@@ -11,7 +11,8 @@
 //! answers the engine and how its runs are isolated is in `mysql.rs`. A case with a `min_version`
 //! file (a `server_version_num`, such as `180000`, or for MySQL the version as one number, such
 //! as `80400`) is skipped on an older server. A MySQL case's `sql_mode` file sets its sessions'
-//! `sql_mode`.
+//! `sql_mode`. A case whose `dialect` file says `duckdb` runs in a fresh DuckDB file, in an
+//! oracle built with the `duckdb` feature (`duckdb.rs`).
 //!
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
@@ -20,6 +21,9 @@
 //!   cargo run -p reylo-oracle -- --url … --dump new.json oracle/cases      # write the answers
 //!   cargo run -p reylo-oracle -- --url … --strict-coverage oracle/cases    # fail on a statement that never ran
 //!   cargo run -p reylo-oracle -- --url … --timeout 2000 oracle/cases       # milliseconds per run
+//!
+//! Each Postgres and MySQL statement is analyzed again under other session settings, and a case
+//! whose analysis changes fails: a descriptor never turns on the session.
 //!
 //! `--analyses` names a JSON object of analyses keyed `<case>/<file>`, which the seeding checks
 //! in place of the engine's own: how a check that passes shows it can fail, run on the answers of
@@ -46,11 +50,21 @@
 //! code), every error a run raises must be one its database defines, naming only what the
 //! narrowing lists. A case's `errors.txt`, where it has one, holds each statement's narrowing, and
 //! is compared and blessed like `expected.txt`.
+//!
+//! Every parameter's and column's type an analysis gives holds to the format's own rules: it is a
+//! `Type` of the format's JSON Schema, reads as the format's type and writes again as the same JSON,
+//! and passes the validity rules of spec/README.md (`validity.rs`). A type that breaks one fails its
+//! case.
 
+#[cfg(feature = "duckdb")]
+mod duckdb;
 mod errors;
 mod mysql;
+mod replay;
 mod seed;
+mod validity;
 
+use reylo_engine_core::types::Type;
 use reylo_engine::AnswerCache;
 use serde_json::{Map, Value};
 use std::fs;
@@ -59,13 +73,25 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use tokio_postgres::{Client, Config, NoTls};
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// The stack the oracle runs on. A descriptor is as deep as its statement nests (a JSON shape 495
+/// levels deep in `deep_statements`), and reading one back through serde, which buffers each level
+/// of a flattened kind, takes more than a main thread's 8 MiB in an unoptimized build. Reserved
+/// address space: only the pages a deep descriptor touches are backed by memory.
+const STACK_BYTES: usize = 256 << 20;
+
+fn main() -> ExitCode {
+    let oracle = std::thread::Builder::new().name("oracle".into()).stack_size(STACK_BYTES).spawn(|| tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("the oracle's runtime starts").block_on(oracle()));
+    oracle.expect("the oracle's thread starts").join().unwrap_or(ExitCode::FAILURE)
+}
+
+async fn oracle() -> ExitCode {
     let mut url = std::env::var("ORACLE_URL").ok();
     let mut mysql_url = std::env::var("ORACLE_MYSQL_URL").ok();
     let mut bless = false;
     let mut keep = false;
     let mut strict_coverage = false;
+    let mut replay: Option<String> = None;
+    let mut mysqld: Option<PathBuf> = None;
     let mut timeout_ms: u64 = 5000;
     let mut given = Map::new();
     let mut dump: Option<PathBuf> = None;
@@ -78,6 +104,8 @@ async fn main() -> ExitCode {
             "--bless" => bless = true,
             "--keep" => keep = true,
             "--strict-coverage" => strict_coverage = true,
+            "--replay" => replay = args.next(),
+            "--mysqld" => mysqld = args.next().map(PathBuf::from),
             "--timeout" => match args.next().and_then(|ms| ms.parse::<u64>().ok()).filter(|ms| *ms > 0) {
                 Some(ms) => timeout_ms = ms,
                 None => {
@@ -99,6 +127,33 @@ async fn main() -> ExitCode {
             _ => paths.push(PathBuf::from(arg)),
         }
     }
+    // A database's own test suite, replayed: `replay/`.
+    if let Some(database) = replay {
+        let outcome = match (database.as_str(), paths.as_slice()) {
+            #[cfg(feature = "duckdb")]
+            ("duckdb", _) => Ok(replay::duckdb::run(&paths, timeout_ms)),
+            #[cfg(not(feature = "duckdb"))]
+            ("duckdb", _) => Err("--replay duckdb runs DuckDB's tests, in an oracle built with DuckDB: --features duckdb".to_string()),
+            ("sqlite", _) => Ok(replay::sqlite::run(&paths, timeout_ms)),
+            ("postgres", [regress]) => match &url {
+                Some(url) => replay::postgres::run(url, regress, timeout_ms).await,
+                None => Err("--replay postgres runs on the server --url names".to_string()),
+            },
+            ("mysql", _) => match &mysqld {
+                Some(mysqld) => replay::mysql::run(mysqld, &paths, timeout_ms).await,
+                None => Err("--replay mysql runs on a server it starts from --mysqld <path to mysqld>".to_string()),
+            },
+            _ => Err("--replay takes duckdb, postgres, sqlite or mysql, and the suite's directory: postgres's src/test/regress alone".to_string()),
+        };
+        return match outcome {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let cases = cases(&paths);
     if cases.is_empty() {
         eprintln!("no cases: name a case directory, or a directory of them");
@@ -116,6 +171,12 @@ async fn main() -> ExitCode {
         let min = fs::read_to_string(case.join("min_version")).ok().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
         let outcome = if dialect == "sqlite" {
             run_sqlite(case, timeout_ms, &given, &mut dumped)
+        } else if dialect == "duckdb" {
+            #[cfg(feature = "duckdb")]
+            let outcome = duckdb::run(case, timeout_ms, &given, &mut dumped, statements(case));
+            #[cfg(not(feature = "duckdb"))]
+            let outcome: Result<(Vec<String>, Vec<String>), String> = Err("a DuckDB case runs in an oracle built with DuckDB: cargo run -p reylo-oracle --features duckdb".into());
+            outcome
         } else if dialect == "mysql" {
             if mysql_server.is_none() {
                 let Some(url) = mysql_url.as_deref() else {
@@ -157,6 +218,10 @@ async fn main() -> ExitCode {
             }
             run_postgres(case, client, config, keep, timeout_ms, &given, &mut dumped).await
         };
+        // Every type the case's statements were given holds to the format's rules, whatever else
+        // fails the case.
+        let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
+        let typed = validity::check(case, &files, &dumped);
         match outcome {
             Ok((lines, unchecked)) => {
                 never_ran += unchecked.len();
@@ -166,9 +231,8 @@ async fn main() -> ExitCode {
                 print_unchecked(case, lines.len(), &unchecked);
                 // Every verdict is printed, whichever fails the case.
                 let matched = check(case, &lines, bless);
-                let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
                 let narrowed = errors::check(case, &errors::lines(case, &files, &dumped), bless);
-                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed {
+                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed || !typed {
                     failed += 1;
                 }
             }
@@ -329,11 +393,17 @@ async fn connect(config: &Config) -> Result<Client, String> {
     Ok(client)
 }
 
-async fn connect_admin(url: &str) -> Result<(Client, Config, i32), String> {
+/// The server `url` names, refused on port 5432, the shared server's: the oracle creates and drops databases, and runs only on a throwaway cluster.
+fn throwaway_config(url: &str) -> Result<Config, String> {
     let config = Config::from_str(url).map_err(|e| e.to_string())?;
     if config.get_ports().contains(&5432) {
         return Err("port 5432 is the shared server; the oracle runs only on a throwaway cluster".into());
     }
+    Ok(config)
+}
+
+async fn connect_admin(url: &str) -> Result<(Client, Config, i32), String> {
+    let config = throwaway_config(url)?;
     let client = connect(&config).await?;
     let version: String = client.query_one("SHOW server_version_num", &[]).await.map_err(|e| e.to_string())?.get(0);
     Ok((client, config, version.parse().unwrap_or(0)))
@@ -361,6 +431,7 @@ async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, keep: 
         dumped.insert(format!("{name}/{file}"), analysis.clone());
         analyzed.push((file, sql, analysis));
     }
+    same_under_other_settings(&client, &name, &analyzed, given).await?;
     // A value that contradicts a type is a failure whatever expected.txt says.
     let report = seed::check(&client, &analyzed, timeout_ms).await;
     drop(client);
@@ -369,6 +440,43 @@ async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, keep: 
     }
     let unchecked = seeded(case, lines.len(), report.map_err(|e| format!("seeding: {e}"))?)?;
     Ok((lines, unchecked))
+}
+
+/// What a Postgres session sets that may change how the server prints a value or an expression,
+/// and that no statement's meaning turns on, each with another of its values.
+const OTHER_SETTINGS: [(&str, &str); 5] = [("DateStyle", "Postgres, DMY"), ("IntervalStyle", "postgres_verbose"), ("TimeZone", "Asia/Kolkata"), ("extra_float_digits", "0"), ("bytea_output", "escape")];
+
+/// Each statement analyzed again under other session settings, which must change nothing: a
+/// descriptor is written in canonical text, never the session's. `search_path` gains a schema that
+/// does not exist, which leaves what every name resolves to as it was. Each setting goes back to
+/// what the case's own setup left it at.
+async fn same_under_other_settings(client: &Client, case: &str, analyzed: &[(String, String, Value)], given: &Map<String, Value>) -> Result<(), String> {
+    let setting = |name: &str, value: &str| format!("SELECT set_config('{name}', '{}', false)", value.replace('\'', "''"));
+    let mut before = Vec::new();
+    for (name, value) in OTHER_SETTINGS.iter().copied().chain([("search_path", "")]) {
+        let current: String = client.query_one(&format!("SELECT current_setting('{name}')"), &[]).await.map_err(|e| pg_message(&e))?.get(0);
+        let other = if name == "search_path" { format!("{current}, reylo_oracle_absent") } else { value.to_string() };
+        client.batch_execute(&setting(name, &other)).await.map_err(|e| format!("{name}: {}", pg_message(&e)))?;
+        before.push((name, current));
+    }
+    let mut outcome = Ok(());
+    for (file, sql, analysis) in analyzed.iter().filter(|(file, _, _)| !given.contains_key(&format!("{case}/{file}"))) {
+        match analyze_postgres(client, sql).await {
+            Ok(again) if again == *analysis => {}
+            Ok(again) => {
+                outcome = Err(format!("{file}: another session's settings change its analysis: {} became {}", line(analysis), line(&again)));
+                break;
+            }
+            Err(e) => {
+                outcome = Err(format!("{file}: under another session's settings: {e}"));
+                break;
+            }
+        }
+    }
+    for (name, value) in before {
+        client.batch_execute(&setting(name, &value)).await.map_err(|e| format!("{name}: {}", pg_message(&e)))?;
+    }
+    outcome
 }
 
 async fn analyze_postgres(client: &Client, sql: &str) -> Result<Value, String> {
@@ -419,51 +527,41 @@ fn analyze_sqlite(db: &rusqlite::Connection, sql: &str) -> Result<Value, String>
 // The printed form
 // ---------------------------------------------------------------------------------------------
 
-/// `maybeOne (id: int4) -> { title: text, author: text? }`, then any diagnostics.
+/// `many (id: int4) -> { id: int4, title: text, author: text? } key (id) ordered`, ` value` where the
+/// result is the one column's values, then any diagnostics: each type as [`Type::short`] prints it.
 fn line(analysis: &Value) -> String {
     let field = |v: &Value| format!("{}: {}{}", v["name"].as_str().unwrap_or("?"), render(&v["type"]), if v["nullable"].as_bool().unwrap_or(false) { "?" } else { "" });
     let params: Vec<String> = analysis["params"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
     let columns: Vec<String> = analysis["columns"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
     let mut out = format!("{} ({}) -> {{ {} }}", analysis["cardinality"].as_str().unwrap_or("?"), params.join(", "), columns.join(", "));
+    // The result keys, which a result of more than one row may have.
+    if let Some(keys) = analysis["unique"].as_array().filter(|k| !k.is_empty()) {
+        let shown: Vec<String> = keys.iter().map(|key| format!("({})", key.as_array().into_iter().flatten().map(|k| k.as_str().unwrap_or("?")).collect::<Vec<_>>().join(", "))).collect();
+        out.push_str(&format!(" key {}", shown.join(", ")));
+    }
+    // The columns of the result its ORDER BY sorts on.
+    if let Some(order) = analysis["order"].as_array().filter(|o| !o.is_empty()) {
+        let shown: Vec<String> = order.iter().map(|o| format!("{}{} nulls {}", o["column"].as_str().unwrap_or("?"), if o["desc"].as_bool() == Some(true) { " desc" } else { "" }, o["nulls"].as_str().unwrap_or("?"))).collect();
+        out.push_str(&format!(" sorted ({})", shown.join(", ")));
+    }
+    // An ORDER BY that orders the rows totally.
+    if analysis["ordered"].as_bool() == Some(true) {
+        out.push_str(" ordered");
+    }
+    if analysis["value"].as_bool() == Some(true) {
+        out.push_str(" value");
+    }
     for d in analysis["diagnostics"].as_array().into_iter().flatten() {
         out.push_str(&format!(" !! reylo{}: {}", d["code"], d["message"].as_str().unwrap_or("")));
     }
     out
 }
 
-/// A type in one short line: `int4`, `'a' | 'b'`, `text[]`, `{ id: int4 }`, `[{ … }?]`,
-/// `json {"type":"string"}`. An array
-/// the statement builds says what it knows of its elements: `(text?)[]` when one may be NULL,
-/// `(text!)[]` when none can be.
+/// A type in one short line ([`Type::short`]), or the JSON it is where it is no type the engine
+/// writes.
 fn render(ty: &Value) -> String {
-    let fields = |v: &Value| -> String {
-        let parts: Vec<String> = v.as_array().into_iter().flatten().map(|f| format!("{}: {}{}", f["name"].as_str().unwrap_or("?"), render(&f["type"]), if f["nullable"].as_bool().unwrap_or(false) { "?" } else { "" })).collect();
-        format!("{{ {} }}", parts.join(", "))
-    };
-    match ty["kind"].as_str() {
-        Some("scalar") => ty["name"].as_str().unwrap_or("?").to_string(),
-        Some("enum") => {
-            let labels: Vec<String> = ty["labels"].as_array().into_iter().flatten().map(|l| format!("'{}'", l.as_str().unwrap_or(""))).collect();
-            if labels.is_empty() { ty["name"].as_str().unwrap_or("enum").to_string() } else { labels.join(" | ") }
-        }
-        Some("array") => {
-            let inner = render(&ty["of"]);
-            match ty["nullable_items"].as_bool() {
-                Some(true) => format!("({inner}?)[]"),
-                Some(false) => format!("({inner}!)[]"),
-                None => format!("{inner}[]"),
-            }
-        }
-        Some("object") => fields(&ty["fields"]),
-        Some("composite") => format!("{}{}", ty["name"].as_str().unwrap_or("record"), fields(&ty["fields"])),
-        Some("list") => format!("[{}{}]", render(&ty["of"]), if ty["nullable_items"].as_bool().unwrap_or(false) { "?" } else { "" }),
-        // A JSON column a CHECK holds to a JSON Schema: `json` and the canonical schema of the
-        // values it admits.
-        Some("json") => match ty.get("schema") {
-            Some(schema) => format!("json {schema}"),
-            None => "json".into(),
-        },
-        Some("unknown") => "unknown".into(),
-        _ => ty.to_string(),
+    match serde_json::from_value::<Type>(ty.clone()) {
+        Ok(t) => t.short(),
+        Err(_) => ty.to_string(),
     }
 }

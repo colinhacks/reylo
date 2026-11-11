@@ -1,7 +1,7 @@
-arrow_binds_tight.sql: many () -> { x: float8?, y: text? }
-bang_before_arrow.sql: many () -> { x: int8|int4?, y: int8|int4? }
-comma_then_right.sql: many () -> { a: int4, b: int4?, c: int4 }
-left_after_bare_join.sql: many () -> { a: int4, b: int4, c: int4? }
-parenthesized_comma.sql: many () -> { a: int4?, b: int4?, c: int4 }
-right_after_bare_join.sql: many () -> { a: int4?, b: int4?, c: int4 }
-second_on.sql: many () -> { a: int4, b: int4?, c: int4? }
+arrow_binds_tight.sql: many () -> { x: double?, y: text? }
+bang_before_arrow.sql: many () -> { x: bigint | int?, y: bigint | int? }
+comma_then_right.sql: many () -> { a: int, b: int?, c: int }
+left_after_bare_join.sql: many () -> { a: int, b: int, c: int? }
+parenthesized_comma.sql: many () -> { a: int?, b: int?, c: int }
+right_after_bare_join.sql: many () -> { a: int?, b: int?, c: int }
+second_on.sql: many () -> { a: int, b: int?, c: int? }

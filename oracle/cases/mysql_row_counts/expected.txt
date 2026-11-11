@@ -1,74 +1,75 @@
-aggregate_and_window.sql: one () -> { n: int8, total: numeric }
-aggregate_any_value.sql: many () -> { name: text }
-aggregate_bit.sql: one () -> { a: int8, o: int8, x: int8 }
-aggregate_distinct.sql: one () -> { n: int8 }
-aggregate_for_update.sql: one () -> { n: int8 }
-aggregate_group_by.sql: many () -> { name: text, n: int8 }
-aggregate_group_by_constant.sql: maybeOne () -> { n: int8 }
+aggregate_and_window.sql: one () -> { n: bigint, total: decimal }
+aggregate_any_value.sql: many () -> { name: varchar }
+aggregate_bit.sql: one () -> { a: bigint, o: bigint, x: bigint }
+aggregate_distinct.sql: one () -> { n: bigint }
+aggregate_for_update.sql: one () -> { n: bigint }
+aggregate_group_by.sql: many () -> { name: varchar(≤20), n: bigint }
+aggregate_group_by_constant.sql: at_most_one () -> { n: bigint }
 aggregate_group_concat.sql: one () -> { names: text? }
-aggregate_having.sql: many () -> { n: int8 }
-aggregate_having_true.sql: many () -> { n: int8 }
-aggregate_in_case.sql: many () -> { verdict: text }
-aggregate_in_function.sql: one () -> { oldest: int8 }
-aggregate_in_order_by.sql: many () -> { name: text }
-aggregate_in_subquery_only.sql: many () -> { n: int8 }
-aggregate_join.sql: one () -> { n: int8 }
-aggregate_json_arrayagg.sql: one () -> { ids: [int4]? }
+aggregate_having.sql: many () -> { n: bigint }
+aggregate_having_true.sql: many () -> { n: bigint }
+aggregate_in_case.sql: many () -> { verdict: varchar }
+aggregate_in_function.sql: one () -> { oldest: bigint }
+aggregate_in_order_by.sql: many () -> { name: varchar(≤20) }
+aggregate_in_subquery_only.sql: many () -> { n: bigint }
+aggregate_join.sql: one () -> { n: bigint }
+aggregate_json_arrayagg.sql: one () -> { ids: json int[]? }
 aggregate_json_objectagg.sql: one () -> { names: json? }
-aggregate_statistics.sql: one () -> { a: float8?, b: float8?, c: float8?, d: float8?, e: float8?, f: float8?, g: float8?, h: numeric?, i: int4|int8? }
-aggregate_union.sql: many () -> { n: int8 }
-aggregate_window.sql: many () -> { n: int8 }
-count_cast.sql: one () -> { n: text? }
-count_expression.sql: one () -> { n: int8 }
+aggregate_statistics.sql: one () -> { a: double?, b: double?, c: double?, d: double?, e: double?, f: double?, g: double?, h: decimal?, i: int | bigint? }
+aggregate_union.sql: many () -> { n: bigint }
+aggregate_window.sql: many () -> { n: bigint }
+count_cast.sql: one () -> { n: varchar? }
+count_expression.sql: one () -> { n: bigint }
 count_into_variable.sql: none () -> {  }
-count_nested.sql: one () -> { n: int8 }
-count_parenthesized.sql: many () -> { n: int8 }
-count_star.sql: one () -> { n: int8 }
-count_where.sql: one (pattern: text) -> { n: int8, oldest: int4|int8? }
-json_table.sql: many () -> { a: int4? }
-key_alias_is_other_table.sql: maybeOne (id: int4) -> { id: int4 }
-key_bare_in_join_group.sql: maybeOne (email: text) -> { email: text, n: int8 }
-key_composite.sql: maybeOne (post: int4, tag: text) -> { tag: text }
-key_composite_partial.sql: many (post: int4) -> { tag: text }
-key_cross_join.sql: many (id: int4) -> { id: int4 }
-key_derived.sql: maybeOne (id: int4) -> { id: int4 }
-key_exists.sql: maybeOne (id: int4) -> { id: int4 }
-key_group_by.sql: maybeOne (id: int4) -> { id: int4, n: int8 }
-key_group_by_bare.sql: maybeOne (id: int4) -> { id: int4, n: int8 }
-key_group_by_expression.sql: maybeOne (id: int4) -> { n: int8 }
-key_group_by_having.sql: maybeOne (id: int4) -> { id: int4, n: int8 }
-key_group_by_joined_column.sql: many (id: int4) -> { title: text, n: int8 }
-key_group_by_other_column.sql: maybeOne (id: int4) -> { name: text, n: int8 }
-key_group_by_position.sql: maybeOne (id: int4) -> { name: text, n: int8 }
-key_group_by_rollup.sql: many (id: int4) -> { id: int4|int8?, n: int8 }
-key_group_by_rollup_single.sql: many (id: int4) -> { id: int4|int8?, n: int8 }
-key_in_subquery.sql: maybeOne (id: int4) -> { id: int4 }
-key_into_variable.sql: none (id: int4) -> {  }
-key_join.sql: many (id: int4) -> { id: int4, title: text }
-key_join_both.sql: maybeOne (id: int4, post: int4) -> { id: int4, title: text }
-key_left_join.sql: many (id: int4) -> { id: int4, title: text? }
-key_order_limit.sql: maybeOne (id: int4) -> { id: int4 }
-key_parenthesized.sql: many (id: int4) -> { id: int4 }
-key_parenthesized_limit.sql: maybeOne () -> { id: int4 }
-key_partition.sql: maybeOne (id: int4) -> { id: int4 }
-key_straight_join.sql: maybeOne (id: int4) -> { id: int4 }
-key_union.sql: many (id: int4, other: int4) -> { id: int4|int8 }
-key_view.sql: maybeOne (id: int4) -> { id: int4|int8 }
-key_window.sql: maybeOne (id: int4) -> { id: int4, r: int8 }
-key_with.sql: maybeOne (id: int4) -> { id: int4 }
-key_with_shadows_in_subquery.sql: one () -> { n: int8 }
-key_with_shadows_recursive.sql: many (id: int4) -> { id: int8|int4 }
-key_with_shadows_table.sql: many (id: int4) -> { id: int8|int4 }
-lateral.sql: maybeOne (id: int4) -> { id: int4, n: int8 }
-no_from.sql: one () -> { one: int8|int4 }
-no_from_dual.sql: many () -> { one: int8|int4 }
-no_from_dual_where.sql: many () -> { one: int8|int4 }
-no_from_having.sql: many () -> { one: int8|int4 }
-no_from_now.sql: one (x: int4) -> { at: timestamp, next: int8|float8|numeric? }
-no_from_union.sql: many () -> { one: int8|int4 }
-no_from_where.sql: many (flag: int4) -> { one: int8|int4 }
-sum_no_rows.sql: one () -> { total: numeric? }
-table_limit.sql: many () -> { post_id: int4, tag: text }
-table_statement.sql: many () -> { post_id: int4, tag: text }
-values_one.sql: one () -> { column_0: int8|int4, column_1: text }
-values_two.sql: many () -> { column_0: int8|int4, column_1: text }
+count_nested.sql: one () -> { n: bigint }
+count_parenthesized.sql: many () -> { n: bigint }
+count_star.sql: one () -> { n: bigint }
+count_where.sql: one (pattern: varchar) -> { n: bigint, oldest: int | bigint? }
+group_by_position.sql: many () -> { name: varchar(≤20), n: bigint }
+json_table.sql: many () -> { a: int? }
+key_alias_is_other_table.sql: at_most_one (id: int32) -> { id: int }
+key_bare_in_join_group.sql: at_most_one (email: varchar) -> { email: varchar(≤40), n: bigint }
+key_composite.sql: at_most_one (post: int32, tag: varchar) -> { tag: varchar(≤20) }
+key_composite_partial.sql: many (post: int32) -> { tag: varchar(≤20) }
+key_cross_join.sql: many (id: int32) -> { id: int }
+key_derived.sql: at_most_one (id: int32) -> { id: int }
+key_exists.sql: at_most_one (id: int32) -> { id: int }
+key_group_by.sql: at_most_one (id: int32) -> { id: int, n: bigint }
+key_group_by_bare.sql: at_most_one (id: int32) -> { id: int, n: bigint }
+key_group_by_expression.sql: at_most_one (id: int32) -> { n: bigint }
+key_group_by_having.sql: at_most_one (id: int32) -> { id: int, n: bigint }
+key_group_by_joined_column.sql: many (id: int32) -> { title: varchar(≤20), n: bigint }
+key_group_by_other_column.sql: at_most_one (id: int32) -> { name: varchar(≤20), n: bigint }
+key_group_by_position.sql: at_most_one (id: int32) -> { name: varchar(≤20), n: bigint }
+key_group_by_rollup.sql: many (id: int32) -> { id: int | bigint?, n: bigint }
+key_group_by_rollup_single.sql: many (id: int32) -> { id: int | bigint?, n: bigint }
+key_in_subquery.sql: at_most_one (id: int32) -> { id: int }
+key_into_variable.sql: none (id: int32) -> {  }
+key_join.sql: many (id: int32) -> { id: int, title: varchar(≤20) }
+key_join_both.sql: at_most_one (id: int32, post: int32) -> { id: int, title: varchar(≤20) }
+key_left_join.sql: many (id: int32) -> { id: int, title: varchar(≤20)? }
+key_order_limit.sql: at_most_one (id: int32) -> { id: int }
+key_parenthesized.sql: many (id: int32) -> { id: int }
+key_parenthesized_limit.sql: at_most_one () -> { id: int }
+key_partition.sql: at_most_one (id: int32) -> { id: int }
+key_straight_join.sql: at_most_one (id: int32) -> { id: int }
+key_union.sql: many (id: int32, other: int32) -> { id: int | bigint }
+key_view.sql: at_most_one (id: int32) -> { id: int | bigint }
+key_window.sql: at_most_one (id: int32) -> { id: int, r: bigint }
+key_with.sql: at_most_one (id: int32) -> { id: int }
+key_with_shadows_in_subquery.sql: one () -> { n: bigint }
+key_with_shadows_recursive.sql: many (id: int32) -> { id: bigint | int }
+key_with_shadows_table.sql: many (id: int32) -> { id: bigint | int }
+lateral.sql: at_most_one (id: int32) -> { id: int, n: bigint }
+no_from.sql: one () -> { one: bigint | int }
+no_from_dual.sql: many () -> { one: bigint | int }
+no_from_dual_where.sql: many () -> { one: bigint | int }
+no_from_having.sql: many () -> { one: bigint | int }
+no_from_now.sql: one (x: int32) -> { at: datetime, next: bigint | double | decimal? }
+no_from_union.sql: many () -> { one: bigint | int }
+no_from_where.sql: many (flag: int32) -> { one: bigint | int }
+sum_no_rows.sql: one () -> { total: decimal? }
+table_limit.sql: many () -> { post_id: int, tag: varchar(≤20) }
+table_statement.sql: many () -> { post_id: int, tag: varchar(≤20) }
+values_one.sql: one () -> { column_0: bigint | int, column_1: varchar }
+values_two.sql: many () -> { column_0: bigint | int, column_1: varchar }

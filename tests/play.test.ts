@@ -41,7 +41,7 @@ test("reylo play analyzes each statement against the project's database, without
 
     const user = await get(q("select id, name, email from users where id = :id"));
     assert.equal(user.status, 200);
-    assert.deepEqual({ ...user.body, ms: 0 }, { sql: "select id, name, email from users where id = :id", params: "{ id: number }", returns: "{ id: number; name: string; email: string | null } | null", cardinality: "maybeOne", diagnostics: [], ms: 0 });
+    assert.deepEqual({ ...user.body, ms: 0 }, { sql: "select id, name, email from users where id = :id", params: "{ id: number }", returns: "{ id: number; name: string; email: string | null } | null", element: "{ id: number; name: string; email: string | null }", cardinality: "maybeOne", diagnostics: [], ms: 0 });
 
     // An error is placed as an editor counts: by line and column.
     const bad = await get(q("select id,\n  nope\nfrom users"));
@@ -84,12 +84,22 @@ test("reylo play answers this machine's own pages and tools, and refuses another
     // fetch() sends its own Host header; a name rebound to 127.0.0.1 sends the name.
     const rebound = await new Promise<number>((done, fail) => request(schema, { headers: { host: `example.com:${new URL(play.url).port}` } }, (res) => (res.resume(), done(res.statusCode!))).on("error", fail).end());
     assert.equal(rebound, 403);
+    // Another site's image or link is a GET with no Origin, which a browser marks with where it comes from.
+    const from = (site: string, path = "api/schema") => new Promise<number>((done, fail) => request(`${play.url}${path}`, { headers: { "sec-fetch-site": site } }, (res) => (res.resume(), done(res.statusCode!))).on("error", fail).end());
+    assert.equal(await from("cross-site"), 403);
+    assert.equal(await from("same-site"), 403);
+    assert.equal(await from("cross-site", `api/analyze?q=${encodeURIComponent("select 1 as a")}`), 403);
+    assert.equal(await from("same-origin"), 200);
+    assert.equal(await from("none"), 200);
+    // A link from another site still opens the page, and a path with a malformed escape is the page too.
+    assert.equal(await from("cross-site", ""), 200);
+    assert.equal((await get(`${play.url}%zz`)).status, 200);
   } finally {
     await play.close();
   }
 });
 
-test("reylo play says, as reylo generate does, that a project file's url alone is not read", async () => {
+test("reylo play says, as reylo analyze does, that a project file's url alone is not read", async () => {
   const root = project({ ".reylo.yaml": 'url: "file:./other.db"\n' });
   new DatabaseSync(join(root, "app.db")).close();
   const play = await startPlay({ cwd: root, port: 0, env: { DATABASE_URL: "file:./app.db" } });

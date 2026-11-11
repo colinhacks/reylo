@@ -1,15 +1,15 @@
-column_collation.sql: maybeOne (e: text) -> { id: int4 }
-deferrable.sql: many (k: int4) -> { id: int4 }
-exact_numeric.sql: maybeOne (k: numeric) -> { id: int4 }
-explicit_collation.sql: many (e: text) -> { id: int4 }
-first_row_only.sql: maybeOne () -> { id: int4 }
-index_collation.sql: many (e: text) -> { id: int4 }
+column_collation.sql: at_most_one (e: text) -> { id: int4 }
+deferrable.sql: many (k: int4) -> { id: int4 } key (id)
+exact_numeric.sql: at_most_one (k: numeric) -> { id: int4 }
+explicit_collation.sql: many (e: text) -> { id: int4 } key (id)
+first_row_only.sql: at_most_one () -> { id: int4 }
+index_collation.sql: many (e: text) -> { id: int4 } key (id)
 inheritance_parent.sql: many (id: int4) -> { v: text? }
-lossy_cast_bigint.sql: many (b: float8) -> { id: int4 }
-lossy_cast_numeric.sql: many (k: float8) -> { id: int4 }
+lossy_cast_bigint.sql: many (b: float8) -> { id: int4 } key (id)
+lossy_cast_numeric.sql: many (k: float8) -> { id: int4 } key (id)
 only_parent.sql: many (id: int4) -> { v: text? }
-partitioned.sql: maybeOne (r: int4, id: int4) -> { name: text? }
-primary_key.sql: maybeOne (id: int4) -> { id: int4 }
-same_collation.sql: maybeOne (e: text) -> { id: int4 }
+partitioned.sql: at_most_one (r: int4, id: int4) -> { name: text? }
+primary_key.sql: at_most_one (id: int4) -> { id: int4 }
+same_collation.sql: at_most_one (e: text) -> { id: int4 }
 schema_qualified.sql: many (id: int4) -> { name: text?, n: int8 }
-with_ties.sql: many () -> { id: int4 }
+with_ties.sql: many () -> { id: int4 } key (id)

@@ -94,6 +94,9 @@ pub struct Analysis {
     /// `GROUP BY ROLLUP`, `CUBE`, or `GROUPING SETS` anywhere: a grouping column is NULL in the
     /// rows that aggregate over it, whatever the catalog says about the column.
     pub has_grouping_sets: bool,
+    /// Whether a write stands below the top statement, in a WITH query: `statement` then names
+    /// one of the statement's writes, not each.
+    pub nested_writes: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +165,7 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
     let mut has_set_op = false;
     let mut has_repeated_table = false;
     let mut has_grouping_sets = false;
+    let mut writes = 0usize;
     let mut nullable_tables: Vec<String> = Vec::new();
     let mut relnames: Vec<String> = Vec::new();
     // How many times the statement reads each relation name, anywhere in it.
@@ -199,11 +203,19 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         // a statement returns are still the outer SELECT's, which is what `statement` is for.
         "InsertStmt" | "UpdateStmt" | "DeleteStmt" | "MergeStmt" => {
             kind = StatementKind::Mutation;
+            writes += 1;
             changes_keys |= key != "InsertStmt";
             if node.get("returning_clause").and_then(|c| c.get("exprs")).and_then(|l| l.as_array()).is_some_and(|l| !l.is_empty()) {
                 has_returning = true;
             }
-            let Some(relation) = node.get("relation").and_then(|r| r.get("relname")).and_then(|r| r.as_str()) else { return };
+            let Some(relname) = node.get("relation").and_then(|r| r.get("relname")).and_then(|r| r.as_str()) else { return };
+            // The relation as the statement writes it, schema and all, as `read_set` and
+            // `write_set` name it: `kv` and `public.kv` are each looked up as written.
+            let relation = match node.get("relation").and_then(|r| r.get("schemaname")).and_then(|r| r.as_str()).filter(|s| !s.is_empty()) {
+                Some(schema) => format!("{schema}.{relname}"),
+                None => relname.to_string(),
+            };
+            let relation = relation.as_str();
             let mut set = |targets: Option<&Value>| {
                 for target in targets.and_then(|t| t.as_array()).into_iter().flatten() {
                     let Some(rt) = target.get("node").and_then(|n| n.get("ResTarget")) else { continue };
@@ -452,6 +464,7 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         has_repeated_table,
         has_set_op,
         has_grouping_sets,
+        nested_writes: writes > usize::from(statement != "select"),
     })
 }
 
@@ -721,6 +734,10 @@ mod tests {
         assert_eq!(analyze("INSERT INTO notes SELECT $1, $2").unwrap().bare, vec![(1, "notes".into(), Position(0)), (2, "notes".into(), Position(1))]);
         assert!(analyze("INSERT INTO notes (a) SELECT $1 UNION ALL SELECT $2").unwrap().bare.is_empty());
         assert_eq!(analyze("UPDATE notes SET a = $1, b = $2::text WHERE id = $3").unwrap().bare, vec![named(1, "a")]);
+        // A relation named with its schema keeps it, as the write set names it.
+        let a = analyze("UPDATE app.notes SET a = $1 WHERE id = $2").unwrap();
+        assert_eq!(a.bare, vec![(1, "app.notes".to_string(), Name("a".into()))]);
+        assert_eq!(a.write_set, ["app.notes"]);
     }
 
     #[test]
@@ -805,6 +822,12 @@ mod tests {
         assert!(analyze("SELECT owner_id, count(*) FROM todos GROUP BY ROLLUP (owner_id)").unwrap().has_grouping_sets);
         assert!(analyze("SELECT x FROM (SELECT a AS x FROM t GROUP BY CUBE (a)) s").unwrap().has_grouping_sets);
         assert!(!analyze("SELECT owner_id, count(*) FROM todos GROUP BY owner_id").unwrap().has_grouping_sets);
+        // A write in a WITH query stands below the statement's own, or below a SELECT.
+        let nested = |sql: &str| analyze(sql).unwrap().nested_writes;
+        assert!(nested("WITH i AS (INSERT INTO t VALUES (1) RETURNING *) UPDATE u SET a = 1 FROM i RETURNING i.a"));
+        assert!(nested("WITH i AS (INSERT INTO t VALUES (1) RETURNING *) SELECT a FROM i"));
+        assert!(!nested("INSERT INTO t VALUES (1) RETURNING a"));
+        assert!(!nested("WITH s AS (SELECT 1 AS a) UPDATE u SET a = s.a FROM s RETURNING u.a"));
     }
 
     #[test]

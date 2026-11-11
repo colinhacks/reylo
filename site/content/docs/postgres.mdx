@@ -10,9 +10,9 @@ description: How Reylo types SQL queries on Postgres. The TypeScript type of eac
 | | |
 | --- | --- |
 | Postgres versions | 14 to 18 |
-| Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/#direct_url). Connect directly, not through a pooler such as PgBouncer. |
-| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres`, and Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql` ([Drivers](#drivers)) |
-| Type checking | Reads the schema through the postgres.js inside `@reylosql/postgres`, so your project needs no driver for it |
+| Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url). Connect directly, not through a pooler such as PgBouncer. |
+| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, and Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql` ([Drivers](#drivers)) |
+| Type checking | Reylo's engine connects to Postgres itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -27,7 +27,7 @@ create table users (
   name text not null,
   email text unique,
   role user_role not null default 'member',
-  tags text[] not null default '{}',
+  tags text[] not null default '{}' check (array_position(tags, null) is null),
   created_at timestamptz not null default now()
 );
 create unique index users_email_lower on users (lower(email));
@@ -80,17 +80,21 @@ Each Postgres type maps to one TypeScript type, and `.run()` returns the same va
 | `timestamptz` | `string` | `"2026-10-20T08:00:00.123456Z"` |
 | `time`, `timetz` | `string` | `"10:00:00"` |
 | `interval` | `string` | `"P1DT2H3M4S"` |
-| `json`, `jsonb` | `unknown` | `{ a: 1 }` |
+| `json`, `jsonb` | `Json` | `{ a: 1 }` |
 | `json`, `jsonb` a JSON Schema `CHECK` holds | what the schema admits | `{ x: 10, y: 20 }` |
 | JSON the statement builds (`jsonb_build_object`, `jsonb_agg`) | the object or array it builds | `{ total: 12.5 }` |
 | `bytea` | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
 | An array | an array of its element type | `["math", "poetry"]` |
 | An enum | the union of its labels | `"admin"` |
 | A domain | its base type | its base type's |
-| A row value | `string` | `"(1,Ada)"` |
+| A row value of a table, a subquery or a composite type | an object of its fields | `{ id: 1, name: "Ada" }` |
+| An array of those rows | an array of objects | `[{ id: 1, name: "Ada" }]` |
+| `point`, `box`, `circle` and the other geometric types | an object of its fields | `{ x: 1.5, y: -2 }` |
+| A range | an object of its bounds | `{ lower: 1, upper: 5, bounds: "[)" }` |
+| A multirange | an array of ranges | `[{ lower: 1, upper: 3, bounds: "[)" }]` |
 | pgvector's `vector`, `halfvec` | `number[]` | `[1, 2.5, -3]` |
 | `hstore` | `Record<string, string \| null>` | `{ a: "1", b: null }` |
-| Every other type (`inet`, ranges, `point`, `tsvector`, `xml`, …) | `string` | `"[1,5)"` |
+| Every other type (`inet`, `tsvector`, `xml`, …) | `string` | `"192.168.0.1"` |
 
 Each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
 
@@ -153,15 +157,17 @@ If your runtime has `Temporal`, read the instant with `Temporal.Instant.from()`,
 
 **Fractions of a second**
 
-Fractions keep the server's precision, up to microseconds, without trailing zeros.
+A `timestamptz` or `timestamp` always has six fraction digits, the microseconds Postgres keeps, so two of them sort as strings in the order of their times.
 
 <Pairs>
 
 - `'2026-10-20 10:00:00.123456+00'::timestamptz` → `"2026-10-20T10:00:00.123456Z"`
-- `'2026-10-20 10:00:00.5+00'::timestamptz` → `"2026-10-20T10:00:00.5Z"`
-- `'2026-10-20 10:00:00+00'::timestamptz` → `"2026-10-20T10:00:00Z"`
+- `'2026-10-20 10:00:00.5+00'::timestamptz` → `"2026-10-20T10:00:00.500000Z"`
+- `'2026-10-20 10:00:00+00'::timestamptz` → `"2026-10-20T10:00:00.000000Z"`
 
 </Pairs>
+
+A `Date` keeps milliseconds, so a value passed through one loses its microseconds, and `where placed_at > :since` can then match the row it came from. Pass back the text `.run()` returned.
 
 **Infinity**
 
@@ -176,13 +182,15 @@ Postgres's `infinity` and `-infinity` come back as those words, in every date an
 
 **Years past 9999 or before 1 AD**
 
-A `timestamptz` uses ISO 8601's extended year, as `Temporal.Instant` does. A `date` or `timestamp` keeps Postgres's own text.
+A `date`, `timestamp` or `timestamptz` uses ISO 8601's extended year, a sign and six digits, as `Temporal` does. The year 0000 is 1 BC, so 2 BC is `-000001`. A `date` past 999999 AD takes the digits it needs after the sign, which `Temporal` can't read.
 
 <Pairs>
 
-- `'12344-12-31 18:30:00+00'::timestamptz` → `"+012344-12-31T18:30:00Z"`
-- `'0002-06-01 12:00:00+00 BC'::timestamptz` → `"-000001-06-01T12:00:00Z"`
-- `'0002-06-01 BC'::date` → `"0002-06-01 BC"`
+- `'12345-01-01'::date` → `"+012345-01-01"`
+- `'0002-06-01 BC'::date` → `"-000001-06-01"`
+- `'0002-06-01 12:00:00 BC'::timestamp` → `"-000001-06-01T12:00:00.000000"`
+- `'12344-12-31 18:30:00+00'::timestamptz` → `"+012344-12-31T18:30:00.000000Z"`
+- `'5874897-12-31'::date` → `"+5874897-12-31"`
 
 </Pairs>
 
@@ -213,7 +221,13 @@ An interval is an ISO 8601 duration with its sign in front, which `Temporal.Dura
 
 ### JSON
 
-A `json` or `jsonb` column is typed `unknown`, unless a JSON Schema `CHECK` constrains it or your query builds the JSON. Here `payload` is typed by its schema, and `kind` by its `CHECK`:
+A `json` or `jsonb` column is typed `Json`, any JSON value, unless a `CHECK` constrains it or your query builds the JSON. Reylo exports the type:
+
+```ts
+type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+```
+
+A `CHECK` of the value's kind is all it takes for an object or an array: `jsonb_typeof(doc) = 'object'` types `doc` as `{ [key: string]: Json }`, and `= 'array'` as `Json[]`. A JSON Schema `CHECK` says more. Here `payload` is typed by its schema, and `kind` by its `CHECK`:
 
 ```ts twoslash tab="main.ts"
 import events from "./pg_events.sql";
@@ -226,7 +240,7 @@ const rows = await events.run(db);
 select kind, payload from events
 ```
 
-JSON your query builds with `jsonb_build_object`, `json_build_object`, `jsonb_agg`, `json_agg`, or `to_jsonb` of a whole row, is typed from what you put in it:
+JSON your query builds with `jsonb_build_object`, `json_build_object`, `jsonb_agg`, `json_agg`, or `to_jsonb` of a whole row, is typed from what you put in it. So is an array built with `jsonb_build_array` or `json_array`, item by item, an object built with `json_object('key': value)`, and `array_to_json` of `array(select …)` or `array_agg`:
 
 ```ts twoslash tab="main.ts"
 import orderSummaries from "./pg_order_summaries.sql";
@@ -245,6 +259,8 @@ select u.name,
 from orders o
 join users u on u.id = o.user_id
 ```
+
+A key given twice holds its last value, as `jsonb` keeps it and as a parser reads the two a `json` value holds.
 
 A schema's type carries through an aggregate, and `to_jsonb` of a row is typed column by column, enums included:
 
@@ -276,16 +292,17 @@ select to_jsonb(u) as "user" from users u where u.id = :id::int
 
 **Values inside a document**
 
-Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `interval` is Postgres's own text rather than an ISO 8601 duration, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `interval` is Postgres's own text rather than an ISO 8601 duration, a `date` or `timestamp` before 1 AD or past 9999 keeps Postgres's own year rather than ISO 8601's extended one, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text. A float or `numeric` that is not finite, which Postgres writes there as text since JSON has no number for it, comes back as the number `NaN`, `Infinity` or `-Infinity`.
 
 <Pairs>
 
 - `jsonb_build_object('n', 9007199254740993::bigint)` → `{ n: 9007199254740992 }`
 - `jsonb_build_object('n', 12.50::numeric)` → `{ n: 12.5 }`
-- `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: "NaN" }`
+- `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: NaN }`
 - `jsonb_build_object('at', '2026-10-20 08:00:00+00'::timestamptz)` → `{ at: "2026-10-20T01:00:00-07:00" }`
 - `jsonb_build_object('b', '\x0102ff'::bytea)` → `{ b: "\\x0102ff" }`
 - `jsonb_build_object('d', '1 day 02:03:04'::interval)` → `{ d: "1 day 02:03:04" }`
+- `jsonb_build_object('d', '0002-06-01 BC'::date)` → `{ d: "0002-06-01 BC" }`
 - `json_build_object('u', row(1, 'Ada'))` → `{ u: { f1: 1, f2: "Ada" } }`
 - `json_build_object('o', 7::oid)` → `{ o: "7" }`
 - `json_build_object('g', 'POINT(1 2)'::geometry)` → `{ g: { type: "Point", coordinates: [1, 2] } }`
@@ -295,7 +312,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 **Aggregates beside columns**
 
-Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `unknown` values.
+Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `Json` values.
 
 <Inferred>
 
@@ -310,7 +327,7 @@ group by u.id
 
 **Aggregates over no rows**
 
-Over no rows, `jsonb_agg` returns `null`, and its type includes `null`. Write `coalesce(jsonb_agg(…), '[]')` to always get an array. With any other default, the column is `unknown`.
+Over no rows, `jsonb_agg` returns `null`, and its type includes `null`. Write `coalesce(jsonb_agg(…), '[]')` to always get an array. With any other default, the column is `Json`.
 
 <Pairs>
 
@@ -364,11 +381,11 @@ from events
 
 **Where it doesn't**
 
-Any other expression on the column, a key read from a JSON parameter, a column under a `union`, a `CHECK` added `NOT VALID`, and `to_jsonb` of a single value are typed `unknown`.
+Any other expression on the column, a key read from a JSON parameter, a column under a `union`, a `CHECK` added `NOT VALID`, and `to_jsonb` of a single value are typed `Json`.
 
 <Inferred>
 
-```sql file="pg_json_unknown.sql"
+```sql file="pg_json_any.sql"
 select payload || '{"seen": true}' as merged, to_jsonb(kind) as k
 from events
 ```
@@ -377,7 +394,7 @@ from events
 
 **Through a `with` query or a subquery**
 
-JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is, put it inside JSON you build, or default it with `coalesce(…, '[]')`. Through a `union` or a `*`, it's `unknown`.
+JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is, put it inside JSON you build, or default it with `coalesce(…, '[]')`. Through a `union` or a `*`, it's `Json`.
 
 <Inferred>
 
@@ -435,7 +452,7 @@ group by u.id
 
 **`NULL` elements**
 
-Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`.
+Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`.
 
 <Pairs>
 
@@ -443,13 +460,15 @@ Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[
 
 </Pairs>
 
+A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
+
 **Several dimensions**
 
-Postgres doesn't track an array's dimensions, so a two-dimensional `int[]` is still typed `(number | null)[]`, though it comes back as nested arrays.
+An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) to type every array column at any depth. Inside JSON your query builds, as with `jsonb_build_object('cells', cells)`, `.run()` returns such a value as it is, and without that setting its type has one dimension. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds.
 
 <Pairs>
 
-- `'{{1,2},{3,4}}'::int[]` → `[ [ 1, 2 ], [ 3, 4 ] ]`
+- `array[array[1, 2], array[3, 4]]` → `[ [ 1, 2 ], [ 3, 4 ] ]`
 
 </Pairs>
 
@@ -469,7 +488,7 @@ A `vector` or `halfvec` comes back as a `number[]`, and a parameter of either ta
 
 ### Enums and domains
 
-An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`). A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
+An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A `text[]` column whose `CHECK` holds it within a list (`tags <@ array['a', 'b']`) is an array of that union, with no `null` element, since `<@` finds `NULL` in no list. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
 
 <Pairs>
 
@@ -478,6 +497,109 @@ An enum is typed as the union of its labels. So is a `text` column whose `CHECK`
 </Pairs>
 
 A domain over `jsonb` with a JSON Schema `CHECK` is typed by its schema. A `CHECK` added `NOT VALID` is ignored, since older rows may break it.
+
+### Row values and geometric types
+
+A row value of a table or a composite type comes back as an object of its fields, each typed as a column of its type is. So does each geometric type: a `point` is `{ x, y }`, a `circle` is `{ center, radius }`. A parameter of either takes the same object.
+
+```ts twoslash tab="main.ts"
+import buyers from "./pg_buyers.sql";
+
+const rows = await buyers.run(db);
+//    ^?
+```
+
+```sql tab="pg_buyers.sql"
+select o.id, u as buyer, point(1.5, -2) as pin
+from orders o
+join users u on u.id = o.user_id
+```
+
+An array of whole rows comes back as an array of objects, with each field read as a column is. It reads the fields of a subquery, which Postgres itself types only as `record`, and it nests to any depth:
+
+```ts twoslash tab="main.ts"
+import authors from "./pg_authors.sql";
+
+const rows = await authors.run(db);
+//    ^?
+```
+
+```sql tab="pg_authors.sql"
+select u.id,
+  array(
+    select o from (
+      select id, total, placed_at from orders where user_id = u.id order by id
+    ) o
+  ) as orders
+from users u
+```
+
+<Rules>
+
+**Arrays of rows**
+
+An `array(…)` is `[]` over no rows, never `null`, where an `array_agg` of the same rows is `null`. An element is `null` only where an outer join nulls its whole row. If the row's alias is also the name of a column in scope, Postgres reads the column, and so does the type.
+
+Each level of nesting escapes the quotes and backslashes inside it again, which multiplies a JSON document's text by about four per level. Build rows nested that deep as JSON instead.
+
+**Geometric types**
+
+A `lseg` and a `polygon` are arrays of their points, and a `path` says whether it is closed.
+
+<Pairs>
+
+- `box(point(3, 4), point(1, 2))` → `{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }`
+- `'[(0,0),(1,1)]'::path` → `{ closed: false, points: [ { x: 0, y: 0 }, { x: 1, y: 1 } ] }`
+- `'((0,0),(1,1),(2,0))'::polygon` → `[ { x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 } ]`
+- `circle(point(1, 2), 3)` → `{ center: { x: 1, y: 2 }, radius: 3 }`
+
+</Pairs>
+
+**Rows without field names**
+
+A row whose fields Postgres doesn't name, as `row(…)` builds, comes back as its text, and so does an array of them. Cast it to a composite type, or select it from a subquery that names its columns, to get an object.
+
+<Pairs>
+
+- `row(1, 'Ada')` → `"(1,Ada)"`
+
+</Pairs>
+
+</Rules>
+
+### Ranges
+
+A range comes back as an object of its bounds: `lower` and `upper`, each in its subtype's form and left out where that end is unbounded, and `bounds`, the brackets Postgres writes around them, as its range constructors take them. An empty range is `{ empty: true }`, and a multirange is an array of ranges. A parameter takes the same object, with `bounds` as `"[)"` where it leaves them out.
+
+```ts twoslash tab="main.ts"
+import deliveries from "./pg_deliveries.sql";
+
+const rows = await deliveries.run(db);
+//    ^?
+```
+
+```sql tab="pg_deliveries.sql"
+select id, tstzrange(placed_at, placed_at + interval '1 day') as delivery
+from orders
+```
+
+<Rules>
+
+**Bounds**
+
+Postgres writes a range of integers or dates as `[)`, whatever the query wrote, and an unbounded end as exclusive. An infinite bound is a bound, unlike an unbounded end.
+
+<Pairs>
+
+- `int4range(1, 5, '[]')` → `{ lower: 1, upper: 6, bounds: "[)" }`
+- `numrange(1.5, null, '(]')` → `{ lower: "1.5", bounds: "()" }`
+- `daterange('2026-10-20', 'infinity')` → `{ lower: "2026-10-20", upper: "infinity", bounds: "[)" }`
+- `'empty'::int4range` → `{ empty: true }`
+- `int4multirange(int4range(1, 3), int4range(5, 7))` → `[ { lower: 1, upper: 3, bounds: "[)" }, { lower: 5, upper: 7, bounds: "[)" } ]`
+
+</Pairs>
+
+</Rules>
 
 ## Nullability
 
@@ -514,7 +636,7 @@ left join orders o on o.user_id = u.id
 
 **Tests that rule out `NULL`**
 
-A test that fails on `NULL`, in the `where` or a later inner join's `on`, makes its column non-null. On a joined table, it also shows the row exists, so the table's `NOT NULL` columns are non-null again.
+A test that fails on `NULL`, in the `where` or in an inner join's `on`, makes its column non-null, whether the query selects it by name or with `*`. On a joined table, it also shows the row exists, so the table's `NOT NULL` columns are non-null again. The `where` of an `update` or a `delete` does the same for its `returning`, except for a column the `update` sets, a generated column, and a table whose trigger or rule may change the row.
 
 <Inferred>
 
@@ -529,7 +651,7 @@ where o.paid
 
 **Expressions**
 
-Literals, `count`, `exists` and `is null` are never null. Operators, casts, built-in functions and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is.
+Literals, `count`, `exists` and `is null` are never null. Operators, casts, built-in functions, `in`, `between` and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is. A function that returns `NULL` for some valid input stays nullable: `nullif`, `substring` with a pattern, and `to_char`, or `extract` of a field such as `month`, over an infinite timestamp (fields that grow with time, such as `year` and `epoch`, are infinite there instead). Two set-returning functions in one select list run in step and pad the shorter with `NULL`, so both are nullable.
 
 <Inferred>
 
@@ -545,7 +667,7 @@ from users
 
 **Aggregates**
 
-Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `array_agg` and `jsonb_agg` are non-null, `max` and `sum` are non-null when their argument is, and a `filter` keeps an aggregate nullable.
+Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `array_agg` and `jsonb_agg` are non-null, `max`, `sum`, `any_value`, `percentile_cont` and `mode` are non-null when their arguments are, and a `filter` keeps an aggregate nullable.
 
 <Inferred>
 
@@ -562,7 +684,7 @@ group by user_id
 
 **Subqueries**
 
-A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`. A column of a `with` query or a subquery in `from` is as nullable as it is in that query.
+A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`. A column of a `with` query or a subquery in `from` is as nullable as it is in that query, and one of a `lateral` subquery too. A set-returning function in `from` returns no row for a `NULL` argument, so the values of `generate_series`, the keys of `jsonb_each` and a `with ordinality` number are never null.
 
 <Inferred>
 
@@ -575,7 +697,7 @@ select (select count(*) from orders) as orders,
 
 **Window functions**
 
-A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. An aggregate over a window follows its argument, unless a `filter` or a frame that can leave out the current row keeps it nullable.
+A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. An aggregate over a window, and `first_value` or `last_value`, follows its argument, unless a `filter` or a frame that can leave out the current row keeps it nullable.
 
 <Inferred>
 
@@ -616,9 +738,52 @@ from orders o
 
 </Inferred>
 
+So does the whole row of a subquery or a `with` query, which Postgres itself types only as `record`, and a recursive `with` query's `cycle` path and `search` column, which hold rows of the columns they name.
+
+<Inferred>
+
+```sql file="pg_subquery_rows.sql"
+select jsonb_agg(u) as people
+from (select id, name, email from users) u
+```
+
+</Inferred>
+
+A function that returns one value of no row type gives that value for its whole row, so `to_jsonb(f.*)` over it is a string or a number where the value is one, not an object. With several columns, a row type, `with ordinality` or `rows from` of several functions, the whole row is a row.
+
+**SQL functions**
+
+A function in `language sql` is read as the query it is, so its body decides which columns are null and how many rows it returns. Mark it `stable` if it only reads: Postgres then plans its body into your query, so a filter on its rows can use an index.
+
+<Inferred>
+
+```sql schema
+create table comments (
+  id bigint primary key,
+  post_id bigint not null,
+  body text not null
+);
+
+create function comments_for(p bigint)
+returns table (id bigint, body text)
+language sql stable
+as $$
+  select id, body
+  from comments
+  where post_id = p
+$$;
+```
+
+```sql file="pg_null_function.sql"
+select id, body
+from comments_for(:post_id::bigint)
+```
+
+</Inferred>
+
 </Rules>
 
-Your own operators, functions and casts, or an extension's, tell Reylo nothing: it assumes nothing wherever Postgres could pick one of them over a built-in. Where the operands' types can only pick a built-in, as with text and number columns beside pgvector, PostGIS or citext, the built-in's rules apply. Postgres reads a call of one argument on a whole row, as `length(o)` or `sum(o)`, as the row's column of that name where no function of the name takes the row, so Reylo types such a call as nullable, and counts it as no aggregate where a row may have a column of that name. To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
+Your own operators and casts, an extension's, and a function whose body Reylo can't read tell Reylo nothing: it assumes nothing wherever Postgres could pick one of them over a built-in. Where the operands' types can only pick a built-in, as with text and number columns beside pgvector, PostGIS or citext, the built-in's rules apply. Postgres reads a call of one argument on a whole row, as `length(o)` or `sum(o)`, as the row's column of that name where no function of the name takes the row, so Reylo types such a call as nullable, and counts it as no aggregate where a row may have a column of that name. To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
 
 ## Cardinality
 
@@ -626,10 +791,12 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
-| `Row` | `one` | is an aggregate without a `group by`, or inserts one row with `values (…)` and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1` or `fetch first 1 row only`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`; or inserts one row with `on conflict do nothing` and `returning` |
+| `Row` | `one` | is an aggregate without a `group by` (or with `group by ()`), or inserts one row, with `values (…)` or a `select` of one row, and has `returning`, an `on conflict do update` included |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query, a view or a `language sql` function that keeps the key; has `limit 1` or `fetch first 1 row only`; has a `where` but no `from`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`, a `from` or `using` included; or inserts one row with `returning` and `on conflict do nothing`, or `on conflict do update` beside a `with` query that writes, which may have updated that row already |
 | `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
 | `Row[]` | `many` | is anything else |
+
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/inference#values)). Among several columns, such an expression is a type error where Postgres names it `?column?`, as it does `id + 1`; a function's name, like `lower`, passes.
 
 <Rules>
 
@@ -643,6 +810,55 @@ A query that compares every column of a primary key or unique index with `=` ret
 select id, name
 from users
 where lower(email) = lower(:email)
+```
+
+</Inferred>
+
+**Writes that read a `with` query**
+
+An `update` or `delete` that joins with `from` or `using` is still a row or `null` when its key is matched, since a row it writes is written once, whatever it joins. The match can be to a `with` query of one row, the usual way to use a parameter twice:
+
+<Inferred>
+
+```sql file="pg_card_with_input.sql"
+with input as (
+  select :id::int as id, :name::text as name
+)
+update users u
+set name = input.name
+from input
+where u.id = input.id and u.name <> input.name
+returning u.id
+```
+
+</Inferred>
+
+**Triggers**
+
+A `BEFORE` row trigger can skip a row by returning `NULL`, so a write it fires on returns a row or `null`. Reylo reads a trigger written in PL/pgSQL: where every `return` returns `new`, or `old` on an update or a delete, it skips nothing, and the write keeps its cardinality. A trigger in another language, or one that assigns `new` as a whole, may skip a row.
+
+<Inferred>
+
+```sql schema
+create table notes (
+  id serial primary key,
+  body text not null,
+  edited_at timestamptz not null default now()
+);
+create function touch_note() returns trigger language plpgsql as $$
+begin
+  new.edited_at := now();
+  return new;
+end $$;
+create trigger touch_note before update on notes
+  for each row execute function touch_note();
+```
+
+```sql file="pg_card_trigger.sql"
+insert into notes (id, body)
+values (:id, :body)
+on conflict (id) do update set body = excluded.body
+returning id, edited_at
 ```
 
 </Inferred>
@@ -672,7 +888,7 @@ where slug = :slug and not deleted
 
 **Subqueries, `with` queries and views**
 
-A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, or when its `group by` or `distinct` lists the columns.
+A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, or when its `group by` or `distinct` lists the columns. A `union`, `intersect` or `except` without `all` is keyed on its whole row when each column is one table column on both sides, of one type, and `intersect` and `except` keep their left side's keys, with `all` or without. A key column its `where` pins to one value may be left out, a column list renames the key's columns, and a unique index on an expression counts when the select list keeps the expression under an alias.
 
 <Inferred>
 
@@ -689,7 +905,7 @@ where id = :id::bigint
 
 </Inferred>
 
-A `union all`, a set-returning function such as `unnest` in the select list, or a key column passed through an expression or a cast leaves no key.
+A `union all`, a set-returning function such as `unnest` in the select list, or a key column passed through an expression or a cast that no unique index covers leaves no key.
 
 **What doesn't count**
 
@@ -705,6 +921,68 @@ returning id
 
 </Inferred>
 
+A comparison under another collation doesn't count either. A column under the default collation compared with a value that carries a nondeterministic one compares under that one, where `'a'` can equal both `'a'` and `'A'`, so a unique key on the column bounds nothing. In a database that holds such a collation, a key is matched by a parameter, a literal, a built-in call or cast of those, or a column Reylo reads as carrying none; a subquery or your own function counts only in a database that holds none.
+
+**Result key**
+
+A query that can return more than one row may also have a result key: the columns that identify each row, since no two rows of a result agree on all of them. Anything that compares two results of the same query can match each row to its earlier version by them. Reylo lists them on the query's Standard Query object, as `query["~standard"].query.key`.
+
+A table's primary key or unique key is the result key when the query selects every column of it unchanged, none of them may be null, and its joins add one row at most per row of that table; where each table's key is selected, the keys together are. So are the `group by` columns, the `distinct on` columns, and the whole row of a `distinct`, or of a `union`, `intersect` or `except` without `all`. A column of an array, JSON or composite type is never part of one, since two of its values can read alike. A query that returns one row at most has none, since its cardinality says as much, and neither does one Reylo infers no key for.
+
+```ts twoslash tab="main.ts"
+import paidOrders from "./pg_key_orders.sql";
+
+paidOrders["~standard"].query.key; // ["id"]
+```
+
+```sql tab="pg_key_orders.sql"
+select o.id, o.total, u.name
+from orders o
+join users u on u.id = o.user_id
+where o.paid
+```
+
+**Decoding each value once**
+
+A driver that reads a result value by value can decode each value as it reads it, instead of handing the raw rows to `decode`. The query's Standard Query object lists its output columns in order as `columns`, each with its `name` and a `decode` that maps the column's text to its value, typed column by column. Its `output` takes the rows built that way, keyed by the columns' names, and returns what `decode` would: the rows, the row or `null`, as the cardinality says. Where the query's one column is an expression with no alias, both return that column's values instead of rows ([single values](/inference#values)). A driver never calls a column's `decode` for NULL, which is `null` in the row.
+
+```ts twoslash tab="main.ts"
+import paidOrders from "./pg_columns_orders.sql";
+
+const { columns, output } = paidOrders["~standard"].query;
+columns[2].decode("2026-10-22 14:46:00+02"); // "2026-10-22T12:46:00.000000Z"
+output([{ id: 1n, total: "12.50", placed_at: "2026-10-22T12:46:00.000000Z" }]);
+```
+
+```sql tab="pg_columns_orders.sql"
+select o.id, o.total, o.placed_at
+from orders o
+where o.paid
+```
+
+**Cardinality**
+
+The query's Standard Query object says how many rows its statement returns as `cardinality`, so a driver tells a list of rows from one value that is itself an array, as in `select array_agg(id) from orders`.
+
+**Total order**
+
+A query whose `order by` sorts by a unique key of the rows it sorts has a total order: no two rows of a result tie, so the order is the same on every run. Reylo marks it on the query's Standard Query object as `ordered: true`, in its type too, so anything that compares two results by position can require it.
+
+The key may be a result key or a table's primary key or unique key, selected or not, whose columns may not be null, through joins that add one row at most per row of that table; where each table's key is sorted by, the keys together are. A `limit` or `offset` keeps the order total. A query without an `order by` has none, and so does one that sorts a key's column by an expression, with `using`, or under a collation that is not deterministic, or with `collate`, and one that sorts by anything whose value can change from run to run, such as `random()`, a window function or a `string_agg`, even one with an `order by` of its own. A query that returns one row at most has none, since its cardinality says as much.
+
+```ts twoslash tab="main.ts"
+import recentOrders from "./pg_ordered_orders.sql";
+
+recentOrders["~standard"].query.ordered; // true
+```
+
+```sql tab="pg_ordered_orders.sql"
+select o.total, u.name
+from orders o
+join users u on u.id = o.user_id
+order by o.placed_at desc, o.id
+```
+
 </Rules>
 
 ## Parameters
@@ -712,6 +990,8 @@ returning id
 ### Placeholders
 
 Write parameters as `:name`, and pass `.run()` an object with those names. You can use Postgres's `$1` instead, but not both in one query; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
+
+A colon right after a subscript's `[` starts a slice, as Postgres reads it, so in `tags[:n]` the name `n` is a column and `tags[:n]` holds the first `n` elements. To subscript with a parameter, wrap it in parentheses: `tags[(:i)]`.
 
 ### What a parameter takes
 
@@ -726,12 +1006,14 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | `date`, `timestamp`, `time` | `string` |
 | `timestamptz` | a `string` that names its zone |
 | `interval` | a `string`: an ISO 8601 duration (`-P1D` too) or Postgres's own text |
-| `json`, `jsonb` | any JSON value, or what the column's JSON Schema admits |
+| `json`, `jsonb` | any value `JSON.stringify` writes, such as a `Date` inside an object, or what the column's JSON Schema admits |
 | `bytea` | `Uint8Array` |
 | An array | an array of its element's parameter type, without `null` |
 | An enum | the union of its labels |
+| `text`, `varchar` a `CHECK` limits to a list | the union of the list, written into the column with no cast |
 | pgvector's `vector`, `halfvec` | `number[]` |
 | `hstore` | an object whose values are strings or `null` |
+| A row value, a geometric type, a range | the object `.run()` returns for it |
 
 <Rules>
 
@@ -767,6 +1049,23 @@ await addEvent.run(db, { payload: '{"x": 1}' });
 insert into events (kind, payload)
 values ('click', :payload::text::jsonb)
 ```
+
+**JSON null**
+
+Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `not null` JSON column can hold. Where it takes null, as for a column that may hold it or a cast to [`nullable(jsonb)`](#parameters-that-may-be-null), `null` is SQL's `NULL`:
+
+```ts twoslash tab="main.ts"
+import jsonKind from "./pg_json_kind.sql";
+
+// "null": the parameter is JSON's null
+const { kind } = await jsonKind.run(db, { doc: null });
+```
+
+```sql tab="pg_json_kind.sql"
+select jsonb_typeof(:doc::jsonb) as kind
+```
+
+A `coalesce` or a null test doesn't make a parameter take null, so `coalesce(:doc::jsonb, doc)` given `null` gives JSON's `null`. Write `coalesce(:doc::nullable(jsonb), doc)` to keep `doc`.
 
 </Rules>
 
@@ -809,9 +1108,67 @@ values (:user_id, :total, :ships_on)
 
 Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:role is null`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
 
+## Recipes
+
+Each of these is one statement in place of code around one.
+
+**Fill only what is still empty**
+
+To write each column only where it is still null, use `coalesce` in one statement, rather than reading the row and then updating it. Two callers can't overwrite each other, and `returning` says what the row holds now:
+
+<Inferred>
+
+```sql file="pg_fill_order.sql"
+update orders
+set ships_on = coalesce(ships_on, :ships_on::date),
+    receipt = coalesce(receipt, :receipt::bytea)
+where id = :id and (ships_on is null or receipt is null)
+returning id, ships_on, receipt
+```
+
+</Inferred>
+
+**Buckets with no gaps**
+
+To count by day with a row for each empty day, join a `generate_series` to the counts, rather than filling the gaps with `Date` arithmetic:
+
+<Inferred>
+
+```sql file="pg_orders_per_day.sql"
+select
+  day::date::text as day,
+  count(o.id)::int as orders
+from generate_series(
+  :from::timestamptz,
+  :to::timestamptz,
+  '1 day'
+) as day
+left join orders o
+  on o.placed_at >= day and o.placed_at < day + '1 day'
+group by day
+order by day
+```
+
+</Inferred>
+
+**An enum's labels as a type**
+
+A query you import only for its `Row` type never runs, so it can give you each enum as a union:
+
+```ts twoslash tab="enums.ts"
+import type { Row } from "./pg_enums.sql";
+
+export type UserRole = NonNullable<Row["role"]>;
+//          ^?
+```
+
+```sql tab="pg_enums.sql"
+select null::user_role as role
+```
+
 ## Database errors
 
-With [`.try()`](/#try), an error Postgres raised comes back as `{ error }`, with the fields the server sent under the same names on every driver:
+With [`.try()`](/usage#try), an error Postgres raised comes back as `{ error }`, with the fields the server sent under the same names on every driver:
 
 | Field | What it holds |
 | --- | --- |
@@ -831,7 +1188,7 @@ An error inside a transaction aborts it, even when `.try()` returns the error: e
 
 ## Drivers
 
-Reylo decodes its query results itself, so type parsers and transforms you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the postgres.js that `@reylosql/postgres` carries, whatever driver your app uses.
+Reylo decodes its query results itself, so type parsers and transforms you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema over the engine's own connection, whatever driver your app uses.
 
 Each example below runs this query:
 
@@ -857,7 +1214,7 @@ await client.query("commit");
 client.release();
 ```
 
-A client created with `binary: true` isn't supported.
+A client created with `binary: true` isn't supported. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy, since Reylo tells one by its shape.
 
 ### postgres.js
 
@@ -1015,9 +1372,12 @@ What Reylo can't type on Postgres, and what to do instead:
 
 | Limit | Instead |
 | --- | --- |
-| A function's body: a SQL function is typed from its declared `returns`, and a PL/pgSQL body isn't read | Declare the type you return |
-| An array's dimensions, and whether its elements are `null` | Keep arrays one-dimensional, and remove `null` elements before passing an array back in |
-| A row value outside JSON, which comes back as text | Select its fields as columns, or build an object with `to_jsonb` |
+| A function whose body Reylo can't read, such as PL/pgSQL, a body of several statements or a name with several overloads: it's typed from its declared `returns`, every column nullable, and returns `Row[]` | Write it as one statement in `language sql` |
+| An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more, or returns it as it is inside JSON your query builds | Select `to_jsonb(column)` to read such a column as JSON, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) |
+| Whether an array's elements are `null` | Give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
+| A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select it from a subquery that names its columns |
+| A materialized view, which holds the rows of its last `refresh`: every column is nullable, and only its own unique indexes are keys | Create a unique index on it, and wrap a column that is never null in `coalesce` |
+| The row an `insert`, `update` or `merge` writes through a view, or to a table with an `instead` rule, which need not pass the view's `where`: its `returning` columns are nullable | Write to the table itself |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
 | `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |

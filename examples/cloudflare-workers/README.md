@@ -44,7 +44,7 @@ To deploy, with an account: `wrangler d1 create reylo-example`, put the `databas
 
 ## How Reylo is wired in
 
-- In `package.json`, `reylo` is a dependency (the plugin, and the run time each query module imports, which the Worker's bundle carries); `@reylosql/sqlite` (the engine that analyzes each statement), `typescript` 7.1 beta, Vite, the Cloudflare Vite and Vitest plugins and wrangler are dev dependencies. D1 needs no driver package: the binding `env.DB` is the client, and `.run(env.DB, …)` takes it as it is. The `typecheck` script is `tsc --noEmit --runExternalCode`, the flag that lets `tsc` run the content mapper, and `build` runs it before `vite build`, which strips types without checking them.
+- In `package.json`, `reylo` is a dependency (the plugin, and the run time each query module imports, which the Worker's bundle carries); `typescript` 7.1 beta, Vite, the Cloudflare Vite and Vitest plugins and wrangler are dev dependencies, and `reylo` brings the engine that analyzes each statement for the machine. D1 needs no driver package: the binding `env.DB` is the client, and `.run(env.DB, …)` takes it as it is. The `typecheck` script is `tsc --noEmit --runExternalCode`, the flag that lets `tsc` run the content mapper, and `build` runs it before `vite build`, which strips types without checking them.
 - In `vite.config.ts`, `reylo()` sits beside `cloudflare()`. It turns each `.sql` import into a module carrying the analyzed statement, in the dev server and in the build. The Cloudflare plugin makes any `.sql` import in a Worker a text module; `reylo()` resolves a relative `.sql` import first, in either order of the list, so the Worker gets the query.
 - The `.reylo.yaml` file sets `direct_url` to the local D1 database's file, which `nub run setup` creates: the type check, the editor and `reylo/vite` read the schema there. The file name is fixed by the binding's `database_id` (see Notes). It is in `.reylo.yaml` rather than in a `.env`, because wrangler and the Cloudflare plugin load `.env` into the Worker's `env` as secrets. The type check also compiles each statement on D1 as the installed wrangler runs it locally, since D1 refuses some functions its SQLite has (`json_pretty`, `power`).
 - The `migrations/` directory holds the schema as D1 migrations, which `wrangler d1 migrations apply` runs locally (`setup`) and on the remote database (`deploy`), and the tests apply to their own database.
@@ -57,8 +57,7 @@ To deploy, with an account: `wrangler d1 create reylo-example`, put the `databas
 
 ## In your own project
 
-- Install from npm instead of the `link:` dependencies: `npm install reylo` and `npm install -D @reylosql/sqlite typescript@beta vite @cloudflare/vite-plugin @cloudflare/vitest-plugin @cloudflare/workers-types @types/node vitest wrangler`.
-- The `.npmrc` file (`minimumReleaseAge=0`) exists only because this machine holds fresh releases back; drop it.
+- Install from npm instead of the `link:` dependencies: `npm install reylo` and `npm install -D typescript@beta vite @cloudflare/vite-plugin @cloudflare/vitest-plugin @cloudflare/workers-types @types/node vitest wrangler`.
 
 ## Notes
 

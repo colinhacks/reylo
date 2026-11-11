@@ -16,10 +16,11 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 /// How many rounds a statement may take before the replay is given up as unsettled. A statement
-/// settles in a handful: each round collects every need that does not wait on another's answer.
+/// settles in a handful: each round collects every need that does not wait on another's answer. An
+/// array of rows nested in another waits a few rounds per level, so three levels take about twenty.
 /// It equals the loader's limit, the bound of the replay loop in `src/engine-core.ts`, so a native
 /// host never settles a statement the loader gives up on.
-pub const ROUNDS: usize = 16;
+pub const ROUNDS: usize = 32;
 
 /// What answers the engine's needs as it is called: a database client that blocks.
 pub trait Answerer<D> {
@@ -92,6 +93,12 @@ impl<D> AnswerCache<D> {
         AnswerCache { entries: HashMap::new(), session, statement }
     }
 
+    /// Answers kept until [`AnswerCache::clear`], for a host that clears them when the schema
+    /// changes, or that lives for one run: each catalog fact is then read once.
+    pub fn until_cleared() -> Self {
+        AnswerCache::new(Duration::MAX, Duration::MAX)
+    }
+
     /// Forgets every answer, as after a change to the schema.
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -132,7 +139,10 @@ fn round<Db: Database>(sql: &str, answers: &mut Answers<Db::Describe>) -> Result
     Db::unbundle(answers);
     let answers: &Answers<Db::Describe> = answers;
     match crate::stack::run(move || Db::round(sql, answers)) {
-        Response::Analysis { analysis } => Ok(Round::Done(Box::new(analysis))),
+        Response::Analysis { mut analysis } => {
+            analysis.comment = crate::comment::prose(sql, Db::DIALECT);
+            Ok(Round::Done(Box::new(analysis)))
+        }
         Response::Need { needs } => Ok(Round::Needs(needs)),
         Response::Error { message } => Err(message),
         other => Err(format!("the engine answered a request for an analysis with {other:?}")),
@@ -230,7 +240,7 @@ mod tests {
             let (described, version) = (described?, version?);
             let described = described.unwrap_or_else(|e| e.message);
             let version = version.map(|rows| rows[0][0].to_string()).unwrap_or_else(|e| e.message);
-            Some(crate::analysis::bare_of(sql, Dialect::Postgres, vec![Diagnostic { message: format!("{described} | {version}"), start: 0, length: 0, code: 0 }]))
+            Some(crate::analysis::bare_of(sql, Dialect::Postgres, vec![Diagnostic { message: format!("{described} | {version}"), start: 0, length: 0, code: 0, server_code: None }]))
         }
     }
 

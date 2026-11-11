@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/execute.ts";
 import { checks, defineQuery } from "../src/index.ts";
 import type { EngineType, JsonSchema } from "../src/engine-type.ts";
+import { array, checked, lite as liteType, my as myType, oneOf, pg as pgType, record } from "./descriptors.ts";
+import { DRIVERS, pgLive, postgresDatabase } from "./helpers.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
 // driver behaviour each one copies was checked against the real package (lab/driver-matrix).
@@ -22,6 +22,21 @@ test("postgres: query(text, values) → { rows }, as on pg, PGlite and Neon's Po
   const client = { query: async (...args: unknown[]) => (calls.push({ method: "query", args }), { rows: [row], rowCount: 1 }) };
   assert.deepEqual(await execute(client, pg, { id: 1, name: "ada" }), [row]);
   assert.deepEqual(calls, [{ method: "query", args: ["select $1::int as id, $2 as name, $1 as again", [1, "ada"]] }]);
+});
+
+test("a parameter left out binds NULL whatever its name: what every object answers for constructor, toString or __proto__ is no value, and a class's getter is one", async () => {
+  const calls: unknown[][] = [];
+  const client = { query: async (_text: string, values: unknown[]) => (calls.push(values), { rows: [], rowCount: 0 }) };
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :driver, :constructor, :toString, :__proto__", params: ["driver", "constructor", "toString", "__proto__"] };
+  await execute(client, q, { driver: "Senna" });
+  class Entry {
+    get driver() {
+      return "Prost";
+    }
+  }
+  await execute(client, q, new Entry() as never);
+  await execute(client, q, { driver: "Senna", constructor: "McLaren", toString: "s", ["__proto__"]: "p" } as never);
+  assert.deepEqual(calls, [["Senna", null, null, null], ["Prost", null, null, null], ["Senna", "McLaren", "s", "p"]]);
 });
 
 test("postgres: a query() that resolves to the rows, as Neon's neon() from 1.0 and pg-promise do", async () => {
@@ -64,7 +79,7 @@ const typed: QueryModule<"postgres"> = {
   params: ["ids", "name", "data"],
   text: "select id from users where id = any($1) and name = $2 and tags @> $3::jsonb",
   order: ["ids", "name", "data"],
-  inputs: { ids: { type: { kind: "array", of: { kind: "scalar", name: "int4" } } }, name: { type: { kind: "scalar", name: "text" } }, data: { type: { kind: "json" } } },
+  inputs: { ids: { type: array(pgType("int4")) }, name: { type: pgType("text") }, data: { type: { kind: "json" } } },
 };
 const typedValues = { ids: [1, 3], name: "ada", data: [1, { a: "b" }] };
 
@@ -93,7 +108,7 @@ const jsonQuery: QueryModule<"postgres"> = {
   dialect: "postgres",
   sql: "select :s::jsonb, :n::jsonb, :b::jsonb, :t::jsonb, :z::jsonb, :o::jsonb, :e::jsonb, :l::jsonb[]",
   params: ["s", "n", "b", "t", "z", "o", "e", "l"],
-  inputs: { ...Object.fromEntries([..."snbtzoe"].map((k) => [k, { type: { kind: "json" as const } }])), l: { type: { kind: "array", of: { kind: "json" } } } },
+  inputs: { ...Object.fromEntries([..."snbtzoe"].map((k) => [k, { type: { kind: "json" as const } }])), l: { type: array({ kind: "json" }) } },
 };
 const jsonValues = { s: "abc", n: 5, b: true, t: '{"a":1}', z: null, o: { d: new Date("2026-01-02T03:04:05Z") }, e: [], l: ["x", { a: 1 }, [true]] };
 const jsonTexts = ['"abc"', "5", "true", '"{\\"a\\":1}"', null, '{"d":"2026-01-02T03:04:05.000Z"}', "[]", '{"\\"x\\"","{\\"a\\":1}","[true]"}'];
@@ -118,7 +133,7 @@ test("postgres: a JSON parameter's value is a JavaScript value, which every driv
 
 test("mysql and sqlite: every driver gets a JSON parameter as its JSON text, and null as NULL", async () => {
   const json = { type: { kind: "json" } } as const;
-  const mq: QueryModule<"mysql"> = { dialect: "mysql", sql: "select cast(:a as json), cast(:b as json), :name, cast(:a as json), cast(:z as json)", params: ["a", "b", "name", "z"], inputs: { a: json, b: json, z: json, name: { type: { kind: "scalar", name: "text" } } } };
+  const mq: QueryModule<"mysql"> = { dialect: "mysql", sql: "select cast(:a as json), cast(:b as json), :name, cast(:a as json), cast(:z as json)", params: ["a", "b", "name", "z"], inputs: { a: json, b: json, z: json, name: { type: myType("varchar") } } };
   const values = { a: [1, 2], b: "abc", name: "ada", z: null };
   const expected = ["[1,2]", '"abc"', "ada", "[1,2]", null];
   const seen: unknown[][] = [];
@@ -149,7 +164,7 @@ test("a typed JSON, structured or cast parameter is checked with the checks its 
   const json: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type: { kind: "json" }, schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] } } } };
   await assert.rejects(async () => execute(client, json, { p: { n: 1 } }), refusal("p"));
   const db = new DatabaseSync(":memory:");
-  const cast: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select cast(:n as integer) as n", params: ["n"], inputs: { n: { type: { kind: "scalar", name: "integer" }, cast: "integer" } } };
+  const cast: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select cast(:n as integer) as n", params: ["n"], inputs: { n: { type: liteType("integer"), cast: "integer" } } };
   assert.throws(() => executeSync(db, cast, { n: 1 }), refusal("n"));
   // With them, a value the schema or the cast refuses is refused, and one they take is bound.
   await assert.rejects(async () => execute(client, { ...json, checks }, { p: { n: "one" } }), /Parameter "p" at \/n/);
@@ -158,11 +173,11 @@ test("a typed JSON, structured or cast parameter is checked with the checks its 
   assert.deepEqual(executeSync(db, { ...cast, checks }, { n: 1 }), [{ n: 1 }]);
 });
 
-test("a parameter the statement takes no null for refuses null and refuses to be left out, before the statement runs", async () => {
+test("a parameter the statement takes no null for refuses null and refuses to be left out, before the statement runs, and a JSON one takes JSON's null", async () => {
   const seen: unknown[][] = [];
   const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [], rowCount: 0 }) };
-  const int4 = { kind: "scalar", name: "int4" } as const;
-  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :x::int + 1 as y, :email as email", params: ["x", "email"], inputs: { x: { type: int4, nullable: false }, email: { type: { kind: "scalar", name: "text" }, nullable: true } } };
+  const int4 = pgType("int4");
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :x::int + 1 as y, :email as email", params: ["x", "email"], inputs: { x: { type: int4, nullable: false }, email: { type: pgType("text"), nullable: true } } };
   await assert.rejects(async () => execute(client, q, { x: null, email: "a" }), { name: "TypeError", message: `Parameter "x" is null, and the statement takes no null for it: pass a value.` });
   await assert.rejects(async () => execute(client, q, { email: "a" }), { name: "TypeError", message: `Parameter "x" is missing, and the statement takes no null for it: pass a value.` });
   assert.throws(() => executeSync(new DatabaseSync(":memory:"), { ...q, dialect: "sqlite", sql: "select :x + 1 as y, :email as email" }, {}), /Parameter "x" is missing/);
@@ -172,23 +187,27 @@ test("a parameter the statement takes no null for refuses null and refuses to be
   await execute(client, q, { x: 1 });
   await execute(client, { ...q, inputs: { x: { type: { kind: "unknown" }, nullable: false }, email: { type: int4 } } }, { x: null, email: null });
   assert.deepEqual(seen, [[1, null], [null, null]]);
-  // A typed JSON parameter takes null where its schema allows null, and otherwise its default or
-  // nothing; pg gets the JSON as its text.
+  // A JSON parameter's null there is JSON's null, which pg gets as the JSON text `null`, unless its
+  // schema, the one it is written with or the one its type carries, refuses null; left out, it is
+  // refused, unless its schema has a default.
   const json = (schema: JsonSchema): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type: { kind: "json" }, schema, nullable: false } }, checks });
   await assert.rejects(async () => execute(client, json({ type: "integer" }), { p: null }), /Parameter "p" is null/);
   await assert.rejects(async () => execute(client, json({ type: "integer" }), {}), /Parameter "p" is missing/);
-  await execute(client, json({ type: ["integer", "null"] }), {});
+  await assert.rejects(async () => execute(client, json({ type: ["integer", "null"] }), {}), /Parameter "p" is missing/);
+  await execute(client, json({ type: ["integer", "null"] }), { p: null });
   await execute(client, json({ type: "integer", default: 3 }), {});
-  assert.deepEqual(seen.slice(2), [[null], ["3"]]);
-  // A JSON parameter with no schema is declared `unknown`, and takes null; one whose type alone
-  // carries a schema takes null where that schema allows null.
-  const untyped = (type: EngineType): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type, nullable: false } }, checks });
+  assert.deepEqual(seen.slice(2), [["null"], ["3"]]);
+  const untyped = (type: EngineType, nullable = false): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type, nullable } }, checks });
   await execute(client, untyped({ kind: "json" }), { p: null });
-  await execute(client, untyped({ kind: "json", schema: { type: ["integer", "null"] } }), {});
-  await assert.rejects(async () => execute(client, untyped({ kind: "json", schema: { type: "integer" } }), { p: null }), /Parameter "p" is null/);
-  assert.deepEqual(seen.slice(4), [[null], [null]]);
+  await assert.rejects(async () => execute(client, untyped({ kind: "json" }), {}), /Parameter "p" is missing/);
+  await execute(client, untyped(checked({ type: ["integer", "null"] })), { p: null });
+  await assert.rejects(async () => execute(client, untyped(checked({ type: "integer" })), { p: null }), /Parameter "p" is null/);
+  // Where the statement takes SQL NULL, a JSON parameter's null is SQL NULL, given or left out.
+  await execute(client, untyped({ kind: "json" }, true), { p: null });
+  await execute(client, untyped({ kind: "json" }, true), {});
+  assert.deepEqual(seen.slice(4), [["null"], ["null"], [null], [null]]);
   // A structured parameter keeps its own message, which says what to pass.
-  const rows: QueryModule<"postgres"> = { dialect: "postgres", sql: "select 1", params: ["r"], inputs: { r: { type: { kind: "rows", one: true, fields: [] }, nullable: false } }, checks };
+  const rows: QueryModule<"postgres"> = { dialect: "postgres", sql: "select 1", params: ["r"], inputs: { r: { type: record([]), members: [], nullable: false } }, checks };
   await assert.rejects(async () => execute(client, rows, { r: null }), /pass one object/);
 });
 
@@ -202,19 +221,19 @@ test("a query without inputs, defined by hand or built before them, binds every 
   await execute({ query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) }, bare, typedValues);
   for (const values of seen) assert.deepEqual(values, [[1, 3], "ada", [1, { a: "b" }]]);
   // Hand-written inputs work through the runtime's own lexer too, a repeated name included.
-  const hand: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :ids::int[] = :ids::int[]", params: ["ids"], inputs: { ids: { type: { kind: "array", of: { kind: "scalar", name: "int4" } } } } };
+  const hand: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :ids::int[] = :ids::int[]", params: ["ids"], inputs: { ids: { type: array(pgType("int4")) } } };
   seen.length = 0;
   await execute({ unsafe }, hand, { ids: [2] });
   assert.deepEqual(seen, [['{"2"}']]);
 });
 
 test("a Date for any date or time parameter, and a string without its zone for a timestamptz one, is refused before the statement runs", async () => {
-  const time = (name: string) => ({ type: { kind: "scalar" as const, name } });
+  const time = (name: string) => ({ type: pgType(name) });
   const q: QueryModule<"postgres"> = {
     dialect: "postgres",
     sql: "select :at::timestamp, :day::date, :tz::timestamptz, :tzs::timestamptz[], :days::date[]",
     params: ["at", "day", "tz", "tzs", "days"],
-    inputs: { at: time("timestamp"), day: time("date"), tz: time("timestamptz"), tzs: { type: { kind: "array", of: time("timestamptz").type } }, days: { type: { kind: "array", of: time("date").type } } },
+    inputs: { at: time("timestamp"), day: time("date"), tz: time("timestamptz"), tzs: { type: array(time("timestamptz").type) }, days: { type: array(time("date").type) } },
   };
   const seen: unknown[][] = [];
   const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) };
@@ -234,13 +253,13 @@ test("a Date for any date or time parameter, and a string without its zone for a
   await refused({ tzs: ["2026-10-12T00:00:00Z", null] }, /^Parameter "tzs" is an array whose elements may not be null, and the element at \[1\] is/);
   await refused({ days: [["2026-10-12", undefined]] }, /^Parameter "days" is an array whose elements may not be null, and the element at \[0\]\[1\] is/);
   assert.equal(seen.length, 1);
-  // MySQL's DATETIME and TIMESTAMP are the engine's timestamp, and a placeholder compared with both is either.
-  const my: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :at", params: ["at"], inputs: { at: time("date|timestamp") } };
+  // MySQL's DATETIME and TIMESTAMP both reach the client as wall-clock time, and a placeholder compared with both is either.
+  const my: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :at", params: ["at"], inputs: { at: { type: oneOf(myType("datetime"), myType("timestamp")) } } };
   await assert.rejects(Promise.resolve().then(() => execute({ query: async () => [[], []] as [unknown, unknown], execute: async () => [[], []] as [unknown, unknown] }, my, { at: new Date() })), /^TypeError: Parameter "at" is a timestamp without a time zone/);
 });
 
 test("postgres: postgres.js, which binds a date or time string through new Date(), gets one declared unknown; Bun.sql gets the string", async () => {
-  const time = (name: string) => ({ type: { kind: "scalar" as const, name } });
+  const time = (name: string) => ({ type: pgType(name) });
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :at::timestamp, :day::date, :tz::timestamptz, :d::timestamptz, :name::text", params: ["at", "day", "tz", "d", "name"], inputs: { at: time("timestamp"), day: time("date"), tz: time("timestamptz"), d: time("timestamptz"), name: time("text") } };
   const values = { at: "2026-01-02 03:04:05.006", day: "infinity", tz: "2026-01-02 03:04:05 America/New_York", d: "1970-01-01T00:00:00Z", name: "ada" };
   const seen: unknown[][] = [];
@@ -257,7 +276,7 @@ test("postgres: postgres.js, which binds a date or time string through new Date(
 });
 
 test("what run returns goes back in: a SQLite truth value as 1 or 0, a Postgres extended or BC year in Postgres's own form", async () => {
-  const s = (name: string) => ({ type: { kind: "scalar" as const, name } });
+  const s = (name: string) => ({ type: pgType(name) });
   // SQLite: better-sqlite3 refuses a boolean and libSQL binds it as the REAL 1.0.
   const lq: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select :a as a, :b as b, :n as n", params: ["a", "b", "n"], inputs: { a: s("numeric"), b: s("integer"), n: s("integer") } };
   const seen: unknown[][] = [];
@@ -271,20 +290,20 @@ test("what run returns goes back in: a SQLite truth value as 1 or 0, a Postgres 
   // Postgres refuses `+010000` and the year 0000, which run returns for years past 9999 and 1 BC.
   const pq: QueryModule<"postgres"> = {
     dialect: "postgres",
-    sql: "select :far::timestamptz, :bc::timestamptz, :zero::date, :now::timestamptz, :days::date[]",
-    params: ["far", "bc", "zero", "now", "days"],
-    inputs: { far: s("timestamptz"), bc: s("timestamptz"), zero: s("date"), now: s("timestamptz"), days: { type: { kind: "array", of: { kind: "scalar", name: "date" } } } },
+    sql: "select :far::timestamptz, :bc::timestamptz, :zero::date, :now::timestamptz, :days::date[], :old::timestamp, :huge::date",
+    params: ["far", "bc", "zero", "now", "days", "old", "huge"],
+    inputs: { far: s("timestamptz"), bc: s("timestamptz"), zero: s("date"), now: s("timestamptz"), days: { type: array(pgType("date")) }, old: s("timestamp"), huge: s("date") },
   };
-  const values = { far: "+010000-01-01T00:00:00Z", bc: "-000001-06-01T12:00:00.5Z", zero: "0000-01-01", now: "2026-10-20T10:00:00Z", days: ["+010000-01-01", "2026-10-20"] };
+  const values = { far: "+010000-01-01T00:00:00Z", bc: "-000001-06-01T12:00:00.5Z", zero: "0000-01-01", now: "2026-10-20T10:00:00Z", days: ["+010000-01-01", "2026-10-20"], old: "-000001-06-01T12:00:00", huge: "+5874897-12-31" };
   seen.length = 0;
   await execute({ query: async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] }) }, pq, values);
-  assert.deepEqual([...seen], [["10000-01-01T00:00:00Z", "0002-06-01T12:00:00.5Z BC", "0001-01-01 BC", "2026-10-20T10:00:00Z", '{"10000-01-01","2026-10-20"}']]);
+  assert.deepEqual([...seen], [["10000-01-01T00:00:00Z", "0002-06-01T12:00:00.5Z BC", "0001-01-01 BC", "2026-10-20T10:00:00Z", '{"10000-01-01","2026-10-20"}', "0002-06-01T12:00:00 BC", "5874897-12-31"]]);
   // Postgres refuses a sign before an ISO 8601 duration's `P`, which run returns for a negative interval.
   const iq: QueryModule<"postgres"> = {
     dialect: "postgres",
     sql: "select :back::interval, :ahead::interval, :mixed::interval, :text::interval, :spans::interval[]",
     params: ["back", "ahead", "mixed", "text", "spans"],
-    inputs: { back: s("interval"), ahead: s("interval"), mixed: s("interval"), text: s("interval"), spans: { type: { kind: "array", of: { kind: "scalar", name: "interval" } } } },
+    inputs: { back: s("interval"), ahead: s("interval"), mixed: s("interval"), text: s("interval"), spans: { type: array(pgType("interval")) } },
   };
   seen.length = 0;
   await execute({ query: async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] }) }, iq, { back: "-P1DT2H0.5S", ahead: "P1M", mixed: "P1M-1D", text: "-1 days", spans: ["-PT3S", "P1D"] });
@@ -317,12 +336,12 @@ test("arrayLiteral writes a Postgres array literal as pg does: nesting, NULL, qu
 test("postgres: a pgvector vector parameter takes an array of finite numbers, written as the text pgvector reads; an array of them as an array of those texts", async () => {
   const seen: unknown[][] = [];
   const client = { query: async (config: { values: unknown[] }) => (seen.push(config.values), { rows: [], fields: [] }), getTypeParser: () => String };
-  const vector = { kind: "scalar", name: "vector" } as const;
+  const vector = pgType("vector");
   const nearest: QueryModule<"postgres"> = {
     dialect: "postgres",
     sql: "select id from items where embedding <-> :q < 1 or embedding = any(:qs) or half = :h",
     params: ["q", "qs", "h"],
-    inputs: { q: { type: vector }, qs: { type: { kind: "array", of: vector } }, h: { type: { kind: "scalar", name: "halfvec" } } },
+    inputs: { q: { type: vector }, qs: { type: array(vector) }, h: { type: pgType("halfvec") } },
   };
   await execute(client as never, nearest, { q: [1, 2.5, -3, 1e-7], qs: [[1, 2], [3]], h: [0.5] });
   assert.deepEqual(seen, [["[1,2.5,-3,1e-7]", '{"[1,2]","[3]"}', "[0.5]"]]);
@@ -339,12 +358,12 @@ test("postgres: a pgvector vector parameter takes an array of finite numbers, wr
 test("postgres: an hstore parameter takes an object of its keys, written as the text hstore reads; an array of them as an array of those texts", async () => {
   const seen: unknown[][] = [];
   const client = { query: async (config: { values: unknown[] }) => (seen.push(config.values), { rows: [], fields: [] }), getTypeParser: () => String };
-  const hstore = { kind: "scalar", name: "hstore" } as const;
+  const hstore = pgType("hstore");
   const save: QueryModule<"postgres"> = {
     dialect: "postgres",
     sql: "update settings set prefs = :prefs where history = any(:history)",
     params: ["prefs", "history"],
-    inputs: { prefs: { type: hstore }, history: { type: { kind: "array", of: hstore } } },
+    inputs: { prefs: { type: hstore }, history: { type: array(hstore) } },
   };
   await execute(client as never, save, { prefs: { theme: "dark", 'q"': "\\", gone: null }, history: [{ a: "1" }, {}] });
   assert.deepEqual(seen, [[String.raw`"theme"=>"dark", "q\""=>"\\", "gone"=>NULL`, String.raw`{"\"a\"=>\"1\"",""}`]]);
@@ -362,7 +381,7 @@ test("postgres: an array parameter is written with its element type's delimiter,
     dialect: "postgres",
     sql: "select id from places where shape = any(:shapes)",
     params: ["shapes"],
-    inputs: { shapes: { type: { kind: "array", of: { kind: "scalar", name: "geometry" }, delimiter: ":" } } },
+    inputs: { shapes: { type: array(pgType("geometry")), delimiter: ":" } },
   };
   await execute(client as never, shapes, { shapes: ["0101", "0102"] });
   assert.deepEqual(seen, [['{"0101":"0102"}']]);
@@ -378,19 +397,12 @@ test("postgres: Neon's neon() before 1.0 is called with (text, values)", async (
 });
 
 // postgres.js on a throwaway server (REYLO_TEST_PG), in a database of its own; the driver is lab/drivers'.
-const PG = process.env.REYLO_TEST_PG;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 
 test("postgres.js: a statement with parameters is prepared on its connection and run again from there, unless the client was made with prepare: false", { skip: pgLive }, async () => {
   const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_execute_prepare_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const prepared = postgres(url.href, { max: 1, onnotice: () => {} });
+  const own = await postgresDatabase("reylo_execute_prepare");
+  const url = new URL(own.url);
+  const prepared = own.sql;
   const unprepared = postgres(url.href, { max: 1, prepare: false, onnotice: () => {} });
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select id, name from users where id = :id::int", params: ["id"] };
   const text = "select id, name from users where id = $1::int";
@@ -412,10 +424,8 @@ test("postgres.js: a statement with parameters is prepared on its connection and
     // A transaction runs on one connection of the client, prepared too.
     assert.deepEqual(await prepared.begin(async (tx: never) => (await execute(tx, q, { id: 1 }), statements(tx))), [{ statement: text, runs: "3" }]);
   } finally {
-    await prepared.end();
     await unprepared.end();
-    await admin.unsafe(`drop database if exists ${name}`);
-    await admin.end();
+    await own.drop();
   }
 });
 
@@ -435,7 +445,7 @@ test("mysql: execute() → [rows, fields] on mysql2, a repeated name repeated in
   // The statement with Reylo's per-query options and typeCast (src/decode-mysql.ts), never decimalNumbers.
   const [options, values] = calls[0]!.args as [Record<string, unknown>, unknown[]];
   assert.deepEqual(values, [1, "ada", 1]);
-  assert.deepEqual({ ...options, typeCast: typeof options.typeCast }, { sql: "select ? as id, ? as name, ? as again", supportBigNumbers: true, bigNumberStrings: true, dateStrings: true, rowsAsArray: false, nestTables: false, typeCast: "function" });
+  assert.deepEqual({ ...options, typeCast: typeof options.typeCast }, { sql: "select ? as id, ? as name, ? as again", supportBigNumbers: true, bigNumberStrings: true, dateStrings: true, rowsAsArray: true, nestTables: false, typeCast: "function" });
   assert.deepEqual(await execute(pool, my, { id: 1, name: "ada" }), []);
 });
 
@@ -519,8 +529,8 @@ test("every other driver gets a binary value as it is, pg-promise included, sinc
 
 test("a binary parameter takes binary data alone, so base64 text is refused before the statement runs", async () => {
   const { plain } = binary();
-  const bytes = (name: string) => ({ type: { kind: "scalar" as const, name } });
-  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :b::bytea, :bs::bytea[]", params: ["b", "bs"], inputs: { b: bytes("bytea"), bs: { type: { kind: "array", of: bytes("bytea").type } } } };
+  const bytes = (name: string) => ({ type: pgType(name) });
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :b::bytea, :bs::bytea[]", params: ["b", "bs"], inputs: { b: bytes("bytea"), bs: { type: array(bytes("bytea").type) } } };
   const seen: unknown[][] = [];
   const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) };
   await execute(client, q, { b: Buffer.from([1]), bs: [plain] });
@@ -531,10 +541,10 @@ test("a binary parameter takes binary data alone, so base64 text is refused befo
   await refused(() => execute(client, q, { b: plain, bs: [plain, "\\x01"] }), /^Parameter "bs" is binary data, .*got "\\\\x01"/);
   await refused(() => execute(client, q, { b: plain.buffer, bs: [] }), /^Parameter "b" is binary data, .*got an object\. Wrap an ArrayBuffer in one: new Uint8Array\(buffer\)\.$/);
   assert.equal(seen.length, 2);
-  // MySQL's BINARY, VARBINARY and BLOB are the engine's bytea; SQLite's BLOB is blob.
-  const my: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :b", params: ["b"], inputs: { b: bytes("bytea") } };
+  // MySQL's BINARY, VARBINARY and BLOB are binary data, as SQLite's BLOB is.
+  const my: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :b", params: ["b"], inputs: { b: { type: myType("blob") } } };
   await refused(() => execute({ query: async () => [[], []] as [unknown, unknown], execute: async () => [[], []] as [unknown, unknown] }, my, { b: "AQL/" }), /^Parameter "b" is binary data/);
-  const lite: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select :b", params: ["b"], inputs: { b: bytes("blob") } };
+  const lite: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select :b", params: ["b"], inputs: { b: { type: liteType("blob") } } };
   await refused(() => execute({ prepare: () => ({ all: () => [] }) }, lite, { b: "AQL/" }), /^Parameter "b" is binary data/);
 });
 
@@ -614,6 +624,16 @@ test("sqlite: @libsql/client and its transactions take execute({ sql, args }) �
   assert.deepEqual(calls, [{ sql: "select ? as id, ? as name, ? as again", args: [1, "ada", 1] }]);
 });
 
+test("sqlite: Cloudflare D1 refuses a BigInt, so one goes as a number, or as its digits for a BIGINT column past 2^53", async () => {
+  const bound: unknown[][] = [];
+  const d1 = { batch: async () => [], prepare: () => ({ first: async () => null, bind: (...values: unknown[]) => (bound.push(values), { all: async () => ({ results: [] }) }) }) };
+  const q: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select :id as id, :big as big", params: ["id", "big"], inputs: { id: { type: liteType("integer"), nullable: false }, big: { type: { kind: "integer", bits: 64, label: "BIGINT" }, nullable: false } } };
+  // What `.run()` returns for a BIGINT column goes back in.
+  await execute(d1, q, { id: 41n, big: 9007199254740993n });
+  assert.deepEqual(bound, [[41, "9007199254740993"]]);
+  await assert.rejects(execute(d1, q, { id: 9007199254740993n, big: 1n }) as Promise<unknown>, /Cloudflare D1 binds no BigInt, and 9007199254740993 is past 2\^53 - 1/);
+});
+
 test("sqlite: Turso's @tursodatabase/database, its Database in every release and its Transaction, takes prepare(sql).all(...values) → a promise of rows; its compat Database answers at once", async () => {
   const calls: unknown[] = [];
   // Its statement, as every release from 0.4 has it: safeIntegers(), a promise from all(), close().
@@ -675,7 +695,7 @@ test("sqlite: sqlite3 and the sqlite package, which bind a BigInt as NULL, get o
   for (const client of [sqlite3, sqlite]) await assert.rejects(Promise.resolve().then(() => execute(client, lite, { id: BigInt("9007199254740993"), name: "ada" })), /^TypeError: sqlite3 binds a BigInt as NULL, and 9007199254740993 is past 2\^53 - 1/);
   assert.equal(seen.length, 2);
   // A BIGINT column's parameter (the engine's int8), whose INTEGER affinity reads the digits as that integer.
-  const big: QueryModule<"sqlite"> = { ...lite, inputs: { id: { type: { kind: "scalar", name: "int8" } }, name: { type: { kind: "scalar", name: "text" } } } };
+  const big: QueryModule<"sqlite"> = { ...lite, inputs: { id: { type: liteType("int8") }, name: { type: liteType("text") } } };
   await execute(sqlite3, big, { id: BigInt("9007199254740993"), name: "ada" });
   await execute(sqlite, big, { id: BigInt("-9007199254740993"), name: "ada" });
   assert.deepEqual([...seen].slice(2), [["9007199254740993", "ada", "9007199254740993"], ["-9007199254740993", "ada", "-9007199254740993"]]);
@@ -922,7 +942,7 @@ test("a query's source names its file, and Reylo's own errors about the query st
   assert.throws(() => one.runSync(db), /^Error: queries\/none\.sql: Expected exactly one row, got 0$/m);
   await assert.rejects(one.run(db), { message: "queries/none.sql: Expected exactly one row, got 0" });
   // A parameter's value: thrown in runSync, rejected by run, the stack's first line named too.
-  const at = defineQuery<{ at: string }, unknown, "many", "postgres">({ dialect: "postgres", sql: "select :at::timestamptz as at", params: ["at"], inputs: { at: { type: { kind: "scalar", name: "timestamptz" } } }, source: "at.sql" });
+  const at = defineQuery<{ at: string }, unknown, "many", "postgres">({ dialect: "postgres", sql: "select :at::timestamptz as at", params: ["at"], inputs: { at: { type: pgType("timestamptz") } }, source: "at.sql" });
   const rejected = await at.run({ query: async () => ({ rows: [] }) }, { at: "2026-10-12 19:06:48" }).then(() => undefined, (e: Error) => e);
   assert.ok(rejected instanceof TypeError);
   assert.match(rejected.message, /^at\.sql: Parameter "at" is a timestamptz/);
@@ -973,7 +993,7 @@ test("a Durable Object's ctx.storage.sql: runSync and run take it, its values gi
     sql: "insert into items (n, big, data, flag, doc) values (:n, :big, :data, :flag, :doc) returning id",
     params: ["n", "big", "data", "flag", "doc"],
     cardinality: "one",
-    inputs: { big: { type: { kind: "scalar", name: "int8" } } },
+    inputs: { big: { type: liteType("int8") } },
     columns: [["id", "int"]],
   });
   const select = defineQuery<{ id: number }, unknown, "one", "sqlite">({
@@ -1008,7 +1028,15 @@ test("a Durable Object's ctx.storage.sql: the catalog facts are read again throu
   const built = (email: string[]) =>
     defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select id, email from users", params: [], fresh: { query, rows: [email, ["users", "id", "INTEGER", "0", "1"]], inserts: [] }, source: "users.sql" });
   assert.deepEqual(built(["users", "email", "TEXT", "1", "0"]).runSync(sql), []);
-  assert.throws(() => built(["users", "email", "TEXT", "0", "0"]).runSync(sql), /^Error: The database changed after users\.sql was built: users\.email was/);
+  const said: string[] = [];
+  const warn = console.warn;
+  console.warn = (message: string) => void said.push(message);
+  try {
+    assert.deepEqual(built(["users", "email", "INTEGER", "1", "0"]).runSync(sql), []);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(said, ["reylo: users.email has changed since users.sql was built (it was INTEGER not null, and is now TEXT not null), so its types may be out of date until the next build."]);
   // run takes the same synchronous path: the check and the statement run before it returns.
   const ran: string[] = [];
   const counted = { ...sql, exec: (text: string, ...bindings: unknown[]) => (ran.push(text), sql.exec(text, ...bindings)), databaseSize: 4096 };

@@ -1,7 +1,7 @@
-delete_partial.sql: maybeOne (e: text) -> { id: int8 }
-expression_hit.sql: maybeOne (h: text) -> { id: int8 }
-expression_miss.sql: many (h: text) -> { id: int8 }
-partial_hit.sql: maybeOne (e: text) -> { id: int8 }
-partial_literal.sql: maybeOne (n: text) -> { id: int8 }
-partial_miss.sql: many (e: text) -> { id: int8 }
-partial_param.sql: many (n: text, s: text) -> { id: int8 }
+delete_partial.sql: at_most_one (e: text) -> { id: int8 }
+expression_hit.sql: at_most_one (h: text) -> { id: int8 }
+expression_miss.sql: many (h: text) -> { id: int8 } key (id)
+partial_hit.sql: at_most_one (e: text) -> { id: int8 }
+partial_literal.sql: at_most_one (n: text) -> { id: int8 }
+partial_miss.sql: many (e: text) -> { id: int8 } key (id)
+partial_param.sql: many (n: text, s: text) -> { id: int8 } key (id)

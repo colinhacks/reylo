@@ -1,9 +1,9 @@
-aggregates.sql: one () -> { c: integer, t: real, most: int8? }
-columns.sql: many () -> { id: integer, user_id: int8, ref: int8?, big: int8?, wide: int8?, n: integer, r: real? }
-computed.sql: many () -> { minus: integer, times: integer, neg: integer?, a: integer?, ci: integer?, cr: real, half: real }
-insert.sql: one (user_id: int8, ref: int8?, n: integer) -> { id: integer, user_id: int8, ref: int8? }
-keyed.sql: maybeOne (id: int8) -> { id: int8, row_id: integer, name: text? }
-params.sql: many (user_id: int8, a: int8, b: int8, lo: int8, hi: int8) -> { id: integer }
-passed_through.sql: many () -> { user_id: int8, through_view: int8, most: int8, least: int8?, co: int8, ifn: int8, cs: int8, pos: int8, nul: int8?, sub: int8? }
-union_arms.sql: many () -> { user_id: int8 }
-windows.sql: many () -> { prev: int8?, first: int8?, smaller: int8? }
+aggregates.sql: one () -> { c: int64, t: float(11,52), most: BIGINT? }
+columns.sql: many () -> { id: INTEGER, user_id: bigint(int64 | float(11,52) | text(utf8) | bytes), ref: INT8(int64 | float(11,52) | text(utf8) | bytes)?, big: unsigned big int(int64 | float(11,52) | text(utf8) | bytes)?, wide: bigint(20)(int64 | float(11,52) | text(utf8) | bytes)?, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes), r: REAL(float(11,52) | text(utf8) | bytes)? }
+computed.sql: many () -> { minus: int64, times: int64, neg: int64?, a: int64?, ci: int64?, cr: float(11,52), half: float(11,52) }
+insert.sql: one (user_id: BIGINT, ref: BIGINT?, n: int64) -> { id: INTEGER, user_id: bigint(int64 | float(11,52) | text(utf8) | bytes), ref: INT8(int64 | float(11,52) | text(utf8) | bytes)? }
+keyed.sql: at_most_one (id: BIGINT) -> { id: bigint(int64 | float(11,52) | text(utf8) | bytes), row_id: INTEGER, name: TEXT(text(utf8) | bytes)? }
+params.sql: many (user_id: BIGINT, a: BIGINT, b: BIGINT, lo: BIGINT, hi: BIGINT) -> { id: INTEGER }
+passed_through.sql: many () -> { user_id: bigint(int64 | float(11,52) | text(utf8) | bytes), through_view: bigint(int64 | float(11,52) | text(utf8) | bytes), most: BIGINT, least: BIGINT?, co: BIGINT, ifn: BIGINT, cs: BIGINT, pos: BIGINT, nul: BIGINT?, sub: BIGINT? }
+union_arms.sql: many () -> { user_id: bigint(int64 | float(11,52) | text(utf8) | bytes) }
+windows.sql: many () -> { prev: BIGINT?, first: BIGINT?, smaller: BIGINT? }

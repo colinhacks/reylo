@@ -13,10 +13,19 @@ pub enum Shape {
     /// `json[b]_agg(x)`. An aggregate over no rows is NULL, so `non_null` is true only under a
     /// `coalesce(…, '[]'::jsonb)`.
     Array { items: Box<Shape>, non_null: bool },
+    /// `json[b]_build_array(a, b, …)` and `JSON_ARRAY(a, b, …)`: an array of exactly these values
+    /// in order, a NULL one written as a JSON `null`, or, where `skips_nulls` (`ABSENT ON NULL`,
+    /// `JSON_ARRAY`'s default), of the ones that are not NULL. The constructor never returns SQL
+    /// NULL, so `non_null` is true unless something above it can null the whole value.
+    Tuple { items: Vec<Shape>, non_null: bool, skips_nulls: bool },
     /// One value expression: column `index` of probe `probe`.
     Column { probe: usize, index: usize },
     /// A whole row: every column of probe `probe`, which selects `alias.*`.
     Row { probe: usize },
+    /// `alias.*` on a function of the FROM: the row of probe `row` where `value`, the same
+    /// reference read as one value, is of a row type, and that value where the function returns
+    /// one of any other type.
+    RowOrValue { row: usize, value: Box<Shape> },
     /// A bound parameter, `$n`; its type is the one the statement's own describe reported.
     Param(i32),
     /// The value of a scalar subquery that may find no row: the shape inside, or NULL.

@@ -1,0 +1,7 @@
+all.sql: many () -> { id: int4?, email: text?, plan: text?, seats: int4? }
+by_own_index.sql: at_most_one (id: int4) -> { id: int4, email: text?, seats: int4? }
+by_table_key.sql: many (id: int4) -> { id: int4, email: text?, plan: text?, seats: int4? }
+by_table_unique.sql: many (email: text) -> { id: int4?, seats: int4? }
+joined.sql: many (id: int4) -> { id: int4, seats: int4? }
+table_itself.sql: at_most_one (id: int4) -> { id: int4, email: text, plan: text('free' | 'pro')?, seats: int4 }
+through_view.sql: many (id: int4) -> { id: int4, email: text?, seats: int4? }

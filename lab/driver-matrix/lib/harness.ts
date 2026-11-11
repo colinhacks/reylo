@@ -305,7 +305,19 @@ export async function callTry(ctx: Ctx, q: any, client: Client, params?: Record<
 // ---------------------------------------------------------------------------------------------
 // The statements, per dialect
 
-const array = (name: string) => ({ kind: "array", of: { kind: "scalar", name } });
+// Parameter types as the engine writes them (spec/index.ts), each with what the run time reads of it.
+const T = {
+  int4: { kind: "integer", bits: 32, label: "int4" },
+  int8: { kind: "integer", bits: 64, label: "int8" },
+  bool: { kind: "boolean", label: "bool" },
+  text: { kind: "text", label: "text" },
+  bytea: { kind: "bytes", label: "bytea" },
+  date: { kind: "date", label: "date" },
+  timestamp: { kind: "datetime", tick: "1/1000000", label: "timestamp" },
+  timestamptz: { kind: "instant", tick: "1/1000000", label: "timestamptz" },
+  json: { kind: "json" },
+};
+const array = (element: object, name?: string) => ({ kind: "array", any_depth: true, element: { type: element }, ...(name === undefined ? {} : { label: name }) });
 
 export function queries(d: Dialect, typed = true) {
   const t = (n: string) => (d === "sqlite" ? n : `driver_matrix.${n}`);
@@ -321,16 +333,18 @@ export function queries(d: Dialect, typed = true) {
     params: q(`select id, name, active, score from ${t("people")} where id = :i and name = :t and active = :b and ${cast(":nul", "int")} is null`, ["i", "t", "b", "nul"], "one"),
     omitted: q(`select id from ${t("people")} where id = :i and ${cast(":omit", "text")} is null`, ["i", "omit"], "many"),
     // `inputs` as the loader writes it from the analysis (src/loader.ts); without it reylo converts no array.
-    list: q(`select id from ${t("people")} where id = any(:ids) and name = any(:names) order by id`, ["ids", "names"], "many", { inputs: { ids: { type: array("int4") }, names: { type: array("text") } } }),
-    typedArrays: q(`select :b::bool[]::text as b, extract(epoch from (:d::timestamptz[])[1])::text as d, array(select encode(x, 'hex') from unnest(:x::bytea[]) as x)::text as x`, ["b", "d", "x"], "one", { inputs: { b: { type: array("bool") }, d: { type: array("timestamptz") }, x: { type: array("bytea") } } }),
-    jsonArrays: q(`select (:a::jsonb)::text as a, (:e::jsonb)::text as e`, ["a", "e"], "one", { inputs: { a: { type: { kind: "json" } }, e: { type: { kind: "json" } } } }),
+    list: q(`select id from ${t("people")} where id = any(:ids) and name = any(:names) order by id`, ["ids", "names"], "many", { inputs: { ids: { type: array(T.int4) }, names: { type: array(T.text) } } }),
+    typedArrays: q(`select :b::bool[]::text as b, extract(epoch from (:d::timestamptz[])[1])::text as d, array(select encode(x, 'hex') from unnest(:x::bytea[]) as x)::text as x`, ["b", "d", "x"], "one", { inputs: { b: { type: array(T.bool) }, d: { type: array(T.timestamptz) }, x: { type: array(T.bytea) } } }),
+    jsonArrays: q(`select (:a::jsonb)::text as a, (:e::jsonb)::text as e`, ["a", "e"], "one", { inputs: { a: { type: T.json }, e: { type: T.json } } }),
     // Postgres and MySQL type a parameter read as JSON as JSON (`::jsonb`, json_extract's document), and the text comes back to be parsed, since each database spaces it its own way.
     jsonValues: q(
       ["s", "n", "b", "t", "o", "a", "e", "z"].map((p) => (d === "postgres" ? `(:${p}::jsonb)::text as ${p}` : `cast(json_extract(:${p}, '$') as char) as ${p}`)).join(", ").replace(/^/, "select "),
       ["s", "n", "b", "t", "o", "a", "e", "z"],
       "one",
-      { inputs: Object.fromEntries(["s", "n", "b", "t", "o", "a", "e", "z"].map((p) => [p, { type: { kind: "json" } }])) },
+      { inputs: Object.fromEntries(["s", "n", "b", "t", "o", "a", "e", "z"].map((p) => [p, { type: T.json }])) },
     ),
+    // A JSON parameter the statement takes no null for: its null is JSON's null (src/execute.ts).
+    jsonNull: q(d === "postgres" ? "select (:z::jsonb)::text as z" : d === "mysql" ? "select cast(json_extract(:z, '$') as char) as z" : "select json(:z) as z", ["z"], "one", { inputs: { z: { type: T.json, nullable: false } } }),
     // A timestamptz is an instant and takes a Date; a timestamp or a date has no zone and takes its text (MySQL has no timestamptz).
     times: q(
       d === "postgres"
@@ -338,7 +352,7 @@ export function queries(d: Dialect, typed = true) {
         : `select true as tz, date_format(cast(:at as datetime(3)), '%Y-%m-%d %H:%i:%s.%f') as at, cast(cast(:day as date) as char) as day`,
       d === "postgres" ? ["tz", "named", "at", "day"] : ["at", "day"],
       "one",
-      { inputs: { tz: { type: { kind: "scalar", name: "timestamptz" } }, named: { type: { kind: "scalar", name: "timestamptz" } }, at: { type: { kind: "scalar", name: "timestamp" } }, day: { type: { kind: "scalar", name: "date" } } } },
+      { inputs: { tz: { type: T.timestamptz }, named: { type: T.timestamptz }, at: { type: T.timestamp }, day: { type: T.date } } },
     ),
     binary: q(d === "postgres" ? `select encode(:a::bytea, 'hex') as a, encode(:b::bytea, 'hex') as b` : `select lower(hex(:a)) as a, lower(hex(:b)) as b`, ["a", "b"], "one"),
     many: q(`select id, name from ${t("people")} order by id`, [], "many"),
@@ -361,12 +375,16 @@ export function queries(d: Dialect, typed = true) {
       `select ${Object.keys(ROUND_TRIP[d]).map((c) => `${ROUND_TRIP_SQL[d](c)} as ${c}`).join(", ")} from ${t("typed")} where id = :id`,
       [...Object.keys(ROUND_TRIP[d]), "id"],
       "one",
-      { inputs: Object.fromEntries([...Object.entries(ROUND_TRIP[d]), ["id", { kind: "scalar", name: "int4" }]].map(([c, type]) => [c, { type }])), columns: Object.keys(ROUND_TRIP[d]).map((c) => [c, "bool"]) },
+      { inputs: Object.fromEntries([...Object.entries(ROUND_TRIP[d]), ["id", T.int4]].map(([c, type]) => [c, { type }])), columns: Object.keys(ROUND_TRIP[d]).map((c) => [c, "bool"]) },
     ),
     // An instant past 9999 and one before 1, which come back as `+010000-…Z` and `-000001-…Z`.
     farInstants: q(`select '10000-01-01 00:00:00+00'::timestamptz as far, '0002-01-01 00:00:00+00 BC'::timestamptz as bc`, [], "one", { columns: [["far", "timestamptz"], ["bc", "timestamptz"]] }),
-    farBack: q(`select :far::timestamptz = '10000-01-01 00:00:00+00'::timestamptz as far, :bc::timestamptz = '0002-01-01 00:00:00+00 BC'::timestamptz as bc`, ["far", "bc"], "one", { inputs: { far: { type: { kind: "scalar", name: "timestamptz" } }, bc: { type: { kind: "scalar", name: "timestamptz" } } }, columns: [["far", "bool"], ["bc", "bool"]] }),
+    farBack: q(`select :far::timestamptz = '10000-01-01 00:00:00+00'::timestamptz as far, :bc::timestamptz = '0002-01-01 00:00:00+00 BC'::timestamptz as bc`, ["far", "bc"], "one", { inputs: { far: { type: T.timestamptz }, bc: { type: T.timestamptz } }, columns: [["far", "bool"], ["bc", "bool"]] }),
     typedBig: q(`select id, big from ${t("typed")} where id = 1`, [], "one", { columns: [["id", "int"], ["big", d === "sqlite" ? "int" : "int8"]] }),
+    // A row of no type the catalog has, and an array of them, whose oids say nothing of their fields.
+    anonymousRows: q(`select s, array[s] as many from (select id, big from ${t("typed")} where id = 1) s`, [], "one", { columns: [["s", ANONYMOUS_ROW], ["many", `${ANONYMOUS_ROW}[]`]] }),
+    // The same rows as a subquery's array, which is empty over no rows.
+    arrayOfRows: q(`select array(select s from (select id, big from ${t("typed")} where id = 1) s) as many, array(select s from (select id, big from ${t("typed")} where id = 0) s) as none`, [], "one", { columns: [["many", `${ANONYMOUS_ROW}[]`], ["none", `${ANONYMOUS_ROW}[]`]] }),
     // SQLite's column declared BIGINT, which the engine types int8.
     typedWide: q(`select id, wide from ${t("typed")} where id = 1`, [], "one", { columns: [["id", "int"], ["wide", "int8"]] }),
     // SQLite: JSON the statement builds, with the kinds the loader writes from the engine's types
@@ -378,46 +396,71 @@ export function queries(d: Dialect, typed = true) {
       "one",
       { columns: [["profile", "json"], ["pair", "json"], ["glued", "text"], ["doc", "text"]] },
     ),
+    // Postgres: JSON a statement builds holding floats and decimals that are not finite, which
+    // Postgres writes there as text, with the `nonFinite` the loader writes for it (src/render.ts,
+    // `jsonNumbers`), beside JSON whose text is only text.
+    nonFiniteJson: q(
+      `select json_build_object('nan', 'NaN'::float8, 'inf', 'Infinity'::numeric, 'neg', '-Infinity'::float4, 'n', 1.5::numeric, 'xs', array['NaN'::float8, 2]) as doc, jsonb_build_object('s', 'NaN') as raw`,
+      [],
+      "one",
+      { columns: [["doc", "json"], ["raw", "json"]], nonFinite: [{ keys: [["nan", true], ["inf", true], ["neg", true], ["n", true], ["xs", { items: true, deep: true }]] }, null] },
+    ),
     dup: q(`insert into ${t("uniq")} (k) values (:k)`, ["k"], "none"),
   };
 }
 
 // Reylo's one representation per SQL type (src/values.ts) of the `typed` fixture's row, on every driver.
+const ANONYMOUS_ROW = `(${JSON.stringify(["id", "int"])},${JSON.stringify(["big", "int8"])})`;
+
 const TYPED: Record<Dialect, Record<string, unknown>> = {
   postgres: {
-    id: 1, big: 9007199254740993n, amount: "12345678901234567890.123456789", day: "2026-10-20", at: "2026-10-20T10:00:00.123", stamp: "2026-10-20T08:00:00.123Z",
+    id: 1, big: 9007199254740993n, amount: "12345678901234567890.123456789", day: "2026-10-20", at: "2026-10-20T10:00:00.123000", stamp: "2026-10-20T08:00:00.123000Z",
     doc: { a: [1, 2] }, docb: { b: true }, raw: Uint8Array.of(1, 2, 255), flag: true, f8: 2.5, tags: ["a", null, "NULL", "b,c"], ints: [1, 2, 3], moods: ["ok", "sad"], span: "P1DT2H", uid: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+    pr: { a: 1, b: "x,y" }, pt: { x: 1.5, y: -2 }, bxs: [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }, { high: { x: 1, y: 1 }, low: { x: 0, y: 0 } }], seats: { lower: 1, upper: 5, bounds: "[)" }, many: [{ lower: 1n, upper: 3n, bounds: "[)" }, { lower: 5n, upper: 7n, bounds: "[)" }],
   },
   mysql: {
     id: 1, big: -9007199254740993n, ubig: 18446744073709551615n, amount: "1.100000000000000001", day: "2026-10-20", at: "2026-10-20T10:00:00.123", doc: { a: [1, 2] },
-    bit1: true, raw: Uint8Array.of(1, 2, 255), tags: "x,z", kind: "b", flag: true, yr: 2026, f8: 2.5, tm: "10:00:00", s: "hi",
+    bit1: true, raw: Uint8Array.of(1, 2, 255), tags: new Set(["x", "z"]), kind: "b", flag: true, yr: 2026, f8: 2.5, tm: "10:00:00", s: "hi",
   },
   sqlite: { id: 1, n: 5, r: 1.5, s: "hi", b: Uint8Array.of(1, 2, 255), doc: { a: [1, 2] }, flag: true, x: 7 },
 };
-const TYPED_COLUMNS: Record<Dialect, [string, string][]> = {
-  postgres: [["id", "int"], ["big", "int8"], ["amount", "decimal"], ["day", "date"], ["at", "timestamp"], ["stamp", "timestamptz"], ["doc", "json"], ["docb", "json"], ["raw", "bytes"], ["flag", "bool"], ["f8", "float"], ["tags", "text[]"], ["ints", "int[]"], ["moods", "text[]"], ["span", "interval"], ["uid", "text"]],
+const TYPED_COLUMNS: Record<Dialect, ([string, string] | [string, string, string])[]> = {
+  postgres: [["id", "int"], ["big", "int8"], ["amount", "decimal"], ["day", "date"], ["at", "timestamp"], ["stamp", "timestamptz"], ["doc", "json"], ["docb", "json"], ["raw", "bytes"], ["flag", "bool"], ["f8", "float"], ["tags", "text[]"], ["ints", "int[]"], ["moods", "text[]"], ["span", "interval"], ["uid", "text"], ["pr", '(["a","int"],["b","text"])'], ["pt", "point"], ["bxs", "box[]", ";"], ["seats", "range:int"], ["many", "multirange:int8"]],
   // A BIT(1) and a TINYINT(1) column are truth values, as the engine types them (engine/mysql).
-  mysql: [["id", "int"], ["big", "int8"], ["ubig", "int8"], ["amount", "decimal"], ["day", "date"], ["at", "timestamp"], ["doc", "json"], ["bit1", "bool"], ["raw", "bytes"], ["tags", "text"], ["kind", "text"], ["flag", "bool"], ["yr", "int"], ["f8", "float"], ["tm", "text"], ["s", "text"]],
+  mysql: [["id", "int"], ["big", "int8"], ["ubig", "int8"], ["amount", "decimal"], ["day", "date"], ["at", "timestamp"], ["doc", "json"], ["bit1", "bool"], ["raw", "bytes"], ["tags", "set"], ["kind", "enum"], ["flag", "bool"], ["yr", "int"], ["f8", "float"], ["tm", "text"], ["s", "text"]],
   // A SQLite JSON column and truth value as the engine types them where it can tell, a column with no type unknown.
   sqlite: [["id", "int"], ["n", "int"], ["r", "float"], ["s", "text"], ["b", "bytes"], ["doc", "json"], ["flag", "bool"], ["x", "unknown"]],
 };
 
-const sc = (name: string) => ({ kind: "scalar", name });
-const enumArray = { kind: "array", of: { kind: "enum", name: "mood", labels: ["ok", "sad"] } };
-/** The parameter types the engine gives `c = :c` for each `typed` column (tests/render.test.ts, ROUND_TRIPS): on MySQL by the column (engine/mysql `column_types`), on SQLite by the column's affinity. */
+const mood = { kind: "text", enum: ["ok", "sad"], label: "driver_matrix.mood" };
+const my = (kind: string, label: string, more: object = {}) => ({ kind, ...more, label });
+/** The parameter types the engine gives `c = :c` for each `typed` column (tests/render.test.ts, ROUND_TRIPS): on MySQL by the column it is compared with (engine/mysql `mysql_params.rs`), on SQLite by the column's affinity. */
 const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
   postgres: {
-    big: sc("int8"), amount: sc("numeric"), day: sc("date"), at: sc("timestamp"), stamp: sc("timestamptz"), doc: { kind: "json" }, docb: { kind: "json" }, raw: sc("bytea"), flag: sc("bool"), f8: sc("float8"),
-    tags: { kind: "array", of: sc("text") }, ints: { kind: "array", of: sc("int4") }, moods: enumArray, span: sc("interval"), uid: sc("uuid"),
+    big: T.int8, amount: { kind: "decimal", label: "numeric" }, day: T.date, at: T.timestamp, stamp: T.timestamptz, doc: { ...T.json, label: "json" }, docb: { ...T.json, label: "jsonb" }, raw: T.bytea, flag: T.bool, f8: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, label: "float8" },
+    tags: array(T.text, "_text"), ints: array(T.int4, "_int4"), moods: array(mood, "driver_matrix._mood"), span: { kind: "duration", label: "interval" }, uid: { kind: "uuid", label: "uuid" },
+    pr: { kind: "record", label: "driver_matrix.pair", fields: [{ name: "a", type: T.int4, nullable: true }, { name: "b", type: T.text, nullable: true }] },
+    pt: { kind: "record", label: "point", fields: [{ name: "x", type: { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "float8" } }, { name: "y", type: { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "float8" } }] },
+    seats: { kind: "range", subtype: T.int4, label: "int4range" },
+    many: { kind: "multirange", subtype: T.int8, label: "int8multirange" },
   },
-  mysql: { big: sc("int8"), ubig: sc("int8"), amount: sc("numeric"), day: sc("date"), at: sc("timestamp"), doc: { kind: "json" }, bit1: sc("bool|int4"), raw: sc("bytea"), tags: sc("text"), kind: sc("text"), flag: sc("bool|int4"), yr: sc("int4"), f8: sc("float8"), tm: sc("time"), s: sc("text") },
-  sqlite: { n: sc("integer"), r: sc("real"), s: sc("text"), b: sc("blob"), flag: sc("numeric"), x: { kind: "unknown" } },
+  mysql: {
+    big: my("integer", "bigint", { bits: 64 }), ubig: my("integer", "bigint", { bits: 64, unsigned: true }), amount: my("decimal", "decimal"), day: my("date", "date"), at: my("datetime", "datetime", { tick: "1/1000000" }), doc: my("json", "json"),
+    bit1: { kind: "union", members: [{ kind: "boolean" }, my("array", "bit", { element: { type: { kind: "boolean" } } })] }, raw: my("bytes", "blob"), tags: my("set", "set", { element: { type: { kind: "text", enum: ["x", "y", "z"] } } }), kind: my("text", "enum", { enum: ["a", "b"] }),
+    flag: my("integer", "tinyint(1)", { bits: 8 }), yr: my("integer", "year", { bits: 16, min: "0", max: "2155" }), f8: my("float", "double", { exponent_bits: 11, mantissa_bits: 52 }), tm: my("duration", "time", { max: "PT838H59M59S", tick: "1/1000000" }), s: my("text", "varchar"),
+  },
+  sqlite: {
+    n: { kind: "integer", bits: 64 }, r: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, s: { kind: "text", ill_formed: "utf8" }, b: { kind: "bytes" },
+    flag: { kind: "union", label: "NUMERIC", members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, { kind: "text", ill_formed: "utf8" }, { kind: "bytes" }] },
+    x: { kind: "unknown" },
+  },
 };
 // An array goes back in without its NULL elements, which a parameter refuses (src/render.ts).
 const ROUND_TRIP_ARRAYS = new Set(["tags", "ints", "moods"]);
 /** The comparison for each column: Postgres's json has no `=`, and MySQL's JSON column is compared with json_extract of the JSON parameter. */
 const ROUND_TRIP_SQL: Record<Dialect, (c: string) => string> = {
-  postgres: (c) => (c === "doc" ? `doc::jsonb = :doc::jsonb` : ROUND_TRIP_ARRAYS.has(c) ? `array_remove(${c}, null) = :${c}` : `${c} = :${c}`),
+  // A point has no `=`: `~=` is its "same as". A row value's `=` reads an uncast parameter as an anonymous record, which Postgres takes no input of.
+  postgres: (c) => (c === "doc" ? `doc::jsonb = :doc::jsonb` : c === "pt" ? `pt ~= :pt` : c === "pr" ? `pr = :pr::driver_matrix.pair` : ROUND_TRIP_ARRAYS.has(c) ? `array_remove(${c}, null) = :${c}` : `${c} = :${c}`),
   mysql: (c) => (c === "doc" ? `doc = json_extract(:doc, '$')` : `${c} = :${c}`),
   sqlite: (c) => `${c} = :${c}`,
 };
@@ -427,6 +470,7 @@ function typedValue(v: unknown): unknown {
   if (v === null || v === undefined) return v ?? null;
   if (v instanceof Date) return `Date(${Number.isNaN(v.getTime()) ? "Invalid" : v.toISOString()})`;
   if (v instanceof Uint8Array) return `Uint8Array(${[...v]})`;
+  if (v instanceof Set) return { Set: [...v].map(typedValue) };
   if (Array.isArray(v)) return v.map(typedValue);
   if (typeof v === "object") return Object.fromEntries(Object.keys(v).sort().map((k) => [k, typedValue((v as Record<string, unknown>)[k])]));
   return `${typeof v}(${String(v)})`;
@@ -592,6 +636,22 @@ export const SCENARIOS: Scenario[] = [
       const values = { s: 'say "hi"', n: 5, b: true, t: '{"a":1}', o: { k: [1, null] }, a: [1, 2], e: [], z: null };
       const row = (await call(ctx, q.jsonValues, client, values)) as Record<string, string | null>;
       eq(Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v == null ? v : JSON.parse(v)])), values, "the stored JSON, parsed");
+    },
+  },
+  {
+    id: "S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out",
+    on: "client",
+    async run(ctx, client, q) {
+      // Every driver gets the JSON text `null`; Bun.sql, which serializes a JSON parameter itself,
+      // gets an object whose toJSON() returns null.
+      eq(await call(ctx, q.jsonNull, client, { z: null }), { z: "null" }, "row");
+      let refused: unknown = null;
+      try {
+        await call(ctx, q.jsonNull, client, {});
+      } catch (e) {
+        refused = e;
+      }
+      if (!(refused instanceof TypeError) || !/^Parameter "z" is missing, and the statement takes no null for it/.test(refused.message)) throw new Mismatch(`not the refusal of a JSON parameter left out: ${describe(refused)}`);
     },
   },
   {
@@ -945,6 +1005,12 @@ export const SCENARIOS: Scenario[] = [
       typedEq(await call(ctx, q.typed, client), TYPED[d], "row");
       if (d !== "sqlite") {
         typedEq(await call(ctx, q.typedBig, client), { id: 1, big: TYPED[d].big }, "an int8 past 2^53");
+        if (d === "postgres") {
+          const row = { id: 1, big: TYPED[d].big };
+          // Twice: PGlite names a statement's oids from its earlier runs.
+          for (let run = 0; run < 2; run++) typedEq(await call(ctx, q.anonymousRows, client), { s: row, many: [row] }, "a row of no catalog type");
+          for (let run = 0; run < 2; run++) typedEq(await call(ctx, q.arrayOfRows, client), { many: [row], none: [] }, "an array of a subquery's rows");
+        }
         return;
       }
       // A column declared BIGINT is a BigInt, exact past 2^53 where the driver reads the integer
@@ -989,6 +1055,15 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    id: "S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string",
+    on: "client",
+    params: false,
+    dialects: ["postgres"],
+    async run(ctx, client, q) {
+      typedEq(await call(ctx, q.nonFiniteJson, client), { doc: { nan: NaN, inf: Infinity, neg: -Infinity, n: 1.5, xs: [NaN, 2] }, raw: { s: "NaN" } }, "row");
+    },
+  },
+  {
     id: "S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal",
     on: "client",
     async run(ctx, client, q) {
@@ -1022,7 +1097,7 @@ export const SCENARIOS: Scenario[] = [
       // They come back as `+010000-…Z` and `-000001-…Z`, which Postgres refuses as input
       // ("time zone displacement out of range"); Reylo writes them as `10000-…` and `0002-… BC`.
       const far = (await call(ctx, q.farInstants, client)) as Record<string, unknown>;
-      eq(far, { far: "+010000-01-01T00:00:00Z", bc: "-000001-01-01T00:00:00Z" }, "the instants past 9999 and before 1");
+      eq(far, { far: "+010000-01-01T00:00:00.000000Z", bc: "-000001-01-01T00:00:00.000000Z" }, "the instants past 9999 and before 1");
       eq(await call(ctx, q.farBack, client, far), { far: true, bc: true }, "the same instants passed back");
     },
   },

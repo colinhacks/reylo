@@ -1,17 +1,17 @@
-//! The `pgreylo` Postgres extension, seen from a client.
+//! A server-side Postgres extension that hosts this engine, seen from a client.
 //!
-//! The extension (`pg-extension/`) hosts this same engine inside the server, where a need is a
+//! The extension hosts this same engine inside the server, where a need is a
 //! function call and not a round trip. A client that finds it has two ways to use it:
 //!
 //! - The server's engine was built from the same sources as this one ([`crate::FINGERPRINT`]):
 //!   the two give the same answer, so the client asks for the whole analysis,
-//!   `SELECT pgreylo.analyze($1)`, in one query.
+//!   `SELECT reylo.analyze($1)`, in one query.
 //! - It is another build: the rules stay the client's, and each round's statement-scoped needs
-//!   travel as one query, `SELECT pgreylo.answer($1)`, which answers every one of them in the
+//!   travel as one query, `SELECT reylo.answer($1)`, which answers every one of them in the
 //!   server. Session-scoped needs stay as they are, so the host goes on caching them.
 //!
 //! Without the extension nothing changes. Finding out costs the first statement of a session one
-//! round for a session-scoped catalog read, and a second for `pgreylo.version()` where the
+//! round for a session-scoped catalog read, and a second for `reylo.version()` where the
 //! extension exists; the host keeps both answers. The statement's own needs wait for that
 //! answer: asked in the same round, a statement that settles in one round would be done before
 //! the answer came, and the extension would never be used.
@@ -31,14 +31,14 @@ use std::collections::HashMap;
 /// Reads nothing but the catalog, so it cannot fail where the extension is absent; an error
 /// here would be asked again for every statement, since a host does not keep a failure. Each
 /// operator and type is `pg_catalog`'s, as in the catalog queries of [`crate::postgres`].
-pub const PROBE_QUERY: &str = "SELECT e.extversion FROM pg_catalog.pg_extension e WHERE e.extname OPERATOR(pg_catalog.=) 'pgreylo'::pg_catalog.name";
-pub const VERSION_QUERY: &str = "SELECT pgreylo.version()";
-pub const ANALYZE_QUERY: &str = "SELECT pgreylo.analyze($1::pg_catalog.text)";
+pub const PROBE_QUERY: &str = "SELECT e.extversion FROM pg_catalog.pg_extension e WHERE e.extname OPERATOR(pg_catalog.=) 'reylo'::pg_catalog.name";
+pub const VERSION_QUERY: &str = "SELECT reylo.version()";
+pub const ANALYZE_QUERY: &str = "SELECT reylo.analyze($1::pg_catalog.text)";
 /// The needs travel as text that the server parses: a parameter described as `jsonb` makes a
 /// driver JSON-encode the string it is handed, and a JSON string is not the array. The text is
 /// read by `jsonb`'s input function, since a conversion from `text` to `jsonb` goes through no
 /// built-in cast and so may be a user's.
-pub const ANSWER_QUERY: &str = "SELECT pgreylo.answer(pg_catalog.jsonb_in(pg_catalog.textout($1::pg_catalog.text)))";
+pub const ANSWER_QUERY: &str = "SELECT reylo.answer(pg_catalog.jsonb_in(pg_catalog.textout($1::pg_catalog.text)))";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Server {
@@ -72,16 +72,36 @@ pub fn server(host: &Host) -> Lazy<Server> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Remote {
-    kind: String,
+    #[serde(default)]
+    kind: Option<reylo_engine_core::types::StatementKind>,
     params: Vec<Param>,
     columns: Vec<Column>,
-    cardinality: String,
+    cardinality: reylo_engine_core::types::Cardinality,
     #[serde(default)]
     cardinality_reason: Option<String>,
+    #[serde(default)]
+    key: Option<Vec<String>>,
+    #[serde(default)]
+    unique: Vec<Vec<String>>,
+    #[serde(default)]
+    order: Vec<reylo_engine_core::types::OrderColumn>,
+    #[serde(default)]
+    ordered: bool,
+    #[serde(default)]
+    value: bool,
     #[serde(default)]
     diagnostics: Vec<Diagnostic>,
     #[serde(default)]
     unresolved: Vec<String>,
+    /// Each domain the descriptors name, to its base type, which the loader reads a value by.
+    #[serde(default)]
+    domains: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    notes: Vec<String>,
+    /// Where the server read a function's body: what that body reads, which the freshness check
+    /// watches, and which no parse of the statement as written gives.
+    #[serde(default)]
+    tables: Option<reylo_engine_core::fresh::Tables>,
 }
 
 /// The whole analysis from the server. `Some(None)` is a server that did not answer it (the
@@ -93,10 +113,16 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
     let Ok(remote) = serde_json::from_value::<Remote>(json_value(value)) else { return Some(None) };
     Some(Some(Analysis {
         kind: remote.kind,
+        comment: None,
         params: remote.params,
         columns: remote.columns,
         cardinality: remote.cardinality,
         cardinality_reason: remote.cardinality_reason,
+        key: remote.key,
+        unique: remote.unique,
+        order: remote.order,
+        ordered: remote.ordered,
+        value: remote.value,
         rewritten: lex::rewrite(sql, &lexed, Target::Dollar),
         style: lexed.style,
         diagnostics: remote.diagnostics,
@@ -104,7 +130,10 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         structured: Vec::new(),
         fresh: None,
         errors: None,
-        tables: None,
+        read_only: false,
+        notes: remote.notes,
+        tables: remote.tables,
+        domains: remote.domains,
     }))
 }
 
@@ -203,6 +232,39 @@ mod tests {
         assert_eq!(server(&Host::new(&answers)), Some(Server::Other { answers: true }));
         answers.insert(version_id(), rows(json!({ "extension": "0.1.0", "engine": null, "fingerprint": null })));
         assert_eq!(server(&Host::new(&answers)), Some(Server::Other { answers: false }));
+    }
+
+    #[test]
+    fn the_servers_analysis_keeps_each_domains_base_type() {
+        let mut answers = HashMap::new();
+        let sql = "select embedding from items";
+        answers.insert(format!("query:{ANALYZE_QUERY}|{}", json!([sql])), rows(json!({
+            "kind": "select",
+            "params": [],
+            "columns": [{ "name": "embedding", "type": { "kind": "array", "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "infinity": true } }, "label": "public.embedding" } }],
+            "cardinality": "many",
+            "domains": { "public.embedding": "vector" },
+        })));
+        let analysis = analyze(sql, &Host::new(&answers)).expect("answered").expect("read");
+        assert_eq!(analysis.domains.get("public.embedding").map(String::as_str), Some("vector"));
+    }
+
+    #[test]
+    fn the_servers_analysis_keeps_what_a_functions_body_settled() {
+        let mut answers = HashMap::new();
+        let sql = "select id from comments_for($1)";
+        let tables = reylo_engine_core::fresh::Tables { read: vec!["comments".into()], write: vec![], functions: vec!["comments_for(bigint)".into()], expanded: Some("SELECT reylo_body.id FROM (SELECT id FROM comments WHERE post_id = $1) AS reylo_body".into()) };
+        answers.insert(format!("query:{ANALYZE_QUERY}|{}", json!([sql])), rows(json!({
+            "kind": "select",
+            "params": [],
+            "columns": [],
+            "cardinality": "many",
+            "notes": ["comments_for(bigint) is volatile"],
+            "tables": tables,
+        })));
+        let analysis = analyze(sql, &Host::new(&answers)).expect("answered").expect("read");
+        assert_eq!(analysis.notes, vec!["comments_for(bigint) is volatile".to_string()]);
+        assert_eq!(analysis.tables, Some(tables));
     }
 
     #[test]

@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { lexPlaceholders } from "../src/lex.ts";
 import { defineQuery } from "../src/index.ts";
-import { fileURLToPath } from "node:url";
 import { engine as load, type Dialect } from "../src/engine.ts";
 
 const names = (sql: string, dialect: "postgres" | "mysql" | "sqlite" = "postgres") => lexPlaceholders(sql, dialect).params;
@@ -19,6 +18,21 @@ test("the named forms, the dialect's own positional form, and a position is its 
   assert.deepEqual(names("select ?5, ?, ?2", "sqlite"), ["2", "5", "6"]);
   // Positional parameters bind by number, whatever order the statement names them in.
   assert.deepEqual(names("select $2::text, $1::int"), ["1", "2"]);
+});
+
+test("a colon that opens a Postgres subscript is a slice, not a parameter", () => {
+  // No expression starts with a colon inside a subscript, so `tags[:n]` is `tags[1:n]` there,
+  // with whitespace or a comment before the colon, after a name, a quoted name, a parenthesis, a
+  // subscript or a placeholder.
+  assert.deepEqual(names("select arr[:hi], arr[ :hi], arr[/* c */:hi], \"a\"[:hi], (f(x))[:pg_t.tgnargs], m[1][:hi], arr[1:hi], :a[:hi] from t where x = :x"), ["a", "x"]);
+  // A parameter as the subscript is parenthesized; a slice's bound after its colon is a parameter.
+  assert.deepEqual(names("select arr[(:i)], arr[ : :hi], arr[1 : :b], arr[:i + 0] from t"), ["i", "hi", "b"]);
+  // An array constructor's bracket follows `array` or another bracket, and holds parameters.
+  assert.deepEqual(names("select array[:a, :b], ARRAY[[:c], [:d]], x = any(array[:e]) from t"), ["a", "b", "c", "d", "e"]);
+  // MySQL has no slices: a colon after no name character opens a parameter there. SQLite reads
+  // `[:lo]` as a quoted name, the alias of `arr`.
+  assert.deepEqual(names("select arr[:lo] from t", "mysql"), ["lo"]);
+  assert.deepEqual(names("select arr[:lo] from t", "sqlite"), []);
 });
 
 test("MySQL text is read as a session in the default sql_mode reads it", () => {
@@ -41,19 +55,23 @@ test("MySQL text is read as a session in the default sql_mode reads it", () => {
 
 test("the runtime's lexer agrees with the engine's", async () => {
   // Every database's engine lexes every dialect: the lexer is the core's.
-  const engine = await load("sqlite", fileURLToPath(new URL("..", import.meta.url)));
+  const engine = await load("sqlite");
   const statements: [string, Dialect][] = [
     ["select 'it\\'s :not', 'a\\\\', :x, \"say \\\":no\", `n:m`, 'a\\nb' from t where id = :id # :c\n and :d --:e\n -- :f\n /* :g */ :h", "mysql"],
     ["select ?, '?', \"\\\"?\", ? -- ?\n # ?\n", "mysql"],
     ["select 'C:\\', :x, \"q\"\":y\", `:z`, ':w' -- :v\n /* :u */ from t where a = :a.b", "postgres"],
+    ["select tags[:n], tags[ :m], (f(x))[:pg_t.tgnargs], \"q\"[:k], array[:a, :b], tags[(:c)], tags[1::int:d] from t where y = :y", "postgres"],
     ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite"],
     ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite"],
+    ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite"],
   ];
   for (const [sql, dialect] of statements) {
     const ours = lexPlaceholders(sql, dialect);
-    const theirs = engine.lex(sql, dialect);
-    assert.deepEqual(ours.params, theirs.params, `${dialect}: ${sql}`);
-    assert.deepEqual(ours.placeholders, theirs.placeholders, `${dialect}: ${sql}`);
+    // Through the engine's long-lived child, and through its one-shot form (a text of its own, so that neither answers from what the other kept).
+    for (const theirs of [await engine.lexAsync(sql, dialect), engine.lex(`${sql}\n`, dialect)]) {
+      assert.deepEqual(ours.params, theirs.params, `${dialect}: ${sql}`);
+      assert.deepEqual(ours.placeholders, theirs.placeholders, `${dialect}: ${sql}`);
+    }
   }
 });
 

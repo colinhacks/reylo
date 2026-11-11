@@ -4,7 +4,7 @@ One complete, working project for each setup the [docs](https://reylo.dev/#setup
 
 | Example | Setup | Database and driver | What runs |
 | --- | --- | --- | --- |
-| [node](./node) | `node --import reylo/register` ([Node](https://reylo.dev/#node)) | Postgres, postgres.js | a script, and tests with Node's test runner |
+| [node](./node) | `node --import reylo/register` ([Node](https://reylo.dev/#setup-node)) | Postgres, postgres.js | a script, and tests with Node's test runner |
 | [nub](./nub) | the preload in `nub.jsonc` ([nub](https://reylo.dev/#setup-nub)) | SQLite, `node:sqlite` | a script, and tests with `nub --test` |
 | [bun](./bun) | the preload in `bunfig.toml`, and `Bun.build` with `reylo/esbuild` ([Bun](https://reylo.dev/#setup-bun)) | SQLite, `bun:sqlite` | a script, `bun test`, and a bundle |
 | [vite](./vite) | `reylo/vite` in a React Router app ([Vite](https://reylo.dev/#setup-vite)) | Postgres, pg | the dev server, the production server, and Vitest |
@@ -23,19 +23,19 @@ Open the example for your setup and read its README's "How Reylo is wired in": e
 
 ```sh
 npm install reylo
-npm install -D @reylosql/postgres typescript@beta   # or @reylosql/mysql, @reylosql/sqlite
+npm install -D typescript@beta
 ```
 
-Each README's "In your own project" lists anything else that exists only because the example lives in this repository: `.npmrc` (`minimumReleaseAge=0`, because this machine holds fresh releases back), and in Next.js the Turbopack root.
+Each README's "In your own project" lists anything else that exists only because the example lives in this repository, such as the Turbopack root in Next.js.
 
 The examples pin TypeScript to `7.1.0-beta` exactly: a range such as `^7.1.0-beta`, which `npm install -D typescript@beta` writes, also takes the 7.1 nightlies, which sort above the beta.
 
 ## Running one here
 
-Each example links the packages built from this repository, `dist/reylo` and `dist/<database>`, as `link:` dependencies. Build them once at the repository root, and again after a change to `src/`:
+Each example links the package built from this repository, `dist/reylo`, as a `link:` dependency, and finds the engine `dist/engine-<platform>` beside it, which the build links into `dist/reylo/node_modules` where an install would put it. Build them once at the repository root, and again after a change to `src/` or the engine:
 
 ```sh
-nub run build            # writes dist/
+nub run build            # writes dist/, building the engine with cargo
 cd examples/<name>
 nub install              # or pnpm install; npm does not take link: dependencies
 ```

@@ -54,6 +54,15 @@ export const CATALOG_QUERIES: Record<Dialect, Queries> = {
   where m.type in ('table', 'view') and m.name not like 'sqlite_%' order by m.name, p.cid`,
     functions: `select name, max(type = 'a') as aggregate, null as returns, 0 as set_returning from pragma_function_list where name not like 'sqlite_%' group by name order by name`,
   },
+  duckdb: {
+    // The tables and views of the current schema, as an unqualified name finds them.
+    tables: `select table_name, column_name, data_type, is_nullable from duckdb_columns()
+  where database_name = current_database() and schema_name = current_schema() and not internal order by table_name, column_index`,
+    functions: `select function_name, bool_or(function_type = 'aggregate'), list(distinct return_type) filter (where return_type is not null), bool_or(function_type in ('table', 'table_macro'))
+  from duckdb_functions() where function_type in ('scalar', 'aggregate', 'macro', 'table', 'table_macro') and not starts_with(function_name, '_')
+  group by function_name order by function_name`,
+    types: `select distinct type_name from duckdb_types() where not starts_with(type_name, '_') order by 1`,
+  },
 };
 
 /** The type names each database's casts take beyond what its catalog lists: the SQL standard's spellings, or every name where it lists none. */
@@ -61,6 +70,7 @@ const SPELLED: Record<Dialect, string[]> = {
   postgres: ["bigint", "boolean", "char", "character", "character varying", "decimal", "double precision", "int", "integer", "real", "smallint", "timestamp with time zone"],
   mysql: ["binary", "char", "date", "datetime", "decimal", "double", "float", "json", "nchar", "real", "signed", "time", "unsigned", "year"],
   sqlite: ["blob", "integer", "numeric", "real", "text"],
+  duckdb: ["bigint", "blob", "boolean", "date", "decimal", "double", "float", "hugeint", "integer", "interval", "json", "smallint", "time", "timestamp", "timestamptz", "tinyint", "ubigint", "uhugeint", "uinteger", "usmallint", "utinyint", "uuid", "varchar"],
 };
 
 /** A type as the list shows it: Postgres's short names for the long standard ones. */

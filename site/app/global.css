@@ -3,18 +3,19 @@
    the agent card and the cursors. Below it, only what is Reylo's own. */
 @import 'docs-kit/style.css';
 @import '../lib/live/play.css';
+@import './typedefs.css';
 
 /* The page's three faces (app/fonts.css, which app/root.tsx links: the files next/font served
-   before the site left Next.js), as the variables docs-kit's stylesheet reads: Geist for text, behind it its size-adjusted Arial;
+   before the site left Next.js), as the variables docs-kit's stylesheet reads: IBM Plex Sans for text, behind it its size-adjusted Arial;
    Geist Mono for code, behind it the system's monospace; Caveat for the "Leave a star!" note. */
 :root {
-  --font-text: 'Geist', 'Geist Fallback';
+  --font-text: 'IBM Plex Sans', 'IBM Plex Sans Fallback';
   --font-code: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --font-hand: 'Caveat', 'Caveat Fallback';
 }
 
 /* ── Reylo: neutral greys and one yellow ──────────────────────────────────────
-   The type is Geist and Geist Mono (app/layout.tsx). Every surface and rule is
+   The type is IBM Plex Sans and Geist Mono (app/fonts.css). Every surface and rule is
    a colourless grey, near-black by night and white by day, so the yellow is
    the page's only colour: it marks links, the active table-of-contents entry
    and inline code. In light mode the yellow darkens to ochre wherever it
@@ -375,6 +376,22 @@
   white-space: nowrap;
 }
 
+/* DuckDB's heading in Dialects says its support is a preview in the same light gray label, after the
+   name. It is drawn by the stylesheet, so the table of contents, the anchor and the section's Markdown
+   keep the name alone. */
+#nd-page .prose h3#duckdb .dk-heading-text::after {
+  content: 'Preview';
+  display: inline-block;
+  margin-inline-start: 0.625rem;
+  vertical-align: 0.15em;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0;
+  color: var(--color-fd-muted-foreground);
+}
+
 
 /* Setup's optional steps, the editor and the skill: a chip after the name. It is drawn by the
    stylesheet, so the table of contents, the anchor and the section's Markdown keep the name alone. */
@@ -408,6 +425,10 @@
 
 .dark #nd-page .dk-callout-head svg {
   filter: drop-shadow(0 0 4px rgb(255 200 31 / 0.55));
+}
+
+.dark .dk-pages-item[aria-current='page']::before {
+  box-shadow: 0 0 8px rgb(255 184 0 / 0.65);
 }
 
 .dark .dk-star svg {
@@ -450,4 +471,430 @@
 
 #nd-page .reylo-play-link-arrow {
   color: var(--color-fd-primary);
+}
+
+/* ── The comparison, /compare (components/compare-table.tsx) ──
+   The label, then Reylo's column between two gutters that hold the frame's light, then the other
+   tools. The table fills the page's one column (`CENTERED` in app/routes/page.tsx). */
+.reylo-compare {
+  container-type: inline-size;
+  margin-block: 0.5rem 2rem;
+}
+
+.reylo-compare-scroll {
+  overflow-x: auto;
+  margin-inline: -18px;
+  padding: 24px 18px 20px;
+}
+
+.reylo-compare-grid {
+  --reylo-lw: 138px;
+  --reylo-g1: 10px;
+  --reylo-rw: 84px;
+  --reylo-g2: 16px;
+  --reylo-rows: 46px;
+  display: grid;
+  grid-template-columns: var(--reylo-lw) var(--reylo-g1) var(--reylo-rw) var(--reylo-g2) repeat(var(--reylo-tools), minmax(58px, 1fr));
+  position: relative;
+  font-size: 14px;
+}
+
+@container (min-width: 760px) {
+  .reylo-compare-grid {
+    --reylo-lw: 176px;
+    --reylo-g1: 14px;
+    --reylo-rw: 104px;
+    --reylo-g2: 24px;
+    --reylo-rows: 50px;
+    font-size: 15px;
+  }
+}
+
+/* On a phone the labels stay put while the marks scroll under them, over an opaque backing. */
+@container (max-width: 600px) {
+  .reylo-compare-scroll {
+    margin-inline: 0;
+    padding-inline: 0 16px;
+  }
+
+  .reylo-compare-grid {
+    --reylo-lw: 112px;
+    --reylo-g1: 14px;
+    --reylo-g2: 16px;
+    grid-template-columns: var(--reylo-lw) var(--reylo-g1) var(--reylo-rw) var(--reylo-g2) repeat(var(--reylo-tools), 66px);
+  }
+
+  .reylo-compare-stick {
+    display: block !important;
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    background: var(--color-fd-background);
+    margin-block: -24px -20px;
+  }
+
+  .reylo-compare-row-label,
+  .reylo-compare-corner {
+    position: sticky !important;
+    left: 0;
+    z-index: 4 !important;
+  }
+
+  .reylo-compare-group {
+    z-index: 5 !important;
+  }
+
+  .reylo-compare-group span {
+    position: sticky;
+    left: 0;
+  }
+}
+
+.reylo-compare-stick {
+  display: none;
+  pointer-events: none;
+}
+
+.reylo-compare-rule {
+  grid-column: 2 / -1;
+  height: 1px;
+  align-self: start;
+  background: var(--color-fd-border);
+}
+
+.reylo-compare-head,
+.reylo-compare-group,
+.reylo-compare-row-label,
+.reylo-compare-cell {
+  position: relative;
+  z-index: 2;
+}
+
+/* Every heading is the same two lines, so the names sit on one baseline. Reylo's wordmark is placed by weight, not by its box: its top puts the centre of its ink level with the centre of the other names' ink, measured on rendered pixels. */
+.reylo-compare-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 12px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.reylo-compare-name {
+  display: block;
+  height: 20px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 20px;
+  letter-spacing: -0.01em;
+  color: var(--color-fd-foreground);
+}
+
+.dark .reylo-compare-name {
+  color: hsl(0, 0%, 98%);
+}
+
+a.reylo-compare-name {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, currentColor 28%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+a.reylo-compare-name:hover {
+  text-decoration-color: var(--dk-accent);
+}
+
+.reylo-compare-sub {
+  display: block;
+  height: 15px;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-brand {
+  position: relative;
+  width: 72px;
+}
+
+.reylo-compare-brand svg {
+  position: absolute;
+  left: 0;
+  top: 2.6px;
+  width: 72px;
+  height: auto;
+  fill: currentColor;
+}
+
+.reylo-compare-brand-mark {
+  fill: var(--dk-accent);
+}
+
+.dark .reylo-compare-brand-mark {
+  fill: hsl(47, 100%, 65%);
+}
+
+@container (min-width: 760px) {
+  .reylo-compare-name {
+    font-size: 14px;
+  }
+
+  .reylo-compare-sub {
+    font-size: 12px;
+  }
+
+  .reylo-compare-brand,
+  .reylo-compare-brand svg {
+    width: 84px;
+  }
+
+  .reylo-compare-brand svg {
+    top: 2.1px;
+  }
+}
+
+.reylo-compare-group {
+  grid-column: 1 / -1;
+  padding: 20px 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.25rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-row-label {
+  display: flex;
+  align-items: center;
+  min-height: var(--reylo-rows);
+  padding-right: 4px;
+  border-top: 1px solid var(--color-fd-border);
+  color: var(--color-fd-foreground);
+  line-height: 1.35;
+}
+
+.reylo-compare-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--reylo-rows);
+}
+
+/* Nothing here is clickable but the tools' names, so a mark keeps the default cursor. */
+.reylo-compare-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  background: none;
+  cursor: default;
+}
+
+.reylo-compare-mark svg {
+  display: block;
+  width: 19px;
+  height: 19px;
+}
+
+@container (min-width: 760px) {
+  .reylo-compare-mark svg {
+    width: 21px;
+    height: 21px;
+  }
+}
+
+.reylo-compare-y {
+  color: hsl(144, 53%, 40%);
+}
+
+.reylo-compare-n {
+  color: hsl(5, 90%, 58%);
+}
+
+.reylo-compare-p {
+  color: hsl(40, 72%, 45%);
+}
+
+.dark .reylo-compare-y {
+  color: #5ccf8a;
+}
+
+.dark .reylo-compare-n {
+  color: #ff6a5c;
+}
+
+.dark .reylo-compare-p {
+  color: #d9ad55;
+}
+
+.reylo-compare-mark .reylo-compare-p {
+  width: 17px;
+  height: 17px;
+}
+
+/* A label that has a popup keeps a dotted rule, as a Twoslash name does, so a reader sees it can be hovered. */
+.reylo-compare-label {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dotted color-mix(in oklab, currentColor 35%, transparent);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.reylo-compare-frame {
+  position: relative;
+  z-index: 1;
+  margin: -14px 0 -6px;
+  border: 2px solid var(--dk-accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dk-accent) 5%, transparent);
+  pointer-events: none;
+}
+
+/* The blade by night: a white core, then yellow light falling off into amber within the gutters. */
+.dark .reylo-compare-frame {
+  border-color: #fffbea;
+  background: rgb(255 184 0 / 0.04);
+  box-shadow:
+    0 0 1px 0.5px #fff4c4,
+    0 0 3px 1px #ffe55c,
+    0 0 7px 1px #ffc81f,
+    0 0 13px 0 rgb(255 184 0 / 0.28),
+    inset 0 0 4px 0.5px #ffe55c,
+    inset 0 0 12px 1px rgb(255 184 0 / 0.32),
+    inset 0 0 40px 0 rgb(255 184 0 / 0.1);
+}
+
+.reylo-compare-pop {
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-pop p {
+  margin: 0 0 8px;
+}
+
+.reylo-compare-pop p:last-child {
+  margin-bottom: 0;
+}
+
+.reylo-compare-pop code {
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+  background: color-mix(in oklab, currentColor 12%, transparent);
+  font: 0.92em/1 var(--font-mono, ui-monospace, monospace);
+  color: var(--color-fd-foreground);
+}
+
+/* A query a tool got wrong: the docs' Inference card (.reylo-inferred), which is scoped to #nd-page, where a popup, rendered at the end of the body, is not. The popup is the card's one frame. */
+.fd-twoslash-popover.reylo-compare-pop-card {
+  width: 480px;
+  max-width: min(480px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  padding: 0;
+  --reylo-compare-wrong: hsl(5, 90%, 58%);
+}
+
+.dark .fd-twoslash-popover.reylo-compare-pop-card {
+  --reylo-compare-wrong: #ff6a5c;
+}
+
+.reylo-compare-card-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reylo-compare-card-on {
+  font-size: 12px;
+  line-height: 1.25rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-card-schema,
+.reylo-compare-card-query {
+  padding: 0.5rem 0.875rem 0.625rem;
+}
+
+.reylo-compare-card-schema {
+  border-bottom: 1px solid var(--color-fd-border);
+  background: var(--color-fd-muted);
+}
+
+.reylo-compare-card pre {
+  margin: 2px 0 0;
+  padding: 0;
+  background: none;
+  font: 12.5px/1.6 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reylo-compare-card [style*='--shiki'] {
+  color: var(--shiki-light);
+}
+
+.dark .reylo-compare-card [style*='--shiki'] {
+  color: var(--shiki-dark);
+}
+
+.reylo-compare-card-types {
+  display: grid;
+  grid-template-columns: max-content 12px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.125rem 8px;
+  padding: 0.5rem 0.875rem 0.625rem;
+  border-top: 1px solid var(--color-fd-border);
+  background: var(--color-fd-muted);
+}
+
+.reylo-compare-card-types svg {
+  width: 12px;
+  height: 12px;
+  align-self: center;
+}
+
+.reylo-compare-card-types code,
+.reylo-compare-pop .reylo-compare-card-types code {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font: 12.5px/1.6 var(--font-mono, ui-monospace, monospace);
+  color: var(--color-fd-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reylo-compare-pop .reylo-compare-card-types .reylo-compare-card-error {
+  font-family: var(--font-text);
+  color: var(--reylo-compare-wrong);
+}
+
+.reylo-compare-card-wrong {
+  text-decoration: wavy underline var(--reylo-compare-wrong);
+  text-decoration-skip-ink: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }

@@ -1,0 +1,16 @@
+aggregate.sql: one (id: integer) -> { n: bigint, latest: timestamp? }
+by_composite.sql: at_most_one (region: varchar, tier: varchar) -> { id: integer }
+by_key.sql: at_most_one (id: integer) -> { handle: varchar }
+by_part.sql: many (region: varchar) -> { id: integer }
+by_unique.sql: at_most_one (handle: varchar) -> { id: integer }
+either_key.sql: many (id: integer) -> { id: integer }
+joined.sql: many (id: integer) -> { handle: varchar, kind: varchar }
+limit_fraction.sql: at_most_one () -> { n: bigint }
+limit_param.sql: at_most_one (n: bigint) -> { n: bigint }
+limited.sql: at_most_one () -> { kind: varchar }
+no_from.sql: one (x: integer) -> { next: integer }
+no_from_filtered.sql: at_most_one (flag: boolean) -> { one: integer }
+offset.sql: at_most_one () -> { n: bigint }
+shadowed.sql: many (id: integer) -> { handle: varchar }
+unnest.sql: many () -> { n: integer? }
+values.sql: one () -> { col0: integer, col1: varchar }

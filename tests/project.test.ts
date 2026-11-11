@@ -2,14 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, join } from "node:path";
 import { engine } from "../src/engine.ts";
 import { findProjectFile, resolveProject } from "../src/project.ts";
 import { Session } from "../src/analyze.ts";
 
-// Any engine reads the project file; the repository's own install has every one.
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
+// The engine's core reads the project file, whichever database's engine is asked.
 
 // A project tree: `files` maps a path under a fresh directory to its text.
 function tree(files: Record<string, string>): string {
@@ -21,8 +19,11 @@ function tree(files: Record<string, string>): string {
   return root;
 }
 
+// A project file's command runs in the system's shell, cmd.exe on Windows, and these tests write theirs for a POSIX shell.
+const posixShell = process.platform === "win32" && "its command is written for a POSIX shell, and Windows runs it in cmd.exe";
+
 test("without a project file, DATABASE_URL comes from the environment, then .env.local, then .env", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const root = tree({ "app/package.json": "{}", "app/.env": "DATABASE_URL=postgres://from-env-file/db\n", "app/.env.local": "DATABASE_URL=postgres://from-local/db\n" });
   const dir = join(root, "app");
   assert.equal(findProjectFile(dir, {}), undefined);
@@ -32,19 +33,22 @@ test("without a project file, DATABASE_URL comes from the environment, then .env
   assert.deepEqual([set.url, set.urlSource, set.dialect], ["file:./x.db", "DATABASE_URL in the environment", "sqlite"]);
   // A parameter nothing types is an error unless the project file says otherwise (since 2026-10-20).
   assert.equal(local.strictParams, true);
-  const loose = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nstrict_params: false\n" });
+  const loose = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nallow_untyped_params: true\n" });
   assert.equal(resolveProject(e, loose, {}).strictParams, false);
   assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\n" }), {}).strictParams, true);
+  // A Postgres array column holds one dimension unless the file says otherwise.
+  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\n" }), {}).allowNestedArrays, false);
+  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nallow_nested_arrays: true\n" }), {}).allowNestedArrays, true);
   // The sqlcommenter comment is on unless the project file turns it off.
   assert.equal(local.sqlcommenter, true);
   assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nsqlcommenter: false\n" }), {}).sqlcommenter, false);
 });
 
-test("the project file sits beside package.json, and its direct_url, env files and strict_params apply", async () => {
-  const e = await engine("postgres", ROOT);
+test("the project file sits beside package.json, and its direct_url, env files and allow_ flags apply", async () => {
+  const e = await engine("postgres");
   const root = tree({
     "package.json": "{}",
-    ".reylo.yaml": "url: postgres://pooler/app\ndirect_url: mysql://root:${DB_PASSWORD}@127.0.0.1:3306/app\nenv: [secrets.env]\nstrict_params: true\napi:\n  routes: api\n",
+    ".reylo.yaml": "url: postgres://pooler/app\ndirect_url: mysql://root:${DB_PASSWORD}@127.0.0.1:3306/app\nenv: [secrets.env]\nallow_untyped_params: false\napi:\n  routes: api\n",
     "secrets.env": "DB_PASSWORD=hunter2\n",
     "src/db/tsconfig.json": "{}",
   });
@@ -70,7 +74,7 @@ test("the project file sits beside package.json, and its direct_url, env files a
 });
 
 test("the project file may be named .reylo.yml, and both names beside one package.json are an error", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const yml = tree({ "package.json": "{}", ".reylo.yml": "direct_url: file:./x.db\n" });
   const r = resolveProject(e, yml, {});
   assert.deepEqual([r.file, r.dialect, r.error], [join(yml, ".reylo.yml"), "sqlite", undefined]);
@@ -86,7 +90,7 @@ test("the project file may be named .reylo.yml, and both names beside one packag
 });
 
 test("a types section, removed on 2026-10-20, is refused where it stands, whatever it holds; package.json decides no type", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   for (const types of ["types:\n  dates: temporal\n", "types: {}\n", "types:\n  datez: Date\n"]) {
     const root = tree({ "package.json": JSON.stringify({ dependencies: { mariadb: "^3", "@planetscale/database": "^1" } }), ".reylo.yaml": `direct_url: mysql://root@127.0.0.1:3306/app\n\n${types}` });
     const r = resolveProject(e, root, {});
@@ -100,12 +104,23 @@ test("a types section, removed on 2026-10-20, is refused where it stands, whatev
 });
 
 test("a key the library does not know, and a variable nothing sets, are errors that say where", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const typo = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://x/db\n\nstirct: true\n" });
   assert.match(resolveProject(e, typo, {}).error!, /^\.reylo\.yaml:3:1: unknown field `stirct`/);
-  // `strict` was renamed `strict_params` on 2026-10-20, with no alias: the old key is unknown, and its error names the new one.
+  // The old names have no alias: each is unknown, and its error says what to write instead.
+  const renamedTo = (key: string) => `.reylo.yaml:2:1: unknown field \`${key}\`: the key is \`allow_untyped_params\` since 0.8.0, and reads the other way round: write \`allow_untyped_params: true\` for \`${key}: false\`, and delete \`${key}: true\`, the default`;
   const renamed = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://x/db\nstrict: true\n" });
-  assert.equal(resolveProject(e, renamed, {}).error, ".reylo.yaml:2:1: unknown field `strict`: the key is `strict_params` since 2026-10-20");
+  assert.equal(resolveProject(e, renamed, {}).error, renamedTo("strict"));
+  const renamedAgain = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nstrict_params: false\n" });
+  assert.equal(resolveProject(e, renamedAgain, {}).error, renamedTo("strict_params"));
+  // A variable falls back, as in a shell, where it is unset or empty; the fallback may name another.
+  const fallback = (url: string, env: Record<string, string>) => resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": `direct_url: ${url}\n` }), env);
+  assert.equal(fallback("${BUILD:-${DEV}}", { BUILD: "postgres://build/db", DEV: "postgres://dev/db" }).url, "postgres://build/db");
+  assert.equal(fallback("${BUILD:-${DEV}}", { DEV: "postgres://dev/db" }).url, "postgres://dev/db");
+  assert.equal(fallback("${BUILD:-${DEV}}", { BUILD: "", DEV: "postgres://dev/db" }).url, "postgres://dev/db");
+  assert.equal(fallback("postgres://${HOST:-localhost}/db", {}).url, "postgres://localhost/db");
+  assert.equal(fallback("${A:-${B:-postgres://c/db}}", {}).url, "postgres://c/db");
+  assert.match(fallback("${BUILD:-${DEV}}", {}).error!, /^\.reylo\.yaml: "direct_url" names \$\{DEV\}, which neither the environment nor/);
   const unset = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: ${NOPE}\n" });
   const r = resolveProject(e, unset, {});
   assert.equal(r.url, undefined);
@@ -115,8 +130,8 @@ test("a key the library does not know, and a variable nothing sets, are errors t
   assert.match(resolveProject(e, odd, {}).error!, /^Cannot tell the database from the URL \("direct_url" in \.reylo\.yaml\)/);
 });
 
-test("a $(command) in direct_url is replaced by what it prints, once per process, percent-encoded in the user or password", async () => {
-  const e = await engine("postgres", ROOT);
+test("a $(command) in direct_url is replaced by what it prints, once per process, percent-encoded in the user or password", { skip: posixShell }, async () => {
+  const e = await engine("postgres");
   // The command counts its runs in a file beside it, and prints a password a URL cannot hold as it is.
   const root = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(echo run >> runs.txt; printf 'p@ss/w?rd&x')@db.internal:5432/app\n" });
   const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
@@ -140,8 +155,8 @@ test("a $(command) in direct_url is replaced by what it prints, once per process
   assert.deepEqual([resolveProject(e, whole, {}).url, resolveProject(e, whole, {}).dialect], ["mysql://root:p@ss@127.0.0.1:3306/app", "mysql"]);
 });
 
-test("a command's variables are its shell's, from the environment and the env files, and no value is read as shell syntax", async () => {
-  const e = await engine("postgres", ROOT);
+test("a command's variables are its shell's, from the environment and the env files, and no value is read as shell syntax", { skip: posixShell }, async () => {
+  const e = await engine("postgres");
   const root = tree({
     "package.json": "{}",
     ".reylo.yaml": "direct_url: postgres://app:$(printf %s \"$DB_PASSWORD\")@$(printf %s \"$DB_HOST\")/app\n",
@@ -156,8 +171,8 @@ test("a command's variables are its shell's, from the environment and the env fi
   assert.equal(existsSync(join(text, "pwned")), false);
 });
 
-test("a command that fails, prints nothing or is left open is an error that names it, and runs nothing more", async () => {
-  const e = await engine("postgres", ROOT);
+test("a command that fails, prints nothing or is left open is an error that names it, and runs nothing more", { skip: posixShell }, async () => {
+  const e = await engine("postgres");
   const failing = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(echo 'no item matches' >&2; exit 3)@h/app\n" });
   const r = resolveProject(e, failing, {});
   assert.equal(r.url, undefined);
@@ -176,14 +191,14 @@ test("a command that fails, prints nothing or is left open is an error that name
 const NOTICE = ".reylo.yaml: Reylo does not read url; set direct_url to the dev database Reylo reads your types from (it uses DATABASE_URL meanwhile)";
 
 test("url is never the type check's connection: alone, it draws a notice and DATABASE_URL is used; direct_url wins; both draw nothing", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   // url alone: DATABASE_URL, from the environment or an env file, and one notice that names direct_url.
   const alone = tree({ "package.json": "{}", ".reylo.yaml": "url: postgres://prod-pooler/app\n", ".env": "DATABASE_URL=postgres://dev/app\n" });
   const fromFile = resolveProject(e, alone, {});
   assert.deepEqual([fromFile.url, fromFile.urlSource, fromFile.error, fromFile.notice], ["postgres://dev/app", "DATABASE_URL in .env", undefined, NOTICE]);
   const fromEnv = resolveProject(e, alone, { DATABASE_URL: "file:./dev.db" });
   assert.deepEqual([fromEnv.url, fromEnv.urlSource, fromEnv.dialect, fromEnv.notice], ["file:./dev.db", "DATABASE_URL in the environment", "sqlite", NOTICE]);
-  // Nothing in url is resolved or checked: an unset variable or an odd scheme there is the framework's to report.
+  // Nothing in url is resolved or checked: an unset variable or an odd scheme there is for the host that serves the queries through it to report.
   const unread = tree({ "package.json": "{}", ".reylo.yaml": "url: ${NOPE}/x\n" });
   assert.deepEqual([resolveProject(e, unread, { DATABASE_URL: "postgres://dev/app" }).url, resolveProject(e, unread, { DATABASE_URL: "postgres://dev/app" }).error], ["postgres://dev/app", undefined]);
   // With no DATABASE_URL either, there is no connection, and the error says why url is not one.
@@ -196,7 +211,7 @@ test("url is never the type check's connection: alone, it draws a notice and DAT
   assert.deepEqual([both.url, both.urlSource, both.notice], ["postgres://dev/app", '"direct_url" in .reylo.yaml', undefined]);
   // Without a project file, or without url in it, nothing is said either.
   assert.equal(resolveProject(e, tree({ "package.json": "{}" }), {}).notice, undefined);
-  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "strict_params: false\n" }), {}).notice, undefined);
+  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "allow_untyped_params: true\n" }), {}).notice, undefined);
   assert.equal(resolveProject(e, tree({ "package.json": "{}" }), {}).missingUrl, 'No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in .reylo.yaml.');
 });
 
@@ -204,20 +219,20 @@ test(".reylo/ names an entry by its statement, then its server: never by url or 
   const entry = async (yaml: string, env: Record<string, string>) => {
     const session = await Session.open(tree({ "package.json": "{}", ".reylo.yaml": yaml }), env);
     await session.close();
-    return session.entryFile("select 1").split("/").pop()!.replace(/\.json$/, "").split("-");
+    return basename(session.entryFile("select 1")).replace(/\.json$/, "").split("-");
   };
-  const [statement, dev] = await entry("strict_params: true\n", { DATABASE_URL: "postgres://dev/app" });
+  const [statement, dev] = await entry("allow_untyped_params: false\n", { DATABASE_URL: "postgres://dev/app" });
   // url alone names it like no url at all, and like a direct_url that names the same database;
   // the password is not part of it.
   assert.deepEqual(await entry("url: postgres://prod-pooler/app\n", { DATABASE_URL: "postgres://dev/app" }), [statement, dev]);
   assert.deepEqual(await entry("direct_url: postgres://:secret@dev/app\n", {}), [statement, dev]);
   // Another database of the dialect: the same statement, another server.
-  const [same, other] = await entry("strict_params: true\n", { DATABASE_URL: "postgres://ci@127.0.0.1:5432/test" });
+  const [same, other] = await entry("allow_untyped_params: false\n", { DATABASE_URL: "postgres://ci@127.0.0.1:5432/test" });
   assert.equal(same, statement);
   assert.notEqual(other, dev);
   // With no URL and every engine installed, as reylo's own install has them, the dialect stays
   // Postgres: the same statement, and no server.
-  assert.equal((await entry("strict_params: true\n", {}))[0], statement);
+  assert.equal((await entry("allow_untyped_params: false\n", {}))[0], statement);
   // Another dialect is another statement.
-  assert.notEqual((await entry("strict_params: true\n", { DATABASE_URL: "mysql://root@127.0.0.1:3306/app" }))[0], statement);
+  assert.notEqual((await entry("allow_untyped_params: false\n", { DATABASE_URL: "mysql://root@127.0.0.1:3306/app" }))[0], statement);
 });

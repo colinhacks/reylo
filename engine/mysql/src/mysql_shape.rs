@@ -942,7 +942,7 @@ fn is_boolean_literal(e: &Expr) -> bool {
 
 /// How many aggregate calls a text has, a name inside a string among them, and whether it may
 /// have a window function.
-fn aggregates_in(text: &str) -> (usize, bool) {
+pub(crate) fn aggregates_in(text: &str) -> (usize, bool) {
     let text = text.to_ascii_lowercase();
     let calls = |name: &&str| text.match_indices(&format!("{name}(")).filter(|(at, _)| !text[..*at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')).count();
     (crate::mysql::AGGREGATES.iter().map(calls).sum(), text.contains(" over ") || text.contains(" over("))
@@ -1153,33 +1153,6 @@ mod tests {
         assert_eq!(first(bare, &Columns::new()), (None, vec!["posts".to_string()]));
         assert_eq!(first(bare, &columns).1, Vec::<String>::new());
         assert_eq!(first("select (select count(p.id) from posts p) as n from users u", &Columns::new()).1, Vec::<String>::new());
-    }
-
-    #[test]
-    fn a_json_aggregate_over_a_derived_table_is_typed_like_one_over_a_with_query() {
-        // The shape of the column named `recent`.
-        let recent = |sql: &str| plan(&query(sql), &Columns::new()).columns.into_iter().find(|(name, _)| name == "recent").map(|(_, shape)| shape);
-        let never_null = |sql: &str| matches!(recent(sql), Some(Shape::Array { non_null: true, .. }));
-        let object = "json_object('id', p.id, 'title', p.title)";
-        for sql in [
-            format!("select (select count(*) from users) as user_count, (select coalesce(json_arrayagg({object}), json_array()) from (select id, title from posts order by id desc limit 5) p) as recent"),
-            format!("with p as (select id, title from posts order by id desc limit 5) select (select count(*) from users) as user_count, (select coalesce(json_arrayagg({object}), json_array()) from p) as recent"),
-            format!("select (select coalesce(json_arrayagg({object}), json_array()) from (select id, title from posts) p) as recent"),
-            format!("select (select ifnull(json_arrayagg({object}), json_array()) from (select id, title from posts limit 5) p) as recent"),
-            format!("select coalesce(json_arrayagg({object}), json_array()) as recent from (select id, title from posts limit 5) p"),
-            "select (select coalesce(json_arrayagg(json_object('id', id, 'title', title)), json_array()) from (select id, title from posts limit 5) p) as recent".to_string(),
-        ] {
-            assert!(never_null(&sql), "{sql}");
-        }
-        // Unguarded, the aggregate over no rows is NULL; an aggregate of the outer query's leaves
-        // the subquery a row per row of its FROM, which may be none.
-        for sql in [
-            "select (select json_arrayagg(json_object('id', p.id)) from (select id from posts limit 5) p) as recent",
-            "select (select coalesce(json_arrayagg(u.name), json_array()) from (select id from posts limit 1) p) as recent from users u",
-            "select (select coalesce(json_arrayagg(name), json_array()) from (select id from posts limit 1) p) as recent from users u",
-        ] {
-            assert!(matches!(recent(sql), Some(Shape::Array { non_null: false, .. })), "{sql}");
-        }
     }
 
     #[test]

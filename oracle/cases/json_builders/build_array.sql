@@ -1,0 +1,1 @@
+select json_build_array(1, 2) as pair, jsonb_build_array('x', m.name) as names, json_build_array() as empty, jsonb_build_array(m.id, m.bio, m.joined) as mixed, json_build_array(json_build_object('n', m.name)) as nested from member m

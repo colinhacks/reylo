@@ -1,0 +1,5 @@
+# The SQLite that rusqlite bundles into every native build (the engine's program, the oracle) has
+# its math, percentile and geopoly functions, so a statement that calls `ceiling` or `acos` reads as
+# calling a function SQLite has, as it did in the WebAssembly engines.
+[env]
+LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_GEOPOLY"

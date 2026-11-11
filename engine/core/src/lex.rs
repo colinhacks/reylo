@@ -3,9 +3,11 @@
 //! One named form works in every dialect, `:name`, which is also the form mysql2's
 //! `namedPlaceholders` and SQLite accept; SQLite's own `@name` and `$name` are named placeholders
 //! there too. Beside them a statement may use its database's own positional form instead, never
-//! both: `$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite. A form the database does not
+//! both: `$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite, and `$1`, `?` and `?NNN` on
+//! DuckDB. A form the database does not
 //! have is refused where the database would misread it: SQLite takes `$1` for a parameter named
-//! `$1`, and a Postgres `$name` outside a dollar quote is a syntax error, so each is an error that
+//! `$1`, a Postgres `$name` outside a dollar quote is a syntax error, and DuckDB takes `$name` for a
+//! parameter Reylo does not bind, so each is an error that
 //! says what to write; MySQL's `@name` is a user variable and `$` a character of its identifiers,
 //! so both stay text there, as `@` (an operator) does on Postgres. A parameter's name drops the
 //! prefix: `:id`, `@id` and `$id` are `id`, and `$2` and `?2` are both `2`. SQLite reads `:id` and
@@ -15,12 +17,12 @@
 //! is an error at its place ([`repeated`]); a bare `?` is a parameter of its own. A name may be
 //! dotted (`:auth.user_id`): each `.segment` starts like a name, so `arr[1:2]` and `:t.*` end
 //! where they should. The engine rewrites placeholders to whatever the
-//! database binds by position (`$n` on Postgres, `?` on MySQL, `?n` for the SQLite prepare, where
+//! database binds by position (`$n` on Postgres and DuckDB, `?` on MySQL, `?n` for the SQLite prepare, where
 //! SQLite's own `:name` would end at the first dot) and keeps a map back to the author's text, so
 //! a server error at a rewritten position lands on the right characters of the `.sql` file.
 //!
 //! The pass knows what the parser knows about text: single-quoted literals (with `''`), `E''`
-//! escape strings (with backslashes), dollar quoting, double-quoted identifiers, line comments,
+//! escape strings (with backslashes), dollar quoting (Postgres's and DuckDB's), double-quoted identifiers, line comments,
 //! nested block comments, and `::` casts. MySQL reads text its own way, by the session's
 //! `sql_mode` ([`MysqlText`]): a backslash in a string escapes the character after it, a
 //! double-quoted word is a string, `#` starts a line comment as `-- ` does (`--` followed by
@@ -157,6 +159,17 @@ fn dotted_name_end(b: &[u8], start: usize) -> usize {
     j
 }
 
+/// What the walk read last, for the one place it matters: a Postgres subscript's `[` (after an
+/// operand) against an array constructor's (after `array`, or nested in one).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Last {
+    Other,
+    /// A name other than `array`, a number, a quoted identifier, a placeholder, `)` or `]`.
+    Operand,
+    /// The `[` of a subscript, with nothing but whitespace and comments read since.
+    Subscript,
+}
+
 fn digits_end(b: &[u8], start: usize) -> usize {
     let mut j = start;
     while j < b.len() && b[j].is_ascii_digit() {
@@ -239,7 +252,7 @@ fn quoted_end(b: &[u8], i: usize, escapes: bool) -> Option<usize> {
 pub enum Named {
     /// `:name` everywhere, and SQLite's own `@name` and `$name` there: the loader's rule.
     Dialect,
-    /// `:name` alone; SQLite's `@name` and `$name` are errors: the framework's rule.
+    /// `:name` alone; SQLite's `@name` and `$name` are errors: the portable spelling alone.
     Colon,
 }
 
@@ -262,6 +275,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
     let mysql = dialect == Dialect::Mysql;
     let b = sql.as_bytes();
     let mut i = 0usize;
+    let mut last = Last::Other;
     let mut params: Vec<String> = Vec::new();
     let mut placeholders: Vec<Placeholder> = Vec::new();
     let mut opaque: Vec<(usize, usize)> = Vec::new();
@@ -291,6 +305,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 };
                 opaque.push((i, end));
                 i = end;
+                last = Last::Other;
             }
             b'E' | b'e' if b.get(i + 1) == Some(&b'\'') && !prev_is_name_char(b, i) && !mysql => {
                 let start = i;
@@ -308,6 +323,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     }
                 }
                 opaque.push((start, i));
+                last = Last::Other;
             }
             b'"' | b'`' => {
                 let Some(end) = quoted_end(b, i, false) else {
@@ -315,6 +331,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 };
                 opaque.push((i, end));
                 i = end;
+                last = Last::Operand;
             }
             // MySQL's `--` starts a comment only before a space or a control character, or at the
             // end of the text: `:a --:b` is `:a - (-:b)`.
@@ -367,26 +384,41 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     if i < b.len() && is_name_start(b[i]) {
                         i = name_end(b, i);
                     }
+                    last = Last::Operand;
                     continue;
                 }
                 match b.get(i + 1) {
+                    // A colon that opens a Postgres subscript is a slice with no lower bound
+                    // (`tags[:n]` is `tags[1:n]`), since no expression starts with a colon there,
+                    // so the name after it is a column's; a parameter as the subscript is written
+                    // `tags[(:n)]`. An array constructor's `[` (`array[:a, :b]`) follows `array`
+                    // or another `[`, not an operand.
+                    _ if last == Last::Subscript && dialect == Dialect::Postgres => {
+                        i += 1;
+                        last = Last::Other;
+                    }
                     Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) => {
                         let end = dotted_name_end(b, i + 1);
                         one_prefix(sql, &mut first_named, i, end)?;
                         push(sql[i + 1..end].to_string(), i, end, &mut params);
                         i = end;
+                        last = Last::Operand;
                     }
-                    _ => i += 1,
+                    _ => {
+                        i += 1;
+                        last = Last::Other;
+                    }
                 }
             }
             b'$' => {
-                if dialect == Dialect::Postgres {
+                if matches!(dialect, Dialect::Postgres | Dialect::Duckdb) {
                     if let Some(tag_end) = dollar_tag_end(b, i) {
                         let tag = &b[i..tag_end];
                         match find_bytes(b, tag, tag_end) {
                             Some(close) => {
                                 opaque.push((i, close + tag.len()));
                                 i = close + tag.len();
+                                last = Last::Other;
                                 continue;
                             }
                             None => {
@@ -400,22 +432,30 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 }
                 match b.get(i + 1) {
                     // `a$1` and `a$b` are identifiers.
-                    _ if prev_is_name_char(b, i) => i += 1,
-                    Some(&n) if n.is_ascii_digit() && dialect == Dialect::Postgres => {
+                    _ if prev_is_name_char(b, i) => {
+                        i += 1;
+                        last = Last::Operand;
+                    }
+                    Some(&n) if n.is_ascii_digit() && matches!(dialect, Dialect::Postgres | Dialect::Duckdb) => {
                         let end = digits_end(b, i + 1);
                         push(position(&sql[i + 1..end], &mut largest), i, end, &mut params);
                         i = end;
+                        last = Last::Operand;
                     }
                     Some(&n) if is_name_start(n) && sqlite_named => {
                         let end = dotted_name_end(b, i + 1);
                         one_prefix(sql, &mut first_named, i, end)?;
                         push(sql[i + 1..end].to_string(), i, end, &mut params);
                         i = end;
+                        last = Last::Operand;
                     }
                     Some(&n) if (is_name_start(n) || n.is_ascii_digit()) && dialect != Dialect::Mysql => {
                         return Err(foreign(sql, i, dialect));
                     }
-                    _ => i += 1,
+                    _ => {
+                        i += 1;
+                        last = Last::Other;
+                    }
                 }
             }
             b'@' => match b.get(i + 1) {
@@ -424,11 +464,15 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     one_prefix(sql, &mut first_named, i, end)?;
                     push(sql[i + 1..end].to_string(), i, end, &mut params);
                     i = end;
+                    last = Last::Operand;
                 }
                 Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) && dialect == Dialect::Sqlite => {
                     return Err(foreign(sql, i, dialect));
                 }
-                _ => i += 1,
+                _ => {
+                    i += 1;
+                    last = Last::Other;
+                }
             },
             b'?' if dialect != Dialect::Postgres => {
                 if b.get(i + 1).is_some_and(u8::is_ascii_digit) && dialect == Dialect::Mysql {
@@ -445,8 +489,38 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     push(largest.to_string(), i, i + 1, &mut params);
                     i += 1;
                 }
+                last = Last::Operand;
             }
-            _ => i += 1,
+            // Whitespace leaves what was read last as it was, as a comment does.
+            _ if c.is_ascii_whitespace() => i += 1,
+            // A name or a number, whole: `array` opens a constructor, anything else is an operand.
+            _ if is_name_char(c) => {
+                let end = name_end(b, i);
+                last = if sql[i..end].eq_ignore_ascii_case("array") { Last::Other } else { Last::Operand };
+                i = end;
+            }
+            b')' | b']' => {
+                i += 1;
+                last = Last::Operand;
+            }
+            // SQLite's `[name]` is a quoted identifier, which ends at the first `]`: a quote or a
+            // `?` inside it is part of the name.
+            b'[' if dialect == Dialect::Sqlite => {
+                let Some(close) = b[i..].iter().position(|&c| c == b']') else {
+                    return Err(LexError { message: "unterminated quoted identifier".into(), offset: i });
+                };
+                opaque.push((i, i + close + 1));
+                i += close + 1;
+                last = Last::Operand;
+            }
+            b'[' => {
+                i += 1;
+                last = if last == Last::Operand { Last::Subscript } else { Last::Other };
+            }
+            _ => {
+                i += 1;
+                last = Last::Other;
+            }
         }
     }
     let positional = params.iter().filter(|p| is_positional(p)).count();
@@ -496,6 +570,7 @@ fn foreign(sql: &str, i: usize, dialect: Dialect) -> LexError {
     let fix = if digits { format!("?{}", &sql[i + 1..end]) } else { format!(":{}", &sql[i + 1..end]) };
     let message = match dialect {
         Dialect::Sqlite => format!("SQLite reads {written} as a parameter that Reylo does not bind; write {fix}"),
+        Dialect::Duckdb => format!("DuckDB reads {written} as a parameter that Reylo does not bind; write {fix}"),
         _ => format!("{written} is not a placeholder here; Reylo's named placeholder is {fix}"),
     };
     LexError { message, offset: i }
@@ -521,7 +596,7 @@ impl From<Repeated> for LexError {
 /// form a parameter is named by: `:name` (a dotted global such as `:auth.user_id` too), SQLite's
 /// `@name` and `$name`, and the positional `$n` and `?n`, whose name is the number, so `?1` after
 /// a bare `?` that took 1 repeats it. A bare `?` is a parameter of its own and never repeats.
-/// Reylo's analysis reports each one where it is written, and Reylo Framework's build fails on it.
+/// Reylo's analysis reports each one where it is written, and a host's build may fail on it.
 pub fn repeated(sql: &str, lexed: &Lexed) -> Vec<Repeated> {
     let mut seen: Vec<&str> = Vec::new();
     let mut out = Vec::new();
@@ -695,6 +770,9 @@ mod tests {
         assert_eq!(names("select $1, $2, $1", Dialect::Postgres), ["1", "2"]);
         assert_eq!(names("select ?, ?", Dialect::Sqlite), ["1", "2"]);
         assert_eq!(names("select ?, ?", Dialect::Mysql), ["1", "2"]);
+        assert_eq!(names("select ?, ?3, ?", Dialect::Duckdb), ["1", "3", "4"]);
+        assert_eq!(names("select $2, $1", Dialect::Duckdb), ["1", "2"]);
+        assert_eq!(names("select :a, :b", Dialect::Duckdb), ["a", "b"]);
         assert_eq!(lex("select :a, $1", Dialect::Postgres).unwrap().style, Style::Mixed);
         assert_eq!(lex("select 1", Dialect::Postgres).unwrap().style, Style::None);
     }
@@ -704,7 +782,12 @@ mod tests {
         let sql = "select ':x' as a, \":y\" as b, e'\\':z' as c, $$:w$$ as d, x::int, arr[1:2], tags ? 'k' -- :c\n /* :d /* :e */ */ from t where id = :id";
         assert_eq!(names(sql, Dialect::Postgres), ["id"]);
         assert_eq!(names("select json_extract(j, '$.a') = ? and x = :n", Dialect::Sqlite), ["1", "n"]);
+        // SQLite's bracketed name is text, whatever it holds; elsewhere a `[` opens a subscript.
+        assert_eq!(names("select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t", Dialect::Sqlite), ["p"]);
+        assert_eq!(lex("select [a from t", Dialect::Sqlite).unwrap_err().offset, 7);
         assert_eq!(names("select `a:b`, 'x' from t where a = :a", Dialect::Mysql), ["a"]);
+        let duck = "select ':x' as a, \":y\" as b, e'\\':z' as c, $$:w ?$$ as d, $t$ $1 $t$ as e, x::int, l[1:2], {'k': 1} -- :c\n /* :d /* :e */ */ from t where id = :id";
+        assert_eq!(names(duck, Dialect::Duckdb), ["id"]);
     }
 
     #[test]
@@ -714,6 +797,7 @@ mod tests {
         assert_eq!(err("select $name", Dialect::Postgres).message, "$name is not a placeholder here; Reylo's named placeholder is :name");
         assert_eq!(err("select 1 where x = $2", Dialect::Sqlite).message, "SQLite reads $2 as a parameter that Reylo does not bind; write ?2");
         assert_eq!(err("select ?2", Dialect::Mysql).message, "MySQL has no numbered placeholder ?2; write ? for each value, or :name");
+        assert_eq!(err("select $name", Dialect::Duckdb).message, "DuckDB reads $name as a parameter that Reylo does not bind; write :name");
         assert_eq!(err("select $name", Dialect::Postgres).offset, 7);
         // Where the dialect reads the form as something else, it is that: MySQL's user variable and
         // `$` identifier, Postgres's `@` operator and `a$1` identifier.
@@ -744,7 +828,7 @@ mod tests {
         // Elsewhere the forms keep their meaning: Postgres `@` is an operator, MySQL `@x` a variable.
         assert!(names("select @a from t", Dialect::Postgres).is_empty());
         assert!(names("select @a, $b from t", Dialect::Mysql).is_empty());
-        // The framework takes `:name` alone.
+        // `Named::Colon` takes `:name` alone.
         let colon = |sql: &str| lex_with(sql, Dialect::Sqlite, Named::Colon).unwrap_err().message;
         assert_eq!(colon("select @a.b from t"), "SQLite reads @a.b as a parameter that Reylo does not bind; write :a.b");
         assert_eq!(colon("select :x, $y"), "SQLite reads $y as a parameter that Reylo does not bind; write :y");
@@ -858,8 +942,29 @@ mod tests {
         for d in [Dialect::Postgres, Dialect::Sqlite, Dialect::Mysql] {
             assert!(lex("select arr[1:2], arr[2:], arr[:3], arr[1:2].x, arr[lo:hi], arr[1:n] from t", d).unwrap().params.is_empty());
         }
-        // A colon after no name character still opens a name: `arr[:lo]` reads a parameter.
-        assert_eq!(names("select arr[:lo] from t", Dialect::Postgres), ["lo"]);
+        // On Postgres a colon that opens a subscript is a slice with no lower bound, whatever
+        // follows it: no expression starts with a colon there. Whitespace and comments may stand
+        // between, and the subscript may follow a quoted name, a parenthesis, another subscript or
+        // a placeholder.
+        let slices = "select arr[:hi], arr[ :hi], arr[/* c */:hi], arr[:t.n], \"a\"[:hi], (f(x))[:pg_t.tgnargs], m[1][:hi], arr[1:hi], arr[:hi][:lo] from t where x = :x and y = $1";
+        let l = lex(slices, Dialect::Postgres).unwrap();
+        assert_eq!(l.params, ["x", "1"]);
+        assert_eq!(l.style, Style::Mixed);
+        assert_eq!(names("select :a[:hi], arr[:hi] from t", Dialect::Postgres), ["a"]);
+        // A parameter is the subscript, or a slice's bound after its colon, as written.
+        assert_eq!(names("select arr[(:i)], arr[ : :hi], arr[1 : :b], arr[:i + 0] from t", Dialect::Postgres), ["i", "hi", "b"]);
+        // An array constructor's bracket follows `array` or another bracket, and holds parameters.
+        assert_eq!(names("select array[:a, :b], ARRAY[[:c], [:d]], x = any(array[:e]) from t", Dialect::Postgres), ["a", "b", "c", "d", "e"]);
+        // The statement the runtime's lexer is checked against reads the same here.
+        let l = lex("select tags[:n], tags[ :m], (f(x))[:pg_t.tgnargs], \"q\"[:k], array[:a, :b], tags[(:c)], tags[1::int:d] from t where y = :y", Dialect::Postgres).unwrap();
+        assert_eq!(l.params, ["a", "b", "c", "y"]);
+        assert_eq!(l.placeholders.iter().map(|p| (p.start, p.end)).collect::<Vec<_>>(), [(66, 68), (70, 72), (81, 83), (119, 121)]);
+        // MySQL and DuckDB keep reading a colon after no name character as a parameter. SQLite
+        // reads `[:lo]` as a quoted name, the alias of `arr`.
+        for d in [Dialect::Mysql, Dialect::Duckdb] {
+            assert_eq!(names("select arr[:lo] from t", d), ["lo"]);
+        }
+        assert!(names("select arr[:lo] from t", Dialect::Sqlite).is_empty());
     }
 
     #[test]

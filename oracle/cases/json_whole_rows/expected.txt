@@ -1,9 +1,24 @@
-agg_star.sql: one () -> { teams: [{ id: int8, name: text, score: float8? }]? }
-agg_star_filter.sql: many () -> { id: int8, members: [{ id: int8, team_id: int8?, name: text, rating: numeric? }]? }
-array_non_null.sql: many () -> { j: { names: (text!)[] } }
-array_null.sql: many () -> { j: { names: (text?)[] } }
-non_finite.sql: many () -> { j: { score: float8?, rating: numeric? } }
-object_star.sql: many () -> { j: { team: { id: int8, name: text, score: float8? } } }
+agg_star.sql: one () -> { teams: jsonb ({ id: int8, name: text, score: float8? })[]? }
+agg_star_filter.sql: many () -> { id: int8, members: json ({ id: int8, team_id: int8, name: text, rating: numeric? })[]? } key (id)
+array_non_null.sql: many () -> { j: json { names: text[] } }
+array_null.sql: many () -> { j: json { names: text?[] } }
+derived_row_object.sql: many () -> { doc: jsonb { team: { id: int8, name: text, n: int8 }, size: int8 } }
+non_finite.sql: many () -> { j: json { score: float8?, rating: numeric? } }
+object_star.sql: many () -> { j: jsonb { team: { id: int8, name: text, score: float8? } } }
+renamed_aggregate.sql: one () -> { doc: jsonb ({ id: int8, name: text, score: float8? })[]? }
+renamed_function_aggregate.sql: one () -> { doc: jsonb ({ id: int8?, name: text?, score: float8? })[]? }
+renamed_function_bare.sql: many () -> { doc: jsonb? }
+renamed_function_columns.sql: many () -> { doc: jsonb { a: int8?, name: text? } }
+renamed_function_columns_read.sql: many () -> { a: int8, b: text } key (a)
+renamed_function_row.sql: many () -> { doc: jsonb { id: int8?, name: text?, score: float8? } }
+renamed_in_object.sql: many () -> { doc: jsonb { t: { id: int8, name: text, score: float8? } } }
+renamed_joined.sql: many () -> { doc: jsonb { id: int8, name: text, score: float8? }? }
+renamed_ordinality.sql: many () -> { doc: jsonb { a: int8?, name: text?, score: float8?, ordinality: int8? } }
+renamed_star.sql: many () -> { doc: jsonb { id: int8, name: text, score: float8? } }
+renamed_subquery.sql: many () -> { doc: jsonb { a: int8, name: text } }
+renamed_table.sql: many () -> { doc: jsonb { id: int8, name: text, score: float8? } }
+renamed_view.sql: many () -> { doc: jsonb { id: int8, name: text } }
 same_name.sql: many () -> { id: int8, id: int8 } !! reylo14: Columns 1 and 2 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
-subquery_row.sql: one () -> { rows: [record?]? }
-to_jsonb_star.sql: many () -> { j: { id: int8, name: text, score: float8? } }
+subquery_row.sql: one () -> { rows: jsonb ({ id: int8, name: text })[]? }
+to_jsonb_star.sql: many () -> { j: jsonb { id: int8, name: text, score: float8? } }
+with_row.sql: one () -> { rows: jsonb ({ id: int8, name: text })[]? }

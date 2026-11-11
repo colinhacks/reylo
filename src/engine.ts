@@ -1,195 +1,367 @@
-// The analysis engine: one WASI reactor per database, `engine.wasm` of the database's own npm
-// package (`@reylosql/postgres`, `@reylosql/sqlite`, `@reylosql/mysql`), which a project installs
-// beside reylo and which is found from the project first, then from reylo's own install; each
-// loads once per process. The engine is pure. `analyze` replays it: every round it either answers
-// or names what it still needs — statements to describe, catalog queries to run — and this module
-// fulfils those through the project's own driver and calls again.
+// The analysis engine: the `reylo` executable (src/native.ts), which holds every database's engine
+// and serves one database's as `reylo engine <database>`: one JSON request per line on its standard
+// input, one answer per line on its standard output, each carrying its request's `id` back
+// (engine/native/src/lib.rs). The engine connects to the database itself. Each connection is a
+// child process of its own, which answers its requests in turn, so that a server slow to answer
+// holds up no other connection; the requests that need no database go to one child per database
+// (the ping, the lexer, and DuckDB's analysis, whose needs this process answers), and those that
+// must answer before this thread can go on (the project file's `config`) to `reylo engine
+// <database> call`, which answers the one request on its standard input and exits. A child keeps
+// this process alive only while a request waits on it, as esbuild's service does, so that a build
+// ends when its work does: the child and its pipes are unreferenced once, when it starts, and a
+// timer holds the process while a request waits. Bun keeps a process alive for good once a child
+// it unreferenced is referenced again in a Bun.build plugin's hook, which is where the esbuild
+// plugin asks the engine, so the child is never referenced again; a timer is held and let go alike
+// in every runtime.
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
-import type { WASI as WasiClass } from "node:wasi";
+import { resolve } from "node:path";
+import { hostUrl, type HostUrl } from "./host-url.ts";
+import { NotMysql, Unreachable } from "./connection.ts";
+import { EngineCore, type Analysis, type Described, type Dialect, type Lexed, type Response } from "./engine-core.ts";
+import { nativeBinary } from "./native.ts";
 
 export type { EngineType } from "./engine-type.ts";
 export { reason, Unreachable } from "./connection.ts";
-export type { Analysis, Answer, DbError, Described, Diagnostic, Dialect, EngineIo, Lexed, MysqlDescribed, Need, Response } from "./engine-core.ts";
+export type { Analysis, Answer, DbError, Described, Diagnostic, Dialect, DuckdbDescribed, DuckdbType, EngineIo, Lexed, MysqlDescribed, Need, Response } from "./engine-core.ts";
 export { AnswerCache, EngineCore } from "./engine-core.ts";
-import { EngineCore, type Dialect, type Instance, type Memory } from "./engine-core.ts";
-/**
- * Each database's engine: an npm package that carries its artifact, `engine.wasm`, reylo's
- * build-time half (src/tooling.ts), and on Postgres and MySQL its describer with the driver inside
- * (`describer`). Each is an optional peer of reylo's, at reylo's own version, so a project installs
- * the ones for its databases. Every one carries the same core, which lexes and reads the project
- * file.
- */
-export const ENGINE_PACKAGES: Record<Dialect, string> = { postgres: "@reylosql/postgres", sqlite: "@reylosql/sqlite", mysql: "@reylosql/mysql" };
 
-/**
- * The version of reylo, which every engine package it loads must have: that of the package this
- * module ships in, which is reylo's in this repository and an engine package's once built
- * (src/tooling.ts). The two move together.
- */
-const REYLO_VERSION: string = (() => {
-  for (const at of ["./package.json", "../package.json"]) {
+/** The version of reylo, which the engine it runs must have: that of the package this module ships in. */
+export const REYLO_VERSION: string = (() => {
+  for (const at of ["../package.json", "./package.json"]) {
     try {
       return JSON.parse(readFileSync(new URL(at, import.meta.url), "utf8")).version;
     } catch {}
   }
-  throw new Error("reylo's build steps cannot find the package.json of their own package");
+  throw new Error("reylo cannot find the package.json of its own package");
 })();
 
-/** An engine reylo cannot load: none installed, another version than reylo's, or another database's. Reported as the project's error. */
+/** An engine reylo cannot run: none installed, or one of another version than reylo's. Reported as the project's error. */
 export class MissingEngine extends Error {
   constructor(message: string) {
     super(message);
     this.name = "MissingEngine";
   }
-
-  /** No engine of `dialect` where the project or reylo finds packages. */
-  static of(dialect: Dialect): MissingEngine {
-    const pkg = ENGINE_PACKAGES[dialect];
-    return new MissingEngine(`${dialect} statements need ${pkg}: npm install -D ${pkg}`);
-  }
-
-  /** No engine at all, so not even the project file can be read. */
-  static none(): MissingEngine {
-    return new MissingEngine(`reylo reads the project file with a database's engine, and none is installed: npm install -D @reylosql/postgres, @reylosql/mysql or @reylosql/sqlite, the one for your database`);
-  }
-}
-
-/**
- * Where `dialect`'s engine is: the project's own install first, as its drivers are found
- * (`describer`, below), then reylo's. `from` is where reylo looks after the project, its own module
- * unless a test says otherwise.
- */
-export function enginePath(dialect: Dialect, projectDir: string, from: string = import.meta.url): string | undefined {
-  for (const base of [join(projectDir, "package.json"), from]) {
-    try {
-      return createRequire(base).resolve(`${ENGINE_PACKAGES[dialect]}/engine.wasm`);
-    } catch {}
-  }
-  return undefined;
-}
-
-/**
- * The half of `dialect`'s analysis that talks to its database, `@reylosql/<database>/describe`:
- * packages/postgres/describe.ts and packages/mysql/describe.ts, each with its driver inside.
- * Found as its engine is, and loaded once per process and file. SQLite has none: it prepares inside
- * the engine and reads the database file through `node:sqlite`.
- */
-export function describer<T>(dialect: "postgres" | "mysql", projectDir: string, from: string = import.meta.url): Promise<T> {
-  for (const base of [join(projectDir, "package.json"), from]) {
-    let path: string;
-    try {
-      path = createRequire(base).resolve(`${ENGINE_PACKAGES[dialect]}/describe`);
-    } catch {
-      continue;
-    }
-    return import(pathToFileURL(path).href) as Promise<T>;
-  }
-  return Promise.reject(MissingEngine.of(dialect));
 }
 
 const engines = new Map<string, Promise<Engine>>();
 
+/** How long the engine has to answer its first request, a ping: it answers in milliseconds, so a binary that does not answer at all is not the engine. */
+const PING_TIMEOUT = 10_000;
+
 /**
- * The engine of one database as `projectDir` finds it, loaded once per process and file. It
- * rejects with a MissingEngine where none is installed, where the package is another version than
- * reylo, and where its artifact reads another database's statements.
+ * The engine of one database, loaded once per process and binary. It rejects with a MissingEngine
+ * where there is no binary, where it is another version than reylo, and where it does not answer
+ * as one database's engine.
  */
-export function engine(dialect: Dialect, projectDir: string, from?: string): Promise<Engine> {
-  const path = enginePath(dialect, projectDir, from);
-  if (!path) return Promise.reject(MissingEngine.of(dialect));
-  let loading = engines.get(path);
+export function engine(dialect: Dialect): Promise<Engine> {
+  let binary: string;
+  try {
+    binary = nativeBinary();
+  } catch (e) {
+    return Promise.reject(new MissingEngine((e as Error).message));
+  }
+  const key = `${binary}\0${dialect}`;
+  let loading = engines.get(key);
   if (!loading) {
     loading = (async () => {
-      const pkg = ENGINE_PACKAGES[dialect];
-      let version: string | undefined;
-      try {
-        version = JSON.parse(readFileSync(join(dirname(path), "package.json"), "utf8")).version;
-      } catch {}
-      if (version !== REYLO_VERSION) {
-        throw new MissingEngine(`reylo ${REYLO_VERSION} runs with ${pkg} ${REYLO_VERSION}, and the one installed is ${version ?? "of no version"} (${dirname(path)}): npm install -D ${pkg}@${REYLO_VERSION}`);
+      // The child that answers this database's requests that need no database, the ping first.
+      const core = new Channel(binary, dialect);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<Answer>((done) => (timer = setTimeout(() => done({ status: "error", message: `it did not answer a ping in ${PING_TIMEOUT / 1000} s` }), PING_TIMEOUT)));
+      const answer = await Promise.race([core.ask({ op: "ping" }), late]);
+      clearTimeout(timer);
+      const ping = answer as unknown as Response;
+      const refuse = (message: string) => {
+        core.kill();
+        return new MissingEngine(message);
+      };
+      if (ping.status !== "ok") throw refuse(`the engine ${binary} does not answer: ${answer.message ?? answer.status}`);
+      if (ping.version !== REYLO_VERSION) {
+        throw refuse(`reylo ${REYLO_VERSION} runs with its engine at ${REYLO_VERSION}, and ${binary} is ${ping.version}: install reylo again, point REYLO_ENGINE_PATH at the engine of reylo ${REYLO_VERSION}, or in a checkout of reylo's repository build it with cargo build --release -p reylo`);
       }
-      const loaded = await Engine.load(path);
-      const ping = loaded.call({ op: "ping" });
-      if (ping.status !== "ok" || ping.database !== dialect) {
-        const reads = ping.status === "ok" && ping.database ? `${ping.database} statements` : "no one database's statements";
-        throw new MissingEngine(`${pkg} (${dirname(path)}) carries an engine that reads ${reads}, not ${dialect} ones: npm install -D ${pkg}@${REYLO_VERSION}`);
-      }
-      return loaded;
+      if (ping.database !== dialect) throw refuse(`${binary} serves ${ping.database ?? "no one database"}'s engine when asked for ${dialect}'s`);
+      return new Engine(binary, dialect, ping.fingerprint, core);
     })();
-    // A failure is not kept: the package may be installed or replaced while the process runs.
-    loading.catch(() => engines.delete(path));
-    engines.set(path, loading);
+    // A failure is not kept: the binary may be installed or rebuilt while the process runs.
+    loading.catch(() => engines.delete(key));
+    engines.set(key, loading);
   }
   return loading;
 }
 
 /**
- * An engine to read the project file with, before the URL in it names the database: every
- * database's engine carries the same core, which parses the file, so the first installed will do.
- * A MissingEngine where none is installed, or where none that is installed loads.
+ * An engine to read the project file with, before the URL in it names the database: the core,
+ * which parses the file, is every database's. A MissingEngine where there is none to run.
  */
-export async function anyEngine(projectDir: string, from?: string): Promise<Engine | MissingEngine> {
-  let failed: MissingEngine | undefined;
-  for (const dialect of ["postgres", "mysql", "sqlite"] as const) {
-    if (!enginePath(dialect, projectDir, from)) continue;
+export async function anyEngine(): Promise<Engine | MissingEngine> {
+  return engine("postgres").catch((e: unknown) => (e instanceof MissingEngine ? e : new MissingEngine((e as Error).message)));
+}
+
+type Answer = { status: string; id?: number; message?: string; code?: string; position?: number; conn?: number; version?: string; analysis?: Analysis; rows?: unknown[][]; server?: string; params?: number[]; columns?: Described["columns"] };
+
+/** What a session asks of a connection the engine holds. */
+export interface Connection {
+  /** The server's version, as the engine read it when the connection opened: `18.1`, `8.4.11`, and on SQLite the engine's own SQLite's, `3.50.2`. */
+  readonly version: string;
+  analyze(sql: string): Promise<Analysis>;
+  /** A query, its parameters bound and its rows read as the engine's catalog queries are. */
+  query(sql: string, params: unknown[]): Promise<unknown[][]>;
+  /** A statement described as the engine's own describe reads it, for a host that runs the engine's analysis itself (EngineCore's `analyze`); Postgres only. */
+  describe(sql: string): Promise<Described>;
+  /** The schema changed: the answers the engine keeps for this connection are stale. */
+  forget(): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** The key a request's answer is kept by, for the requests whose answer is the same for the same request: `config` and `lex`. */
+function keptKey(request: object): string | undefined {
+  const op = (request as { op?: unknown }).op;
+  return op === "config" || op === "lex" ? JSON.stringify(request) : undefined;
+}
+
+/** How many answers to `config` and `lex` are kept: each is the same for the same request, and a type check asks again for each file it transforms. */
+const KEPT_ANSWERS = 512;
+
+/** One database's engine, as the `reylo` executable serves it. */
+export class Engine extends EngineCore {
+  readonly binary: string;
+  readonly dialect: Dialect;
+  /** The engine's fingerprint, core's sources and its database's, which names the `.reylo/` entries it writes. */
+  readonly fingerprint: string;
+  /** The child that answers this database's requests that need no database, started again where it stopped. */
+  #core: Channel;
+  readonly #kept = new Map<string, Response>();
+
+  constructor(binary: string, dialect: Dialect, fingerprint: string, core: Channel) {
+    super((request) => callSync(binary, dialect, request));
+    this.binary = binary;
+    this.dialect = dialect;
+    this.fingerprint = fingerprint;
+    this.#core = core;
+  }
+
+  /**
+   * The answer to a request that needs no database, while this thread waits: `reylo engine
+   * <database> call`, a process of its own, for a caller that cannot wait (the project file's
+   * `config`). The answers to `config` and `lex`, the same for the same request, are kept.
+   */
+  override call(request: object): Response {
+    const key = keptKey(request);
+    return (key && this.#kept.get(key)) || this.#remember(key, super.call(request));
+  }
+
+  /** The lexer's reading of `sql`, through the long-lived child, for a caller that can wait: a round trip, where the one-shot form starts a process. */
+  async lexAsync(sql: string, dialect: Dialect): Promise<Lexed> {
+    const request = { op: "lex", sql, dialect };
+    const key = keptKey(request);
+    const r = (key && this.#kept.get(key)) || this.#remember(key, await this.ask(request));
+    if (r.status !== "lexed") throw new Error(r.status === "error" ? r.message : `unexpected ${r.status}`);
+    return r.lexed;
+  }
+
+  #remember(key: string | undefined, answer: Response): Response {
+    if (key === undefined || answer.status === "error") return answer;
+    if (this.#kept.size >= KEPT_ANSWERS) this.#kept.delete(this.#kept.keys().next().value!);
+    this.#kept.set(key, answer);
+    return answer;
+  }
+
+  /** A request that needs no database, through this database's long-lived child: the rounds of an analysis whose needs this process answers, and the lexer for a caller that can wait. */
+  protected override async ask(request: object): Promise<Response> {
+    if (this.#core.ended) this.#core = new Channel(this.binary, this.dialect);
+    const answer = await this.#core.ask(request);
+    if (answer.status === "unreachable") throw new Error(answer.message);
+    return answer as unknown as Response;
+  }
+
+  /**
+   * A connection to the database `url` names (a SQLite database's path), opened by the engine in a
+   * child of its own, so that a server slow to answer holds up no other connection; an Unreachable
+   * where it cannot be opened.
+   */
+  async open(url: string): Promise<Connection> {
+    const target: HostUrl = url.includes("://") ? await hostUrl(url) : { url, close: () => {} };
+    const channel = new Channel(this.binary, this.dialect);
+    const ask = async (request: object) => settled(await channel.ask(request));
+    let conn: number;
+    let version: string;
     try {
-      return await engine(dialect, projectDir, from);
+      const opened = await ask({ op: "open", url: target.url, ...(target.bridge && { bridge: target.bridge }) });
+      conn = opened.conn!;
+      version = opened.version ?? "";
     } catch (e) {
-      failed ??= e instanceof MissingEngine ? e : new MissingEngine((e as Error).message);
+      channel.end();
+      target.close();
+      // A socket the bridge could not open: its reason, rather than the connection it closed.
+      const failure = target.failure?.();
+      throw failure ? new Unreachable(failure) : e;
+    }
+    return {
+      version,
+      analyze: async (sql) => (await ask({ op: "run", conn, sql })).analysis!,
+      query: async (sql, params) => (await ask({ op: "query", conn, sql, params })).rows!,
+      describe: async (sql) => {
+        const d = await ask({ op: "describe", conn, sql });
+        return { params: d.params!.map((oid) => ({ oid })), columns: d.columns! };
+      },
+      forget: async () => void (await ask({ op: "forget", conn })),
+      close: async () => {
+        await ask({ op: "close", conn }).catch(() => {});
+        channel.end();
+        target.close();
+      },
+    };
+  }
+}
+
+/**
+ * An answer as the session reads it. A refused login and a database that cannot be reached are an
+ * Unreachable, its cause carrying the server's code, so that `refusedLogin` reads it
+ * (src/connection.ts); a MariaDB server, which the type check refuses, is a NotMysql; any other
+ * failure is an Error, with the server's code and the character its message points at, where it
+ * gives them.
+ */
+function settled(answer: Answer): Answer {
+  if (answer.status === "notMysql") throw new NotMysql(answer.server!);
+  if (answer.status === "unreachable" || answer.status === "refused") throw new Unreachable(Object.assign(new Error(answer.message), answer.code && { code: answer.code }));
+  if (answer.status === "error") throw Object.assign(new Error(answer.message), answer.code && { code: answer.code }, answer.position !== undefined && { position: answer.position });
+  return answer;
+}
+
+/** The variables that name a file the engine reads: Node's extra roots, and libpq's TLS files. */
+const FILE_VARIABLES = ["NODE_EXTRA_CA_CERTS", "PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY"];
+
+/**
+ * The engine's environment: this process's, with each variable that names a file resolved from
+ * this process's working directory as Node and libpq resolve it, now, so that a later `chdir` here
+ * changes nothing for a child already running.
+ */
+function engineEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of FILE_VARIABLES) if (env[name] && env[name] !== "system") env[name] = resolve(env[name]);
+  return env;
+}
+
+/** The answer of `reylo engine <database> call` to `request`, or why there is none, as the engine words a failure. */
+function oneShot(binary: string, run: { error?: Error; status: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }): string {
+  if (run.error) return JSON.stringify({ status: "error", message: `the engine ${binary} could not start: ${run.error.message}` });
+  const line = run.stdout.trim();
+  if (run.status === 0 && line) return line;
+  const said = run.stderr.trim().split("\n").slice(-3).join("\n");
+  return JSON.stringify({ status: "error", message: `the engine ${binary} ${run.status === null ? `ended on ${run.signal}` : `exited with code ${run.status}`}${said ? `: ${said}` : ""}` });
+}
+
+/** One request that needs no database, answered by the one-shot form while this thread waits. */
+function callSync(binary: string, dialect: Dialect, request: string): string {
+  const run = spawnSync(binary, ["engine", dialect, "call"], { input: request, encoding: "utf8", env: engineEnv(), maxBuffer: 1 << 30, windowsHide: true });
+  return oneShot(binary, run);
+}
+
+/** The period of the timer that holds the process while a request waits: long, since it only has to exist. */
+const HOLD_INTERVAL = 1 << 30;
+
+/** How much of what the engine writes to its standard error is kept, for the message of a child that stopped. */
+const STDERR_KEPT = 4096;
+
+/**
+ * One child, `reylo engine <database>`, answering its requests in turn. It keeps this process alive
+ * only while a request waits on it; a child that fails to start or stops answers what waits on it,
+ * and everything after, as a database that cannot be reached, and the session opens another.
+ */
+class Channel {
+  readonly #child: ChildProcessWithoutNullStreams;
+  readonly #pending = new Map<number, (answer: Answer) => void>();
+  #next = 1;
+  #buffered = "";
+  #stderr = "";
+  #ended: string | undefined;
+  /** What holds this process while a request waits: a timer, which never fires. */
+  #waiting: ReturnType<typeof setInterval> | undefined;
+
+  constructor(binary: string, dialect: Dialect) {
+    const child = spawn(binary, ["engine", dialect], { env: engineEnv(), windowsHide: true });
+    this.#child = child;
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      this.#buffered += chunk;
+      let end: number;
+      while ((end = this.#buffered.indexOf("\n")) !== -1) {
+        const line = this.#buffered.slice(0, end);
+        this.#buffered = this.#buffered.slice(end + 1);
+        this.#answer(line);
+      }
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (this.#stderr = (this.#stderr + chunk).slice(-STDERR_KEPT)));
+    // A child that stopped closes its input under a request being written: the exit says why.
+    child.stdin.on("error", () => {});
+    child.on("error", (e: Error) => this.#end(`the engine ${binary} could not start: ${e.message}`));
+    // `close`, after the child's output has been read to its end, rather than `exit`.
+    child.on("close", (code, signal) => {
+      const said = this.#stderr.trim().split("\n").slice(-3).join("\n");
+      this.#end(`the engine ${binary} stopped (${code ?? signal})${said ? `: ${said}` : ""}`);
+    });
+    // Neither the child nor its pipes keep this process alive, from the start (`#hold`).
+    child.unref();
+    for (const stream of [child.stdin, child.stdout, child.stderr]) (stream as unknown as { unref?(): void }).unref?.();
+  }
+
+  get ended(): boolean {
+    return this.#ended !== undefined;
+  }
+
+  ask(request: object): Promise<Answer> {
+    if (this.#ended) return Promise.resolve({ status: "unreachable", message: this.#ended });
+    const id = this.#next++;
+    return new Promise<Answer>((resolve) => {
+      this.#pending.set(id, resolve);
+      this.#hold(true);
+      this.#child.stdin.write(`${JSON.stringify({ ...request, id })}\n`);
+    });
+  }
+
+  /** The child stopped, with what it held: its input closed, at which it exits. */
+  end(): void {
+    this.#ended ??= "the connection is closed";
+    this.#child.stdin.end();
+    this.#hold(false);
+  }
+
+  /** The child stopped at once, for one that is no engine to talk to. */
+  kill(): void {
+    this.end();
+    this.#child.kill();
+  }
+
+  #answer(line: string): void {
+    let answer: Answer;
+    try {
+      answer = JSON.parse(line);
+    } catch {
+      return;
+    }
+    // A line the engine could not read as a request is answered without its `id`: the child answers
+    // in turn, so the answer is the oldest request's.
+    const id = answer.id ?? this.#pending.keys().next().value;
+    const resolve = id === undefined ? undefined : this.#pending.get(id);
+    if (!resolve) return;
+    this.#pending.delete(id!);
+    resolve(answer);
+    if (this.#pending.size === 0) this.#hold(false);
+  }
+
+  #end(why: string): void {
+    this.#ended ??= why;
+    for (const resolve of this.#pending.values()) resolve({ status: "unreachable", message: this.#ended });
+    this.#pending.clear();
+    this.#hold(false);
+  }
+
+  /** Whether this process is held for the requests waiting on the child: by a timer, since the child itself is never referenced again once it starts. */
+  #hold(held: boolean): void {
+    if (held) this.#waiting ??= setInterval(() => {}, HOLD_INTERVAL);
+    else if (this.#waiting !== undefined) {
+      clearInterval(this.#waiting);
+      this.#waiting = undefined;
     }
   }
-  return failed ?? MissingEngine.none();
-}
-
-// The WebAssembly namespace is a global in every runtime reylo supports; it is typed here
-// rather than through the DOM lib.
-const WA = (globalThis as unknown as { WebAssembly: { compile(bytes: Uint8Array): Promise<unknown>; instantiate(module: unknown, imports: object): Promise<Instance> } }).WebAssembly;
-
-// Node warns "ExperimentalWarning: WASI is an experimental feature" when `node:wasi` first loads
-// in a thread, not when a WASI is made, so a static import printed that line before anything else
-// in every program run under `reylo/register`. The module is loaded here instead, when the engine
-// is, while a filter on `process.emitWarning`, which Node's own warning goes through, swallows that
-// one warning and passes every other through. Node 24 and Bun both have `getBuiltinModule`.
-const WASI_WARNING = "WASI is an experimental feature and might change at any time";
-function loadWasi(): { WASI: typeof WasiClass } {
-  const emitWarning = process.emitWarning;
-  process.emitWarning = function (this: unknown, warning: string | Error, ...rest: unknown[]) {
-    const message = typeof warning === "string" ? warning : warning.message;
-    const type = typeof warning === "string" ? (typeof rest[0] === "string" ? rest[0] : (rest[0] as { type?: string } | undefined)?.type) : warning.name;
-    if (message === WASI_WARNING && type === "ExperimentalWarning") return;
-    return (emitWarning as (...args: unknown[]) => void).call(this, warning, ...rest);
-  } as typeof process.emitWarning;
-  try {
-    return process.getBuiltinModule("node:wasi");
-  } finally {
-    process.emitWarning = emitWarning;
-  }
-}
-
-/** The engine loaded from a file with Node's (or Bun's) `node:wasi`. */
-export class Engine extends EngineCore {
-  static async load(path: URL | string): Promise<Engine> {
-    const module = await WA.compile(readFileSync(path));
-    const { WASI } = loadWasi();
-    const wasi = new WASI({ version: "preview1", args: ["reylo-engine"], env: {} });
-    // Bun's node:wasi has neither getImportObject nor initialize: it takes the imports from
-    // wasiImport, and its start(instance) only sets the memory of a reactor, which has no _start.
-    // Its random_get returns the length instead of 0 before Bun 1.4 (oven-sh/bun#35438), which
-    // the engine's first hash map reads as a failure, so it is replaced.
-    const bun = typeof (wasi as { getImportObject?: unknown }).getImportObject !== "function";
-    let instance: Instance;
-    const random_get = (ptr: number, len: number) => {
-      const memory = instance.exports.memory as Memory;
-      for (let at = 0; at < len; at += 65536) crypto.getRandomValues(new Uint8Array(memory.buffer, ptr + at, Math.min(65536, len - at)));
-      return 0;
-    };
-    instance = await WA.instantiate(module, bun ? { wasi_snapshot_preview1: { ...wasi.wasiImport, random_get } } : wasi.getImportObject());
-    if (bun) wasi.start(instance as never);
-    else wasi.initialize(instance as never);
-    return new Engine(instance);
-  }
-
 }

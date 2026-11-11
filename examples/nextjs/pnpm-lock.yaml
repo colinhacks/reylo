@@ -24,9 +24,6 @@ importers:
         specifier: link:../../dist/reylo
         version: link:../../dist/reylo
     devDependencies:
-      '@reylosql/postgres':
-        specifier: link:../../dist/postgres
-        version: link:../../dist/postgres
       '@types/node':
         specifier: ^24
         version: 24.19.2

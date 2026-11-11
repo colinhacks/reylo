@@ -1,0 +1,20 @@
+count_if.sql: one () -> { positive: hugeint?, n: bigint, pairs: uinteger }
+cube_expression_keys.sql: many () -> { big: boolean?, missing: boolean?, n: bigint }
+filtered_aggregate.sql: many () -> { customer: varchar, big: decimal(38,2)? }
+group_all.sql: many () -> { customer: varchar, revenue: decimal(38,2) }
+group_all_constant.sql: one () -> { scope: varchar, n: bigint, revenue: decimal(38,2)? }
+group_all_totals.sql: one () -> { revenue: decimal(38,2)?, last_customer: varchar? }
+grouped.sql: many () -> { region: varchar?, n: bigint, revenue: decimal(38,2), last_note: varchar?, first_customer: varchar, customers: varchar?[] }
+grouping_sets_empty.sql: many () -> { n: bigint }
+grouping_sets_literal_key.sql: many () -> { scope: varchar?, customer: varchar?, n: bigint }
+having.sql: at_most_one () -> { n: bigint }
+qualify.sql: many () -> { customer: varchar, total: decimal(10,2) }
+rollup.sql: many () -> { customer: varchar?, region: varchar?, revenue: decimal(38,2)? }
+rollup_beside_key.sql: many () -> { is_a: boolean?, region: varchar?, n: bigint }
+rollup_coalesce_key.sql: many () -> { r: varchar?, s: decimal(38,2)? }
+rollup_column_key.sql: many () -> { r: varchar, s: decimal(38,2), k: integer, missing: boolean, c: bigint, g: bigint }
+rollup_expression_key.sql: many () -> { bucket: varchar?, n: bigint }
+rollup_position_key.sql: many (p: integer) -> { p: integer?, n: bigint }
+rollup_shadowed_key.sql: many () -> { region: varchar, n: bigint }
+totals.sql: one () -> { n: bigint, noted: bigint, revenue: decimal(38,2)?, last_customer: varchar?, mean: double? }
+windows.sql: many () -> { id: integer, position: bigint, rank_in_region: bigint, previous_two: decimal(38,2)?, previous_customer: varchar? }

@@ -1,0 +1,7 @@
+limit_zero.sql: at_most_one (id: int4) -> { id: int4 }
+offset_param.sql: at_most_one (id: int4, n: int8) -> { id: int4 }
+plain.sql: one (id: int4, name: text) -> { id: int4 }
+plain_function.sql: one (id: int4, name: text) -> { id: int4 }
+series.sql: many () -> { id: int4 }
+unnest_param.sql: many (ids: int4?[]) -> { id: int4 }
+with_series.sql: many () -> { id: int4 }

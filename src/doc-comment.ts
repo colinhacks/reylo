@@ -40,7 +40,7 @@ export function leadingComment(sql: string, dialect?: Dialect): Leading {
       let j = at + 2;
       while (j < sql.length && depth > 0) {
         if (sql.startsWith("*/", j)) { depth--; j += 2; }
-        else if (dialect === "postgres" && sql.startsWith("/*", j)) { depth++; j += 2; }
+        else if ((dialect === "postgres" || dialect === "duckdb") && sql.startsWith("/*", j)) { depth++; j += 2; }
         else j++;
       }
       const text = sql.slice(at + 2, depth === 0 ? j - 2 : sql.length);
@@ -76,12 +76,6 @@ function dedent(lines: string[]): string[] {
 export function statementAfter(sql: string, leading: Leading): string {
   return sql.slice(leading.end).trim();
 }
-
-/** What `sql` is, after the statement in its doc comment. */
-export const sqlNote = (commented: boolean) =>
-  `The statement as Reylo sends it to the database, as the module's \`sql\` export: \`:id\` is \`$1\` on Postgres and \`?\` on MySQL and SQLite, ${commented ? "each cast is the dialect's own, and a comment naming the file ends it" : "and each cast is the dialect's own"}.`;
-/** What `raw` is, after the statement in its doc comment. */
-export const RAW_NOTE = "The `.sql` file's contents, exactly as written, as the module's `raw` export.";
 
 /**
  * A JSDoc comment, indented by `indent`: the prose, then `sql` in a fenced `sql` block, then

@@ -21,9 +21,10 @@ function SparklesIcon() {
  * "Copy agent prompt" at the top of the page, on the title's row (`titleAside` of `DocsShell`): the
  * call to action at the very top of the page, a plain button. It copies what the page's
  * agent card (`<AgentPrompt>`) copies, found in the page by its `data-agent-prompt`, so the prompt
- * is written once, in the card's code block. A page without a card shows no button.
+ * is written once, in the card's code block. A page without a card shows no button, unless it is
+ * given the prompt as `text`, for a site whose card is on another page.
  */
-export function CopyAgentPrompt({ label = 'Copy agent prompt' }: { label?: string }) {
+export function CopyAgentPrompt({ label = 'Copy agent prompt', text }: { label?: string; text?: string }) {
   const [missing, setMissing] = useState(false);
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -31,14 +32,14 @@ export function CopyAgentPrompt({ label = 'Copy agent prompt' }: { label?: strin
   // Rendered on the server, so a page with a card shows the button from the first paint; one
   // without a card drops it once it has hydrated.
   useEffect(() => {
-    setMissing(!document.querySelector(AGENT_PROMPT_SELECTOR));
+    setMissing(text === undefined && !document.querySelector(AGENT_PROMPT_SELECTOR));
     return () => clearTimeout(timer.current);
   }, []);
 
   async function copy() {
     const card = document.querySelector(AGENT_PROMPT_SELECTOR);
-    if (!card) return;
-    await navigator.clipboard.writeText(agentPromptText(card));
+    if (text === undefined && !card) return;
+    await navigator.clipboard.writeText(text ?? agentPromptText(card!));
     setCopied(true);
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setCopied(false), 1600);

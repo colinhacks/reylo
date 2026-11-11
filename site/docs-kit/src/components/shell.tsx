@@ -3,6 +3,7 @@ import { DocsBody, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/docs/page';
 import type { TOCItemType } from 'fumadocs-core/toc';
 import type { ComponentProps, CSSProperties, ReactNode } from 'react';
 import { TocFooter, TocHeader, TopRow } from './chrome';
+import { PageListColumn, PageListMenu, type PageList } from './page-list';
 
 /**
  * Fumadocs' docs grid with the table of contents moved to the left, where the sidebar tree would
@@ -42,11 +43,16 @@ type Tree = ComponentProps<typeof DocsLayout>['tree'];
  * that wants a subheader writes it as its first element (`<p className="dk-subheader">`), where it
  * can hold inline code.
  */
+export type { PageList } from './page-list';
+
 export function DocsShell({
   tree,
   title,
   toc,
   fold,
+  centered,
+  pages,
+  pageTitle,
   brand,
   github,
   before,
@@ -61,6 +67,20 @@ export function DocsShell({
   toc: TOCItemType[];
   /** The h2 anchors whose h3s stay out of the table of contents. */
   fold?: readonly string[];
+  /**
+   * A page with no table of contents: the width of its one column, which sits in the middle of the
+   * window under the top row, on Fumadocs' own grid, whose outer columns share what the window leaves.
+   */
+  centered?: string;
+  /**
+   * A site of several pages: the pages in the left column and the table of contents in the right,
+   * on Fumadocs' own grid, with no bar above them. Each column gives way to the sticky strip above
+   * the page as the window narrows (style.css, "The page list"). `centered` then keeps the left
+   * column and gives the page the right column's room.
+   */
+  pages?: PageList;
+  /** With `pages`, the current page's name on the strip that opens the list on a phone. */
+  pageTitle?: string;
   /** The site's mark and name, a link to the top of the page. */
   brand: ReactNode;
   /** The repository's URL. */
@@ -74,31 +94,75 @@ export function DocsShell({
   /** The page's MDX, rendered. */
   children: ReactNode;
 }) {
+  const body = (
+    <>
+      {before}
+      {titleAside ? (
+        <div className="dk-title-row">
+          <DocsTitle>{title}</DocsTitle>
+          {titleAside}
+        </div>
+      ) : (
+        <DocsTitle>{title}</DocsTitle>
+      )}
+      <DocsBody>{children}</DocsBody>
+      {footer ? <footer className="dk-footer">{footer}</footer> : null}
+    </>
+  );
+
+  if (pages) {
+    return (
+      <DocsLayout
+        tree={tree}
+        sidebar={{ enabled: false }}
+        nav={{ enabled: false }}
+        containerProps={{
+          'data-dk-pages': '',
+          'data-dk-wide': centered ? '' : undefined,
+          style: centered ? ({ '--dk-column': centered } as CSSProperties) : undefined,
+        } as ComponentProps<typeof DocsLayout>['containerProps']}
+      >
+        <PageListColumn list={pages} brand={brand} github={github} />
+        <TopRow brand={brand} github={github} paged />
+        <PageListMenu list={pages} brand={brand} github={github} title={pageTitle ?? ''} />
+        <DocsPage
+          toc={centered ? [] : foldToc(toc, fold)}
+          tableOfContent={centered ? { enabled: false } : { style: 'clerk', container: { className: 'ps-4 pt-8' } }}
+          tableOfContentPopover={centered ? { enabled: false } : undefined}
+          breadcrumb={{ enabled: false }}
+          footer={{ enabled: false }}
+        >
+          {body}
+        </DocsPage>
+      </DocsLayout>
+    );
+  }
+
   return (
-    <DocsLayout tree={tree} sidebar={{ enabled: false }} nav={{ enabled: false }} containerProps={{ style: LEFT_TOC }}>
-      <TopRow brand={brand} github={github} />
+    <DocsLayout
+      tree={tree}
+      sidebar={{ enabled: false }}
+      nav={{ enabled: false }}
+      containerProps={{ style: centered ? ({ '--dk-column': centered, '--fd-layout-width': 'calc(var(--dk-column) + 4rem)' } as CSSProperties) : LEFT_TOC }}
+    >
+      <TopRow brand={brand} github={github} centered={centered !== undefined} />
       <DocsPage
-        toc={foldToc(toc, fold)}
-        tableOfContent={{
-          style: 'clerk',
-          header: <TocHeader brand={brand} />,
-          footer: <TocFooter github={github} />,
-          container: { className: 'justify-self-end ps-4 pt-8' },
-        }}
+        toc={centered ? [] : foldToc(toc, fold)}
+        tableOfContent={
+          centered
+            ? { enabled: false }
+            : {
+                style: 'clerk',
+                header: <TocHeader brand={brand} />,
+                footer: <TocFooter github={github} />,
+                container: { className: 'justify-self-end ps-4 pt-8' },
+              }
+        }
+        tableOfContentPopover={centered ? { enabled: false } : undefined}
         breadcrumb={{ enabled: false }}
         footer={{ enabled: false }}
       >
-        {before}
-        {titleAside ? (
-          <div className="dk-title-row">
-            <DocsTitle>{title}</DocsTitle>
-            {titleAside}
-          </div>
-        ) : (
-          <DocsTitle>{title}</DocsTitle>
-        )}
-        <DocsBody>{children}</DocsBody>
-        {footer ? <footer className="dk-footer">{footer}</footer> : null}
+        {body}
       </DocsPage>
     </DocsLayout>
   );

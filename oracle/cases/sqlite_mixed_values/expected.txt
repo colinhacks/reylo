@@ -1,14 +1,23 @@
 case_json.sql: many () -> { v: unknown? }
+case_no_else.sql: many () -> { v: int64? }
+coalesce_json.sql: many () -> { v: unknown? }
+coalesce_text.sql: many () -> { v: text(utf8) }
 coalesce_untyped.sql: many () -> { v: unknown? }
-compound_integers.sql: many () -> { v: integer }
+compound_integers.sql: many () -> { v: INTEGER }
 compound_json.sql: many () -> { v: unknown? }
+compound_null.sql: many () -> { v: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+compound_parameter.sql: many (p: int64) -> { v: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
 compound_text.sql: many () -> { v: unknown }
+compound_text_first.sql: many () -> { v: unknown }
 compound_untyped.sql: many () -> { v: unknown? }
+iif_json.sql: many () -> { v: unknown? }
 iif_untyped.sql: many () -> { v: unknown? }
 lag_blob_default.sql: many () -> { v: unknown? }
-lag_integer_default.sql: many () -> { v: integer? }
-lag_parameter_default.sql: many (p: integer) -> { v: integer? }
-lag_parameter_value.sql: many (p: integer) -> { v: integer? }
+lag_integer_default.sql: many () -> { v: int64? }
+lag_no_default.sql: many () -> { v: int64? }
+lag_null_default.sql: many () -> { v: int64? }
+lag_parameter_default.sql: many (p: int64) -> { v: int64? }
+lag_parameter_value.sql: many (p: int64) -> { v: int64? }
 lead_text_default.sql: many () -> { v: unknown? }
 min_untyped.sql: many () -> { v: unknown? }
 subquery_compound.sql: many () -> { v: unknown }

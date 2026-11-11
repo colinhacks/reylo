@@ -1,0 +1,1 @@
+select row(id, kind) = row(1, 'a') as same, row(id, note) = row(1, 'a') as same_note, (id, kind) < (2, 'b') as before, (id, kind) in ((1, 'a'), (2, 'b')) as listed, (n, note) in ((1, 'a')) as listed_note, (id, kind) between (1, 'a') and (2, 'b') as between from events

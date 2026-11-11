@@ -24,7 +24,7 @@ use std::cell::Cell;
 /// scalar subqueries; a flat list (`a or b or …`, a `CASE` with many `WHEN`s, an `IN` list) does
 /// not nest at all. The bound is set in the patch to libpg_query (`engine/postgres/vendor/`), the
 /// same for every host, so a statement parses on all of them or on none, and a client engine and
-/// `pgreylo` give the same answer. It is what the WebAssembly engine can afford: there the
+/// one inside a server-side extension give the same answer. It is what the WebAssembly engine can afford: there the
 /// recursion runs on the JavaScript engine's own stack, about 1 MB in Node and shared with the
 /// host's frames, and the deepest statement of each shape leaves the host 45% of it
 /// (`tests/depth.test.ts`). The
@@ -56,8 +56,8 @@ pub fn run<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 }
 
 /// Run a host's own work on a stack of [`STACK_BYTES`], so that the engine's calls it makes run
-/// there, and its own walks over what they return have the room too (Reylo Framework runs every
-/// command this way). Unlike [`run`] it leaves the signal mask as it is: the host's work starts
+/// there, and its own walks over what they return have the room too (a host that serves the queries
+/// runs every command this way). Unlike [`run`] it leaves the signal mask as it is: the host's work starts
 /// threads and processes, which inherit the mask, and handles its own signals.
 #[cfg(not(target_family = "wasm"))]
 pub fn host<T: Send>(f: impl FnOnce() -> T + Send) -> T {

@@ -1,25 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { transform, DRIVERS, PG, MYSQL, pgLive, mysqlLive } from "./helpers.ts";
 
 // A parameter nothing in the statement types is error reylo12 in the type check unless the project
-// file says `strict_params: false`. The content
+// file says `allow_untyped_params: true`. The content
 // mapper runs as the type check runs it, through its own JSON-RPC process. Postgres and MySQL run
 // on throwaway servers (REYLO_TEST_PG, REYLO_TEST_MYSQL), each in a database of its own.
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const MAPPER = fileURLToPath(new URL("../src/mapper.ts", import.meta.url));
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
-const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
-
-type Diagnostic = { messageText: string; start: number; length: number; code: number };
 
 function project(url: string, reylo: string | undefined, driver?: string, name = ".reylo.yaml"): string {
   const root = mkdtempSync(join(tmpdir(), "reylo-strict-"));
@@ -33,48 +24,7 @@ function project(url: string, reylo: string | undefined, driver?: string, name =
   return root;
 }
 
-/** What the content mapper answers for each file: its declaration and its diagnostics. */
-async function transform(root: string, files: Record<string, string>): Promise<Record<string, { text: string; diagnostics: Diagnostic[] }>> {
-  const child = spawn(process.execPath, [MAPPER], { cwd: root, stdio: ["pipe", "pipe", "inherit"] });
-  const pending = new Map<number, (result: unknown) => void>();
-  let buffer = Buffer.alloc(0);
-  child.stdout.on("data", (chunk: Buffer) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    for (;;) {
-      const end = buffer.indexOf("\r\n\r\n");
-      if (end === -1) return;
-      const length = Number(/Content-Length:\s*(\d+)/i.exec(buffer.subarray(0, end).toString("ascii"))![1]);
-      if (buffer.length < end + 4 + length) return;
-      const message = JSON.parse(buffer.subarray(end + 4, end + 4 + length).toString("utf8"));
-      buffer = buffer.subarray(end + 4 + length);
-      pending.get(message.id)?.(message.error ? Promise.reject(new Error(message.error.message)) : message.result);
-    }
-  });
-  let id = 0;
-  const call = (method: string, params: unknown) =>
-    new Promise<any>((resolve) => {
-      pending.set(++id, resolve);
-      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params }), "utf8");
-      child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-      child.stdin.write(body);
-    });
-  try {
-    await call("initialize", { protocolVersion: 1 });
-    await call("openProject", { projectHandle: "p", configFileName: join(root, "tsconfig.json"), options: {} });
-    const out: Record<string, { text: string; diagnostics: Diagnostic[] }> = {};
-    for (const [name, content] of Object.entries(files)) {
-      const result = await call("transform", { fileName: join(root, name), content, projectHandle: "p" });
-      out[name] = { text: result.text, diagnostics: result.diagnostics };
-    }
-    await call("closeProject", { projectHandle: "p" });
-    return out;
-  } finally {
-    child.stdin.end();
-    await new Promise((resolve) => child.once("exit", resolve));
-  }
-}
-
-const message = (written: string, file = ".reylo.yaml") => `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in ${file}.`;
+const message = (written: string, file = ".reylo.yaml") => `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set allow_untyped_params: true in ${file}.`;
 
 /** On MySQL every `::` cast types its parameter, through the server's describe of the cast. */
 const CASTS = {
@@ -90,7 +40,7 @@ async function jsonCast(url: string, json: string, driver?: string) {
   assert.deepEqual(out["cast.sql"]!.diagnostics, []);
 }
 
-test("SQLite: a parameter nothing types is an error by default, and strict_params: false keeps it unknown", async () => {
+test("SQLite: a parameter nothing types is an error by default, and allow_untyped_params: true keeps it unknown", async () => {
   const root = mkdtempSync(join(tmpdir(), "reylo-strict-db-"));
   const db = new DatabaseSync(join(root, "app.db"));
   db.exec("create table users (id integer primary key)");
@@ -103,15 +53,15 @@ test("SQLite: a parameter nothing types is an error by default, and strict_param
     { messageText: message(":x"), start: 7, length: 2, code: 12 },
     { messageText: message(":y"), start: 16, length: 2, code: 12 },
   ]);
-  // A project file without the key takes the default too, and so does `strict_params: true`.
-  for (const file of ["env: [.env]\n", "strict_params: true\n"]) {
+  // A project file without the key takes the default too, and so does `allow_untyped_params: false`.
+  for (const file of ["env: [.env]\n", "allow_untyped_params: false\n"]) {
     assert.deepEqual((await transform(project(url, file), sql))["bare.sql"]!.diagnostics.map((d) => d.code), [12, 12], file);
   }
   // A project whose file is `.reylo.yml` is told to set the key there, not in a `.reylo.yaml` it lacks.
-  const yml = await transform(project(url, "strict_params: true\n", undefined, ".reylo.yml"), sql);
+  const yml = await transform(project(url, "allow_untyped_params: false\n", undefined, ".reylo.yml"), sql);
   assert.deepEqual(yml["bare.sql"]!.diagnostics.map((d) => d.messageText), [message(":x", ".reylo.yml"), message(":y", ".reylo.yml")]);
-  // `strict_params: false` keeps such a parameter `unknown`, with no error.
-  const loose = await transform(project(url, "strict_params: false\n"), sql);
+  // `allow_untyped_params: true` keeps such a parameter `unknown`, with no error.
+  const loose = await transform(project(url, "allow_untyped_params: true\n"), sql);
   assert.deepEqual(loose["bare.sql"]!.diagnostics, []);
   assert.match(loose["bare.sql"]!.text, /export type Params = \{ x: unknown; y: unknown \}/);
   // A statement the engine refused keeps its own error alone: a parameter written twice is untyped

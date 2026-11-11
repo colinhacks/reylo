@@ -4,7 +4,11 @@
 // are. It imports nothing from Node, so a browser can run it beside the engine.
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
 import { docComment } from "./doc-comment.ts";
-import { declaredType, ident, lastOfEachName, renderParamType, renderType } from "./render.ts";
+import type { Codecs } from "./codecs.ts";
+import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
+import { ident, lastOfEachName, orNull, renderParamType, renderType } from "./render.ts";
+
+type Placeholder = Lexed["placeholders"][number];
 
 /** A diagnostic of the `.sql` file: its range in UTF-8 bytes, the encoding the content mapper chose. */
 export type FileDiagnostic = { message: string; start: number; length: number; code: number };
@@ -13,13 +17,16 @@ export type ModuleTypes = {
   diagnostics: FileDiagnostic[];
   /** `{ id: number }`, `Record<never, never>` for none, or `unknown` where the statement failed. */
   params: string;
-  /** `{ id: number; name: string }` (a field per line, after its doc comment, where a column's comment documents one), `never` for no columns, or `unknown` where the statement failed. */
+  /** `{ id: number; name: string }` (a field per line, after its doc comment, where a column's comment documents one), the column's type alone where the statement's one column has no name, `never` for no columns, or `unknown` where the statement failed. */
   row: string;
-  cardinality: Analysis["cardinality"];
+  /** How many rows the statement returns, as a module's `Query` names it. */
+  cardinality: "one" | "maybeOne" | "many" | "none";
   /** The parameters' names in order of first use: the module's `params` at run time. */
   names: string[];
   /** The type of the error `.try()` gives: the module's `QueryError`. */
   queryError: string;
+  /** The Standard Query's `columns`, one entry per output column in order: `readonly [{ readonly name: "id"; decode(value: string): number }]`; undefined where the statement failed. */
+  columns?: string;
 };
 
 /**
@@ -30,7 +37,7 @@ export type ModuleTypes = {
  */
 export function queryErrorType(dialect: Dialect, errors: Analysis["errors"]): string {
   if (!errors) return `import("reylo").QueryError<${JSON.stringify(dialect)}>`;
-  const name = { postgres: "PostgresQueryError", mysql: "MysqlQueryError", sqlite: "SqliteQueryError" }[dialect];
+  const name = { postgres: "PostgresQueryError", mysql: "MysqlQueryError", sqlite: "SqliteQueryError", duckdb: "DuckdbQueryError" }[dialect];
   const names = (field: string, list: string[]) => list.map((n) => (field === "columns" ? `readonly [${n.split(", ").map((c) => JSON.stringify(c)).join(", ")}]` : JSON.stringify(n))).join(" | ");
   const codes = Object.entries(errors).map(([code, fields]) => `  ${JSON.stringify(code)}: { ${Object.entries(fields).map(([field, list]) => `${field}: ${names(field, list)}`).join("; ")} };`);
   return codes.length ? `import("reylo").${name}<{\n${codes.join("\n")}\n}>` : `import("reylo").${name}<{}>`;
@@ -39,7 +46,20 @@ export function queryErrorType(dialect: Dialect, errors: Analysis["errors"]): st
 /** A parameter's TypeScript type: `unknown` when nothing in the statement types it (a CAST does), with `| null` where the statement lets the caller pass null. */
 function paramType(q: Analysis["params"][number], rendered: string): string {
   if (q.type.kind === "unknown") return "unknown";
-  return q.nullable ? `${rendered} | null` : rendered;
+  return q.nullable ? orNull(rendered) : rendered;
+}
+
+/**
+ * The module's import from `reylo`: `Query`, and `Json` and `JsonInput` where one of `types` names
+ * it. Comments, string literal types and a key of either name are left out of the search, so that the module never
+ * imports a name it does not use. Strings and comments are read in one pass, from the left, so a
+ * comment's delimiter inside a quoted name (`"/*"`) starts no comment, nor a quote inside a comment
+ * a string.
+ */
+export function reyloImport(...types: string[]): string {
+  const text = types.join("\n").replace(/"(?:[^"\\]|\\.)*"|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith('"') ? '""' : ""));
+  const names = ["Json", "JsonInput", "NestedArray"].filter((name) => new RegExp(`(?<![\\w$])${name}(?![\\w$]|\\s*\\??:)`).test(text));
+  return `import type { ${names.map((name) => `${name}, `).join("")}Query } from "reylo";`;
 }
 
 /**
@@ -79,55 +99,86 @@ export function withinFile(start: number, length: number, size: number): { start
 }
 
 /**
+ * The error at the first use of each parameter nothing in the statement types, which the type check
+ * and `reylo analyze` give unless the project file says `allow_untyped_params: true` (an error by default
+ * since 2026-10-20); `placeholders` are where the statement writes each parameter, in UTF-8 bytes. A
+ * statement the engine already refused (a parameter written twice, an error from the server) was not
+ * analysed to its end, so its parameters are untyped for that reason: its own error is the one to fix
+ * first, and none is given.
+ */
+export function untypedParams(sql: string, analysis: Pick<Analysis, "params" | "diagnostics">, placeholders: readonly Placeholder[], projectFile = ".reylo.yaml"): FileDiagnostic[] {
+  if (analysis.diagnostics.length) return [];
+  const bytes = utf8.encode(sql);
+  const diagnostics: FileDiagnostic[] = [];
+  for (const q of analysis.params) {
+    if (q.type.kind !== "unknown") continue;
+    const at = placeholders.find((h) => h.name === q.name);
+    // The engine's offsets are UTF-8 bytes, as the diagnostics' are. A MySQL placeholder's span
+    // takes in the `::type` the engine rewrote, which is no part of its name.
+    const span = at ? fromUtf8.decode(bytes.subarray(at.start, at.end)) : `:${q.name}`;
+    const written = span.replace(/\s*::[\s\S]*$/, "");
+    const length = at ? utf8.encode(written).length : 1;
+    const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set allow_untyped_params: true in ${projectFile}.`;
+    diagnostics.push({ message, start: at?.start ?? 0, length, code: 12 });
+  }
+  return diagnostics;
+}
+
+/**
+ * Where the statement writes each parameter, in UTF-8 bytes: the lexer's reading (absent where the
+ * lexer refused it), but on MySQL the placeholders the analysis read, since a MySQL session reads its
+ * strings by its sql_mode, which the analysis asked for and the lexer alone does not know.
+ */
+export function placeholdersOf(analysis: Pick<Analysis, "rewritten">, dialect: Dialect, lexed: Pick<Lexed, "placeholders"> | undefined): Placeholder[] {
+  if (dialect === "mysql") return analysis.rewritten.spans.map(([start, end], k) => ({ name: analysis.rewritten.order[k]!, start, end }));
+  return lexed?.placeholders ?? [];
+}
+
+/**
  * The module's types for a statement the engine analyzed. `lexed` is the engine's lexer's reading of
  * the statement, which names the parameters (absent where the lexer refused it); `strictParams` is
- * the project file's `strict_params`, and `projectFile` the file the error about it names: the
+ * the opposite of the project file's `allow_untyped_params`, and `projectFile` the file the error about it names: the
  * project's own file, which may be `.reylo.yml` or another path REYLO_CONFIG names.
  */
-export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml"): ModuleTypes {
-  let names = lexed?.params ?? [];
-  let placeholders = lexed?.placeholders ?? [];
-  // A MySQL session reads its strings by its sql_mode, which the analysis asked for and the
-  // lexer alone does not know: the placeholders are the ones the analysis read.
-  if (dialect === "mysql") {
-    names = analysis.params.map((q) => q.name);
-    placeholders = analysis.rewritten.spans.map(([start, end], k) => ({ name: analysis.rewritten.order[k]!, start, end }));
-  }
+export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml", codecs: Codecs = {}, allowNestedArrays = false): ModuleTypes {
+  const based = analysisWithBases(written);
+  const analysis = allowNestedArrays ? analysisWithNestedArrays(based) : based;
+  // On MySQL, the names and places are the ones the analysis read (`placeholdersOf`).
+  const names = dialect === "mysql" ? analysis.params.map((q) => q.name) : (lexed?.params ?? []);
+  const placeholders = placeholdersOf(analysis, dialect, lexed);
   const diagnostics: FileDiagnostic[] = analysis.diagnostics.map((d) => ({ message: d.message, start: d.start, length: d.length, code: d.code }));
-  // A parameter nothing in the statement types is an error at its first use, unless the project
-  // file says `strict_params: false` (the default is true since 2026-10-20). A statement the engine
-  // already refused (a parameter written twice, an error from the server) was not analysed to its
-  // end, so its parameters are untyped for that reason: its own error is the one to fix first.
-  if (strictParams && !analysis.diagnostics.length) {
-    const bytes = utf8.encode(sql);
-    for (const q of analysis.params) {
-      if (q.type.kind !== "unknown") continue;
-      const at = placeholders.find((h) => h.name === q.name);
-      // The engine's offsets are UTF-8 bytes, as the diagnostics' are. A MySQL placeholder's span
-      // takes in the `::type` the engine rewrote, which is no part of its name.
-      const span = at ? fromUtf8.decode(bytes.subarray(at.start, at.end)) : `:${q.name}`;
-      const written = span.replace(/\s*::[\s\S]*$/, "");
-      const length = at ? utf8.encode(written).length : 1;
-      const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in ${projectFile}.`;
-      diagnostics.push({ message, start: at?.start ?? 0, length, code: 12 });
-    }
-  }
-  const cardinality = analysis.cardinality;
-  if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === "")) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
-  const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? " | null" : ""}`, c.comment] as const);
+  if (strictParams) diagnostics.push(...untypedParams(sql, analysis, placeholders, projectFile));
+  const cardinality = analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality;
+  if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === undefined)) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
+  // A family the project file's `js.codecs` gives another type is that type (src/codecs.ts).
+  const columns = lastOfEachName(analysis.columns).map((c) => {
+    const type = renderType(c.type, false, dialect, codecs);
+    return [`${ident(c.name)}: ${c.nullable ? orNull(type) : type}`, c.comment] as const;
+  });
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
-  const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect)), q.comment] as const);
-  // A parameter that takes null may be left out, which binds NULL; so may a typed JSON parameter
-  // whose schema has a `default` (wiki/typed-json-params.md).
-  const optional = new Set(analysis.params.filter((q) => q.nullable || (q.schema !== null && typeof q.schema === "object" && "default" in q.schema)).map((q) => q.name));
+  const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect, false, q.members, codecs)), q.comment] as const);
+  // A parameter that takes null may be left out, which binds NULL; so may one the engine says the
+  // caller may leave out, a typed JSON parameter whose schema has a `default`.
+  const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
   const paramTypes = typed.map(([name, type, comment]) => [`${ident(name)}${optional.has(name) ? "?" : ""}: ${type}`, comment] as const);
   return {
     diagnostics,
     params: paramTypes.length ? objectType(paramTypes) : "Record<never, never>",
-    row: columns.length ? objectType(columns) : "never",
+    // A statement whose one column has no name gives that column's values, with no key to document.
+    row: analysis.value ? (analysis.columns[0]!.nullable ? orNull(renderType(analysis.columns[0]!.type, false, dialect, codecs)) : renderType(analysis.columns[0]!.type, false, dialect, codecs)) : columns.length ? objectType(columns) : "never",
     cardinality,
     names,
     queryError: queryErrorType(dialect, analysis.errors),
+    columns: standardColumnsType(analysis.columns, dialect, codecs),
   };
+}
+
+/**
+ * The type of a module's Standard Query `columns`: one entry per output column, in order, whose
+ * decoder takes the column's raw value, never NULL, and gives the column's type without null.
+ */
+export function standardColumnsType(columns: Analysis["columns"], dialect: Dialect, codecs: Codecs = {}): string {
+  const raw = dialect === "postgres" ? "string" : dialect === "duckdb" ? "unknown" : "string | number | bigint | Uint8Array";
+  return `readonly [${columns.map((c) => `{ readonly name: ${JSON.stringify(c.name)}; decode(value: ${raw}): ${renderType(c.type, false, dialect, codecs)} }`).join(", ")}]`;
 }

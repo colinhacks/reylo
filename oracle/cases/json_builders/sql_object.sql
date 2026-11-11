@@ -1,0 +1,1 @@
+select json_object('id': m.id, 'name': m.name, 'bio': m.bio) as o, json_object('bio': m.bio absent on null) as absent, json_object('id': m.id returning text) as text, json_object('name': m.name returning jsonb) as binary from member m

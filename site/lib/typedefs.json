@@ -1,0 +1,1174 @@
+{
+  "044195ad2d5666b2": {
+    "dialect": "postgres",
+    "query": "select body from feeds where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select body from feeds where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "body",
+            "type": {
+              "kind": "xml",
+              "fragment": true,
+              "label": "xml"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "053006bc386c6f39": {
+    "dialect": "postgres",
+    "query": "select geom from places where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select geom from places where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "geom",
+            "type": {
+              "kind": "geometry",
+              "model": "planar",
+              "srid": 4326,
+              "subtype": "point",
+              "coordinates": "xy",
+              "label": "public.geometry"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "1192be4c52444858": {
+    "dialect": "postgres",
+    "query": "select json_build_object('id', p.id, 'title', p.title) as post\nfrom posts p\nwhere p.id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select json_build_object('id', p.id, 'title', p.title) as post\nfrom posts p\nwhere p.id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "post",
+            "type": {
+              "kind": "json",
+              "content": {
+                "type": {
+                  "kind": "record",
+                  "fields": [
+                    {
+                      "name": "id",
+                      "type": {
+                        "kind": "integer",
+                        "bits": 32,
+                        "label": "int4"
+                      }
+                    },
+                    {
+                      "name": "title",
+                      "type": {
+                        "kind": "text",
+                        "label": "text"
+                      }
+                    }
+                  ]
+                }
+              },
+              "label": "json"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "371ba52275265dbb": {
+    "dialect": "postgres",
+    "query": "select emial from users",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select emial from users",
+      "params": [],
+      "result": {
+        "kind": "rows",
+        "cardinality": "many",
+        "columns": []
+      },
+      "diagnostics": [
+        {
+          "message": "column \"emial\" does not exist (42703)",
+          "start": 7,
+          "end": 12,
+          "code": "42703"
+        }
+      ]
+    }
+  },
+  "3a527091a3bdd8ea": {
+    "dialect": "postgres",
+    "query": "select opens from shops where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select opens from shops where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "opens",
+            "type": {
+              "kind": "time",
+              "tick": "1",
+              "max": "24:00:00",
+              "label": "time"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "3c7b7677a024e456": {
+    "dialect": "postgres",
+    "query": "select attrs from products where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select attrs from products where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "attrs",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "text"
+              },
+              "value": {
+                "type": {
+                  "kind": "text"
+                },
+                "nullable": true
+              },
+              "label": "public.hstore"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "3d7dbedd0d826f53": {
+    "dialect": "postgres",
+    "query": "select total from orders where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select total from orders where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "total",
+            "type": {
+              "kind": "decimal",
+              "precision": 10,
+              "min_scale": 2,
+              "max_scale": 2,
+              "nan": true,
+              "label": "numeric"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "4f4b744a125c4664": {
+    "dialect": "postgres",
+    "query": "select tags from posts where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select tags from posts where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "tags",
+            "type": {
+              "kind": "array",
+              "element": {
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 20
+                  },
+                  "label": "varchar"
+                },
+                "nullable": true
+              },
+              "any_depth": true,
+              "label": "_varchar"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "526164ed362370f3": {
+    "dialect": "postgres",
+    "query": "select at from events where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select at from events where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "at",
+            "type": {
+              "kind": "datetime",
+              "tick": "1/1000",
+              "min": "-4713-11-24T00:00:00",
+              "max": "+294276-12-31T23:59:59.999",
+              "infinity": true,
+              "label": "timestamp"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "5b47644f14a65ec4": {
+    "dialect": "postgres",
+    "query": "select home from customers where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select home from customers where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "home",
+            "type": {
+              "kind": "record",
+              "fields": [
+                {
+                  "name": "street",
+                  "type": {
+                    "kind": "text",
+                    "label": "text"
+                  },
+                  "nullable": true
+                },
+                {
+                  "name": "zip",
+                  "type": {
+                    "kind": "text",
+                    "size": {
+                      "max": 10
+                    },
+                    "label": "varchar"
+                  },
+                  "nullable": true
+                }
+              ],
+              "label": "public.address"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "6107c2cda6f3adee": {
+    "dialect": "postgres",
+    "query": "select avatar from users where id = :id::int8",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select avatar from users where id = $1::int8",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 64,
+            "label": "int8"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "avatar",
+            "type": {
+              "kind": "bytes",
+              "label": "bytea"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "6878f15a5a4e8506": {
+    "dialect": "postgres",
+    "query": "select email, mood from users where id = :id::int8",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select email, mood from users where id = $1::int8",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 64,
+            "label": "int8"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "email",
+            "type": {
+              "kind": "text",
+              "size": {
+                "max": 255
+              },
+              "label": "varchar"
+            }
+          },
+          {
+            "name": "mood",
+            "type": {
+              "kind": "text",
+              "enum": [
+                "sad",
+                "ok",
+                "happy"
+              ],
+              "label": "public.mood"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "7b30f72cf2f22d50": {
+    "dialect": "postgres",
+    "query": "select active from users where id = :id::int8",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select active from users where id = $1::int8",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 64,
+            "label": "int8"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "active",
+            "type": {
+              "kind": "boolean",
+              "label": "bool"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "82725b554b7a7247": {
+    "dialect": "postgres",
+    "query": "select free from rooms where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select free from rooms where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "free",
+            "type": {
+              "kind": "multirange",
+              "subtype": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              },
+              "label": "int4multirange"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "882379a78845742c": {
+    "dialect": "postgres",
+    "query": "select rate from products where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select rate from products where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "rate",
+            "type": {
+              "kind": "float",
+              "exponent_bits": 11,
+              "mantissa_bits": 52,
+              "infinity": true,
+              "nan": true,
+              "label": "float8"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "8ca442737783250e": {
+    "dialect": "postgres",
+    "query": "select id, email from users order by email desc, id",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select id, email from users order by email desc, id",
+      "kind": "select",
+      "params": [],
+      "result": {
+        "kind": "rows",
+        "cardinality": "many",
+        "columns": [
+          {
+            "name": "id",
+            "type": {
+              "kind": "integer",
+              "bits": 64,
+              "label": "int8"
+            }
+          },
+          {
+            "name": "email",
+            "type": {
+              "kind": "text",
+              "size": {
+                "max": 255
+              },
+              "label": "varchar"
+            }
+          }
+        ],
+        "unique": [
+          [
+            "id"
+          ],
+          [
+            "email"
+          ]
+        ],
+        "order": [
+          {
+            "column": "email",
+            "desc": true,
+            "nulls": "first"
+          },
+          {
+            "column": "id",
+            "nulls": "last"
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "8cd2d18cbbe1e80a": {
+    "dialect": "postgres",
+    "query": "select path from tree where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select path from tree where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "path",
+            "type": {
+              "kind": "opaque",
+              "label": "public.ltree"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "bf3320257c05c873": {
+    "dialect": "postgres",
+    "query": "select during from bookings where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select during from bookings where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "during",
+            "type": {
+              "kind": "range",
+              "subtype": {
+                "kind": "instant",
+                "tick": "1/1000000",
+                "min": "-4713-11-24T00:00:00Z",
+                "max": "+294276-12-31T23:59:59.999999Z",
+                "infinity": true,
+                "label": "timestamptz"
+              },
+              "label": "tstzrange"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "c587da60925153a4": {
+    "dialect": "postgres",
+    "query": "-- One user's email\nselect email from users where id = :id::int8",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "-- One user's email\nselect email from users where id = $1::int8",
+      "kind": "select",
+      "comment": "One user's email",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 64,
+            "label": "int8"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "email",
+            "type": {
+              "kind": "text",
+              "size": {
+                "max": 255
+              },
+              "label": "varchar"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "cac08d2880290e32": {
+    "dialect": "sqlite",
+    "query": "select price from items where id = :id",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "sqlite",
+        "version": "3.53.4"
+      },
+      "sql": "select price from items where id = ?",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 64
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "price",
+            "type": {
+              "kind": "union",
+              "members": [
+                {
+                  "kind": "integer",
+                  "bits": 64
+                },
+                {
+                  "kind": "float",
+                  "exponent_bits": 11,
+                  "mantissa_bits": 52,
+                  "infinity": true
+                },
+                {
+                  "kind": "text",
+                  "ill_formed": "utf8"
+                },
+                {
+                  "kind": "bytes"
+                }
+              ],
+              "label": "numeric"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "d50c8a536990bacb": {
+    "dialect": "postgres",
+    "query": "select id from sessions where user_id = :user_id::int8",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select id from sessions where user_id = $1::int8",
+      "kind": "select",
+      "params": [
+        {
+          "name": "user_id",
+          "type": {
+            "kind": "integer",
+            "bits": 64,
+            "label": "int8"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "many",
+        "columns": [
+          {
+            "name": "id",
+            "type": {
+              "kind": "uuid",
+              "label": "uuid"
+            }
+          }
+        ],
+        "unique": [
+          [
+            "id"
+          ]
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "d7e18a003fd6acae": {
+    "dialect": "mysql",
+    "query": "select tags from m where id = :id",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "mysql",
+        "version": "8.4.13"
+      },
+      "sql": "select tags from m where id = ?",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 64,
+            "unsigned": true,
+            "label": "bigint"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "tags",
+            "type": {
+              "kind": "set",
+              "element": {
+                "type": {
+                  "kind": "text",
+                  "enum": [
+                    "a",
+                    "b"
+                  ]
+                }
+              },
+              "label": "set"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "e18c5b63280de5fc": {
+    "dialect": "postgres",
+    "query": "select born from users where id = :id::int8",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select born from users where id = $1::int8",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 64,
+            "label": "int8"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "born",
+            "type": {
+              "kind": "date",
+              "min": "-4713-11-24",
+              "max": "+5874897-12-31",
+              "infinity": true,
+              "label": "date"
+            },
+            "nullable": true
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "e5547c7caa8e1a1d": {
+    "dialect": "postgres",
+    "query": "select stock from products where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select stock from products where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "stock",
+            "type": {
+              "kind": "integer",
+              "bits": 32,
+              "label": "int4"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "ec074ca9e5f1407a": {
+    "dialect": "sqlite",
+    "query": "select :x as x",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "sqlite",
+        "version": "3.53.4"
+      },
+      "sql": "select ? as x",
+      "kind": "select",
+      "params": [
+        {
+          "name": "x",
+          "type": {
+            "kind": "unknown"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "one",
+        "columns": [
+          {
+            "name": "x",
+            "type": {
+              "kind": "unknown"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "ee33eb8b273c28eb": {
+    "dialect": "postgres",
+    "query": "select trial from plans where id = :id::int4",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select trial from plans where id = $1::int4",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 32,
+            "label": "int4"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "trial",
+            "type": {
+              "kind": "duration",
+              "max": "P2147483648M2147483648D",
+              "infinity": true,
+              "label": "interval"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  },
+  "ee9e7354dbafc3fe": {
+    "dialect": "postgres",
+    "query": "select created_at from users where id = :id::int8",
+    "descriptor": {
+      "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+      "dialect": {
+        "name": "postgres",
+        "version": "18.6"
+      },
+      "sql": "select created_at from users where id = $1::int8",
+      "kind": "select",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "integer",
+            "bits": 64,
+            "label": "int8"
+          }
+        }
+      ],
+      "result": {
+        "kind": "rows",
+        "cardinality": "at_most_one",
+        "columns": [
+          {
+            "name": "created_at",
+            "type": {
+              "kind": "instant",
+              "tick": "1/1000000",
+              "min": "-4713-11-24T00:00:00Z",
+              "max": "+294276-12-31T23:59:59.999999Z",
+              "infinity": true,
+              "label": "timestamptz"
+            }
+          }
+        ]
+      },
+      "diagnostics": []
+    }
+  }
+}

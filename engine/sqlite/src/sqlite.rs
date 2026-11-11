@@ -10,14 +10,35 @@
 //! [`analyze_ddl`], for a host that holds a live connection and runs [`DDL_QUERY`] and
 //! [`FUNCTIONS_QUERY`] on it itself, with [`Extras`] naming the scalar functions it registers there.
 
-use crate::analysis::{bare, constant_key, diag, KeyClause};
+use crate::analysis::{bare, constant_key, diag, KeyClause, ResultTarget};
 use crate::api::{Analysis, Column, Param, Scope};
 use crate::dialect::Dialect;
 use crate::fresh::Tables;
 use crate::host::{as_str, Host, Lazy};
 use crate::lex::{self, Lexed, Target};
 use crate::sqlite_tree::{self as tree, From, Node, Sel, Tree};
-use crate::types::{Field, Type};
+use crate::types::{Cardinality, Field, FloatType, IllFormed, Kind, Position, StatementKind, TextType, Type};
+
+/// What the analysis reasons in: a value's storage class by the affinity name SQLite gives it
+/// (`integer`, `real`, `text`, `blob`, `numeric`; `int8` for a value a column declared 64 bits wide
+/// holds, `bool` for a truth value or a column declared BOOLEAN), the JSON a constructor builds,
+/// or nothing known. The analysis hands each result column and parameter on as the format's type
+/// ([`descriptor`]).
+#[derive(Debug, Clone, PartialEq)]
+enum Ty {
+    Scalar { name: String },
+    Object { fields: Vec<TyField> },
+    List { of: Box<Ty>, nullable_items: bool },
+    Json { schema: Option<serde_json::Value> },
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TyField {
+    name: String,
+    ty: Ty,
+    nullable: bool,
+}
 use std::collections::{HashMap, HashSet};
 
 /// The schema, as SQLite stores it: its `sql` column is the DDL the engine replays into its
@@ -136,7 +157,7 @@ pub struct SqliteAnalysis {
     /// `IS`, `IS NULL`, `NOT`, `AND`, `OR`, `TRUE` or `FALSE`, a `like`, `glob`, `regexp` or `match`
     /// call, or a `CASE`, `coalesce`, `ifnull`, `iif`, scalar subquery or subquery column whose
     /// every value is one. SQLite stores one as the integer 0 or 1, and its type stays `integer`;
-    /// a host that types by meaning, as the framework does, reads it as a boolean. Empty when the
+    /// a host that types by meaning reads it as a boolean. Empty when the
     /// statement did not prepare.
     pub booleans: Vec<bool>,
 }
@@ -171,6 +192,26 @@ fn analyze_ddl_here(sql: &str, ddl: &[String], extras: &Extras) -> SqliteAnalysi
     }
 }
 
+/// How the statement writes its result columns: a write's `RETURNING`, or a query's select list, the
+/// first arm's of a compound, whose names are the result's. SQLite has expanded each `*` by now, into
+/// columns it names. `None` for a write without `RETURNING`.
+fn result_targets(t: &Tree) -> Option<Vec<ResultTarget>> {
+    // `RETURNING`'s names are not resolved yet where the serializer reads them.
+    let target = |c: &tree::Col| if c.named || matches!(c.expr.op.as_str(), "column" | "id" | "dot") { ResultTarget::Named } else { ResultTarget::Unnamed(None) };
+    if let Some(returning) = &t.returning {
+        return Some(returning.iter().map(target).collect());
+    }
+    let mut first = t.statement.as_ref().filter(|_| t.dml.is_none())?;
+    while let Some(prior) = first.prior.as_deref() {
+        first = prior;
+    }
+    // `values (1, 2)`: named column1 and column2 by SQLite, by nothing in the statement.
+    if first.values {
+        return Some(vec![ResultTarget::Unnamed(None); first.columns.len()]);
+    }
+    Some(first.columns.iter().map(target).collect())
+}
+
 /// The statements the SQLite analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "values", "insert", "replace", "update", "delete"];
 
@@ -184,13 +225,14 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     // dot, so `:auth.user_id` survives only as a number. `?n` is the lexer's n-th parameter, which
     // is how `params` matches them back, and an error offset maps back through the rewrite.
     let numbered = lex::rewrite(sql, lexed, Target::Numbered);
+    let rewritten = lex::rewrite(sql, lexed, Target::Question);
     let functions: Vec<(&str, i32)> = extras.total.iter().map(|f| (f.name.as_str(), f.arity)).collect();
     // Triggers are not replayed (a body may call a function only the application registers);
     // their headers say which statements a trigger can skip a row of.
     let (triggers, replay): (Vec<String>, Vec<String>) = ddl.iter().cloned().partition(|s| trigger_header(s).is_some());
     let skipping = skipping_triggers(&triggers);
     let listed: Option<Vec<tree::Listed>> = extras.host.as_ref().map(|host| host.iter().map(|f| (f.name.as_str(), f.arity, f.kind)).collect());
-    let t = match tree::analyze(&replay, &numbered.sql, &functions, listed.as_deref()) {
+    let t = match tree::analyze(&replay, &numbered.sql, &rewritten.sql, &functions, listed.as_deref()) {
         Ok(t) => t,
         Err(message) => return failed(bare(sql, lexed, Dialect::Sqlite, vec![diag(message, 0, sql.trim_end().len(), 6)])),
     };
@@ -225,6 +267,17 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         }
         return failed(bare(sql, lexed, Dialect::Sqlite, diagnostics));
     }
+    // SQLite prepared the `?n` rewrite, so each of its parameters is one the lexer numbered. Any
+    // other is one SQLite reads and the lexer does not (`:été`, whose name the lexer ends before):
+    // it stayed in the text, takes no value and would run as NULL. An error where it stands.
+    for p in t.params.iter().filter(|p| !lexed_parameter(p, lexed)) {
+        // Where it stands: the first place its name is written outside a string, a quoted name or a comment.
+        let text = |start: &usize| lexed.opaque.iter().any(|(from, to)| (*from..*to).contains(start));
+        let at = p.name.as_deref().and_then(|name| sql.match_indices(name).map(|(start, _)| start).find(|start| !text(start)).map(|start| (start, name.len())));
+        let written = p.name.as_deref().unwrap_or("a ? in this statement");
+        let (start, length) = at.unwrap_or((0, sql.trim_end().len()));
+        diagnostics.push(diag(format!("SQLite reads {written} as a parameter that Reylo does not bind; name a parameter with the letters a to z, digits and underscores, starting with a letter or an underscore"), start, length, 1));
+    }
     // A JSON object of an odd count of arguments, which SQLite prepares and refuses when it runs;
     // only the built-in constructors, which a function the host registers under the name overrides
     // (`Extras::function`). The host's list names the built-ins with any argument count (-1).
@@ -240,39 +293,50 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     // says what it takes and returns, and nothing says where a column comes from, so each is of
     // no known type and may be NULL. One that returns no rows runs as a write does.
     if let lex::Statement::Command(kind) = statement {
-        let columns: Vec<Column> = t.columns.iter().map(|c| Column { name: c.name.clone(), ty: Type::Unknown, nullable: true, type_name: c.declared.clone().unwrap_or_default(), comment: None }).collect();
-        let cardinality = if columns.is_empty() { "none" } else { "many" };
+        let columns: Vec<Column> = t.columns.iter().map(|c| Column::new(c.name.clone(), Type::unknown(), true)).collect();
+        let cardinality = if columns.is_empty() { Cardinality::None } else { Cardinality::Many };
         let analysis = Analysis {
-            kind,
+            kind: Some(StatementKind::of(&kind)),
+            comment: None,
             params: a.params(lexed).0,
             columns,
-            cardinality: cardinality.into(),
+            cardinality,
             cardinality_reason: None,
-            rewritten: lex::rewrite(sql, lexed, Target::Question),
+            key: None,
+            unique: Vec::new(),
+            order: Vec::new(),
+            ordered: false,
+            value: false,
+            rewritten,
             style: lexed.style,
             diagnostics,
             unresolved: Vec::new(),
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            read_only: false,
+            notes: Vec::new(),
             tables: None,
+            domains: Default::default(),
         };
         return SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys: HashMap::new(), booleans: vec![false; t.columns.len()] };
     }
-    let (mut columns, kind) = a.columns();
+    let (facts, kind) = a.columns();
     let booleans = a.booleans();
-    // A truth value, and a column declared BOOLEAN, are booleans to the loader's run time, which
-    // reads 0 and 1 and refuses any other value (src/values.ts). A truth value SQLite computes is
-    // named `bool`, which the oracle holds to 0 and 1; a column keeps its affinity's name, since it
-    // holds whatever was stored in it.
-    for ((column, flag), computed) in columns.iter_mut().zip(a.flags()).zip(&booleans) {
-        if flag {
-            column.ty = Type::Scalar { name: "bool".into() };
-            if *computed {
-                column.type_name = "bool".into();
-            }
-        }
-    }
+    // A truth value SQLite computes is a boolean, which the oracle holds to 0 and 1; a column
+    // declared BOOLEAN, read or passed through, holds whatever was stored in it, and the loader's
+    // run time reads it as a truth value by its name, refusing any other value (src/values.ts).
+    let columns: Vec<Column> = facts
+        .into_iter()
+        .zip(a.flags())
+        .zip(&booleans)
+        .zip(&t.columns)
+        .zip(a.exacts())
+        .map(|(((((name, fact), flag), computed), public), exact)| {
+            let ty = if flag { Ty::Scalar { name: "bool".into() } } else { fact.ty };
+            Column::new(name, descriptor(&ty, public.declared.as_deref(), *computed, exact), !fact.non_null)
+        })
+        .collect();
     let (params, refused) = a.params(lexed);
     // A parameter cast to `nullable(…)` and written whole to a column that refuses null would be
     // refused at run time for the null its type allows: an error at the parameter.
@@ -284,21 +348,30 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     }
     let (cardinality, reason) = a.cardinality();
     let mut analysis = Analysis {
-        kind,
+        kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
+        comment: None,
         params,
         columns,
         cardinality,
         cardinality_reason: reason,
-        rewritten: lex::rewrite(sql, lexed, Target::Question),
+        key: None,
+        unique: Vec::new(),
+        order: Vec::new(),
+        ordered: false,
+        value: false,
+        rewritten,
         style: lexed.style,
         diagnostics,
         unresolved: Vec::new(),
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        read_only: false,
+        notes: Vec::new(),
         tables: Some(tables(&t)),
+        domains: Default::default(),
     };
-    crate::analysis::clashes(sql, &mut analysis, &|_| None);
+    crate::analysis::names(sql, Dialect::Sqlite, &mut analysis, result_targets(&t).as_deref(), &|_| None);
     let unique_keys = t.tables.iter().map(|(name, info)| (name.clone(), info.unique_keys.clone())).collect();
     SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys, booleans }
 }
@@ -385,7 +458,13 @@ fn tables(t: &Tree) -> Tables {
     }
     let Walk { mut read, ctes } = walk;
     read.retain(|table| !ctes.iter().any(|cte| cte.eq_ignore_ascii_case(table)));
-    Tables { read, write }
+    Tables { read, write, ..Default::default() }
+}
+
+/// Whether SQLite's parameter is one the lexer read: the statement is prepared as its `?n` rewrite,
+/// which names the lexer's parameters `?1` to `?N`.
+fn lexed_parameter(p: &tree::PublicParam, lexed: &Lexed) -> bool {
+    p.name.as_deref().and_then(|name| name.strip_prefix('?')).and_then(|k| k.parse::<usize>().ok()).is_some_and(|k| (1..=lexed.params.len()).contains(&k))
 }
 
 /// The error of each parameter that is, bare or under casts and collations, a whole key of an
@@ -498,7 +577,7 @@ fn token_len(rest: &str) -> usize {
 /// What an expression is: its affinity as the type model, and whether it can be NULL.
 #[derive(Debug, Clone)]
 struct Fact {
-    ty: Type,
+    ty: Ty,
     non_null: bool,
 }
 
@@ -507,7 +586,79 @@ impl Fact {
         Fact { ty: affinity_type(aff), non_null }
     }
     fn unknown() -> Fact {
-        Fact { ty: Type::Unknown, non_null: false }
+        Fact { ty: Ty::Unknown, non_null: false }
+    }
+}
+
+/// SQLite's storage classes as the format's types: a 64-bit integer, a double that holds the
+/// infinities (a NaN is stored as NULL), text that is never validated as UTF-8, and bytes.
+fn int64() -> Type {
+    Type::integer(64)
+}
+fn real() -> Type {
+    Type::new(Kind::Float(FloatType { exponent_bits: 11, mantissa_bits: 52, infinity: true, ..FloatType::default() }))
+}
+fn text() -> Type {
+    Type::new(Kind::Text(TextType { ill_formed: Some(IllFormed::Utf8), ..TextType::default() }))
+}
+
+/// What a column of an affinity holds outside a STRICT table: an INTEGER or NUMERIC one any
+/// storage class, a REAL one a float, text or bytes, a TEXT one text or bytes.
+fn stored(aff: &str) -> Type {
+    let members = match aff {
+        "real" => vec![real(), text(), Type::bytes()],
+        "text" => vec![text(), Type::bytes()],
+        _ => vec![int64(), real(), text(), Type::bytes()],
+    };
+    Type::union(members)
+}
+
+/// The format's type of a value the analysis typed `ty` ([`Ty`]). A column read as it is
+/// (`declared`, the type its table declares, through subqueries and views) holds what its affinity
+/// stores, under that name: SQLite keeps what it cannot convert as it is. One that is `exact`, in a
+/// STRICT table or a rowid, holds its declared type alone ([`Analyzer::exacts`]). A value the statement
+/// computes is the storage class the analysis gives it, a 64-bit column's under `BIGINT` and a
+/// column declared BOOLEAN's under `BOOLEAN`, the names a client reads it by; a truth value SQLite
+/// computes (`computed`) is a boolean, delivered as 1 or 0.
+fn descriptor(ty: &Ty, declared: Option<&str>, computed: bool, exact: bool) -> Type {
+    // SQLite gives a compound's column the first arm's declared type: it names the value only
+    // where the value is what a column of that type holds.
+    let declared = declared.map(str::trim).filter(|d| !d.is_empty()).filter(|d| match ty {
+        Ty::Scalar { name } if name == "bool" => is_boolean_declared(d),
+        Ty::Scalar { .. } => !is_boolean_declared(d) && column_type(d, affinity(d), false) == *ty,
+        _ => false,
+    });
+    match ty {
+        Ty::Scalar { name } if name == "bool" && computed => Type::boolean(),
+        Ty::Scalar { name } if name == "bool" => stored("numeric").named(declared.unwrap_or("BOOLEAN")),
+        Ty::Scalar { name } => match (declared, name.as_str()) {
+            (Some(d), "integer" | "int8") if exact => int64().named(d),
+            (Some(d), "real") if exact => real().named(d),
+            (Some(d), "text") if exact => text().named(d),
+            (Some(d), "blob") if exact => Type::bytes().named(d),
+            (Some(d), aff) => stored(if aff == "int8" { "integer" } else { aff }).named(d),
+            (None, "integer") => int64(),
+            (None, "int8") => int64().named("BIGINT"),
+            (None, "real") => real(),
+            (None, "text") => text(),
+            (None, "blob") => Type::bytes(),
+            (None, "numeric") => stored("numeric").named("NUMERIC"),
+            _ => Type::unknown(),
+        },
+        Ty::Object { .. } | Ty::List { .. } => Type::json_of(Position::non_null(content(ty))),
+        Ty::Json { schema: Some(schema) } => Type::json_schema_of(schema.clone()),
+        Ty::Json { schema: None } => Type::json(),
+        Ty::Unknown => Type::unknown(),
+    }
+}
+
+/// A value inside a document SQLite built: an object's fields and an array's items, each the
+/// value SQLite wrote there.
+fn content(ty: &Ty) -> Type {
+    match ty {
+        Ty::Object { fields } => Type::record(fields.iter().map(|f| Field::new(f.name.clone(), content(&f.ty), f.nullable)).collect()),
+        Ty::List { of, nullable_items } => Type::array(Position::new(content(of), *nullable_items)),
+        other => descriptor(other, None, false, false),
     }
 }
 
@@ -516,12 +667,12 @@ impl Fact {
 /// a 64-bit integer's name ([`is_int8_declared`]) is `int8`, the type Postgres's `int8` and MySQL's
 /// `BIGINT` are: the declared width decides, on every database (wiki/driver-decoding.md). (`ANY` in
 /// a table that is not STRICT is a declared type like any other, with NUMERIC affinity.)
-fn column_type(declared: &str, aff: &str, strict: bool) -> Type {
+fn column_type(declared: &str, aff: &str, strict: bool) -> Ty {
     let declared = declared.trim();
     if declared.is_empty() || (strict && declared.eq_ignore_ascii_case("any")) {
-        Type::Unknown
+        Ty::Unknown
     } else if aff == "integer" && is_int8_declared(declared) {
-        Type::Scalar { name: "int8".into() }
+        Ty::Scalar { name: "int8".into() }
     } else {
         affinity_type(aff)
     }
@@ -538,26 +689,26 @@ fn is_int8_declared(declared: &str) -> bool {
 }
 
 /// An affinity name as the type model; `none` is unknown.
-fn affinity_type(aff: &str) -> Type {
+fn affinity_type(aff: &str) -> Ty {
     match aff {
-        "integer" | "real" | "text" | "blob" | "numeric" => Type::Scalar { name: aff.to_string() },
-        _ => Type::Unknown,
+        "integer" | "real" | "text" | "blob" | "numeric" => Ty::Scalar { name: aff.to_string() },
+        _ => Ty::Unknown,
     }
 }
 
-fn scalar_name(t: &Type) -> Option<&str> {
+fn scalar_name(t: &Ty) -> Option<&str> {
     match t {
-        Type::Scalar { name } => Some(name.as_str()),
+        Ty::Scalar { name } => Some(name.as_str()),
         _ => None,
     }
 }
 
-fn is_numeric(t: &Type) -> bool {
+fn is_numeric(t: &Ty) -> bool {
     matches!(scalar_name(t), Some("integer" | "int8" | "real" | "numeric"))
 }
 
 /// Whether a type is an integer's: SQLite's INTEGER, or a column declared 64 bits wide.
-fn is_integral(t: &Type) -> bool {
+fn is_integral(t: &Ty) -> bool {
     matches!(scalar_name(t), Some("integer" | "int8"))
 }
 
@@ -565,9 +716,9 @@ fn is_integral(t: &Type) -> bool {
 /// unchanged only as itself (a column, a subquery's or view's column, `min`, `max`, `coalesce`, a
 /// `CASE` arm, a window's `lag`), and what SQLite computes from it (`-id`, `abs(id)`, `sum(id)`,
 /// `id + 1`) is SQLite's INTEGER, as `count(*)` is.
-fn computed(t: Type) -> Type {
+fn computed(t: Ty) -> Ty {
     if scalar_name(&t) == Some("int8") {
-        Type::Scalar { name: "integer".into() }
+        Ty::Scalar { name: "integer".into() }
     } else {
         t
     }
@@ -576,13 +727,13 @@ fn computed(t: Type) -> Type {
 /// The type several arms share: one type when they agree, `int8` for a mix of integers of which
 /// one is a 64-bit column's (`coalesce(user_id, 0)`: any integer is exact as a BigInt), `real` for
 /// another mix of numbers, unknown otherwise.
-fn shared(facts: &[&Fact]) -> Type {
-    let known: Vec<&Type> = facts.iter().map(|f| &f.ty).filter(|t| !matches!(t, Type::Unknown)).collect();
-    let Some(first) = known.first() else { return Type::Unknown };
+fn shared(facts: &[&Fact]) -> Ty {
+    let known: Vec<&Ty> = facts.iter().map(|f| &f.ty).filter(|t| !matches!(t, Ty::Unknown)).collect();
+    let Some(first) = known.first() else { return Ty::Unknown };
     // Built JSON is text to SQLite: beside a value of no known type (a parameter:
     // `coalesce(:doc, json_array())`), or another type, it is the text it is.
     if known.len() < facts.len() && known.iter().any(|t| is_built(t)) {
-        return Type::Scalar { name: "text".into() };
+        return Ty::Scalar { name: "text".into() };
     }
     if known.iter().all(|t| t == first) {
         return (*first).clone();
@@ -590,19 +741,19 @@ fn shared(facts: &[&Fact]) -> Type {
     if let Some(ty) = same_json(&known) {
         return ty;
     }
-    let known: Vec<Type> = known.iter().map(|t| textual(t)).collect();
-    let known: Vec<&Type> = known.iter().collect();
+    let known: Vec<Ty> = known.iter().map(|t| textual(t)).collect();
+    let known: Vec<&Ty> = known.iter().collect();
     let first = known[0];
     if known.iter().all(|t| *t == first) {
         return first.clone();
     }
     if known.iter().all(|t| is_integral(t)) {
-        return Type::Scalar { name: "int8".into() };
+        return Ty::Scalar { name: "int8".into() };
     }
     if known.iter().all(|t| is_numeric(t)) {
-        return Type::Scalar { name: "real".into() };
+        return Ty::Scalar { name: "real".into() };
     }
-    Type::Unknown
+    Ty::Unknown
 }
 
 /// The arguments of `coalesce` or `ifnull` it can hand back: each up to the first that is never
@@ -617,31 +768,31 @@ fn reached(args: &[Fact]) -> &[Fact] {
 /// parameter, such as a column declared without a type or `json_extract`, may be of any storage
 /// class, so the result is unknown too; a parameter takes the others' type, and a NULL literal says
 /// nothing of the type.
-fn values_type(values: &[(&Node, &Fact)]) -> Type {
+fn values_type(values: &[(&Node, &Fact)]) -> Ty {
     let valued: Vec<&Fact> = values.iter().filter(|(e, _)| e.op != "null").map(|(_, f)| *f).collect();
-    if values.iter().any(|(e, f)| matches!(f.ty, Type::Unknown) && e.op != "null" && e.op != "variable") {
-        return Type::Unknown;
+    if values.iter().any(|(e, f)| matches!(f.ty, Ty::Unknown) && e.op != "null" && e.op != "variable") {
+        return Ty::Unknown;
     }
     shared(&valued)
 }
 
 /// Whether a type is JSON a constructor built, which SQLite returns as text.
-fn is_built(t: &Type) -> bool {
-    matches!(t, Type::Object { .. } | Type::List { .. } | Type::Json { .. })
+fn is_built(t: &Ty) -> bool {
+    matches!(t, Ty::Object { .. } | Ty::List { .. } | Ty::Json { .. })
 }
 
 /// A type as SQLite's storage class: built JSON is text.
-fn textual(t: &Type) -> Type {
-    if is_built(t) { Type::Scalar { name: "text".into() } } else { t.clone() }
+fn textual(t: &Ty) -> Ty {
+    if is_built(t) { Ty::Scalar { name: "text".into() } } else { t.clone() }
 }
 
 /// The one JSON shape several types are, where they differ only in that one is an empty array
 /// (`json_array()`) and the others one list: the list.
-fn same_json(types: &[&Type]) -> Option<Type> {
-    let empty = |t: &Type| matches!(t, Type::Json { schema: Some(s) } if s.get("prefixItems").is_none() && s["type"] == "array" && s["items"] == false);
-    let lists: Vec<&Type> = types.iter().copied().filter(|t| !empty(t)).collect();
+fn same_json(types: &[&Ty]) -> Option<Ty> {
+    let empty = |t: &Ty| matches!(t, Ty::Json { schema: Some(s) } if s.get("prefixItems").is_none() && s["type"] == "array" && s["items"] == false);
+    let lists: Vec<&Ty> = types.iter().copied().filter(|t| !empty(t)).collect();
     let first = lists.first()?;
-    (matches!(first, Type::List { .. }) && lists.iter().all(|t| t == first)).then(|| (*first).clone())
+    (matches!(first, Ty::List { .. }) && lists.iter().all(|t| t == first)).then(|| (*first).clone())
 }
 
 /// Whether a value carries SQLite's JSON subtype, which makes a JSON function that reads it nest
@@ -674,7 +825,7 @@ fn combine(carries: &[Carry]) -> Carry {
 
 /// A value as a JSON function reads it ([`Analyzer::json_fact`]).
 struct JsonFact {
-    ty: Type,
+    ty: Ty,
     non_null: bool,
     carry: Carry,
 }
@@ -709,43 +860,43 @@ const PLAIN: &[&str] = &[
 /// as a number, a REAL as a number (an infinity as `9.0e+999`, which JSON.parse reads as one), a
 /// TEXT as a string, and a NUMERIC as either. A BLOB is read as JSONB (`x'01'` is `true`,
 /// `x'00'` null) or is an error, and a value of no known storage class may be one: any JSON.
-fn in_json(t: &Type) -> Type {
+fn in_json(t: &Ty) -> Ty {
     match scalar_name(t) {
         Some("integer" | "int8" | "real" | "text" | "numeric") => t.clone(),
-        _ => Type::Unknown,
+        _ => Ty::Unknown,
     }
 }
 
 /// Whether a type already admits a JSON null, so a field of it needs no `| null`.
-fn admits_null(t: &Type) -> bool {
-    matches!(t, Type::Unknown | Type::Json { schema: None })
+fn admits_null(t: &Ty) -> bool {
+    matches!(t, Ty::Unknown | Ty::Json { schema: None })
 }
 
 /// The JSON Schema of a value inside a document SQLite built, as src/schema.ts spells SQLite's
 /// values there, for a tuple's items and an object's values of any key.
-fn value_schema(t: &Type, nullable: bool) -> serde_json::Value {
+fn value_schema(t: &Ty, nullable: bool) -> serde_json::Value {
     use serde_json::json;
     let schema = match t {
-        Type::Scalar { name } => match name.as_str() {
+        Ty::Scalar { name } => match name.as_str() {
             "integer" | "int8" => json!({"type": "integer", "format": "int64"}),
             "real" => json!({"type": "number", "format": "double"}),
             "text" => json!({"type": "string"}),
             "numeric" => json!({"type": ["number", "string"]}),
             _ => json!({}),
         },
-        Type::Object { fields } => {
+        Ty::Object { fields } => {
             let properties: serde_json::Map<String, serde_json::Value> = fields.iter().map(|f| (f.name.clone(), value_schema(&f.ty, f.nullable))).collect();
             json!({"type": "object", "properties": properties, "required": fields.iter().map(|f| f.name.clone()).collect::<Vec<_>>(), "additionalProperties": false})
         }
-        Type::List { of, nullable_items } => json!({"type": "array", "items": value_schema(of, *nullable_items)}),
-        Type::Json { schema: Some(schema) } => schema.clone(),
+        Ty::List { of, nullable_items } => json!({"type": "array", "items": value_schema(of, *nullable_items)}),
+        Ty::Json { schema: Some(schema) } => schema.clone(),
         _ => json!({}),
     };
     if nullable { reylo_engine_core::schema::nullable(schema) } else { schema }
 }
 
 /// An object of any keys whose values are each one of `values`.
-fn record(values: Vec<serde_json::Value>) -> Type {
+fn record(values: Vec<serde_json::Value>) -> Ty {
     let mut distinct: Vec<serde_json::Value> = Vec::new();
     for v in values {
         if !distinct.contains(&v) {
@@ -753,7 +904,7 @@ fn record(values: Vec<serde_json::Value>) -> Type {
         }
     }
     let rest = if distinct.len() == 1 { distinct.pop().unwrap_or_default() } else { serde_json::json!({"anyOf": distinct}) };
-    Type::Json { schema: Some(serde_json::json!({"type": "object", "additionalProperties": rest})) }
+    Ty::Json { schema: Some(serde_json::json!({"type": "object", "additionalProperties": rest})) }
 }
 
 /// The FROM lists in scope, innermost last: a column reference names a cursor of one of them.
@@ -772,7 +923,7 @@ struct Analyzer<'a> {
     /// What the WHERE and the grouping of the SELECT arm whose columns are being typed prove.
     level: std::cell::RefCell<Level>,
     /// The JSON each constructor builds, by its node ([`Analyzer::shape`]).
-    shapes: std::cell::RefCell<HashMap<usize, Option<Type>>>,
+    shapes: std::cell::RefCell<HashMap<usize, Option<Ty>>>,
     /// The recursive WITH queries being settled, innermost last: each one's name and what its reads
     /// of itself are taken to be ([`Analyzer::recursive_column`]).
     recursion: std::cell::RefCell<Vec<(String, Vec<Fact>)>>,
@@ -789,6 +940,24 @@ struct Level {
     reduced: HashSet<i64>,
     /// A plain GROUP BY: no group is empty.
     grouped: bool,
+    /// The cursors of the arm's own FROM items where it aggregates with no GROUP BY: over no rows
+    /// it still returns one row, in which a column outside an aggregate's arguments is NULL,
+    /// whatever its table declares and its WHERE tests.
+    lone: HashSet<i64>,
+    /// How many aggregate calls the expression being typed stands inside: their arguments are
+    /// read from the rows aggregated, each a row that is there.
+    aggregating: u32,
+    /// The cursors of the arm's own FROM items.
+    own: HashSet<i64>,
+    /// The same cursors of the arms around this one, each read here outside its arm's
+    /// aggregates: a subquery's read of such an arm's column (`(select e.name)`) is NULL in the
+    /// row that arm returns over no rows.
+    around: HashSet<i64>,
+    /// How many of the aggregate calls the expression stands inside read none of this arm's own
+    /// items for certain. SQLite gives an aggregate to the innermost query whose items it reads,
+    /// so such a call is an arm's around this one (`(select json_group_array(name) from posts)`
+    /// over `users` aggregates the users), and reads that arm's rows, each one there.
+    foreign: u32,
 }
 
 /// The parameter a value is under the conversion a `::type` cast compiles to: `CAST(?n AS type)`,
@@ -807,12 +976,27 @@ fn cast_variable<'n>(n: &'n Node, extras: &Extras) -> Option<&'n String> {
 fn level_of(sel: &Sel, extras: &Extras) -> Level {
     let own: HashSet<i64> = sel.from.iter().map(|f| f.cursor).collect();
     let outer: HashSet<i64> = sel.from.iter().filter(|f| f.outer).map(|f| f.cursor).collect();
+    // A RIGHT or FULL JOIN null-extends the items before it after their inner joins' ON terms
+    // removed rows: those terms narrow none of their columns.
+    let extended: HashSet<i64> = sel.from.iter().filter(|f| f.left_of_right).map(|f| f.cursor).collect();
     let mut narrowed = HashSet::new();
     for term in conjuncts(sel.where_.as_ref()).into_iter().filter(|t| !t.outer_on) {
-        narrowed.extend(strict_in(term, extras).into_iter().filter(|(cursor, _)| own.contains(cursor)));
+        narrowed.extend(strict_in(term, extras).into_iter().filter(|(cursor, _)| own.contains(cursor) && !(term.inner_on && extended.contains(cursor))));
     }
     let reduced = narrowed.iter().map(|(cursor, _)| *cursor).filter(|c| outer.contains(c)).collect();
-    Level { narrowed, reduced, grouped: !sel.group_by.is_empty() }
+    let lone = if sel.aggregate && sel.group_by.is_empty() { own.clone() } else { HashSet::new() };
+    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, own, around: HashSet::new(), foreign: 0 }
+}
+
+/// Whether an expression reads a column of one of `cursors`, or may: a subquery in it may read
+/// one in any of its clauses.
+fn reads_cursor(n: &Node, cursors: &HashSet<i64>) -> bool {
+    if (n.op == "column" && cursors.contains(&n.cursor)) || n.select.is_some() {
+        return true;
+    }
+    n.left.as_deref().is_some_and(|x| reads_cursor(x, cursors))
+        || n.right.as_deref().is_some_and(|x| reads_cursor(x, cursors))
+        || n.list.iter().chain(&n.args).chain(&n.order_by).chain(&n.partition_by).any(|x| reads_cursor(x, cursors))
 }
 
 /// The columns a WHERE test at the top level rejects NULL in: under OR the ones every arm does; a
@@ -832,7 +1016,9 @@ fn strict_in(n: &Node, extras: &Extras) -> HashSet<(i64, String)> {
         "=" | "!=" | "<" | "<=" | ">" | ">=" => n.left.iter().chain(n.right.iter()).flat_map(|x| nulls(x)).collect(),
         "not" => match n.left.as_deref() {
             Some(inner) if inner.op == "isnull" => inner.left.as_deref().map(nulls).unwrap_or_default(),
-            Some(inner) => strict_in(inner, extras).into_iter().filter(|_| matches!(inner.op.as_str(), "=" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "between")).collect(),
+            // `x NOT IN (SELECT …)` is true of a NULL `x` where the subquery returns no row; a
+            // list is never empty.
+            Some(inner) => strict_in(inner, extras).into_iter().filter(|_| matches!(inner.op.as_str(), "=" | "!=" | "<" | "<=" | ">" | ">=" | "between") || (inner.op == "in" && inner.select.is_none())).collect(),
             None => HashSet::new(),
         },
         "function" if !n.agg && !n.window && matches!(n.name.as_deref(), Some("like" | "glob")) && extras.function(n.name.as_deref().unwrap_or(""), n.args.len()).is_none() => {
@@ -1001,7 +1187,7 @@ enum Nulls {
 impl Analyzer<'_> {
     // ---- result columns ---------------------------------------------------------------------
 
-    fn columns(&self) -> (Vec<Column>, String) {
+    fn columns(&self) -> (Vec<(String, Fact)>, String) {
         let t = self.tree;
         let kind = t.dml.as_ref().map(|d| if d.kind == "upsert" { "insert".to_string() } else { d.kind.clone() }).unwrap_or_else(|| if t.statement.is_some() { "select".into() } else { String::new() });
         let facts: Vec<Fact> = if let Some(returning) = &t.returning {
@@ -1016,10 +1202,7 @@ impl Analyzer<'_> {
             .iter()
             .enumerate()
             .map(|(i, public)| {
-                let fact = facts.get(i).cloned().unwrap_or_else(Fact::unknown);
-                // Built JSON is the text SQLite returns, which the run time parses.
-                let type_name = if is_built(&fact.ty) { "text".to_string() } else { scalar_name(&fact.ty).unwrap_or("").to_string() };
-                Column { name: public.name.clone(), ty: fact.ty, nullable: !fact.non_null, type_name, comment: None }
+                (public.name.clone(), facts.get(i).cloned().unwrap_or_else(Fact::unknown))
             })
             .collect();
         (columns, kind)
@@ -1049,6 +1232,50 @@ impl Analyzer<'_> {
             Vec::new()
         };
         (0..t.columns.len()).map(|i| truths.get(i).copied().unwrap_or(false)).collect()
+    }
+
+    /// Per result column, whether it holds its declared type alone, as a column of a STRICT table
+    /// and a rowid do: read as it is, through subqueries and views, in every arm of a compound.
+    fn exacts(&self) -> Vec<bool> {
+        let t = self.tree;
+        let exact: Vec<bool> = if let Some(returning) = &t.returning {
+            returning.iter().map(|c| self.exact(&c.expr, &Vec::new())).collect()
+        } else if let (Some(sel), None) = (&t.statement, &t.dml) {
+            (0..sel.columns.len()).map(|i| self.select_exact(sel, i, &Vec::new())).collect()
+        } else {
+            Vec::new()
+        };
+        (0..t.columns.len()).map(|i| exact.get(i).copied().unwrap_or(false)).collect()
+    }
+
+    fn select_exact(&self, sel: &Sel, i: usize, scope: &ScopeStack) -> bool {
+        let mut s = Some(sel);
+        while let Some(arm) = s {
+            let mut inner = scope.clone();
+            inner.push(&arm.from);
+            if !arm.columns.get(i).is_some_and(|c| self.exact(&c.expr, &inner)) || !arm.rows.is_empty() {
+                return false;
+            }
+            s = arm.prior.as_deref();
+        }
+        true
+    }
+
+    fn exact(&self, n: &Node, scope: &ScopeStack) -> bool {
+        if n.op != "column" {
+            return false;
+        }
+        for froms in scope.iter().rev() {
+            if let Some(f) = froms.iter().find(|f| f.cursor == n.cursor) {
+                if let Some(sub) = f.subquery.as_deref() {
+                    return self.select_exact(sub, n.index.max(0) as usize, scope);
+                }
+                break;
+            }
+        }
+        // A generated column of a STRICT table is left out: SQLite checks what it computes only
+        // from 3.51, and an app's driver may carry an older SQLite, which stores anything there.
+        (n.strict && !n.generated) || n.rowid
     }
 
     /// Whether column `i` of a select is a truth value in every arm of a compound.
@@ -1131,7 +1358,7 @@ impl Analyzer<'_> {
             .flat_map(|arm| {
                 let mut inner = scope.clone();
                 inner.push(&arm.from);
-                let outer = self.level.replace(level_of(arm, self.extras));
+                let outer = self.level.replace(self.level_within(arm));
                 let rows = std::iter::once(arm.columns.get(i).map(|c| &c.expr)).chain(arm.rows.iter().map(|row| row.get(i)));
                 let facts: Vec<(Option<&Node>, Fact)> = rows.map(|e| (e, e.map(|e| self.type_of(e, &inner)).unwrap_or_else(Fact::unknown))).collect();
                 self.level.replace(outer);
@@ -1143,7 +1370,7 @@ impl Analyzer<'_> {
         let ty = match values {
             _ if facts.iter().all(|(_, f)| f.ty == first.ty) => first.ty.clone(),
             Some(values) => values_type(&values),
-            None => Type::Unknown,
+            None => Ty::Unknown,
         };
         Fact { ty, non_null: facts.iter().all(|(_, f)| f.non_null) }
     }
@@ -1168,7 +1395,7 @@ impl Analyzer<'_> {
         let width = first.columns.len();
         let mut inner = scope.clone();
         inner.push(&first.from);
-        let outer = self.level.replace(level_of(first, self.extras));
+        let outer = self.level.replace(self.level_within(first));
         let mut assumed: Vec<Fact> = first.columns.iter().map(|c| Fact { ty: self.type_of(&c.expr, &inner).ty, non_null: true }).collect();
         self.level.replace(outer);
         // What a round works out under its assumption, a JSON constructor's shape or a recursive
@@ -1203,9 +1430,9 @@ impl Analyzer<'_> {
     fn column_ref(&self, n: &Node, scope: &ScopeStack) -> Fact {
         // A strict WHERE test on the column, or on any column of its outer-joined item, keeps
         // its NULL (or the item's null extension) out of every returned row.
-        let (narrowed, reduced) = {
+        let (narrowed, reduced, lone) = {
             let level = self.level.borrow();
-            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor))
+            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor), (level.aggregating == 0 && level.lone.contains(&n.cursor)) || (level.foreign == 0 && level.around.contains(&n.cursor)))
         };
         for froms in scope.iter().rev() {
             if let Some(f) = froms.iter().find(|f| f.cursor == n.cursor) {
@@ -1218,7 +1445,7 @@ impl Analyzer<'_> {
                     _ => None,
                 };
                 if let Some(inner) = inner {
-                    return Fact { ty: inner.ty, non_null: narrowed || (inner.non_null && ((!f.outer && !n.outer) || reduced)) };
+                    return Fact { ty: inner.ty, non_null: !lone && (narrowed || (inner.non_null && ((!f.outer && !n.outer) || reduced))) };
                 }
                 break;
             }
@@ -1228,10 +1455,27 @@ impl Analyzer<'_> {
             Some(declared) if !n.rowid => column_type(declared, aff, n.strict),
             _ => affinity_type(aff),
         };
-        Fact { ty, non_null: narrowed || ((n.not_null || n.rowid) && (!n.outer || reduced)) }
+        Fact { ty, non_null: !lone && (narrowed || ((n.not_null || n.rowid) && (!n.outer || reduced))) }
     }
 
     // ---- expressions -------------------------------------------------------------------------
+
+    /// A function call's type: the JSON a constructor builds, or what the function returns for
+    /// its arguments' types.
+    fn call(&self, n: &Node, scope: &ScopeStack) -> Fact {
+        // The JSON a `json_*` constructor builds, which SQLite returns as its text.
+        if let Some(ty) = self.built_text(n, scope) {
+            // `json()` of a scalar subquery is NULL where the subquery finds no row; every
+            // other constructor reads that NULL as a null (`[null]`, `{}`) and is never NULL.
+            let non_null = match n.args.first() {
+                Some(a) if a.op == "select" && self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
+                _ => true,
+            };
+            return Fact { ty, non_null };
+        }
+        let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
+        self.function(n, &args)
+    }
 
     fn type_of(&self, n: &Node, scope: &ScopeStack) -> Fact {
         let arg = |x: &Option<Box<Node>>| x.as_deref().map(|x| self.type_of(x, scope)).unwrap_or_else(Fact::unknown);
@@ -1243,20 +1487,9 @@ impl Analyzer<'_> {
             "blob" => Fact::new("blob", true),
             "null" => Fact::unknown(),
             // A parameter is a non-null value unless the statement means to take NULL for it.
-            "variable" => Fact { ty: Type::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
+            "variable" => Fact { ty: Ty::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
             "function" => {
-                // The JSON a `json_*` constructor builds, which SQLite returns as its text.
-                if let Some(ty) = self.built_text(n, scope) {
-                    // `json()` of a scalar subquery is NULL where the subquery finds no row; every
-                    // other constructor reads that NULL as a null (`[null]`, `{}`) and is never NULL.
-                    let non_null = match n.args.first() {
-                        Some(a) if a.op == "select" && self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
-                        _ => true,
-                    };
-                    return Fact { ty, non_null };
-                }
-                let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
-                self.function(n, &args)
+                self.aggregated(n, || self.call(n, scope))
             }
             "+" | "-" | "*" => {
                 let (l, r) = (arg(&n.left), arg(&n.right));
@@ -1298,7 +1531,7 @@ impl Analyzer<'_> {
             }
             "neg" => {
                 let l = arg(&n.left);
-                Fact { ty: if is_numeric(&l.ty) { computed(l.ty) } else { Type::Scalar { name: "real".into() } }, non_null: l.non_null }
+                Fact { ty: if is_numeric(&l.ty) { computed(l.ty) } else { Ty::Scalar { name: "real".into() } }, non_null: l.non_null }
             }
             // Unary plus does nothing to any storage class: `+name` is the text 'bob'. SQLite's
             // parser also writes a one-element `x IN (e)` as `x = +e`.
@@ -1344,7 +1577,7 @@ impl Analyzer<'_> {
             };
             Fact::new(aff, non_null)
         };
-        let typed = |ty: Type, nulls: Nulls| Fact { ty, non_null: matches!(nulls, Nulls::Never) || (matches!(nulls, Nulls::IfArgs) && all_non_null) };
+        let typed = |ty: Ty, nulls: Nulls| Fact { ty, non_null: matches!(nulls, Nulls::Never) || (matches!(nulls, Nulls::IfArgs) && all_non_null) };
         if !n.agg && !n.window {
             if let Some(f) = self.extras.function(name, args.len()) {
                 return done(f.returns.name(), Nulls::IfArgs);
@@ -1361,7 +1594,7 @@ impl Analyzer<'_> {
                 "percent_rank" | "cume_dist" => done("real", Nulls::Never),
                 "count" => done("integer", Nulls::Never),
                 "total" => done("real", total_nulls(&first)),
-                "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::Always),
+                "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Ty::Scalar { name: "real".into() } }, Nulls::Always),
                 "avg" => done("real", Nulls::Always),
                 // `lag` and `lead` hand back their default where the row they read is missing.
                 "lag" | "lead" if args.len() >= 3 => typed(values_type(&[(&n.args[0], &args[0]), (&n.args[2], &args[2])]), Nulls::Always),
@@ -1380,7 +1613,7 @@ impl Analyzer<'_> {
             return match name {
                 "count" => done("integer", Nulls::Never),
                 "total" => done("real", total_nulls(&first)),
-                "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::Always),
+                "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Ty::Scalar { name: "real".into() } }, Nulls::Always),
                 "avg" => done("real", Nulls::Always),
                 "min" | "max" => typed(first.ty.clone(), if grouped { Nulls::IfArgs } else { Nulls::Always }),
                 "group_concat" | "string_agg" => done("text", if grouped { Nulls::IfArgs } else { Nulls::Always }),
@@ -1406,7 +1639,7 @@ impl Analyzer<'_> {
             }
             "min" | "max" => Fact { ty: values_type(&n.args.iter().zip(args).collect::<Vec<_>>()), non_null: all_non_null },
             // `abs` of the least integer is an error, not NULL; of text, 0.0.
-            "abs" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::IfArgs),
+            "abs" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Ty::Scalar { name: "real".into() } }, Nulls::IfArgs),
             "round" => done("real", Nulls::IfArgs),
             "length" | "instr" | "json_valid" | "octet_length" => done("integer", Nulls::IfArgs),
             // A path that finds nothing is NULL: `json_array_length('{}', '$.a')`, `json_type('{}', '$.a')`.
@@ -1427,8 +1660,8 @@ impl Analyzer<'_> {
             // non-null only over text. A parameter there is typed text ([`Analyzer::argument`]).
             "substr" | "substring" => {
                 let blob = matches!(scalar_name(&first.ty), Some("blob"));
-                let any = matches!(first.ty, Type::Unknown) && n.args.first().is_some_and(|a| a.op != "variable");
-                let ty = if blob { first.ty.clone() } else if any { Type::Unknown } else { Type::Scalar { name: "text".into() } };
+                let any = matches!(first.ty, Ty::Unknown) && n.args.first().is_some_and(|a| a.op != "variable");
+                let ty = if blob { first.ty.clone() } else if any { Ty::Unknown } else { Ty::Scalar { name: "text".into() } };
                 Fact { ty, non_null: all_non_null && !blob && !any }
             }
             // NULL where it writes nothing, as for an empty format or one that stops at a
@@ -1495,7 +1728,7 @@ impl Analyzer<'_> {
     /// The JSON a call that SQLite answers with text builds: a `json_object`, `json_array`,
     /// `json_group_array` or `json_group_object` call, or `json()` of one of those or of a
     /// `jsonb_*` constructor. A `jsonb_*` call is a blob, which stays one.
-    fn built_text(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    fn built_text(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         match self.builtin_name(n)? {
             "json_object" | "json_array" | "json_group_array" | "json_group_object" => self.shape(n, scope),
             "json" if n.args.len() == 1 && !n.agg && !n.window => self.shape(&n.args[0], scope).or_else(|| self.subquery_shape(&n.args[0], scope)),
@@ -1506,7 +1739,7 @@ impl Analyzer<'_> {
     /// The JSON a scalar subquery's one column builds, which `json()` of the subquery marks as
     /// JSON again whether or not the subquery's value kept SQLite's subtype ([`Analyzer::carry`]).
     /// None for a compound or a `VALUES` list, whose rows the first arm's column does not type.
-    fn subquery_shape(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    fn subquery_shape(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         if n.op != "select" {
             return None;
         }
@@ -1528,17 +1761,17 @@ impl Analyzer<'_> {
     /// The JSON a constructor builds, `json_*` or `jsonb_*`, each value as SQLite writes it
     /// there ([`Analyzer::json_fact`]); `json()` and `jsonb()` of one build the same. Each node's
     /// shape is worked out once: a constructor's nullability and its parent's shape both read it.
-    fn shape(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    fn shape(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         let key = n as *const Node as usize;
         if let Some(found) = self.shapes.borrow().get(&key) {
             return found.clone();
         }
-        let shape = self.shape_here(n, scope);
+        let shape = self.aggregated(n, || self.shape_here(n, scope));
         self.shapes.borrow_mut().insert(key, shape.clone());
         shape
     }
 
-    fn shape_here(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    fn shape_here(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         let name = self.builtin_name(n)?;
         let aggregate = n.agg || n.window;
         // What a JSON function reads an argument as: a value that may be NULL is a null there,
@@ -1552,9 +1785,9 @@ impl Analyzer<'_> {
             "json_object" | "jsonb_object" if !aggregate => {
                 // An odd count of arguments is an error, and so is a key that is no text.
                 if n.args.len() % 2 != 0 {
-                    return Some(Type::Json { schema: None });
+                    return Some(Ty::Json { schema: None });
                 }
-                let mut fields: Vec<Field> = Vec::new();
+                let mut fields: Vec<TyField> = Vec::new();
                 let mut dynamic = false;
                 for pair in n.args.chunks(2) {
                     let (ty, nullable) = value(&pair[1]);
@@ -1565,11 +1798,11 @@ impl Analyzer<'_> {
                                 f.ty = ty;
                                 f.nullable = nullable;
                             }
-                            None => fields.push(Field { name: key.to_string(), ty, nullable }),
+                            None => fields.push(TyField { name: key.to_string(), ty, nullable }),
                         },
                         None => {
                             dynamic = true;
-                            fields.push(Field { name: String::new(), ty, nullable });
+                            fields.push(TyField { name: String::new(), ty, nullable });
                         }
                     }
                 }
@@ -1577,7 +1810,7 @@ impl Analyzer<'_> {
                 if dynamic {
                     return Some(record(fields.iter().map(|f| value_schema(&f.ty, f.nullable)).collect()));
                 }
-                Some(Type::Object { fields })
+                Some(Ty::Object { fields })
             }
             // A JSON array of exactly these values, in this order: a tuple.
             "json_array" | "jsonb_array" if !aggregate => {
@@ -1590,12 +1823,12 @@ impl Analyzer<'_> {
                     schema["minItems"] = serde_json::json!(items.len());
                     schema["prefixItems"] = serde_json::Value::Array(items);
                 }
-                Some(Type::Json { schema: Some(schema) })
+                Some(Ty::Json { schema: Some(schema) })
             }
             // `[]` over no rows, never NULL; a FILTER and a window frame alike.
             "json_group_array" | "jsonb_group_array" if aggregate && n.args.len() == 1 => {
                 let (ty, nullable) = value(&n.args[0]);
-                Some(Type::List { of: Box::new(ty), nullable_items: nullable })
+                Some(Ty::List { of: Box::new(ty), nullable_items: nullable })
             }
             // `{}` over no rows; a key aggregated twice is in the text twice.
             "json_group_object" | "jsonb_group_object" if aggregate && n.args.len() == 2 => {
@@ -1616,7 +1849,7 @@ impl Analyzer<'_> {
             let f = self.type_of(n, scope);
             JsonFact { ty: in_json(&f.ty), non_null: f.non_null, carry: Carry::No }
         };
-        let any = JsonFact { ty: Type::Unknown, non_null: false, carry: Carry::Maybe };
+        let any = JsonFact { ty: Ty::Unknown, non_null: false, carry: Carry::Maybe };
         match n.op.as_str() {
             "function" => {
                 // A function the host registers may set the subtype on what it returns.
@@ -1644,7 +1877,7 @@ impl Analyzer<'_> {
                     }
                     // The aggregate hands back one of its values.
                     "min" | "max" if n.args.len() == 1 && !n.window => self.json_arms(first, false, scope).map(|f| JsonFact { non_null: non_null(), ..f }).unwrap_or_else(plain),
-                    _ if is_json_result(name) => JsonFact { ty: Type::Json { schema: None }, non_null: non_null(), carry: Carry::Yes },
+                    _ if is_json_result(name) => JsonFact { ty: Ty::Json { schema: None }, non_null: non_null(), carry: Carry::Yes },
                     // `max(a, b)` and `lag(x)` hand back one of their arguments: `max` kept the
                     // subtype on 3.53.4 and `lag` dropped it.
                     _ if PASSING.contains(&name) => {
@@ -1690,10 +1923,10 @@ impl Analyzer<'_> {
         }
         let non_null = facts.iter().any(|f| f.non_null);
         if !facts.iter().all(|f| f.carry == Carry::Yes) {
-            return Some(JsonFact { ty: Type::Unknown, non_null, carry: Carry::Maybe });
+            return Some(JsonFact { ty: Ty::Unknown, non_null, carry: Carry::Maybe });
         }
-        let types: Vec<&Type> = facts.iter().map(|f| &f.ty).collect();
-        let ty = if types.iter().all(|t| *t == types[0]) { types[0].clone() } else { same_json(&types).unwrap_or(Type::Unknown) };
+        let types: Vec<&Ty> = facts.iter().map(|f| &f.ty).collect();
+        let ty = if types.iter().all(|t| *t == types[0]) { types[0].clone() } else { same_json(&types).unwrap_or(Ty::Unknown) };
         Some(JsonFact { ty, non_null, carry: Carry::Yes })
     }
 
@@ -1775,11 +2008,47 @@ impl Analyzer<'_> {
         combine(&carries)
     }
 
+    /// `f` inside the arguments of `n` where it is an aggregate call: they are read from the rows
+    /// it aggregates ([`Level`]), where a window call's are read from the statement's own rows.
+    fn aggregated<T>(&self, n: &Node, f: impl FnOnce() -> T) -> T {
+        if !(n.op == "function" && n.agg && !n.over) {
+            return f();
+        }
+        // A FILTER, which the tree does not carry (`window`, on a call with no OVER), may read
+        // the arm's own items too: only a call seen to read none of them is an arm's around it.
+        let foreign = {
+            let level = self.level.borrow();
+            !n.window && !reads_cursor(n, &level.own)
+        };
+        {
+            let mut level = self.level.borrow_mut();
+            level.aggregating += 1;
+            level.foreign += u32::from(foreign);
+        }
+        let out = f();
+        let mut level = self.level.borrow_mut();
+        level.aggregating -= 1;
+        level.foreign -= u32::from(foreign);
+        out
+    }
+
+    /// A select arm's level, read from where the analysis stands: what the arm proves of its own
+    /// FROM items, and the cursors of the arms around it that are NULL where it reads them.
+    fn level_within(&self, sel: &Sel) -> Level {
+        let mut level = level_of(sel, self.extras);
+        let outer = self.level.borrow();
+        level.around = outer.around.clone();
+        if outer.aggregating == 0 {
+            level.around.extend(outer.lone.iter().copied());
+        }
+        level
+    }
+
     /// `f` over a select arm's own scope and level, as [`Analyzer::select_column`] reads its columns.
     fn within<T>(&self, sel: &Sel, scope: &ScopeStack, f: impl FnOnce(&ScopeStack) -> T) -> T {
         let mut inner = scope.clone();
         inner.push(&sel.from);
-        let outer = self.level.replace(level_of(sel, self.extras));
+        let outer = self.level.replace(self.level_within(sel));
         let out = f(&inner);
         self.level.replace(outer);
         out
@@ -1859,7 +2128,7 @@ impl Analyzer<'_> {
         // The tree was prepared over the `?n` rewrite (see `analyze`): SQLite's `?k` is the lexer's
         // k-th parameter, whatever the author wrote.
         let mut typed: HashMap<&str, &Fact> = HashMap::new();
-        for (name, fact) in found.iter().filter(|(_, f)| !matches!(f.ty, Type::Unknown)) {
+        for (name, fact) in found.iter().filter(|(_, f)| !matches!(f.ty, Ty::Unknown)) {
             typed.entry(name.as_str()).or_insert(fact);
         }
         let params = lexed
@@ -1871,9 +2140,8 @@ impl Analyzer<'_> {
                 let fact = typed.get(numbered.as_str()).map(|f| (*f).clone()).unwrap_or_else(Fact::unknown);
                 // A parameter compared with built JSON is bound as the text it is compared with.
                 let fact = Fact { ty: textual(&fact.ty), ..fact };
-                let type_name = scalar_name(&fact.ty).unwrap_or("").to_string();
                 let nullable = fills.get(&numbered).copied().unwrap_or(false) || self.nullable_params.contains(&numbered);
-                Param { name: name.clone(), ty: fact.ty, type_name, nullable, schema: None, cast: None, comment: None }
+                Param { nullable, ..Param::new(name.clone(), descriptor(&fact.ty, None, false, false)) }
             })
             .collect();
         (params, refused)
@@ -1900,7 +2168,7 @@ impl Analyzer<'_> {
             compound = (0..sel.columns.len())
                 .map(|i| {
                     let ty = self.select_column(sel, i, scope).ty;
-                    (!matches!(ty, Type::Unknown)).then_some(Fact { ty, non_null: true })
+                    (!matches!(ty, Ty::Unknown)).then_some(Fact { ty, non_null: true })
                 })
                 .collect();
             compound.as_slice()
@@ -2035,7 +2303,7 @@ impl Analyzer<'_> {
                         let refs: Vec<&Fact> = others.iter().collect();
                         let ty = shared(&refs);
                         match ty {
-                            Type::Unknown => outer_type(&ctx),
+                            Ty::Unknown => outer_type(&ctx),
                             ty => Ctx::Typed(Some(Fact { ty, non_null: true })),
                         }
                     }
@@ -2050,7 +2318,7 @@ impl Analyzer<'_> {
                         let values: Vec<Fact> = n.list.iter().enumerate().filter(|(j, _)| j % 2 == 0 && j + 1 < n.list.len()).map(|(_, x)| self.type_of(x, scope)).collect();
                         let refs: Vec<&Fact> = values.iter().collect();
                         match shared(&refs) {
-                            Type::Unknown => Ctx::None,
+                            Ty::Unknown => Ctx::None,
                             ty => Ctx::Typed(Some(Fact { ty, non_null: true })),
                         }
                     }
@@ -2118,7 +2386,7 @@ impl Analyzer<'_> {
                 if i >= out.len() {
                     out.push(None);
                 }
-                if out[i].as_ref().is_none_or(|known| matches!(known.ty, Type::Unknown)) {
+                if out[i].as_ref().is_none_or(|known| matches!(known.ty, Ty::Unknown)) {
                     out[i] = f;
                 }
             }
@@ -2139,7 +2407,7 @@ impl Analyzer<'_> {
             let facts: Vec<Fact> = n.args.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, a)| self.type_of(a, scope)).collect();
             let refs: Vec<&Fact> = facts.iter().collect();
             let ty = shared(&refs);
-            Ctx::Typed(if matches!(ty, Type::Unknown) { None } else { Some(Fact { ty, non_null: true }) })
+            Ctx::Typed(if matches!(ty, Ty::Unknown) { None } else { Some(Fact { ty, non_null: true }) })
         };
         match name {
             "like" | "glob" | "regexp" | "match" | "upper" | "lower" | "trim" | "ltrim" | "rtrim" | "length" | "hex" | "unicode" | "quote" | "instr" | "replace" | "soundex"
@@ -2157,7 +2425,7 @@ impl Analyzer<'_> {
             // value and the default each take the other's type.
             "lag" | "lead" if n.args.len() >= 3 && (i == 0 || i == 2) => {
                 let other = self.type_of(&n.args[2 - i], scope);
-                Ctx::Typed(if matches!(other.ty, Type::Unknown) { None } else { Some(Fact { ty: other.ty, non_null: true }) })
+                Ctx::Typed(if matches!(other.ty, Ty::Unknown) { None } else { Some(Fact { ty: other.ty, non_null: true }) })
             }
             // A condition is a truth value; a value shares the other values' type.
             "iif" | "if" => {
@@ -2167,7 +2435,7 @@ impl Analyzer<'_> {
                 } else {
                     let facts: Vec<Fact> = values.iter().filter(|j| **j != i).filter_map(|j| n.args.get(*j)).map(|a| self.type_of(a, scope)).collect();
                     let ty = shared(&facts.iter().collect::<Vec<_>>());
-                    Ctx::Typed(if matches!(ty, Type::Unknown) { None } else { Some(Fact { ty, non_null: true }) })
+                    Ctx::Typed(if matches!(ty, Ty::Unknown) { None } else { Some(Fact { ty, non_null: true }) })
                 }
             }
             "sum" | "avg" | "total" => real(),
@@ -2182,11 +2450,11 @@ impl Analyzer<'_> {
 
     // ---- the row count -----------------------------------------------------------------------
 
-    fn cardinality(&self) -> (String, Option<String>) {
+    fn cardinality(&self) -> (Cardinality, Option<String>) {
         let t = self.tree;
         if let Some(dml) = &t.dml {
             if t.returning.is_none() {
-                return ("none".into(), None);
+                return (Cardinality::None, None);
             }
             return match dml.kind.as_str() {
                 "insert" => {
@@ -2195,28 +2463,28 @@ impl Analyzer<'_> {
                         let can_skip = dml.on_error == "ignore"
                             || dml.upsert.as_ref().is_some_and(|u| !u.do_update || u.where_.is_some() || triggered(TRIGGER_ROW_UPDATE))
                             || triggered(TRIGGER_ROW_INSERT);
-                        if can_skip { ("maybeOne".into(), Some("ON CONFLICT DO NOTHING, OR IGNORE, a DO UPDATE with a WHERE, or a BEFORE trigger's RAISE(IGNORE) can insert no row".into())) } else { ("one".into(), None) }
+                        if can_skip { (Cardinality::AtMostOne, Some("ON CONFLICT DO NOTHING, OR IGNORE, a DO UPDATE with a WHERE, or a BEFORE trigger's RAISE(IGNORE) can insert no row".into())) } else { (Cardinality::One, None) }
                     } else if dml.rows > 1 {
-                        ("many".into(), Some(format!("a VALUES list of {} rows returns {} rows", dml.rows, dml.rows)))
+                        (Cardinality::Many, Some(format!("a VALUES list of {} rows returns {} rows", dml.rows, dml.rows)))
                     } else {
-                        ("many".into(), Some("an INSERT ... SELECT returns a row per row it reads".into()))
+                        (Cardinality::Many, Some("an INSERT ... SELECT returns a row per row it reads".into()))
                     }
                 }
                 _ => {
                     // UPDATE or DELETE: the WHERE pins a unique key of the target, or any number.
                     match self.pinned_by_name(&dml.table, dml.where_.as_ref()) {
-                        Ok(()) => ("maybeOne".into(), None),
-                        Err(why) => ("many".into(), Some(why)),
+                        Ok(()) => (Cardinality::AtMostOne, None),
+                        Err(why) => (Cardinality::Many, Some(why)),
                     }
                 }
             };
         }
-        let Some(sel) = &t.statement else { return ("none".into(), None) };
+        let Some(sel) = &t.statement else { return (Cardinality::None, None) };
         match self.exactly_one(sel) {
-            Ok(()) => ("one".into(), None),
+            Ok(()) => (Cardinality::One, None),
             Err(one_why) => match self.at_most_one(sel) {
-                Ok(()) => ("maybeOne".into(), Some(one_why)),
-                Err(why) => ("many".into(), Some(why)),
+                Ok(()) => (Cardinality::AtMostOne, Some(one_why)),
+                Err(why) => (Cardinality::Many, Some(why)),
             },
         }
     }
@@ -2440,7 +2708,10 @@ impl Analyzer<'_> {
     ///
     /// None for a set operation or a VALUES list, which may repeat a row.
     fn output_keys(&self, sel: &Sel) -> Vec<Vec<i64>> {
-        if sel.prior.is_some() || sel.values {
+        if let Some(prior) = &sel.prior {
+            return self.compound_keys(sel, prior);
+        }
+        if sel.values {
             return Vec::new();
         }
         let index: HashMap<i64, usize> = sel.from.iter().enumerate().map(|(i, f)| (f.cursor, i)).collect();
@@ -2476,9 +2747,58 @@ impl Analyzer<'_> {
                     keys.extend(key.iter().map(|p| position(&|e: &Node| e.cursor == f.cursor && e.index == *p)).collect::<Option<Vec<i64>>>());
                 }
             } else if let Some(info) = f.table.as_deref().and_then(|t| self.tree.tables.get(t)) {
+                // A key column the select list leaves out still counts where the WHERE pins it to
+                // one value.
+                let fixed = |c: &str| {
+                    let none = vec![false; n];
+                    conjuncts(sel.where_.as_ref()).iter().filter(|t| !t.outer_on).any(|t| self.pinned_column(t, f.cursor, &none, &index).and_then(|col| col.column.as_deref()).is_some_and(|name| name.eq_ignore_ascii_case(c)))
+                };
                 for key in info.unique_keys.iter().filter(|k| !k.is_empty()) {
-                    keys.extend(key.iter().map(|c| position(&|e: &Node| e.cursor == f.cursor && e.column.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(c)))).collect::<Option<Vec<i64>>>());
+                    keys.extend(
+                        key.iter()
+                            .filter_map(|c| match position(&|e: &Node| e.cursor == f.cursor && e.column.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(c))) {
+                                Some(p) => Some(Some(p)),
+                                None if fixed(c) => None,
+                                None => Some(None),
+                            })
+                            .collect::<Option<Vec<i64>>>(),
+                    );
                 }
+            }
+        }
+        keys
+    }
+
+    /// The keys of a compound SELECT's rows, `sel` its last arm and `prior` the arms before it.
+    /// INTERSECT and EXCEPT return only rows of their left side, so they keep its keys. Any operator
+    /// but UNION ALL returns distinct rows, so the whole row is a key, where each column is a
+    /// column on every arm, of one affinity and one collation, which the comparison that told the
+    /// rows apart and the one that reads them agree on.
+    fn compound_keys(&self, sel: &Sel, prior: &Sel) -> Vec<Vec<i64>> {
+        let op = sel.op.as_deref().unwrap_or("");
+        let mut keys = Vec::new();
+        if op == "intersect" || op == "except" {
+            keys.extend(self.output_keys(prior));
+        }
+        if op != "union all" {
+            let mut arms = vec![sel];
+            let mut at = Some(prior);
+            while let Some(arm) = at {
+                arms.push(arm);
+                at = arm.prior.as_deref();
+            }
+            let width = sel.columns.len();
+            let alike = width > 0
+                && arms.iter().all(|arm| !arm.values && arm.columns.len() == width)
+                && (0..width).all(|i| {
+                    let first = &sel.columns[i].expr;
+                    first.op == "column" && arms.iter().all(|arm| {
+                        let e = &arm.columns[i].expr;
+                        e.op == "column" && e.aff == first.aff && e.coll.as_deref().unwrap_or("BINARY").eq_ignore_ascii_case(first.coll.as_deref().unwrap_or("BINARY"))
+                    })
+                });
+            if alike {
+                keys.push((0..width as i64).collect());
             }
         }
         keys
@@ -2848,10 +3168,10 @@ fn cursors(n: &Node) -> Option<Vec<i64>> {
 }
 
 /// The type of `a op b` for `+`, `-`, `*`, `/`, `%`: integer stays integer, anything else is real.
-fn arithmetic(l: &Type, r: &Type) -> Type {
+fn arithmetic(l: &Ty, r: &Ty) -> Ty {
     match (scalar_name(l), scalar_name(r)) {
-        (Some("integer" | "int8"), Some("integer" | "int8")) => Type::Scalar { name: "integer".into() },
-        _ => Type::Scalar { name: "real".into() },
+        (Some("integer" | "int8"), Some("integer" | "int8")) => Ty::Scalar { name: "integer".into() },
+        _ => Ty::Scalar { name: "real".into() },
     }
 }
 
@@ -2939,6 +3259,15 @@ enum Slot {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_row_assigned_fewer_values_than_columns_is_the_database_s_error() {
+        let ddl = vec!["create table t1 (a integer primary key, b, c, d)".to_string(), "create table t2 (w, x, y)".to_string()];
+        for sql in ["update t1 set (b, c, d) = (select x, y from t2 where w = a)", "update t1 set (a, a, a, b) = (select 99, 100)"] {
+            let a = analyze_ddl(sql, &ddl, &Extras::default()).analysis;
+            assert!(!a.diagnostics.is_empty(), "{sql}: {a:?}");
+        }
+    }
+
     fn ddl() -> Vec<String> {
         vec![
             "create table users (id integer primary key, name text not null, email text unique, score real, avatar blob, created_at text not null default current_timestamp)".to_string(),
@@ -2971,7 +3300,7 @@ mod tests {
             (t.read, t.write)
         };
         let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(tables("select u.id, (select count(*) from posts p where p.user_id = u.id) from USERS u where exists (select 1 from tags t where t.id = u.id)"), (names(&["posts", "tags", "users"]), vec![]));
+        assert_eq!(tables("select u.id, (select count(*) from posts p where p.user_id = u.id) as n from USERS u where exists (select 1 from tags t where t.id = u.id)"), (names(&["posts", "tags", "users"]), vec![]));
         // A WITH query is no table, and a view is named, not what it reads.
         assert_eq!(tables("with recent as (select user_id from posts) select title from titles join recent on true"), (names(&["posts", "titles"]), vec![]));
         assert_eq!(tables("select value from json_each('[1]')"), (vec![], vec![]));
@@ -2989,7 +3318,7 @@ mod tests {
         // before the serializer lists the tables: read then, a recursive one nested in another,
         // whose memory SQLite had reused, ended the analysis in a crash.
         let described = |sql: &str| {
-            let t = tree::analyze(&ddl(), sql, &[], None).expect("the tree parses");
+            let t = tree::analyze(&ddl(), sql, sql, &[], None).expect("the tree parses");
             assert!(t.error.is_none(), "{sql}: {:?}", t.error);
             let mut names = t.tables.into_keys().collect::<Vec<_>>();
             names.sort();
@@ -3014,7 +3343,7 @@ mod tests {
         // SQLite's own bound is 1,000; the engine's SQLite takes 350 (`csrc/reylo_sqlite.c`).
         for (shape, n) in [("sum", 350), ("and_or", 348), ("case", 348), ("coalesce", 349), ("subquery", 23)] {
             let at = small(crate::stack::nested(shape, n));
-            assert!(at.diagnostics.is_empty() && at.kind == "select", "{shape} at {n}: {:?}", at.diagnostics);
+            assert!(at.diagnostics.is_empty() && at.kind == Some(StatementKind::Select), "{shape} at {n}: {:?}", at.diagnostics);
             let past = small(crate::stack::nested(shape, n + 1));
             assert_eq!(past.diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["Expression tree is too large (maximum depth 350)"], "{shape} at {}", n + 1);
         }
@@ -3025,12 +3354,12 @@ mod tests {
 
     fn col(a: &Analysis, name: &str) -> (String, bool) {
         let c = a.columns.iter().find(|c| c.name == name).unwrap_or_else(|| panic!("no column {name}"));
-        (scalar_name(&c.ty).unwrap_or("unknown").to_string(), c.nullable)
+        (affinity_of(&c.ty).unwrap_or("unknown").to_string(), c.nullable)
     }
 
     fn param(a: &Analysis, name: &str) -> String {
         let p = a.params.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no param {name}"));
-        scalar_name(&p.ty).unwrap_or("unknown").to_string()
+        affinity_of(&p.ty).unwrap_or("unknown").to_string()
     }
 
     #[test]
@@ -3189,6 +3518,10 @@ mod tests {
         assert_eq!(col(&reduced, "name"), ("text".into(), false));
         assert_eq!(col(&analysis("select p.title, u.name from posts p left join users u on u.id = p.user_id"), "name"), ("text".into(), true));
         // An ON term is not a WHERE test: the posts that meet no user still have NULL there.
+        // Nor is an inner join's, for the rows a RIGHT JOIN after it null-extends.
+        let right = analysis("select p.title, u.name from posts p join users u on u.email is not null right join posts q on q.id = 0");
+        assert_eq!((col(&right, "title").1, col(&right, "name").1), (true, true));
+        assert_eq!(col(&analysis("select u.email from posts p join users u on u.email is not null"), "email").1, false);
         assert_eq!(col(&analysis("select p.title, u.name from posts p left join users u on u.id = p.user_id and u.email = :e"), "name"), ("text".into(), true));
         // Under a plain GROUP BY no group is empty.
         let grouped = analysis("select user_id, max(title) as t, min(id) as m, group_concat(title) as g from posts group by user_id");
@@ -3197,53 +3530,6 @@ mod tests {
         // `concat` skips NULLs; `concat_ws` is NULL only for a NULL separator.
         let concat = analysis("select concat(email, 'x') as c, concat_ws(',', email) as w, concat_ws(email, 'a') as n from users");
         assert_eq!((col(&concat, "c").1, col(&concat, "w").1, col(&concat, "n").1), (false, false, true));
-    }
-
-    #[test]
-    fn a_window_aggregate_over_the_current_row_follows_its_argument() {
-        let nullable = |sql: &str| col(&analysis(sql), "v").1;
-        // No frame clause, and every frame from at or before the current row to at or after it.
-        for over in [
-            "()",
-            "(order by id)",
-            "(partition by user_id)",
-            "(order by id rows between 1 preceding and 1 following)",
-            "(order by id rows unbounded preceding)",
-            "(order by id rows between current row and unbounded following)",
-            "(order by id range between 5 preceding and 0 following)",
-            "(order by id groups between 2 preceding and current row)",
-            "(order by id range between current row and current row exclude ties)",
-            "(order by id range unbounded preceding exclude no others)",
-            "w",
-            "(w order by id rows between 1 preceding and 1 following)",
-        ] {
-            for agg in ["max(title)", "min(title)"] {
-                let sql = format!("select {agg} over {over} as v from posts window w as (partition by user_id)");
-                assert!(!nullable(&sql), "{sql}");
-            }
-            let sql = format!("select max(body) over {over} as v from posts window w as (partition by user_id)");
-            assert!(nullable(&sql), "{sql}: a NULL argument");
-            // A sum of 1e999 and -1e999 is NaN, which SQLite returns as NULL, and before 3.47.0 a
-            // window's `group_concat` of nothing but `''` is NULL.
-            for agg in ["sum(id)", "avg(id)", "group_concat(title)", "string_agg(title, ',')"] {
-                let sql = format!("select {agg} over {over} as v from posts window w as (partition by user_id)");
-                assert!(nullable(&sql), "{sql}");
-            }
-        }
-        // A frame that can leave the current row out, a FILTER, and an aggregate with no OVER.
-        for item in [
-            "max(title) over (order by id rows between 1 following and 2 following)",
-            "max(title) over (order by id rows between unbounded preceding and 1 preceding)",
-            "max(title) over (order by id rows between unbounded preceding and unbounded following exclude current row)",
-            "max(title) over (order by id range between current row and current row exclude group)",
-            "max(title) over w",
-            "max(title) filter (where id > 1) over ()",
-            "max(title) filter (where id > 1)",
-            "max(title)",
-        ] {
-            let sql = format!("select {item} as v from posts window w as (order by id rows between 2 following and unbounded following)");
-            assert!(nullable(&sql), "{sql}");
-        }
     }
 
     #[test]
@@ -3312,44 +3598,13 @@ mod tests {
     }
 
     #[test]
-    fn joins_grouping_distinct_and_set_operations_prove_rows_as_on_postgres() {
-        let rows = |sql: &str| analysis(sql).cardinality;
-        for sql in [
-            "select p.title, u.name from posts p join users u on u.id = p.user_id where p.id = :id",
-            "select p.title, u.name from posts p left join users u on u.id = p.user_id where p.id = :id",
-            "select p.title, u.name from posts p, users u where u.id = p.user_id and p.id = :id",
-            "select a.name from users a join users b on b.id = a.id where a.id = :id",
-            "select s.name from (select * from users where id = :id) s",
-            "select user_id, count(*) as n from posts where user_id = :u group by user_id",
-            "select distinct user_id from posts where user_id = :u",
-            "select id from users where id = :id intersect select user_id from posts",
-            "select id from users where id = :id except select user_id from posts",
-        ] {
-            assert_eq!(rows(sql), "maybeOne", "{sql}");
-        }
-        for sql in [
-            // Many posts per user.
-            "select p.title from posts p join users u on u.id = p.user_id where u.id = :id",
-            "select title, count(*) as n from posts where user_id = :u group by title",
-            "select user_id from posts except select id from users where id = :id",
-            // A FULL JOIN keeps each side's unmatched rows.
-            "select p.title, u.name from posts p full join users u on u.id = p.user_id where p.id = :id",
-            // A volatile value is evaluated for each row.
-            "select name from users where id = abs(random()) % 3",
-            "delete from users where id = abs(random()) % 3 returning id",
-        ] {
-            assert_eq!(rows(sql), "many", "{sql}");
-        }
-    }
-
-    #[test]
     fn an_outer_joins_on_term_pins_its_right_side_but_groups_nothing() {
         // SQLite moves the ON terms into the WHERE: `u.id = :id` restricts which user a post
         // meets, and the posts that meet none have NULL there, a second group.
         assert_eq!(analysis("select u.name, count(*) as n from posts p left join users u on u.id = :id and u.id = p.user_id group by u.name").cardinality, "many");
-        assert_eq!(analysis("select u.name, count(*) as n from posts p left join users u on u.id = p.user_id where u.id = :id group by u.name").cardinality, "maybeOne");
+        assert_eq!(analysis("select u.name, count(*) as n from posts p left join users u on u.id = p.user_id where u.id = :id group by u.name").cardinality, "at_most_one");
         // The ON term still pins the right side against a pinned left one.
-        assert_eq!(analysis("select p.title, u.name from posts p left join users u on u.id = :u where p.id = :id").cardinality, "maybeOne");
+        assert_eq!(analysis("select p.title, u.name from posts p left join users u on u.id = :u where p.id = :id").cardinality, "at_most_one");
     }
 
     #[test]
@@ -3362,11 +3617,11 @@ mod tests {
         let insert = "insert into users (name) values (:n) returning id";
         assert_eq!(count(insert, &[]), "one");
         // A BEFORE trigger's RAISE(IGNORE) skips the row; an AFTER trigger cannot.
-        assert_eq!(count(insert, &["create trigger skip before insert on users begin select raise(ignore) where new.name = 'x'; end"]), "maybeOne");
-        assert_eq!(count(insert, &["create trigger untimed insert on users begin select 1; end"]), "maybeOne", "BEFORE is the default");
+        assert_eq!(count(insert, &["create trigger skip before insert on users begin select raise(ignore) where new.name = 'x'; end"]), "at_most_one");
+        assert_eq!(count(insert, &["create trigger untimed insert on users begin select 1; end"]), "at_most_one", "BEFORE is the default");
         assert_eq!(count(insert, &["create trigger later after insert on users begin select 1; end"]), "one");
         // `DO UPDATE … WHERE` leaves a conflicting row alone and returns nothing for it.
-        assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name where users.score > 1 returning id", &[]), "maybeOne");
+        assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name where users.score > 1 returning id", &[]), "at_most_one");
         assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name returning id", &[]), "one");
     }
 
@@ -3380,33 +3635,9 @@ mod tests {
         };
         // `e` compares under NOCASE, and its unique index tells 'A' from 'a'.
         assert_eq!(count("select id from c where e = :e"), "many");
-        assert_eq!(count("select id from c where b = :b"), "maybeOne");
+        assert_eq!(count("select id from c where b = :b"), "at_most_one");
         assert_eq!(count("select id from c where b = :b collate nocase"), "many");
-        assert_eq!(count("select e from c where id = :id"), "maybeOne");
-    }
-
-    #[test]
-    fn a_key_holds_only_where_the_comparison_leaves_the_column_as_it_is() {
-        let count = |sql: &str| {
-            let mut schema = ddl();
-            schema.push("create table t (id integer primary key, code text unique)".into());
-            schema.push("create table b (id integer primary key, n integer, nc text collate nocase)".into());
-            schema.push("create table a (id integer primary key, k unique, kt text unique)".into());
-            schema.push("create table rt (rowid integer, v text)".into());
-            analyze_ddl(sql, &schema, &Extras::default()).analysis.cardinality
-        };
-        // A side of INTEGER affinity applies NUMERIC affinity to a TEXT or untyped key: '01' and
-        // '1' compare equal to 1, and so do 7 and '7'.
-        assert_eq!(count("select id from t where code = cast(:c as integer)"), "many");
-        assert_eq!(count("select a.id from b join a on a.k = b.n where b.id = 1"), "many");
-        assert_eq!(count("update t set id = id where code = cast(:c as integer) returning id"), "many");
-        assert_eq!(count("select id from t where code = :c"), "maybeOne");
-        assert_eq!(count("select a.id from b join a on a.kt = b.nc where b.id = 1"), "maybeOne");
-        // A column on the left decides the collation: NOCASE meets 'x' and 'X'.
-        assert_eq!(count("select a.id from b join a on b.nc = a.kt where b.id = 1"), "many");
-        // A declared column named rowid hides the rowid; `_rowid_` still reads it.
-        assert_eq!(count("select v from rt where rowid = :r"), "many");
-        assert_eq!(count("select v from rt where _rowid_ = :r"), "maybeOne");
+        assert_eq!(count("select e from c where id = :id"), "at_most_one");
     }
 
     #[test]
@@ -3415,6 +3646,30 @@ mod tests {
         let nullable = |extras: &Extras| col(&analyze_ddl("select email from users where lower(email) = :e", &ddl(), extras).analysis, "email").1;
         assert!(!nullable(&Extras::default()));
         assert!(nullable(&lower));
+    }
+
+    #[test]
+    fn a_strict_column_and_a_rowid_hold_their_declared_type_alone() {
+        let ddl = [
+            "create table s (id integer primary key, n int not null, x real, t text, b blob, a any, g integer generated always as (n * 2) virtual) strict",
+            "create table loose (id integer primary key, n integer not null, t text)",
+            "create table desc_key (a integer primary key desc)",
+        ]
+        .map(String::from);
+        let kinds = |sql: &str| {
+            let analysis = analyze_ddl(sql, &ddl, &Extras::default()).analysis;
+            analysis.columns.iter().map(|c| serde_json::to_value(&c.ty).unwrap()["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>().join(" ")
+        };
+        assert_eq!(kinds("select id, n, x, t, b, a from s"), "integer integer float text bytes unknown");
+        assert_eq!(kinds("select id, n, t from loose"), "integer union union");
+        assert_eq!(kinds("select a from desc_key"), "union");
+        // A generated column keeps its affinity's union: SQLite before 3.51 never checks it.
+        assert_eq!(kinds("select g from s"), "union");
+        // Through subqueries, views and every arm of a compound, and no further.
+        assert_eq!(kinds("select n, t from (select n, t from s)"), "integer text");
+        assert_eq!(kinds("select n from s union all select id from loose"), "integer");
+        assert_eq!(kinds("select n from s union all select n from loose"), "union");
+        assert_eq!(kinds("select n from s union all values (1)"), "union");
     }
 
     #[test]
@@ -3437,18 +3692,8 @@ mod tests {
     }
 
     #[test]
-    fn unary_plus_is_its_operand() {
-        // `+name` returns the text itself, and SQLite writes a one-element `x IN (e)` as `x = +e`.
-        let a = analysis("select +name as p, -score as m from users where name in (:n) and id in (:i)");
-        assert_eq!(col(&a, "p"), ("text".into(), false));
-        assert_eq!(col(&a, "m"), ("real".into(), true));
-        assert_eq!(param(&a, "n"), "text");
-        assert_eq!(param(&a, "i"), "integer");
-    }
-
-    #[test]
     fn columns_from_provenance_and_rules() {
-        let a = analysis("select id, name, email, score, length(email) as l, coalesce(email, 'x') as e, id * 2 as d, id / 2 as h, count(*) as n from users");
+        let a = analysis("select id, name, email, score, length(email) as l, coalesce(email, 'x') as e, id * 2 as d, id / 2 as h from users");
         assert_eq!(col(&a, "id"), ("integer".into(), false));
         assert_eq!(col(&a, "name"), ("text".into(), false));
         assert_eq!(col(&a, "email"), ("text".into(), true));
@@ -3457,8 +3702,24 @@ mod tests {
         assert_eq!(col(&a, "e"), ("text".into(), false));
         assert_eq!(col(&a, "d"), ("integer".into(), false));
         assert_eq!(col(&a, "h"), ("integer".into(), false));
+        assert_eq!(a.cardinality, "many");
+    }
+
+    #[test]
+    fn a_column_beside_an_aggregate_with_no_group_by_is_null_over_no_rows() {
+        // The one row an aggregate with no GROUP BY returns over no rows holds NULL in every
+        // column outside an aggregate's arguments, whatever the table declares or the WHERE tests.
+        let a = analysis("select id, name, coalesce(email, 'x') as e, id * 2 as d, count(*) as n, count(name) as c, max(id) as m from users where name = 'ada'");
+        assert_eq!(col(&a, "id"), ("integer".into(), true));
+        assert_eq!(col(&a, "name"), ("text".into(), true));
+        assert_eq!(col(&a, "e"), ("text".into(), false));
+        assert_eq!(col(&a, "d"), ("integer".into(), true));
         assert_eq!(col(&a, "n"), ("integer".into(), false));
+        assert_eq!(col(&a, "c"), ("integer".into(), false));
         assert_eq!(a.cardinality, "one");
+        // A group has a row, and an aggregate reads rows that are there.
+        let a = analysis("select name, count(*) as n from users group by name");
+        assert_eq!(col(&a, "name"), ("text".into(), false));
     }
 
     #[test]
@@ -3469,23 +3730,6 @@ mod tests {
         assert_eq!(col(&a, "id"), ("integer".into(), false));
         assert_eq!(col(&a, "name"), ("text".into(), false));
         assert_eq!(param(&a, "id"), "integer");
-    }
-
-    #[test]
-    fn a_recursive_with_query_is_typed_through_its_reads_of_itself() {
-        // Each column holds for every round: the first arm's rows on their own, each later row
-        // given the row it was computed from.
-        let a = analysis("with recursive t (id, depth) as (select id, 0 from users union all select p.id, t.depth + 1 from posts p join t on p.user_id = t.id) select id, depth from t");
-        assert_eq!(col(&a, "id"), ("integer".into(), false));
-        assert_eq!(col(&a, "depth"), ("integer".into(), false));
-        // A round that reads a nullable column, or NULL, leaves the column nullable.
-        let a = analysis("with recursive t (id, body) as (select id, title from posts union all select p.id, p.body from posts p join t on p.user_id = t.id) select id, body from t");
-        assert_eq!(col(&a, "body"), ("text".into(), true));
-        let a = analysis("with recursive t (n, x) as (select 1, 'a' union all select n + 1, null from t where n < 3) select n, x from t");
-        assert_eq!(col(&a, "x"), ("text".into(), true));
-        // A table named as a WITH query that only reads it is that table, not a read of itself.
-        let a = analysis("with users as (select id, email from main.users) select id, email from users");
-        assert_eq!(col(&a, "email"), ("text".into(), true));
     }
 
     #[test]
@@ -3508,38 +3752,7 @@ mod tests {
         assert_eq!(param(&a, "name"), "text");
         assert_eq!(param(&a, "score"), "real");
         assert_eq!(param(&a, "id"), "integer");
-        assert_eq!(a.cardinality, "maybeOne");
-    }
-
-    #[test]
-    fn a_row_value_types_each_parameter_by_the_element_it_is_compared_with() {
-        // A keyset page: each element of a row value takes the type of its partner, in every
-        // comparison SQLite takes a row value in, a subquery's columns and a VALUES list too.
-        let ddl = vec!["create table users (id integer primary key, name text not null, created_at text not null) strict".to_string()];
-        let types = |sql: &str| {
-            let a = analyze_ddl(sql, &ddl, &Extras::default()).analysis;
-            assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
-            a.params.iter().map(|p| format!("{}: {}{}", p.name, scalar_name(&p.ty).unwrap_or("unknown"), if p.nullable { " | null" } else { "" })).collect::<Vec<_>>().join(", ")
-        };
-        let page = "select id, name, created_at from users where (created_at, id) < (:created_at, :id) order by created_at desc, id desc limit 20";
-        assert_eq!(types(page), "created_at: text, id: integer");
-        for op in ["=", "<>", "!=", "<", "<=", ">", ">=", "is", "is not"] {
-            assert_eq!(types(&format!("select id from users where (created_at, id) {op} (:at, :id)")), "at: text, id: integer", "{op}");
-            assert_eq!(types(&format!("select id from users where (:at, :id) {op} (created_at, id)")), "at: text, id: integer", "{op} reversed");
-        }
-        assert_eq!(types("select id from users where (created_at, :id) < (:at, id)"), "id: integer, at: text");
-        assert_eq!(types("select id from users where (created_at, id) between (:lo_at, :lo_id) and (:hi_at, :hi_id)"), "lo_at: text, lo_id: integer, hi_at: text, hi_id: integer");
-        assert_eq!(types("select id from users where (:at, :id) between (created_at, id) and ('9999', 0)"), "at: text, id: integer");
-        assert_eq!(types("select id from users where (created_at, id) in (select :at, :id)"), "at: text, id: integer");
-        assert_eq!(types("select id from users where (:at, :id) in (select created_at, id from users)"), "at: text, id: integer");
-        assert_eq!(types("select id from users where (created_at, id) in ((:a1, :i1), (:a2, :i2))"), "a1: text, i1: integer, a2: text, i2: integer");
-        assert_eq!(types("select id from users where (created_at, id) = (select :at, :id)"), "at: text, id: integer");
-        assert_eq!(types("select case (created_at, id) when (:at, :id) then 1 else 0 end as hit from users"), "at: text, id: integer");
-        assert_eq!(types("select case (:at, :id) when (created_at, id) then 1 else 0 end as hit from users"), "at: text, id: integer");
-        assert_eq!(types("update users set (name, created_at) = (select :name, :at) where id = :id"), "name: text, at: text, id: integer");
-        // One column of a subquery takes the type it is compared with, as a row's columns do.
-        assert_eq!(types("select id from users where id = (select :p)"), "p: integer");
-        assert_eq!(types("select id from users where id in (select :p union all select 1)"), "p: integer");
+        assert_eq!(a.cardinality, "at_most_one");
     }
 
     #[test]
@@ -3562,87 +3775,14 @@ mod tests {
     }
 
     #[test]
-    fn a_subquery_a_with_query_or_a_view_is_pinned_by_a_key_of_its_rows() {
-        let rows = |sql: &str| analysis(sql).cardinality;
-        for sql in [
-            "select * from (select id, name from users) s where s.id = :id",
-            "with s as (select id, name from users) select * from s where s.id = :id",
-            "select * from (select id as user_id from users) s where s.user_id = :id",
-            "select * from (select * from (select id from users) a) b where b.id = :id",
-            "select * from (select p.id, u.name from posts p join users u on u.id = p.user_id) s where s.id = :id",
-            "select * from (select user_id, count(*) as n from posts group by user_id) s where s.user_id = :u",
-            "select * from (select distinct user_id from posts) s where s.user_id = :u",
-        ] {
-            assert_eq!(rows(sql), "maybeOne", "{sql}");
-        }
-        for sql in [
-            "select * from (select name from users) s where s.name = :n",
-            "select * from (select id + 0 as id from users) s where s.id = :id",
-            "select * from (select id from users union all select id from users) s where s.id = :id",
-            "select * from (select p.id from posts p cross join users u) s where s.id = :id",
-            "select * from (select user_id, count(*) as n from posts group by user_id) s where s.n = :n",
-        ] {
-            assert_eq!(rows(sql), "many", "{sql}");
-        }
-    }
-
-    #[test]
-    fn a_limit_only_lowers_a_bound_and_a_from_of_one_row_items_is_one_row() {
-        let rows = |sql: &str| analysis(sql).cardinality;
-        // A LIMIT above one, one from a parameter and an OFFSET remove rows and add none.
-        assert_eq!(rows("select * from users where id = :id limit 5"), "maybeOne");
-        assert_eq!(rows("select * from users where id = :id limit :n offset :skip"), "maybeOne");
-        assert_eq!(rows("select * from users where id = :id limit 2, 5"), "maybeOne");
-        assert_eq!(rows("select * from users limit 5"), "many");
-        assert_eq!(rows("select * from users limit -1"), "many");
-        assert_eq!(rows("select count(*) as n from users limit 5"), "one");
-        assert_eq!(rows("select count(*) as n from users limit 5 offset 0"), "one");
-        assert_eq!(rows("select count(*) as n from users limit 0"), "maybeOne");
-        assert_eq!(rows("select count(*) as n from users limit :n"), "maybeOne");
-        assert_eq!(rows("select count(*) as n from users limit -1"), "maybeOne");
-        assert_eq!(rows("select count(*) as n from users limit 5 offset 1"), "maybeOne");
-        // A derived table and a WITH query of one row, alone and joined.
-        assert_eq!(rows("select * from (select count(*) as n from users) s"), "one");
-        assert_eq!(rows("with s as (select count(*) as n from users) select n from s"), "one");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a, (select count(*) as m from posts) b"), "one");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a join (select count(*) as m from posts) b on 1 = 1"), "one");
-        assert_eq!(rows("select a.n, u.name from (select count(*) as n from users) a left join users u on u.id = :id"), "one");
-        // A WHERE or an inner join's condition can drop the row, an unpinned side multiplies it,
-        // and a FULL JOIN is two rows where its condition fails.
-        assert_eq!(rows("select s.n from (select count(*) as n from users) s where s.n > :min"), "maybeOne");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a join (select count(*) as m from posts) b on a.n = b.m"), "maybeOne");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a join (select count(*) as m from posts) b on 1 = 2"), "maybeOne");
-        assert_eq!(rows("select s.n from (select count(*) as n from users limit :n) s"), "maybeOne");
-        assert_eq!(rows("select a.n, u.name from (select count(*) as n from users) a left join users u on u.name = :name"), "many");
-        assert_eq!(rows("select a.n, u.name from users u left join (select count(*) as n from users) a on 1 where u.id = :id"), "maybeOne");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a full join (select count(*) as m from posts) b on a.n = b.m + 1"), "many");
-        assert_eq!(rows("select a.n, u.name from (select count(*) as n from users) a, users u"), "many");
-        // An aggregate over columns of the query around a subquery is that query's: the subquery
-        // is a row per row of `posts`, and none when it has none.
-        for sql in [
-            "select (select count(u.id) from posts where 0) as n from users u",
-            "select (select count(u.id) from posts where 0 limit 5) as n from users u",
-            "select (select s.n from (select count(u.id) as n from posts where 0) s) as n from users u",
-        ] {
-            assert!(col(&analysis(sql), "n").1, "the scalar subquery may find no row: {sql}");
-        }
-        assert!(!col(&analysis("select (select count(p.id) from posts p where 0 limit 5) as n from users u"), "n").1);
-        assert!(!col(&analysis("select (select s.n from (select count(p.id) as n from posts p where 0) s) as n from users u"), "n").1);
-        // SQLite reads a VALUES of several rows as a FROM item, which does not say how many.
-        assert_eq!(rows("values (1), (2)"), "many");
-        assert_eq!(rows("select v.column1 from (values (1), (2)) v"), "many");
-        assert_eq!(rows("select a.n, v.column1 from (select count(*) as n from users) a, (values (1), (2)) v"), "many");
-    }
-
-    #[test]
     fn cardinality_by_keys() {
-        assert_eq!(analysis("select id from users where email = :email").cardinality, "maybeOne");
+        assert_eq!(analysis("select id from users where email = :email").cardinality, "at_most_one");
         assert_eq!(analysis("select id from users where name = :name").cardinality, "many");
-        assert_eq!(analysis("select u.id, count(p.id) as n from users u left join posts p on p.user_id = u.id where u.id = :id group by u.id").cardinality, "maybeOne");
-        assert_eq!(analysis("select id from users limit 1").cardinality, "maybeOne");
-        assert_eq!(analysis("insert or ignore into users (email, name) values (:e, :n) returning id").cardinality, "maybeOne");
+        assert_eq!(analysis("select u.id, count(p.id) as n from users u left join posts p on p.user_id = u.id where u.id = :id group by u.id").cardinality, "at_most_one");
+        assert_eq!(analysis("select id from users limit 1").cardinality, "at_most_one");
+        assert_eq!(analysis("insert or ignore into users (email, name) values (:e, :n) returning id").cardinality, "at_most_one");
         assert_eq!(analysis("insert into users (email, name) values (:e, :n)").cardinality, "none");
-        assert_eq!(analysis("delete from users where id = :id returning id").cardinality, "maybeOne");
+        assert_eq!(analysis("delete from users where id = :id returning id").cardinality, "at_most_one");
         assert_eq!(analysis("select id from users union all select user_id from posts").cardinality, "many");
     }
 
@@ -3706,7 +3846,7 @@ mod tests {
         ] {
             let got = a(sql);
             assert!(got.diagnostics.is_empty(), "{sql}: {:?}", got.diagnostics);
-            assert_eq!(got.cardinality, "maybeOne", "{sql}: {:?}", got.cardinality_reason);
+            assert_eq!(got.cardinality, "at_most_one", "{sql}: {:?}", got.cardinality_reason);
         }
         // A declared column named rowid in any case hides the rowid, and a table without a rowid
         // has none to name.
@@ -3721,14 +3861,14 @@ mod tests {
         assert_eq!(param(&a("insert into books (ROWID, title) values (:r, :t)"), "r"), "integer");
         assert_eq!(param(&a("insert into rt (_rowid_, v) values (:r, :v)"), "r"), "unknown");
         // SQLite folds ASCII alone: `été` is another name than `Été`, and no table.
-        assert_eq!(a("select v from \"\u{c9}t\u{e9}\" where id = :id").cardinality, "maybeOne");
+        assert_eq!(a("select v from \"\u{c9}t\u{e9}\" where id = :id").cardinality, "at_most_one");
         assert_eq!(a("select v from \"\u{e9}t\u{e9}\" where id = :id").diagnostics[0].message, "no such table: \u{e9}t\u{e9}");
         // A table-valued function in any case is the function.
         assert_eq!(param(&a("select value from JSON_EACH(:ids)"), "ids"), "text");
         // A trigger's table is read as SQLite reads it, quoted and in another case, and so is a
         // trigger whose name or column list holds a keyword.
-        assert_eq!(a("insert into books (title) values (:t) returning id").cardinality, "maybeOne");
-        assert_eq!(a("insert into \"My Table\" (v) values (:v) returning id").cardinality, "maybeOne");
+        assert_eq!(a("insert into books (title) values (:t) returning id").cardinality, "at_most_one");
+        assert_eq!(a("insert into \"My Table\" (v) values (:v) returning id").cardinality, "at_most_one");
         assert_eq!(trigger_header(&schema[5]), Some(("before".into(), "insert".into(), "books".into())));
         assert_eq!(trigger_header(&schema[7]), Some(("after".into(), "update".into(), "my table".into())));
         assert_eq!(trigger_header("CREATE TRIGGER main.\"before\" /* on x */ INSTEAD OF DELETE ON v -- on y\n BEGIN SELECT 1; END"), Some(("instead".into(), "delete".into(), "v".into())));
@@ -3739,7 +3879,7 @@ mod tests {
     fn every_row_of_a_values_list_types_its_parameters() {
         let a = analysis("insert into users (id, name, email) values (:a, :b, :e), (:c, :d, :e2), (:f, upper(:g), 'x') returning id");
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-        let got: Vec<(String, String, bool)> = a.params.iter().map(|p| (p.name.clone(), scalar_name(&p.ty).unwrap_or("unknown").to_string(), p.nullable)).collect();
+        let got: Vec<(String, String, bool)> = a.params.iter().map(|p| (p.name.clone(), affinity_of(&p.ty).unwrap_or("unknown").to_string(), p.nullable)).collect();
         let want = [("a", "integer", false), ("b", "text", false), ("e", "text", true), ("c", "integer", false), ("d", "text", false), ("e2", "text", true), ("f", "integer", false), ("g", "text", false)];
         assert_eq!(got, want.map(|(n, t, null)| (n.to_string(), t.to_string(), null)));
         assert_eq!((a.cardinality.as_str(), a.cardinality_reason.as_deref()), ("many", Some("a VALUES list of 3 rows returns 3 rows")));
@@ -3752,7 +3892,7 @@ mod tests {
         assert_eq!(a.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(), [3]);
         // Without a column list the rows fill the columns in order; under a WITH too.
         let a = analysis("with w as (select 1) insert into posts values (:id, :u, :t, :b), (:id2, :u2, :t2, :b2)");
-        assert_eq!(a.params.iter().map(|p| (scalar_name(&p.ty).unwrap_or("unknown"), p.nullable)).collect::<Vec<_>>(), [("integer", false), ("integer", false), ("text", false), ("text", true)].repeat(2));
+        assert_eq!(a.params.iter().map(|p| (affinity_of(&p.ty).unwrap_or("unknown"), p.nullable)).collect::<Vec<_>>(), [("integer", false), ("integer", false), ("text", false), ("text", true)].repeat(2));
         // A list of any length: SQLite keeps a row per arm, and the tree nests none of them.
         let rows: Vec<String> = (0..3000).map(|i| format!("(:n{i}, :e{i}, {i})")).collect();
         let a = analysis(&format!("insert into users (name, email, score) values {}", rows.join(", ")));
@@ -3771,30 +3911,6 @@ mod tests {
     }
 
     #[test]
-    fn a_collate_keeps_its_operands_context() {
-        let count = |sql: &str| {
-            let mut schema = ddl();
-            schema.push("create table c (id integer primary key, b text unique, n text unique collate nocase)".into());
-            let a = analyze_ddl(sql, &schema, &Extras::default()).analysis;
-            assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
-            (param(&a, "v"), a.cardinality)
-        };
-        assert_eq!(count("select id from users where name = :v collate nocase"), ("text".into(), "many".into()));
-        assert_eq!(count("select id from users where :v collate nocase = name"), ("text".into(), "many".into()));
-        assert_eq!(count("select id from users where name collate nocase = :v"), ("text".into(), "many".into()));
-        assert_eq!(count("select id from users where id = :v collate binary"), ("integer".into(), "many".into()));
-        assert_eq!(count("select id from users where name in (:v collate nocase, 'a')"), ("text".into(), "many".into()));
-        // The type is the column's; the key is not the comparison's: a BINARY unique index tells
-        // 'a' from 'A', and NOCASE meets both, on either side of the comparison.
-        for sql in ["select id from c where b = :v collate nocase", "select id from c where :v collate nocase = b", "select id from c where b collate nocase = :v", "delete from c where b = :v collate nocase returning id"] {
-            assert_eq!(count(sql), ("text".into(), "many".into()), "{sql}");
-        }
-        // A key under the comparison's own collation still bounds it, with no COLLATE written.
-        assert_eq!(count("select id from c where n = :v"), ("text".into(), "maybeOne".into()));
-        assert_eq!(count("select id from c where b = :v"), ("text".into(), "maybeOne".into()));
-    }
-
-    #[test]
     fn the_select_that_feeds_an_insert_types_its_parameters() {
         let schema = vec!["create table bar (name text not null, ready bool not null, n integer)".to_string(), "create table foo (name text not null, meta text, k integer)".to_string(), "create table foo2 (name text not null, meta text, k integer)".to_string()];
         let a = |sql: &str| {
@@ -3802,13 +3918,13 @@ mod tests {
             assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
             a
         };
-        let params = |a: &Analysis| a.params.iter().map(|p| (scalar_name(&p.ty).unwrap_or("unknown").to_string(), p.nullable)).collect::<Vec<_>>();
+        let params = |a: &Analysis| a.params.iter().map(|p| (affinity_of(&p.ty).unwrap_or("unknown").to_string(), p.nullable)).collect::<Vec<_>>();
         let typed = |types: &[&str]| types.iter().map(|t| (t.to_string(), false)).collect::<Vec<_>>();
         // A select-list parameter takes its target column's type; one the WHERE compares, the
         // column's: `bool` is a declared type of NUMERIC affinity, a number or a text.
         // A bare one written to a column that may hold NULL takes NULL, as in a VALUES row.
         let got = a("insert into foo (name, meta) select name, ? from bar where ready = ?");
-        assert_eq!((got.kind.as_str(), got.cardinality.as_str()), ("insert", "none"));
+        assert_eq!((got.kind.map_or("", StatementKind::as_str), got.cardinality.as_str()), ("insert", "none"));
         assert_eq!(params(&got), [("text".to_string(), true), ("numeric".to_string(), false)]);
         assert_eq!(params(&a("select name from bar where ready = ?")), typed(&["numeric"]));
         // Without a column list, through an expression, in every arm of a compound, and under a
@@ -3826,7 +3942,7 @@ mod tests {
         assert_eq!(params(&a("insert into foo (name, k) values ('a', (select :p))")), typed(&["integer"]));
         // A whole-table copy, which SQLite runs without a SELECT, is still an INSERT.
         let copy = a("insert into foo2 select * from foo");
-        assert_eq!((copy.kind.as_str(), copy.cardinality.as_str()), ("insert", "none"));
+        assert_eq!((copy.kind.map_or("", StatementKind::as_str), copy.cardinality.as_str()), ("insert", "none"));
     }
 
     #[test]
@@ -3877,7 +3993,7 @@ mod tests {
         let extra = [("host_only", 2, 's'), ("host_only", 3, 's'), ("host_agg", 1, 'a'), ("host_win", -1, 'w')];
         let a = on_host("select host_only(name, 1) as two, host_only(name, 1, 2) as three from users where id = :id", &ddl(), &extra, Vec::new());
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-        assert_eq!((col(&a, "two"), col(&a, "three"), a.cardinality.as_str()), (("unknown".into(), true), ("unknown".into(), true), "maybeOne"));
+        assert_eq!((col(&a, "two"), col(&a, "three"), a.cardinality.as_str()), (("unknown".into(), true), ("unknown".into(), true), "at_most_one"));
         // It may change from row to row, so it pins no key.
         assert_eq!(on_host("select name from users where id = host_only(1, 2)", &ddl(), &extra, Vec::new()).cardinality, "many");
         let a = on_host("select host_agg(score) as total from users", &ddl(), &extra, Vec::new());
@@ -4021,6 +4137,48 @@ mod tests {
     }
 
     #[test]
+    fn a_double_quoted_word_that_names_no_column_is_refused_as_the_drivers_refuse_it() {
+        // A schema that holds one replays, as SQLite reads it from a file.
+        let schema = vec!["create table t (id integer primary key, v text default \"none\" check (v <> \"bad\"))".to_string()];
+        let a = |sql: &str| analyze_ddl(sql, &schema, &Extras::default()).analysis;
+        for sql in ["select \"hello\"", "select \"hello\" from t", "select id from t where v = \"x\""] {
+            let messages: Vec<String> = a(sql).diagnostics.iter().map(|d| d.message.clone()).collect();
+            assert_eq!(messages, [format!("no such column: \"{}\" - should this be a string literal in single-quotes?", if sql.contains("hello") { "hello" } else { "x" })], "{sql}");
+        }
+        for sql in ["select \"id\", \"v\" from t", "select 'hello'", "insert into t (id) values (1) returning v"] {
+            assert!(a(sql).diagnostics.is_empty(), "{sql}: {:?}", a(sql).diagnostics);
+        }
+    }
+
+    #[test]
+    fn the_version_reported_is_the_embedded_sqlites() {
+        // The release the docs name (site/content/docs/sqlite.mdx): a newer amalgamation changes both.
+        assert!(tree::version().starts_with("3.53."), "{}", tree::version());
+    }
+
+    #[test]
+    fn a_parameter_sqlite_reads_and_the_lexer_does_not_is_an_error_at_its_place() {
+        let unbound = |sql: &str| analysis(sql).diagnostics.iter().filter(|d| d.code == 1).map(|d| (d.start, d.length, d.message.clone())).collect::<Vec<_>>();
+        // SQLite's parameter is `:`, `@` or `$` and any run of name characters, digits and bytes
+        // past ASCII among them; the lexer's name is ASCII and starts with no digit.
+        for written in [":été", ":1st", "@2x"] {
+            let sql = format!("select id from users where name = :n and email = {written}");
+            let found = unbound(&sql);
+            assert_eq!(found.iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(sql.find(written).unwrap(), written.len())], "{sql}");
+            assert_eq!(found[0].2, format!("SQLite reads {written} as a parameter that Reylo does not bind; name a parameter with the letters a to z, digits and underscores, starting with a letter or an underscore"));
+        }
+        // The place is the parameter's, not the same text in a string before it.
+        let sql = "select ':été' from users where name = :été";
+        assert_eq!(unbound(sql).iter().map(|(s, _, _)| *s).collect::<Vec<_>>(), [sql.rfind(":été").unwrap()]);
+        // Every parameter the lexer read is one SQLite numbers, in each form, and a bracketed
+        // name hides nothing after it.
+        for sql in ["select id from users where name = :n and email = :e", "select id from users where name = ?2 and email = ?", "select id as [it's], :n as n from users", "pragma table_info(users)"] {
+            assert!(unbound(sql).is_empty(), "{sql}");
+        }
+        assert_eq!(analysis("select id as [it's], :n as n from users").params.len(), 1);
+    }
+
+    #[test]
     fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
         // Through the protocol's whole path, which compiles a `::type` cast to SQLite's own.
         let full = |sql: &str| {
@@ -4080,7 +4238,17 @@ mod tests {
         // The rest of the statement is typed all the same.
         let a = full("select id from users order by :sort::text");
         assert_eq!(a.columns.len(), 1);
-        assert_eq!(a.params[0].type_name, "text");
+        assert_eq!(affinity_of(&a.params[0].ty), Some("text"));
+    }
+
+    #[test]
+    fn names_a_column_as_the_statement_is_sent() {
+        // The tree is read over `?1`; the statement runs with `?`, and a driver's row holds the name that text gives.
+        let names = |sql: &str| analysis(sql).columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("select id + cast(:a as integer), name from users"), ["id + cast(? as integer)", "name"]);
+        assert_eq!(names("select * from (select id + cast(:a as integer) from users)"), ["id + cast(? as integer)"]);
+        assert_eq!(names("update users set name = name returning id + cast(:a as integer)"), ["id + cast(? as integer)"]);
+        assert_eq!(names("select cast(:a as integer) as a"), ["a"]);
     }
 
     #[test]
@@ -4120,54 +4288,6 @@ mod tests {
     }
 
     #[test]
-    fn a_value_of_one_of_several_types_is_unknown() {
-        let ddl = vec![
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, s TEXT, doc TEXT NOT NULL) STRICT".to_string(),
-            "CREATE TABLE u (x)".to_string(),
-            "CREATE VIEW w AS SELECT 'x' AS v UNION ALL SELECT n FROM t".to_string(),
-        ];
-        let ty = |sql: &str| {
-            let r = analyze_ddl(sql, &ddl, &Extras::default());
-            assert!(r.analysis.diagnostics.is_empty(), "{sql}: {:?}", r.analysis.diagnostics);
-            col(&r.analysis, "v").0
-        };
-        // A compound's column is any arm's value: SQLite names the leftmost arm's declared type,
-        // which is not every arm's.
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT 'x'"), "unknown");
-        assert_eq!(ty("SELECT 'x' AS v UNION ALL SELECT n FROM t"), "unknown");
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT x FROM u"), "unknown");
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT json_extract(doc, '$.a') FROM t"), "unknown");
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT id FROM t"), "integer");
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT NULL"), "integer");
-        // Read through a subquery, a view or a WITH query, for which SQLite names the rightmost arm's.
-        assert_eq!(ty("SELECT v FROM (SELECT 'x' AS v UNION ALL SELECT n FROM t)"), "unknown");
-        assert_eq!(ty("SELECT v FROM w"), "unknown");
-        assert_eq!(ty("WITH c(v) AS (SELECT 'x' UNION ALL SELECT n FROM t) SELECT v FROM c"), "unknown");
-        // A parameter arm takes the others' type.
-        let r = analyze_ddl("SELECT n AS v FROM t UNION ALL SELECT :p", &ddl, &Extras::default());
-        assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()));
-        // So with `coalesce`, `CASE`, `iif` and `min`: a value of no known type may be any.
-        assert_eq!(ty("SELECT coalesce(s, json_extract(doc, '$.a')) AS v FROM t"), "unknown");
-        assert_eq!(ty("SELECT coalesce(s, x) AS v FROM t, u"), "unknown");
-        assert_eq!(ty("SELECT CASE WHEN n > 0 THEN n ELSE x END AS v FROM t, u"), "unknown");
-        assert_eq!(ty("SELECT iif(n > 0, n, json_extract(doc, '$.a')) AS v FROM t"), "unknown");
-        assert_eq!(ty("SELECT min(n, x) AS v FROM t, u"), "unknown");
-        assert_eq!(ty("SELECT coalesce(s, 'none') AS v FROM t"), "text");
-        assert_eq!(ty("SELECT CASE WHEN n > 0 THEN n END AS v FROM t"), "integer");
-        // `lag` and `lead` hand back their default where the row they read is missing.
-        assert_eq!(ty("SELECT lead(n, 1, 'z') OVER (ORDER BY id) AS v FROM t"), "unknown");
-        assert_eq!(ty("SELECT lag(s, 1, x'00') OVER (ORDER BY id) AS v FROM t"), "unknown");
-        assert_eq!(ty("SELECT lag(n, 1, 0) OVER (ORDER BY id) AS v FROM t"), "integer");
-        assert_eq!(ty("SELECT lag(n, 1, NULL) OVER (ORDER BY id) AS v FROM t"), "integer");
-        assert_eq!(ty("SELECT lag(n) OVER (ORDER BY id) AS v FROM t"), "integer");
-        // A parameter as the value or the default takes the other's type.
-        for sql in ["SELECT lag(n, 1, :p) OVER (ORDER BY id) AS v FROM t", "SELECT lag(:p, 1, n) OVER (ORDER BY id) AS v FROM t"] {
-            let r = analyze_ddl(sql, &ddl, &Extras::default());
-            assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()), "{sql}");
-        }
-    }
-
-    #[test]
     fn the_direct_entry_reads_a_schema_it_is_handed() {
         let ddl = vec![
             "CREATE TABLE todos (id uuid PRIMARY KEY NOT NULL, owner_id text NOT NULL, org_id uuid, title varchar(200) NOT NULL, done boolean NOT NULL DEFAULT 0, UNIQUE (owner_id, title))".to_string(),
@@ -4177,7 +4297,7 @@ mod tests {
         let r = analyze_ddl(sql, &ddl, &Extras::default());
         let a = &r.analysis;
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-        assert_eq!(a.kind, "select");
+        assert_eq!(a.kind, Some(StatementKind::Select));
         assert!(r.readonly);
         assert_eq!(col(a, "id"), ("numeric".into(), false));
         assert_eq!(col(a, "title"), ("text".into(), false));
@@ -4186,13 +4306,13 @@ mod tests {
         assert_eq!(r.declared, [Some("uuid".to_string()), Some("varchar(200)".into()), Some("uuid".into()), Some("boolean".into()), None]);
         assert_eq!(param(a, "auth.user_id"), "text");
         assert_eq!(param(a, "title"), "text");
-        assert_eq!(a.cardinality, "maybeOne");
+        assert_eq!(a.cardinality, "at_most_one");
         assert_eq!(a.rewritten.sql, "SELECT t.id, t.title, t.org_id, t.done, count(*) OVER () AS n FROM todos t WHERE t.owner_id = ? AND t.title = ?");
         // A write: not read-only, and its RETURNING typed from the target.
         let r = analyze_ddl("INSERT INTO todos (id, owner_id, title) VALUES (:id, :owner, :title) RETURNING id, done", &ddl, &Extras::default());
         assert!(r.analysis.diagnostics.is_empty(), "{:?}", r.analysis.diagnostics);
         assert!(!r.readonly);
-        assert_eq!((r.analysis.kind.as_str(), r.analysis.cardinality.as_str()), ("insert", "one"));
+        assert_eq!((r.analysis.kind.map_or("", StatementKind::as_str), r.analysis.cardinality.as_str()), ("insert", "one"));
         // A column declared BOOLEAN is a boolean to the loader's run time, which refuses a value
         // other than 0 or 1 in it.
         assert_eq!(col(&r.analysis, "done"), ("bool".into(), false));
@@ -4265,15 +4385,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unregistered_function_fails_to_prepare() {
-        let sql = "select id, nope(name) from users";
-        let a = analysis(sql);
-        assert_eq!(a.diagnostics.len(), 1, "{:?}", a.diagnostics);
-        assert_eq!(a.diagnostics[0].message, "no such function: nope");
-        assert_eq!((a.diagnostics[0].start, a.diagnostics[0].length), (sql.find("nope").unwrap(), 4));
-    }
-
-    #[test]
     fn a_scalar_subquery_is_non_null_only_when_it_always_finds_one_row() {
         let a = analysis("select (select count(*) from posts p where p.user_id = u.id) as n, (select max(title) from posts) as top, (select title from posts limit 1) as one, (select count(*) from posts group by user_id) as g, (select 1) as k from users u");
         assert_eq!(col(&a, "n"), ("integer".into(), false));
@@ -4314,61 +4425,17 @@ mod tests {
         let ddl = vec!["CREATE TABLE flags (id INTEGER PRIMARY KEY, done BOOLEAN NOT NULL, b bool, n INTEGER, t TINYINT(1))".to_string(), "CREATE VIEW v AS SELECT done FROM flags".to_string()];
         let r = analyze_ddl("select f.done, b, n, t, f.done + 0 as plus, coalesce(b, f.done) as either, coalesce(b, 0) as zero, case when n > 0 then f.done end as c, (select done from flags limit 1) as sub, x.done as derived from flags f, (select done from flags) x", &ddl, &Extras::default());
         assert!(r.analysis.diagnostics.is_empty(), "{:?}", r.analysis.diagnostics);
-        let types: Vec<String> = r.analysis.columns.iter().map(|c| scalar_name(&c.ty).unwrap_or("?").to_string()).collect();
+        let types: Vec<String> = r.analysis.columns.iter().map(|c| affinity_of(&c.ty).unwrap_or("?").to_string()).collect();
         assert_eq!(types, ["bool", "bool", "integer", "integer", "real", "bool", "real", "bool", "bool", "bool"]);
-        // The framework's truth values are the ones SQLite computes alone.
+        // The truth values are the ones SQLite computes alone.
         assert_eq!(r.booleans, [false; 10]);
         // Through a view, and across a compound only where every arm is one.
         let r = analyze_ddl("select done from v", &ddl, &Extras::default());
         assert_eq!(col(&r.analysis, "done"), ("bool".into(), false));
         let r = analyze_ddl("select done from flags union all select 5", &ddl, &Extras::default());
-        assert_ne!(scalar_name(&r.analysis.columns[0].ty), Some("bool"));
+        assert_ne!(affinity_of(&r.analysis.columns[0].ty), Some("bool"));
         let r = analyze_ddl("select done from flags union all select id > 1 from flags", &ddl, &Extras::default());
-        assert_eq!(scalar_name(&r.analysis.columns[0].ty), Some("bool"));
-    }
-
-    #[test]
-    fn a_column_declared_64_bits_wide_is_int8_and_what_sqlite_computes_from_it_an_integer() {
-        let ddl = vec![
-            "create table orders (id integer primary key, user_id BIGINT not null, ref Int8, big unsigned  big  int, wide bigint(20), n integer not null, i int, small tinyint, r real)".to_string(),
-            "create table keyed (id bigint primary key, name text)".to_string(),
-            "create view v as select user_id, n from orders".to_string(),
-        ];
-        let types = |sql: &str| {
-            let r = analyze_ddl(sql, &ddl, &Extras::default());
-            assert!(r.analysis.diagnostics.is_empty(), "{sql}: {:?}", r.analysis.diagnostics);
-            r.analysis.columns.iter().map(|c| scalar_name(&c.ty).unwrap_or("unknown").to_string()).collect::<Vec<_>>()
-        };
-        // The declared width decides: BIGINT, INT8 and UNSIGNED BIG INT in any case and spacing,
-        // with a size or not; every other integer name, and the rowid, is SQLite's INTEGER.
-        assert_eq!(types("select id, user_id, ref, big, wide, n, i, small, r from orders"), ["integer", "int8", "int8", "int8", "int8", "integer", "integer", "integer", "real"]);
-        // A BIGINT PRIMARY KEY is no rowid alias: a column of its own, declared 64 bits wide.
-        assert_eq!(types("select id, rowid as r from keyed"), ["int8", "integer"]);
-        // What passes the column through unchanged keeps its type: a subquery's or view's column,
-        // min and max, coalesce and a CASE over integers, a window's lag, unary plus.
-        assert_eq!(
-            types("select x.user_id, v.user_id as through_view, max(o.user_id) as most, coalesce(o.ref, 0) as co, ifnull(o.ref, o.n) as ifn, case when o.n > 0 then o.user_id else 0 end as cs, +o.user_id as pos, (select max(user_id) from orders) as sub from orders o, (select user_id from orders) x, v group by o.id"),
-            ["int8", "int8", "int8", "int8", "int8", "int8", "int8", "int8"],
-        );
-        assert_eq!(types("select lag(user_id) over (order by id) as prev, min(user_id, ref) as least from orders"), ["int8", "int8"]);
-        assert_eq!(types("select user_id from orders union all select 1"), ["int8"]);
-        // What SQLite computes from it is SQLite's INTEGER, as count(*) is; a mix with a real is a real.
-        assert_eq!(
-            types("select user_id + 1 as plus, user_id * n as times, -user_id as neg, abs(user_id) as a, sum(user_id) as s, count(user_id) as c, cast(user_id as integer) as ci, coalesce(ref, 1.5) as cr, total(user_id) as t from orders"),
-            ["integer", "integer", "integer", "integer", "integer", "integer", "integer", "real", "real"],
-        );
-        // total() over a 64-bit column is over integers, so it is never NaN.
-        let r = analyze_ddl("select total(user_id) as t from orders", &ddl, &Extras::default());
-        assert_eq!(col(&r.analysis, "t"), ("real".into(), false));
-        // A parameter compared with or written to one takes its type.
-        let r = analyze_ddl("select id from orders where user_id = :u and ref in (:a, :b)", &ddl, &Extras::default());
-        assert_eq!([param(&r.analysis, "u"), param(&r.analysis, "a"), param(&r.analysis, "b")], ["int8", "int8", "int8"]);
-        let r = analyze_ddl("insert into orders (user_id, n) values (:u, :n) returning user_id", &ddl, &Extras::default());
-        assert_eq!([param(&r.analysis, "u"), param(&r.analysis, "n")], ["int8", "integer"]);
-        assert_eq!(col(&r.analysis, "user_id"), ("int8".into(), false));
-        assert_eq!(r.analysis.columns[0].type_name, "int8");
-        assert!(["bigint", "BIGINT", " int8 ", "Unsigned Big Int", "bigint(20)", "unsigned big int (8)"].iter().all(|d| is_int8_declared(d)));
-        assert!(!["integer", "int", "bigint unsigned", "big int", "int64", "biginteger", "unsigned bigint"].iter().any(|d| is_int8_declared(d)));
+        assert_eq!(affinity_of(&r.analysis.columns[0].ty), Some("bool"));
     }
 
     /// A type as src/render.ts writes a SQLite one, compactly: the value `.run()` returns at the
@@ -4376,8 +4443,15 @@ mod tests {
     fn ts(t: &Type, in_json: bool) -> String {
         let null = |s: String, nullable: bool| if nullable { format!("{s} | null") } else { s };
         let list = |s: String| if s.contains('|') { format!("({s})[]") } else { format!("{s}[]") };
-        match t {
-            Type::Scalar { name } => match (name.as_str(), in_json) {
+        match &t.kind {
+            Kind::Json(crate::types::JsonType { content: Some(c), .. }) => ts(&c.ty, true),
+            Kind::Record(r) => {
+                let fields: Vec<String> = r.fields.iter().map(|f| format!("{}: {}", f.name, null(ts(&f.ty, true), f.nullable))).collect();
+                if fields.is_empty() { "Record<never, never>".into() } else { format!("{{ {} }}", fields.join("; ")) }
+            }
+            Kind::Array(a) => list(null(ts(&a.element.ty, true), a.element.nullable)),
+            Kind::Json(crate::types::JsonType { schema: Some(_), .. }) => schema_ts(&t.schema().unwrap_or(serde_json::Value::Bool(true))),
+            _ => match (affinity_of(t).unwrap_or("?"), in_json) {
                 ("integer" | "real", _) | ("int8", true) => "number".into(),
                 ("int8", false) => "bigint".into(),
                 ("text", _) => "string".into(),
@@ -4386,13 +4460,25 @@ mod tests {
                 ("bool", _) => "boolean".into(),
                 _ => "unknown".into(),
             },
-            Type::Object { fields } => {
-                let fields: Vec<String> = fields.iter().map(|f| format!("{}: {}", f.name, null(ts(&f.ty, true), f.nullable))).collect();
-                if fields.is_empty() { "Record<never, never>".into() } else { format!("{{ {} }}", fields.join("; ")) }
-            }
-            Type::List { of, nullable_items } => list(null(ts(of, true), *nullable_items)),
-            Type::Json { schema: Some(schema) } => schema_ts(schema),
-            _ => "unknown".into(),
+        }
+    }
+
+    /// The analysis's affinity name for a value of the format's type, as [`descriptor`] wrote it.
+    fn affinity_of(t: &Type) -> Option<&'static str> {
+        let name = t.label.as_deref().unwrap_or("");
+        match &t.kind {
+            Kind::Boolean => Some("bool"),
+            Kind::Integer(_) if name == "BIGINT" => Some("int8"),
+            Kind::Integer(_) => Some("integer"),
+            Kind::Float(_) => Some("real"),
+            Kind::Text(_) => Some("text"),
+            Kind::Bytes(_) => Some("blob"),
+            Kind::Union(_) if is_boolean_declared(name) => Some("bool"),
+            Kind::Union(u) if u.members.len() == 2 => Some("text"),
+            Kind::Union(u) if u.members.len() == 3 => Some("real"),
+            Kind::Union(_) if affinity(name) == "integer" && is_int8_declared(name) => Some("int8"),
+            Kind::Union(_) => Some(affinity(name)),
+            _ => None,
         }
     }
 
@@ -4459,7 +4545,7 @@ mod tests {
         assert_eq!(json_typed("select json((select json_object('n', name) from users where id = 1)) as u"), "u: { n: string } | null");
         assert_eq!(json_typed("select json_array((select name from users where id = 1)) as a, json_group_array((select name from users where id = 1)) as g, json_group_object((select name from users where id = 1), id) as o from users"), "a: [string | null]; g: (string | null)[]; o: { [key: string]: number }");
         let a = analyze_ddl(profile, &json_ddl(), &Extras::default()).analysis;
-        assert_eq!((a.columns[0].type_name.as_str(), a.cardinality.as_str()), ("text", "maybeOne"));
+        assert_eq!((a.columns[0].ty.kind.name(), a.cardinality.as_str()), ("json", "at_most_one"));
         // Each value as SQLite writes it there: an INTEGER, a BIGINT column's too, as a number
         // (which JSON.parse rounds past 2^53), a REAL, a TEXT, a NUMERIC as either, NULL as null,
         // a truth value as 1 or 0 and a BOOLEAN column as what it holds. A BLOB is read as JSONB
@@ -4476,7 +4562,9 @@ mod tests {
         assert_eq!(json_typed("select json_object('k', id, 'k', name) as o from users"), "o: { k: string }");
         // The aggregates are `[]` and `{}` over no rows, never NULL, with a FILTER or as a window.
         assert_eq!(json_typed("select json_group_array(email) as e, json_group_object(name, id) as g from users where id < 0"), "e: (string | null)[]; g: { [key: string]: number }");
-        assert_eq!(json_typed("select json_group_array(id) filter (where id > 1) as f, json_group_array(id) over (order by id) as w from users"), "f: number[]; w: number[]");
+        // Beside an aggregate, a window call runs over the aggregate's one row, where a bare
+        // column is NULL over no rows: `[null]`.
+        assert_eq!(json_typed("select json_group_array(id) filter (where id > 1) as f, json_group_array(id) over (order by id) as w from users"), "f: number[]; w: (number | null)[]");
         assert_eq!(
             json_typed("select json_object('f', json_group_array(id) filter (where id > 1)) as f, json_object('w', json_group_array(id) over ()) as w from users"),
             "f: { f: number[] }; w: { w: unknown }"
@@ -4589,7 +4677,7 @@ mod tests {
         // json_array())` is that text, and the parameter is a string.
         let a = marked("select coalesce(CAST(:doc AS TEXT), json_array()) as d, json_object('a', :a) as o from users where json_array(id) = :j", &json_ddl(), &["doc"]);
         assert_eq!(shown(&a), "d: string; o: { a: unknown }");
-        assert_eq!(a.params.iter().map(|p| format!("{} {} {}", p.name, ts(&p.ty, false), p.type_name)).collect::<Vec<_>>(), ["doc string text", "a unknown ", "j string text"]);
+        assert_eq!(a.params.iter().map(|p| format!("{} {} {}", p.name, ts(&p.ty, false), affinity_of(&p.ty).unwrap_or(""))).collect::<Vec<_>>(), ["doc string text", "a unknown ", "j string text"]);
     }
 
     #[test]

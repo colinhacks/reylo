@@ -14,7 +14,6 @@
     "reylo": "link:../../dist/reylo"
   },
   "devDependencies": {
-    "@reylosql/postgres": "link:../../dist/postgres",
     "@rspack/cli": "^2.2.9",
     "@rspack/core": "^2.2.9",
     "@types/node": "^24.0.0",

@@ -197,6 +197,13 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
   if( IsView(pTab) ) kv_bool(s, "view", 1);
 }
 
+/* A row assigned fewer values than it has columns (`SET (a, b, c) = (SELECT x, y)`) is SQLite's
+** error when it codes the statement, after the hooks: the field past the values has no expression
+** for sqlite3ExprAffinity to read. */
+static int missingField(Expr *p){
+  return p->op==TK_SELECT_COLUMN && p->pLeft && ExprUseXSelect(p->pLeft) && p->pLeft->x.pSelect
+      && (p->pLeft->x.pSelect->pEList==0 || p->iColumn>=p->pLeft->x.pSelect->pEList->nExpr);
+}
 static void expr(sqlite3_str *s, Expr *p, Select *pSel){
   int op;
   if( p==0 ){ sqlite3_str_appendall(s, "null"); return; }
@@ -204,11 +211,14 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
   if( op==TK_REGISTER ) op = p->op2;
   sqlite3_str_appendchar(s, 1, '{');
   kv_str(s, "op", opName(op));
-  kv_str(s, "aff", affName(sqlite3ExprAffinity(p)));
+  kv_str(s, "aff", affName(missingField(p) ? SQLITE_AFF_NONE : sqlite3ExprAffinity(p)));
   kv_bool(s, "canBeNull", sqlite3ExprCanBeNull(p));
   /* SQLite moves every ON term into the WHERE; one from an outer join's ON says so, and names the
   ** cursor of the join's right side, which the term restricts without removing a row. */
   if( ExprHasProperty(p, EP_OuterON) ){ kv_bool(s, "outerOn", 1); kv_int(s, "join", p->w.iJoin); }
+  /* One from an inner join's ON, which a RIGHT or FULL JOIN after it does not apply to the rows it
+  ** null-extends. */
+  if( ExprHasProperty(p, EP_InnerON) ) kv_bool(s, "innerOn", 1);
   switch( op ){
     case TK_COLUMN: case TK_AGG_COLUMN: case TK_TRIGGER:
       columnRef(s, p, pSel);
@@ -337,6 +347,7 @@ static void selectJson(sqlite3_str *s, Select *pTop){
     kv_bool(s, "outer", (pItem->fg.jointype & (JT_LEFT|JT_LTORJ))!=0);
     kv_bool(s, "cross", (pItem->fg.jointype & JT_CROSS)!=0);
     kv_bool(s, "right", (pItem->fg.jointype & JT_RIGHT)!=0);
+    kv_bool(s, "leftOfRight", (pItem->fg.jointype & JT_LTORJ)!=0);
     kv_bool(s, "tabFunc", pItem->fg.isTabFunc);
     if( pItem->fg.isTabFunc ){ key(s, "args"); exprList(s, pItem->u1.pFuncArg, p); sqlite3_str_appendchar(s, 1, ','); }
     kv_bool(s, "cte", pItem->fg.isCte);
@@ -500,6 +511,7 @@ static void returningHook(Parse *pParse, Table *pTab, ExprList *pNew){
   for(i=0; pNew && i<pNew->nExpr; i++){
     sqlite3_str_appendchar(gReturning, 1, '{');
     kv_str(gReturning, "name", pNew->a[i].zEName);
+    kv_bool(gReturning, "named", pNew->a[i].fg.eEName==ENAME_NAME);
     key(gReturning, "expr"); expr(gReturning, pNew->a[i].pExpr, 0); sqlite3_str_appendchar(gReturning, 1, ',');
     closeObj(gReturning); sqlite3_str_appendchar(gReturning, 1, ',');
   }
@@ -713,6 +725,12 @@ static int openSchema(
     }
     sqlite3_free(zErr);
   }
+  /* A double-quoted word that names no column is a string to SQLite only where the build allows
+  ** it. better-sqlite3, node:sqlite, libSQL and Turso build without it (SQLITE_DQS=0) and refuse
+  ** `select "hello"`, so a statement is prepared without it too. The replay above keeps it, since
+  ** SQLite always reads a schema it loads from a file that way, whatever the build. */
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DML, 0, (int*)0);
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DDL, 0, (int*)0);
   return SQLITE_OK;
 }
 
@@ -792,19 +810,20 @@ static char *missingSchema(const char *zSql, const char *zMsg, int *piOfst, int 
 
 /*
 ** Analyzes one statement against the schema DDL, with the host's scalar functions (azFn[i] taking
-** aFnArg[i] arguments, -1 for any number) registered on the replay, and the functions of the
+** aFnArg[i] arguments, -1 for any number) registered on the replay, its columns named as zSent,
+** the same statement as the application runs it, names them (zSql when it is null), and the functions of the
 ** host's SQLite (azHost[i] taking aHostArg[i] arguments, of type zHostType[i]; nHost is negative
 ** when the host did not list them, and every function this build has is then taken to exist).
 ** Returns a JSON document (free with reylo_sqlite_free): { statement, dml, returning, tables,
 ** columns, params, readonly, error, schemaErrors }.
 */
 char *reylo_sqlite_analyze(
-  const char *const *azDdl, int nDdl, const char *zSql, const char *const *azFn, const int *aFnArg, int nFn,
+  const char *const *azDdl, int nDdl, const char *zSql, const char *zSent, const char *const *azFn, const int *aFnArg, int nFn,
   const char *const *azHost, const int *aHostArg, const char *zHostType, int nHost
 ){
   sqlite3_str *out = sqlite3_str_new(0);
   sqlite3_str *schemaErrors = sqlite3_str_new(0);
-  sqlite3_stmt *pStmt = 0;
+  sqlite3_stmt *pStmt = 0, *pNames = 0;
   const char *zTail = 0;
   int rc, i, n, nDepth;
   sqlite3_str_appendchar(schemaErrors, 1, '[');
@@ -860,10 +879,15 @@ char *reylo_sqlite_analyze(
     key(out, "returning"); if( sqlite3_str_length(gReturning) ) sqlite3_str_appendall(out, sqlite3_str_value(gReturning)); else sqlite3_str_appendall(out, "null");
     sqlite3_str_appendchar(out, 1, ',');
     n = sqlite3_column_count(pStmt);
+    /* zSent is the statement as the application runs it, whose parameters are written differently,
+    ** and SQLite names a column with no alias after its text: `select ?1 + 1` is `?1 + 1` where
+    ** `select ? + 1` is `? + 1`. Each name is read from that text, which nothing else is. */
+    if( zSent ) sqlite3_prepare_v2(gDb, zSent, -1, &pNames, 0);
+    if( pNames && sqlite3_column_count(pNames)!=n ){ sqlite3_finalize(pNames); pNames = 0; }
     key(out, "columns"); sqlite3_str_appendchar(out, 1, '[');
     for(i=0; i<n; i++){
       sqlite3_str_appendchar(out, 1, '{');
-      kv_str(out, "name", sqlite3_column_name(pStmt, i));
+      kv_str(out, "name", sqlite3_column_name(pNames ? pNames : pStmt, i));
       kv_str(out, "declared", sqlite3_column_decltype(pStmt, i));
       kv_str(out, "table", sqlite3_column_table_name(pStmt, i));
       kv_str(out, "column", sqlite3_column_origin_name(pStmt, i));
@@ -886,6 +910,7 @@ char *reylo_sqlite_analyze(
   key(out, "schemaErrors"); sqlite3_str_appendall(out, sqlite3_str_value(schemaErrors) ? sqlite3_str_value(schemaErrors) : "[]");
   sqlite3_str_appendchar(out, 1, ',');
   closeObj(out);
+  sqlite3_finalize(pNames);
   sqlite3_finalize(pStmt);
   sqlite3_free(sqlite3_str_finish(gStmt)); sqlite3_free(sqlite3_str_finish(gDml)); sqlite3_free(sqlite3_str_finish(gReturning));
   sqlite3_free(sqlite3_str_finish(schemaErrors));
@@ -896,6 +921,9 @@ char *reylo_sqlite_analyze(
 }
 
 void reylo_sqlite_free(char *p){ sqlite3_free(p); }
+
+/* The version of this SQLite, as "3.53.4": the one that prepares every statement the engine types. */
+const char *reylo_sqlite_version(void){ return sqlite3_libversion(); }
 
 #ifdef REYLO_SQLITE_MAIN
 /* reylo_sqlite_check <database file> <statements file>: the DDL of the file, one JSON line per statement. */
@@ -912,7 +940,7 @@ int main(int argc, char **argv){
   while( fgets(line, sizeof line, f) ){
     char *nl = strchr(line, '\n'); if( nl ) *nl = 0;
     if( line[0]==0 || line[0]=='#' ) continue;
-    char *json = reylo_sqlite_analyze(azDdl, nDdl, line, 0, 0, 0, 0, 0, 0, -1);
+    char *json = reylo_sqlite_analyze(azDdl, nDdl, line, 0, 0, 0, 0, 0, 0, 0, -1);
     printf("%s\n", json);
     reylo_sqlite_free(json);
   }

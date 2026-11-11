@@ -1,12 +1,13 @@
-merged_alone.sql: many () -> { id: int4|int8, next: int8 }
-merged_in_derived.sql: many () -> { id: int4, next: int8? }
-merged_left_join.sql: many () -> { id: int4, post: int4|int8?, next: int8? }
-merged_nested_join.sql: many () -> { id: int4, next: int8? }
-merged_outer_expression.sql: many () -> { id: int4, after: int8? }
-merged_preserved.sql: many () -> { id: int4|int8, next: int8, name: text? }
-merged_right_join.sql: many () -> { id: int4, next: int8? }
-merged_unaliased.sql: many () -> { id: int4, next: int8? }
-merged_where_rejects_null.sql: many () -> { id: int4, next: int8 }
-plain_left_join.sql: many () -> { id: int4, next: int8? }
-temp_left_join.sql: many () -> { id: int4, next: int8? }
-with_shadows_view.sql: many () -> { id: int4, next: int8? }
+merged_alone.sql: many () -> { id: int | bigint, next: bigint }
+merged_in_derived.sql: many () -> { id: int, next: bigint? }
+merged_left_join.sql: many () -> { id: int, post: int | bigint?, next: bigint? }
+merged_nested_join.sql: many () -> { id: int, next: bigint? }
+merged_outer_expression.sql: many () -> { id: int, after: bigint? }
+merged_preserved.sql: many () -> { id: int | bigint, next: bigint, name: text(≤65535 bytes UTF-8)? }
+merged_right_join.sql: many () -> { id: int, next: bigint? }
+merged_unaliased.sql: many () -> { id: int, next: bigint? }
+merged_where_rejects_null.sql: many () -> { id: int, next: bigint }
+plain_left_join.sql: many () -> { id: int, next: bigint? }
+temp_left_join.sql: many () -> { id: int, next: bigint? }
+view_outer_joins_view.sql: many () -> { id: int | bigint, name: text, next: bigint? }
+with_shadows_view.sql: many () -> { id: int, next: bigint? }

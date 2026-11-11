@@ -14,7 +14,7 @@ import { hashOf } from './remark-mapper.ts';
 // import, and the capture refuses one that has no error.
 
 /** lib/sql-errors.json: dialect, then file name, then the hash of the block's text, then its errors as the editor places them. */
-export type Errors = Partial<Record<'postgres' | 'mysql' | 'sqlite', Record<string, Record<string, Diagnostic[]>>>>;
+export type Errors = Partial<Record<'postgres' | 'mysql' | 'sqlite' | 'duckdb', Record<string, Record<string, Diagnostic[]>>>>;
 
 /** A `sql` block whose meta says `errors`: an example of a statement that fails. */
 export const isErrorExample = (node: { lang?: string | null; meta?: string | null }) => (node.lang ?? 'sql') === 'sql' && /(?:^|\s)errors(?:\s|$)/.test(node.meta ?? '');
@@ -32,7 +32,7 @@ export const withErrors = (text: string, errors: Diagnostic[]) => [...errors.map
 type Node = { type: string; name?: string | null; lang?: string | null; meta?: string | null; value?: string; attributes?: { type: string; name?: string; value?: unknown }[]; data?: Record<string, unknown>; children?: Node[] };
 type Example = { node: Node & { value: string }; parent: Node; name: string | undefined; dialect: keyof Errors; hash: string; line: number };
 
-const DIALECT_NAME = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite' } as const;
+const DIALECT_NAME = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite', duckdb: 'DuckDB' } as const;
 
 const jsx = (name: string, attributes: [string, string | null][], children: Node[]): Node => ({
   type: 'mdxJsxFlowElement',

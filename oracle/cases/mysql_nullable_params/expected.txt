@@ -1,17 +1,25 @@
-coalesce_direct.sql: many (email: text?, bio: text?) -> { id: int4, name: text }
-guard_derived.sql: many (tag: text) -> { id: int4, tag: text? }
-guard_nullable.sql: many (q: text?) -> { id: int4 }
-guard_other_column.sql: many (name: text) -> { id: int4 }
-guard_with.sql: many (name: text) -> { id: int4, name: text? }
-guard_with_alias.sql: many (min: int4) -> { id: int4 }
-guard_with_columns.sql: many (q: text) -> { id: int4 }
-insert_positions.sql: none (id: int4, name: text, email: text?, bio: text?) -> {  }
-insert_set.sql: none (name: text, email: text?) -> {  }
-insert_upsert.sql: none (name: text, email: text?, bio: text?) -> {  }
-insert_values.sql: none (name: text, email: text?) -> {  }
-isnull_call.sql: many (p: text) -> { id: int4, missing: int8|int4 }
-null_safe.sql: many (email: text) -> { id: int4 }
-replace_values.sql: none (id: int4, name: text, bio: text) -> {  }
-update_expression.sql: none (email: text, id: int4) -> {  }
-update_join.sql: none (bio: text?, title: text, tag: text?, id: int4) -> {  }
-update_set.sql: none (email: text?, name: text, id: int4) -> {  }
+coalesce_direct.sql: many (email: varchar?, bio: varchar?) -> { id: int, name: varchar(≤20) }
+compared_not_written.sql: at_most_one (email: varchar) -> { id: int }
+guard_derived.sql: many (tag: varchar) -> { id: int, tag: text? }
+guard_nullable.sql: many (q: varchar?) -> { id: int }
+guard_other_column.sql: many (name: varchar) -> { id: int }
+guard_with.sql: many (name: varchar) -> { id: int, name: text? }
+guard_with_alias.sql: many (min: int32) -> { id: int }
+guard_with_columns.sql: many (q: varchar) -> { id: int }
+insert_positions.sql: none (id: int, name: varchar(≤20), email: varchar(≤40)?, bio: varchar(≤40)?) -> {  }
+insert_rows.sql: none (n1: varchar(≤20), e1: varchar(≤40)?, n2: varchar(≤20), e2: varchar(≤40)?) -> {  }
+insert_select_mixed.sql: none (email: varchar(≤40)?, bio: varchar(≤40)?) -> {  }
+insert_select_params.sql: none (name: varchar(≤20), email: varchar(≤40)?) -> {  }
+insert_set.sql: none (name: varchar(≤20), email: varchar(≤40)?) -> {  }
+insert_upsert.sql: none (name: varchar(≤20), email: varchar(≤40)?, bio: varchar(≤40)?) -> {  }
+insert_values.sql: none (name: varchar(≤20), email: varchar(≤40)?) -> {  }
+isnull_call.sql: many (p: varchar) -> { id: int, missing: bigint | int }
+null_safe.sql: many (email: varchar) -> { id: int }
+replace_parenthesized.sql: none (name: varchar(≤20), email: varchar(≤40)?, bio: varchar(≤40)?) -> {  }
+replace_values.sql: none (id: int, name: varchar(≤20), bio: varchar) -> {  }
+update_aliased.sql: none (bio: varchar(≤40)?, id: int32) -> {  }
+update_expression.sql: none (email: varchar, id: int32) -> {  }
+update_join.sql: none (bio: varchar(≤40)?, title: varchar(≤40), tag: varchar(≤20)?, id: int32) -> {  }
+update_join_tag.sql: none (email: varchar(≤40)?, title: varchar(≤40), tag: varchar(≤20)?, id: int32) -> {  }
+update_set.sql: none (email: varchar(≤40)?, name: varchar(≤20), id: int32) -> {  }
+upsert_update_list.sql: none (name: varchar(≤20), email: varchar(≤40)?, bio: varchar(≤40)?, again: varchar(≤20)) -> {  }

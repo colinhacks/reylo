@@ -1,5 +1,5 @@
 foreign_check.sql: many () -> { status: text? }
 foreign_not_null.sql: many () -> { id: int4? }
-local.sql: many () -> { id: int4, status: 'a' | 'b'? }
+local.sql: many () -> { id: int4, status: text('a' | 'b')? }
 partition_check.sql: many () -> { status: text? }
 partition_not_null.sql: many () -> { id: int4? }

@@ -1,6 +1,6 @@
 //! What a statement's analysis relied on, for a deployed query to check against the database it
-//! runs on: the schema freshness check (wiki/structured-params.md §6): any
-//! change fails.
+//! runs on: the schema freshness check, in `src/fresh.ts`. A change to a column warns, and one to a
+//! default an insert copied fails the call.
 //!
 //! For each table the statement reads or writes, the facts of each column it names (of every
 //! column, after a `*`): the type as the catalog writes it, whether it is not null, and whether it
@@ -21,16 +21,21 @@ use crate::api::{Analysis, Describe, Scope};
 use crate::dialect::Dialect;
 use crate::host::{Host, Lazy};
 use crate::lex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The tables a statement reads and writes, as its database's own parse names them: each as the
 /// statement writes it (a schema-qualified name with its schema), a WITH query's name never.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tables {
     pub read: Vec<String>,
     /// What an INSERT, an UPDATE, a DELETE or a MERGE writes.
     pub write: Vec<String>,
+    /// The functions whose bodies an analysis read: on Postgres as `to_regprocedure` reads each
+    /// back, on DuckDB the macro's name.
+    pub functions: Vec<String>,
+    /// The statement with those bodies in place, whose names are the facts.
+    pub expanded: Option<String>,
 }
 
 /// The facts a query relied on, and the query that reads them again.
@@ -84,10 +89,36 @@ pub const PG_QUERY_DEFAULTS: &str = pg_query!(
     " LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid OPERATOR(pg_catalog.=) a.attrelid AND d.adnum OPERATOR(pg_catalog.=) a.attnum"
 );
 
+/// Postgres: each function `{functions}` names, one row in the facts' columns: the name, the column
+/// `(body)`, and for a type a hash of all that says what the function returns. `{extra}` is the sixth
+/// column where the other rows have one.
+pub const PG_FUNCTIONS: &str = "SELECT r.name AS fresh_table, '(body)'::pg_catalog.text AS fresh_column, \
+    pg_catalog.md5(l.lanname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) p.prosrc \
+      OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(pg_catalog.pg_get_function_sqlbody(p.oid), ''::pg_catalog.text) \
+      OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) p.proretset::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) p.proisstrict::pg_catalog.text \
+      OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(p.proconfig::pg_catalog.text, ''::pg_catalog.text) \
+      OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(pg_catalog.pg_get_expr(p.proargdefaults, 0::pg_catalog.oid), ''::pg_catalog.text)) AS fresh_type, \
+    'false'::pg_catalog.text AS fresh_not_null, 'false'::pg_catalog.text AS fresh_default{extra} \
+    FROM (VALUES {functions}) AS r(name) \
+    JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) pg_catalog.to_regprocedure(r.name)::pg_catalog.oid \
+    JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang";
+
+/// DuckDB: each table macro `{functions}` names, one row in the facts' columns, as [`PG_FUNCTIONS`].
+const DUCKDB_FUNCTIONS: &str = "select f.function_name as fresh_table, '(body)' as fresh_column, md5(coalesce(f.macro_definition, '')) as fresh_type, \
+    'false' as fresh_not_null, 'false' as fresh_default \
+    from duckdb_functions() f where f.function_type = 'table_macro' and lower(f.function_name) in ({functions})";
+
 /// MySQL: every column of each table of the session's database that `{tables}` names.
 const MYSQL_QUERY: &str = "select c.table_name as fresh_table, c.column_name as fresh_column, c.column_type as fresh_type, cast(c.is_nullable = 'NO' as char) as fresh_not_null, \
     cast(c.column_default is not null or c.extra like '%auto_increment%' as char) as fresh_default \
     from information_schema.columns c where c.table_schema = database() and c.table_name in ({tables}) \
+    order by 1, 2";
+
+/// DuckDB: every column of each table of the current schema that `{tables}` names, a name compared
+/// as DuckDB compares one, without case.
+const DUCKDB_QUERY: &str = "select c.table_name as fresh_table, c.column_name as fresh_column, c.data_type as fresh_type, cast(not c.is_nullable as varchar) as fresh_not_null, \
+    cast(c.column_default is not null as varchar) as fresh_default \
+    from duckdb_columns() c where c.database_name = current_database() and c.schema_name = current_schema() and lower(c.table_name) in ({tables}) \
     order by 1, 2";
 
 /// SQLite: every column of each table `{tables}` (a SELECT of their names) names; an INTEGER
@@ -116,16 +147,16 @@ fn literal(s: &str) -> String {
 /// The facts of `analysis`'s statement, which reads and writes `tables`; `Some(None)` where it
 /// names no table the catalog knows, or its database's parse named none.
 pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<&Tables>, host: &Host<'_, D>) -> Lazy<Option<Fresh>> {
-    let rewritten = &analysis.rewritten;
     let Some(parsed) = tables else { return Some(None) };
+    let statement = parsed.expanded.as_deref().unwrap_or(&analysis.rewritten.sql);
     let mut tables: Vec<String> = parsed.read.iter().chain(&parsed.write).cloned().collect();
     tables.sort();
     tables.dedup();
-    if tables.is_empty() {
+    if tables.is_empty() && parsed.functions.is_empty() {
         return Some(None);
     }
     let names: Vec<String> = tables.iter().map(|t| if dialect == Dialect::Postgres { quoted(t) } else { t.rsplit('.').next().unwrap_or(t).to_string() }).collect();
-    let inserts: Vec<String> = if analysis.kind == "insert" { parsed.write.iter().map(|t| names[tables.iter().position(|x| x == t).unwrap_or(0)].clone()).collect() } else { Vec::new() };
+    let inserts: Vec<String> = if analysis.kind == Some(crate::types::StatementKind::Insert) { parsed.write.iter().map(|t| names[tables.iter().position(|x| x == t).unwrap_or(0)].clone()).collect() } else { Vec::new() };
     if dialect == Dialect::Mysql && names.iter().any(|n| n.contains('\\')) {
         return Some(None);
     }
@@ -137,11 +168,27 @@ pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<
     let query = match dialect {
         Dialect::Postgres => (if with_defaults { PG_QUERY_DEFAULTS } else { PG_QUERY }).replace("{tables}", &literals.iter().map(|l| format!("({l}::pg_catalog.text)")).collect::<Vec<_>>().join(", ")),
         Dialect::Mysql => MYSQL_QUERY.replace("{tables}", &literals.join(", ")),
+        Dialect::Duckdb => DUCKDB_QUERY.replace("{tables}", &names.iter().map(|n| literal(&n.to_lowercase())).collect::<Vec<_>>().join(", ")),
         Dialect::Sqlite => (if with_defaults { SQLITE_QUERY_DEFAULTS } else { SQLITE_QUERY }).replace("{tables}", &literals.iter().enumerate().map(|(k, l)| if k == 0 { format!("select {l} as value") } else { format!("select {l}") }).collect::<Vec<_>>().join(" union all ")),
+    };
+    // A function the analysis read through is a fact beside the columns its body names.
+    let query = match dialect {
+        _ if parsed.functions.is_empty() => query,
+        Dialect::Postgres => {
+            let list: Vec<String> = parsed.functions.iter().map(|f| format!("({}::pg_catalog.text)", literal(f))).collect();
+            let functions = PG_FUNCTIONS.replace("{functions}", &list.join(", ")).replace("{extra}", if with_defaults { ", ''::pg_catalog.text AS fresh_expr" } else { "" });
+            if tables.is_empty() { functions } else { format!("({query}) UNION ALL ({functions})") }
+        }
+        Dialect::Duckdb => {
+            let list: Vec<String> = parsed.functions.iter().map(|f| literal(&f.to_lowercase())).collect();
+            let functions = DUCKDB_FUNCTIONS.replace("{functions}", &list.join(", "));
+            if tables.is_empty() { functions } else { format!("select * from ({query}) union all {functions}") }
+        }
+        _ => query,
     };
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;
     let Ok(rows) = rows else { return Some(None) };
-    let (named, star) = names_in(&rewritten.sql, dialect);
+    let (named, star) = names_in(statement, dialect);
     let yes = |v: &str| v == "true" || v == "1";
     let text = |v: &Value| match v {
         Value::String(s) => s.clone(),
@@ -153,7 +200,7 @@ pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<
     let mut defaults = Vec::new();
     let mut kept: Vec<Vec<String>> = Vec::new();
     for r in rows.iter().map(|r| r.iter().map(text).collect::<Vec<String>>()).filter(|r| r.len() == width) {
-        if !(star || named.contains(&r[1].to_ascii_lowercase()) || (inserts.contains(&r[0]) && yes(&r[3]) && !yes(&r[4]))) {
+        if !(star || r[1] == "(body)" || named.contains(&r[1].to_ascii_lowercase()) || (inserts.contains(&r[0]) && yes(&r[3]) && !yes(&r[4]))) {
             continue;
         }
         let mut r = r;

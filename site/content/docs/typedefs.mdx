@@ -1,0 +1,697 @@
+---
+title: Reylo Type Defs
+description: A JSON format for the types of SQL queries, the same for every database.
+---
+
+<TypeDefsVersion />
+
+Reylo writes one descriptor per query, the same for every database:
+
+<TypeDef id="first" notes={{"$schema": "the format, and its version", "dialect": "every label below is this dialect's", "sql": "as the database runs it", "comment": "the comment before the statement", "result.cardinality": "one, at_most_one, many or none", "diagnostics": "errors, each at its place"}}>
+
+```sql schema
+create table users (
+  id int8 primary key,
+  email varchar(255) not null
+)
+```
+
+```sql
+-- One user's email
+select email from users where id = :id::int8
+```
+
+</TypeDef>
+
+## Usage
+
+Analyze a statement to read its descriptor:
+
+```ts
+import { analyze } from "reylo";
+
+const defs = await analyze({
+  sql: "select email from users where id = :id::int8",
+  url: "postgres://localhost/app",
+});
+```
+
+Or analyze a file from the command line, which prints one descriptor per statement:
+
+```sh
+npx reylo analyze queries/get_user.sql
+```
+
+### `$schema`
+
+The format's version, as the URL of its JSON Schema.
+
+An editor or a validator reads the schema at that URL. Versions are [semantic](https://semver.org), and until 1.0.0 a new minor version may change anything.
+
+<TypeDefPart of="first" show="$schema" />
+
+### `dialect`
+
+The database, and its server's version. SQLite has no server, so its version is that of Reylo's own SQLite, which checks the statement.
+
+Every `label` in the descriptor is this database's name for a type.
+
+<TypeDefPart of="first" show="dialect" />
+
+### `sql`
+
+The statement as the database runs it.
+
+It has the database's own placeholders, `$1` on Postgres and `?` on MySQL and SQLite, in the order `params` lists them.
+
+<TypeDefPart of="first" show="sql" />
+
+### `kind`
+
+What the statement does.
+
+It is `select`, `insert`, `update`, `delete`, `merge`, or `other` for a `CALL`, an `EXPLAIN`, a `SHOW` or DDL, and absent when the statement does not parse.
+
+<TypeDefPart of="first" show="kind" />
+
+### `comment`
+
+The prose in comments before the statement.
+
+<TypeDefPart of="first" show="comment" />
+
+### `params`
+
+What the statement takes, in order.
+
+Each has a `name` and a `type`, with `nullable` where it accepts null and `optional` where it may be left out.
+
+<TypeDefPart of="first" show="params" />
+
+### `result`
+
+What the statement returns, as a [`rows`](#rows) type.
+
+Each column has a `name` and a `type`, with `nullable` where it may be null. Nullability is on the column and never in its type, since an outer join makes any column nullable.
+
+<TypeDefPart of="first" show="result" />
+
+### `diagnostics`
+
+What the database reports against the statement, each at its place.
+
+Offsets count UTF-16 units of the statement as written, so an editor can underline it. A statement the database refuses has no columns.
+
+<TypeDef show="diagnostics" errors>
+
+```sql schema
+create table users (
+  id int8 primary key
+)
+```
+
+```sql
+select emial from users
+```
+
+</TypeDef>
+
+## Kinds
+
+Every type has a `kind`:
+
+| Kind | What it holds | For example |
+| --- | --- | --- |
+| [`boolean`](#boolean) | A truth value | `boolean`, a comparison |
+| [`integer`](#integer) | A whole number of a fixed width | `int4`, `BIGINT UNSIGNED` |
+| [`float`](#float) | An IEEE 754 binary float | `float8`, `REAL` |
+| [`decimal`](#decimal) | An exact decimal | `numeric(10,2)`, `DECIMAL` |
+| [`text`](#text) | Text, with its size and values | `varchar(255)`, an enum |
+| [`bytes`](#bytes) | Bytes | `bytea`, `BLOB` |
+| [`uuid`](#uuid) | A 128-bit identifier | `uuid` |
+| [`array`](#array) | A sequence of elements | `int4[]`, `vector(3)` |
+| [`record`](#record) | Fields, in order | `point`, a composite |
+| [`json`](#json) | A JSON value, and what it holds | `jsonb`, `JSON` |
+| [`date`](#date) | A calendar date | `date` |
+| [`time`](#time) | A time of day | `time(3)`, `timetz` |
+| [`datetime`](#datetime) | A wall-clock date and time | `timestamp`, `DATETIME` |
+| [`instant`](#instant) | A point on the timeline | `timestamptz` |
+| [`duration`](#duration) | A length of time | `interval` |
+| [`union`](#union) | One of several types | SQLite `NUMERIC` |
+| [`set`](#set) | Elements in no order | MySQL `SET` |
+| [`map`](#map) | Keys to values | `hstore` |
+| [`range`](#range) | A range of an ordered type | `tstzrange` |
+| [`multirange`](#multirange) | Non-overlapping ranges | `int4multirange` |
+| [`geometry`](#geometry) | An OGC simple feature | PostGIS `geometry` |
+| [`xml`](#xml) | XML | `xml` |
+| [`opaque`](#opaque) | A type the format does not structure | `ltree`, `money` |
+| [`unknown`](#unknown) | Nothing is known | an untyped parameter |
+| [`tagged_union`](#tagged_union) | Alternatives named by a tag | DuckDB `UNION` |
+| [`rows`](#rows) | Rows of columns | a statement's result |
+
+A type is its `kind` and the fields that narrow it, so a program can read `kind` and ignore the fields it has no use for. Its `label` is the database's name for it, where it has one. A few fields widen a type instead, each named on its kind below, and a flag appears only when it is true. Bounds are strings in the kind's canonical text, so a 64-bit bound survives JSON.
+
+### `boolean`
+
+A truth value.
+
+A comparison's result is one on every database, though MySQL and SQLite deliver it as 1 or 0.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["boolean"], "DuckDB": ["BOOLEAN"]}} notes={{"type.kind": "true or false", "type.label": "Postgres's name for boolean"}} holds={["true", "false"]}>
+
+```sql schema
+create table users (
+  id int8 primary key,
+  active boolean not null
+)
+```
+
+```sql
+select active from users where id = :id::int8
+```
+
+</TypeDef>
+
+### `integer`
+
+A whole number of a fixed width.
+
+Its range follows from the width, two's complement unless `unsigned`. A bound on one is always inclusive, since `x > 0` is `x >= 1`. MySQL's `BOOLEAN` is an integer, since it can hold 5.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["smallint", "integer", "bigint", "oid"], "MySQL": ["TINYINT", "SMALLINT", "MEDIUMINT", "INT", "BIGINT", "YEAR", "BOOLEAN"], "SQLite": ["INTEGER"], "DuckDB": ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"]}} notes={{"type.bits": "from -2147483648 to 2147483647"}} holds={["-2147483648", "0", "2147483647"]}>
+
+```sql schema
+create table products (
+  id int4 primary key,
+  stock int4 not null
+)
+```
+
+```sql
+select stock from products where id = :id::int4
+```
+
+</TypeDef>
+
+### `float`
+
+An [IEEE 754](https://en.wikipedia.org/wiki/IEEE_754) binary float.
+
+Its exponent and mantissa widths fix its range and precision.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["real", "double precision"], "MySQL": ["FLOAT", "DOUBLE"], "SQLite": ["REAL"], "DuckDB": ["FLOAT", "DOUBLE"]}} notes={{"type.exponent_bits": "a double", "type.mantissa_bits": "52, not counting the implicit bit", "type.infinity": "also holds Infinity and -Infinity", "type.nan": "and NaN", "nullable": "rate may be NULL"}} holds={["1.5", "'Infinity'", "'NaN'"]}>
+
+```sql schema
+create table products (
+  id int4 primary key,
+  rate float8
+)
+```
+
+```sql
+select rate from products where id = :id::int4
+```
+
+</TypeDef>
+
+### `decimal`
+
+An exact decimal.
+
+Its precision counts its digits, and its scale the digits after the point. A decimal is a number, so `1.5` and `1.50` are one value.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["numeric"], "MySQL": ["DECIMAL"], "DuckDB": ["DECIMAL", "BIGNUM"]}} notes={{"type.precision": "at most 10 digits", "type.min_scale": "2 after the point", "type.max_scale": "exactly", "type.nan": "NaN, but no infinity: numeric(10,2) refuses one"}} holds={["1.50", "99999999.99", "'NaN'"]}>
+
+```sql schema
+create table orders (
+  id int4 primary key,
+  total numeric(10,2) not null
+)
+```
+
+```sql
+select total from orders where id = :id::int4
+```
+
+</TypeDef>
+
+### `text`
+
+Text.
+
+Its size counts code points unless its `unit` says otherwise, and an enum is text with its values.
+
+<TypeDef show="result.columns" types={{"Postgres": ["text", "varchar", "char", "name", "an enum"], "MySQL": ["CHAR", "VARCHAR", "TINYTEXT", "TEXT", "MEDIUMTEXT", "LONGTEXT", "ENUM"], "SQLite": ["TEXT"], "DuckDB": ["VARCHAR", "ENUM"]}} notes={{"columns": "two columns: a varchar(255) and an enum"}} holds={["'ada@example.com'", "'happy'"]}>
+
+```sql schema
+create type mood as enum ('sad', 'ok', 'happy');
+create table users (
+  id int8 primary key,
+  email varchar(255) not null,
+  mood mood
+)
+```
+
+```sql
+select email, mood from users where id = :id::int8
+```
+
+</TypeDef>
+
+### `bytes`
+
+Bytes.
+
+The type states their length where it fixes one, as `binary(16)` does.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["bytea", "macaddr", "macaddr8"], "MySQL": ["BINARY", "VARBINARY", "TINYBLOB", "BLOB", "MEDIUMBLOB", "LONGBLOB"], "SQLite": ["BLOB"], "DuckDB": ["BLOB"]}} notes={{"type.kind": "any number of bytes"}} holds={["'\\x0102'", "''"]}>
+
+```sql schema
+create table users (
+  id int8 primary key,
+  avatar bytea
+)
+```
+
+```sql
+select avatar from users where id = :id::int8
+```
+
+</TypeDef>
+
+### `uuid`
+
+A 128-bit identifier.
+
+Its values are those of [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562).
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["uuid"], "DuckDB": ["UUID"]}} holds={["'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'"]}>
+
+```sql schema
+create table sessions (
+  id uuid primary key,
+  user_id int8 not null
+)
+```
+
+```sql
+select id from sessions where user_id = :user_id::int8
+```
+
+</TypeDef>
+
+### `array`
+
+A sequence of elements.
+
+Each element has its own nullability, and a [pgvector](https://github.com/pgvector/pgvector) vector is an array of floats. An array column takes `any_depth`, since Postgres doesn't enforce its dimensions; an array a statement builds has the depth it shows.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["T[]", "bit", "varbit", "lseg", "polygon", "vector", "halfvec"], "MySQL": ["BIT"], "DuckDB": ["LIST", "ARRAY", "BIT"]}} notes={{"type.element": "each element, which may be NULL", "type.any_depth": "Postgres ignores declared dimensions", "type.label": "the array type's own name"}} holds={["'{a,b}'", "'{NULL}'", "'{}'"]}>
+
+```sql schema
+create table posts (
+  id int4 primary key,
+  tags varchar(20)[] not null default '{}'
+)
+```
+
+```sql
+select tags from posts where id = :id::int4
+```
+
+</TypeDef>
+
+### `record`
+
+Fields, in order.
+
+A composite type, a row value, or an object a statement builds, each field with its own nullability.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["a composite type", "point", "line", "box", "path", "circle"], "DuckDB": ["STRUCT"]}} notes={{"type.fields": "a composite's fields may each be NULL"}} holds={["('1 Main St', '02134')", "(,)"]}>
+
+```sql schema
+create type address as (street text, zip varchar(10));
+create table customers (
+  id int4 primary key,
+  home address
+)
+```
+
+```sql
+select home from customers where id = :id::int4
+```
+
+</TypeDef>
+
+### `json`
+
+A [JSON](https://www.rfc-editor.org/rfc/rfc8259) value.
+
+Its `content` is what the statement built, in these same types, and its `schema` a [JSON Schema](https://json-schema.org) every value satisfies.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["json", "jsonb"], "MySQL": ["JSON"], "DuckDB": ["JSON"]}} notes={{"type.content": "what json_build_object built"}} holds={["'{\"id\": 1, \"title\": \"Hello\"}'"]}>
+
+```sql schema
+create table posts (
+  id int4 primary key,
+  title text not null
+)
+```
+
+```sql
+select json_build_object('id', p.id, 'title', p.title) as post
+from posts p
+where p.id = :id::int4
+```
+
+</TypeDef>
+
+### `date`
+
+A calendar date.
+
+Its bounds are [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) text, with a sign and more than four digits where a year needs them.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["date"], "MySQL": ["DATE"], "DuckDB": ["DATE"]}} notes={{"type.min": "Postgres's earliest date", "type.max": "and latest", "type.infinity": "also holds infinity and -infinity"}} holds={["'2026-11-04'", "'-infinity'"]}>
+
+```sql schema
+create table users (
+  id int8 primary key,
+  born date
+)
+```
+
+```sql
+select born from users where id = :id::int8
+```
+
+</TypeDef>
+
+### `time`
+
+A time of day.
+
+Its `tick` is its smallest step in seconds, and it holds 24:00:00 only where its bounds say so.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["time", "timetz"], "DuckDB": ["TIME", "TIMETZ", "TIME_NS"]}} notes={{"type.tick": "time(0): whole seconds", "type.max": "Postgres's time holds 24:00:00"}} holds={["'09:30:00'", "'24:00:00'"]}>
+
+```sql schema
+create table shops (
+  id int4 primary key,
+  opens time(0) not null
+)
+```
+
+```sql
+select opens from shops where id = :id::int4
+```
+
+</TypeDef>
+
+### `datetime`
+
+A date and time as a wall clock reads it.
+
+With no zone, it can't be read as an instant.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["timestamp"], "MySQL": ["DATETIME"], "DuckDB": ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"]}} notes={{"type.tick": "timestamp(3): milliseconds", "type.max": "the latest value, at that tick"}} holds={["'2026-11-04 09:30:00.123'"]}>
+
+```sql schema
+create table events (
+  id int4 primary key,
+  at timestamp(3) not null
+)
+```
+
+```sql
+select at from events where id = :id::int4
+```
+
+</TypeDef>
+
+### `instant`
+
+A point on the timeline.
+
+A `timestamptz` is one instant however a session prints it.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["timestamptz"], "MySQL": ["TIMESTAMP"], "DuckDB": ["TIMESTAMPTZ"]}} notes={{"type.tick": "microseconds", "type.min": "bounds in UTC"}} holds={["'2026-11-04 17:30:00.123456+00'"]}>
+
+```sql schema
+create table users (
+  id int8 primary key,
+  created_at timestamptz not null default now()
+)
+```
+
+```sql
+select created_at from users where id = :id::int8
+```
+
+</TypeDef>
+
+### `duration`
+
+A length of time.
+
+Its parts are months, days and a time, each signed on its own, so `1 mon` and `30 days` are two values though Postgres finds them equal. Its bounds are [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) durations.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["interval"], "MySQL": ["TIME"], "DuckDB": ["INTERVAL"]}} notes={{"type.months": "interval day keeps months and days", "type.days": "and drops the time"}} holds={["'1 mon 3 days'", "'-2 days'"]}>
+
+```sql schema
+create table plans (
+  id int4 primary key,
+  trial interval day not null
+)
+```
+
+```sql
+select trial from plans where id = :id::int4
+```
+
+</TypeDef>
+
+### `union`
+
+One of several types. <span className="typedef-dialect">SQLite</span>
+
+A SQLite column outside a `STRICT` table is the union of what its affinity stores. A union is flat, and lists its members in the order of the kinds.
+
+<TypeDef dialect="sqlite" show="result.columns.0" types={{"Postgres": ["inet", "cidr"], "SQLite": ["every column outside a STRICT table"]}} notes={{"type.members": "what NUMERIC affinity stores outside a STRICT table", "type.label": "the declared type"}} holds={["12", "1.5", "'abc'", "x'00'"]}>
+
+```sql schema
+create table items (
+  id integer primary key,
+  price numeric
+)
+```
+
+```sql
+select price from items where id = :id
+```
+
+</TypeDef>
+
+### `set`
+
+Elements in no order, each at most once. <span className="typedef-dialect">MySQL</span>
+
+<TypeDef dialect="mysql" show="result.columns.0" types={{"MySQL": ["SET"]}} holds={["''", "'a'", "'a,b'"]}>
+
+```sql schema
+create table m (
+  id bigint unsigned primary key,
+  tags set('a', 'b')
+)
+```
+
+```sql
+select tags from m where id = :id
+```
+
+</TypeDef>
+
+### `map`
+
+Keys to values, each key once.
+
+On Postgres, this is [`hstore`](https://www.postgresql.org/docs/current/hstore.html).
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["hstore"], "DuckDB": ["MAP"]}} notes={{"type.key": "a key is never NULL", "type.value": "a value may be"}} holds={["'color=>red, size=>NULL'"]}>
+
+```sql schema
+create extension hstore;
+create table products (
+  id int4 primary key,
+  attrs hstore
+)
+```
+
+```sql
+select attrs from products where id = :id::int4
+```
+
+</TypeDef>
+
+### `range`
+
+A range of an ordered type.
+
+It may be empty, and either end may be unbounded.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange"]}} notes={{"type.subtype": "a range of timestamptz"}} holds={["'[2026-11-04 09:00+00, 2026-11-04 10:00+00)'", "'empty'"]}>
+
+```sql schema
+create table bookings (
+  id int4 primary key,
+  during tstzrange not null
+)
+```
+
+```sql
+select during from bookings where id = :id::int4
+```
+
+</TypeDef>
+
+### `multirange`
+
+Non-overlapping ranges, in order.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["int4multirange", "int8multirange", "nummultirange", "tsmultirange", "tstzmultirange", "datemultirange"]}} holds={["'{[1,3), [5,8)}'", "'{}'"]}>
+
+```sql schema
+create table rooms (
+  id int4 primary key,
+  free int4multirange not null
+)
+```
+
+```sql
+select free from rooms where id = :id::int4
+```
+
+</TypeDef>
+
+### `geometry`
+
+An [OGC simple feature](https://www.ogc.org/standards/sfa/).
+
+It has a model, an SRID, a subtype and its coordinates. On Postgres, it comes from [PostGIS](https://postgis.net).
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["geometry", "geography"], "MySQL": ["GEOMETRY", "POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION"]}} notes={{"type.srid": "geometry(Point, 4326)", "type.coordinates": "neither Z nor M"}} holds={["'SRID=4326;POINT(-71.06 42.36)'"]}>
+
+```sql schema
+create extension postgis;
+create table places (
+  id int4 primary key,
+  geom geometry(Point, 4326) not null
+)
+```
+
+```sql
+select geom from places where id = :id::int4
+```
+
+</TypeDef>
+
+### `xml`
+
+[XML](https://www.w3.org/TR/xml/).
+
+A document with one root, or with `fragment` several.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["xml"]}} notes={{"type.fragment": "Postgres's xml may have several roots"}} holds={["'<a/>'", "'<a/><b/>'"]}>
+
+```sql schema
+create table feeds (
+  id int4 primary key,
+  body xml
+)
+```
+
+```sql
+select body from feeds where id = :id::int4
+```
+
+</TypeDef>
+
+### `opaque`
+
+A type the format doesn't structure.
+
+Its `label` is all the format says. A program that meets a kind it doesn't know reads it as this one.
+
+<TypeDef show="result.columns.0" types={{"Postgres": ["money", "tsvector", "tsquery", "pg_lsn", "an extension's type"], "SQL Server": ["sql_variant"], "Oracle": ["ANYDATA"]}} notes={{"type.label": "an extension's type, by its name"}} holds={["'top.science.physics'"]}>
+
+```sql schema
+create extension ltree;
+create table tree (
+  id int4 primary key,
+  path ltree not null
+)
+```
+
+```sql
+select path from tree where id = :id::int4
+```
+
+</TypeDef>
+
+### `unknown`
+
+Nothing is known about the values. <span className="typedef-dialect">SQLite</span>
+
+A parameter nothing in the statement types is one, where [`allow_untyped_params`](/configuration#allow_untyped_params) lets it through.
+
+<TypeDef dialect="sqlite" show="result.columns.0" types={{"SQLite": ["every ANY column in a STRICT table"]}} notes={{"type.kind": "allow_untyped_params lets it through"}}>
+
+```sql
+select :x as x
+```
+
+</TypeDef>
+
+### `tagged_union`
+
+One of several alternatives, each named by a tag. <span className="typedef-dialect">DuckDB</span>
+
+Every value carries its tag.
+
+<TypeDef example="duckdb_column" show="result.columns.0" types={{"DuckDB": ["UNION"]}} notes={{"type.alternatives": "in the order the type declares them"}} holds={["union_value(num := 1)", "union_value(str := 'x')"]}>
+
+```sql
+select union_value(num := 1)::union(num integer, str varchar) as u
+```
+
+</TypeDef>
+
+### `rows`
+
+Rows of columns.
+
+It is what every statement returns as its [`result`](#result), and a relation nested in a value is the same kind, as SQL's `MULTISET` and Oracle's nested tables are. Its `cardinality` is `one`, `at_most_one`, `many`, or `none` for a write without `returning`.
+
+On rows that can be more than one, Postgres also writes:
+
+- `unique`: each set of columns no two rows agree on, a table's primary key first where the rows hold it. A NULL counts as equal to another NULL.
+- `order`: the columns the rows are sorted on, each with its direction and where its NULLs sort. It ends at the first `ORDER BY` key that isn't a column of the result, since a later key sorts only among rows that tie on that one.
+
+<TypeDef show="result" notes={{"result.unique": "no two rows agree on any of these sets", "result.order": "email, highest first, then id"}}>
+
+```sql schema
+create table users (
+  id int8 primary key,
+  email varchar(255) not null unique
+)
+```
+
+```sql
+select id, email from users order by email desc, id
+```
+
+</TypeDef>
+
+## Specification
+
+<TypeDefsSpec />

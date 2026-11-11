@@ -1,0 +1,18 @@
+[package]
+name = "reylo-engine-duckdb"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Reylo's analysis engine for DuckDB: the types DuckDB's prepared statement reports, read with a sqlparser tree for nullability and the row-count proof, over the core's protocol."
+
+[lib]
+name = "reylo_engine_duckdb"
+
+[build-dependencies]
+reylo-engine-build = { path = "../build-support" }
+
+[dependencies]
+reylo-engine-core = { path = "../core" }
+sqlparser = { version = "=0.63.0", default-features = false, features = ["std", "visitor"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }

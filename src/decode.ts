@@ -22,9 +22,12 @@
 // A built-in type (an oid below 10000, the same in every database and version) has its kind here.
 // A type the database created (an enum, a domain's array, an extension's type) has the kind the
 // module gives its column; for a query defined by hand, one catalog query per client reads which of
-// those oids are arrays, cached in a WeakMap keyed by the app's object.
-import { coerce, DecodeError, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
+// those oids are arrays, cached in a WeakMap keyed by the app's object. A row value the module knows
+// the fields of has the kind of its column whatever its oid: `record` is one oid for every shape of
+// row, and a built-in catalog table's row type is below 10000 too.
+import { coerce, DecodeError, elementKind, isRowKind, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
+import { lastOfEach, rowOf, type RowBuilder } from "./row.ts";
 
 type AnyClient = Record<string, any>;
 type Field = { name: string; oid: number };
@@ -32,13 +35,17 @@ type Field = { name: string; oid: number };
 /** Below it the built-in types, whose oids every database shares (FirstGenbkiObjectId). */
 const FIRST_USER_OID = 10000;
 
-const SCALAR_OIDS: Readonly<Record<number, ScalarKind>> = {
+const SCALAR_OIDS: Readonly<Record<number, Kind>> = {
   16: "bool", 17: "bytes", 20: "int8", 21: "int", 23: "int", 26: "int", 700: "float", 701: "float",
   1700: "decimal", 1082: "date", 1114: "timestamp", 1184: "timestamptz", 1186: "interval", 114: "json", 3802: "json",
+  600: "point", 601: "lseg", 602: "path", 603: "box", 604: "polygon", 628: "line", 718: "circle",
+  3904: "range:int", 3906: "range:decimal", 3908: "range:timestamp", 3910: "range:timestamptz", 3912: "range:date", 3926: "range:int8",
+  4451: "multirange:int", 4532: "multirange:decimal", 4533: "multirange:timestamp", 4534: "multirange:timestamptz", 4535: "multirange:date", 4536: "multirange:int8",
 };
 
-// Every built-in array type and its element, as Postgres 18's pg_type lists them (none was ever
-// renumbered): `_record` is left out, since an array of row values is its text.
+// Every built-in array type and its element, as Postgres 19's pg_type lists them (none was ever
+// renumbered): `_record` is left out, since an array of row values is its text until its column's
+// kind says what its fields are.
 const ARRAY_OIDS = new Map<number, number>([
   [143, 142], [199, 114], [271, 5069], [629, 628], [651, 650], [719, 718], [775, 774], [791, 790], [1000, 16], [1001, 17],
   [1002, 18], [1003, 19], [1005, 21], [1006, 22], [1007, 23], [1008, 24], [1009, 25], [1010, 27], [1011, 28], [1012, 29],
@@ -48,7 +55,7 @@ const ARRAY_OIDS = new Map<number, number>([
   [2207, 2202], [2208, 2203], [2209, 2204], [2210, 2205], [2211, 2206], [2949, 2970], [2951, 2950], [3221, 3220],
   [3643, 3614], [3644, 3642], [3645, 3615], [3735, 3734], [3770, 3769], [3807, 3802], [3905, 3904], [3907, 3906],
   [3909, 3908], [3911, 3910], [3913, 3912], [3927, 3926], [4073, 4072], [4090, 4089], [4097, 4096], [4192, 4191],
-  [5039, 5038], [6150, 4451], [6151, 4532], [6152, 4533], [6153, 4534], [6155, 4535], [6157, 4536],
+  [5039, 5038], [6150, 4451], [6151, 4532], [6152, 4533], [6153, 4534], [6155, 4535], [6157, 4536], [6442, 6437], [6491, 6490],
 ]);
 const BOX_ARRAY = 1020;
 
@@ -88,8 +95,9 @@ const learnedOf = (key: object): Learned => {
 type Load = (sql: string) => Promise<(string | null)[][]>;
 
 // Every type among `oids`, and every array type's element, with its base type through any number
-// of domains and that base type's name (an array of row values, or of a type whose own output is
-// an array, stays text). An oid goes out as int8, since one above 2^31 would wrap as int4.
+// of domains and that base type's name (an array of a type whose own output is an array stays
+// text), a row type's fields as a JSON array of each one's name and type, and a range's or a
+// multirange's subtype. An oid goes out as int8, since one above 2^31 would wrap as int4.
 const catalogSql = (oids: number[]) => {
   const list = `'{${oids.map((o) => Math.trunc(o)).join(",")}}'::pg_catalog.oid[]`;
   return `with recursive d(oid, base) as (
@@ -97,7 +105,9 @@ const catalogSql = (oids: number[]) => {
   union all
   select d.oid, t.typbasetype from d join pg_catalog.pg_type t on t.oid = d.base where t.typtype = 'd'
 )
-select e.typarray::int8::text, b.oid::int8::text, (b.typtype = 'c' or b.typcategory = 'A')::text, e.typdelim::text, e.oid::int8::text, b.typname::text
+select e.typarray::int8::text, b.oid::int8::text, (b.typtype = 'c' or b.typcategory = 'A')::text, e.typdelim::text, e.oid::int8::text, b.typname::text,
+  case when b.typtype = 'c' then coalesce((select pg_catalog.json_agg(pg_catalog.json_build_array(a.attname, a.atttypid::int8) order by a.attnum) from pg_catalog.pg_attribute a where a.attrelid = b.typrelid and a.attnum > 0 and not a.attisdropped)::text, '[]') end,
+  b.typtype::text, (select r.rngsubtype::int8::text from pg_catalog.pg_range r where r.rngtypid = b.oid or r.rngmultitypid = b.oid)
 from pg_catalog.pg_type e
 join pg_catalog.pg_type b on b.oid = coalesce((select d.base from d join pg_catalog.pg_type t on t.oid = d.base where d.oid = e.oid and t.typtype <> 'd'), e.oid)
 where e.typarray = any(${list}) or (e.oid = any(${list}) and e.typcategory <> 'A')`;
@@ -105,18 +115,33 @@ where e.typarray = any(${list}) or (e.oid = any(${list}) and e.typcategory <> 'A
 
 /**
  * Reads the kinds of the oids the client has not met yet: a type the database created by its
- * name, as the engine names it (pgvector's `vector` is its numbers, an enum its text), and an array
- * of one its element's kind.
+ * name, as the engine names it (pgvector's `vector` is its numbers, an enum its text), a row type
+ * by its fields, each field's type read the same way where the client has not met it either, and
+ * an array of one its element's kind.
  */
 async function learn(key: object, oids: Iterable<number>, load: Load): Promise<void> {
   const known = learnedOf(key);
   const missing = new Set([...oids].filter((oid) => !known.has(oid)));
   if (!missing.size) return;
   const rows = await load(catalogSql([...missing]));
+  // A row type's fields, by its base type's oid; the catalog forbids a row type that holds itself.
+  const rowTypes = new Map<number, [string, number][]>();
+  for (const row of rows) if (row[6]) rowTypes.set(Number(row[1]), JSON.parse(row[6]) as [string, number][]);
+  // A range's or a multirange's subtype, by its base type's oid.
+  const subtypes = new Map<number, { range: "range" | "multirange"; subtype: number }>();
+  for (const row of rows) if (row[8] && (row[7] === "r" || row[7] === "m")) subtypes.set(Number(row[1]), { range: row[7] === "r" ? "range" : "multirange", subtype: Number(row[8]) });
+  const unmet = [...new Set([...[...rowTypes.values()].flat().map(([, oid]) => Number(oid)), ...[...subtypes.values()].map((s) => s.subtype)])].filter((oid) => !builtin(oid) && !known.has(oid));
+  if (unmet.length) await learn(key, unmet, load);
+  const rowKind = (fields: [string, number][]) => `(${fields.map(([field, oid]) => {
+    const k = builtin(Number(oid)) ?? known.get(Number(oid)) ?? { kind: "text", delim: "," };
+    return JSON.stringify(k.kind.endsWith("[]") && k.delim !== "," ? [field, k.kind, k.delim] : [field, k.kind]);
+  }).join(",")})`;
   // An array oid takes its element's kind, never the text its own row as a type would give it.
   const arrays = new Set<number>();
   for (const [array, base, isText, delim, oid, name] of rows) {
-    const element = isText === "true" ? undefined : (builtin(Number(base))?.kind ?? (name ? scalarKind(name, "postgres") : "text"));
+    const fields = rowTypes.get(Number(base));
+    const range = subtypes.get(Number(base));
+    const element = fields !== undefined ? rowKind(fields) : range !== undefined ? `${range.range}:${(builtin(range.subtype) ?? known.get(range.subtype))?.kind ?? "text"}` : isText === "true" ? undefined : (builtin(Number(base))?.kind ?? (name ? scalarKind(name) : "text"));
     if (missing.has(Number(array))) {
       arrays.add(Number(array));
       known.set(Number(array), element === undefined || element.endsWith("[]") ? { kind: "text", delim: "," } : { kind: `${element}[]`, delim: delim ?? "," });
@@ -127,8 +152,9 @@ async function learn(key: object, oids: Iterable<number>, load: Load): Promise<v
 }
 
 /**
- * The decoder of each field a result named: a built-in type's by its oid, a created type's by the
- * module's column (when the module's columns match the result's) or by what the catalog said.
+ * The decoder of each field a result named: a row value's by the module's column, a built-in type's
+ * by its oid, a created type's by the module's column (when the module's columns match the result's)
+ * or by what the catalog said.
  */
 async function fieldDecoders(fields: Field[], columns: Columns | undefined, key: object, load: Load): Promise<Decoder[]> {
   const byColumn = columns && columns.length === fields.length ? columns : undefined;
@@ -136,7 +162,9 @@ async function fieldDecoders(fields: Field[], columns: Columns | undefined, key:
   const known = learnedOf(key);
   if (byColumn) created.forEach((f) => known.has(f.oid) || known.set(f.oid, { kind: byColumn[fields.indexOf(f)]![1], delim: byColumn[fields.indexOf(f)]![2] ?? "," }));
   else if (created.length) await learn(key, created.map((f) => f.oid), load);
-  return fields.map((f) => {
+  return fields.map((f, i) => {
+    const column = byColumn?.[i];
+    if (column && isRowKind(column[1])) return textDecoder(column[1], column[2]);
     const b = builtinDecoder(f.oid);
     if (b) return b;
     const k = known.get(f.oid) ?? { kind: "text", delim: "," };
@@ -195,6 +223,17 @@ async function pgFamily(key: object, run: (types: object) => Promise<PgResult>, 
   const result = await run(types.table);
   const rows = Array.isArray(result) ? (result as Record<string, unknown>[]) : result.rows;
   if (types.sawBinary()) throw refuseBinary();
+  // The table goes by oid, which says nothing of a built-in row's fields, so those are still text.
+  const rowColumns = columns?.filter(([, kind]) => isRowKind(kind));
+  if (rowColumns?.length) {
+    const decoders = rowColumns.map(([name, kind, delim]) => [name, textDecoder(kind, delim)] as const);
+    for (const row of rows) {
+      for (const [name, decode] of decoders) {
+        const v = row[name];
+        if (typeof v === "string") row[name] = decode(v);
+      }
+    }
+  }
   if (!types.sawPending()) return rows;
   // Learned from the module's columns where the result has their fields, else from the catalog.
   if (result.fields && !Array.isArray(result)) await fieldDecoders(result.fields.map((f) => ({ name: f.name, oid: f.dataTypeID })), columns, key, load);
@@ -297,18 +336,19 @@ async function pglite(db: AnyClient, text: string, values: unknown[], columns: C
   const result = await db.query(text, values, { rowMode: "object", parsers });
   const rows: Record<string, unknown>[] = result.rows;
   const fields: Field[] = (result.fields ?? []).map((f: { name: string; dataTypeID: number }) => ({ name: f.name, oid: f.dataTypeID }));
-  // Created types, which the table kept as text, and an oid the table did not name, which went
-  // through the instance's parser.
-  const after = fields.map((f, i) => [f, i] as const).filter(([f]) => f.oid >= FIRST_USER_OID || !oids.has(f.oid));
+  // Created types, which the table kept as text, an oid the table did not name, which went through
+  // the instance's parser, and a row value, whose oid says nothing of its fields.
+  const byColumn = columns && columns.length === fields.length ? columns : undefined;
+  const after = fields.map((f, i) => [f, i] as const).filter(([f, i]) => f.oid >= FIRST_USER_OID || !oids.has(f.oid) || (byColumn !== undefined && isRowKind(byColumn[i]![1])));
   if (after.length) {
     const load: Load = async (sql) => (await db.query(sql, [], { rowMode: "array", parsers: { 25: keepText } })).rows;
     const decoders = await fieldDecoders(fields, columns, db, load);
-    const kinds = fields.map((f, i) => (columns && columns.length === fields.length ? columns[i]![1] : (builtin(f.oid)?.kind ?? learnedOf(db).get(f.oid)?.kind ?? "text")));
+    const kinds = fields.map((f, i) => byColumn?.[i]![1] ?? builtin(f.oid)?.kind ?? learnedOf(db).get(f.oid)?.kind ?? "text");
     for (const [f, i] of after) {
       const decode = decoders[i]!;
       for (const row of rows) {
         const v = row[f.name];
-        if (v !== null && v !== undefined) row[f.name] = typeof v === "string" ? decode(v) : coerce(kinds[i]!, v, f.name);
+        if (v !== null && v !== undefined) row[f.name] = typeof v === "string" ? decode(v) : coerce(kinds[i]!, v, f.name, ",", true);
       }
     }
   }
@@ -325,14 +365,14 @@ async function pglite(db: AnyClient, text: string, values: unknown[], columns: C
 type BufferLike = Uint8Array;
 const textOf = utf8;
 
-export async function postgresJs(c: AnyClient, text: string, params: unknown[], columns: Columns | undefined): Promise<unknown[]> {
+export async function postgresJs(c: AnyClient, text: string, params: unknown[], columns: Columns | undefined, row?: RowBuilder): Promise<unknown[]> {
   // Prepared, as postgres.js prepares its own queries: its unsafe() prepares nothing by default,
   // so every run with a parameter took two round trips (Parse and Describe, then Bind and Execute)
   // where a statement prepared on the connection takes one. A client made with `prepare: false`,
   // as one behind a pooler in transaction mode is, still prepares nothing: its option wins.
   const pending = c.unsafe(text, params, { prepare: true });
   // A client whose query has no raw() (a wrapper of postgres.js's shape): its values, given their kinds.
-  if (typeof pending?.raw !== "function") return bunRows(await pending, columns);
+  if (typeof pending?.raw !== "function") return bunRows(await pending, columns, true);
   const raw = await pending.raw();
   const fields: Field[] = (raw.columns ?? []).map((f: { name: string; type: number }) => ({ name: f.name, oid: f.type }));
   if (!raw.length) return [];
@@ -346,17 +386,19 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
   const decoders = await fieldDecoders(fields, columns, c, load);
   // The module's names, which a `transform.column` of the app's does not rename; a query defined by
   // hand has the server's.
-  const names = columns && columns.length === fields.length ? columns.map(([name]) => name) : fields.map((f) => f.name);
-  const n = names.length;
+  const byColumns = columns !== undefined && columns.length === fields.length;
+  const build = byColumns && row ? row : rowOf(byColumns ? columns.map(([name]) => name) : fields.map((f) => f.name));
+  const n = fields.length;
+  // Each row's values, decoded into one array the builder copies from.
+  const decoded = new Array<unknown>(n);
   const out = new Array(raw.length);
   for (let r = 0; r < raw.length; r++) {
     const values = raw[r] as (BufferLike | null)[];
-    const row: Record<string, unknown> = {};
     for (let i = 0; i < n; i++) {
       const v = values[i];
-      row[names[i]!] = v === null || v === undefined ? null : decoders[i]!(textOf(v));
+      decoded[i] = v === null || v === undefined ? null : decoders[i]!(textOf(v));
     }
-    out[r] = row;
+    out[r] = build(decoded);
   }
   return out;
 }
@@ -370,11 +412,12 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  * typed array, an array of a type Bun does not parse (an enum's, uuid, name, a range) as its text,
  * a pgvector vector and an hstore as their text, MySQL's TINYINT(1) and a comparison as a number or
  * a BIGINT's digits, and its BIT(1) as a boolean; and an interval as Postgres's text, which Reylo writes as
- * an ISO 8601 duration.
+ * an ISO 8601 duration. A row value, a geometric type, a range and a MySQL SET are their text, which
+ * Reylo reads as an object, an array or a Set, and a MySQL ENUM's text is checked.
  */
-const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector|hstore)$|\[\]$|\|/;
+const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector|hstore|point|line|lseg|box|path|polygon|circle|enum|set)$|^\(|^(multi)?range:|\[\]$|\|/;
 
-export function bunRows(rows: unknown[], columns: Columns | undefined): unknown[] {
+export function bunRows(rows: unknown[], columns: Columns | undefined, postgres = false): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
   const first = rows[0] as Record<string, unknown>;
   // A query defined by hand carries no kinds: only what Bun's own types say is converted.
@@ -384,16 +427,16 @@ export function bunRows(rows: unknown[], columns: Columns | undefined): unknown[
     for (const [name, kind, delim] of work) {
       const v = row[name];
       if (v === null || v === undefined) continue;
-      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim);
+      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim, postgres);
     }
   }
   return rows;
 }
 
 /** A value of `kind` as Bun.sql gave it: an either's digits are a MySQL BIGINT's, which Bun gives as a string. */
-function bunValue(kind: Kind, v: unknown, name: string, delim?: string): unknown {
+function bunValue(kind: Kind, v: unknown, name: string, delim: string | undefined, postgres: boolean): unknown {
   if (typeof v === "string" && kind.includes("|") && kind.split("|").includes("int8") && /^[+-]?\d+$/.test(v)) return BigInt(v);
-  return coerce(kind, v, name, delim);
+  return coerce(kind, v, name, delim, postgres);
 }
 
 /** A value whose kind is not known: a typed array an array, and a Date, which no kind is, the instant's text. */
@@ -515,8 +558,10 @@ function slonikRows(rows: Record<string, unknown>[], fields: { name: string; dat
       const b = builtin(f.dataTypeId);
       return b ? ([f.name, b.kind, b.delim] as const) : ([f.name, "text"] as const);
     });
+  // The last column of each name, whose value the row holds: decoded once, by that column's kind.
+  const kept = lastOfEach(work);
   for (const row of rows) {
-    for (const [name, kind, delim] of work) row[name] = slonikValue(kind, row[name], name, delim);
+    for (const [name, kind, delim] of kept) row[name] = slonikValue(kind, row[name], name, delim);
   }
   return rows;
 }
@@ -527,11 +572,11 @@ function slonikValue(kind: Kind, v: unknown, name: string, delim?: string): unkn
   if (typeof v === "string") return textDecoder(kind, delim)(v);
   // pg parses an array's text into an array, each element by the element type's parser, which
   // Reylo's tag passes through for the types it names.
-  if (Array.isArray(v) && kind.endsWith("[]")) return v.map((e) => (Array.isArray(e) ? slonikValue(kind, e, name, delim) : slonikValue(kind.slice(0, -2), e, name, delim)));
+  if (Array.isArray(v) && kind.endsWith("[]")) return v.map((e) => (Array.isArray(e) ? slonikValue(kind, e, name, delim) : slonikValue(elementKind(kind), e, name, delim)));
   if (SLONIK_STRICT.test(kind)) {
     throw new DecodeError(`Column "${name}" reached Reylo already converted by Slonik's driver (${v instanceof Date ? "a Date" : typeof v}), which ignored the query's type parsers, as a custom driverFactory may: Reylo refuses it rather than return a value that may have been rounded.`);
   }
-  return coerce(kind, v, name, delim);
+  return coerce(kind, v, name, delim, true);
 }
 
 const refuseSlonikRows = () =>

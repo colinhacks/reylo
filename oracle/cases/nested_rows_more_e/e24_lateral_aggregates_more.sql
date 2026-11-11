@@ -1,0 +1,1 @@
+select l.* from posts p cross join lateral (select string_agg(x.body, ',') as sa, bool_and(x.big > 0) as ba, array_agg(x.big) as aa, jsonb_agg(x.big) as ja, count(x.body) as cb from comments x where x.post_id = p.id) l

@@ -4,14 +4,14 @@ import { DatabaseSync } from "node:sqlite";
 import { execute, type QueryModule } from "../src/execute.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, postgresInterval, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder, withinDimensions } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
+import { array, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
 
 // The one table (src/values.ts): the kind of each SQL type, the TypeScript type the module declares
 // for it, the JSON Schema of its JSON form, and the value the run time gives it, which must agree.
 
-const scalar = (name: string): EngineType => ({ kind: "scalar", name });
 /** The TypeScript type a value is, as the declared type names it. */
 function typeOf(v: unknown): string {
   if (v === null) return "null";
@@ -27,21 +27,23 @@ const TEXTS: Record<string, string> = {
   bool: "t", int2: "2", int4: "4", oid: "26", float4: "1.1", float8: "2.2", int8: "9007199254740993", numeric: "1.100000000000000001",
   money: "$1.50", date: "2026-10-20", timestamp: "2026-10-20 10:00:00.123456", timestamptz: "2026-10-20 10:00:00.123456+02",
   time: "10:00:00", timetz: "10:00:00+02", interval: "1 day", json: '{"a":1}', jsonb: "[1,2]", bytea: "\\x0102ff", uuid: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
-  text: "hi", point: "(1,2)", int4range: "[1,5)", xid: "7", void: "",
+  text: "hi", xid: "7", void: "",
 };
 
 test("every Postgres type's decoded value is the type the module declares for it, and its JSON form is its schema's", () => {
   for (const [name, text] of Object.entries(TEXTS)) {
-    const t = scalar(name);
+    const t = pg(name);
     const kind = columnKind(t, "postgres");
     const value = textDecoder(kind)(text);
     const declared = renderType(t, false, "postgres");
-    if (declared !== "unknown") assert.equal(typeOf(value), declared, name);
+    // A JSON value is any JSON, `Json`: what JSON.parse gives back.
+    if (declared === "Json") assert.deepEqual(JSON.parse(JSON.stringify(value)), value, name);
+    else if (declared !== "unknown") assert.equal(typeOf(value), declared, name);
     // The array of it, NULL elements null.
-    const array: EngineType = { kind: "array", of: t };
-    const values = textDecoder(columnKind(array, "postgres"))(`{${JSON.stringify(text)},NULL}`) as unknown[];
+    const values = textDecoder(columnKind(array(t), "postgres"))(`{${JSON.stringify(text)},NULL}`) as unknown[];
     assert.equal(values[1], null, name);
-    if (declared !== "unknown") assert.equal(`(${typeOf(values[0])} | null)[]`, renderType(array, false, "postgres"), name);
+    if (declared === "Json") assert.equal(renderType(array(t), false, "postgres"), "Json[]", name);
+    else if (declared !== "unknown") assert.equal(`(${typeOf(values[0])} | null)[]`, renderType(array(t), false, "postgres"), name);
     // The value written as JSON, a BigInt as the integer it is, has the schema's JSON type.
     const schema = typeSchema(t, "postgres") as { type?: string | string[] };
     if (schema.type !== undefined) {
@@ -54,16 +56,142 @@ test("every Postgres type's decoded value is the type the module declares for it
   }
 });
 
+// Postgres's geometric types, each as the server writes it and as the object `.run()` gives it.
+const SHAPES: [name: string, text: string, value: unknown][] = [
+  ["point", "(1.5,-2)", { x: 1.5, y: -2 }],
+  ["line", "{1,-1,0}", { a: 1, b: -1, c: 0 }],
+  ["lseg", "[(0,0),(1,1e+300)]", [{ x: 0, y: 0 }, { x: 1, y: 1e300 }]],
+  ["box", "(3,4),(1,2)", { high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }],
+  ["path", "[(0,0),(1,1),(2,0)]", { closed: false, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 }] }],
+  ["path", "((0,0),(1,1))", { closed: true, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }],
+  ["polygon", "((0,0),(1,1),(2,0))", [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 }]],
+  ["circle", "<(1,2),Infinity>", { center: { x: 1, y: 2 }, radius: Infinity }],
+];
+
+test("a geometric type is an object of its fields, declared and decoded alike, and goes back as the text it came from", () => {
+  for (const [name, text, value] of SHAPES) {
+    const t = pg(name);
+    const kind = columnKind(t, "postgres");
+    assert.equal(kind, name);
+    assert.deepEqual(textDecoder(kind)(text), value, name);
+    assert.deepEqual(coerce(kind, text, "c"), value, `${name}: from the text a driver gave`);
+    assert.equal(postgresLiteral(t, value, (m) => assert.fail(m)), text.replace("1e+300", "1e+300"), `${name}: back as its text`);
+    // The type the module declares, the parameter's and the JSON Schema of the JSON form all say the same object.
+    const declared = renderType(t, false, "postgres");
+    assert.equal(renderParamType(t, "postgres"), declared, name);
+    assert.equal(declared, kindType(kind), name);
+    assert.equal((typeSchema(t, "postgres") as { type: string }).type, Array.isArray(value) ? "array" : "object", name);
+  }
+  assert.equal(renderType(pg("point"), false, "postgres"), "{ x: number; y: number }");
+  assert.equal(renderType(pg("circle"), false, "postgres"), "{ center: { x: number; y: number }; radius: number }");
+  assert.deepEqual(typeSchema(pg("point"), "postgres"), { type: "object", properties: { x: { type: "number", format: "double" }, y: { type: "number", format: "double" } }, required: ["x", "y"] });
+  // Inside a document Postgres writes a geometric type as its text.
+  assert.equal(renderType(pg("box"), true, "postgres"), "string");
+  // An array of boxes is written with a semicolon between them, since a box's own text holds commas.
+  assert.deepEqual(textDecoder("box[]", ";")("{(3,4),(1,2);(1,1),(0,0)}"), [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }, { high: { x: 1, y: 1 }, low: { x: 0, y: 0 } }]);
+  assert.deepEqual(textDecoder(columnKind(array(pg("lseg")), "postgres"))('{"[(0,0),(1,1)]",NULL}'), [[{ x: 0, y: 0 }, { x: 1, y: 1 }], null]);
+  // Anything but the type's own object is refused, naming what it takes.
+  for (const [name, v] of [["point", "(1,2)"], ["point", { x: 1 }], ["point", { x: 1, y: "2" }], ["point", { x: 1, y: 2, z: 3 }], ["lseg", [{ x: 0, y: 0 }]], ["path", { closed: 1, points: [{ x: 0, y: 0 }] }], ["polygon", []]] as [string, unknown][]) {
+    assert.throws(() => postgresLiteral(pg(name), v, (m) => { throw new TypeError(m); }), new RegExp(`^TypeError: a ${name}, `), JSON.stringify(v));
+  }
+});
+
+test("a Postgres row value is an object of its fields, each decoded and bound as a column of its type is", () => {
+  const address = record([field("street", pg("text"), true), field("zip", pg("int4"), true), field("tags", array(pg("text")), true), field("at", pg("timestamptz"), true), field("spot", pg("point"), true), field("boxes", array(pg("box")), true)], "public.address");
+  const kind = columnKind(address, "postgres");
+  assert.equal(kind, '(["street","text"],["zip","int"],["tags","text[]"],["at","timestamptz"],["spot","point"],["boxes","box[]",";"])');
+  // record_out's quoting: a field with a comma, a quote, a parenthesis or a space is quoted, a quote inside doubled, an empty field NULL.
+  const text = '("1 ""Main"", St",12345,"{a,""b c""}","2026-10-20 01:00:00-07","(1,2)",)';
+  assert.deepEqual(parseRow(text, 6), ['1 "Main", St', "12345", '{a,"b c"}', "2026-10-20 01:00:00-07", "(1,2)", null]);
+  const value = { street: '1 "Main", St', zip: 12345, tags: ["a", "b c"], at: "2026-10-20T08:00:00.000000Z", spot: { x: 1, y: 2 }, boxes: null };
+  assert.deepEqual(textDecoder(kind)(text), value);
+  assert.deepEqual(parseRow(String.raw`(,"","\\",a\,b,"x""y")`, 5), [null, "", "\\", "a,b", 'x"y']);
+  assert.deepEqual(parseRow("()", 1), [null]);
+  assert.deepEqual(textDecoder(`${kind}[]`)(`{${JSON.stringify(text)},NULL}`), [value, null]);
+  assert.equal(renderType(address, false, "postgres"), "{ street: string | null; zip: number | null; tags: (string | null)[] | null; at: string | null; spot: { x: number; y: number } | null; boxes: ({ high: { x: number; y: number }; low: { x: number; y: number } } | null)[] | null }");
+  // Back as the text record_in reads: every field quoted, NULL empty, and a field left out NULL.
+  const literal = postgresLiteral(address, { ...value, tags: ["a", null], boxes: [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }] }, (m) => assert.fail(m));
+  assert.equal(literal, String.raw`("1 \"Main\", St","12345","{\"a\",NULL}","2026-10-20T08:00:00.000000Z","(1,2)","{\"(3,4),(1,2)\"}")`);
+  assert.equal(postgresLiteral(address, { zip: 1 }, (m) => assert.fail(m)), '(,"1",,,,)');
+  const refuse = (v: unknown, expected: RegExp) => assert.throws(() => postgresLiteral(address, v, (m) => { throw new TypeError(m); }), expected);
+  refuse("(x,1)", /^TypeError: public\.address, an object of its fields \(street, zip, tags, at, spot, boxes\); got "\(x,1\)"\.$/);
+  refuse({ stret: "x" }, /^TypeError: public\.address, which has no field "stret"; its fields are street, zip, tags, at, spot, boxes\.$/);
+  refuse({ spot: "(1,2)" }, /^TypeError: public\.address, whose field "spot" is a point, \{ x: number; y: number \}; got "\(1,2\)"\.$/);
+});
+
+test("a range is an object of its bounds and their brackets, each bound in its subtype's form, and goes back as the text it came from", () => {
+  const cases: [name: string, text: string, value: unknown, literal: string][] = [
+    ["int4range", "[1,5)", { lower: 1, upper: 5, bounds: "[)" }, '["1","5")'],
+    ["numrange", "(1.5,5]", { lower: "1.5", upper: "5", bounds: "(]" }, '("1.5","5"]'],
+    ["int8range", "[9007199254740993,)", { lower: 9007199254740993n, bounds: "[)" }, '["9007199254740993",)'],
+    ["int4range", "(,)", { bounds: "()" }, "(,)"],
+    ["int4range", "empty", { empty: true }, "empty"],
+    ["tstzrange", '["2026-10-20 01:00:00-07",)', { lower: "2026-10-20T08:00:00.000000Z", bounds: "[)" }, '["2026-10-20T08:00:00.000000Z",)'],
+    // An infinite bound is a bound, unlike an unbounded end.
+    ["daterange", "[2026-10-20,infinity)", { lower: "2026-10-20", upper: "infinity", bounds: "[)" }, '["2026-10-20","infinity")'],
+    ["int4multirange", "{[1,3),[5,7)}", [{ lower: 1, upper: 3, bounds: "[)" }, { lower: 5, upper: 7, bounds: "[)" }], '{["1","3"),["5","7")}'],
+    ["int4multirange", "{}", [], "{}"],
+  ];
+  for (const [name, text, value, literal] of cases) {
+    const t = pg(name);
+    const kind = columnKind(t, "postgres");
+    assert.deepEqual(textDecoder(kind)(text), value, `${name} ${text}`);
+    assert.deepEqual(coerce(kind, text, "c"), value, `${name} ${text}: from the text a driver gave`);
+    assert.equal(postgresLiteral(t, value, (m) => assert.fail(m)), literal, `${name} ${text}: back as text`);
+  }
+  // A parameter that leaves its brackets out takes Postgres's constructors' `[)`.
+  assert.equal(postgresLiteral(pg("int4range"), { lower: 1, upper: 5 }, (m) => assert.fail(m)), '["1","5")');
+  assert.deepEqual(textDecoder(columnKind(array(pg("tstzrange")), "postgres"))(String.raw`{"[\"2026-10-20 08:00:00+00\",)",empty}`), [{ lower: "2026-10-20T08:00:00.000000Z", bounds: "[)" }, { empty: true }]);
+  const brackets = `"[)" | "[]" | "(]" | "()"`;
+  assert.equal(renderType(pg("int4range"), false, "postgres"), `{ empty: true } | { lower?: number; upper?: number; bounds: ${brackets} }`);
+  assert.equal(renderType(pg("int4multirange"), false, "postgres"), `({ empty: true } | { lower?: number; upper?: number; bounds: ${brackets} })[]`);
+  assert.equal(renderParamType(pg("int8range"), "postgres"), `{ empty: true } | { lower?: number | bigint | string; upper?: number | bigint | string; bounds?: ${brackets} }`);
+  // Inside a document Postgres writes a range as its text.
+  assert.equal(renderType(pg("int4range"), true, "postgres"), "string");
+  // A null bound, an unknown key, brackets of another shape and anything but an object are refused.
+  for (const v of [{ lower: null }, { min: 1 }, { empty: true, lower: 1 }, { lower: 1, bounds: "[[" }, "[1,5)"]) {
+    assert.throws(() => postgresLiteral(pg("int4range"), v, (m) => { throw new TypeError(m); }), /^TypeError: int4range, \{ empty: true \} or \{ lower, upper, bounds \}/, JSON.stringify(v));
+  }
+});
+
+test("a MySQL ENUM of known labels is refused the '' MySQL stores for any other value, unless it lists one", () => {
+  const labelled = (...labels: string[]) => ({ kind: "text", enum: labels, label: "enum" }) as EngineType;
+  assert.equal(columnKind(labelled("a", "b"), "mysql"), "enum");
+  assert.equal(renderType(labelled("a", "b"), false, "mysql"), '"a" | "b"');
+  assert.equal(coerce("enum", "a", "kind"), "a");
+  assert.throws(() => coerce("enum", "", "kind"), (e: Error) => e instanceof DecodeError && /^Column "kind" holds "", which is none of its ENUM's labels.*nullif\(kind, ''\)/.test(e.message));
+  // One that lists '' holds it as any other label, and one whose labels are not known is its text.
+  assert.equal(columnKind(labelled("", "a"), "mysql"), "text");
+  assert.equal(columnKind({ kind: "text", label: "enum" }, "mysql"), "text");
+  // Postgres enforces an enum's labels itself.
+  assert.equal(columnKind({ kind: "text", enum: ["a"], label: "enum" }, "postgres"), "text");
+});
+
+test("a MySQL SET is a Set of its members, declared and decoded alike, and is its text inside JSON", () => {
+  const t = my("set");
+  assert.equal(columnKind(t, "mysql"), "set");
+  assert.deepEqual(coerce("set", "a,c", "tags"), new Set(["a", "c"]));
+  assert.deepEqual(coerce("set", "", "tags"), new Set());
+  // mariadb gives an array of its members.
+  assert.deepEqual(coerce("set", ["a", "c"], "tags"), new Set(["a", "c"]));
+  assert.equal(renderType(t, false, "mysql"), "Set<string>");
+  assert.equal(renderParamType(t, "mysql"), "Set<string>");
+  assert.deepEqual(typeSchema(t, "mysql"), { type: "array", items: { type: "string" }, uniqueItems: true });
+  // MySQL writes a SET inside a document as its text.
+  assert.equal(renderType(t, true, "mysql"), "string");
+  assert.deepEqual(typeSchema(t, "mysql", false, true), { type: "string" });
+});
+
 test("the representation, value by value", () => {
-  const d = (name: string, text: string) => textDecoder(scalarKind(name, "postgres"))(text);
+  const d = (name: string, text: string) => textDecoder(scalarKind(name))(text);
   assert.equal(d("int8", "9007199254740993"), 9007199254740993n);
   assert.equal(d("int8", "-9223372036854775808"), -9223372036854775808n);
-  assert.deepEqual(textDecoder(scalarKind("int8", "postgres") + "[]")("{1,NULL,9223372036854775807}"), [1n, null, 9223372036854775807n]);
+  assert.deepEqual(textDecoder(scalarKind("int8") + "[]")("{1,NULL,9223372036854775807}"), [1n, null, 9223372036854775807n]);
   assert.equal(d("timestamptz", "2026-10-20 10:00:00.123456+02"), "2026-10-20T08:00:00.123456Z");
   assert.equal(d("numeric", "12345678901234567890.123456789"), "12345678901234567890.123456789");
   assert.equal(d("date", "2026-10-20"), "2026-10-20");
   assert.equal(d("timestamp", "2026-10-20 10:00:00.123456"), "2026-10-20T10:00:00.123456");
-  assert.equal(d("timestamp", "0044-03-15 12:00:00 BC"), "0044-03-15T12:00:00 BC");
+  assert.equal(d("timestamp", "0044-03-15 12:00:00 BC"), "-000043-03-15T12:00:00.000000");
   assert.equal(d("timestamp", "infinity"), "infinity");
   assert.equal(d("interval", "1 year 2 mons"), "P1Y2M");
   assert.deepEqual(d("bytea", "\\x0102ff"), Buffer.from([1, 2, 255]));
@@ -110,29 +238,84 @@ test("interval: an ISO 8601 duration with its sign in front, which Temporal read
   assert.equal(coerce("interval", "-1 days", "span"), "-P1D", "a driver's text, as Bun.sql gives it");
 });
 
-test("timestamptz: the instant's ISO 8601 text in UTC, the server's fraction kept, which new Date(text) gets wrong for BC, year 1 and offsets with seconds", () => {
-  const Temporal = (globalThis as unknown as { Temporal: { Instant: { from(text: string): { toString(): string; epochNanoseconds: bigint } } } }).Temporal;
+test("date and timestamp: a year outside 0000 to 9999 in ISO 8601's extended form, as timestamptz's, which Temporal reads and a parameter takes back", () => {
+  type PlainFrom = { from(text: string): { toString(options?: { fractionalSecondDigits?: number }): string } };
+  const Temporal = (globalThis as unknown as { Temporal: { PlainDate: PlainFrom; PlainDateTime: PlainFrom } }).Temporal;
+  const date = textDecoder("date");
+  const timestamp = textDecoder("timestamp");
+  // A server text as `.run()` gives it back for a parameter: a T, and six fraction digits.
+  const padded = (t: string) => t.replace(" ", "T").replace(/(\d\d:\d\d:\d\d)(\.\d+)?/, (_, hms: string, f?: string) => `${hms}.${(f ?? ".").slice(1).padEnd(6, "0")}`);
+  for (const [text, iso] of [
+    ["2026-10-20", "2026-10-20"],
+    ["0001-01-01", "0001-01-01"],
+    ["9999-12-31", "9999-12-31"],
+    ["0001-12-31 BC", "0000-12-31"],
+    ["0002-06-01 BC", "-000001-06-01"],
+    ["4714-11-24 BC", "-004713-11-24"],
+    ["10000-01-01", "+010000-01-01"],
+    ["12345-01-01", "+012345-01-01"],
+    ["275760-09-13", "+275760-09-13"],
+  ] as const) {
+    assert.equal(date(text), iso, text);
+    assert.equal(Temporal.PlainDate.from(iso).toString(), iso, iso);
+    // The round-trip rule: the parameter is the text the server wrote, which it reads as the same date.
+    assert.equal(postgresYear(iso), text, iso);
+  }
+  for (const [text, iso] of [
+    ["2026-10-20 10:00:00.123456", "2026-10-20T10:00:00.123456"],
+    ["0001-12-31 23:59:59.999999 BC", "0000-12-31T23:59:59.999999"],
+    ["0002-06-01 12:00:00 BC", "-000001-06-01T12:00:00.000000"],
+    ["4714-11-24 00:00:00 BC", "-004713-11-24T00:00:00.000000"],
+    ["10000-01-01 00:00:00", "+010000-01-01T00:00:00.000000"],
+    ["123456-01-01 00:00:00.5", "+123456-01-01T00:00:00.500000"],
+    ["275760-09-13 00:00:00", "+275760-09-13T00:00:00.000000"],
+  ] as const) {
+    assert.equal(timestamp(text), iso, text);
+    assert.equal(Temporal.PlainDateTime.from(iso).toString({ fractionalSecondDigits: 6 }), iso, iso);
+    assert.equal(postgresYear(iso), padded(text), iso);
+  }
+  // A date past 999999 AD, which only Postgres's date reaches (5874897), keeps a sign before the
+  // digits it needs; Temporal holds no such date, and the parameter still reads it back.
+  assert.equal(date("5874897-12-31"), "+5874897-12-31");
+  assert.equal(date("1000000-01-01"), "+1000000-01-01");
+  assert.equal(postgresYear("+5874897-12-31"), "5874897-12-31");
+  assert.throws(() => Temporal.PlainDate.from("+5874897-12-31"), RangeError);
+  for (const word of ["infinity", "-infinity"]) {
+    assert.equal(date(word), word);
+    assert.equal(timestamp(word), word);
+  }
+  // Arrays: each element as a scalar's, a BC element quoted in Postgres's text.
+  assert.deepEqual(textDecoder("date[]")('{"0002-06-01 BC",12345-01-01,2026-10-20,NULL,infinity}'), ["-000001-06-01", "+012345-01-01", "2026-10-20", null, "infinity"]);
+  assert.deepEqual(textDecoder("timestamp[]")('{"0002-06-01 12:00:00 BC","10000-01-01 00:00:00",-infinity}'), ["-000001-06-01T12:00:00.000000", "+010000-01-01T00:00:00.000000", "-infinity"]);
+  // A driver's Date (Bun.sql's, read as UTC) gives the same text as the server's.
+  assert.equal(coerce("date", new Date("+012345-01-01T00:00:00Z"), "d"), "+012345-01-01");
+  assert.equal(coerce("timestamp", new Date("+010000-01-01T00:00:00.250Z"), "t"), "+010000-01-01T00:00:00.25");
+  assert.equal(coerce("timestamp", new Date("-000001-06-01T12:00:00Z"), "t"), "-000001-06-01T12:00:00");
+});
+
+test("timestamptz: the instant's ISO 8601 text in UTC, the fraction in six digits, which new Date(text) gets wrong for BC, year 1 and offsets with seconds", () => {
+  const Temporal = (globalThis as unknown as { Temporal: { Instant: { from(text: string): { toString(options?: { fractionalSecondDigits?: number }): string; epochNanoseconds: bigint } } } }).Temporal;
   for (const [text, iso] of [
     ["2026-10-20 03:03:00.123456-07", "2026-10-20T10:03:00.123456Z"],
-    ["2026-10-20 10:00:00+00", "2026-10-20T10:00:00Z"],
-    ["2026-10-20 10:00:00.5+05:30", "2026-10-20T04:30:00.5Z"],
-    ["2026-12-31 23:30:00-01", "2027-01-01T00:30:00Z"],
-    ["0001-01-01 00:00:00+00", "0001-01-01T00:00:00Z"],
-    ["0001-01-01 00:30:00+01", "0000-12-31T23:30:00Z"],
-    ["1883-11-18 12:00:00-07:52:58", "1883-11-18T19:52:58Z"],
-    ["1900-01-01 00:00:00+00:00:36", "1899-12-31T23:59:24Z"],
+    ["2026-10-20 10:00:00+00", "2026-10-20T10:00:00.000000Z"],
+    ["2026-10-20 10:00:00.5+05:30", "2026-10-20T04:30:00.500000Z"],
+    ["2026-12-31 23:30:00-01", "2027-01-01T00:30:00.000000Z"],
+    ["0001-01-01 00:00:00+00", "0001-01-01T00:00:00.000000Z"],
+    ["0001-01-01 00:30:00+01", "0000-12-31T23:30:00.000000Z"],
+    ["1883-11-18 12:00:00-07:52:58", "1883-11-18T19:52:58.000000Z"],
+    ["1900-01-01 00:00:00+00:00:36", "1899-12-31T23:59:24.000000Z"],
     ["0001-12-31 23:59:59.999999+00 BC", "0000-12-31T23:59:59.999999Z"],
-    ["0002-06-01 12:00:00+00 BC", "-000001-06-01T12:00:00Z"],
-    ["0044-03-15 12:00:00+00 BC", "-000043-03-15T12:00:00Z"],
-    ["4713-11-24 00:00:00+00 BC", "-004712-11-24T00:00:00Z"],
+    ["0002-06-01 12:00:00+00 BC", "-000001-06-01T12:00:00.000000Z"],
+    ["0044-03-15 12:00:00+00 BC", "-000043-03-15T12:00:00.000000Z"],
+    ["4713-11-24 00:00:00+00 BC", "-004712-11-24T00:00:00.000000Z"],
     ["9999-12-31 23:59:59.999999-01", "+010000-01-01T00:59:59.999999Z"],
-    ["12345-01-01 00:00:00+05:30", "+012344-12-31T18:30:00Z"],
-    ["2000-02-29 12:00:00+00", "2000-02-29T12:00:00Z"],
-    ["1900-03-01 00:00:00+01", "1900-02-28T23:00:00Z"],
+    ["12345-01-01 00:00:00+05:30", "+012344-12-31T18:30:00.000000Z"],
+    ["2000-02-29 12:00:00+00", "2000-02-29T12:00:00.000000Z"],
+    ["1900-03-01 00:00:00+01", "1900-02-28T23:00:00.000000Z"],
   ] as const) {
     assert.equal(instant(text), iso, text);
     // Temporal reads each back to the same text: an ISO 8601 instant, the year extended outside 0000 to 9999.
-    assert.equal(Temporal.Instant.from(iso).toString(), iso, iso);
+    assert.equal(Temporal.Instant.from(iso).toString({ fractionalSecondDigits: 6 }), iso, iso);
   }
   // Each to the nanosecond against Temporal's own reading of the server's offset (its microseconds kept).
   assert.equal(Temporal.Instant.from(instant("2026-10-20 03:03:00.123456-07")).epochNanoseconds, Temporal.Instant.from("2026-10-20T03:03:00.123456-07:00").epochNanoseconds);
@@ -146,23 +329,114 @@ test("timestamptz: the instant's ISO 8601 text in UTC, the server's fraction kep
   assert.equal(new Date("2026-10-20T03:03:00.123456-07:00").toISOString(), "2026-10-20T10:03:00.123Z");
 });
 
+test("timestamptz: the text read by position is the pattern's, for every server text and for text that is not one", () => {
+  // The reading by pattern alone, as `instant` was before it read the usual text by position.
+  const TSTZ = /^(\d{4,})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)(\.\d{1,6})?([+-])(\d\d)(?::(\d\d))?(?::(\d\d))?( BC)?$/;
+  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+  const isoYear = (y: number) => (y >= 0 && y <= 9999 ? pad(y, 4) : `${y < 0 ? "-" : "+"}${pad(Math.abs(y), 6)}`);
+  const daysFromCivil = (y: number, m: number, d: number) => {
+    y -= m <= 2 ? 1 : 0;
+    const era = Math.floor(y / 400);
+    const yoe = y - era * 400;
+    const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1;
+    return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy - 719468;
+  };
+  const civilFromDays = (days: number): [number, number, number] => {
+    const z = days + 719468;
+    const era = Math.floor(z / 146097);
+    const doe = z - era * 146097;
+    const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+    const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+    const mp = Math.floor((5 * doy + 2) / 153);
+    const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+    const m = mp + (mp < 10 ? 3 : -9);
+    return [era * 400 + yoe + (m <= 2 ? 1 : 0), m, d];
+  };
+  const byPattern = (x: string): string => {
+    const m = TSTZ.exec(x);
+    if (m === null) return x;
+    const year = m[12] === undefined ? +m[1]! : 1 - +m[1]!;
+    const offset = (m[8] === "-" ? -1 : 1) * (+m[9]! * 3600 + (m[10] === undefined ? 0 : +m[10] * 60) + (m[11] === undefined ? 0 : +m[11]));
+    const seconds = daysFromCivil(year, +m[2]!, +m[3]!) * 86400 + +m[4]! * 3600 + +m[5]! * 60 + +m[6]! - offset;
+    const days = Math.floor(seconds / 86400);
+    const s = seconds - days * 86400;
+    const [y, mo, d] = civilFromDays(days);
+    return `${isoYear(y)}-${pad(mo)}-${pad(d)}T${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}${m[7] ? m[7].padEnd(7, "0") : ".000000"}Z`;
+  };
+  // A seeded generator, so that a failure names a text that fails again.
+  let seed = 0x2545f491;
+  const random = () => ((seed = (Math.imul(seed ^ (seed >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) | 0) >>> 0) / 2 ** 32;
+  const int = (lo: number, hi: number) => lo + Math.floor(random() * (hi - lo + 1));
+  const pick = <T,>(xs: readonly T[]): T => xs[int(0, xs.length - 1)]!;
+  const DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  // What the server writes in DateStyle ISO: a year of four digits or more (` BC` before 1 AD), a
+  // fraction of up to six digits, an offset in hours, minutes or seconds (a zone's local mean time).
+  const serverText = () => {
+    const kind = random();
+    const year = kind < 0.6 ? int(1000, 9999) : kind < 0.75 ? int(1, 999) : kind < 0.9 ? int(10000, 294276) : int(1, 4713);
+    const month = int(1, 12);
+    const fraction = random() < 0.5 ? "" : `.${String(int(0, 999999)).padStart(6, "0").slice(0, int(1, 6))}`;
+    const sign = random() < 0.5 ? "+" : "-";
+    const zone = random();
+    const offset = `${sign}${pad(int(0, 15))}${zone < 0.6 ? "" : `:${pad(int(0, 59))}${zone < 0.85 ? "" : `:${pad(int(0, 59))}`}`}`;
+    return `${pad(year, 4)}-${pad(month)}-${pad(int(1, DAYS[month - 1]!))} ${pad(int(0, 23))}:${pad(int(0, 59))}:${pad(int(0, 59))}${fraction}${offset}${kind >= 0.9 ? " BC" : ""}`;
+  };
+  // A server text with one character changed, taken out or put in: text the pattern refuses, or reads otherwise.
+  const CHARS = "0123456789-+:. BCTZx";
+  const mutated = () => {
+    const t = serverText();
+    const at = int(0, t.length - 1);
+    const op = random();
+    return op < 0.5 ? t.slice(0, at) + pick([...CHARS]) + t.slice(at + 1) : op < 0.75 ? t.slice(0, at) + t.slice(at + 1) : t.slice(0, at) + pick([...CHARS]) + t.slice(at);
+  };
+  const texts = ["infinity", "-infinity", "", "2026-10-20 10:00:00+00", "2026-10-20 10:00:00.1234567+00", "2026-10-20 10:00:00.+00", "2026-10-20 10:00:00+0", "2026-10-20 10:00:00+00:0", "2026-10-20 10:00:00+00:00:00:00"];
+  for (let i = 0; i < 300_000; i++) texts.push(serverText());
+  for (let i = 0; i < 100_000; i++) texts.push(mutated());
+  for (const text of texts) if (instant(text) !== byPattern(text)) assert.equal(instant(text), byPattern(text), JSON.stringify(text));
+});
+
+test("Postgres: an array of polygons, segments, vectors or multiranges has one dimension, each element an array of its own", async () => {
+  const point = { x: 0, y: 0 };
+  const range = { lower: 1, upper: 3, bounds: "[)" };
+  const values: [EngineType, unknown[]][] = [
+    [array(pg("polygon")), [[point, point, point]]],
+    [array(pg("lseg")), [[point, point]]],
+    [array(pg("vector")), [[1, 2]]],
+    [array(pg("int4multirange")), [[range, range]]],
+  ];
+  for (const [type, value] of values) {
+    const kind = columnKind(type, "postgres");
+    assert.equal(withinDimensions(value, kind, "c"), value, kind);
+    // One level more is a second dimension, which the column's type does not have.
+    assert.throws(() => withinDimensions([value], kind, "c"), /holds an array of 2 dimensions/, kind);
+  }
+  // As a parameter, each element is one value of its type: the text Postgres reads for it.
+  const calls: unknown[][] = [];
+  const client = { query: async (_text: string, bound: unknown[]) => (calls.push(bound), { rows: [], rowCount: 0 }) };
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :slots, :outlines", params: ["slots", "outlines"], inputs: { slots: { type: array(pg("int4multirange")), nullable: false }, outlines: { type: array(pg("polygon")), nullable: false } } };
+  await execute(client, q, { slots: [[range, { lower: 5, upper: 7, bounds: "[)" }]], outlines: [[point, { x: 1, y: 1 }, { x: 2, y: 0 }]] });
+  assert.deepEqual(calls, [[`{"{[\\"1\\",\\"3\\"),[\\"5\\",\\"7\\")}"}`, `{"((0,0),(1,1),(2,0))"}`]]);
+});
+
 test("SQLite: the kinds, and a NUMERIC column of either", () => {
-  assert.deepEqual(["integer", "real", "text", "blob", "numeric", "bool", "mystery"].map((n) => scalarKind(n, "sqlite")), ["int", "float", "text", "bytes", "int|float|text", "bool", "unknown"]);
+  assert.deepEqual(["integer", "real", "text", "blob", "numeric", "bool"].map((n) => columnKind(lite(n), "sqlite")), ["int", "float", "text", "bytes", "int|float|text", "bool"]);
+  assert.equal(columnKind({ kind: "unknown" }, "sqlite"), "unknown");
   assert.deepEqual(["int", "int|float|text", "unknown", "bytes"].map(kindType), ["number", "number | string", "unknown", "Uint8Array"]);
 });
 
 test("SQLite: a column declared BIGINT, INT8 or UNSIGNED BIG INT (the engine's int8) is a BigInt, as on Postgres and MySQL, and its parameter takes one back", () => {
-  assert.equal(scalarKind("int8", "sqlite"), "int8");
-  assert.equal(renderType(scalar("int8"), false, "sqlite"), "bigint");
-  assert.equal(renderType(scalar("int8"), true, "sqlite"), "number", "inside a JSON document, the number SQLite writes");
-  assert.equal(renderParamType(scalar("int8"), "sqlite"), "number | bigint");
-  assert.deepEqual(typeSchema(scalar("int8"), "sqlite"), { type: "integer", format: "int64" }, "the BigInt, as the JSON integer it is");
-  assert.deepEqual(typeSchema(scalar("int8"), "sqlite"), typeSchema(scalar("int8"), "postgres"));
-  // Inside a document a non-finite float or decimal is the text Postgres writes; MySQL stores none.
-  assert.deepEqual(typeSchema(scalar("float8"), "postgres", false, true), { anyOf: [{ type: "number", format: "double" }, { enum: ["NaN", "Infinity", "-Infinity"] }] });
-  assert.deepEqual(typeSchema(scalar("numeric"), "mysql", false, true), { type: "number", format: "decimal" });
-  assert.deepEqual(typeSchema(scalar("interval"), "postgres", false, true), { type: "string", description: "pg type interval" }, "inside a document, Postgres's own text");
-  assert.deepEqual(typeSchema(scalar("int8"), "sqlite", true), { type: "integer", format: "int64" }, "a parameter");
+  assert.equal(columnKind(lite("int8"), "sqlite"), "int8");
+  assert.equal(renderType(lite("int8"), false, "sqlite"), "bigint");
+  assert.equal(renderType(lite("int8"), true, "sqlite"), "number", "inside a JSON document, the number SQLite writes");
+  assert.equal(renderParamType(lite("int8"), "sqlite"), "number | bigint");
+  assert.deepEqual(typeSchema(lite("int8"), "sqlite"), { type: "integer", format: "int64" }, "the BigInt, as the JSON integer it is");
+  assert.deepEqual(typeSchema(lite("int8"), "sqlite"), typeSchema(pg("int8"), "postgres"));
+  // Inside a document a non-finite float or decimal is the text Postgres writes, which the run time
+  // gives as the number it is; MySQL stores none.
+  assert.deepEqual(typeSchema(pg("float8"), "postgres", false, true), { type: "number", format: "double" });
+  assert.deepEqual(typeSchema(my("decimal"), "mysql", false, true), { type: "number", format: "decimal" });
+  assert.deepEqual(typeSchema(pg("interval"), "postgres", false, true), { type: "string", description: "pg type interval" }, "inside a document, Postgres's own text");
+  assert.deepEqual(typeSchema(lite("int8"), "sqlite", true), { type: "integer", format: "int64" }, "a parameter");
 });
 
 test("SQLite: a BIGINT column on node:sqlite exact past 2^53 beside an INTEGER read as a number, whatever the database's setting; on the drivers that round, a BigInt within 2^53 and a rounded value refused", async () => {
@@ -208,8 +482,10 @@ test("coerce: a value a driver decoded, given its kind; an integer a number cann
   assert.equal(coerce("timestamptz", Infinity, "c"), "infinity");
   assert.equal(coerce("timestamptz", -Infinity, "c"), "-infinity");
   assert.equal(coerce("timestamp", new Date("2026-10-20T10:00:00.500Z"), "c"), "2026-10-20T10:00:00.5");
-  assert.equal(coerce("timestamptz", new Date("2026-10-20T10:00:00.500Z"), "c"), "2026-10-20T10:00:00.5Z", "Bun.sql's Date, to its millisecond");
-  assert.equal(coerce("timestamptz", new Date("2026-10-20T10:00:00Z"), "c"), "2026-10-20T10:00:00Z");
+  assert.equal(coerce("timestamptz", new Date("2026-10-20T10:00:00.500Z"), "c"), "2026-10-20T10:00:00.500000Z", "Bun.sql's Date, to its millisecond");
+  assert.equal(coerce("timestamptz", new Date("2026-10-20T10:00:00Z"), "c"), "2026-10-20T10:00:00.000000Z");
+  // A Postgres timestamp from a Date takes six digits too; a MySQL DATETIME keeps the driver's.
+  assert.equal(coerce("timestamp", new Date("2026-10-20T10:00:00.500Z"), "c", ",", true), "2026-10-20T10:00:00.500000");
   assert.equal(coerce("timestamptz", "2026-10-20 10:00:00.123456+02", "c"), "2026-10-20T08:00:00.123456Z");
   assert.equal(coerce("timestamptz", -Infinity, "c"), "-infinity");
   assert.deepEqual(coerce("int[]", Int32Array.of(1, 2), "c"), [1, 2]);
@@ -243,17 +519,18 @@ test("a truth value: 0 or 1 in every form a driver gives it, and any other value
 });
 
 test("the kinds: a BIGINT is a BigInt, and an integer a temporary table may widen to one is too; a timestamptz a string; no kind a Date", () => {
-  assert.deepEqual(["int8", "int8|int4", "int4|int8", "int8|float8|numeric", "int4|int8|float8|numeric", "bool", "timestamptz"].map((n) => scalarKind(n, "mysql")), ["int8", "int8", "int8", "int8|float|decimal", "int|int8|float|decimal", "bool", "timestamptz"]);
-  assert.deepEqual(["int8", "int8|int4", "int8|float8|numeric", "bool", "timestamptz", "date"].map((n) => kindType(scalarKind(n, "mysql"))), ["bigint", "bigint", "bigint | number | string", "boolean", "string", "string"]);
-  assert.equal(renderType({ kind: "array", of: scalar("int8") }), "(bigint | null)[]");
-  assert.equal(renderType(scalar("int8"), true), "number", "inside a JSON document, as the database writes it");
-  assert.deepEqual(typeSchema(scalar("int8"), "postgres"), { type: "integer", format: "int64" });
-  assert.deepEqual(typeSchema(scalar("int8"), "postgres", true), { type: ["integer", "string"], format: "int64" }, "a parameter, as every driver binds it");
-  assert.deepEqual(typeSchema(scalar("timestamptz"), "postgres"), { type: "string", format: "date-time" });
-  assert.deepEqual(typeSchema(scalar("bool"), "mysql"), { type: "boolean" });
-  assert.deepEqual(typeSchema(scalar("bool"), "sqlite"), { type: "boolean" });
-  assert.deepEqual(typeSchema(scalar("integer"), "sqlite"), { type: "integer", format: "int64" });
-  assert.deepEqual(typeSchema(scalar("numeric"), "sqlite"), { type: ["number", "string"] });
+  const mysql = [my("bigint"), oneOf(my("bigint"), my("int")), oneOf(my("int"), my("bigint")), oneOf(my("bigint"), my("double"), my("decimal")), oneOf(my("int"), my("bigint"), my("double"), my("decimal")), { kind: "boolean" } as EngineType, my("timestamp"), my("date")];
+  assert.deepEqual(mysql.map((t) => columnKind(t, "mysql")), ["int8", "int8", "int8", "int8|float|decimal", "int|int8|float|decimal", "bool", "timestamp", "date"]);
+  assert.deepEqual(mysql.map((t) => kindType(columnKind(t, "mysql"))), ["bigint", "bigint", "bigint", "bigint | number | string", "number | bigint | string", "boolean", "string", "string"]);
+  assert.equal(renderType(array(pg("int8"))), "(bigint | null)[]");
+  assert.equal(renderType(pg("int8"), true), "number", "inside a JSON document, as the database writes it");
+  assert.deepEqual(typeSchema(pg("int8"), "postgres"), { type: "integer", format: "int64" });
+  assert.deepEqual(typeSchema(pg("int8"), "postgres", true), { type: ["integer", "string"], format: "int64" }, "a parameter, as every driver binds it");
+  assert.deepEqual(typeSchema(pg("timestamptz"), "postgres"), { type: "string", format: "date-time" });
+  assert.deepEqual(typeSchema({ kind: "boolean" }, "mysql"), { type: "boolean" });
+  assert.deepEqual(typeSchema(lite("bool"), "sqlite"), { type: "boolean" });
+  assert.deepEqual(typeSchema(lite("integer"), "sqlite"), { type: "integer", format: "int64" });
+  assert.deepEqual(typeSchema(lite("numeric"), "sqlite"), { type: ["number", "string"] });
   for (const kind of ["bool", "int", "float", "int8", "decimal", "text", "date", "timestamp", "timestamptz", "json", "bytes", "unknown"]) assert.notEqual(kindType(kind), "Date", kind);
 });
 
@@ -436,8 +713,59 @@ test("MySQL: a truth value is a boolean on every driver, whatever form it gives 
   await assert.rejects(execute(bun(5) as never, q) as Promise<unknown>, /Column "done" is a boolean, stored as 0 or 1, and holds 5/);
 });
 
+// mysql2 and mariadb read rows by position, as the real drivers answer `rowsAsArray`.
+const mysql2Arrays = (names: [string, number, number?][], row: unknown[]) => ({ query: async () => [[], []], execute: async () => [[row], names.map(([name, columnType, decimals = 0]) => ({ name, columnType, decimals }))] });
+const mariadbArrays = (names: string[], row: unknown[]) => ({ batch: async () => ({}), query: async () => Object.assign([row], { meta: names.map((name) => ({ name: () => name })) }) });
+
+test("MySQL and SQLite: of two columns with one name a row keeps the last one's value, converted as that column's kind says and no other's", async () => {
+  // select u.*, o.* over a join: users' id is a BIGINT, its active a TINYINT(1) and its created_at a DATETIME(3); orders' are an INT, an INT and a VARCHAR.
+  const columns: Columns = [["id", "int8"], ["active", "bool"], ["created_at", "timestamp"], ["tags", "set"], ["id", "int"], ["active", "int"], ["created_at", "text"], ["tags", "text"]];
+  const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select 1", params: [], columns };
+  const names: [string, number, number?][] = [["id", 8], ["active", 1], ["created_at", 12, 3], ["tags", 254], ["id", 3], ["active", 3], ["created_at", 253], ["tags", 253]];
+  const expected = [{ id: 3, active: 5, created_at: "hello world", tags: "x,y" }];
+  assert.deepEqual(await execute(mysql2Arrays(names, ["7", 1, "2026-01-01 10:00:00.000", "x", 3, 5, "hello world", "x,y"]) as never, q), expected);
+  assert.deepEqual([...((await execute(mariadbArrays(names.map(([name]) => name), [7n, 1, "2026-01-01 10:00:00.000", ["x"], 3, 5, "hello world", "x,y"]) as never, q)) as unknown[])], expected);
+  // The other way round, the last column's kind still converts its value.
+  const reversed: QueryModule<"mysql"> = { ...q, columns: [...columns.slice(4), ...columns.slice(0, 4)] };
+  assert.deepEqual(await execute(mysql2Arrays([...names.slice(4), ...names.slice(0, 4)], [3, 5, "hello world", "x,y", "7", 1, "2026-01-01 10:00:00.000", "x"]) as never, reversed), [{ id: 7n, active: true, created_at: "2026-01-01T10:00:00.000", tags: new Set(["x"]) }]);
+
+  const db = new DatabaseSync(":memory:");
+  db.exec("create table u (id integer primary key, active boolean not null, code integer not null); create table o (id integer primary key, active integer not null, code text not null); insert into u values (7, 1, 5); insert into o values (3, 5, '007')");
+  const sqlite: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select u.*, o.* from u join o", params: [], columns: [["id", "int"], ["active", "bool"], ["code", "int"], ["id", "int"], ["active", "int"], ["code", "text"]] };
+  assert.deepEqual(await execute(db, sqlite), [{ id: 3, active: 5, code: "007" }]);
+  db.close();
+});
+
+test("MySQL: a select * built before a migration moved, added or dropped a column reads each value under its own column's name, with that column's kind", async () => {
+  // Built on (id, active, name, legacy).
+  const columns: Columns = [["id", "int"], ["active", "bool"], ["name", "text"], ["legacy", "text"]];
+  const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select 1", params: [], columns };
+  const run = async (names: string[], row: unknown[]) => {
+    const types: Record<string, number> = { id: 3, active: 1, extra: 3 };
+    const mysql2 = await execute(mysql2Arrays(names.map((name) => [name, types[name] ?? 253]), row) as never, q);
+    assert.deepEqual([...((await execute(mariadbArrays(names, row) as never, q)) as unknown[])], mysql2);
+    return mysql2;
+  };
+  assert.deepEqual(await run(["id", "active", "name", "legacy"], [1, 1, "Ada", "old"]), [{ id: 1, active: true, name: "Ada", legacy: "old" }]);
+  // `modify name … after id`.
+  assert.deepEqual(await run(["id", "name", "active", "legacy"], [1, "Ada", 1, "old"]), [{ id: 1, name: "Ada", active: true, legacy: "old" }]);
+  // `add column extra … after id`.
+  assert.deepEqual(await run(["id", "extra", "active", "name", "legacy"], [1, 42, 1, "Ada", "old"]), [{ id: 1, extra: 42, active: true, name: "Ada", legacy: "old" }]);
+  // `drop column legacy, add column phone … after id`.
+  assert.deepEqual(await run(["id", "phone", "active", "name"], [1, "555", 1, "Ada"]), [{ id: 1, phone: "555", active: true, name: "Ada" }]);
+  // A column a driver names otherwise than the module, as one with no alias may be, is the module's by its position.
+  const unnamed: QueryModule<"mysql"> = { ...q, columns: [["id", "int"], ["done", "bool"]] };
+  assert.deepEqual(await execute(mysql2Arrays([["id", 3], ["done ", 8]], [1, "1"]) as never, unnamed), [{ id: 1, done: true }]);
+  // A driver that writes a value into the statement names its column after the value, here the first column's name: still the module's, by position.
+  const written: QueryModule<"mysql"> = { ...q, columns: [["hey", "text"], ["?", "text"]] };
+  assert.deepEqual([...((await execute(mariadbArrays(["hey", "hey"], ["a", "b"]) as never, written)) as unknown[])], [{ hey: "a", "?": "b" }]);
+  // mariadb's callback API hands rows over with no metadata: the module's names, by position.
+  const bare = { batch: async () => ({}), query: async () => [[1, 1, "Ada", "old"]] };
+  assert.deepEqual([...((await execute(bare as never, q)) as unknown[])], [{ id: 1, active: true, name: "Ada", legacy: "old" }]);
+});
+
 test("MySQL: a VECTOR is an array of its floats on every driver that reads one, and its parameter binds their text", async () => {
-  const vector: EngineType = { kind: "array", of: scalar("float4"), nullable_items: false };
+  const vector: EngineType = { kind: "array", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } }, label: "vector" };
   assert.equal(columnKind(vector, "mysql"), "float[]");
   assert.equal(renderType(vector), "number[]");
   assert.equal(renderParamType(vector, "mysql"), "number[]");
@@ -507,4 +835,58 @@ test("an hstore's text is an object of its keys, and an object goes back in as t
   assert.throws(() => hstoreText(new Map([["a", "1"]]), fail), /got a Map\./);
   assert.throws(() => hstoreText(new (class Prefs {})(), fail), /got a Prefs\./);
   assert.equal(hstoreText(Object.assign(Object.create(null), { a: "1" }), fail), String.raw`"a"=>"1"`);
+});
+
+test("the text Postgres writes inside JSON for a non-finite float or decimal is that number, where the type says one may stand", () => {
+  const at = { keys: [["n", true], ["xs", { items: true, deep: true }], ["rows", { items: { keys: [["v", true]] } }], ["__proto__", true]] } as const;
+  const v = JSON.parse(`{"n": "NaN", "s": "NaN", "xs": [["Infinity", 1], ["-Infinity", "NaN"]], "rows": [{"v": "Infinity", "w": "NaN"}, {"v": 2.5}], "__proto__": "-Infinity"}`);
+  assert.equal(numbersInJson(v, at), v, "in place");
+  assert.deepEqual(v.n, NaN);
+  assert.equal(v.s, "NaN", "a key the type names no number at keeps its text");
+  assert.deepEqual(v.xs, [[Infinity, 1], [-Infinity, NaN]]);
+  assert.deepEqual(v.rows, [{ v: Infinity, w: "NaN" }, { v: 2.5 }]);
+  assert.equal(Object.getOwnPropertyDescriptor(v, "__proto__")?.value, -Infinity);
+  // Any other text, a number, null and a value of another shape stay as they are.
+  assert.equal(numbersInJson("nan", true), "nan");
+  assert.equal(numbersInJson(null, at), null);
+  assert.deepEqual(numbersInJson({ xs: "NaN" }, at), { xs: "NaN" });
+  // A Postgres array of JSON arrays reads each array as an element.
+  assert.deepEqual(numbersInJson([["NaN"]], { items: { items: true }, deep: true }), [[NaN]]);
+});
+
+test("a row converts each name's last column by that column's own mask, by position beside the columns", () => {
+  const n = { keys: [["n", true]] } as const;
+  const columns: Columns = [["x", "json"], ["x", "json"], ["y", "json"], ["y", "json"], ["constructor", "json"], ["__proto__", "json"], ["id", "int4"]];
+  // The first `x` has a mask and the last none; the first `y` none and the last one.
+  assert.deepEqual(rowMasks(columns, [n, null, null, n, null, n, null]), [["y", n], ["__proto__", n]]);
+  assert.deepEqual(rowMasks(columns, []), []);
+});
+
+test("an array of arrays decodes its innermost elements by their kind, from text or a driver's arrays", () => {
+  // The kind of array_agg over an int8[] column: two levels, whose text nests them itself.
+  assert.deepEqual(textDecoder("int8[][]")("{{1,2},{3,NULL}}"), [[1n, 2n], [3n, null]]);
+  assert.deepEqual(coerce("int8[][]", "{{1,2}}", "c"), [[1n, 2n]]);
+  assert.deepEqual(coerce("int8[][]", [["1", "2"], ["3", null]], "c"), [[1n, 2n], [3n, null]]);
+});
+
+test("an array of rows reads as parseArray and parseRow read it, in every quoting record_out and array_out write", () => {
+  const row = `(${JSON.stringify(["a", "int"])},${JSON.stringify(["b", "text"])},${JSON.stringify(["c", "text"])})`;
+  const decode = textDecoder(row) as (text: string) => unknown;
+  for (const text of ['(1,"he said ""hi"", (ok) \\\\ back",)', '(1,,"")', "(,,)", "(2,NULL,x)", '(3,"a b","c\\"d")']) {
+    const [a, b, c] = parseRow(text, 3);
+    assert.deepEqual(decode(text), { a: a === null ? null : Number(a), b, c }, text);
+  }
+  const rows = textDecoder(`${row}[]`) as (text: string) => unknown;
+  const one = textDecoder(`(${JSON.stringify(["x", "int"])})[]`) as (text: string) => unknown;
+  assert.deepEqual(rows("{}"), []);
+  assert.deepEqual(rows("{NULL}"), [null]);
+  assert.deepEqual(one("{(1),NULL,(2)}"), [{ x: 1 }, null, { x: 2 }]);
+  assert.deepEqual(one("{()}"), [{ x: null }]);
+  assert.deepEqual(rows('{"(1,x,)","(2,\\"y z\\",\\"\\")"}'), [{ a: 1, b: "x", c: null }, { a: 2, b: "y z", c: "" }]);
+  // Another shape parseArray reads: lower bounds, and more than one dimension.
+  assert.deepEqual(rows('[0:0]={"(1,x,y)"}'), [{ a: 1, b: "x", c: "y" }]);
+  assert.deepEqual(rows('{{"(1,x,y)"},{"(2,a,b)"}}'), [[{ a: 1, b: "x", c: "y" }], [{ a: 2, b: "a", c: "b" }]]);
+  // A field named __proto__ is a field, whatever an assignment would make of it.
+  const proto = textDecoder(`(${JSON.stringify(["__proto__", "int"])})`) as (text: string) => object;
+  assert.deepEqual(Object.keys(proto("(1)")), ["__proto__"]);
 });

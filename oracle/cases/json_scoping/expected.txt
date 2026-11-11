@@ -1,23 +1,23 @@
-alias_list.sql: many () -> { a: json }
-cast_name.sql: many () -> { jsonb: json }
-cast_name_top.sql: many () -> { jsonb_build_object: { k: int4 }, jsonb: json }
-cte_alias_list.sql: many () -> { a: json }
-cte_earlier_sibling.sql: many () -> { o: { n: text } }
-cte_later_sibling.sql: many () -> { o: { n: int4 } }
-cte_reads_table_of_its_name.sql: many () -> { o: { n: int4? } }
-cte_reference_alias_list.sql: many () -> { a: json }
-derived_with_reads_outer.sql: many () -> { v: json? }
+alias_list.sql: many () -> { a: jsonb }
+cast_name.sql: many () -> { jsonb: jsonb }
+cast_name_top.sql: many () -> { jsonb_build_object: jsonb { k: int4 }, jsonb: jsonb }
+cte_alias_list.sql: many () -> { a: jsonb }
+cte_earlier_sibling.sql: many () -> { o: jsonb { n: text } }
+cte_later_sibling.sql: many () -> { o: jsonb { n: int4 } }
+cte_reads_table_of_its_name.sql: many () -> { o: jsonb { n: int4? } }
+cte_reference_alias_list.sql: many () -> { a: jsonb }
+derived_with_reads_outer.sql: many () -> { v: jsonb? }
 dml_target.sql: many () -> { motto: text? }
 dml_target_expr.sql: many () -> { m: text? }
-dml_target_probe.sql: many () -> { j: json? }
-grouping_set.sql: many () -> { o: { n: text }? }
-inner_with_hides.sql: one () -> { v: json? }
-param_with_table.sql: one (n: int4) -> { o: { n: int4 } }
-rollup_aggregate.sql: many () -> { o: [text]? }
-rollup_by_alias.sql: many () -> { o: { n: text? }? }
-rollup_by_ordinal.sql: many () -> { o: { n: text? }? }
-rollup_leaf.sql: many () -> { o: { n: text? }? }
-rollup_nested.sql: many () -> { o: { a: { b: text? }? }? }
-rollup_window.sql: many () -> { o: [text?]? }
-sublink_inner_with.sql: one () -> { v: json? }
-subquery_with_hides.sql: one () -> { v: json? }
+dml_target_probe.sql: many () -> { j: jsonb? }
+grouping_set.sql: many () -> { o: jsonb { n: text }? }
+inner_with_hides.sql: one () -> { v: jsonb? }
+param_with_table.sql: one (n: int4) -> { o: jsonb { n: int4 } }
+rollup_aggregate.sql: many () -> { o: jsonb text[]? }
+rollup_by_alias.sql: many () -> { o: jsonb { n: text? }? }
+rollup_by_ordinal.sql: many () -> { o: jsonb { n: text? }? }
+rollup_leaf.sql: many () -> { o: jsonb { n: text? }? }
+rollup_nested.sql: many () -> { o: jsonb { a: { b: text? }? }? }
+rollup_window.sql: many () -> { o: jsonb text?[]? }
+sublink_inner_with.sql: one () -> { v: jsonb? }
+subquery_with_hides.sql: one () -> { v: jsonb? }

@@ -1,80 +1,1509 @@
-//! The type model every database's engine answers with. A scalar's name is in its database's
-//! vocabulary: Postgres's catalog names, which MySQL maps its protocol types into, and SQLite's
-//! storage classes.
+//! The type model every database's engine answers with: Reylo Type Defs (RTD), the type descriptor
+//! format of `spec/typedefs.schema.json`, as Rust types that serialize to exactly its JSON. A [`Type`] says
+//! which values a parameter or a column can hold, across databases: its `kind`, that kind's
+//! fields, and the database's name for it, its `label`; a [`Position`] says where a value stands and whether
+//! it may be null; a [`StatementDescriptor`] is what introspecting one statement returns.
+//!
+//! The spec is the reference for every kind, field and rule; the comments here only say how the
+//! Rust spells it. A flag is a `bool` written only when true, a value inside the format (a bound, a
+//! tick, a duration's maximum) is a `String` in its kind's canonical text, and a count (`bits`, a
+//! size, a precision, a scale) is a number. [`Type::check`] runs rule 7's validity checks.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
-/// What the mapper renders as a TypeScript type and as JSON Schema. Inside an `Object` or a
-/// `List` every value is JSON-encoded, so the same `Scalar` reads differently there (a
-/// `timestamptz` is a `Date` on the wire and a string inside JSON); the renderer keeps track.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Type {
-    /// A base type (a domain resolves to its base) by its catalog name: `int4`, `text`, `uuid`.
-    Scalar { name: String },
-    /// An enum: a union of its labels.
-    Enum { name: String, labels: Vec<String> },
-    /// A Postgres array of the element type. Any array may hold NULL elements, whatever a
-    /// column's `NOT NULL`, so a result's array renders `(T | null)[]` unless the statement
-    /// builds it from values it shows are not NULL; a parameter's renders `T[]`. Only an array the
-    /// statement builds says more (`reylo_engine_postgres::types::DescribedColumn::nullable_items`):
-    /// `Some(true)` when an element may be NULL, as `array_agg(u.email)` over a LEFT JOIN gives
-    /// `{NULL}` for a team with no users; `Some(false)` when every element is non-null.
-    Array {
-        of: Box<Type>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        nullable_items: Option<bool>,
-        /// The character between the elements of the array's text, where the element type's
-        /// `typdelim` is not a comma: `:` for PostGIS's `geometry` and `geography`, `;` for `box`.
-        /// The server writes and reads the array's text with it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        delimiter: Option<String>,
-    },
-    /// `json[b]_build_object(…)`: the keys in the order the SQL writes them.
-    Object { fields: Vec<Field> },
-    /// A named composite (a table's row type, a `CREATE TYPE … AS (…)`) whose columns the
-    /// catalog gave: each field nullable unless the column is `NOT NULL`. Unlike an `Object`, its
-    /// fields are read in the position the value itself stands in: a driver hands the whole value
-    /// over as the text Postgres prints, and inside a JSON document the database writes it as an
-    /// object of its fields. A composite whose columns were not read stays `Scalar { "record" }`.
-    Composite { name: String, fields: Vec<Field> },
-    /// `json[b]_agg(…)`: a JSON array of the item type.
-    List { of: Box<Type>, nullable_items: bool },
-    /// A `json`/`jsonb` value: any JSON, or, where a CHECK holds it to a JSON Schema the
-    /// database validates, the values that schema admits, as the canonical schema of
-    /// [`crate::schema_type`].
-    Json {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        schema: Option<serde_json::Value>,
-    },
-    /// A structured parameter, `:events::rows(…)` or `:user::row(…)`: one object (`one`) or an
-    /// array of objects, whose keys the parameter's column list names ([`crate::structured`]).
-    Rows { one: bool, fields: Vec<RowField> },
-    /// Nothing the engine derived.
-    Unknown,
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
-/// One key of a structured parameter.
+/// A type: its kind, with that kind's fields, and what every type may carry, the database's name
+/// for it and the comment the database keeps on it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RowField {
+pub struct Type {
+    #[serde(flatten)]
+    pub kind: Kind,
+    /// The database's name for the type, less the modifiers a field states (`numeric` for
+    /// `numeric(10,2)`), qualified where a schema defines it; absent on a type the statement builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// `COMMENT ON TYPE` or `COMMENT ON DOMAIN`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+}
+
+/// The kinds, in the order the spec's `Type` lists them, which is also the order a union lists
+/// its members in ([`Kind::rank`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Kind {
+    Boolean,
+    Integer(IntegerType),
+    Float(FloatType),
+    Decimal(DecimalType),
+    Text(TextType),
+    Bytes(BytesType),
+    Uuid,
+    Array(ArrayType),
+    Record(RecordType),
+    Json(JsonType),
+    Date(DateType),
+    Time(TimeType),
+    #[serde(rename = "datetime")]
+    DateTime(DateTimeType),
+    Instant(InstantType),
+    Duration(DurationType),
+    Union(UnionType),
+    Set(SetType),
+    Map(MapType),
+    Range(RangeType),
+    Multirange(RangeType),
+    Geometry(GeometryType),
+    Xml(XmlType),
+    /// A type the database knows and the format does not structure; its `label` is all it says.
+    Opaque,
+    /// Nothing is known about the values.
+    Unknown,
+    /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
+    /// Appended, as a new kind is, so the order of the kinds never changes.
+    TaggedUnion(TaggedUnionType),
+    /// Rows of columns: what a statement returns, and a relation nested in a value.
+    Rows(RowsType),
+}
+
+/// Bounds on an ordered kind's finite values, each a value in its kind's canonical text. A side
+/// takes one of its two fields, and a whole-number kind only `min` and `max`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bounds {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusive_min: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusive_max: Option<String>,
+}
+
+impl Bounds {
+    pub fn is_empty(&self) -> bool {
+        self.min.is_none() && self.max.is_none() && self.exclusive_min.is_none() && self.exclusive_max.is_none()
+    }
+
+    /// Inclusive bounds at `min` and `max`.
+    pub fn between(min: impl Into<String>, max: impl Into<String>) -> Bounds {
+        Bounds { min: Some(min.into()), max: Some(max.into()), ..Bounds::default() }
+    }
+}
+
+/// How long a value is, in whole numbers of its kind's unit: `exact`, or `min`, `max` or both.
+/// Only valid Unicode text names a `unit` (code points when absent), and only a byte size an
+/// `encoding`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Size {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<SizeUnit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u64>,
+}
+
+impl Size {
+    pub fn exact(n: u64) -> Size {
+        Size { exact: Some(n), ..Size::default() }
+    }
+
+    pub fn at_most(n: u64) -> Size {
+        Size { max: Some(n), ..Size::default() }
+    }
+
+    /// At most `n` bytes in `encoding`.
+    pub fn bytes_at_most(n: u64, encoding: impl Into<String>) -> Size {
+        Size { unit: Some(SizeUnit::Byte), encoding: Some(encoding.into()), max: Some(n), ..Size::default() }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeUnit {
+    Utf16Unit,
+    Byte,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct IntegerType {
+    pub bits: u32,
+    /// From 0 to 2^bits − 1.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unsigned: bool,
+    #[serde(flatten)]
+    pub bounds: Bounds,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiple_of: Option<String>,
+    /// The only values, as JSON Schema's `enum`.
+    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+}
+
+/// An IEEE 754 binary float by its exponent and mantissa widths (the mantissa's without its
+/// implicit bit).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FloatType {
+    pub exponent_bits: u32,
+    pub mantissa_bits: u32,
+    #[serde(flatten)]
+    pub bounds: Bounds,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub infinity: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nan: bool,
+}
+
+/// An exact decimal: a coefficient of at most `precision` digits times 10^-scale, the scale from
+/// `min_scale` to `max_scale`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DecimalType {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_scale: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_scale: Option<i32>,
+    #[serde(flatten)]
+    pub bounds: Bounds,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub infinity: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nan: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiple_of: Option<String>,
+    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+}
+
+/// Text, in one of three shapes by `ill_formed`: valid Unicode (absent), bytes meant as UTF-8 and
+/// never validated, or UTF-16 units that may hold a lone surrogate.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TextType {
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "ill_formed")]
+    pub ill_formed: Option<IllFormed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Size>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<Pattern>,
+    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IllFormed {
+    Utf8,
+    Utf16,
+}
+
+/// `ill_formed: false` is valid Unicode, as an absent one is.
+fn ill_formed<'de, D: Deserializer<'de>>(d: D) -> Result<Option<IllFormed>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Written {
+        Flag(bool),
+        Shape(IllFormed),
+    }
+    match Option::<Written>::deserialize(d)? {
+        None | Some(Written::Flag(false)) => Ok(None),
+        Some(Written::Flag(true)) => Err(serde::de::Error::custom("ill_formed is false, \"utf8\" or \"utf16\"")),
+        Some(Written::Shape(shape)) => Ok(Some(shape)),
+    }
+}
+
+/// A pattern every value matches, in its own dialect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pattern {
+    pub dialect: PatternDialect,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PatternDialect {
+    Postgres,
+    Mysql,
+    Posix,
+    Ecma,
+    Like,
+    Ilike,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BytesType {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Size>,
+}
+
+/// A sequence of `element`s; `any_depth` where an element may itself be an array of them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArrayType {
+    pub element: Box<Position>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Size>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub any_depth: bool,
+}
+
+/// Fields, in order.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecordType {
+    pub fields: Vec<Field>,
+}
+
+/// A JSON value: what the statement built (`content`), a JSON Schema every value satisfies
+/// (`schema`), or neither, any JSON.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct JsonType {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Box<Position>>,
+    /// A JSON Schema every value satisfies, whose `$schema` names the draft it is read by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DateType {
+    #[serde(flatten)]
+    pub bounds: Bounds,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub infinity: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TimeType {
+    /// The smallest step, in seconds, in lowest terms: `"1/1000000"`.
+    pub tick: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<Zone>,
+    #[serde(flatten)]
+    pub bounds: Bounds,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DateTimeType {
+    pub tick: String,
+    #[serde(flatten)]
+    pub bounds: Bounds,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub infinity: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct InstantType {
+    pub tick: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<Zone>,
+    #[serde(flatten)]
+    pub bounds: Bounds,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub infinity: bool,
+}
+
+/// What each value keeps besides the moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Zone {
+    Offset,
+    Region,
+    RegionOrOffset,
+}
+
+/// A length of time in the parts it has, each signed on its own: `max` writes each part (months,
+/// days, time) at the magnitude it reaches, as one ISO 8601 duration, and `tick` is the time
+/// part's step, present exactly when `max` has a time part.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DurationType {
+    pub max: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub infinity: bool,
+}
+
+/// One of several types, each value one of them. Flat, its members in kind order ([`Type::union`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnionType {
+    pub members: Vec<Type>,
+}
+
+/// One of several alternatives, each named by the tag every value carries, in the order the type
+/// declares them: two may hold one type, and a value says which it is, even holding NULL.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaggedUnionType {
+    pub alternatives: Vec<Alternative>,
+}
+
+/// An alternative of a tagged union: its tag, unique in the type, and the value it holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Alternative {
+    pub tag: String,
+    #[serde(rename = "type")]
+    pub ty: Type,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nullable: bool,
+}
+
+impl Alternative {
+    pub fn position(&self) -> Position {
+        Position { ty: self.ty.clone(), nullable: self.nullable }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetType {
+    pub element: Box<Position>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Size>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub duplicates: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapType {
+    pub key: Box<Type>,
+    pub value: Box<Position>,
+}
+
+/// A range, or a multirange, of an ordered `subtype`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RangeType {
+    pub subtype: Box<Type>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GeometryType {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<GeometryModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub srid: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtype: Option<GeometrySubtype>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinates: Option<Coordinates>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometryModel {
+    Planar,
+    Geodetic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometrySubtype {
+    Point,
+    Linestring,
+    Polygon,
+    Multipoint,
+    Multilinestring,
+    Multipolygon,
+    Geometrycollection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Coordinates {
+    Xy,
+    Xyz,
+    Xym,
+    Xyzm,
+}
+
+/// XML: a document, valid against any `schemas` given, or a `fragment`, which names none.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct XmlType {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fragment: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schemas: Option<Vec<String>>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Positions
+// ---------------------------------------------------------------------------------------------
+
+/// Where a value stands: a record's field, an array's element, a map's value, or JSON content.
+/// Nullability lives here, never in a type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Position {
+    #[serde(rename = "type")]
+    pub ty: Type,
+    /// The value may be null (inside JSON content, JSON null).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nullable: bool,
+}
+
+impl Position {
+    pub fn new(ty: Type, nullable: bool) -> Position {
+        Position { ty, nullable }
+    }
+
+    pub fn non_null(ty: Type) -> Position {
+        Position { ty, nullable: false }
+    }
+
+    pub fn nullable(ty: Type) -> Position {
+        Position { ty, nullable: true }
+    }
+}
+
+/// A result's column: a row always has every column, and a statement whose result repeats a name
+/// has a diagnostic at each later column of it ([`crate::analysis::clashes`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Column {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: Type,
-    /// The type as the column list writes it, whose modifiers (`varchar(32)`, `numeric(12,2)`)
-    /// say what the run time checks beside the type itself.
-    pub written: String,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub nullable: bool,
-    /// Whether the caller may leave the key out: a `?` member, or one that may be null.
-    pub optional: bool,
-    /// A `json('…')` member's JSON Schema as written, which the run time checks a value against.
+    /// `COMMENT ON COLUMN`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema: Option<serde_json::Value>,
+    pub comment: Option<String>,
 }
 
+/// A record's field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: Type,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub nullable: bool,
+    /// The key may be absent: a structured parameter's `?` member, a JSON object's key.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+}
+
+impl Field {
+    pub fn new(name: impl Into<String>, ty: Type, nullable: bool) -> Field {
+        Field { name: name.into(), ty, nullable, optional: false }
+    }
+
+    pub fn position(&self) -> Position {
+        Position { ty: self.ty.clone(), nullable: self.nullable }
+    }
+}
+
+/// A statement's parameter. Where the statement writes it whole into a column, its type is that
+/// column's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Param {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: Type,
+    /// The statement accepts null.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nullable: bool,
+    /// The caller may leave the parameter out.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+    /// The comment the database keeps on the column the parameter is written to whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// The statement
+// ---------------------------------------------------------------------------------------------
+
+/// The URL of the JSON Schema of the format version this crate writes, which every
+/// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
+pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0.json";
+
+/// Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's
+/// `MULTISET` or an Oracle nested table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowsType {
+    pub cardinality: Cardinality,
+    pub columns: Vec<Column>,
+    /// Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, and
+    /// a table's primary key first where the rows hold it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique: Vec<Vec<String>>,
+    /// The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the
+    /// result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<OrderColumn>,
+}
+
+/// A column rows are sorted on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrderColumn {
+    pub column: String,
+    /// Sorted from the highest value down.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub desc: bool,
+    /// Where NULLs sort.
+    pub nulls: NullsOrder,
+}
+
+/// Where NULLs sort among a column's values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NullsOrder {
+    First,
+    Last,
+}
+
+/// What a statement returns: a [`RowsType`], with what every type may carry. It reads and writes as a [`Type`] of kind `rows`, and refuses any other kind, as the format does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Type", into = "Type")]
+pub struct ResultRows {
+    pub rows: RowsType,
+    pub label: Option<String>,
+    pub comment: Option<String>,
+}
+
+impl From<RowsType> for ResultRows {
+    fn from(rows: RowsType) -> Self {
+        ResultRows { rows, label: None, comment: None }
+    }
+}
+
+impl TryFrom<Type> for ResultRows {
+    type Error = String;
+
+    fn try_from(ty: Type) -> Result<Self, String> {
+        match ty.kind {
+            Kind::Rows(rows) => Ok(ResultRows { rows, label: ty.label, comment: ty.comment }),
+            other => Err(format!("a statement's result is of kind rows, not {}", other.name())),
+        }
+    }
+}
+
+impl From<ResultRows> for Type {
+    fn from(result: ResultRows) -> Self {
+        Type { kind: Kind::Rows(result.rows), label: result.label, comment: result.comment }
+    }
+}
+
+/// What introspecting one statement returns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatementDescriptor {
+    /// The format version the descriptor is written in, as the URL of its JSON Schema ([`SCHEMA`]).
+    #[serde(rename = "$schema")]
+    pub schema: String,
+    pub dialect: DialectVersion,
+    /// The statement as the database runs it, with its own placeholders, in the order `params`
+    /// lists them.
+    pub sql: String,
+    /// Absent when the statement does not parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<StatementKind>,
+    /// The prose written in comments before the statement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    pub params: Vec<Param>,
+    /// What the statement returns.
+    pub result: ResultRows,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// The database a document of descriptors describes: its name and server version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialectVersion {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatementKind {
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Merge,
+    Other,
+}
+
+impl StatementKind {
+    /// The kind of a statement whose first keyword is `word`: one of the five, else `other`.
+    pub fn of(word: &str) -> StatementKind {
+        match word.to_ascii_lowercase().as_str() {
+            "select" => StatementKind::Select,
+            "insert" => StatementKind::Insert,
+            "update" => StatementKind::Update,
+            "delete" => StatementKind::Delete,
+            "merge" => StatementKind::Merge,
+            _ => StatementKind::Other,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StatementKind::Select => "select",
+            StatementKind::Insert => "insert",
+            StatementKind::Update => "update",
+            StatementKind::Delete => "delete",
+            StatementKind::Merge => "merge",
+            StatementKind::Other => "other",
+        }
+    }
+}
+
+/// How many rows the statement returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cardinality {
+    One,
+    AtMostOne,
+    Many,
+    None,
+}
+
+impl Cardinality {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Cardinality::One => "one",
+            Cardinality::AtMostOne => "at_most_one",
+            Cardinality::Many => "many",
+            Cardinality::None => "none",
+        }
+    }
+}
+
+/// A cardinality compares with its name as the format writes it.
+impl PartialEq<&str> for Cardinality {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+/// What the database or the introspection reports against the statement: offsets into the
+/// statement as written, in UTF-16 units, and the database's own error code where it has one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub message: String,
+    pub start: usize,
+    pub end: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Building types
+// ---------------------------------------------------------------------------------------------
+
+/// A microsecond, the tick of Postgres's, MySQL's and DuckDB's default times.
+pub const MICROSECOND: &str = "1/1000000";
+
+/// The draft the engine's canonical JSON Schema ([`crate::schema_type`]) is read by: its keywords
+/// (`prefixItems` among them) are draft 2020-12's.
+pub const CANONICAL_SCHEMA: &str = "https://json-schema.org/draft/2020-12/schema";
+
+impl Kind {
+    /// Where the kind stands in the spec's list of kinds, which orders a union's members.
+    pub fn rank(&self) -> usize {
+        match self {
+            Kind::Boolean => 0,
+            Kind::Integer(_) => 1,
+            Kind::Float(_) => 2,
+            Kind::Decimal(_) => 3,
+            Kind::Text(_) => 4,
+            Kind::Bytes(_) => 5,
+            Kind::Uuid => 6,
+            Kind::Array(_) => 7,
+            Kind::Record(_) => 8,
+            Kind::Json(_) => 9,
+            Kind::Date(_) => 10,
+            Kind::Time(_) => 11,
+            Kind::DateTime(_) => 12,
+            Kind::Instant(_) => 13,
+            Kind::Duration(_) => 14,
+            Kind::Union(_) => 15,
+            Kind::Set(_) => 16,
+            Kind::Map(_) => 17,
+            Kind::Range(_) => 18,
+            Kind::Multirange(_) => 19,
+            Kind::Geometry(_) => 20,
+            Kind::Xml(_) => 21,
+            Kind::Opaque => 22,
+            Kind::Unknown => 23,
+            Kind::TaggedUnion(_) => 24,
+            Kind::Rows(_) => 25,
+        }
+    }
+
+    /// The kind's name as the format writes it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Kind::Boolean => "boolean",
+            Kind::Integer(_) => "integer",
+            Kind::Float(_) => "float",
+            Kind::Decimal(_) => "decimal",
+            Kind::Text(_) => "text",
+            Kind::Bytes(_) => "bytes",
+            Kind::Uuid => "uuid",
+            Kind::Array(_) => "array",
+            Kind::Record(_) => "record",
+            Kind::Json(_) => "json",
+            Kind::Date(_) => "date",
+            Kind::Time(_) => "time",
+            Kind::DateTime(_) => "datetime",
+            Kind::Instant(_) => "instant",
+            Kind::Duration(_) => "duration",
+            Kind::Union(_) => "union",
+            Kind::Set(_) => "set",
+            Kind::Map(_) => "map",
+            Kind::Range(_) => "range",
+            Kind::Multirange(_) => "multirange",
+            Kind::Geometry(_) => "geometry",
+            Kind::Xml(_) => "xml",
+            Kind::Opaque => "opaque",
+            Kind::Unknown => "unknown",
+            Kind::TaggedUnion(_) => "tagged_union",
+            Kind::Rows(_) => "rows",
+        }
+    }
+}
+
+impl From<Kind> for Type {
+    fn from(kind: Kind) -> Type {
+        Type { kind, label: None, comment: None }
+    }
+}
+
+impl Type {
+    pub fn new(kind: Kind) -> Type {
+        kind.into()
+    }
+
+    /// The same type under the database's name for it.
+    pub fn named(mut self, name: impl Into<String>) -> Type {
+        self.label = Some(name.into());
+        self
+    }
+
+    pub fn boolean() -> Type {
+        Kind::Boolean.into()
+    }
+
+    /// A two's complement integer of `bits`.
+    pub fn integer(bits: u32) -> Type {
+        Kind::Integer(IntegerType { bits, ..IntegerType::default() }).into()
+    }
+
+    /// An integer from 0 to 2^bits − 1.
+    pub fn unsigned(bits: u32) -> Type {
+        Kind::Integer(IntegerType { bits, unsigned: true, ..IntegerType::default() }).into()
+    }
+
+    pub fn float(exponent_bits: u32, mantissa_bits: u32) -> Type {
+        Kind::Float(FloatType { exponent_bits, mantissa_bits, ..FloatType::default() }).into()
+    }
+
+    /// IEEE 754's double, which holds neither infinity nor NaN as this type says.
+    pub fn double() -> Type {
+        Type::float(11, 52)
+    }
+
+    /// IEEE 754's single.
+    pub fn single() -> Type {
+        Type::float(8, 23)
+    }
+
+    pub fn decimal(d: DecimalType) -> Type {
+        Kind::Decimal(d).into()
+    }
+
+    /// Valid Unicode text.
+    pub fn text() -> Type {
+        Kind::Text(TextType::default()).into()
+    }
+
+    /// Text that is one of `values`.
+    pub fn text_of(values: Vec<String>) -> Type {
+        Kind::Text(TextType { values: Some(values), ..TextType::default() }).into()
+    }
+
+    pub fn bytes() -> Type {
+        Kind::Bytes(BytesType::default()).into()
+    }
+
+    pub fn uuid() -> Type {
+        Kind::Uuid.into()
+    }
+
+    pub fn array(element: Position) -> Type {
+        Kind::Array(ArrayType { element: Box::new(element), size: None, any_depth: false }).into()
+    }
+
+    pub fn record(fields: Vec<Field>) -> Type {
+        Kind::Record(RecordType { fields }).into()
+    }
+
+    /// Any JSON.
+    pub fn json() -> Type {
+        Kind::Json(JsonType::default()).into()
+    }
+
+    /// JSON the statement built, of `content`.
+    pub fn json_of(content: Position) -> Type {
+        Kind::Json(JsonType { content: Some(Box::new(content)), schema: None }).into()
+    }
+
+    /// JSON every value of which the engine's canonical JSON Schema `source` admits, carrying
+    /// `$schema`, the draft the canonical form is read by ([`CANONICAL_SCHEMA`]). `true` and
+    /// `false`, which have no keyword to carry it, are written as the objects that mean the same,
+    /// `{}` and `{ "not": {} }`.
+    pub fn json_schema_of(source: Value) -> Type {
+        let mut keywords = match source {
+            Value::Object(keywords) => keywords,
+            Value::Bool(false) => serde_json::Map::from_iter([("not".to_string(), Value::Object(serde_json::Map::new()))]),
+            _ => serde_json::Map::new(),
+        };
+        keywords.insert("$schema".into(), CANONICAL_SCHEMA.into());
+        Kind::Json(JsonType { content: None, schema: Some(Value::Object(keywords)) }).into()
+    }
+
+    /// A JSON type's JSON Schema in the engine's canonical form, where it has one: without its
+    /// `$schema`, and `true` and `false` as themselves ([`Type::json_schema_of`]).
+    pub fn schema(&self) -> Option<Value> {
+        let Kind::Json(JsonType { schema: Some(schema), .. }) = &self.kind else { return None };
+        let Value::Object(keywords) = schema else { return Some(schema.clone()) };
+        let mut keywords = keywords.clone();
+        keywords.remove("$schema");
+        Some(match keywords.len() {
+            0 => Value::Bool(true),
+            1 if keywords.get("not").is_some_and(|n| n.as_object().is_some_and(|n| n.is_empty())) => Value::Bool(false),
+            _ => Value::Object(keywords),
+        })
+    }
+
+    /// Whether the type is JSON: any JSON, JSON a statement built, or JSON a schema holds to.
+    pub fn is_json(&self) -> bool {
+        matches!(self.kind, Kind::Json(_))
+    }
+
+    pub fn opaque(name: impl Into<String>) -> Type {
+        Type::new(Kind::Opaque).named(name)
+    }
+
+    pub fn unknown() -> Type {
+        Kind::Unknown.into()
+    }
+
+    pub fn is_unknown(&self) -> bool {
+        matches!(self.kind, Kind::Unknown)
+    }
+
+    /// A union of `members` as rule 4 spells it: flat (a member that is an unnamed union gives its
+    /// members), each member once, in kind order (members of one kind in the order given), and a
+    /// lone member itself. An empty union holds no value.
+    pub fn union(members: Vec<Type>) -> Type {
+        let mut flat: Vec<Type> = Vec::new();
+        for member in members {
+            let inner = match member.kind {
+                Kind::Union(UnionType { members }) if member.label.is_none() => members,
+                _ => vec![member],
+            };
+            for m in inner {
+                if !flat.contains(&m) {
+                    flat.push(m);
+                }
+            }
+        }
+        if flat.len() == 1 {
+            return flat.pop().expect("one member");
+        }
+        flat.sort_by_key(|t| t.kind.rank());
+        Kind::Union(UnionType { members: flat }).into()
+    }
+
+    /// A tagged union of `alternatives`, in the order the type declares them.
+    pub fn tagged_union(alternatives: Vec<Alternative>) -> Type {
+        Kind::TaggedUnion(TaggedUnionType { alternatives }).into()
+    }
+
+    /// Every name the type and the types inside it carry, each once, outermost first.
+    pub fn names(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.collect_names(&mut out);
+        out
+    }
+
+    fn collect_names(&self, out: &mut Vec<String>) {
+        if let Some(name) = &self.label {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        match &self.kind {
+            Kind::Array(a) => a.element.ty.collect_names(out),
+            Kind::Set(s) => s.element.ty.collect_names(out),
+            Kind::Record(r) => r.fields.iter().for_each(|f| f.ty.collect_names(out)),
+            Kind::Json(JsonType { content: Some(c), .. }) => c.ty.collect_names(out),
+            Kind::Union(u) => u.members.iter().for_each(|m| m.collect_names(out)),
+            Kind::TaggedUnion(t) => t.alternatives.iter().for_each(|a| a.ty.collect_names(out)),
+            Kind::Rows(r) => r.columns.iter().for_each(|c| c.ty.collect_names(out)),
+            Kind::Map(m) => {
+                m.key.collect_names(out);
+                m.value.ty.collect_names(out);
+            }
+            Kind::Range(r) | Kind::Multirange(r) => r.subtype.collect_names(out),
+            _ => {}
+        }
+    }
+
+    /// The type with each name inside it, its own included, that `rename` answers for replaced
+    /// by the answer: a domain read as its base type, where a rule keys on the base's name.
+    pub fn renamed(mut self, rename: &impl Fn(&str) -> Option<String>) -> Type {
+        if let Some(name) = self.label.as_deref().and_then(rename) {
+            self.label = Some(name);
+        }
+        let position = |p: Position| Position { ty: p.ty.renamed(rename), ..p };
+        self.kind = match self.kind {
+            Kind::Array(a) => Kind::Array(ArrayType { element: Box::new(position(*a.element)), ..a }),
+            Kind::Set(s) => Kind::Set(SetType { element: Box::new(position(*s.element)), ..s }),
+            Kind::Record(r) => Kind::Record(RecordType { fields: r.fields.into_iter().map(|f| Field { ty: f.ty.renamed(rename), ..f }).collect(), ..r }),
+            Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(position(*c))), schema }),
+            Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect() }),
+            Kind::TaggedUnion(t) => Kind::TaggedUnion(TaggedUnionType { alternatives: t.alternatives.into_iter().map(|a| Alternative { ty: a.ty.renamed(rename), ..a }).collect() }),
+            Kind::Rows(r) => Kind::Rows(RowsType { columns: r.columns.into_iter().map(|c| Column { ty: c.ty.renamed(rename), ..c }).collect(), ..r }),
+            Kind::Map(m) => Kind::Map(MapType { key: Box::new(m.key.renamed(rename)), value: Box::new(position(*m.value)), ..m }),
+            Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
+            Kind::Multirange(r) => Kind::Multirange(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
+            other => other,
+        };
+        self
+    }
+
+    /// The union's members, or the type alone.
+    pub fn members(&self) -> &[Type] {
+        match &self.kind {
+            Kind::Union(u) => &u.members,
+            _ => std::slice::from_ref(self),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// One line
+// ---------------------------------------------------------------------------------------------
+
+impl Type {
+    /// The type in one short line, as the oracle's `expected.txt` and the engines' tests print it:
+    /// its name (else its kind), then what narrows it in parentheses: an enum's values
+    /// (`varchar('a' | 'b')`), a size (`varchar(≤255)`, `bytes(=6)`), a decimal's precision and
+    /// scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`) and divisor
+    /// (`int4(×5)`). An array is its element and
+    /// `[]`, `?` after an element that may be null (`text?[]`); a record is its fields
+    /// (`point{ x: float8, y: float8 }`, `?` after a field that may be null and before one that
+    /// may be absent); JSON a statement built is its content after its name (`json { id: int4 }`),
+    /// and JSON a schema holds to the schema (`json {"type":"string"}`); a union is its members
+    /// between `|`.
+    pub fn short(&self) -> String {
+        let label = || self.label.clone().unwrap_or_else(|| self.kind.name().to_string());
+        let with = |facts: Vec<String>| if facts.is_empty() { label() } else { format!("{}({})", label(), facts.join(", ")) };
+        let size = |size: &Option<Size>| size.as_ref().map(short_size).into_iter().collect::<Vec<_>>();
+        match &self.kind {
+            Kind::Integer(i) => {
+                let label = self.label.clone().unwrap_or_else(|| format!("{}int{}", if i.unsigned { "u" } else { "" }, i.bits));
+                let mut facts = Vec::new();
+                facts.extend(short_bounds(&i.bounds));
+                facts.extend(i.multiple_of.as_ref().map(|m| format!("×{m}")));
+                if let Some(values) = &i.values {
+                    facts.push(values.join(" | "));
+                }
+                if facts.is_empty() { label } else { format!("{label}({})", facts.join(", ")) }
+            }
+            Kind::Float(f) if self.label.is_none() => format!("float({},{})", f.exponent_bits, f.mantissa_bits),
+            Kind::Float(f) => with(short_bounds(&f.bounds).into_iter().collect()),
+            Kind::Decimal(d) => {
+                let mut facts = match (d.precision, d.min_scale, d.max_scale) {
+                    (Some(p), Some(min), Some(max)) if min == max => vec![format!("{p},{min}")],
+                    (Some(p), _, _) => vec![p.to_string()],
+                    _ => Vec::new(),
+                };
+                facts.extend(short_bounds(&d.bounds));
+                facts.extend(d.multiple_of.as_ref().map(|m| format!("×{m}")));
+                with(facts)
+            }
+            Kind::Text(t) => {
+                let mut facts = size(&t.size);
+                if let Some(values) = &t.values {
+                    facts.push(values.iter().map(|v| format!("'{v}'")).collect::<Vec<_>>().join(" | "));
+                }
+                if let Some(p) = &t.pattern {
+                    facts.push(format!("{:?} {}", p.dialect, p.source).to_ascii_lowercase());
+                }
+                if let Some(shape) = t.ill_formed {
+                    facts.push(format!("{shape:?}").to_ascii_lowercase());
+                }
+                with(facts)
+            }
+            Kind::Bytes(b) => with(size(&b.size)),
+            Kind::Array(a) => {
+                let element = position_short(&a.element);
+                let sized = match &a.size {
+                    Some(Size { exact: Some(n), .. }) => n.to_string(),
+                    Some(s) => format!("{}..{}", s.min.map(|n| n.to_string()).unwrap_or_default(), s.max.map(|n| n.to_string()).unwrap_or_default()),
+                    None => String::new(),
+                };
+                let element = if element.contains(' ') { format!("({element})") } else { element };
+                // A Postgres array type's own name (`_int4`) says no more than its element.
+                match self.label.as_deref() {
+                    Some(name) if !name.rsplit('.').next().unwrap_or(name).starts_with('_') => format!("{name}({element}[{sized}])"),
+                    _ => format!("{element}[{sized}]"),
+                }
+            }
+            Kind::Record(r) => {
+                let fields: Vec<String> = r.fields.iter().map(|f| format!("{}{}: {}", f.name, if f.optional { "?" } else { "" }, position_short(&f.position()))).collect();
+                format!("{}{{ {} }}", self.label.clone().unwrap_or_default(), fields.join(", "))
+            }
+            Kind::Json(j) => match (&j.content, self.schema()) {
+                (Some(content), _) => format!("{} {}", label(), position_short(content)),
+                (None, Some(schema)) => format!("{} {}", label(), schema),
+                (None, None) => label(),
+            },
+            Kind::Union(u) => {
+                let inner = u.members.iter().map(Type::short).collect::<Vec<_>>().join(" | ");
+                match &self.label {
+                    Some(name) => format!("{name}({inner})"),
+                    None => inner,
+                }
+            }
+            Kind::TaggedUnion(t) => {
+                let alternatives: Vec<String> = t.alternatives.iter().map(|a| format!("{}: {}", a.tag, position_short(&a.position()))).collect();
+                format!("{}<{}>", self.label.as_deref().unwrap_or("tagged"), alternatives.join(" | "))
+            }
+            Kind::Rows(r) => {
+                let columns: Vec<String> = r.columns.iter().map(|c| format!("{}: {}", c.name, position_short(&Position::new(c.ty.clone(), c.nullable)))).collect();
+                format!("{}<{}>{{ {} }}", self.kind.name(), r.cardinality.as_str(), columns.join(", "))
+            }
+            Kind::Set(set) => format!("{}{{{}}}", label(), position_short(&set.element)),
+            Kind::Map(m) => format!("{}({} => {})", label(), m.key.short(), position_short(&m.value)),
+            Kind::Range(r) | Kind::Multirange(r) if self.label.is_none() => format!("{}({})", self.kind.name(), r.subtype.short()),
+            _ => label(),
+        }
+    }
+}
+
+fn position_short(p: &Position) -> String {
+    format!("{}{}", p.ty.short(), if p.nullable { "?" } else { "" })
+}
+
+fn short_size(size: &Size) -> String {
+    let unit = match (size.unit, &size.encoding) {
+        (Some(SizeUnit::Byte), Some(encoding)) => format!(" bytes {encoding}"),
+        (Some(SizeUnit::Byte), None) => " bytes".to_string(),
+        (Some(SizeUnit::Utf16Unit), _) => " utf16".to_string(),
+        (None, _) => String::new(),
+    };
+    let n = match (size.exact, size.min, size.max) {
+        (Some(n), _, _) => format!("={n}"),
+        (None, Some(min), Some(max)) => format!("{min}..{max}"),
+        (None, Some(min), None) => format!("≥{min}"),
+        (None, None, Some(max)) => format!("≤{max}"),
+        (None, None, None) => String::new(),
+    };
+    format!("{n}{unit}")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rule 7: what no shape rules out
+// ---------------------------------------------------------------------------------------------
+
+impl Type {
+    /// The first of rule 7's validity checks this type fails, at any depth, with where it is, or
+    /// `Ok` for a valid type: a side of a range takes one bound, a whole-number kind no exclusive
+    /// one, a minimum is at most its maximum, a size's `exact` stands alone and its `min` never
+    /// equals its `max`, `encoding` comes only with a byte unit, a tick is positive and a float's
+    /// widths are too; and an opaque type has its label.
+    pub fn check(&self) -> Result<(), String> {
+        self.check_at("")
+    }
+
+    fn check_at(&self, at: &str) -> Result<(), String> {
+        let here = if at.is_empty() { self.kind.name().to_string() } else { format!("{at} ({})", self.kind.name()) };
+        let fail = |why: String| Err(format!("{here}: {why}"));
+        let position = |p: &Position, step: &str| p.ty.check_at(&format!("{at}{step}"));
+        match &self.kind {
+            Kind::Integer(i) => {
+                if i.bits == 0 {
+                    return fail("bits is 0".into());
+                }
+                if i.bounds.exclusive_min.is_some() || i.bounds.exclusive_max.is_some() {
+                    return fail("a whole-number kind writes its bounds inclusive".into());
+                }
+                check_order(&i.bounds, decimal_order).or_else(fail)?;
+            }
+            Kind::Float(f) => {
+                if f.exponent_bits == 0 || f.mantissa_bits == 0 {
+                    return fail("a float's widths are positive".into());
+                }
+                check_bounds(&f.bounds, decimal_order).or_else(fail)?;
+            }
+            Kind::Decimal(d) => {
+                check_bounds(&d.bounds, decimal_order).or_else(fail)?;
+                if let (Some(min), Some(max)) = (d.min_scale, d.max_scale) {
+                    if min > max {
+                        return fail(format!("min_scale {min} is above max_scale {max}"));
+                    }
+                }
+            }
+            Kind::Text(t) => {
+                if let Some(size) = &t.size {
+                    check_size(size, t.ill_formed.is_none()).or_else(fail)?;
+                }
+            }
+            Kind::Bytes(BytesType { size: Some(size) }) => check_size(size, false).or_else(fail)?,
+            Kind::Array(a) => {
+                if let Some(size) = &a.size {
+                    check_size(size, false).or_else(fail)?;
+                }
+                position(&a.element, "[]")?;
+            }
+            Kind::Set(s) => {
+                if let Some(size) = &s.size {
+                    check_size(size, false).or_else(fail)?;
+                }
+                position(&s.element, "[]")?;
+            }
+            Kind::Record(r) => {
+                for f in &r.fields {
+                    f.ty.check_at(&format!("{at}.{}", f.name))?;
+                }
+            }
+            Kind::Json(j) => {
+                if let Some(content) = &j.content {
+                    position(content, "<json>")?;
+                }
+            }
+            Kind::Date(d) => check_bounds(&d.bounds, text_order).or_else(fail)?,
+            Kind::Time(t) => {
+                check_tick(&t.tick).or_else(fail)?;
+                check_bounds(&t.bounds, text_order).or_else(fail)?;
+            }
+            Kind::DateTime(t) => {
+                check_tick(&t.tick).or_else(fail)?;
+                check_bounds(&t.bounds, text_order).or_else(fail)?;
+            }
+            Kind::Instant(t) => {
+                check_tick(&t.tick).or_else(fail)?;
+                check_bounds(&t.bounds, text_order).or_else(fail)?;
+            }
+            Kind::Duration(d) => match (duration_has_time(&d.max).map_err(|why| format!("{here}: {why}"))?, &d.tick) {
+                (true, Some(tick)) => check_tick(tick).or_else(fail)?,
+                (false, None) => {}
+                _ => return fail("a duration has a tick exactly when its max has a time part".into()),
+            },
+            Kind::Union(u) => {
+                for (i, m) in u.members.iter().enumerate() {
+                    m.check_at(&format!("{at}|{i}"))?;
+                }
+            }
+            Kind::Rows(r) => {
+                for c in &r.columns {
+                    c.ty.check_at(&format!("{at}.{}", c.name))?;
+                }
+                if !r.unique.is_empty() && r.cardinality != Cardinality::Many {
+                    return fail("unique is only for rows that can be more than one".into());
+                }
+                if !r.order.is_empty() && r.cardinality != Cardinality::Many {
+                    return fail("order is only for rows that can be more than one".into());
+                }
+                if let Some(o) = r.order.iter().find(|o| !r.columns.iter().any(|c| c.name == o.column)) {
+                    return fail(format!("order column {:?} is not a column", o.column));
+                }
+                if let Some((at, o)) = r.order.iter().enumerate().find(|(at, o)| r.order[..*at].iter().any(|p| p.column == o.column)) {
+                    return fail(format!("order names column {:?} twice, at {at}", o.column));
+                }
+                for key in &r.unique {
+                    if key.is_empty() {
+                        return fail("a set of unique columns holds at least one".into());
+                    }
+                    if let Some(k) = key.iter().find(|k| !r.columns.iter().any(|c| &c.name == *k)) {
+                        return fail(format!("unique column {k:?} is not a column"));
+                    }
+                }
+            }
+            Kind::TaggedUnion(t) => {
+                let mut tags = std::collections::HashSet::new();
+                for a in &t.alternatives {
+                    if !tags.insert(a.tag.as_str()) {
+                        return fail(format!("tag {:?} names two alternatives", a.tag));
+                    }
+                    a.ty.check_at(&format!("{at}<{}>", a.tag))?;
+                }
+            }
+            Kind::Map(m) => {
+                m.key.check_at(&format!("{at}<key>"))?;
+                position(&m.value, "<value>")?;
+            }
+            Kind::Range(r) | Kind::Multirange(r) => r.subtype.check_at(&format!("{at}<subtype>"))?,
+            Kind::Opaque if self.label.is_none() => return fail("an opaque type has its label".into()),
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+fn check_bounds(b: &Bounds, order: fn(&str, &str) -> Option<std::cmp::Ordering>) -> Result<(), String> {
+    if b.min.is_some() && b.exclusive_min.is_some() {
+        return Err("min beside exclusive_min".into());
+    }
+    if b.max.is_some() && b.exclusive_max.is_some() {
+        return Err("max beside exclusive_max".into());
+    }
+    check_order(b, order)
+}
+
+fn check_order(b: &Bounds, order: fn(&str, &str) -> Option<std::cmp::Ordering>) -> Result<(), String> {
+    let low = b.min.as_deref().or(b.exclusive_min.as_deref());
+    let high = b.max.as_deref().or(b.exclusive_max.as_deref());
+    if let (Some(low), Some(high)) = (low, high) {
+        if order(low, high) == Some(std::cmp::Ordering::Greater) {
+            return Err(format!("the minimum {low} is above the maximum {high}"));
+        }
+    }
+    Ok(())
+}
+
+/// A number's bounds in the short notation (`0..150`, `>0..<1`), but for those an exponent writes:
+/// the reach of the type itself (`numeric`'s `1e131072`), which says nothing of the column.
+fn short_bounds(b: &Bounds) -> Option<String> {
+    let side = |inclusive: &Option<String>, exclusive: &Option<String>, mark: &str| match (inclusive, exclusive) {
+        (Some(v), _) if !v.contains('e') => v.clone(),
+        (_, Some(v)) if !v.contains('e') => format!("{mark}{v}"),
+        _ => String::new(),
+    };
+    let (low, high) = (side(&b.min, &b.exclusive_min, ">"), side(&b.max, &b.exclusive_max, "<"));
+    (!low.is_empty() || !high.is_empty()).then(|| format!("{low}..{high}"))
+}
+
+/// Two numbers in canonical decimal text, compared, where both read as `f64` without loss of
+/// order (an exponent such as `1e131072` reads as infinity, which still orders it).
+fn decimal_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let (x, y) = (a.parse::<f64>().ok()?, b.parse::<f64>().ok()?);
+    x.partial_cmp(&y)
+}
+
+/// Two dates or times in ISO 8601, compared: by their text where both have four-digit years and
+/// no sign, else not at all.
+fn text_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let plain = |s: &str| !s.starts_with(['+', '-']);
+    (plain(a) && plain(b)).then(|| a.cmp(b))
+}
+
+fn check_size(size: &Size, unicode: bool) -> Result<(), String> {
+    if size.exact.is_some() && (size.min.is_some() || size.max.is_some()) {
+        return Err("a size's exact beside its min or max".into());
+    }
+    if size.exact.is_none() && size.min.is_none() && size.max.is_none() {
+        return Err("a size with no length".into());
+    }
+    if let (Some(min), Some(max)) = (size.min, size.max) {
+        if min >= max {
+            return Err(format!("a size's min {min} is not below its max {max}"));
+        }
+    }
+    if size.unit.is_some() && !unicode {
+        return Err("only valid Unicode text names a size's unit".into());
+    }
+    if size.encoding.is_some() != (size.unit == Some(SizeUnit::Byte)) {
+        return Err("encoding comes with unit: \"byte\" and only with it".into());
+    }
+    Ok(())
+}
+
+/// Whether a duration's `max` has a time part, once it reads as the spec writes it: `P`, then
+/// months in `M` and days in `D`, then `T` and time in `H`, `M` and `S`, each part at most once,
+/// in that order, above zero and with no leading zero, only the seconds with a fraction, the
+/// minutes and seconds below 60, and at least one part.
+fn duration_has_time(max: &str) -> Result<bool, String> {
+    let refused = || format!("the duration's max {max:?} is not one ISO 8601 duration in the spec's units and order");
+    let rest = max.strip_prefix('P').ok_or_else(refused)?;
+    let (date, time) = match rest.split_once('T') {
+        Some((date, time)) => (date, Some(time)),
+        None => (rest, None),
+    };
+    let mut parts = 0;
+    for (text, units) in [(date, &['M', 'D'][..]), (time.unwrap_or_default(), &['H', 'M', 'S'][..])] {
+        let mut next = 0;
+        let mut start = 0;
+        for (i, unit) in text.char_indices().filter(|(_, c)| !c.is_ascii_digit() && *c != '.') {
+            let at = next + units[next..].iter().position(|&u| u == unit).ok_or_else(refused)?;
+            let number = &text[start..i];
+            let (whole, fraction) = number.split_once('.').map_or((number, None), |(w, f)| (w, Some(f)));
+            let canonical = !whole.is_empty()
+                && whole.bytes().all(|b| b.is_ascii_digit())
+                && (whole == "0" || !whole.starts_with('0'))
+                && fraction.is_none_or(|f| unit == 'S' && !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()) && !f.ends_with('0'))
+                && (whole != "0" || fraction.is_some())
+                && (unit == 'H' || units.len() == 2 || whole.parse::<u8>().is_ok_and(|n| n < 60));
+            if !canonical {
+                return Err(refused());
+            }
+            (next, start, parts) = (at + 1, i + 1, parts + 1);
+        }
+        if start != text.len() {
+            return Err(refused());
+        }
+    }
+    if parts == 0 || time == Some("") {
+        return Err(refused());
+    }
+    Ok(time.is_some())
+}
+
+fn check_tick(tick: &str) -> Result<(), String> {
+    let (n, d) = tick.split_once('/').unwrap_or((tick, "1"));
+    match (n.parse::<u64>(), d.parse::<u64>()) {
+        (Ok(n), Ok(d)) if n > 0 && d > 0 => Ok(()),
+        _ => Err(format!("the tick {tick:?} is not a positive fraction")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Read and written back, `value` is itself, and it passes rule 7.
+    fn round_trip(value: Value) -> Type {
+        let ty: Type = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{value}: {e}"));
+        assert_eq!(serde_json::to_value(&ty).unwrap(), value);
+        ty.check().unwrap_or_else(|e| panic!("{value}: {e}"));
+        ty
+    }
+
+    /// The examples of spec/examples.ts, which `nub run typedefs` copies into spec/examples.json: each descriptor, whole or in part, reads and writes back as itself, and every type in it passes rule 7.
+    #[test]
+    fn the_spec_examples_read_and_write_as_they_are_written() {
+        let examples: Value = serde_json::from_str(include_str!("../../../spec/examples.json")).unwrap();
+        let examples = examples.as_object().unwrap();
+        assert!(!examples.is_empty());
+        let mut types = 0;
+        for (name, example) in examples {
+            let descriptor = &example["descriptor"];
+            for value in descriptor["params"].as_array().into_iter().flatten() {
+                let param: Param = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
+                assert_eq!(serde_json::to_value(&param).unwrap(), *value, "{name}");
+                param.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", param.name));
+                types += 1;
+            }
+            for value in descriptor["result"]["columns"].as_array().into_iter().flatten() {
+                let column: Column = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
+                assert_eq!(serde_json::to_value(&column).unwrap(), *value, "{name}");
+                column.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", column.name));
+                types += 1;
+            }
+            // The rows themselves, whose `unique` sets rule 7 holds to their columns.
+            if let Some(result) = descriptor.get("result") {
+                round_trip(result.clone());
+            }
+            // A whole descriptor, which names the format's version.
+            if descriptor.get("$schema").is_some() {
+                let whole: StatementDescriptor = serde_json::from_value(descriptor.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(serde_json::to_value(&whole).unwrap(), *descriptor, "{name}");
+                assert_eq!(whole.schema, SCHEMA, "{name}");
+            }
+        }
+        assert!(types > 0);
+    }
+
+    /// The kinds and fields no example in spec/examples.ts shows, and a tagged union's short form.
+    #[test]
+    fn what_no_example_shows_reads_and_writes_as_the_spec_spells_it() {
+        let tagged = round_trip(json!({"kind": "tagged_union", "label": "union", "alternatives": [{"tag": "num", "nullable": true, "type": {"kind": "integer", "bits": 32}}, {"tag": "str", "type": {"kind": "text"}}]}));
+        assert_eq!(tagged.short(), "union<num: int32? | str: text>");
+        assert!(serde_json::from_value::<Type>(json!({"kind": "tagged_union", "alternatives": [{"tag": "a", "type": {"kind": "text"}}, {"tag": "a", "type": {"kind": "text"}}]})).unwrap().check().is_err());
+        round_trip(json!({"kind": "text", "size": {"unit": "byte", "encoding": "UTF-8", "max": 65535}, "label": "text"}));
+        round_trip(json!({"kind": "text", "size": {"max": 255}, "pattern": {"dialect": "like", "source": "%@%"}, "label": "public.email"}));
+        round_trip(json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/1000000", "label": "time"}));
+        round_trip(json!({"kind": "duration", "max": "P1199M"}));
+        round_trip(json!({"kind": "duration", "max": "PT0.5S", "tick": "1/1000"}));
+        round_trip(json!({"kind": "set", "size": {"max": 2}, "label": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
+        round_trip(json!({"kind": "map", "label": "hstore", "key": {"kind": "text"}, "value": {"nullable": true, "type": {"kind": "text"}}}));
+        round_trip(json!({"kind": "geometry", "model": "geodetic", "srid": 4326, "subtype": "point", "coordinates": "xy", "label": "geography"}));
+        round_trip(json!({"kind": "xml", "fragment": true, "label": "xml"}));
+        round_trip(json!({"kind": "opaque", "label": "ltree"}));
+        round_trip(json!({"kind": "uuid", "label": "uuid"}));
+        round_trip(json!({"kind": "datetime", "tick": "1/1000000", "label": "timestamp"}));
+        round_trip(json!({"kind": "multirange", "subtype": {"kind": "integer", "bits": 32, "label": "int4"}, "label": "int4multirange"}));
+    }
+
+    #[test]
+    fn a_false_flag_reads_as_an_absent_one() {
+        let ty: Type = serde_json::from_value(json!({"kind": "text", "ill_formed": false})).unwrap();
+        assert_eq!(serde_json::to_value(&ty).unwrap(), json!({"kind": "text"}));
+        let ty: Type = serde_json::from_value(json!({"kind": "integer", "bits": 16, "unsigned": false})).unwrap();
+        assert_eq!(serde_json::to_value(&ty).unwrap(), json!({"kind": "integer", "bits": 16}));
+    }
+
+    #[test]
+    fn a_union_is_flat_once_each_and_in_kind_order() {
+        let text = Type::text();
+        let nested = Type::union(vec![Type::bytes(), text.clone()]);
+        let u = Type::union(vec![nested, Type::integer(64), text.clone()]);
+        assert_eq!(serde_json::to_value(&u).unwrap(), json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}, {"kind": "bytes"}]}));
+        assert_eq!(Type::union(vec![text.clone(), text.clone()]), text);
+        // A named union stays a member: its name is the database's type.
+        let named = Type::union(vec![Type::integer(64), Type::double()]).named("NUMERIC");
+        assert_eq!(Type::union(vec![named, Type::text()]).members().len(), 2);
+    }
+
+    #[test]
+    fn rule_7_refuses_what_no_shape_rules_out() {
+        let refused = |value: Value| serde_json::from_value::<Type>(value.clone()).unwrap().check().err().unwrap_or_else(|| panic!("{value} passed"));
+        refused(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "min": "0", "exclusive_min": "0"}));
+        refused(json!({"kind": "integer", "bits": 32, "exclusive_min": "0"}));
+        refused(json!({"kind": "integer", "bits": 32, "min": "5", "max": "1"}));
+        refused(json!({"kind": "text", "size": {"exact": 3, "max": 4}}));
+        refused(json!({"kind": "text", "size": {"min": 4, "max": 4}}));
+        refused(json!({"kind": "text", "size": {"unit": "utf16_unit", "encoding": "UTF-8", "max": 4}}));
+        refused(json!({"kind": "bytes", "size": {"unit": "byte", "max": 4}}));
+        refused(json!({"kind": "text", "ill_formed": "utf8", "size": {"unit": "byte", "encoding": "UTF-8", "max": 4}}));
+        refused(json!({"kind": "time", "tick": "0"}));
+        // A duration's max: its tick exactly with a time part, and only the spec's units, in order, above zero.
+        refused(json!({"kind": "duration", "max": "PT838H59M59S"}));
+        refused(json!({"kind": "duration", "max": "P1199M", "tick": "1"}));
+        for max in ["P", "PT", "P1MT", "P99Y11M", "P2W", "P1D1M", "PT1H1H", "PT90M", "PT1M60S", "PT01H", "P0D", "P1.5D", "PT1.50S", "-P1D", "P1M2"] {
+            refused(json!({"kind": "duration", "max": max, "tick": "1"}));
+        }
+        refused(json!({"kind": "decimal", "min_scale": 3, "max_scale": 2}));
+        refused(json!({"kind": "opaque"}));
+        refused(json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 0, "mantissa_bits": 3}}}));
+        let id = json!({"name": "id", "type": {"kind": "integer", "bits": 32}});
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["missing"]]}));
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [[]]}));
+        refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "unique": [["id"]]}));
+        refused(json!({"kind": "rows", "cardinality": "one", "columns": [id], "unique": [["id"]]}));
+        serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["id"]]})).unwrap().check().unwrap();
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "missing", "nulls": "last"}]}));
+        refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "order": [{"column": "id", "nulls": "last"}]}));
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "id", "nulls": "last"}, {"column": "id", "desc": true, "nulls": "first"}]}));
+        serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "id", "desc": true, "nulls": "first"}]})).unwrap().check().unwrap();
+    }
+
+    #[test]
+    fn a_statements_result_is_rows_and_nothing_else() {
+        let result = |result: Value| serde_json::from_value::<StatementDescriptor>(json!({"$schema": SCHEMA, "dialect": {"name": "postgres", "version": "18"}, "sql": "select 1", "params": [], "result": result, "diagnostics": []}));
+        assert!(result(json!({"kind": "integer", "bits": 32})).is_err());
+        let rows = json!({"kind": "rows", "cardinality": "one", "columns": []});
+        let read = result(rows.clone()).unwrap();
+        assert_eq!(read.result.rows.cardinality, Cardinality::One);
+        assert_eq!(serde_json::to_value(&read).unwrap()["result"], rows);
+    }
+
+    #[test]
+    fn the_schema_url_is_the_one_the_spec_names() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!("../../../spec/typedefs.schema.json")).unwrap();
+        assert_eq!(spec["$id"], SCHEMA);
+        assert_eq!(spec["$defs"]["StatementDescriptor"]["properties"]["$schema"]["const"], SCHEMA);
+    }
 }

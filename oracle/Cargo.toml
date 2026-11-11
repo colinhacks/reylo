@@ -9,6 +9,11 @@ description = "Runs the engine against live databases: each case's statements ar
 name = "reylo-oracle"
 path = "src/main.rs"
 
+# `duckdb` runs the DuckDB cases, on DuckDB built from its sources (a few minutes), so no other
+# build of the workspace compiles it: `cargo run -p reylo-oracle --features duckdb`.
+[features]
+duckdb = ["dep:libduckdb-sys", "reylo-engine/duckdb"]
+
 [dependencies]
 reylo-engine-core = { path = "../engine/core" }
 reylo-engine = { path = "../engine/facade", features = ["tokio-postgres", "rusqlite", "mysql_async"] }
@@ -16,7 +21,14 @@ serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 # The same features as Reylo Framework's, so the two share one build of each in the workspace's target.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs", "io-util", "process"] }
 tokio-postgres = "0.7"
+# `COPY … FROM stdin` in Postgres's regression suite (`src/replay/postgres.rs`).
+bytes = "1"
+futures-util = "0.3"
 rusqlite = { version = "0.39", features = ["bundled", "column_decltype", "column_metadata", "hooks", "functions"] }
 # Pure Rust (`minimal-rust`: no TLS, flate2's Rust backend): its `Statement` carries the prepare's
 # column and parameter definitions whole, type code, flags and character set, as mysql2 reports them.
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust"] }
+libduckdb-sys = { version = "=1.20000.1", default-features = false, features = ["bundled", "capi-v1"], optional = true }
+# A JSON Schema 2020-12 validator, which holds every type the engine infers to the format's own
+# schema, spec/typedefs.schema.json (`src/validity.rs`).
+boon = "0.6"

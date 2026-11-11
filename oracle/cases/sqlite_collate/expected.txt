@@ -1,11 +1,25 @@
-column_side.sql: many (v: text) -> { id: integer }
-in_list.sql: many (v: text) -> { id: integer }
-key_binary.sql: maybeOne (v: text) -> { id: integer }
-key_binary_written.sql: many (v: text) -> { id: integer }
-key_column_nocase.sql: many (v: text) -> { id: integer }
-key_delete_nocase.sql: many (v: text) -> { id: integer }
-key_nocase.sql: maybeOne (v: text) -> { id: integer }
-key_param_nocase.sql: many (v: text) -> { id: integer }
-key_param_nocase_left.sql: many (v: text) -> { id: integer }
-param_left.sql: many (v: text) -> { id: integer }
-param_right.sql: many (v: text) -> { id: integer }
+collate_binary_integer.sql: many (v: int64) -> { id: INTEGER }
+collate_in_list.sql: many (v: text(utf8)) -> { id: INTEGER }
+collate_on_column.sql: many (v: text(utf8)) -> { id: INTEGER }
+collate_on_parameter.sql: many (v: text(utf8)) -> { id: INTEGER }
+collate_on_parameter_left.sql: many (v: text(utf8)) -> { id: INTEGER }
+column_side.sql: many (v: text(utf8)) -> { id: INTEGER }
+in_list.sql: many (v: text(utf8)) -> { id: INTEGER }
+key_binary.sql: at_most_one (v: text(utf8)) -> { id: INTEGER }
+key_binary_written.sql: many (v: text(utf8)) -> { id: INTEGER }
+key_column_nocase.sql: many (v: text(utf8)) -> { id: INTEGER }
+key_delete_nocase.sql: many (v: text(utf8)) -> { id: INTEGER }
+key_nocase.sql: at_most_one (v: text(utf8)) -> { id: INTEGER }
+key_param_nocase.sql: many (v: text(utf8)) -> { id: INTEGER }
+key_param_nocase_left.sql: many (v: text(utf8)) -> { id: INTEGER }
+other_binary_left.sql: at_most_one () -> { id: INTEGER }
+other_derived_collate_left.sql: many () -> { id: INTEGER }
+other_derived_left.sql: many () -> { id: INTEGER }
+other_nocase_cast.sql: many () -> { id: INTEGER }
+other_nocase_left.sql: many () -> { id: INTEGER }
+other_nocase_right.sql: at_most_one () -> { id: INTEGER }
+other_nocase_unary.sql: many () -> { id: INTEGER }
+other_subquery.sql: many () -> { id: INTEGER }
+other_with_left.sql: many () -> { id: INTEGER }
+param_left.sql: many (v: text(utf8)) -> { id: INTEGER }
+param_right.sql: many (v: text(utf8)) -> { id: INTEGER }

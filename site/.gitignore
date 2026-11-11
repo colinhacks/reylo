@@ -4,3 +4,5 @@ node_modules/
 build/
 *.tsbuildinfo
 .live/
+.share/
+.playground/

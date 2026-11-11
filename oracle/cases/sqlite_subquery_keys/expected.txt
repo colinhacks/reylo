@@ -1,49 +1,56 @@
-bare_name.sql: maybeOne (id: integer) -> { id: integer, title: text }
-cast.sql: many (id: text) -> { id: text, title: text }
-compared_as_number.sql: maybeOne () -> { email: text }
-cross_join.sql: many (id: integer) -> { id: integer }
-distinct.sql: maybeOne (a: integer) -> { author_id: integer }
-distinct_expression.sql: many (a: integer) -> { author_id: integer, t: text }
-expression.sql: many (id: integer) -> { id: integer, title: text }
-filtered_inside.sql: maybeOne (a: integer, id: integer) -> { id: integer, title: text }
-group_by.sql: maybeOne (a: integer) -> { author_id: integer, n: integer }
-group_by_ordinal.sql: maybeOne (a: integer) -> { author_id: integer, n: integer }
-group_by_two.sql: many (a: integer) -> { author_id: integer, title: text, n: integer }
-group_key_hidden.sql: many (n: integer) -> { author_id: integer, n: integer }
-join_many.sql: many (id: integer) -> { id: integer, tag: text }
-join_pinned.sql: maybeOne (id: integer) -> { id: integer, title: text, name: text }
-joined_on_key.sql: maybeOne (id: integer) -> { title: text, name: text }
-key_dropped.sql: many (t: text) -> { title: text }
-left_join_many.sql: many (id: integer) -> { id: integer }
-left_join_pinned.sql: maybeOne (id: integer) -> { id: integer, title: text, name: text? }
-left_join_subquery.sql: maybeOne (p: integer, id: integer) -> { name: text, title: text? }
-limit_inside.sql: maybeOne (id: integer) -> { id: integer, title: text }
-nested.sql: maybeOne (id: integer) -> { id: integer, title: text }
-nocase_key.sql: maybeOne (n: text) -> { id: integer, name: text }
-nocase_key_binary.sql: many (n: text) -> { id: integer, name: text }
-not_a_key.sql: many (e: text) -> { id: integer, author_id: integer, id: integer, email: text, name: text, deleted_at: text? } !! reylo14: Columns 1 and 3 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
-null_extended_side.sql: many (id: integer) -> { id: integer, name: text }
-recursive.sql: many (id: integer) -> { id: integer }
-renamed.sql: maybeOne (id: integer) -> { post_id: integer, title: text }
-right_join.sql: many (id: integer) -> { id: integer }
-second_key.sql: maybeOne (e: text) -> { id: integer, email: text }
-self_join_key.sql: maybeOne (id: integer) -> { id: integer, title: text }
-self_join_nonkey.sql: many (id: integer) -> { id: integer }
-star.sql: maybeOne (id: integer) -> { id: integer, author_id: integer, title: text }
-subquery.sql: maybeOne (id: integer) -> { id: integer, title: text }
-table_function.sql: many (ids: text, id: integer) -> { id: integer, value: unknown? }
-two_subqueries.sql: maybeOne (id: integer) -> { title: text, name: text }
-two_withs.sql: maybeOne (id: integer) -> { id: integer, title: text }
-union.sql: many (id: integer) -> { id: integer }
-union_all.sql: many (id: integer) -> { id: integer }
-values_list.sql: many (id: integer) -> { column1: integer }
-view.sql: maybeOne (id: integer) -> { id: integer, title: text }
-view_column_list.sql: maybeOne (id: integer) -> { post_id: integer, headline: text }
-view_group_by.sql: maybeOne (a: integer) -> { author_id: integer, n: integer }
-view_join.sql: maybeOne (id: integer) -> { id: integer, title: text, name: text }
-view_join_many.sql: many (id: integer) -> { id: integer, tag: text }
-view_of_view.sql: maybeOne (id: integer) -> { id: integer, title: text }
-window_inside.sql: maybeOne (id: integer) -> { id: integer, rn: integer }
-with_joined.sql: maybeOne (u: integer, id: integer) -> { title: text, name: text }
-with_materialized.sql: maybeOne (id: integer) -> { id: integer, title: text }
-with_query.sql: maybeOne (id: integer) -> { id: integer, title: text }
+bare_name.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+cast.sql: many (id: text(utf8)) -> { id: text(utf8), title: TEXT(text(utf8) | bytes) }
+compared_as_number.sql: at_most_one () -> { email: TEXT(text(utf8) | bytes) }
+cross_join.sql: many (id: int64) -> { id: INTEGER }
+distinct.sql: at_most_one (a: int64) -> { author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+distinct_expression.sql: many (a: int64) -> { author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), t: text(utf8) }
+except_left_keys.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+expression.sql: many (id: int64) -> { id: int64, title: TEXT(text(utf8) | bytes) }
+filtered_inside.sql: at_most_one (a: int64, id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+group_by.sql: at_most_one (a: int64) -> { author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+group_by_ordinal.sql: at_most_one (a: int64) -> { author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+group_by_two.sql: many (a: int64) -> { author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), title: TEXT(text(utf8) | bytes), n: int64 }
+group_key_hidden.sql: many (n: int64) -> { author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+intersect_left_keys.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+join_many.sql: many (id: int64) -> { id: INTEGER, tag: TEXT(text(utf8) | bytes) }
+join_pinned.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
+joined_on_key.sql: at_most_one (id: int64) -> { title: TEXT(text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
+key_dropped.sql: many (t: text(utf8)) -> { title: TEXT(text(utf8) | bytes) }
+key_fixed_inside.sql: at_most_one (p: int64, t: text(utf8)) -> { tag: TEXT(text(utf8) | bytes) }
+key_not_fixed_inside.sql: many (p: int64, t: text(utf8)) -> { tag: TEXT(text(utf8) | bytes) }
+left_join_many.sql: many (id: int64) -> { id: INTEGER }
+left_join_pinned.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes), name: TEXT(text(utf8) | bytes)? }
+left_join_subquery.sql: at_most_one (p: int64, id: int64) -> { name: TEXT(text(utf8) | bytes), title: TEXT(text(utf8) | bytes)? }
+limit_inside.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+nested.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+nocase_key.sql: at_most_one (n: text(utf8)) -> { id: INTEGER, name: TEXT(text(utf8) | bytes) }
+nocase_key_binary.sql: many (n: text(utf8)) -> { id: INTEGER, name: TEXT(text(utf8) | bytes) }
+not_a_key.sql: many (e: text(utf8)) -> { id: INTEGER, author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), id: INTEGER, email: TEXT(text(utf8) | bytes), name: TEXT(text(utf8) | bytes), deleted_at: TEXT(text(utf8) | bytes)? } !! reylo14: Columns 1 and 3 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+null_extended_side.sql: many (id: int64) -> { id: INTEGER, name: TEXT(text(utf8) | bytes) }
+recursive.sql: many (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+renamed.sql: at_most_one (id: int64) -> { post_id: INTEGER, title: TEXT(text(utf8) | bytes) }
+right_join.sql: many (id: int64) -> { id: INTEGER }
+second_key.sql: at_most_one (e: text(utf8)) -> { id: INTEGER, email: TEXT(text(utf8) | bytes) }
+self_join_key.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+self_join_nonkey.sql: many (id: int64) -> { id: INTEGER }
+star.sql: at_most_one (id: int64) -> { id: INTEGER, author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), title: TEXT(text(utf8) | bytes) }
+subquery.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+table_function.sql: many (ids: text(utf8), id: int64) -> { id: INTEGER, value: unknown? }
+two_subqueries.sql: at_most_one (id: int64) -> { title: TEXT(text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
+two_withs.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+union.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+union_all.sql: many (id: int64) -> { id: INTEGER }
+union_mixed_affinity.sql: many (id: unknown) -> { id: unknown }
+values_list.sql: many (id: int64) -> { column1: int64 }
+view.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+view_column_list.sql: at_most_one (id: int64) -> { post_id: INTEGER, headline: TEXT(text(utf8) | bytes) }
+view_group_by.sql: at_most_one (a: int64) -> { author_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+view_join.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
+view_join_many.sql: many (id: int64) -> { id: INTEGER, tag: TEXT(text(utf8) | bytes) }
+view_of_view.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+window_inside.sql: at_most_one (id: int64) -> { id: INTEGER, rn: int64 }
+with_column_list.sql: at_most_one (id: int64) -> { pid: INTEGER, t: TEXT(text(utf8) | bytes) }
+with_column_list_shifted.sql: many (t: text(utf8)) -> { id: TEXT(text(utf8) | bytes), x: INTEGER }
+with_joined.sql: at_most_one (u: int64, id: int64) -> { title: TEXT(text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
+with_materialized.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+with_query.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }

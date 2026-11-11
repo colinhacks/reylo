@@ -1,2 +1,3 @@
 insert_post.sql: UNIQUE constraint failed: posts.id
 insert_user.sql: UNIQUE constraint failed: users.id
+update_row_short.sql: 3 columns assigned 2 values

@@ -1,9 +1,9 @@
-pipes_in_select.sql: many () -> { label: text? }
-pipes_join_strings.sql: maybeOne (a: text, b: text) -> { id: int4 }
-pipes_on_date_key.sql: maybeOne (a: text, b: text) -> { id: int4 }
-quoted_identifier_key.sql: maybeOne (id: int4) -> { id: int4 }
-quoted_is_a_column.sql: many () -> { id: int4 }
+pipes_in_select.sql: many () -> { label: varchar? }
+pipes_join_strings.sql: at_most_one (a: varchar, b: varchar) -> { id: int }
+pipes_on_date_key.sql: at_most_one (a: varchar, b: varchar) -> { id: int }
+quoted_identifier_key.sql: at_most_one (id: int32) -> { id: int }
+quoted_is_a_column.sql: many () -> { id: int }
 quoted_is_a_column_object.sql: many () -> { o: json? }
-quoted_names_in_json.sql: maybeOne (id: int4) -> { o: { id: int4, name: text, at: timestamp } }
-quoted_names_in_json_list.sql: one () -> { l: [{ id: int4, email: text }]? }
-single_quoted.sql: maybeOne () -> { id: int4 }
+quoted_names_in_json.sql: at_most_one (id: int32) -> { o: json { id: int, name: varchar(≤40), at: datetime } }
+quoted_names_in_json_list.sql: one () -> { l: json ({ id: int, email: varchar(≤40) })[]? }
+single_quoted.sql: at_most_one () -> { id: int }

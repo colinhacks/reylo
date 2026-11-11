@@ -29,7 +29,7 @@ Each run of `start` adds a post; `nub run setup` starts over. The tests roll the
 
 ## How Reylo is wired in
 
-- In `package.json`, `reylo` is a dependency, because the preload runs in the app; the SQLite engine `@reylosql/sqlite` and `typescript` 7.1 are dev dependencies, used by the type check. SQLite needs no driver package: `node:sqlite` is built into Node.
+- In `package.json`, `reylo` is a dependency, because the preload runs in the app; `typescript` 7.1 is a dev dependency, used by the type check, and `reylo` brings the engine that analyzes each statement for the machine. SQLite needs no driver package: `node:sqlite` is built into Node.
 - The `nub.jsonc` file sets `"preload": ["reylo/register"]`, which nub loads before the app, so `nub src/main.ts` and `nub --test` import `.sql` files with no flag.
 - In the `package.json` scripts, `typecheck` is `tsc --noEmit --runExternalCode`, the flag that lets `tsc` run the content mapper. The `start` script is `nub src/main.ts` and `test` is `nub --test`, Node's test runner under nub, which finds `src/queries.test.ts` and runs it with the preload.
 - In `tsconfig.json`, `contentMappers` names `reylo` for `.sql`, which types each import from the database, and for the project file, `.reylo.yaml` or `.reylo.yml`. The `include` option is `src` and `setup.ts`, so `setup.sql`, a schema rather than one query, stays out of the type check.
@@ -39,8 +39,7 @@ Each run of `start` adds a post; `nub run setup` starts over. The tests roll the
 
 ## In your own project
 
-- Install from npm instead of the `link:` dependencies: `nub add reylo` and `nub add -D @reylosql/sqlite typescript@beta`.
-- The `.npmrc` file (`minimumReleaseAge=0`) exists only because this machine holds fresh releases back; drop it.
+- Install from npm instead of the `link:` dependencies: `nub add reylo` and `nub add -D typescript@beta`.
 
 ## Notes
 

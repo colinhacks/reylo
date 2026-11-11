@@ -1,0 +1,10 @@
+[package]
+name = "sqlx-check"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+sqlx = { version = "=0.9.0", features = ["postgres", "mysql", "sqlite", "runtime-tokio", "macros", "json"] }
+tokio = { version = "1", features = ["full"] }

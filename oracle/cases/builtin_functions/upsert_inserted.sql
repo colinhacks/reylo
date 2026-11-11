@@ -1,0 +1,1 @@
+insert into events (id, kind, amount, at, local_at, day, clock, wait, span, spans, tags, mood, n) values (:id, 'k', 1, now(), localtimestamp, current_date, localtime, interval '1 day', tstzrange(now(), null), '{[1,2)}', '{}', 'ok', 1) on conflict (id) do update set n = excluded.n returning (xmax = 0) as inserted, ctid

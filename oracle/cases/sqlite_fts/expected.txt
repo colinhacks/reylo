@@ -1,11 +1,11 @@
-highlight_unmatched.sql: many (col: integer, open: text, close: text) -> { id: integer, hit: text?, rank: real }
-notes_fts4.sql: many (q: text) -> { id: integer, o: text, m: blob, s: text? }
-rank.sql: many (weight: real, q: text) -> { id: integer, rank: real, weighted: real?, body_hit: text?, excerpt: text? }
-recipe.sql: maybeOne (id: integer) -> { title: text }
-remove.sql: maybeOne (id: integer) -> { id: integer, body: text? }
-retitle.sql: maybeOne (title: text?, id: integer) -> { id: integer, title: text? }
-search.sql: many (q: text) -> { id: integer, title: text }
-search_articles.sql: many (q: text) -> { id: integer, body: text? }
-search_bare.sql: many (q: text) -> { rowid: integer }
-search_index.sql: many (q: text) -> { rowid: integer, title: unknown?, body: unknown? }
-search_words.sql: many (q: text) -> { word: unknown? }
+highlight_unmatched.sql: many (col: int64, open: text(utf8), close: text(utf8)) -> { id: INTEGER, hit: text(utf8)?, rank: float(11,52) }
+notes_fts4.sql: many (q: text(utf8)) -> { id: INTEGER, o: text(utf8), m: bytes, s: text(utf8)? }
+rank.sql: many (weight: float(11,52), q: text(utf8)) -> { id: INTEGER, rank: float(11,52), weighted: float(11,52)?, body_hit: text(utf8)?, excerpt: text(utf8)? }
+recipe.sql: at_most_one (id: int64) -> { title: TEXT(text(utf8) | bytes) }
+remove.sql: at_most_one (id: int64) -> { id: INTEGER, body: TEXT(text(utf8) | bytes)? }
+retitle.sql: at_most_one (title: text(utf8)?, id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes)? }
+search.sql: many (q: text(utf8)) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+search_articles.sql: many (q: text(utf8)) -> { id: INTEGER, body: TEXT(text(utf8) | bytes)? }
+search_bare.sql: many (q: text(utf8)) -> { rowid: INTEGER }
+search_index.sql: many (q: text(utf8)) -> { rowid: INTEGER, title: unknown?, body: unknown? }
+search_words.sql: many (q: text(utf8)) -> { word: unknown? }

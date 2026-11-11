@@ -4,14 +4,12 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { Engine, engine, enginePath, type Dialect, type EngineIo } from "../src/engine.ts";
+import { engine, type Dialect, type Engine, type EngineIo } from "../src/engine.ts";
 import { Session } from "../src/analyze.ts";
 
 // How deeply a statement may nest for the engine to read it: libpg_query hands over at most 1,000
-// levels of a parse tree (engine/core/src/stack.rs), the same in the WebAssembly engine as in every
-// native host, and the embedded SQLite reads an expression 350 deep, where SQLite's own bound is
-// 1,000. These are the deepest statements of each shape that parse, as engine/core/src/stack.rs's
+// levels of a parse tree (engine/core/src/stack.rs), the same in every host of the engine, and the
+// embedded SQLite reads an expression 350 deep, where SQLite's own bound is 1,000. These are the deepest statements of each shape that parse, as engine/core/src/stack.rs's
 // tests have them.
 function nested(shape: string, n: number): string {
   const fold = (start: string, f: (s: string, i: number) => string) => Array.from({ length: n }, (_, i) => i).reduce(f, start);
@@ -47,39 +45,8 @@ const io: EngineIo = {
   },
 };
 
-// The host's own frames on the stack below every call into the engine: 45% of the stack Node
-// gives its main thread, which the engine shares with its caller. They are counted before each
-// call as a share of the frames of `deep` that fit, since a frame's size is whatever V8 has
-// compiled `deep` to by then: a fixed 4,000 frames were 45% of the stack while it was interpreted
-// and a third once it was optimized.
-const HOST_SHARE = 0.45;
-const deep = <T>(n: number, f: () => T): T => (n === 0 ? f() : deep(n - 1, f));
-/** How many frames of `deep` fit on the stack from here. */
-function room(): number {
-  let fits = 0;
-  let overflows = 1 << 20;
-  while (overflows - fits > 1) {
-    const n = (fits + overflows) >>> 1;
-    try {
-      deep(n, () => n);
-      fits = n;
-    } catch (e) {
-      if (!(e instanceof RangeError)) throw e;
-      overflows = n;
-    }
-  }
-  return fits;
-}
-/** The engine, with every call it is made beneath the host's frames. */
-function hosted(instance: Engine): Engine {
-  const call = instance.call.bind(instance);
-  instance.call = (request: object) => deep(Math.floor(HOST_SHARE * room()), () => call(request));
-  return instance;
-}
-/** A fresh instance of the dialect's engine, as the repository installs it, whose calls this file wraps. */
-async function loaded(dialect: Dialect): Promise<Engine> {
-  return hosted(await Engine.load(enginePath(dialect, fileURLToPath(new URL("..", import.meta.url)))!));
-}
+/** The dialect's engine, as the analysis runs it. */
+const loaded = (dialect: Dialect): Promise<Engine> => engine(dialect);
 
 test("a Postgres statement nested to the bound is read whole, one level past it falls back to the describe, and the engine goes on", async () => {
   const engine = await loaded("postgres");
@@ -88,12 +55,12 @@ test("a Postgres statement nested to the bound is read whole, one level past it 
     assert.equal(at.kind, "select", `${shape} at ${n}`);
     assert.notEqual(at.cardinalityReason, "the statement did not parse locally", `${shape} at ${n}`);
     const past = await engine.analyze(nested(shape, n + 1), "postgres", io);
-    assert.deepEqual([past.kind, past.cardinality, past.cardinalityReason], ["", "many", "the statement did not parse locally"], `${shape} at ${n + 1}`);
+    assert.deepEqual([past.kind, past.cardinality, past.cardinalityReason], [undefined, "many", "the statement did not parse locally"], `${shape} at ${n + 1}`);
     assert.ok(past.columns.every((c) => c.nullable) && past.diagnostics.length === 0, `${shape} at ${n + 1}`);
   }
   // Far past the bound, and long lists that do not nest at all.
-  assert.equal((await engine.analyze(nested("sum", 100_000), "postgres", io)).kind, "");
-  assert.equal((await engine.analyze(nested("parens", 20_000), "postgres", io)).kind, "");
+  assert.equal((await engine.analyze(nested("sum", 100_000), "postgres", io)).kind, undefined);
+  assert.equal((await engine.analyze(nested("parens", 20_000), "postgres", io)).kind, undefined);
   assert.equal((await engine.analyze(nested("or", 10_000), "postgres", io)).kind, "select");
   assert.equal((await engine.analyze(nested("parens", 5_000), "postgres", io)).kind, "select");
   // The same instance answers a plain statement after all of that.
@@ -107,8 +74,6 @@ test("a SQLite statement nested to the engine's bound is typed, and one level pa
   const db = new DatabaseSync(join(root, "app.db"));
   db.exec("create table users (id integer primary key, name text not null, nick text)");
   db.close();
-  // The session analyzes with the process's one instance of the SQLite engine, which this wraps.
-  hosted(await engine("sqlite", root));
   const session = await Session.open(root, { DATABASE_URL: "file:./app.db" });
   try {
     for (const [shape, n] of SQLITE_BOUNDS) {
@@ -119,7 +84,7 @@ test("a SQLite statement nested to the engine's bound is typed, and one level pa
       assert.deepEqual(past.ok && past.analysis.diagnostics.map((d) => d.message), ["Expression tree is too large (maximum depth 350)"], `${shape} at ${n + 1}`);
     }
     const plain = await session.analyze("select id, name from users where id = :id", { force: true });
-    assert.ok(plain.ok && plain.analysis.cardinality === "maybeOne");
+    assert.ok(plain.ok && plain.analysis.cardinality === "at_most_one");
   } finally {
     await session.close();
   }

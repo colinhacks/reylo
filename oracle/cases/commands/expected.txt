@@ -1,5 +1,5 @@
 call.sql: none (n: int4) -> {  }
-call_out.sql: many () -> { n: int8? }
+call_out.sql: one () -> { n: int8? }
 comment.sql: none () -> {  }
 create_existing.sql: none () -> {  }
 create_index.sql: none () -> {  }

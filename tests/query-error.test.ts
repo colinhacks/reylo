@@ -1,22 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { defineQuery, type MysqlClient, type MysqlCode, type MysqlQueryError, type PostgresClient, type PostgresCondition, type PostgresQueryError, type Query, type SqliteCode, type SqliteQueryError } from "../src/index.ts";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import { defineQuery, type MysqlClient, type MysqlCode, type MysqlNarrowing, type MysqlQueryError, type PostgresClient, type PostgresCondition, type PostgresNarrowing, type PostgresQueryError, type Query, type SqliteCode, type SqliteNarrowing, type SqliteQueryError } from "../src/index.ts";
 import { readQueryError, readQueryErrorSync } from "../src/query-error.ts";
+import { queryErrorType } from "../src/module-types.ts";
+import type { Analysis, Dialect } from "../src/engine.ts";
+import { DRIVERS, MYSQL, ROOT, pgLive, mysqlLive, postgresDatabase, driver, languageServer } from "./helpers.ts";
 
 // `.try()` and the database's error it reads from each driver's own (src/query-error.ts). The
 // drivers' errors below are the ones each throws, measured on the real package (lab/driver-matrix
 // checks them through `.try()` on every driver). Postgres and MySQL run on throwaway servers
 // (REYLO_TEST_PG, REYLO_TEST_MYSQL), each test in a database of its own.
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
-const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
 
 /** A driver's error: an Error with the driver's own fields. */
 const thrown = (message: string, fields: Record<string, unknown> = {}, Class: new (message: string) => Error = Error) => Object.assign(new Class(message), fields);
@@ -133,6 +132,7 @@ test("MySQL: the error each driver throws reads as one, named from MySQL's own l
     ["a null", thrown("Column 'email' cannot be null", { errno: 1048, sqlState: "23000", sqlMessage: "Column 'email' cannot be null" }), { ...MY_NONE, message: "Column 'email' cannot be null", code: "ER_BAD_NULL_ERROR", errno: 1048, sqlState: "23000", column: "email" }],
     ["a missing value", thrown("Field 'email' doesn't have a default value", { errno: 1364, sqlState: "HY000", sqlMessage: "Field 'email' doesn't have a default value" }), { ...MY_NONE, message: "Field 'email' doesn't have a default value", code: "ER_NO_DEFAULT_FOR_FIELD", errno: 1364, sqlState: "HY000", column: "email" }],
     ["a value too long", thrown("Data too long for column 'email' at row 1", { errno: 1406, sqlState: "22001", sqlMessage: "Data too long for column 'email' at row 1" }), { ...MY_NONE, message: "Data too long for column 'email' at row 1", code: "ER_DATA_TOO_LONG", errno: 1406, sqlState: "22001", column: "email" }],
+    ["a cast out of range, which names no column", thrown("Out of range value for column '(null)' at row 1", { errno: 1264, sqlState: "22003", sqlMessage: "Out of range value for column '(null)' at row 1" }), { ...MY_NONE, message: "Out of range value for column '(null)' at row 1", code: "ER_WARN_DATA_OUT_OF_RANGE", errno: 1264, sqlState: "22003" }],
     ["mysql2's refused connection", thrown("connect ECONNREFUSED 127.0.0.1:1", { errno: -61, code: "ECONNREFUSED", syscall: "connect", fatal: true }), undefined],
     ["mariadb's refused connection, which has a state", thrown("connect ECONNREFUSED 127.0.0.1:1", { errno: -61, code: "ECONNREFUSED", fatal: true, sqlState: "HY000" }), undefined],
     ["mariadb's own error", thrown("(conn:-1, no: 45001, SQLState: 08S01) Cannot execute new commands: connection closed", { sqlMessage: "Cannot execute new commands: connection closed", fatal: true, errno: 45001, sqlState: "08S01", code: "ER_CONNECTION_ALREADY_CLOSED" }), undefined],
@@ -239,16 +239,10 @@ test("trySync returns the value or the database's error on a synchronous SQLite 
 });
 
 test("Postgres: try reads each constraint, the syntax error's position and a function's own code, on pg and postgres.js", { skip: pgLive }, async () => {
-  const require = createRequire(join(DRIVERS, "postgres", "package.json"));
-  const postgres = require("postgres");
-  const pg = require("pg");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_try_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const sql = postgres(url.href, { max: 1, onnotice: () => {} });
+  const pg = driver("pg");
+  const own = await postgresDatabase("reylo_try");
+  const url = new URL(own.url);
+  const sql = own.sql;
   const client = new pg.Client({ connectionString: url.href });
   await client.connect();
   try {
@@ -280,9 +274,7 @@ test("Postgres: try reads each constraint, the syntax error's position and a fun
     }
   } finally {
     await client.end();
-    await sql.end();
-    await admin.unsafe(`drop database if exists ${name}`);
-    await admin.end();
+    await own.drop();
   }
 });
 
@@ -328,6 +320,75 @@ test("MySQL: try reads each constraint and a signal's own number, on mysql2 and 
     await db.end();
     await admin.query(`drop database if exists ${name}`);
     await admin.end();
+  }
+});
+
+test("a hover names each dialect's error type, as the module's QueryError or the dialect's own, and never lists the codes the database defines", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-query-error-")));
+  writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
+  mkdirSync(join(root, "node_modules"));
+  symlinkSync(ROOT, join(root, "node_modules", "reylo"));
+  const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowArbitraryExtensions: true };
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, include: ["main.ts"] }));
+  // Each module declares its query as the content mapper does (src/mapper-server.ts), with the
+  // QueryError the mapper writes: narrowed where the statement runs only the database's own code,
+  // the dialect's whole type where it may run a user's.
+  const modules: [name: string, dialect: Dialect, errors: Analysis["errors"], named: string][] = [
+    ["pg_select", "postgres", {}, "QueryError"],
+    ["pg_insert", "postgres", { "23505": { constraint: ["users_email_key", "users_pkey"], table: ["users"] } }, "QueryError"],
+    ["pg_audited", "postgres", undefined, "PostgresQueryError"],
+    ["my_insert", "mysql", { ER_DUP_ENTRY: { key: ["users.email"] } }, "QueryError"],
+    ["my_audited", "mysql", undefined, "MysqlQueryError"],
+    ["lite_insert", "sqlite", { SQLITE_CONSTRAINT_UNIQUE: { table: ["users"], columns: ["email", "slug, lang"] } }, "QueryError"],
+    ["lite_audited", "sqlite", undefined, "SqliteQueryError"],
+    ["duck_select", "duckdb", undefined, "DuckdbQueryError"],
+  ];
+  for (const [name, dialect, errors] of modules) {
+    const text = `import type { Query } from "reylo";\nexport type QueryError = ${queryErrorType(dialect, errors)};\ndeclare const query: Query<{ id: number }, { id: number }, "many", ${JSON.stringify(dialect)}, QueryError>;\nexport default query;\n`;
+    writeFileSync(join(root, `${name}.d.sql.ts`), text);
+  }
+  const main = [
+    ...modules.map(([name]) => `import ${name} from "./${name}.sql";`),
+    ...modules.map(([name]) => `export const ${name}_error = (await ${name}.try(null!, { id: 1 })).error;`),
+    // Every code but the one the narrowing lists.
+    `export const pg_other = pg_insert_error?.code === "23505" ? undefined : pg_insert_error;`,
+    `export const lite_other = lite_insert_error?.code === "SQLITE_CONSTRAINT_UNIQUE" ? undefined : lite_insert_error;`,
+    // A narrowed field, which a hover names by itself, as the docs show it.
+    `export const pg_named = pg_insert_error?.code === "23505" ? pg_insert_error.constraint : undefined;`,
+    `export const my_named = my_insert_error?.code === "ER_DUP_ENTRY" ? my_insert_error.key : undefined;`,
+    `export const lite_named = lite_insert_error?.code === "SQLITE_CONSTRAINT_UNIQUE" ? lite_insert_error.columns : undefined;`,
+  ].join("\n");
+  writeFileSync(join(root, "main.ts"), main);
+  const at = (needle: string) => {
+    const before = main.slice(0, main.indexOf(needle)).split("\n");
+    return { line: before.length - 1, character: before.at(-1)!.length };
+  };
+  const lsp = languageServer(root);
+  try {
+    await lsp.request("initialize", { processId: process.pid, rootUri: pathToFileURL(root).href, capabilities: { textDocument: { hover: { contentFormat: ["markdown"] } } } });
+    lsp.notify("initialized", {});
+    const uri = pathToFileURL(join(root, "main.ts")).href;
+    lsp.notify("textDocument/didOpen", { textDocument: { uri, languageId: "typescript", version: 1, text: main } });
+    const hover = async (needle: string): Promise<string> => (await lsp.request("textDocument/hover", { textDocument: { uri }, position: at(needle) }))?.contents?.value ?? "";
+    // A list TypeScript cuts short reads `... 204 more ...`.
+    const listsNoCodes = (text: string) => assert.ok(text !== "" && !text.includes(" more ...") && text.length < 600, text);
+    for (const [name, dialect, , named] of modules) {
+      const query = await hover(`${name} from`);
+      listsNoCodes(query);
+      assert.ok(query.includes(`"many", ${JSON.stringify(dialect)}, ${named}>`), query);
+      const error = await hover(`${name}_error =`);
+      listsNoCodes(error);
+      assert.ok(error.includes(`${named} | undefined`), error);
+    }
+    const pgOther = await hover("pg_other =");
+    listsNoCodes(pgOther);
+    assert.ok(pgOther.includes("Readonly<PostgresErrorFields> & PostgresOtherCode<"), pgOther);
+    listsNoCodes(await hover("lite_other ="));
+    assert.match(await hover("constraint : undefined"), /^\(property\) constraint: "users_email_key" \| "users_pkey" \| undefined$/m);
+    assert.match(await hover("key : undefined"), /^\(property\) key: "users\.email" \| undefined$/m);
+    assert.match(await hover("columns : undefined"), /^\(property\) columns: readonly \["email"\] \| readonly \["slug", "lang"\] \| undefined$/m);
+  } finally {
+    await lsp.close();
   }
 });
 
@@ -380,6 +441,19 @@ export async function types(pg: Query<{}, { id: number }, "one", "postgres">, my
     // @ts-expect-error: no such table
     if (liteNarrowed.table === "users") {}
   }
+  // A narrowing inferred back from a narrowed error, for which TypeScript compares the type's
+  // parameter generically: each narrowing must stay one type there, not one per code the database
+  // defines, which made "a union type that is too complex to represent".
+  const pgNarrowing = <N extends PostgresNarrowing | undefined>(e: PostgresQueryError<N>) => e as unknown as N;
+  pgNarrowing(narrowed) satisfies { "23505": { constraint: "users_email_key" | "users_pkey"; table: "users" } };
+  const myNarrowing = <N extends MysqlNarrowing | undefined>(e: MysqlQueryError<N>) => e as unknown as N;
+  myNarrowing(myNarrowed) satisfies { ER_DUP_ENTRY: { key: "users.PRIMARY" | "users.email" } };
+  const liteNarrowing = <N extends SqliteNarrowing | undefined>(e: SqliteQueryError<N>) => e as unknown as N;
+  liteNarrowing(liteNarrowed) satisfies { SQLITE_CONSTRAINT_UNIQUE: { table: "posts"; columns: readonly ["email"] | readonly ["slug", "lang"] } };
+  // A narrowed error is still the dialect's error.
+  narrowed satisfies PostgresQueryError;
+  myNarrowed satisfies MysqlQueryError;
+  liteNarrowed satisfies SqliteQueryError;
   const c = lite.trySync(liteDb);
   if (c.error) {
     c.error.code satisfies SqliteCode | undefined;

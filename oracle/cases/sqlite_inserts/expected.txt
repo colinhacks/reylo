@@ -1,12 +1,12 @@
 insert_copy.sql: none () -> {  }
-insert_select.sql: none (1: text?, 2: numeric) -> {  }
-insert_select_compound.sql: many (a: integer, b: text) -> { name: text, k: integer? }
-insert_select_returning.sql: many (meta: text?, d: integer, n: integer) -> { name: text, meta: text?, k: integer? }
-numeric_column.sql: many (ready: numeric) -> { name: text }
-values_alone.sql: many (p: real, q: integer) -> { column1: integer, column2: text?, column3: real }
-values_one_row.sql: one () -> { column1: integer, column2: text }
-values_positional.sql: many (name: text, meta: text?, k: integer?, name2: text, meta2: text?, k2: integer?) -> { name: text, meta: text?, k: integer? }
+insert_select.sql: none (1: text(utf8)?, 2: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)) -> {  }
+insert_select_compound.sql: many (a: int64, b: text(utf8)) -> { name: TEXT(text(utf8) | bytes), k: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+insert_select_returning.sql: many (meta: text(utf8)?, d: int64, n: int64) -> { name: TEXT(text(utf8) | bytes), meta: TEXT(text(utf8) | bytes)?, k: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+numeric_column.sql: many (ready: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)) -> { name: TEXT(text(utf8) | bytes) }
+values_alone.sql: many (p: float(11,52), q: int64) -> { column1: int64, column2: text(utf8)?, column3: float(11,52) }
+values_one_row.sql: one () -> { column1: int64, column2: text(utf8) }
+values_positional.sql: many (name: text(utf8), meta: text(utf8)?, k: int64?, name2: text(utf8), meta2: text(utf8)?, k2: int64?) -> { name: TEXT(text(utf8) | bytes), meta: TEXT(text(utf8) | bytes)?, k: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
 values_repeated_param.sql: many (x: unknown, y: unknown, z: unknown) -> {  } !! reylo3: The parameter :x appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :x::<type> as x) select … from input
-values_rows.sql: none (a: integer, b: text, c: integer, d: text) -> {  }
-values_rows_returning.sql: many (a: text, n: text?, b: text, m: text?, c: text, u: text) -> { id: integer, name: text, nick: text? }
-values_subquery.sql: many () -> { column1: integer }
+values_rows.sql: none (a: int64, b: text(utf8), c: int64, d: text(utf8)) -> {  }
+values_rows_returning.sql: many (a: text(utf8), n: text(utf8)?, b: text(utf8), m: text(utf8)?, c: text(utf8), u: text(utf8)) -> { id: INTEGER, name: TEXT(text(utf8) | bytes), nick: TEXT(text(utf8) | bytes)? }
+values_subquery.sql: many () -> { column1: int64 }

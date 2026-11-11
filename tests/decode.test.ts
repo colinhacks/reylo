@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { execute, type QueryModule } from "../src/execute.ts";
-import { parseArray } from "../src/decode.ts";
+import { bunRows, parseArray } from "../src/decode.ts";
 import type { Columns } from "../src/values.ts";
 
 // Fakes of the Postgres drivers that decode as the real ones do (checked against
@@ -37,6 +37,8 @@ const COLUMNS: [string, number, string | null][] = [
   ["spans", 1187, '{"1 day","02:00:00"}'],
   ["amounts", 1231, "{1.5,12345678901234567890.1}"],
   ["ints", 1007, "{1,NULL}"],
+  ["ids", 6442, "{1,18446744073709551615}"],
+  ["databases", 6491, "{postgres}"],
   ["big", 20, "9007199254740993"],
   ["at", 1184, "2024-01-15 10:30:00.123456+02"],
   ["wall", 1114, "2024-01-15 10:30:00.123456"],
@@ -63,6 +65,8 @@ const declared = {
   spans: ["P1D", "PT2H"],
   amounts: ["1.5", "12345678901234567890.1"],
   ints: [1, null],
+  ids: ["1", "18446744073709551615"],
+  databases: ["postgres"],
   big: 9007199254740993n,
   at: "2024-01-15T08:30:00.123456Z",
   wall: "2024-01-15T10:30:00.123456",
@@ -70,7 +74,7 @@ const declared = {
   doc: { a: [1, 2] },
   bytes: Uint8Array.from([1, 2, 255]),
   flag: true,
-  boxes: ["(1,1),(0,0)", "(2,2),(1,1)"],
+  boxes: [{ high: { x: 1, y: 1 }, low: { x: 0, y: 0 } }, { high: { x: 2, y: 2 }, low: { x: 1, y: 1 } }],
   shapes: ["0101", null, "0102"],
   embedding: [1, 2.5, -3, 1e-7],
   embeddings: [[1, 2], null, [3]],
@@ -80,8 +84,8 @@ const declared = {
 };
 /** The module's columns for the same statement, as a build step writes them (src/loader.ts). */
 const columns: Columns = [
-  ["roles", "text[]"], ["role", "text"], ["names", "text[]"], ["posints", "int[]"], ["pairs", "text"], ["span", "text"], ["spans", "text[]"], ["amounts", "decimal[]"], ["ints", "int[]"],
-  ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["embeddings", "vector[]"], ["prefs", "hstore"], ["history", "hstore[]"], ["nothing", "text[]"],
+  ["roles", "text[]"], ["role", "text"], ["names", "text[]"], ["posints", "int[]"], ["pairs", "text"], ["span", "text"], ["spans", "text[]"], ["amounts", "decimal[]"], ["ints", "int[]"], ["ids", "text[]"], ["databases", "text[]"],
+  ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "box[]", ";"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["embeddings", "vector[]"], ["prefs", "hstore"], ["history", "hstore[]"], ["nothing", "text[]"],
 ];
 
 // The catalog, as decode.ts reads it: [array oid, element's base oid, a row type's array (kept as
@@ -156,6 +160,20 @@ function pgClient(db: Db, options: { binary?: boolean } = {}) {
 const probe: QueryModule<"postgres"> = { dialect: "postgres", sql: "select * from probe where id = :id", params: ["id"] };
 const built: QueryModule<"postgres"> = { ...probe, columns };
 const lateProbe: QueryModule<"postgres"> = { dialect: "postgres", sql: "select *, late from probe where id = :id", params: ["id"] };
+
+test("Bun.sql: a row value, a geometric type, a range and a MySQL SET are their text, which Reylo reads by the module's kinds", () => {
+  const row = { pair: "(1,x)", pt: "(1.5,-2)", boxes: "{(3,4),(1,2)}", seats: "[1,5)", many: "{[1,3)}", tags: "a,c", name: "(not,a,row)" };
+  const kinds: Columns = [["pair", '(["a","int"],["b","text"])'], ["pt", "point"], ["boxes", "box[]", ";"], ["seats", "range:int"], ["many", "multirange:int8"], ["tags", "set"], ["name", "text"]];
+  assert.deepEqual(bunRows([row], kinds), [{
+    pair: { a: 1, b: "x" },
+    pt: { x: 1.5, y: -2 },
+    boxes: [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }],
+    seats: { lower: 1, upper: 5, bounds: "[)" },
+    many: [{ lower: 1n, upper: 3n, bounds: "[)" }],
+    tags: new Set(["a", "c"]),
+    name: "(not,a,row)",
+  }]);
+});
 
 test("parseArray: quoting, escapes, NULL, nesting, bounds and box's delimiter", () => {
   assert.deepEqual(parseArray("{}", String), []);
@@ -380,6 +398,7 @@ test("Bun.sql: its values are given their kinds after the fact", async () => {
     day: new Date("2024-01-15T00:00:00Z"),
     wall: new Date("2024-01-15T10:30:00.120Z"),
     old: new Date("-000043-03-15T12:00:00Z"),
+    far: new Date("+012345-06-01T12:00:00Z"),
     ints: Int32Array.of(1, 2),
     roles: "{admin,member}",
     shapes: "{0101:0102}",
@@ -389,13 +408,39 @@ test("Bun.sql: its values are given their kinds after the fact", async () => {
     forever: Infinity,
   };
   const bun = { unsafe: async () => [{ ...bunRow }], commitDistributed: async () => {} };
-  const q: QueryModule<"postgres"> = { ...probe, columns: [["big", "int8"], ["day", "date"], ["wall", "timestamp"], ["old", "timestamp"], ["ints", "int[]"], ["roles", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["prefs", "hstore"], ["at", "timestamptz"], ["forever", "date"]] };
+  const q: QueryModule<"postgres"> = { ...probe, columns: [["big", "int8"], ["day", "date"], ["wall", "timestamp"], ["old", "timestamp"], ["far", "timestamp"], ["ints", "int[]"], ["roles", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["prefs", "hstore"], ["at", "timestamptz"], ["forever", "date"]] };
   // The failing control: Bun.sql's timestamptz is a Date; Reylo's the instant's text, to Bun's millisecond.
   assert.ok(bunRow.at instanceof Date);
-  assert.deepEqual(await execute(bun, q, { id: 1 }), [{ big: 9007199254740993n, day: "2024-01-15", wall: "2024-01-15T10:30:00.12", old: "0044-03-15T12:00:00 BC", ints: [1, 2], roles: ["admin", "member"], shapes: ["0101", "0102"], embedding: [1, 2.5], prefs: { a: "1" }, at: "2024-01-15T08:30:00Z", forever: "infinity" }]);
+  assert.deepEqual(await execute(bun, q, { id: 1 }), [{ big: 9007199254740993n, day: "2024-01-15", wall: "2024-01-15T10:30:00.120000", old: "-000043-03-15T12:00:00.000000", far: "+012345-06-01T12:00:00.000000", ints: [1, 2], roles: ["admin", "member"], shapes: ["0101", "0102"], embedding: [1, 2.5], prefs: { a: "1" }, at: "2024-01-15T08:30:00.000000Z", forever: "infinity" }]);
   // Without bigint: true, Bun's int8 is its text.
   const plain = { unsafe: async () => [{ big: "9007199254740993", at: new Date("2024-01-15T08:30:00.5Z") }], commitDistributed: async () => {} };
-  assert.deepEqual(await execute(plain, { ...probe, columns: [["big", "int8"], ["at", "timestamptz"]] }, { id: 1 }), [{ big: 9007199254740993n, at: "2024-01-15T08:30:00.5Z" }]);
+  assert.deepEqual(await execute(plain, { ...probe, columns: [["big", "int8"], ["at", "timestamptz"]] }, { id: 1 }), [{ big: 9007199254740993n, at: "2024-01-15T08:30:00.500000Z" }]);
   // A query defined by hand: a typed array an array, and a Date, which no value is, the instant's text.
-  assert.deepEqual(await execute(bun, probe, { id: 1 }), [{ ...bunRow, day: "2024-01-15T00:00:00Z", wall: "2024-01-15T10:30:00.12Z", old: "-000043-03-15T12:00:00Z", at: "2024-01-15T08:30:00Z", ints: [1, 2] }]);
+  assert.deepEqual(await execute(bun, probe, { id: 1 }), [{ ...bunRow, day: "2024-01-15T00:00:00.000000Z", wall: "2024-01-15T10:30:00.120000Z", old: "-000043-03-15T12:00:00.000000Z", far: "+012345-06-01T12:00:00.000000Z", at: "2024-01-15T08:30:00.000000Z", ints: [1, 2] }]);
+});
+
+test("a Postgres array column holds one dimension, and an array the statement builds of arrays the levels it declares", async () => {
+  // Bun.sql parses an array's text itself, nested arrays included, which the run time is given.
+  const client = (rows: Record<string, unknown>[]) => ({ unsafe: async () => rows.map((r) => ({ ...r })), commitDistributed: async () => {} });
+  const flat: QueryModule<"postgres"> = { ...probe, columns: [["tags", "int[]"]] };
+  assert.deepEqual(await execute(client([{ tags: [1, null] }, { tags: [] }, { tags: null }]), flat, { id: 1 }), [{ tags: [1, null] }, { tags: [] }, { tags: null }]);
+  await assert.rejects(
+    async () => execute(client([{ tags: [1] }, { tags: [[1, 2], [3, 4]] }]), flat, { id: 1 }),
+    /^TypeError: Column "tags" holds an array of 2 dimensions, and its type has one: Reylo types a Postgres array column with one dimension, which Postgres doesn't enforce\. Select to_jsonb\(tags\) to read it as JSON, or set allow_nested_arrays: true in \.reylo\.yaml to type it at any depth\.$/,
+  );
+  // array_agg(tags) over an int4[] column: two levels, the elements' own arrays.
+  const built: QueryModule<"postgres"> = { ...probe, columns: [["all_tags", "int[][]"]] };
+  assert.deepEqual(await execute(client([{ all_tags: [[1, 2], [3, 4]] }]), built, { id: 1 }), [{ all_tags: [[1, 2], [3, 4]] }]);
+  await assert.rejects(async () => execute(client([{ all_tags: [[[1]]] }]), built, { id: 1 }), /^TypeError: Column "all_tags" holds an array of 3 dimensions, and its type has 2: an array column it collects holds more than one dimension, which Postgres doesn't enforce\. Collect to_jsonb\(<that column>\) instead to read it as JSON\.$/);
+  // Under `allow_nested_arrays: true` the module says so, and nothing is refused.
+  const nesting: QueryModule<"postgres"> = { ...flat, nestedArrays: true };
+  assert.deepEqual(await execute(client([{ tags: [[1, 2], [3, 4]] }]), nesting, { id: 1 }), [{ tags: [[1, 2], [3, 4]] }]);
+  // An array of NULLs at the top is one dimension: a NULL is never a nested array.
+  assert.deepEqual(await execute(client([{ tags: [null, null] }]), flat, { id: 1 }), [{ tags: [null, null] }]);
+  // A vector is an array itself, and a JSON value may be one at any depth.
+  const vectors: QueryModule<"postgres"> = { ...probe, columns: [["v", "vector[]"]] };
+  assert.deepEqual(await execute(client([{ v: [null, [1, 2]] }]), vectors, { id: 1 }), [{ v: [null, [1, 2]] }]);
+  await assert.rejects(async () => execute(client([{ v: [[[1, 2]]] }]), vectors, { id: 1 }), /Column "v" holds an array of 2 dimensions, and its type has one:/);
+  const docs: QueryModule<"postgres"> = { ...probe, columns: [["docs", "json[]"]] };
+  assert.deepEqual(await execute(client([{ docs: [[[1], { a: [2] }]] }]), docs, { id: 1 }), [{ docs: [[[1], { a: [2] }]] }]);
 });

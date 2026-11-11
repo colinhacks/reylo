@@ -1,0 +1,1 @@
+d31_ifnull_expr.sql: Invalid Input Error: Division by zero in expression (big // 0). Use TRY(...) to return NULL for this expression, or SET error_on_division_by_zero=false to return NULL for all divisions by zero.

@@ -65,6 +65,7 @@
 //! `?n` placeholders become `$n`. Clause structure is the SQL both dialects share, and SQLite's
 //! own syntax — `LIMIT 5, 0`, `[bracketed]` names — does not parse there, which proves nothing.
 
+use crate::analysis::KeyClause;
 use crate::dialect::Dialect;
 use crate::infer::{self, Trust};
 use crate::resolution::{Kind, Operand};
@@ -89,6 +90,8 @@ pub struct Catalog {
     pub set_returning: HashSet<String>,
     /// Operator names some set-returning function implements, in any schema.
     pub set_returning_operators: HashSet<String>,
+    /// Names of set-returning functions one argument can call, in any schema: `(x).f` and `t.f` call `f` where `x` or `t` has no field of the name.
+    pub set_returning_attributes: HashSet<String>,
     /// Per relation, the column lists of its unique keys: every unique, valid, non-partial index
     /// over plain columns. This is the fact [`at_most_one`] rests on, and it is a fact about the
     /// database rather than about the statement — adding an index makes a read provably single
@@ -109,6 +112,9 @@ pub struct Catalog {
     /// whose equality is not identity: `'a' = 'A'` there, and a function of the column can tell
     /// the two apart.
     pub nondeterministic: std::collections::HashMap<String, HashSet<String>>,
+    /// Whether the database holds no nondeterministic collation, as the trust check reports it, so
+    /// no value of a comparison can bring one ([`From::keeps_collation`]).
+    pub deterministic_only: bool,
     /// The relations, as named in `unique_keys`, that hold exactly one row whatever is written: a
     /// sequence (`SELECT last_value FROM my_sequence`).
     pub single_row: HashSet<String>,
@@ -146,9 +152,12 @@ pub struct Catalog {
     pub declared_types: std::collections::HashMap<String, std::collections::HashMap<String, u32>>,
     /// Per relation, the events (`TRIGGER_ROW_INSERT`, `_UPDATE`, `_DELETE` as bits) for which it,
     /// or a partition or an inheritance child of it, has an enabled row trigger that runs BEFORE
-    /// the change or INSTEAD of it. Such a trigger can return NULL and skip the row, so an INSERT
-    /// of one row returns at most one.
+    /// the change or INSTEAD of it, which may return NULL and skip the row, so an INSERT of one row
+    /// returns at most one: all but a PL/pgSQL trigger whose body keeps every row ([`keeps_the_row`]).
     pub skipping_triggers: std::collections::HashMap<String, i32>,
+    /// The same events for every such trigger, one that keeps every row included: it may still change
+    /// a row after the WHERE that read it, or fill a column the statement leaves out.
+    pub row_triggers: std::collections::HashMap<String, i32>,
     /// Per relation, the events (the same bits) a rewrite rule replaces or adds actions to, and
     /// for a view every event it has no INSTEAD OF trigger for, as it hands such a write to a table
     /// whose triggers and rules this catalog did not read. RETURNING then gives any number of rows.
@@ -157,8 +166,13 @@ pub struct Catalog {
     /// subquery, a WITH query's body or a set operation's arm is proven on its own as: such a
     /// name read there unqualified is that WITH query, never the table of the same name.
     pub enclosing_ctes: Vec<String>,
+    /// Those WITH queries in the order they are in scope, so that a reference to one is read
+    /// through its statement: each name, its SELECT as the parser deparses it, and the column names
+    /// its column list gives, if any. One the engine does not read (a recursive one, a write, one
+    /// that does not deparse) has no statement, and still hides an outer one of its name.
+    pub enclosing_bodies: Vec<(String, Option<String>, Vec<String>)>,
     /// Whether the statement being proven is a subquery of another one, whose columns it may read
-    /// (a `SUBQ` site of the framework, proven on its own). An aggregate over such columns alone
+    /// (a `SUBQ` site, proven on its own). An aggregate over such columns alone
     /// belongs to that statement and leaves the subquery a row per row of its FROM, so a nested
     /// statement is one row by an aggregate only where [`crate::levels`] finds the aggregate its
     /// own, from `columns`. A host that sets this lists the enclosing statement's WITH queries in
@@ -175,13 +189,17 @@ pub struct Catalog {
     /// read as a subquery, it gives the view the keys its statement keeps ([`output_keys`]). The
     /// tables it reads are among the relations the rest of this catalog covers.
     pub views: std::collections::HashMap<String, String>,
+    /// Per relation as named in `unique_keys`, its columns every row a scan of it reads holds a value
+    /// in: a valid `NOT NULL` through its inheritance tree. A key of these alone orders a relation's
+    /// rows totally ([`total_order`]), since no two rows share NULLs in it.
+    pub not_null: std::collections::HashMap<String, HashSet<String>>,
 }
 
 impl Catalog {
     /// This catalog for a view's defining statement, which sees none of the WITH queries of the
     /// statement that reads the view.
     fn for_view(&self) -> Catalog {
-        Catalog { enclosing_ctes: Vec::new(), nested: false, row_fields: None, ..self.clone() }
+        Catalog { enclosing_ctes: Vec::new(), enclosing_bodies: Vec::new(), nested: false, row_fields: None, ..self.clone() }
     }
 
     /// This catalog for a statement nested in one whose WITH queries are `names`.
@@ -190,6 +208,42 @@ impl Catalog {
         inner.enclosing_ctes.extend(names.iter().cloned());
         inner
     }
+
+    /// [`Catalog::enclosed`] for a statement nested in one whose WITH queries are `names`, with the
+    /// statements of the first `upto` of `with`'s queries (every one, for `None`) in scope, so
+    /// that a reference to one reads its keys. A WITH query's body sees those before it.
+    fn scoped(&self, names: &[String], with: Option<&protobuf::WithClause>, upto: Option<usize>) -> Catalog {
+        let mut inner = self.enclosed(names);
+        let recursive = with.is_some_and(|w| w.recursive);
+        for cte in with.into_iter().flat_map(|w| w.ctes.iter().take(upto.unwrap_or(usize::MAX))) {
+            let Some(NodeEnum::CommonTableExpr(cte)) = cte.node.as_ref() else { continue };
+            let text = match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
+                Some(NodeEnum::SelectStmt(body)) if !recursive => deparse_select(body),
+                _ => None,
+            };
+            inner.enclosing_bodies.push((cte.ctename.clone(), text, cte.aliascolnames.iter().filter_map(field_name).map(String::from).collect()));
+        }
+        inner
+    }
+}
+
+/// A SELECT as text, deparsed by the library that parsed it.
+fn deparse_select(select: &SelectStmt) -> Option<String> {
+    let version = crate::stack::parse("SELECT 1").ok()?.protobuf.version;
+    let tree = protobuf::ParseResult { version, stmts: vec![protobuf::RawStmt { stmt: Some(Box::new(protobuf::Node { node: Some(NodeEnum::SelectStmt(Box::new(select.clone()))) })), stmt_location: 0, stmt_len: 0 }] };
+    crate::stack::deparse(&tree).ok()
+}
+
+/// `f` of the statement of the WITH query of an enclosing statement named `name`, under the catalog
+/// it is read in (the WITH queries before it in scope), with its column list; `None` where none is
+/// in scope.
+fn enclosing_body<T>(catalog: &Catalog, name: &str, f: impl FnOnce(&SelectStmt, &Catalog, &[String]) -> T) -> Option<T> {
+    let at = catalog.enclosing_bodies.iter().rposition(|(n, _, _)| n == name)?;
+    let (_, text, columns) = &catalog.enclosing_bodies[at];
+    let text = text.as_deref()?;
+    let mut scoped = catalog.clone();
+    scoped.enclosing_bodies.truncate(at);
+    view_select(text, |body| f(body, &scoped, columns))
 }
 
 /// The names of a SELECT's own WITH queries.
@@ -252,13 +306,16 @@ pub const TRIGGER_ROW_UPDATE: i32 = 16;
 
 /// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: one row per relation a write
 /// to which may return no row or many, `(the name, the events that may skip the row, the events a
-/// rule rewrites)`, each as tgtype bits. An event may skip the row where the relation, or a
-/// partition or an inheritance child a row is routed to, has an enabled row-level trigger that
-/// runs BEFORE the change or INSTEAD of it (internal triggers, the foreign keys', run AFTER and
-/// skip nothing), or is a foreign table, whose wrapper may write nothing. A rule (`pg_rewrite`) on
-/// the relation rewrites its event, and so does a view every event it has no INSTEAD OF trigger
-/// for, since a write through it reaches a table whose triggers and rules these rows do not cover;
-/// an INSTEAD OF trigger returns its own row or none.
+/// rule rewrites, per BEFORE row trigger written in PL/pgSQL the events it fires on and its
+/// function's body, in two arrays, and the events a rule runs its actions INSTEAD of the
+/// statement for, whose RETURNING is then the rule's own)`, each event as tgtype bits. An event may skip the row where the
+/// relation, or a partition or an inheritance child a row is routed to, has an enabled row-level
+/// trigger that runs BEFORE the change or INSTEAD of it (internal triggers, the foreign keys', run
+/// AFTER and skip nothing), or is a foreign table, whose wrapper may write nothing; a PL/pgSQL
+/// trigger's body says whether it does ([`keeps_the_row`]), so it counts only in the arrays. A rule
+/// (`pg_rewrite`) on the relation rewrites its event, and so does a view every event it has no
+/// INSTEAD OF trigger for, since a write through it reaches a table whose triggers and rules these
+/// rows do not cover; an INSTEAD OF trigger returns its own row or none.
 pub const TRIGGERS_QUERY: &str = concat!(
     "WITH RECURSIVE rels AS (SELECT c.oid AS root, c.relkind, x.name FROM ",
     names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "x"),
@@ -267,10 +324,17 @@ pub const TRIGGERS_QUERY: &str = concat!(
     "), \
     tree(root, rel) AS (SELECT rels.root, rels.root FROM rels \
       UNION SELECT t.root, i.inhrelid FROM tree t JOIN pg_catalog.pg_inherits i ON i.inhparent OPERATOR(pg_catalog.=) t.rel), \
-    found AS (SELECT r.name, \
+    readable AS (SELECT t.root, g.oid AS id, g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 28 AS events, p.prosrc FROM tree t \
+      JOIN pg_catalog.pg_trigger g ON g.tgrelid OPERATOR(pg_catalog.=) t.rel \
+      JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) g.tgfoid \
+      JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang \
+      WHERE NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
+        AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 3) OPERATOR(pg_catalog.=) 3 AND l.lanname OPERATOR(pg_catalog.=) 'plpgsql'::pg_catalog.name), \
+    found AS (SELECT r.name, r.root, \
       (coalesce((SELECT pg_catalog.bit_or(g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 28) FROM tree t JOIN pg_catalog.pg_trigger g ON g.tgrelid OPERATOR(pg_catalog.=) t.rel \
           WHERE t.root OPERATOR(pg_catalog.=) r.root AND NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
-            AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 66) OPERATOR(pg_catalog.<>) 0), 0) \
+            AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 66) OPERATOR(pg_catalog.<>) 0 \
+            AND NOT EXISTS (SELECT 1 FROM readable x WHERE x.id OPERATOR(pg_catalog.=) g.oid AND x.root OPERATOR(pg_catalog.=) t.root)), 0) \
         OPERATOR(pg_catalog.|) CASE WHEN EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_class f ON f.oid OPERATOR(pg_catalog.=) t.rel \
           WHERE t.root OPERATOR(pg_catalog.=) r.root AND f.relkind OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\") THEN 28 ELSE 0 END) AS skipping, \
       ((CASE WHEN r.relkind OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" THEN 28 OPERATOR(pg_catalog.&) (OPERATOR(pg_catalog.~) coalesce((SELECT pg_catalog.bit_or(g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 28) \
@@ -279,10 +343,68 @@ pub const TRIGGERS_QUERY: &str = concat!(
         OPERATOR(pg_catalog.|) coalesce((SELECT pg_catalog.bit_or(CASE WHEN w.ev_type OPERATOR(pg_catalog.=) '2'::pg_catalog.\"char\" THEN 16 \
             WHEN w.ev_type OPERATOR(pg_catalog.=) '3'::pg_catalog.\"char\" THEN 4 ELSE 8 END) FROM pg_catalog.pg_rewrite w \
           WHERE w.ev_class OPERATOR(pg_catalog.=) r.root AND w.ev_type OPERATOR(pg_catalog.=) ANY ('{2,3,4}'::pg_catalog.\"char\"[]) \
-            AND w.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\"), 0)) AS rewritten \
+            AND w.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\"), 0)) AS rewritten, \
+      coalesce((SELECT pg_catalog.bit_or(CASE WHEN w.ev_type OPERATOR(pg_catalog.=) '2'::pg_catalog.\"char\" THEN 16 \
+            WHEN w.ev_type OPERATOR(pg_catalog.=) '3'::pg_catalog.\"char\" THEN 4 ELSE 8 END) FROM pg_catalog.pg_rewrite w \
+          WHERE w.ev_class OPERATOR(pg_catalog.=) r.root AND w.ev_type OPERATOR(pg_catalog.=) ANY ('{2,3,4}'::pg_catalog.\"char\"[]) \
+            AND w.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" AND w.is_instead), 0) AS instead, \
+      ARRAY(SELECT x.events::pg_catalog.int8 FROM readable x WHERE x.root OPERATOR(pg_catalog.=) r.root ORDER BY x.id) AS events, \
+      ARRAY(SELECT x.prosrc FROM readable x WHERE x.root OPERATOR(pg_catalog.=) r.root ORDER BY x.id) AS bodies \
       FROM rels r) \
-    SELECT f.name, f.skipping, f.rewritten FROM found f WHERE f.skipping OPERATOR(pg_catalog.<>) 0 OR f.rewritten OPERATOR(pg_catalog.<>) 0"
+    SELECT f.name, f.skipping, f.rewritten, f.events, f.bodies, f.instead FROM found f \
+    WHERE f.skipping OPERATOR(pg_catalog.<>) 0 OR f.rewritten OPERATOR(pg_catalog.<>) 0 OR EXISTS (SELECT 1 FROM readable x WHERE x.root OPERATOR(pg_catalog.=) f.root)"
 );
+
+/// Whether a BEFORE row trigger written in PL/pgSQL, with the body `body` and firing on `events`,
+/// keeps every row: only a RETURN of NULL skips one, and a body that ends without a RETURN raises.
+/// So each RETURN must return NEW where the trigger fires on INSERT and UPDATE alone, or OLD where
+/// it fires on UPDATE and DELETE alone: the other is NULL on the events that have none. Nothing may
+/// assign either as a whole, since `new := null` empties it, and a RETURN of the record then
+/// returns NULL; a field's assignment leaves the record a row. A CALL can write either back through
+/// an INOUT parameter. A body the parser does not read says nothing.
+pub fn keeps_the_row(body: &str, events: i32) -> bool {
+    use serde_json::Map;
+    /// `varno` as the dump writes it, which leaves a 0 out.
+    fn number(map: &Map<String, Value>, key: &str) -> i64 {
+        map.get(key).and_then(Value::as_i64).unwrap_or(0)
+    }
+    struct Rules {
+        new: i64,
+        old: i64,
+        may_return: Vec<i64>,
+    }
+    fn holds(v: &Value, rules: &Rules) -> bool {
+        match v {
+            Value::Array(items) => items.iter().all(|i| holds(i, rules)),
+            Value::Object(map) => map.iter().all(|(key, child)| {
+                let own = match (key.as_str(), child.as_object()) {
+                    ("PLpgSQL_stmt_return", Some(s)) => !s.contains_key("expr") && rules.may_return.contains(&number(s, "retvarno")),
+                    ("PLpgSQL_stmt_assign" | "PLpgSQL_stmt_foreach_a", Some(s)) => ![rules.new, rules.old].contains(&number(s, "varno")),
+                    // A record named as a target: `SELECT … INTO new`, `FOR new IN …`, `FETCH c INTO new`.
+                    ("PLpgSQL_rec", Some(r)) => ![rules.new, rules.old].contains(&number(r, "dno")),
+                    ("PLpgSQL_stmt_call" | "PLpgSQL_stmt_return_next" | "PLpgSQL_stmt_return_query", _) => false,
+                    _ => true,
+                };
+                own && holds(child, rules)
+            }),
+            _ => true,
+        }
+    }
+    let statement = format!("CREATE FUNCTION reylo_trigger() RETURNS trigger LANGUAGE plpgsql AS '{}'", body.replace('\'', "''"));
+    let Ok(Value::Array(functions)) = crate::stack::run(|| pg_query::parse_plpgsql(&statement)) else { return false };
+    let [function] = functions.as_slice() else { return false };
+    let Some(function) = function.get("PLpgSQL_function").and_then(Value::as_object) else { return false };
+    let Some(action) = function.get("action") else { return false };
+    let (new, old) = (number(function, "new_varno"), number(function, "old_varno"));
+    let mut may_return = Vec::new();
+    if events & TRIGGER_ROW_DELETE == 0 {
+        may_return.push(new);
+    }
+    if events & TRIGGER_ROW_INSERT == 0 {
+        may_return.push(old);
+    }
+    holds(action, &Rules { new, old, may_return })
+}
 
 /// `$1` is `text[]` of relation names as the statement writes them (`users`, `archive.users`), `$2` how many:
 /// one row per unique index that bounds what a scan of that relation reads, `(the name, key
@@ -350,7 +472,8 @@ pub const UNIQUE_KEYS_QUERY: &str = concat!(
             AND d.refobjsubid OPERATOR(pg_catalog.>) 0 AND NOT o.collisdeterministic)) \
       ELSE i.indcollation[k] OPERATOR(pg_catalog.=) a.attcollation OR ( \
         coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) i.indcollation[k]), true) \
-        AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true)) END)"
+        AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true)) END) \
+    ORDER BY x.name, i.indisprimary DESC, i.indexrelid"
 );
 
 /// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: every column of each, `(the
@@ -377,13 +500,21 @@ pub const COLUMNS_QUERY: &str = concat!(
 );
 
 /// `$1` is `text[]` of function names: `(proname, has a set-returning overload, has a volatile
-/// overload)`.
-pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog.bool_or(p.proretset), pg_catalog.bool_or(p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\") \
+/// overload)`, an aggregate volatile where a function it runs is, whatever its own label, which
+/// Postgres writes as immutable for every aggregate.
+pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog.bool_or(p.proretset), pg_catalog.bool_or(p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" \
+      OR EXISTS (SELECT 1 FROM pg_catalog.pg_aggregate a JOIN pg_catalog.pg_proc f \
+        ON f.oid OPERATOR(pg_catalog.=) ANY (ARRAY[a.aggtransfn::pg_catalog.oid, a.aggfinalfn::pg_catalog.oid, a.aggcombinefn::pg_catalog.oid, a.aggmtransfn::pg_catalog.oid, a.aggminvtransfn::pg_catalog.oid, a.aggmfinalfn::pg_catalog.oid]) \
+        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")) \
     FROM pg_catalog.pg_proc p WHERE p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) GROUP BY p.proname";
 
 /// Every operator some set-returning function implements.
 pub const SET_RETURNING_OPERATORS_QUERY: &str = "SELECT DISTINCT o.oprname::pg_catalog.text FROM pg_catalog.pg_operator o \
     JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode::pg_catalog.oid WHERE p.proretset";
+
+/// Every set-returning function one argument can call, as `(x).f` and `t.f` do.
+pub const SET_RETURNING_ATTRIBUTES_QUERY: &str = "SELECT DISTINCT p.proname::pg_catalog.text FROM pg_catalog.pg_proc p \
+    WHERE p.proretset AND p.pronargs OPERATOR(pg_catalog.>=) '1'::pg_catalog.int2 AND p.pronargs OPERATOR(pg_catalog.-) p.pronargdefaults OPERATOR(pg_catalog.<=) '1'::pg_catalog.int2";
 
 /// Prove that one rewritten statement (placeholders already `$n` or `?n`) returns exactly one
 /// row, or say why the build cannot, worded to finish a sentence: "a WHERE with no FROM can
@@ -413,7 +544,7 @@ fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
         return Err("SELECT INTO creates a table and returns no rows".into());
     }
     if dialect == Dialect::Postgres {
-        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
         if let Some(why) = calls_at_this_level(at_this_level).set_returning(catalog) {
             return Err(why);
         }
@@ -475,7 +606,7 @@ fn never_empty(node: &protobuf::Node, s: &SelectStmt, dialect: Dialect, trust: &
                     let enclosed = catalog.enclosed(&with_names(s));
                     let one = match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
                         Some(NodeEnum::SelectStmt(inner)) => exactly_one_select(inner, dialect, trust, &enclosed),
-                        Some(body @ (NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_))) => match dml_node(body, &enclosed) {
+                        Some(body @ (NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_))) => match dml_node(body, trust, &enclosed) {
                             Some(Ok(Cardinality::One)) => Ok(()),
                             Some(Ok(Cardinality::AtMostOne)) => Err("the write may change no row".to_string()),
                             Some(Err(why)) => Err(why),
@@ -666,7 +797,7 @@ fn at_most_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
         }
     }
     if dialect == Dialect::Postgres {
-        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
         if let Some(why) = calls_at_this_level(at_this_level).set_returning(catalog) {
             return Err(why);
         }
@@ -699,7 +830,7 @@ fn cte_passthrough(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Ca
         return None;
     }
     if dialect == Dialect::Postgres {
-        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
         if let Some(why) = calls_at_this_level(at_this_level).set_returning(catalog) {
             return Some(Err(why));
         }
@@ -714,7 +845,7 @@ fn cte_passthrough(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Ca
                 Err(_) => Err(format!("the WITH query `{}` returns any number of rows: {why}", rv.relname)),
             },
         },
-        NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_) => match dml_node(body, catalog) {
+        NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_) => match dml_node(body, trust, catalog) {
             Some(r) => r.map_err(|why| format!("the WITH query `{}` returns any number of rows: {why}", rv.relname)),
             None => return None,
         },
@@ -760,9 +891,12 @@ fn one_group(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog)
     }
 }
 
-/// The expression of output column `n`, counting from one.
+/// The expression of output column `n`, counting from one; `None` past a `*`, whose width the
+/// statement does not say.
 fn output(s: &SelectStmt, n: i32) -> Option<&protobuf::Node> {
-    match s.target_list.get(usize::try_from(n).ok()?.checked_sub(1)?)?.node.as_ref()? {
+    let n = usize::try_from(n).ok()?.checked_sub(1)?;
+    let at = target_positions(s).iter().position(|p| *p == Some(n))?;
+    match s.target_list.get(at)?.node.as_ref()? {
         NodeEnum::ResTarget(r) => r.val.as_deref(),
         _ => None,
     }
@@ -805,6 +939,8 @@ struct From<'a> {
     natural: bool,
     /// Why no closure holds over this FROM at all.
     refused: Option<&'static str>,
+    /// The statement's own WITH queries, whose statements a subquery or a WITH query reads.
+    with: Option<&'a protobuf::WithClause>,
 }
 
 /// One FROM item.
@@ -818,6 +954,8 @@ struct Item<'a> {
     /// Whether its alias renames its columns (`users u (a, b)`), so a column's name is not the
     /// catalog's.
     renamed: bool,
+    /// The names its alias gives its columns, by position.
+    columns: Vec<String>,
 }
 
 enum Source<'a> {
@@ -828,7 +966,7 @@ enum Source<'a> {
     /// A subquery, and whether it is LATERAL.
     Subquery(&'a SelectStmt, bool),
     /// A WITH query of an enclosing statement, read by name: the proof does not read its body.
-    Enclosing,
+    Enclosing(String),
     /// A function, or the several of `ROWS FROM (…)`.
     Function(&'a protobuf::RangeFunction),
     /// `TABLESAMPLE`, `XMLTABLE`, `JSON_TABLE`: nothing the proof reads.
@@ -857,7 +995,7 @@ impl<'a> From<'a> {
     fn read(s: &'a SelectStmt, catalog: &Catalog) -> From<'a> {
         let mut ctes = with_names(s);
         ctes.extend(catalog.enclosing_ctes.iter().cloned());
-        let mut from = From { items: Vec::new(), conjuncts: Vec::new(), ctes, using: Vec::new(), natural: false, refused: None };
+        let mut from = From { items: Vec::new(), conjuncts: Vec::new(), ctes, using: Vec::new(), natural: false, refused: None, with: s.with_clause.as_ref() };
         for item in &s.from_clause {
             from.flatten(item, s.with_clause.as_ref(), false);
         }
@@ -869,17 +1007,23 @@ impl<'a> From<'a> {
         from
     }
 
-    /// One relation alone, as an UPDATE or a DELETE reads its target, with the WHERE's conjuncts.
-    fn single(rv: &'a protobuf::RangeVar, where_clause: Option<&'a protobuf::Node>, with: Option<&'a protobuf::WithClause>) -> From<'a> {
+    /// An UPDATE's or a DELETE's target, the first item, with what its FROM or USING joins and the
+    /// WHERE's conjuncts.
+    fn target(rv: &'a protobuf::RangeVar, where_clause: Option<&'a protobuf::Node>, with: Option<&'a protobuf::WithClause>, joined: &'a [protobuf::Node]) -> From<'a> {
         let ctes = with.iter().flat_map(|w| w.ctes.iter().filter_map(cte_name).cloned()).collect();
         let (alias, renamed) = rv.alias.as_ref().map_or_else(|| (rv.relname.clone(), false), |a| (a.aliasname.clone(), !a.colnames.is_empty()));
-        let item = Item { alias, source: Source::Relation(rv), nullable: false, renamed };
+        let item = Item { alias, source: Source::Relation(rv), nullable: false, renamed, columns: Vec::new() };
         let conjuncts = where_clause.into_iter().flat_map(conjuncts_of).map(|node| Conjunct { node, may_pin: None, inner: true }).collect();
-        From { items: vec![item], conjuncts, ctes, using: Vec::new(), natural: false, refused: None }
+        let mut from = From { items: vec![item], conjuncts, ctes, using: Vec::new(), natural: false, refused: None, with };
+        for item in joined {
+            from.flatten(item, with, false);
+        }
+        from
     }
 
     fn flatten(&mut self, node: &'a protobuf::Node, with: Option<&'a protobuf::WithClause>, nullable: bool) {
         let named = |a: &protobuf::Alias| (a.aliasname.clone(), !a.colnames.is_empty());
+        let columns = |a: Option<&protobuf::Alias>| a.map(|a| a.colnames.iter().filter_map(field_name).map(String::from).collect()).unwrap_or_default();
         match node.node.as_ref() {
             Some(NodeEnum::RangeVar(rv)) => {
                 let (alias, renamed) = rv.alias.as_ref().map(named).unwrap_or_else(|| (rv.relname.clone(), false));
@@ -891,10 +1035,10 @@ impl<'a> From<'a> {
                 });
                 let source = match cte {
                     Some((c, recursive)) => Source::With(c, recursive),
-                    None if rv.schemaname.is_empty() && self.ctes.contains(&rv.relname) => Source::Enclosing,
+                    None if rv.schemaname.is_empty() && self.ctes.contains(&rv.relname) => Source::Enclosing(rv.relname.clone()),
                     None => Source::Relation(rv),
                 };
-                self.items.push(Item { alias, source, nullable, renamed });
+                self.items.push(Item { alias, source, nullable, renamed, columns: columns(rv.alias.as_ref()) });
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let (alias, renamed) = r.alias.as_ref().map(named).unwrap_or_default();
@@ -902,7 +1046,7 @@ impl<'a> From<'a> {
                     Some(NodeEnum::SelectStmt(sub)) => Source::Subquery(sub, r.lateral),
                     _ => Source::Opaque,
                 };
-                self.items.push(Item { alias, source, nullable, renamed });
+                self.items.push(Item { alias, source, nullable, renamed, columns: columns(r.alias.as_ref()) });
             }
             Some(NodeEnum::JoinExpr(j)) => {
                 use protobuf::JoinType;
@@ -965,7 +1109,7 @@ impl<'a> From<'a> {
                     _ => Source::Opaque,
                 };
                 match alias {
-                    Some(alias) => self.items.push(Item { alias, source, nullable, renamed: true }),
+                    Some(alias) => self.items.push(Item { alias, source, nullable, renamed: true, columns: Vec::new() }),
                     None => self.refused = Some("a FROM item the engine cannot name"),
                 }
             }
@@ -1023,7 +1167,8 @@ impl<'a> From<'a> {
                     Source::With(cte, recursive) => !*recursive && (with_query_at_most_one(cte, dialect, trust, &catalog.enclosed(&self.ctes)) || self.derived_pinned(i, &keys[i], &done, constant, catalog)),
                     Source::Subquery(sub, lateral) => (!*lateral || rest()) && (at_most_one_select(sub, dialect, trust, &catalog.enclosed(&self.ctes)).is_ok() || self.derived_pinned(i, &keys[i], &done, constant, catalog)),
                     Source::Function(f) => !constant && rest() && one_row_function(f, catalog).is_ok(),
-                    Source::Enclosing | Source::Opaque => false,
+                    Source::Enclosing(_) => self.derived_pinned(i, &keys[i], &done, constant, catalog),
+                    Source::Opaque => false,
                 };
                 if pinned {
                     done[i] = true;
@@ -1040,9 +1185,6 @@ impl<'a> From<'a> {
     /// query `i` ([`output_keys`]), as [`From::key_pinned`] pins a table's.
     fn derived_pinned(&self, i: usize, keys: &[Key], done: &[bool], constant: bool, catalog: &Catalog) -> bool {
         let item = &self.items[i];
-        if item.renamed {
-            return false;
-        }
         let usable = |c: &Conjunct| match &c.may_pin {
             None => true,
             Some(may) => may.contains(&i) && (!constant || (c.inner && !item.nullable)),
@@ -1057,33 +1199,54 @@ impl<'a> From<'a> {
     /// WITH query's from its statement ([`output_keys`]). A key over an expression is none here.
     fn item_keys(&self, i: usize, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
         let item = &self.items[i];
-        if item.renamed {
+        if item.renamed && matches!(item.source, Source::Relation(_)) {
             return Vec::new();
         }
         match &item.source {
             Source::Relation(rv) if catalog.views.contains_key(&catalog_name(rv)) => view_select(&catalog.views[&catalog_name(rv)], |view| output_keys(view, dialect, trust, &catalog.for_view())).unwrap_or_default(),
+            // A key over an expression maps only to a select list that keeps the expression.
             Source::Relation(rv) => {
                 let relation = catalog_name(rv);
                 let full = catalog.unique_keys.get(&relation).into_iter().flatten();
                 let partial = catalog.partial_keys.get(&relation).into_iter().flatten().filter(|(_, p)| self.restricts(i, p)).map(|(k, _)| k);
-                full.chain(partial)
-                    .filter(|k| !k.is_empty() && k.iter().all(|c| !c.starts_with('(')))
-                    .map(|k| k.iter().map(|c| Part { name: c.clone(), relation: relation.clone(), column: c.clone() }).collect())
-                    .collect()
+                full.chain(partial).filter(|k| !k.is_empty()).map(|k| k.iter().map(|c| Part { name: c.clone(), relation: relation.clone(), column: c.clone() }).collect()).collect()
             }
-            Source::Subquery(sub, _) => output_keys(sub, dialect, trust, &catalog.enclosed(&self.ctes)),
-            Source::With(cte, false) if cte.aliascolnames.is_empty() => match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
-                Some(NodeEnum::SelectStmt(body)) => output_keys(body, dialect, trust, &catalog.enclosed(&self.ctes)),
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
+            _ => self.through(i, catalog, |body, scope, columns| renamed_keys(output_keys(body, dialect, trust, scope), body, columns)).unwrap_or_default(),
+        }
+    }
+
+    /// `f` of the statement of subquery, WITH query or enclosing WITH query `i`, under the catalog
+    /// it is read in, with the names its column lists give its columns by position (the WITH
+    /// query's own, then the alias's).
+    fn through<T>(&self, i: usize, catalog: &Catalog, f: impl FnOnce(&SelectStmt, &Catalog, &[String]) -> T) -> Option<T> {
+        let item = &self.items[i];
+        let overlay = |inner: &[String]| -> Vec<String> {
+            let mut columns = inner.to_vec();
+            for (at, name) in item.columns.iter().enumerate() {
+                match columns.get_mut(at) {
+                    Some(slot) => *slot = name.clone(),
+                    None => columns.push(name.clone()),
+                }
+            }
+            columns
+        };
+        match &item.source {
+            Source::Subquery(sub, _) => Some(f(sub, &catalog.scoped(&self.ctes, self.with, None), &item.columns)),
+            Source::With(cte, false) => {
+                let Some(NodeEnum::SelectStmt(body)) = cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) else { return None };
+                let at = self.with.and_then(|w| w.ctes.iter().position(|c| matches!(c.node.as_ref(), Some(NodeEnum::CommonTableExpr(c)) if std::ptr::eq(c.as_ref(), *cte))));
+                let own: Vec<String> = cte.aliascolnames.iter().filter_map(field_name).map(String::from).collect();
+                Some(f(body, &catalog.scoped(&self.ctes, self.with, Some(at.unwrap_or(0))), &overlay(&own)))
+            }
+            Source::Enclosing(name) => enclosing_body(catalog, name, |body, scope, own| f(body, scope, &overlay(own))),
+            _ => None,
         }
     }
 
     /// The table column behind column `column` of item `i`, passed through unchanged.
     fn base(&self, i: usize, column: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Option<(String, String)> {
         let item = &self.items[i];
-        if item.renamed {
+        if item.renamed && matches!(item.source, Source::Relation(_)) {
             return None;
         }
         match &item.source {
@@ -1092,12 +1255,7 @@ impl<'a> From<'a> {
                 Some(definition) => view_select(definition, |view| output_base(view, column, dialect, trust, &catalog.for_view())).flatten(),
                 None => Some((catalog_name(rv), column.to_string())),
             },
-            Source::Subquery(sub, _) => output_base(sub, column, dialect, trust, &catalog.enclosed(&self.ctes)),
-            Source::With(cte, false) if cte.aliascolnames.is_empty() => match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
-                Some(NodeEnum::SelectStmt(body)) => output_base(body, column, dialect, trust, &catalog.enclosed(&self.ctes)),
-                _ => None,
-            },
-            _ => None,
+            _ => self.through(i, catalog, |body, scope, columns| inner_name(column, body, columns).and_then(|inner| output_base(body, &inner, dialect, trust, scope))).flatten(),
         }
     }
 
@@ -1108,10 +1266,71 @@ impl<'a> From<'a> {
             return Some(placed);
         }
         match c.fields.iter().filter_map(field_name).collect::<Vec<_>>().as_slice() {
-            // A table's own columns are placed above; a name it lacks is an enclosing query's.
-            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) => Some((0, column.to_string())),
+            // A table's own columns are placed above; a name it lacks is an enclosing query's. The
+            // item's own name may be no column of it but the whole row, which `name.name` would
+            // read as a function of that row: neither is placed.
+            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) && self.items[0].alias != *column => Some((0, column.to_string())),
             _ => None,
         }
+    }
+
+    /// The output name of column `column` of item `i` in SELECT `s`, whose select list keeps it
+    /// unchanged.
+    fn output(&self, s: &SelectStmt, i: usize, column: &str, catalog: &Catalog) -> Option<String> {
+        s.target_list.iter().find_map(|target| {
+            let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { return None };
+            let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref().and_then(|v| v.node.as_ref()) else { return None };
+            let star = c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_))));
+            if star {
+                // A USING or NATURAL join merges columns under one name.
+                let every = c.fields.len() == 1 && !self.natural && self.using.is_empty();
+                let its = c.fields.len() == 2 && c.fields.first().and_then(field_name) == Some(self.items[i].alias.as_str());
+                return (every || its).then(|| column.to_string());
+            }
+            let (j, own) = self.place_column(c, catalog)?;
+            (j == i && own == column).then(|| if r.name.is_empty() { own } else { r.name.clone() })
+        })
+    }
+
+    /// The output column of SELECT `s` that is key part `p` of table `r`, an expression of an index
+    /// (`(lower(email))`), where the select list keeps the expression under an alias of its own.
+    fn kept_expression(&self, s: &SelectStmt, r: usize, p: &Part) -> Option<Part> {
+        let alias = &self.items[r].alias;
+        s.target_list.iter().find_map(|t| {
+            let Some(NodeEnum::ResTarget(t)) = t.node.as_ref() else { return None };
+            let value = t.val.as_deref()?;
+            (!t.name.is_empty() && !self.mentions_merged(value) && matches_expression(value, &p.name, alias)).then(|| Part { name: t.name.clone(), relation: p.relation.clone(), column: p.column.clone() })
+        })
+    }
+
+    /// The output column that stands for key part `p` of table `r`, which the select list leaves
+    /// out: a column of another table that an equality holding of every row of the FROM (the
+    /// WHERE's, or an inner join's) makes equal to it, of the same type and both compared as
+    /// identity, so that equal values of the one are equal values of the other.
+    fn equated_output(&self, r: usize, p: &Part, output: &dyn Fn(usize, &str) -> Option<String>, catalog: &Catalog) -> Option<Part> {
+        if catalog.equality_shadowed || !matches!(self.items[r].source, Source::Relation(_)) || !identity(catalog, &p.relation, &p.column) {
+            return None;
+        }
+        let alias = &self.items[r].alias;
+        let ty = |relation: &str, column: &str| catalog.column_types.get(relation).and_then(|t| t.get(column)).copied();
+        self.conjuncts.iter().filter(|c| c.inner).find_map(|c| {
+            let Some(NodeEnum::AExpr(e)) = c.node.node.as_ref() else { return None };
+            if !is_equality(e) || e.name.len() != 1 {
+                return None;
+            }
+            let (l, rhs) = (e.lexpr.as_deref()?, e.rexpr.as_deref()?);
+            [(l, rhs), (rhs, l)].into_iter().find_map(|(side, other)| {
+                if self.own(side, alias).as_deref() != Some(p.name.as_str()) {
+                    return None;
+                }
+                let Some(NodeEnum::ColumnRef(oc)) = other.node.as_ref() else { return None };
+                let (j, column) = self.column(oc, catalog)?;
+                let Source::Relation(rv) = &self.items[j].source else { return None };
+                let relation = catalog_name(rv);
+                let same = j != r && !self.items[j].renamed && ty(&p.relation, &p.column).is_some() && ty(&p.relation, &p.column) == ty(&relation, &column) && identity(catalog, &relation, &column);
+                same.then(|| output(j, &column).map(|name| Part { name, relation, column })).flatten()
+            })
+        })
     }
 
     /// Whether the equalities pin every column of a unique key of item `i`.
@@ -1184,7 +1403,95 @@ impl<'a> From<'a> {
                     read.iter().all(|(j, read)| *j != i && (done[*j] || read.as_deref().is_some_and(|c| self.pinned_by_value(*j, c, catalog))))
                 })
                 && equality_bounds(catalog, relation, column, value, &|n| self.node_type(n, catalog))
+                && self.keeps_collation(relation, column, value, catalog)
         })
+    }
+
+    /// Whether `column = value` compares under the column's own collation, or one as strict. A
+    /// value's collation decides a comparison with a column of the default one (`u.code = t.c`,
+    /// with `t.c` under a case-insensitive collation, matches 'a' and 'A', which a unique index
+    /// under the default tells apart), and one of its children's reaches it through a call, an
+    /// operator or a cast (`lower(t.c)`). A key under a nondeterministic collation holds to that
+    /// one: another implicit collation beside it is an error, and an explicit one is refused
+    /// ([`equality_bounds`]). A comparison of a type with no collation uses none.
+    fn keeps_collation(&self, relation: &str, column: &str, value: &protobuf::Node, catalog: &Catalog) -> bool {
+        if catalog.deterministic_only {
+            return true;
+        }
+        let Some(column_type) = catalog.column_types.get(relation).and_then(|types| types.get(column)) else { return true };
+        if UNCOLLATED_TYPES.contains(column_type) || catalog.nondeterministic.get(relation).is_some_and(|n| n.contains(column)) {
+            return true;
+        }
+        serde_json::to_value(value).is_ok_and(|tree| !self.may_bring_collation(&tree, catalog))
+    }
+
+    /// Whether an expression, as the parse tree's JSON writes it, may carry a nondeterministic
+    /// collation: it reads a column that holds one or that the proof cannot place, a field of a
+    /// row (whose type's fields the catalog does not give), a subquery, a cast to a type that may
+    /// be a domain under one, or a call that may return such a domain.
+    fn may_bring_collation(&self, v: &Value, catalog: &Catalog) -> bool {
+        let names = |list: Option<&Value>| -> Vec<String> { list.and_then(Value::as_array).into_iter().flatten().filter_map(|n| n.pointer("/node/String/sval")?.as_str().map(String::from)).collect() };
+        // A name that is the built-in's, as `infer::builtin_name` reads one.
+        let built_in = |names: Vec<String>| match names.as_slice() {
+            [name] => Some(name.clone()),
+            [schema, name] if schema == "pg_catalog" => Some(name.clone()),
+            _ => None,
+        };
+        match v {
+            Value::Array(items) => items.iter().any(|item| self.may_bring_collation(item, catalog)),
+            Value::Object(map) => map.iter().any(|(key, child)| match key.as_str() {
+                "ColumnRef" => !self.column_is_deterministic(child, catalog),
+                "SubLink" | "SelectStmt" | "AIndirection" => true,
+                "TypeCast" => {
+                    let named = built_in(names(child.pointer("/type_name/names"))).is_some_and(|name| CAST_TYPES.iter().any(|(c, _)| *c == name) && catalog.cast_targets.as_ref().is_none_or(|t| t.contains(&name)));
+                    !named || child.get("arg").is_some_and(|arg| self.may_bring_collation(arg, catalog))
+                }
+                "FuncCall" => {
+                    let known = built_in(names(child.get("funcname"))).is_some_and(|name| infer::postgres_function_names().contains(&name.as_str()) && !catalog.user_operators.contains(&name));
+                    !known || self.may_bring_collation(child, catalog)
+                }
+                "AExpr" => {
+                    let known = built_in(names(child.get("name"))).is_some_and(|name| (infer::POSTGRES_OPERATORS.contains(&name.as_str()) || infer::POSTGRES_STRICT_OPERATORS.contains(&name.as_str())) && !catalog.user_operators.contains(&name));
+                    !known || self.may_bring_collation(child, catalog)
+                }
+                _ => self.may_bring_collation(child, catalog),
+            }),
+            _ => false,
+        }
+    }
+
+    /// Whether a column reference, as the parse tree's JSON writes it, reads a column certainly
+    /// under no nondeterministic collation: of an item here, or of an enclosing query's relation.
+    fn column_is_deterministic(&self, c: &Value, catalog: &Catalog) -> bool {
+        let Some(fields) = c.get("fields").and_then(Value::as_array) else { return false };
+        let parts: Vec<&str> = fields.iter().filter_map(|f| f.pointer("/node/String/sval")?.as_str()).collect();
+        if parts.len() != fields.len() {
+            return false;
+        }
+        match parts.as_slice() {
+            [q, column] => match self.items.iter().position(|it| it.alias == *q) {
+                Some(i) => self.item_column_is_deterministic(i, column, catalog),
+                None => catalog.outer_aliases.get(*q).is_some_and(|relation| relation_column_is_deterministic(catalog, relation, column)),
+            },
+            [column] if !self.merged(column) => {
+                let mut having = (0..self.items.len()).filter(|i| self.has_column(*i, column, catalog));
+                match (having.next(), having.next()) {
+                    (Some(i), None) => self.item_column_is_deterministic(i, column, catalog),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// [`From::column_is_deterministic`] of column `column` of item `i`: a table's or a view's, as
+    /// the catalog gives it, or what the statement of a subquery or a WITH query selects for it.
+    fn item_column_is_deterministic(&self, i: usize, column: &str, catalog: &Catalog) -> bool {
+        let item = &self.items[i];
+        match &item.source {
+            Source::Relation(rv) => !item.renamed && relation_column_is_deterministic(catalog, &catalog_name(rv), column),
+            _ => self.through(i, catalog, |body, scope, columns| inner_name(column, body, columns).is_some_and(|inner| output_is_deterministic(body, &inner, scope))).unwrap_or(false),
+        }
     }
 
     /// Whether the WHERE equates this column of item `j` to a value that reads no column, so every
@@ -1209,6 +1516,7 @@ impl<'a> From<'a> {
                     self.own(side, &item.alias).as_deref() == Some(column)
                         && self.reads(value, catalog).is_some_and(|read| read.is_empty())
                         && equality_bounds(catalog, &relation, column, value, &|n| self.node_type(n, catalog))
+                        && self.keeps_collation(&relation, column, value, catalog)
                 })
         })
     }
@@ -1276,7 +1584,8 @@ impl<'a> From<'a> {
             return None;
         }
         match parts.as_slice() {
-            [q, column] => self.items.iter().position(|it| it.alias == *q && !it.renamed).map(|i| (i, column.to_string())),
+            // A renamed table's columns are not the catalog's; a renamed subquery's go by their new names.
+            [q, column] => self.items.iter().position(|it| it.alias == *q && !(it.renamed && matches!(it.source, Source::Relation(_)))).map(|i| (i, column.to_string())),
             [column] if self.merged(column) => None,
             [column] => {
                 let mut having = (0..self.items.len()).filter(|i| self.has_column(*i, column, catalog));
@@ -1492,7 +1801,7 @@ impl<'a> From<'a> {
                 }
             }
             Source::With(cte, _) => format!("the WITH query `{}` returns any number of rows", cte.ctename),
-            Source::Enclosing => format!("`{}` is a WITH query of an enclosing statement, which returns any number of rows", item.alias),
+            Source::Enclosing(_) => format!("`{}` is a WITH query of an enclosing statement, which returns any number of rows", item.alias),
             Source::Subquery(..) => format!("the subquery `{}` returns any number of rows", item.alias),
             Source::Function(_) | Source::Opaque => format!("`{}` in the FROM is a function or table function, which returns any number of rows", item.alias),
         }
@@ -1503,7 +1812,7 @@ impl<'a> From<'a> {
 fn with_query_at_most_one(cte: &protobuf::CommonTableExpr, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> bool {
     match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
         Some(NodeEnum::SelectStmt(inner)) => at_most_one_select(inner, dialect, trust, catalog).is_ok(),
-        Some(body @ (NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_))) => matches!(dml_node(body, catalog), Some(Ok(_))),
+        Some(body @ (NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_))) => matches!(dml_node(body, trust, catalog), Some(Ok(_))),
         _ => false,
     }
 }
@@ -1660,13 +1969,23 @@ fn projected(sub: &SelectStmt, c: &protobuf::ColumnRef, ctes: &[String], catalog
     catalog.column_types.get(&relation)?.get(column).copied()
 }
 
-/// The type of the output column `name` of a subquery or WITH query over one relation, where the
-/// column is one of the relation's, passed through: `*`, or a plain column under its own name or
-/// an alias. A grouping or an aggregate changes no plain column's type.
+/// The type of the output column `name` of a subquery or WITH query, where the column is one of
+/// the one relation it reads, passed through (`*`, or a plain column under its own name or an
+/// alias), or a value under an alias whose type the SQL names, as the cast of `with input as
+/// (select :id::int as id)`. A grouping or an aggregate changes no plain column's type.
 fn output_type(sub: &SelectStmt, name: &str, ctes: &[String], catalog: &Catalog) -> Option<u32> {
     for target in &sub.target_list {
         let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { continue };
-        let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref().and_then(|v| v.node.as_ref()) else { continue };
+        let Some(value) = r.val.as_deref() else { continue };
+        let Some(NodeEnum::ColumnRef(c)) = value.node.as_ref() else {
+            if r.name == name {
+                return match value_type(value, catalog, &|_| None) {
+                    ValueType::Is(t) => Some(t),
+                    _ => None,
+                };
+            }
+            continue;
+        };
         if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) {
             let (relation, _) = only_relation(sub, ctes)?;
             if let Some(t) = catalog.column_types.get(&relation).and_then(|types| types.get(name)) {
@@ -1787,15 +2106,18 @@ type Key = Vec<Part>;
 ///
 /// None at all for a set operation, a VALUES list, or a set-returning call at this level, which
 /// repeats a row (`SELECT id, generate_series(1, 2) FROM posts`).
-fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
-    if s.larg.is_some() || s.rarg.is_some() || !s.values_lists.is_empty() || s.into_clause.is_some() {
+fn output_keys<'a>(s: &'a SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
+    if let (Some(left), Some(right)) = (s.larg.as_deref(), s.rarg.as_deref()) {
+        return set_keys(s, left, right, dialect, trust, &catalog.scoped(&with_names(s), s.with_clause.as_ref(), None));
+    }
+    if !s.values_lists.is_empty() || s.into_clause.is_some() {
         return Vec::new();
     }
     if s.group_clause.iter().any(|g| matches!(g.node.as_ref(), Some(NodeEnum::GroupingSet(_)))) {
         return Vec::new();
     }
     if dialect == Dialect::Postgres {
-        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
         if calls_at_this_level(at_this_level).set_returning(catalog).is_some() {
             return Vec::new();
         }
@@ -1805,34 +2127,39 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
         return Vec::new();
     }
     // The output name of column `column` of item `i`, where the select list keeps it unchanged.
-    let output = |i: usize, column: &str| -> Option<String> {
-        s.target_list.iter().find_map(|target| {
-            let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { return None };
-            let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref().and_then(|v| v.node.as_ref()) else { return None };
-            let star = c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_))));
-            if star {
-                // A USING or NATURAL join merges columns under one name.
-                let every = c.fields.len() == 1 && !from.natural && from.using.is_empty();
-                let its = c.fields.len() == 2 && c.fields.first().and_then(field_name) == Some(from.items[i].alias.as_str());
-                return (every || its).then(|| column.to_string());
-            }
-            let (j, own) = from.place_column(c, catalog)?;
-            (j == i && own == column).then(|| if r.name.is_empty() { own } else { r.name.clone() })
-        })
-    };
+    let output = |i: usize, column: &str| from.output(s, i, column, catalog);
     // The output column an expression of GROUP BY or DISTINCT ON is, with the table column behind it.
-    let part = |e: &protobuf::Node| -> Option<Part> {
+    // The entry of the select list at output position `n`, counted only where no `*` comes before
+    // it, whose width the statement does not say.
+    let positions = target_positions(s);
+    let entry = |n: usize| -> Option<&protobuf::ResTarget> {
+        let at = positions.iter().position(|p| *p == Some(n))?;
+        match s.target_list[at].node.as_ref()? {
+            NodeEnum::ResTarget(r) => Some(r),
+            _ => None,
+        }
+    };
+    // The column an entry holds as it is, with the name the entry gives it, if it gives one.
+    let held = |r: &'a protobuf::ResTarget| -> Option<(&'a protobuf::ColumnRef, Option<String>)> {
+        match r.val.as_deref()?.node.as_ref()? {
+            NodeEnum::ColumnRef(c) => Some((c, Some(r.name.clone()).filter(|n| !n.is_empty()))),
+            _ => None,
+        }
+    };
+    // The output column an expression of GROUP BY or DISTINCT ON is, with the table column behind
+    // it. A bare name in DISTINCT ON names an output column of that name first, as in ORDER BY, and
+    // in GROUP BY a column of the FROM.
+    let part = |e: &'a protobuf::Node, distinct_on: bool| -> Option<Part> {
         let (c, name) = match e.node.as_ref()? {
+            NodeEnum::ColumnRef(c) if distinct_on && c.fields.len() == 1 => match named_entry(s, c.fields.first().and_then(field_name)?) {
+                Named::One(r) => held(r)?,
+                Named::None => (c, None),
+                Named::Unknown => return None,
+            },
             NodeEnum::ColumnRef(c) => (c, None),
             // `GROUP BY 2` groups by the second output column.
             NodeEnum::AConst(k) => match &k.val {
-                Some(protobuf::a_const::Val::Ival(n)) => match s.target_list.get(usize::try_from(n.ival).ok()?.checked_sub(1)?)?.node.as_ref()? {
-                    NodeEnum::ResTarget(r) => match r.val.as_deref()?.node.as_ref()? {
-                        NodeEnum::ColumnRef(c) => (c, Some(r.name.clone()).filter(|n| !n.is_empty())),
-                        _ => return None,
-                    },
-                    _ => return None,
-                },
+                Some(protobuf::a_const::Val::Ival(n)) => held(entry(usize::try_from(n.ival).ok()?.checked_sub(1)?)?)?,
                 _ => return None,
             },
             _ => return None,
@@ -1847,7 +2174,7 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
     };
     let mut keys = Vec::new();
     if !s.group_clause.is_empty() {
-        keys.extend(s.group_clause.iter().map(part).collect::<Option<Key>>());
+        keys.extend(s.group_clause.iter().map(|g| part(g, false)).collect::<Option<Key>>());
         return keys;
     }
     if !s.distinct_clause.is_empty() {
@@ -1868,7 +2195,7 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
                 })
                 .collect()
         } else {
-            s.distinct_clause.iter().map(part).collect()
+            s.distinct_clause.iter().map(|d| part(d, true)).collect()
         };
         keys.extend(key);
     }
@@ -1888,11 +2215,835 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
             _ => derived[r].clone(),
         };
         for key in own {
-            let mapped: Option<Key> = key.iter().map(|p| output(r, &p.name).map(|name| Part { name, relation: p.relation.clone(), column: p.column.clone() })).collect();
+            // A key column the select list leaves out still counts where the WHERE pins it to
+            // one value, or where an inner equality keeps a column of the same value in the list.
+            let mapped: Option<Key> = key
+                .iter()
+                .filter_map(|p| match output(r, &p.name) {
+                    Some(name) => Some(Some(Part { name, relation: p.relation.clone(), column: p.column.clone() })),
+                    None if p.name.starts_with('(') => Some(from.kept_expression(s, r, p)),
+                    None if matches!(from.items[r].source, Source::Relation(_)) && from.pinned_by_value(r, &p.name, catalog) => None,
+                    None => Some(from.equated_output(r, p, &output, catalog)),
+                })
+                .collect();
             keys.extend(mapped);
         }
     }
     keys
+}
+
+/// The keys of a set operation's rows. Without ALL every operator returns distinct rows, so the
+/// whole row is a key, where each column passes one table column through on both sides and the
+/// two are of one type, whose equality the row's columns then compare under. INTERSECT returns only
+/// rows of its left side, and EXCEPT a subset of them, with ALL or without, so those keep its keys.
+/// UNION ALL has none.
+fn set_keys(s: &SelectStmt, left: &SelectStmt, right: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
+    use protobuf::SetOperation as Op;
+    let mut keys = Vec::new();
+    if s.op == Op::SetopIntersect as i32 || s.op == Op::SetopExcept as i32 {
+        let names = output_names(left).unwrap_or_default();
+        let unconverted = |p: &Part| names.iter().position(|n| n.as_deref() == Some(p.name.as_str())).is_some_and(|at| unconverted(left, right, at, dialect, trust, catalog));
+        keys.extend(output_keys(left, dialect, trust, catalog).into_iter().filter(|key| key.iter().all(unconverted)));
+    }
+    if !s.all {
+        let whole = || -> Option<Key> {
+            let (names, others) = (output_names(left)?, output_names(right)?);
+            if names.len() != others.len() {
+                return None;
+            }
+            names
+                .iter()
+                .zip(&others)
+                .map(|(name, other)| {
+                    let (name, other) = (name.as_deref()?, other.as_deref()?);
+                    let (relation, column) = output_base(left, name, dialect, trust, catalog)?;
+                    let (other_relation, other_column) = output_base(right, other, dialect, trust, catalog)?;
+                    let ty = |r: &str, c: &str| catalog.column_types.get(r).and_then(|t| t.get(c)).copied();
+                    (ty(&relation, &column).is_some() && ty(&relation, &column) == ty(&other_relation, &other_column)).then(|| Part { name: name.to_string(), relation, column })
+                })
+                .collect()
+        };
+        keys.extend(whole());
+    }
+    keys
+}
+
+/// Whether output column `at` of a set operation is its left side's column unconverted: each side
+/// passes one table column through, both of one type. Otherwise the operation may convert the left
+/// side's values to a type in which two of them are equal (two `bigint` keys to one `float8`), and
+/// the left side's keys hold no more.
+fn unconverted(left: &SelectStmt, right: &SelectStmt, at: usize, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> bool {
+    let (Some(names), Some(others)) = (output_names(left), output_names(right)) else { return false };
+    let (Some(Some(name)), Some(Some(other))) = (names.get(at), others.get(at)) else { return false };
+    let ty = |s: &SelectStmt, name: &str| output_base(s, name, dialect, trust, catalog).and_then(|(r, c)| catalog.column_types.get(&r).and_then(|t| t.get(&c)).copied());
+    let left_type = ty(left, name);
+    names.len() == others.len() && left_type.is_some() && left_type == ty(right, other)
+}
+
+/// The result keys of one rewritten SELECT: each set of output columns, by name, no two of its rows
+/// agree on all of, a NULL counting as equal to another NULL. `columns` are the statement's output
+/// columns in order, each with whether it may be NULL. Each key in output order, none inside
+/// another, a table's primary key before its other keys; none where none is proven, or where a
+/// key's column shares its name with another output column, or is one `identifies` marks false: of
+/// a type two of whose values may read alike.
+///
+/// - Without ALL, UNION, INTERSECT and EXCEPT return distinct rows: the whole output is a key.
+///   INTERSECT and EXCEPT, with ALL or without, return only rows of their left side, which keep its
+///   keys. UNION ALL has none.
+/// - GROUP BY returns one row per group: its expressions, where each is an output column, are a key
+///   (not under GROUPING SETS, ROLLUP or CUBE). A group of NULLs is one group, so the columns may be
+///   NULL.
+/// - DISTINCT makes the whole output a key, and DISTINCT ON its expressions, where each is an output
+///   column.
+/// - A unique key of the rows of the FROM ([`output_keys`]), every column of it in the output and
+///   none of them NULL: a unique index lets NULLs repeat, and an outer join gives a row whose
+///   columns of the other side are all NULL. Each row of the FROM is one row of each item, so where
+///   no item's key alone is one, a key of every item together is, under the same conditions.
+/// - A LIMIT or an OFFSET only removes rows, and keeps every key.
+///
+/// None at all for a VALUES list, or a set-returning call at this level, which repeats a row.
+pub fn result_keys(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], identifies: &[bool]) -> Vec<Vec<String>> {
+    crate::stack::run(|| {
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
+        let keys = select_keys(&s, trust, &with_fields(&s, catalog), columns);
+        // A column whose name another output column also has is not one a row can be read by.
+        let named = |i: usize| columns.get(i).filter(|(name, _)| identifies.get(i) == Some(&true) && columns.iter().filter(|(other, _)| other == name).count() == 1).map(|(name, _)| name.clone());
+        let readable: Vec<Vec<usize>> = keys
+            .into_iter()
+            .filter_map(|mut key| {
+                key.sort_unstable();
+                key.dedup();
+                (!key.is_empty() && key.iter().all(|&i| named(i).is_some())).then_some(key)
+            })
+            .collect();
+        // A key another key lies inside says nothing more, and one repeated says it once. The rest
+        // keep the order they were found in, a table's primary key before its other keys.
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        for key in &readable {
+            let holds = |other: &Vec<usize>| other.len() < key.len() && other.iter().all(|i| key.contains(i));
+            if !readable.iter().any(holds) && !out.contains(key) {
+                out.push(key.clone());
+            }
+        }
+        out.into_iter().map(|key| key.into_iter().filter_map(named).collect()).collect()
+    })
+}
+
+/// The keys of a SELECT's rows as [`result_keys`] reads them, each a list of output positions.
+fn select_keys(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)]) -> Vec<Vec<usize>> {
+    if s.limit_count.is_some() || s.limit_offset.is_some() {
+        return select_keys(&unlimited(s), trust, catalog, columns);
+    }
+    let whole: Vec<usize> = (0..columns.len()).collect();
+    if let (Some(left), Some(right)) = (s.larg.as_deref(), s.rarg.as_deref()) {
+        use protobuf::SetOperation as Op;
+        let mut keys = Vec::new();
+        if !s.all {
+            keys.push(whole);
+        }
+        // A set operation's columns are its left side's, by position and by name, where neither
+        // side's values are converted to a common type.
+        if s.op == Op::SetopIntersect as i32 || s.op == Op::SetopExcept as i32 {
+            let scoped = catalog.scoped(&with_names(s), s.with_clause.as_ref(), None);
+            let kept = select_keys(left, trust, &scoped, columns).into_iter().filter(|key| key.iter().all(|&at| unconverted(left, right, at, Dialect::Postgres, trust, &scoped)));
+            keys.extend(kept.collect::<Vec<_>>());
+        }
+        return keys;
+    }
+    if !s.values_lists.is_empty() || s.into_clause.is_some() {
+        return Vec::new();
+    }
+    if s.group_clause.iter().any(|g| matches!(g.node.as_ref(), Some(NodeEnum::GroupingSet(_)))) {
+        return Vec::new();
+    }
+    let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
+    if calls_at_this_level(at_this_level).set_returning(catalog).is_some() {
+        return Vec::new();
+    }
+    let from = From::read(s, catalog);
+    let positions = target_positions(s);
+    let mut keys = Vec::new();
+    if !s.group_clause.is_empty() {
+        keys.extend(s.group_clause.iter().map(|g| clause_column(s, &from, g, KeyClause::GroupBy, &positions, catalog, columns)).collect::<Option<Vec<usize>>>());
+        return keys;
+    }
+    // The keys of the FROM's rows, which DISTINCT only thins out, a table's primary key first.
+    let plain = SelectStmt { distinct_clause: Vec::new(), ..s.clone() };
+    let at = |name: &str| {
+        let mut found = columns.iter().enumerate().filter(|(_, (n, _))| n == name).map(|(i, _)| i);
+        match (found.next(), found.next()) {
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
+    };
+    for key in output_keys(&plain, Dialect::Postgres, trust, catalog) {
+        keys.extend(key.iter().map(|p| at(&p.name).filter(|&i| !columns[i].1)).collect::<Option<Vec<usize>>>());
+    }
+    // A row of the FROM is one row of each item, so a key of every item, together, is a key of the
+    // FROM's rows, however the items join.
+    if from.refused.is_none() && !from.items.is_empty() {
+        let each = (0..from.items.len()).map(|i| {
+            from.item_keys(i, Dialect::Postgres, trust, catalog)
+                .iter()
+                .filter_map(|key| key.iter().map(|p| from.output(s, i, &p.name, catalog).and_then(|name| at(&name)).filter(|&j| !columns[j].1)).collect::<Option<Vec<usize>>>())
+                .min_by_key(|key| key.len())
+        });
+        keys.extend(each.collect::<Option<Vec<Vec<usize>>>>().map(|parts| parts.concat()));
+    }
+    if !s.distinct_clause.is_empty() {
+        if s.distinct_clause.iter().all(|d| d.node.is_none()) {
+            keys.push(whole);
+        } else {
+            keys.extend(s.distinct_clause.iter().map(|d| clause_column(s, &from, d, KeyClause::DistinctOn, &positions, catalog, columns)).collect::<Option<Vec<usize>>>());
+        }
+    }
+    keys
+}
+
+/// What a bare name in ORDER BY or DISTINCT ON names among a select list's output columns.
+enum Named<'a> {
+    /// The one entry of that name.
+    One(&'a protobuf::ResTarget),
+    /// No entry: the name is a column of the FROM.
+    None,
+    /// Two entries of the name, or one whose name the engine does not read and may be it.
+    Unknown,
+}
+
+/// The entry of a select list a bare name in ORDER BY or DISTINCT ON names: an entry's alias, or
+/// the name Postgres gives it, a column's own or a function's. An entry `*` gives the names of the
+/// columns it expands to, each a column of the FROM of that name, which the name reads as either;
+/// a `(composite).*` gives its fields' names, which the engine does not read.
+fn named_entry<'a>(s: &'a SelectStmt, name: &str) -> Named<'a> {
+    let mut found = Named::None;
+    for t in &s.target_list {
+        let Some(NodeEnum::ResTarget(r)) = t.node.as_ref() else { return Named::Unknown };
+        let Some(value) = r.val.as_deref() else { return Named::Unknown };
+        if expands(value) {
+            if matches!(value.node.as_ref(), Some(NodeEnum::AIndirection(_))) {
+                return Named::Unknown;
+            }
+            continue;
+        }
+        let own = if r.name.is_empty() { implicit_name(value).map(|(n, _)| n) } else { Some(r.name.clone()) };
+        match own {
+            Some(own) if own == name => {
+                if !matches!(found, Named::None) {
+                    return Named::Unknown;
+                }
+                found = Named::One(r);
+            }
+            Some(_) => {}
+            None => return Named::Unknown,
+        }
+    }
+    found
+}
+
+/// The name Postgres gives an entry of a select list that has no alias, with its strength as
+/// Postgres's `FigureColname` ranks it (0 for `?column?`, 1 for a type's or `case`, 2 for a name
+/// of its own); `None` for an expression whose name the engine does not read, which may be any.
+fn implicit_name(node: &protobuf::Node) -> Option<(String, u8)> {
+    let unnamed = || Some(("?column?".to_string(), 0));
+    let last = |nodes: &[protobuf::Node]| nodes.last().and_then(field_name).map(String::from);
+    match node.node.as_ref()? {
+        NodeEnum::ColumnRef(c) => Some((last(&c.fields)?, 2)),
+        NodeEnum::FuncCall(f) => Some((last(&f.funcname)?, 2)),
+        NodeEnum::AExpr(e) if e.kind == protobuf::AExprKind::AexprNullif as i32 => Some(("nullif".into(), 2)),
+        NodeEnum::AExpr(_) | NodeEnum::AConst(_) | NodeEnum::BoolExpr(_) | NodeEnum::ParamRef(_) | NodeEnum::NullTest(_) | NodeEnum::BooleanTest(_) => unnamed(),
+        NodeEnum::TypeCast(t) => match implicit_name(t.arg.as_deref()?)? {
+            (name, 2) => Some((name, 2)),
+            _ => Some((last(&t.type_name.as_ref()?.names)?, 1)),
+        },
+        NodeEnum::CollateClause(c) => implicit_name(c.arg.as_deref()?),
+        NodeEnum::CaseExpr(c) => match c.defresult.as_deref() {
+            None => Some(("case".into(), 1)),
+            Some(d) => match implicit_name(d)? {
+                (name, 2) => Some((name, 2)),
+                _ => Some(("case".into(), 1)),
+            },
+        },
+        NodeEnum::CoalesceExpr(_) => Some(("coalesce".into(), 2)),
+        NodeEnum::AArrayExpr(_) => Some(("array".into(), 2)),
+        NodeEnum::RowExpr(_) => Some(("row".into(), 2)),
+        NodeEnum::GroupingFunc(_) => Some(("grouping".into(), 2)),
+        NodeEnum::MinMaxExpr(m) => Some((if m.op == protobuf::MinMaxOp::IsGreatest as i32 { "greatest" } else { "least" }.into(), 2)),
+        NodeEnum::SubLink(l) if l.sub_link_type == protobuf::SubLinkType::ExistsSublink as i32 => Some(("exists".into(), 2)),
+        NodeEnum::SubLink(l) if l.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => Some(("array".into(), 2)),
+        _ => None,
+    }
+}
+
+/// Whether an entry of a select list is a `*`, `t.*` or `(composite).*`, which expands to columns
+/// the statement does not count.
+fn expands(node: &protobuf::Node) -> bool {
+    let last_is_star = |items: &[protobuf::Node]| items.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_))));
+    match node.node.as_ref() {
+        Some(NodeEnum::ColumnRef(c)) => last_is_star(&c.fields),
+        Some(NodeEnum::AIndirection(i)) => last_is_star(&i.indirection),
+        _ => false,
+    }
+}
+
+/// Each entry of a SELECT's select list's output position, `None` from the first `*` on, whose
+/// width the statement does not say.
+fn target_positions(s: &SelectStmt) -> Vec<Option<usize>> {
+    let mut at = Some(0usize);
+    s.target_list
+        .iter()
+        .map(|t| {
+            let star = matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(r)) if r.val.as_deref().is_some_and(expands));
+            if star {
+                at = None;
+            }
+            let here = at;
+            at = at.map(|a| a + 1);
+            here
+        })
+        .collect()
+}
+
+/// The output position of an expression of GROUP BY or DISTINCT ON, where it is an output column:
+/// a position (`GROUP BY 2`), or a column of the FROM the select list holds as it is. A bare name
+/// in DISTINCT ON names an output column of that name first, as in ORDER BY, and in GROUP BY a
+/// column of the FROM first.
+fn clause_column(s: &SelectStmt, from: &From, e: &protobuf::Node, clause: KeyClause, positions: &[Option<usize>], catalog: &Catalog, columns: &[(String, bool)]) -> Option<usize> {
+    match e.node.as_ref()? {
+        NodeEnum::AConst(k) => match &k.val {
+            Some(protobuf::a_const::Val::Ival(n)) => positions.get(usize::try_from(n.ival).ok()?.checked_sub(1)?).copied().flatten(),
+            _ => None,
+        },
+        NodeEnum::ColumnRef(c) => {
+            if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) {
+                return None;
+            }
+            if clause == KeyClause::DistinctOn && c.fields.len() == 1 {
+                let name = c.fields.first().and_then(field_name)?;
+                let mut named = columns.iter().enumerate().filter(|(_, (n, _))| n == name).map(|(i, _)| i);
+                match (named.next(), named.next()) {
+                    (Some(i), None) => return Some(i),
+                    (Some(_), Some(_)) => return None,
+                    _ => {}
+                }
+            }
+            if from.refused.is_some() {
+                return None;
+            }
+            let placed = from.place_column(c, catalog)?;
+            s.target_list.iter().zip(positions).find_map(|(t, at)| {
+                let Some(NodeEnum::ResTarget(r)) = t.node.as_ref() else { return None };
+                let Some(NodeEnum::ColumnRef(held)) = r.val.as_deref().and_then(|v| v.node.as_ref()) else { return None };
+                (from.place_column(held, catalog).as_ref() == Some(&placed)).then_some(*at).flatten()
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether the ORDER BY of one rewritten SELECT orders its rows totally: no two rows of any result
+/// tie on every sort key, so a result's order is the same on every run. `columns` are the
+/// statement's output columns in order, each with whether it may be NULL, and `plain` says of each
+/// whether its type has no collation.
+///
+/// The sort keys must hold every column of a unique key of the rows being sorted:
+///
+/// - a result key ([`result_keys`]'s rules), each column an output column the ORDER BY names, by
+///   position, by its output name or as the FROM's column the select list holds;
+/// - a unique key of a FROM item's rows (a table's, or one a view, a WITH query or a subquery keeps
+///   from its statement), every column of it a table's `NOT NULL` column passed through unchanged,
+///   sorted by as the item's column whether or not it is selected, where every other item meets
+///   one row at most per row of that item and no outer join null-extends it; or one such key of
+///   every item of the FROM together.
+///
+/// A sort key counts only under its column's own ordering: not one written with `USING` or
+/// `COLLATE`, nor a string under a nondeterministic collation, or one whose collation the engine
+/// does not read, under which two values may tie. A LIMIT or an OFFSET keeps the order. Nothing
+/// without an ORDER BY is ordered.
+pub fn total_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> bool {
+    crate::stack::run(|| {
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return false };
+        ordered_select(&s, trust, &with_fields(&s, catalog), columns, plain)
+    })
+}
+
+fn ordered_select(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> bool {
+    if s.sort_clause.is_empty() {
+        return false;
+    }
+    let set_operation = s.larg.is_some() || s.rarg.is_some();
+    let from = (!set_operation).then(|| From::read(s, catalog)).filter(|f| f.refused.is_none());
+    let positions = target_positions(s);
+    let mut sorted_at = HashSet::new();
+    let mut sorted_inputs: HashSet<(usize, String)> = HashSet::new();
+    for item in &s.sort_clause {
+        let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { return false };
+        let Some(e) = by.node.as_deref() else { return false };
+        // A sort key whose value for a row may change from run to run (a volatile call, a window
+        // function, an aggregate whose value turns on the order it reads its rows in) may reorder
+        // rows that do not tie, wherever it stands in the ORDER BY.
+        if !stable_sort_key(s, from.as_ref(), e, &positions, trust, catalog, columns) {
+            return false;
+        }
+        if !by.use_op.is_empty() {
+            continue;
+        }
+        let (at, input) = sort_target(s, from.as_ref(), e, &positions, catalog, columns);
+        if let Some(at) = at {
+            if plain.get(at) == Some(&true) || deterministic_output(s, at, trust, catalog) {
+                sorted_at.insert(at);
+            }
+        }
+        if let (Some(from), Some((i, column))) = (from.as_ref(), input) {
+            if deterministic_input(from, i, &column, trust, catalog) {
+                sorted_inputs.insert((i, column));
+            }
+        }
+    }
+    if select_keys(s, trust, catalog, columns).iter().any(|key| key.iter().all(|at| sorted_at.contains(at))) {
+        return true;
+    }
+    let Some(from) = from else { return false };
+    from_ordered(s, &from, &sorted_inputs, trust, catalog)
+}
+
+/// The columns of one rewritten SELECT's result its ORDER BY sorts on, in order, with each one's
+/// direction and where its NULLs sort: ascending and last unless the key says otherwise, and
+/// descending first. The list ends at the first key that is no output column of a name of its own,
+/// since a later key sorts only among rows that tie on that one: an expression, a column the
+/// result doesn't hold, a `USING` operator or a `COLLATE`, under which the values aren't sorted
+/// as the column's own collation sorts them. A later key on a column already listed sorts nothing.
+/// A column of a type with a collation is listed only where it is a table's column, passed through
+/// unchanged ([`From::base`]), or a set operation's: a set-returning SQL function the planner inlines
+/// sorts a column it passes through under its body's collation, not the one it declares. A name
+/// spelled with a character beyond ASCII ends the list too, since a server whose encoding is not
+/// UTF-8 truncates and folds it otherwise than the parser here does.
+/// A LIMIT or an OFFSET keeps the order. A locking clause doesn't: at READ COMMITTED a row it waited
+/// for is returned with its new values, in the place its old ones sorted to, so such a statement
+/// has no order to state.
+pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> Vec<crate::types::OrderColumn> {
+    use crate::types::{NullsOrder, OrderColumn};
+    use protobuf::{SortByDir, SortByNulls};
+    crate::stack::run(|| {
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
+        if !s.locking_clause.is_empty() {
+            return Vec::new();
+        }
+        let catalog = with_fields(&s, catalog);
+        let set_operation = s.larg.is_some() || s.rarg.is_some();
+        let from = (!set_operation).then(|| From::read(&s, &catalog)).filter(|f| f.refused.is_none());
+        let positions = target_positions(&s);
+        let mut order: Vec<OrderColumn> = Vec::new();
+        for item in &s.sort_clause {
+            let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { break };
+            let Some(e) = by.node.as_deref() else { break };
+            if !by.use_op.is_empty() || by.sortby_dir == SortByDir::SortbyUsing as i32 {
+                break;
+            }
+            let (Some(at), input) = sort_target(&s, from.as_ref(), e, &positions, &catalog, columns) else { break };
+            let Some((name, _)) = columns.get(at) else { break };
+            let target = positions.iter().position(|p| *p == Some(at)).and_then(|t| s.target_list.get(t));
+            if !ascii_names(e) || target.is_some_and(|t| !ascii_names(t)) {
+                break;
+            }
+            if plain.get(at) != Some(&true) && !set_operation {
+                let traced = from.as_ref().zip(input.as_ref()).and_then(|(f, (i, column))| f.base(*i, column, Dialect::Postgres, trust, &catalog));
+                if traced.is_none() {
+                    break;
+                }
+            }
+            if columns.iter().filter(|(other, _)| other == name).count() != 1 {
+                break;
+            }
+            if order.iter().any(|o| o.column == *name) {
+                continue;
+            }
+            let desc = by.sortby_dir == SortByDir::SortbyDesc as i32;
+            let first = if by.sortby_nulls == SortByNulls::SortbyNullsFirst as i32 {
+                true
+            } else if by.sortby_nulls == SortByNulls::SortbyNullsLast as i32 {
+                false
+            } else {
+                desc
+            };
+            order.push(OrderColumn { column: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
+        }
+        order
+    })
+}
+
+/// Whether every name a column reference or a select-list entry spells is ASCII.
+fn ascii_names(node: &protobuf::Node) -> bool {
+    match node.node.as_ref() {
+        Some(NodeEnum::ColumnRef(c)) => c.fields.iter().filter_map(field_name).all(|f| f.is_ascii()),
+        Some(NodeEnum::ResTarget(r)) => r.name.is_ascii() && r.val.as_deref().is_none_or(ascii_names),
+        _ => true,
+    }
+}
+
+/// What one sort key of a SELECT names: the output column, by position, and the FROM's column, by
+/// item and name. A position counts output columns, a `*`'s included; a bare name is an output
+/// column's before a column of the FROM, as Postgres reads ORDER BY.
+fn sort_target(s: &SelectStmt, from: Option<&From>, e: &protobuf::Node, positions: &[Option<usize>], catalog: &Catalog, columns: &[(String, bool)]) -> (Option<usize>, Option<(usize, String)>) {
+    let held = |at: usize| -> Option<(usize, String)> {
+        let t = positions.iter().position(|p| *p == Some(at))?;
+        let Some(NodeEnum::ResTarget(r)) = s.target_list.get(t)?.node.as_ref() else { return None };
+        let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref()?.node.as_ref() else { return None };
+        if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) {
+            return None;
+        }
+        from?.place_column(c, catalog)
+    };
+    match e.node.as_ref() {
+        Some(NodeEnum::AConst(k)) => match &k.val {
+            Some(protobuf::a_const::Val::Ival(n)) => match usize::try_from(n.ival).ok().and_then(|n| n.checked_sub(1)).filter(|at| *at < columns.len()) {
+                Some(at) => (Some(at), held(at)),
+                None => (None, None),
+            },
+            _ => (None, None),
+        },
+        Some(NodeEnum::ColumnRef(c)) if !c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => {
+            if c.fields.len() == 1 {
+                let Some(name) = c.fields.first().and_then(field_name) else { return (None, None) };
+                match output_named(s, name, columns) {
+                    Output::At(at) => return (Some(at), held(at)),
+                    Output::Ambiguous => return (None, None),
+                    // A column a `*` expands to is the FROM's column of that name, as below.
+                    Output::Expanded(at) => {
+                        let input = from.and_then(|f| f.place_column(c, catalog));
+                        return (input.is_some().then_some(at), input);
+                    }
+                    Output::None => {}
+                }
+            }
+            let Some(input) = from.and_then(|f| f.place_column(c, catalog)) else { return (None, None) };
+            let at = (0..columns.len()).find(|at| held(*at).as_ref() == Some(&input));
+            (at, Some(input))
+        }
+        _ => (None, None),
+    }
+}
+
+/// What a bare name in ORDER BY names among a SELECT's output columns (`columns`, as the statement
+/// returns them): an entry of the select list, at its output position; a column a `*` expands to;
+/// none, so the name is the FROM's; or two of them.
+enum Output {
+    At(usize),
+    Expanded(usize),
+    None,
+    Ambiguous,
+}
+
+fn output_named(s: &SelectStmt, name: &str, columns: &[(String, bool)]) -> Output {
+    let mut named = columns.iter().enumerate().filter(|(_, (n, _))| n == name).map(|(i, _)| i);
+    let at = match (named.next(), named.next()) {
+        (Some(at), None) => at,
+        (Some(_), Some(_)) => return Output::Ambiguous,
+        _ => return Output::None,
+    };
+    if s.larg.is_some() || s.rarg.is_some() {
+        return Output::At(at);
+    }
+    let positions = target_positions(s);
+    match named_entry(s, name) {
+        Named::One(r) => match s.target_list.iter().position(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(t)) if std::ptr::eq(t.as_ref(), r))).and_then(|t| positions[t]) {
+            Some(p) if p == at => Output::At(at),
+            _ => Output::Ambiguous,
+        },
+        Named::None => Output::Expanded(at),
+        Named::Unknown => Output::Ambiguous,
+    }
+}
+
+/// The aggregates whose value turns on the order they read their rows in: a list or a document
+/// built in that order, a floating-point sum, and a value of any row of the group. An ORDER BY of
+/// the call's own is no cure, since it need not be total over the group's rows.
+const ORDER_SENSITIVE: &[&str] = &["array_agg", "string_agg", "json_agg", "jsonb_agg", "json_object_agg", "jsonb_object_agg", "json_agg_strict", "jsonb_agg_strict", "json_object_agg_strict", "jsonb_object_agg_strict", "json_object_agg_unique", "jsonb_object_agg_unique", "json_object_agg_unique_strict", "jsonb_object_agg_unique_strict", "xmlagg", "any_value", "sum", "avg", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp", "corr", "covar_pop", "covar_samp", "regr_avgx", "regr_avgy", "regr_intercept", "regr_r2", "regr_slope", "regr_sxx", "regr_sxy", "regr_syy"];
+
+/// Whether a sort key's value for a row is the same on every run over the same data: an output
+/// column ORDER BY names whose entry is one, or an expression of the FROM's columns, each a table's
+/// passed through, that calls nothing volatile, no window function, no subquery and no aggregate
+/// whose value turns on the order of its rows ([`ORDER_SENSITIVE`], and SQL/JSON's
+/// `json_arrayagg` and `json_objectagg`).
+#[allow(clippy::too_many_arguments)]
+fn stable_sort_key(s: &SelectStmt, from: Option<&From>, e: &protobuf::Node, positions: &[Option<usize>], trust: &Trust, catalog: &Catalog, columns: &[(String, bool)]) -> bool {
+    match e.node.as_ref() {
+        Some(NodeEnum::CollateClause(c)) => return c.arg.as_deref().is_some_and(|arg| stable_sort_key(s, from, arg, positions, trust, catalog, columns)),
+        Some(NodeEnum::AConst(k)) => {
+            if let Some(protobuf::a_const::Val::Ival(n)) = &k.val {
+                return usize::try_from(n.ival).ok().and_then(|n| n.checked_sub(1)).is_some_and(|at| stable_output(s, at, trust, catalog));
+            }
+        }
+        Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 1 => {
+            let Some(name) = c.fields.first().and_then(field_name) else { return false };
+            match output_named(s, name, columns) {
+                Output::At(at) => return stable_output(s, at, trust, catalog),
+                Output::Ambiguous => return false,
+                Output::Expanded(_) | Output::None => {}
+            }
+        }
+        _ => {}
+    }
+    from.is_some_and(|from| stable_expression(from, e, trust, catalog))
+}
+
+/// Whether output column `at` of a SELECT holds a value the same on every run, on both sides of a
+/// set operation: its entry is a stable expression ([`stable_sort_key`]). A column past a `*` is
+/// not read.
+fn stable_output(s: &SelectStmt, at: usize, trust: &Trust, catalog: &Catalog) -> bool {
+    if let (Some(left), Some(right)) = (s.larg.as_deref(), s.rarg.as_deref()) {
+        let scoped = catalog.scoped(&with_names(s), s.with_clause.as_ref(), None);
+        return stable_output(left, at, trust, &scoped) && stable_output(right, at, trust, &scoped);
+    }
+    let from = From::read(s, catalog);
+    if from.refused.is_some() {
+        return false;
+    }
+    let Some(t) = target_positions(s).iter().position(|p| *p == Some(at)) else { return false };
+    let Some(NodeEnum::ResTarget(r)) = s.target_list[t].node.as_ref() else { return false };
+    r.val.as_deref().is_some_and(|v| stable_expression(&from, v, trust, catalog))
+}
+
+fn stable_expression(from: &From, e: &protobuf::Node, trust: &Trust, catalog: &Catalog) -> bool {
+    // `json_array(select …)` is a query of its own before analysis makes it a subquery.
+    if mentions_window(e) || mentions(e, "SubLink") || mentions(e, "JsonArrayQueryConstructor") || mentions(e, "JsonArrayAgg") || mentions(e, "JsonObjectAgg") || calls_volatile(e, catalog) {
+        return false;
+    }
+    fn calls(v: &Value, trust: &Trust) -> bool {
+        match v {
+            Value::Object(map) => map.iter().all(|(key, child)| {
+                let ok = match key.as_str() {
+                    "FuncCall" => last_name(child.get("funcname")).is_some_and(|n| trust.builtin(&n) && !ORDER_SENSITIVE.contains(&n.as_str())),
+                    _ => true,
+                };
+                ok && calls(child, trust)
+            }),
+            Value::Array(items) => items.iter().all(|i| calls(i, trust)),
+            _ => true,
+        }
+    }
+    let Ok(tree) = serde_json::to_value(e) else { return false };
+    if !calls(&tree, trust) {
+        return false;
+    }
+    let passed = |i: usize, column: &str| stable_column(from, i, column, trust, catalog);
+    // A column alone is placed as the select list's are, a bare name over one WITH query or
+    // subquery included.
+    if let Some(NodeEnum::ColumnRef(c)) = e.node.as_ref() {
+        return from.place_column(c, catalog).is_some_and(|(i, column)| passed(i, &column));
+    }
+    from.reads(e, catalog).is_some_and(|read| read.iter().all(|(i, column)| column.as_deref().is_some_and(|c| passed(*i, c))))
+}
+
+/// Whether column `column` of item `i` holds a value the same on every run: a table's column passed
+/// through, or a WITH query's or a (not LATERAL) subquery's column whose entry in its statement is
+/// itself a stable expression ([`stable_expression`]), such as a parameter (`with input as (select
+/// :sort::text as sort)`).
+fn stable_column(from: &From, i: usize, column: &str, trust: &Trust, catalog: &Catalog) -> bool {
+    if from.base(i, column, Dialect::Postgres, trust, catalog).is_some() {
+        return true;
+    }
+    // A LATERAL subquery reads the other items of the FROM, whose columns its own statement does
+    // not place.
+    if matches!(from.items[i].source, Source::Subquery(_, true)) {
+        return false;
+    }
+    from.through(i, catalog, |body, scope, columns| {
+        let Some(inner) = inner_name(column, body, columns) else { return false };
+        if body.larg.is_some() || body.rarg.is_some() || !body.values_lists.is_empty() {
+            return false;
+        }
+        let at_this_level = body.target_list.iter().chain(&body.sort_clause).chain(&body.distinct_clause).chain(&body.group_clause);
+        if calls_at_this_level(at_this_level).set_returning(scope).is_some() {
+            return false;
+        }
+        let inner_from = From::read(body, scope);
+        if inner_from.refused.is_some() {
+            return false;
+        }
+        let Named::One(r) = named_entry(body, &inner) else { return false };
+        r.val.as_deref().is_some_and(|v| stable_expression(&inner_from, v, trust, scope))
+    })
+    .unwrap_or(false)
+}
+
+/// Whether output column `at` of a SELECT is a table's column, on both sides of a set operation,
+/// whose order the engine reads as deterministic.
+fn deterministic_output(s: &SelectStmt, at: usize, trust: &Trust, catalog: &Catalog) -> bool {
+    if let (Some(left), Some(right)) = (s.larg.as_deref(), s.rarg.as_deref()) {
+        let scoped = catalog.scoped(&with_names(s), s.with_clause.as_ref(), None);
+        return deterministic_output(left, at, trust, &scoped) && deterministic_output(right, at, trust, &scoped);
+    }
+    let from = From::read(s, catalog);
+    if from.refused.is_some() {
+        return false;
+    }
+    let Some(t) = target_positions(s).iter().position(|p| *p == Some(at)) else { return false };
+    let Some(NodeEnum::ResTarget(r)) = s.target_list[t].node.as_ref() else { return false };
+    let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref().and_then(|v| v.node.as_ref()) else { return false };
+    from.place_column(c, catalog).is_some_and(|(i, column)| deterministic_input(&from, i, &column, trust, catalog))
+}
+
+/// Whether column `column` of item `i` passes through a table's column whose collation the
+/// engine read as deterministic, or that has none.
+fn deterministic_input(from: &From, i: usize, column: &str, trust: &Trust, catalog: &Catalog) -> bool {
+    let Some((relation, base)) = from.base(i, column, Dialect::Postgres, trust, catalog) else { return false };
+    catalog.column_types.get(&relation).is_some_and(|t| t.contains_key(&base)) && !catalog.nondeterministic.get(&relation).is_some_and(|n| n.contains(&base))
+}
+
+/// Whether the sorted columns of the FROM hold a unique key of its rows: a table's key of
+/// `NOT NULL` columns, where every other item is determined against that table and no outer join
+/// null-extends it, or one such key of every item together.
+fn from_ordered(s: &SelectStmt, from: &From, sorted: &HashSet<(usize, String)>, trust: &Trust, catalog: &Catalog) -> bool {
+    if !s.group_clause.is_empty() || !s.values_lists.is_empty() || s.into_clause.is_some() || from.items.is_empty() {
+        return false;
+    }
+    let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+    if calls_at_this_level(at_this_level).set_returning(catalog).is_some() {
+        return false;
+    }
+    let not_null = |relation: &str, column: &str| catalog.not_null.get(relation).is_some_and(|c| c.contains(column));
+    // A table's key, or a key of a view's, a WITH query's or a subquery's rows, each column of it a
+    // table's column passed through unchanged that holds no NULL.
+    let sorted_key = |i: usize| -> bool {
+        from.item_keys(i, Dialect::Postgres, trust, catalog).iter().any(|key| {
+            !key.is_empty() && key.iter().all(|p| !p.name.starts_with('(') && sorted.contains(&(i, p.name.clone())) && not_null(&p.relation, &p.column))
+        })
+    };
+    let n = from.items.len();
+    if (0..n).all(sorted_key) {
+        return true;
+    }
+    let derived = from.derived_keys(Dialect::Postgres, trust, catalog);
+    (0..n).any(|r| {
+        // A LATERAL subquery's rows are computed anew for each row of the rest, so two of them may
+        // share a key.
+        if from.items[r].nullable || matches!(from.items[r].source, Source::Subquery(_, true)) || !sorted_key(r) {
+            return false;
+        }
+        let mut seed = vec![false; n];
+        seed[r] = true;
+        from.determined_from(seed, &derived, false, Dialect::Postgres, trust, catalog).iter().all(|d| *d)
+    })
+}
+
+/// What the oracle runs to check an order the engine says is total: the SELECT `sql` with each sort
+/// key that is no output column (`columns` names them) added to its select list, and for each sort
+/// key in order, the column of the result that holds it. `None` for the statement's text where every
+/// sort key is an output column already, and `None` for the whole where the ORDER BY is not one
+/// that can be read so.
+pub fn sort_probe(sql: &str, columns: &[String]) -> Option<(Option<String>, Vec<usize>)> {
+    crate::stack::run(|| {
+        let parsed = crate::stack::parse(sql).ok()?;
+        let [stmt] = parsed.protobuf.stmts.as_slice() else { return None };
+        let Some(NodeEnum::SelectStmt(select)) = stmt.stmt.as_deref()?.node.as_ref() else { return None };
+        let mut s = (**select).clone();
+        let set_operation = s.larg.is_some() || s.rarg.is_some();
+        let mut at = Vec::new();
+        let mut added = Vec::new();
+        for item in &s.sort_clause {
+            let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { return None };
+            let e = by.node.as_deref()?;
+            let named = match e.node.as_ref() {
+                Some(NodeEnum::AConst(k)) => match &k.val {
+                    Some(protobuf::a_const::Val::Ival(n)) => Some(usize::try_from(n.ival).ok()?.checked_sub(1).filter(|at| *at < columns.len())?),
+                    _ => None,
+                },
+                Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 1 => {
+                    let name = c.fields.first().and_then(field_name)?;
+                    let mut found = columns.iter().enumerate().filter(|(_, n)| n.as_str() == name).map(|(i, _)| i);
+                    match (found.next(), found.next()) {
+                        (Some(i), None) => Some(i),
+                        (Some(_), Some(_)) => return None,
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            match named {
+                Some(i) => at.push(i),
+                None if set_operation => return None,
+                None => {
+                    at.push(columns.len() + added.len());
+                    added.push(e.clone());
+                }
+            }
+        }
+        if added.is_empty() {
+            return Some((None, at));
+        }
+        // Names no output column and no sort key has, so that adding them changes what no name reads.
+        let taken = |name: &str| columns.iter().any(|c| c == name) || serde_json::to_string(&s.sort_clause).is_ok_and(|text| text.contains(&format!("\"{name}\"")));
+        let mut fresh = (0..).map(|n| format!("reylo_sort_{n}")).filter(|n| !taken(n));
+        for e in added {
+            let target = protobuf::ResTarget { name: fresh.next()?, val: Some(Box::new(e)), ..Default::default() };
+            s.target_list.push(protobuf::Node { node: Some(NodeEnum::ResTarget(Box::new(target))) });
+        }
+        Some((Some(deparse_select(&s)?), at))
+    })
+}
+
+/// The names of a SELECT's output columns by position: an alias, or a column's own name, and
+/// `None` for an entry the engine does not name. `None` for the whole where the list holds `*`,
+/// whose width the statement does not say. A set operation's are its first arm's.
+fn output_names(s: &SelectStmt) -> Option<Vec<Option<String>>> {
+    if let Some(left) = s.larg.as_deref() {
+        return output_names(left);
+    }
+    s.target_list
+        .iter()
+        .map(|t| {
+            let Some(NodeEnum::ResTarget(r)) = t.node.as_ref() else { return Some(None) };
+            if !r.name.is_empty() {
+                return Some(Some(r.name.clone()));
+            }
+            match r.val.as_deref().and_then(|v| v.node.as_ref()) {
+                Some(NodeEnum::ColumnRef(c)) if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => None,
+                Some(NodeEnum::ColumnRef(c)) => Some(c.fields.iter().filter_map(field_name).last().map(String::from)),
+                _ => Some(None),
+            }
+        })
+        .collect()
+}
+
+/// A SELECT's output names after a column list renames them by position.
+fn renamed_names(body: &SelectStmt, columns: &[String]) -> Option<Vec<Option<String>>> {
+    let mut names = output_names(body)?;
+    for (at, name) in columns.iter().enumerate() {
+        *names.get_mut(at)? = Some(name.clone());
+    }
+    Some(names)
+}
+
+/// `keys` of a SELECT's rows, each column by the name a column list gives it. A key whose column
+/// the statement's own names do not tell apart is dropped.
+fn renamed_keys(keys: Vec<Key>, body: &SelectStmt, columns: &[String]) -> Vec<Key> {
+    if columns.is_empty() {
+        return keys;
+    }
+    let (Some(names), Some(renamed)) = (output_names(body), renamed_names(body, columns)) else { return Vec::new() };
+    let at = |name: &str| {
+        let mut found = names.iter().enumerate().filter(|(_, n)| n.as_deref() == Some(name)).map(|(i, _)| i);
+        match (found.next(), found.next()) {
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
+    };
+    keys.into_iter()
+        .filter_map(|key| key.into_iter().map(|p| Some(Part { name: renamed.get(at(&p.name)?)?.clone()?, ..p })).collect())
+        .collect()
+}
+
+/// The statement's own name for the column a column list calls `column`.
+fn inner_name(column: &str, body: &SelectStmt, columns: &[String]) -> Option<String> {
+    if columns.is_empty() {
+        return Some(column.to_string());
+    }
+    let (names, renamed) = (output_names(body)?, renamed_names(body, columns)?);
+    let mut found = renamed.iter().enumerate().filter(|(_, n)| n.as_deref() == Some(column)).map(|(i, _)| i);
+    match (found.next(), found.next()) {
+        (Some(i), None) => names.get(i)?.clone(),
+        _ => None,
+    }
 }
 
 /// `f` of a view's defining SELECT, as `pg_get_viewdef` prints it; `None` where it does not parse
@@ -1905,6 +3056,39 @@ fn view_select<T>(definition: &str, f: impl FnOnce(&SelectStmt) -> T) -> Option<
         NodeEnum::SelectStmt(select) => Some(f(select)),
         _ => None,
     }
+}
+
+/// Whether output column `name` of a SELECT certainly carries no nondeterministic collation.
+fn output_is_deterministic(s: &SelectStmt, name: &str, catalog: &Catalog) -> bool {
+    if s.larg.is_some() || s.rarg.is_some() || !s.values_lists.is_empty() {
+        return false;
+    }
+    let from = From::read(s, catalog);
+    if from.refused.is_some() {
+        return false;
+    }
+    s.target_list.iter().any(|target| {
+        let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { return false };
+        let Some(value) = r.val.as_deref() else { return false };
+        if let Some(NodeEnum::ColumnRef(c)) = value.node.as_ref() {
+            if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) {
+                // `*` over one item, or `q.*`, keeps that item's column of the name.
+                let i = match c.fields.len() {
+                    1 if from.items.len() == 1 && !from.natural && from.using.is_empty() => Some(0),
+                    2 => from.items.iter().position(|it| Some(it.alias.as_str()) == c.fields.first().and_then(field_name)),
+                    _ => None,
+                };
+                return i.is_some_and(|i| from.item_column_is_deterministic(i, name, catalog));
+            }
+        }
+        let out = if r.name.is_empty() { implicit_name(value).map(|(n, _)| n) } else { Some(r.name.clone()) };
+        out.as_deref() == Some(name) && !mentions(value, "CollateClause") && serde_json::to_value(value).is_ok_and(|tree| !from.may_bring_collation(&tree, catalog))
+    })
+}
+
+/// Whether a table's or a view's column certainly carries no nondeterministic collation.
+fn relation_column_is_deterministic(catalog: &Catalog, relation: &str, column: &str) -> bool {
+    catalog.column_types.get(relation).is_some_and(|types| types.contains_key(column)) && !catalog.nondeterministic.get(relation).is_some_and(|n| n.contains(column))
 }
 
 /// The table column behind output column `name` of a SELECT, passed through unchanged.
@@ -1953,6 +3137,12 @@ fn not_key_shaped(s: &SelectStmt) -> Option<&'static str> {
 /// The key proof over the whole FROM: every item is determined ([`From`]), so the FROM has one
 /// row at most; or `SELECT DISTINCT` (`DISTINCT ON`) over values that are the same in every row.
 fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
+    // With no FROM there is one row before the WHERE, which only removes it: on Postgres, whose
+    // select list the caller has found no set-returning call in, the statement returns one row
+    // at most (`SELECT 1 WHERE $1`).
+    if s.from_clause.is_empty() && dialect == Dialect::Postgres {
+        return Ok(());
+    }
     if s.from_clause.is_empty() {
         return Err("a SELECT with no FROM and a WHERE can return no row or one, and the engine proves that only through a LIMIT".into());
     }
@@ -1968,7 +3158,26 @@ fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -
     // `DISTINCT ON` when every expression it is distinct on is.
     if !s.distinct_clause.is_empty() {
         let constant = from.determined(true, dialect, trust, catalog);
-        let on: Vec<&protobuf::Node> = s.distinct_clause.iter().filter(|d| d.node.is_some()).collect();
+        // `DISTINCT ON (2)` is distinct on the second output column, and a bare name on the output
+        // column of that name before a column of the FROM, as in ORDER BY.
+        let on: Option<Vec<&protobuf::Node>> = s
+            .distinct_clause
+            .iter()
+            .filter(|d| d.node.is_some())
+            .map(|d| match d.node.as_ref() {
+                Some(NodeEnum::AConst(c)) => match &c.val {
+                    Some(protobuf::a_const::Val::Ival(i)) => output(s, i.ival),
+                    _ => Some(d),
+                },
+                Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 1 => match named_entry(s, c.fields.first().and_then(field_name)?) {
+                    Named::One(r) => r.val.as_deref(),
+                    Named::None => Some(d),
+                    Named::Unknown => None,
+                },
+                _ => Some(d),
+            })
+            .collect();
+        let Some(on) = on else { return Err(from.why_not(&determined, catalog)) };
         let values: Vec<&protobuf::Node> = if on.is_empty() {
             s.target_list
                 .iter()
@@ -1987,12 +3196,16 @@ fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -
     Err(from.why_not(&determined, catalog))
 }
 
-/// Whether `where_clause` pins one row of `rv` by a unique key, as the closure over one relation
-/// does ([`From::single`]).
+/// Whether `where_clause` pins one row of `rv`, an UPDATE's or a DELETE's target, by a unique key,
+/// as the closure over the target and what its FROM or USING joins does ([`From::target`]). The
+/// target alone has to be pinned: a target row that joins several rows is written once, and
+/// returned once.
 fn key_bounds(
     rv: &protobuf::RangeVar,
     with: Option<&protobuf::WithClause>,
     where_clause: Option<&protobuf::Node>,
+    joined: &[protobuf::Node],
+    trust: &Trust,
     catalog: &Catalog,
 ) -> Result<(), String> {
     let relation = catalog_name(rv);
@@ -2002,9 +3215,12 @@ fn key_bounds(
             return Err(format!("`{relation}` here is the WITH query of that name, which has no unique index"));
         }
     }
-    let from = From::single(rv, where_clause, with);
-    let determined = from.determined(false, Dialect::Postgres, &Trust::default(), catalog);
-    if determined.iter().all(|d| *d) {
+    let from = From::target(rv, where_clause, with, joined);
+    if from.refused.is_some() {
+        return Err("a write that joins what the engine does not read returns a row per pair it matches".into());
+    }
+    let determined = from.determined(false, Dialect::Postgres, trust, catalog);
+    if determined.first().copied().unwrap_or(false) {
         Ok(())
     } else {
         Err(from.why_not(&determined, catalog))
@@ -2015,66 +3231,98 @@ fn key_bounds(
 /// of one `VALUES` row is one row (or none under `ON CONFLICT DO NOTHING`); an `UPDATE` or
 /// `DELETE` whose `WHERE` pins a unique key of its one target relation is at most one; anything
 /// else is any number. `None` when the statement is not one of these.
-pub fn dml(sql: &str, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
-    crate::stack::run(|| dml_here(sql, catalog))
+pub fn dml(sql: &str, trust: &Trust, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
+    crate::stack::run(|| dml_here(sql, trust, catalog))
 }
 
-fn dml_here(sql: &str, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
+fn dml_here(sql: &str, trust: &Trust, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
     let parsed = crate::stack::parse(sql).ok()?;
     let mut stmts = parsed.protobuf.stmts;
     if stmts.len() != 1 {
         return None;
     }
     let node = stmts.pop().and_then(|s| s.stmt).and_then(|n| n.node)?;
-    dml_node(&node, catalog)
+    dml_node(&node, trust, catalog)
 }
 
-fn dml_node(node: &NodeEnum, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
+/// How many rows an INSERT's SELECT returns, read with the INSERT's WITH queries in its scope:
+/// `with input as (select :id::int as id) insert … select input.id from input` writes one row.
+fn inserted_rows(i: &protobuf::InsertStmt, s: &SelectStmt, trust: &Trust, catalog: &Catalog) -> Result<Cardinality, String> {
+    const WHY: &str = "an INSERT … SELECT returns a row per row the SELECT produces";
+    let own;
+    let select = match i.with_clause.as_ref() {
+        Some(_) if s.with_clause.is_some() => return Err(WHY.into()),
+        Some(with) => {
+            own = SelectStmt { with_clause: Some(with.clone()), ..s.clone() };
+            &own
+        }
+        None => s,
+    };
+    let catalog = Catalog { row_fields: None, ..catalog.clone() };
+    if exactly_one_select(select, Dialect::Postgres, trust, &catalog).is_ok() {
+        return Ok(Cardinality::One);
+    }
+    at_most_one_select(select, Dialect::Postgres, trust, &catalog).map(|()| Cardinality::AtMostOne).map_err(|_| WHY.to_string())
+}
+
+fn dml_node(node: &NodeEnum, trust: &Trust, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
     Some(match node {
         NodeEnum::InsertStmt(i) => {
             let rows = match i.select_stmt.as_deref().and_then(|n| n.node.as_ref()) {
-                Some(NodeEnum::SelectStmt(s)) if s.values_lists.len() == 1 && s.from_clause.is_empty() => 1,
-                Some(NodeEnum::SelectStmt(s)) if !s.values_lists.is_empty() => s.values_lists.len(),
+                // The server plans a one-row VALUES of an INSERT as a select list: a set-returning
+                // call in it makes a row per value it returns, and none for an empty set, and a
+                // LIMIT or an OFFSET on it may leave no row.
+                Some(NodeEnum::SelectStmt(s)) if s.values_lists.len() == 1 && s.from_clause.is_empty() => {
+                    if let Some(why) = calls_at_this_level(s.values_lists.iter()).set_returning(catalog) {
+                        return Some(Err(why));
+                    }
+                    if limit_keeps_a_row(s) {
+                        Cardinality::One
+                    } else {
+                        Cardinality::AtMostOne
+                    }
+                }
+                Some(NodeEnum::SelectStmt(s)) if !s.values_lists.is_empty() => return Some(Err("a VALUES list returns a row per row it lists".into())),
+                Some(NodeEnum::SelectStmt(s)) => match inserted_rows(i, s, trust, catalog) {
+                    Ok(rows) => rows,
+                    Err(why) => return Some(Err(why)),
+                },
                 // `INSERT … DEFAULT VALUES` has no select at all.
-                None => 1,
+                None => Cardinality::One,
                 _ => return Some(Err("an INSERT … SELECT returns a row per row the SELECT produces".into())),
             };
-            if rows != 1 {
-                return Some(Err("a VALUES list returns a row per row it lists".into()));
-            }
             if rewritten(i.relation.as_ref(), TRIGGER_ROW_INSERT, catalog) {
                 return Some(Err(REWRITTEN.into()));
+            }
+            if rows == Cardinality::AtMostOne {
+                return Some(Ok(Cardinality::AtMostOne));
             }
             // A row trigger that runs BEFORE the insert (or the update ON CONFLICT turns it into)
             // or INSTEAD of it can return NULL, and then the row is neither written nor returned.
             let skipped = |events: i32| i.relation.as_ref().and_then(|rv| catalog.skipping_triggers.get(&catalog_name(rv))).is_some_and(|mask| mask & events != 0);
+            // A `WITH` query that writes may have updated the conflicting row already, and `DO UPDATE` leaves a row this statement has written alone, and returns nothing for it.
+            let written_before = i.with_clause.as_ref().is_some_and(|w| w.ctes.iter().any(|c| matches!(c.node.as_ref(), Some(NodeEnum::CommonTableExpr(cte)) if !matches!(cte.ctequery.as_deref().and_then(|q| q.node.as_ref()), Some(NodeEnum::SelectStmt(_))))));
             match i.on_conflict_clause.as_deref() {
                 Some(c) if c.action == protobuf::OnConflictAction::OnconflictNothing as i32 => Ok(Cardinality::AtMostOne),
                 // `DO UPDATE … WHERE` leaves a conflicting row alone, and returns nothing for it.
-                Some(c) if c.action == protobuf::OnConflictAction::OnconflictUpdate as i32 && (c.where_clause.is_some() || skipped(TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE)) => Ok(Cardinality::AtMostOne),
+                Some(c) if c.action == protobuf::OnConflictAction::OnconflictUpdate as i32 && (c.where_clause.is_some() || written_before || skipped(TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE)) => Ok(Cardinality::AtMostOne),
                 _ if skipped(TRIGGER_ROW_INSERT) => Ok(Cardinality::AtMostOne),
                 _ => Ok(Cardinality::One),
             }
         }
         NodeEnum::UpdateStmt(u) => {
-            if !u.from_clause.is_empty() {
-                return Some(Err("an UPDATE … FROM returns a row per pair it matches".into()));
-            }
             let rv = u.relation.as_ref()?;
             if rewritten(Some(rv), TRIGGER_ROW_UPDATE, catalog) {
                 return Some(Err(REWRITTEN.into()));
             }
-            key_bounds(rv, u.with_clause.as_ref(), u.where_clause.as_deref(), catalog).map(|()| Cardinality::AtMostOne)
+            key_bounds(rv, u.with_clause.as_ref(), u.where_clause.as_deref(), &u.from_clause, trust, catalog).map(|()| Cardinality::AtMostOne)
         }
         NodeEnum::DeleteStmt(d) => {
-            if !d.using_clause.is_empty() {
-                return Some(Err("a DELETE … USING returns a row per pair it matches".into()));
-            }
             let rv = d.relation.as_ref()?;
             if rewritten(Some(rv), TRIGGER_ROW_DELETE, catalog) {
                 return Some(Err(REWRITTEN.into()));
             }
-            key_bounds(rv, d.with_clause.as_ref(), d.where_clause.as_deref(), catalog).map(|()| Cardinality::AtMostOne)
+            key_bounds(rv, d.with_clause.as_ref(), d.where_clause.as_deref(), &d.using_clause, trust, catalog).map(|()| Cardinality::AtMostOne)
         }
         _ => return None,
     })
@@ -2207,7 +3455,50 @@ fn value_type(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&proto
                 None => ValueType::Unnamed,
             }
         }
-        _ => ValueType::Unnamed,
+        _ => built_in_result(value, catalog, type_of).map_or(ValueType::Unnamed, ValueType::Is),
+    }
+}
+
+/// The type a call over values the build types is, where the call can only be the built-in one:
+/// `lower` and `upper` of a string are `text` (an untyped argument takes `lower(text)`, the
+/// string category being the one an unknown argument picks), and `+`, `-`, `*`, `/` and `%` over
+/// integers are the wider integer (`int2 + int4` is `int4`, either side `int8` is `int8`), an
+/// untyped side taking the other's type. Only a name the trust check read and no user or
+/// extension defined, and only where no function of theirs converts a built-in type implicitly,
+/// which a built-in's candidate may run on its operand.
+fn built_in_result(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&protobuf::Node) -> Option<u32>) -> Option<u32> {
+    const INTEGERS: &[u32] = &[oid::INT2, oid::INT4, oid::INT8];
+    let built_in = |name: &str| !catalog.user_operators.contains(name) && catalog.overloads.as_ref().is_some_and(|o| !o.0.casts_implicitly());
+    match value.node.as_ref()? {
+        NodeEnum::FuncCall(f) => {
+            let name = infer::builtin_name(&f.funcname)?;
+            let plain = f.agg_order.is_empty() && f.agg_filter.is_none() && f.over.is_none() && !f.agg_within_group && !f.agg_star && !f.agg_distinct && !f.func_variadic;
+            let [arg] = f.args.as_slice() else { return None };
+            let string = match value_type(arg, catalog, type_of) {
+                ValueType::Adapts => true,
+                ValueType::Is(t) => [oid::TEXT, oid::VARCHAR].contains(&t),
+                ValueType::Unnamed => false,
+            };
+            let named = matches!(arg.node.as_ref(), Some(NodeEnum::NamedArgExpr(_)));
+            (plain && !named && string && ["lower", "upper"].contains(&name.as_str()) && infer::postgres_function_names().contains(&name.as_str()) && built_in(&name)).then_some(oid::TEXT)
+        }
+        NodeEnum::AExpr(e) if e.kind == protobuf::AExprKind::AexprOp as i32 => {
+            let name = infer::builtin_name(&e.name)?;
+            if !["+", "-", "*", "/", "%"].contains(&name.as_str()) || !infer::POSTGRES_OPERATORS.contains(&name.as_str()) || !built_in(&name) {
+                return None;
+            }
+            let side = |n: Option<&protobuf::Node>| match n.map(|n| value_type(n, catalog, type_of)) {
+                Some(ValueType::Is(t)) if INTEGERS.contains(&t) => Some(Some(t)),
+                Some(ValueType::Adapts) => Some(None),
+                _ => None,
+            };
+            match (side(e.lexpr.as_deref())?, side(e.rexpr.as_deref())?) {
+                (Some(l), Some(r)) => INTEGERS.iter().rev().find(|t| **t == l || **t == r).copied(),
+                (Some(t), None) | (None, Some(t)) => Some(t),
+                (None, None) => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -2260,6 +3551,10 @@ fn compatible(column: u32, value: u32) -> bool {
 /// computed from one is computed from the other. Not `numeric` (1 = 1.0, of another scale), not
 /// the floats (0 = -0), and not a string under a nondeterministic collation ('a' = 'A').
 const IDENTITY_TYPES: &[u32] = &[oid::INT2, oid::INT4, oid::INT8, oid::BOOL, oid::UUID, oid::DATE, oid::TIMESTAMP, oid::TIMESTAMPTZ, oid::TEXT, oid::VARCHAR, oid::NAME];
+
+/// Column types that have no collation, so that whatever a comparison's other side carries, the
+/// comparison is the type's own.
+const UNCOLLATED_TYPES: &[u32] = &[oid::BOOL, oid::BYTEA, oid::INT2, oid::INT4, oid::INT8, oid::FLOAT4, oid::FLOAT8, oid::NUMERIC, oid::UUID, oid::DATE, oid::TIME, oid::TIMESTAMP, oid::TIMESTAMPTZ, oid::INTERVAL, oid::JSONB];
 
 /// Whether this column's equality is identity ([`IDENTITY_TYPES`]), as far as the catalog says.
 fn identity(catalog: &Catalog, relation: &str, column: &str) -> bool {
@@ -2355,7 +3650,7 @@ pub fn never_a_row(sql: &str, dialect: Dialect) -> Option<&'static str> {
 /// The one `SELECT` a statement is, parsed as the dialect's statements are read.
 fn one_select(sql: &str, dialect: Dialect) -> Result<Box<SelectStmt>, String> {
     let text = match dialect {
-        Dialect::Postgres => sql.to_string(),
+        Dialect::Postgres | Dialect::Duckdb => sql.to_string(),
         Dialect::Sqlite | Dialect::Mysql => infer::dollar_placeholders(sql),
     };
     let parsed = crate::stack::parse(&text).map_err(|_| match dialect {
@@ -2367,7 +3662,14 @@ fn one_select(sql: &str, dialect: Dialect) -> Result<Box<SelectStmt>, String> {
         return Err("it is not exactly one statement".into());
     }
     match stmts.pop().and_then(|s| s.stmt).and_then(|n| n.node) {
-        Some(NodeEnum::SelectStmt(s)) => Ok(s),
+        Some(NodeEnum::SelectStmt(mut s)) => {
+            // `GROUP BY ()` groups every row into the one empty grouping set, and beside other
+            // grouping items it is the identity of their cross product: dropped, the statement is
+            // the plain aggregate it is (`SELECT count(*) FROM t GROUP BY ()` is one row). Without
+            // an aggregate the statement then reads as ungrouped, which is many rows, never fewer.
+            s.group_clause.retain(|g| !matches!(g.node.as_ref(), Some(NodeEnum::GroupingSet(set)) if set.kind == protobuf::GroupingSetKind::GroupingSetEmpty as i32));
+            Ok(s)
+        }
         _ => Err("only a SELECT is proven".into()),
     }
 }
@@ -2393,6 +3695,8 @@ fn not_one_row_shaped(s: &SelectStmt) -> &'static str {
 struct Calls {
     functions: Vec<String>,
     operators: Vec<String>,
+    /// The last names of `(x).f` and `t.f`, each a field or, where the value has no such field, a call of `f`.
+    attributes: Vec<String>,
 }
 
 impl Calls {
@@ -2405,6 +3709,9 @@ impl Calls {
             if !catalog.functions.contains(name) {
                 return Some(format!("the function {name} is not in the catalog, so the build cannot rule out that it returns a set"));
             }
+        }
+        if let Some(name) = self.attributes.iter().find(|name| catalog.set_returning_attributes.contains(name.as_str())) {
+            return Some(format!("{name} may be a call of the set-returning function of that name, which returns a row per value, and none for an empty set"));
         }
         self.operators
             .iter()
@@ -2451,6 +3758,15 @@ fn walk(v: &Value, calls: &mut Calls) {
                         }
                         walk(child, calls);
                     }
+                    "AIndirection" => {
+                        calls.attributes.extend(child.get("indirection").and_then(Value::as_array).into_iter().flatten().filter_map(|n| n.pointer("/node/String/sval")?.as_str().map(String::from)));
+                        walk(child, calls);
+                    }
+                    "ColumnRef" => {
+                        if child.get("fields").and_then(Value::as_array).is_some_and(|fields| fields.len() > 1) {
+                            calls.attributes.extend(last_name(child.get("fields")));
+                        }
+                    }
                     "AExpr" => {
                         match last_name(child.get("name")) {
                             // `a BETWEEN x AND y` is spelled with the comparisons it expands to.
@@ -2471,6 +3787,47 @@ fn walk(v: &Value, calls: &mut Calls) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_trigger_keeps_the_row_where_every_return_is_a_row() {
+        let (update, insert, delete) = (TRIGGER_ROW_UPDATE, TRIGGER_ROW_INSERT, TRIGGER_ROW_DELETE);
+        // Every RETURN returns the row, whatever else the body does.
+        assert!(keeps_the_row("begin new.at := now(); return new; end", update));
+        assert!(keeps_the_row("begin new.at := now(); return new; end", update | insert));
+        assert!(keeps_the_row("begin if new.a is not distinct from old.a then new.a := now(); end if; return new; end", update));
+        assert!(keeps_the_row("BEGIN RETURN NEW; END", update));
+        assert!(keeps_the_row("declare n alias for new; begin return n; end", update));
+        assert!(keeps_the_row("begin return old; end", update));
+        assert!(keeps_the_row("begin return old; end", delete));
+        assert!(keeps_the_row("begin return old; end", update | delete));
+        // Falling off the end raises, and a raise skips nothing.
+        assert!(keeps_the_row("begin new.at := now(); end", update));
+        assert!(keeps_the_row("begin raise exception 'no'; end", update));
+        // A body in single quotes reads as written.
+        assert!(keeps_the_row("begin new.a := 'it''s'; return new; end", update));
+        // NULL, by name or by value.
+        assert!(!keeps_the_row("begin return null; end", update));
+        assert!(!keeps_the_row("begin if new.a then return null; end if; return new; end", update));
+        assert!(!keeps_the_row("begin perform 1; return new; exception when others then return null; end", update));
+        assert!(!keeps_the_row("declare other record; begin return other; end", update));
+        assert!(!keeps_the_row("begin declare new record; begin return new; end; end", update));
+        assert!(!keeps_the_row("begin return (null::t); end", update));
+        // NEW is NULL on a delete, and OLD on an insert.
+        assert!(!keeps_the_row("begin return new; end", delete));
+        assert!(!keeps_the_row("begin return new; end", update | delete));
+        assert!(!keeps_the_row("begin return old; end", insert));
+        assert!(!keeps_the_row("begin return old; end", insert | update));
+        // The whole record assigned.
+        assert!(!keeps_the_row("begin new := null; return new; end", update));
+        assert!(!keeps_the_row("begin select * into new from t where false; return new; end", update));
+        assert!(!keeps_the_row("begin execute 'select 1' into new; return new; end", update));
+        assert!(!keeps_the_row("begin for new in select * from t loop null; end loop; return new; end", update));
+        assert!(!keeps_the_row("declare c cursor for select 1; begin open c; fetch c into new; return new; end", update));
+        assert!(!keeps_the_row("declare n alias for new; begin n := null; return new; end", update));
+        assert!(!keeps_the_row("begin call p(new); return new; end", update));
+        // What the parser does not read says nothing.
+        assert!(!keeps_the_row("this is not plpgsql", update));
+    }
+
     use super::*;
 
     fn catalog() -> Catalog {
@@ -2663,8 +4020,8 @@ mod tests {
         // A predicate met only in a join's ON clause does not count.
         refused(at("select p.id from users u join posts p on p.score is null where p.title = $1 and u.id = 1"), "of `p`", "the predicate in an ON");
         // A write reads the same keys.
-        assert!(matches!(dml("delete from posts where title = $1 and score is null returning id", &c), Some(Ok(_))));
-        assert!(matches!(dml("delete from posts where title = $1 returning id", &c), Some(Err(_))));
+        assert!(matches!(dml("delete from posts where title = $1 and score is null returning id", &Trust::default(), &c), Some(Ok(_))));
+        assert!(matches!(dml("delete from posts where title = $1 returning id", &Trust::default(), &c), Some(Err(_))));
     }
 
     #[test]
@@ -2676,7 +4033,7 @@ mod tests {
         // A function the catalog does not know may be volatile.
         refused(at("select email from users where id = nextval('s')"), "does not equate every column", "nextval");
         refused(at("select author_id, count(*) from posts where author_id = random()::int group by author_id"), "GROUP BY", "group by random");
-        assert!(matches!(dml("delete from users where id = random()::int returning id", &c), Some(Err(_))));
+        assert!(matches!(dml("delete from users where id = random()::int returning id", &Trust::default(), &c), Some(Err(_))));
         assert_eq!(at("select id from users where email = lower($1)"), Ok(()));
     }
 
@@ -2738,38 +4095,46 @@ mod tests {
     }
 
     #[test]
-    fn a_with_query_of_an_enclosing_statement_shadows_the_table_inside_it() {
-        let c = joined();
-        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
-        // A subquery, a WITH query's body and a set operation's arm are proven on their own, and
-        // still read `users` as the WITH query of that name, which has no key.
-        for sql in [
-            "select t.id from (with users as (select 1::int8 as id union all select 1) select * from (select id from users where id = 1) s) t, users u where u.id = 1",
-            "with users as (select 1::int8 as id union all select 1), x as (select id from users where id = 1) select x.id from x",
-            "with users as (select 1::int8 as id union all select 1) select id from users where id = 1 intersect all select id from posts",
-            "with users as (select 1::int8 as id union all select 1) select s.id from (select id from users where id = 1) s",
-        ] {
-            refused(at(sql), "", sql);
-        }
-        assert_eq!(at("with one as (select 1 as n) select s.id from (select id from users where id = 1) s"), Ok(()));
-    }
-
-    #[test]
-    fn a_column_merged_by_using_and_a_qualified_name_are_neither_sides_key() {
-        let mut c = joined();
-        c.unique_keys.insert("ua".into(), vec![vec!["id".into()], vec!["k".into()]]);
-        c.unique_keys.insert("ub".into(), vec![vec!["id".into()], vec!["k".into()]]);
+    fn a_value_that_may_carry_a_nondeterministic_collation_pins_no_key_under_another() {
+        let mut c = catalog();
+        c.unique_keys.insert("ck_u".into(), vec![vec!["code".into()], vec!["id".into()]]);
+        c.unique_keys.insert("ck_t".into(), vec![vec!["id".into()], vec!["ci".into()]]);
         let columns = |cols: &[(&str, u32)]| cols.iter().map(|(n, t)| (n.to_string(), *t)).collect();
-        c.column_types.insert("ua".into(), columns(&[("id", oid::INT8), ("k", oid::FLOAT8)]));
-        c.column_types.insert("ub".into(), columns(&[("id", oid::INT8), ("k", oid::NUMERIC)]));
-        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
-        // The merged `k` is `ua.k` compared with `ub.k` converted to float8, which maps two
-        // numerics to one value.
-        refused(at("select ua.id, ub.id from ua join ub using (k) where k = '0.1'"), "a join returns a row per pair", "using");
-        refused(at("select ua.id, ub.id from ua natural join ub where k = '0.1'"), "a join returns a row per pair", "natural");
-        // A schema-qualified name is the table, never the WITH query of that name.
-        refused(at("with users as (select count(*) as n from users) select id from public.users"), "public.users", "with");
-        assert!(exactly_one("with users as (select count(*) as n from users) select id from public.users", Dialect::Postgres, &Trust::default(), &c).is_err());
+        c.column_types.insert("ck_u".into(), columns(&[("id", oid::INT4), ("code", oid::TEXT)]));
+        c.column_types.insert("ck_t".into(), columns(&[("id", oid::INT4), ("ci", oid::TEXT), ("plain", oid::TEXT)]));
+        c.nondeterministic.insert("ck_t".into(), ["ci".to_string()].into_iter().collect());
+        c.functions.extend(["lower".to_string(), "my_value".to_string(), "length".to_string()]);
+        let at = |sql: &str, c: &Catalog| at_most_one(sql, Dialect::Postgres, &Trust::default(), c);
+        let carried = [
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.code = t.ci",
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.code = lower(t.ci)",
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.code = t.ci || ''",
+            "select id from ck_u where code = (select plain from ck_t where id = 1)",
+            "select u.id from (select ci from ck_t where id = 1) t, ck_u u where u.code = t.ci",
+            "select u.id from (select 'a' collate ci as c) t, ck_u u where u.code = t.c",
+            "select id from ck_u where code = $1::ci_text",
+            "select id from ck_u where code = my_value()",
+        ];
+        for sql in carried {
+            refused(at(sql, &c), "", sql);
+        }
+        for sql in [
+            "select id from ck_u where code = $1",
+            "select id from ck_u where code = 'a'",
+            "select id from ck_u where code = $1::text",
+            "select id from ck_u where code = lower($1::text)",
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.code = t.plain",
+            "select u.id from (select plain from ck_t where id = 1) t, ck_u u where u.code = t.plain",
+            // A key under the collation itself holds to its equality, and an integer has none.
+            "select t.id from ck_t t, ck_u u where u.id = 1 and t.ci = u.code",
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.id = length(t.ci)",
+        ] {
+            assert_eq!(at(sql, &c), Ok(()), "{sql}");
+        }
+        // A database that holds no nondeterministic collation has no value to carry one.
+        c.nondeterministic.clear();
+        c.deterministic_only = true;
+        assert_eq!(at("select id from ck_u where code = my_value()", &c), Ok(()));
     }
 
     fn at_most(sql: &str) -> Result<(), String> {
@@ -2779,28 +4144,30 @@ mod tests {
     #[test]
     fn an_insert_of_one_row_returns_it_unless_something_can_skip_it() {
         let c = catalog();
-        assert_eq!(dml("insert into users (email) values ($1) returning id", &c), Some(Ok(Cardinality::One)));
-        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do nothing returning id", &c), Some(Ok(Cardinality::AtMostOne)));
-        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &c), Some(Ok(Cardinality::One)));
+        assert_eq!(dml("insert into users (email) values ($1) returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
+        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do nothing returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
         // `DO UPDATE … WHERE` leaves a conflicting row alone and returns nothing for it.
-        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email where users.id > 1 returning id", &c), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("with u as (update users set email = $1 returning id) insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("with u as (select 1) insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
+        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email where users.id > 1 returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
         // A row trigger that runs BEFORE the insert can return NULL; one on UPDATE matters only
         // where ON CONFLICT turns the insert into an update.
         let mut triggered = catalog();
         triggered.skipping_triggers.insert("users".into(), TRIGGER_ROW_INSERT);
-        assert_eq!(dml("insert into users (email) values ($1) returning id", &triggered), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("insert into users (email) values ($1) returning id", &Trust::default(), &triggered), Some(Ok(Cardinality::AtMostOne)));
         triggered.skipping_triggers.insert("users".into(), TRIGGER_ROW_UPDATE);
-        assert_eq!(dml("insert into users (email) values ($1) returning id", &triggered), Some(Ok(Cardinality::One)));
-        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &triggered), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("insert into users (email) values ($1) returning id", &Trust::default(), &triggered), Some(Ok(Cardinality::One)));
+        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &triggered), Some(Ok(Cardinality::AtMostOne)));
         // A rewrite rule replaces the write with actions of its own, and a view hands it to a
         // table whose triggers and rules the catalog did not read: any number of rows.
         let mut ruled = catalog();
         ruled.rewritten.insert("users".into(), TRIGGER_ROW_INSERT);
-        assert!(matches!(dml("insert into users (email) values ($1) returning id", &ruled), Some(Err(_))));
-        assert_eq!(dml("delete from users where id = $1 returning id", &ruled), Some(Ok(Cardinality::AtMostOne)));
+        assert!(matches!(dml("insert into users (email) values ($1) returning id", &Trust::default(), &ruled), Some(Err(_))));
+        assert_eq!(dml("delete from users where id = $1 returning id", &Trust::default(), &ruled), Some(Ok(Cardinality::AtMostOne)));
         ruled.rewritten.insert("users".into(), TRIGGER_ROW_DELETE | TRIGGER_ROW_UPDATE);
-        assert!(matches!(dml("delete from users where id = $1 returning id", &ruled), Some(Err(_))));
-        assert!(matches!(dml("update users set email = $2 where id = $1 returning id", &ruled), Some(Err(_))));
+        assert!(matches!(dml("delete from users where id = $1 returning id", &Trust::default(), &ruled), Some(Err(_))));
+        assert!(matches!(dml("update users set email = $2 where id = $1 returning id", &Trust::default(), &ruled), Some(Err(_))));
     }
 
     #[test]
@@ -2880,14 +4247,6 @@ mod tests {
     }
 
     #[test]
-    fn a_limit_with_ties_bounds_nothing() {
-        assert!(at_most("select id from users order by email fetch first 1 rows only").is_ok());
-        assert!(at_most("select id from users order by email limit 1").is_ok());
-        // Every row that ties with the first comes along.
-        assert!(at_most("select id from users order by email fetch first 1 rows with ties").is_err());
-    }
-
-    #[test]
     fn grouped_by_a_pinned_relation_is_one_group() {
         assert!(at_most("select u.id, count(p.id) from users u left join posts p on p.user_id = u.id where u.id = $1 group by u.id").is_ok());
         assert!(at_most("select u.id, u.name, count(*) from users u join posts p on p.user_id = u.id where u.id = $1 and p.title = $2 group by u.id, u.name having count(*) > 1").is_ok());
@@ -2964,39 +4323,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_subquery_a_with_query_or_a_view_is_pinned_by_a_key_of_its_rows() {
-        let mut c = stock();
-        c.views.insert("open_todos".into(), "SELECT id, title FROM todos WHERE done = false".into());
-        let at_most = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
-        for sql in [
-            "select * from (select id, title from todos) s where s.id = $1",
-            "with s as (select id, title from todos) select * from s where s.id = $1",
-            "select * from (select id as todo_id from todos) s where s.todo_id = $1",
-            "select * from (select * from (select id from todos) a) b where b.id = $1",
-            "select * from (select id from todos order by id limit 10) s where s.id = $1",
-            "select * from (select t.id, u.email from todos t join users u on u.id = t.owner_id) s where s.id = $1",
-            "select * from (select t.owner_id, count(*) as n from todos t group by t.owner_id) s where s.owner_id = $1",
-            "select * from (select distinct t.owner_id from todos t) s where s.owner_id = $1",
-            "select * from (select org_id, user_id from org_members) s where s.org_id = $1 and s.user_id = $2",
-            "select * from open_todos where id = $1",
-        ] {
-            assert_eq!(at_most(sql), Ok(()), "{sql}");
-        }
-        for sql in [
-            "select * from (select title from todos) s where s.title = $1",
-            "select * from (select id + 0 as id from todos) s where s.id = $1",
-            "select * from (select id from todos union all select id from todos) s where s.id = $1",
-            "select * from (select id, generate_series(1, 2) as n from todos) s where s.id = $1",
-            "select * from (select t.id from todos t cross join users u) s where s.id = $1",
-            "select * from (select org_id, user_id from org_members) s where s.org_id = $1",
-            "select * from (select owner_id, count(*) as n from todos group by rollup (owner_id)) s where s.owner_id = $1",
-            "select s.id from users u cross join lateral (select t.id, u.id as uid from todos t) s where u.id = s.uid and s.id = $1",
-        ] {
-            assert!(at_most(sql).is_err(), "{sql}");
-        }
-    }
-
     fn pg(sql: &str) -> Result<(), String> {
         exactly_one(sql, Dialect::Postgres, &Trust::default(), &stock())
     }
@@ -3046,6 +4372,34 @@ mod tests {
     fn a_where_with_no_from_can_remove_the_row() {
         refused(pg("SELECT 1 AS authorized WHERE $1 = 1"), "a WHERE with no FROM can remove the row", "pg");
         refused(lite("SELECT 1 AS authorized WHERE ?1 = 1"), "a WHERE with no FROM can remove the row", "sqlite");
+        // It can only remove the one row, so on Postgres it is one row at most, unless a call at
+        // its level returns a set.
+        let most = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &stock());
+        assert_eq!(most("SELECT 1 AS authorized WHERE $1 = 1"), Ok(()));
+        refused(most("SELECT generate_series(1, 3) AS g WHERE $1 = 1"), "set-returning function", "generate_series");
+        assert!(at_most_one("SELECT 1 AS authorized WHERE ?1 = 1", Dialect::Sqlite, &Trust::default(), &Catalog::default()).is_err());
+    }
+
+    #[test]
+    fn an_empty_grouping_set_is_one_group() {
+        // `GROUP BY ()` is the aggregate without it: one row, even over no rows, and a HAVING can
+        // remove it. Beside another grouping item it changes nothing.
+        let c = stock();
+        assert_eq!(exactly_one("SELECT count(*) AS n FROM pg_class WHERE false GROUP BY ()", Dialect::Postgres, &Trust::default(), &c), Ok(()));
+        assert!(exactly_one("SELECT count(*) AS n FROM pg_class GROUP BY () HAVING count(*) > 1", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("SELECT relkind, count(*) AS n FROM pg_class GROUP BY relkind, ()", Dialect::Postgres, &Trust::default(), &c).is_err());
+        // Without an aggregate it reads as ungrouped: many rows, never fewer than it returns.
+        assert!(at_most_one("SELECT 1 AS x FROM pg_class GROUP BY ()", Dialect::Postgres, &Trust::default(), &c).is_err());
+    }
+
+    #[test]
+    fn an_attribute_may_be_a_call_of_a_set_returning_function() {
+        let mut catalog = stock();
+        catalog.set_returning_attributes.insert("jsonb_object_keys".into());
+        let one = |sql: &str| exactly_one(sql, Dialect::Postgres, &Trust::default(), &catalog);
+        refused(one("SELECT ('{}'::jsonb).jsonb_object_keys AS k"), "set-returning function", "field notation");
+        refused(one("SELECT count(*) AS n, t.jsonb_object_keys AS k FROM t"), "set-returning function", "a qualified name");
+        assert!(one("SELECT ('{}'::jsonb).other AS k").is_ok());
     }
 
     #[test]
@@ -3447,5 +4801,141 @@ mod tests {
         for sql in ["SELECT 1 AS x", "SELECT 1 AS x LIMIT 1", "SELECT 1 AS x LIMIT $1", "SELECT 1 AS x LIMIT ALL", "SELECT 1 AS x OFFSET 1", "SELECT 1 AS x WHERE false"] {
             assert_eq!(never_a_row(sql, Dialect::Postgres), None, "{sql}");
         }
+    }
+
+    /// The result key of `sql` over `joined()` of fewest columns, its output columns named and
+    /// nullable as given.
+    fn key_of(sql: &str, columns: &[(&str, bool)]) -> Option<Vec<String>> {
+        let columns: Vec<(String, bool)> = columns.iter().map(|(n, nullable)| (n.to_string(), *nullable)).collect();
+        result_keys(sql, &Trust::default(), &joined(), &columns, &vec![true; columns.len()]).into_iter().min_by_key(Vec::len)
+    }
+
+    #[test]
+    fn a_unique_key_in_the_output_and_never_null_identifies_each_row() {
+        let key = |cols: &[&str]| Some(cols.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+        assert_eq!(key_of("select u.id, u.name from users u", &[("id", false), ("name", true)]), key(&["id"]));
+        assert_eq!(key_of("select u.email, u.name from users u", &[("email", false), ("name", true)]), key(&["email"]));
+        // A unique index lets NULLs repeat.
+        assert_eq!(key_of("select u.email, u.name from users u", &[("email", true), ("name", true)]), None);
+        // A join to one row at most keeps the key; one to many repeats it.
+        assert_eq!(key_of("select p.id, u.name from posts p join users u on u.id = p.author_id", &[("id", false), ("name", true)]), key(&["id"]));
+        assert_eq!(key_of("select u.id, p.title from users u join posts p on p.author_id = u.id", &[("id", false), ("title", true)]), None);
+        assert_eq!(key_of("select u.id as uid, p.id as pid from users u join posts p on p.author_id = u.id", &[("uid", false), ("pid", false)]), key(&["pid"]));
+        // A key of every item together.
+        assert_eq!(key_of("select u.id as uid, c.id as cid from users u cross join comments c", &[("uid", false), ("cid", false)]), key(&["uid", "cid"]));
+        assert_eq!(key_of("select u.id, c.body from users u cross join comments c", &[("id", false), ("body", true)]), None);
+        // A key whose column shares its name with another output column names no column.
+        assert_eq!(key_of("select u.id, p.id from users u join posts p on p.id = u.id", &[("id", false), ("id", false)]), None);
+        // A LIMIT keeps the key.
+        assert_eq!(key_of("select u.id from users u order by u.id limit 5", &[("id", false)]), key(&["id"]));
+    }
+
+    #[test]
+    fn grouping_distinct_and_set_operations_make_their_own_keys() {
+        let key = |cols: &[&str]| Some(cols.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+        // One row per group, a group of NULLs included.
+        assert_eq!(key_of("select p.title, count(*) as n from posts p group by p.title", &[("title", true), ("n", false)]), key(&["title"]));
+        assert_eq!(key_of("select p.title, count(*) as n from posts p group by 1", &[("title", true), ("n", false)]), key(&["title"]));
+        assert_eq!(key_of("select count(*) as n from posts p group by p.title", &[("n", false)]), None);
+        assert_eq!(key_of("select p.title, count(*) as n from posts p group by rollup (p.title)", &[("title", true), ("n", false)]), None);
+        assert_eq!(key_of("select distinct p.title, p.score from posts p", &[("title", true), ("score", true)]), key(&["title", "score"]));
+        assert_eq!(key_of("select distinct on (p.author_id) p.author_id, p.title from posts p", &[("author_id", false), ("title", true)]), key(&["author_id"]));
+        // In DISTINCT ON, as in ORDER BY, a bare name is an output column's before a table's.
+        assert_eq!(key_of("select distinct on (title) p.author_id as title, p.title as t from posts p", &[("title", false), ("t", true)]), key(&["title"]));
+        assert_eq!(key_of("select p.title from posts p union select u.name from users u", &[("title", true)]), key(&["title"]));
+        assert_eq!(key_of("select p.title from posts p union all select u.name from users u", &[("title", true)]), None);
+        assert_eq!(key_of("select p.id from posts p except all select u.id from users u", &[("id", false)]), key(&["id"]));
+        // A side converted to a common type may make two of its keys equal.
+        assert_eq!(key_of("select p.id from posts p except all select 0::float8 where false", &[("id", false)]), None);
+        assert_eq!(key_of("select p.id from posts p except all select p.score from posts p", &[("id", false)]), None);
+        assert_eq!(key_of("select * from (values (1), (1)) v (x)", &[("x", true)]), None);
+    }
+
+    #[test]
+    fn a_bare_name_in_distinct_on_is_the_output_column_of_that_name() {
+        // DISTINCT ON (title) keeps a row per author here, so the subquery's rows share a `t2`.
+        let mut c = joined();
+        c.unique_keys.insert("posts".into(), vec![vec!["id".into()]]);
+        assert!(at_most_one("select s.t2 from (select distinct on (title) p.author_id as title, p.title as t2 from posts p order by title) s where s.t2 = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select s.t2 from (select distinct on (p.title) p.author_id as title, p.title as t2 from posts p order by p.title) s where s.t2 = $1", Dialect::Postgres, &Trust::default(), &c).is_ok());
+        // A position counts the entries of the select list only before a `*`.
+        assert!(at_most_one("select s.a from (select distinct on (2) p.*, p.title as a from posts p) s where s.a = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
+        // An integer in DISTINCT ON is a position, not a value every row shares.
+        assert!(at_most_one("select distinct on (2) p.id, p.title from posts p", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select distinct on (2) p.*, p.id from posts p", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select p.*, p.title as t from posts p where p.title = $1 group by 2", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select p.title, p.id from posts p where p.title = $1 group by 1", Dialect::Postgres, &Trust::default(), &c).is_ok());
+        // The same reading in the statement's own cardinality: `title` is the output column, `author_id`.
+        assert!(at_most_one("select distinct on (title) p.author_id as title from posts p where p.title = $1 order by title", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select distinct on (title) p.title from posts p where p.title = $1", Dialect::Postgres, &Trust::default(), &c).is_ok());
+        // `(p).*` expands to columns the statement does not count, as `p.*` does.
+        assert!(at_most_one("select distinct on (2) (p).*, p.title as t from posts p where p.title = $1 order by 2", Dialect::Postgres, &Trust::default(), &c).is_err());
+        // A composite's fields may carry the name, which the engine does not read.
+        assert!(at_most_one("select distinct on (title) (p).* from posts p where p.title = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select distinct on (title) p.* from posts p where p.title = $1", Dialect::Postgres, &Trust::default(), &c).is_ok());
+        // A cast with no name of its own is named after its type, so `text` here is the cast.
+        assert!(at_most_one("select s.x from (select distinct on (text) (p.id + 0)::text, p.title as x from (select id, title, title as text from posts) p order by text) s where s.x = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
+    }
+
+    /// Whether `sql`'s order is total over `joined()`, whose keys hold no NULL, its output columns
+    /// named and nullable as given, none of a type without a collation.
+    fn ordered_of(sql: &str, columns: &[(&str, bool)]) -> bool {
+        let mut c = joined();
+        for (relation, cols) in [("users", &["id", "email"][..]), ("posts", &["id", "author_id"][..]), ("comments", &["id"][..]), ("profiles", &["user_id"][..])] {
+            c.not_null.insert(relation.into(), cols.iter().map(|c| c.to_string()).collect());
+        }
+        let columns: Vec<(String, bool)> = columns.iter().map(|(n, nullable)| (n.to_string(), *nullable)).collect();
+        total_order(sql, &Trust::default(), &c, &columns, &vec![false; columns.len()])
+    }
+
+    #[test]
+    fn an_order_is_total_where_its_sort_keys_hold_a_unique_key() {
+        assert!(ordered_of("select u.id, u.name from users u order by u.id", &[("id", false), ("name", true)]));
+        assert!(ordered_of("select u.name from users u order by u.email desc", &[("name", true)]));
+        assert!(ordered_of("select p.title from posts p order by p.title, p.id", &[("title", true)]));
+        assert!(ordered_of("select p.title, u.name from posts p join users u on u.id = p.author_id order by p.id", &[("title", true), ("name", true)]));
+        assert!(ordered_of("select u.name, p.title from users u join posts p on p.author_id = u.id order by u.id, p.id", &[("name", true), ("title", true)]));
+        assert!(ordered_of("select p.author_id, count(*) as n from posts p group by p.author_id order by 1", &[("author_id", false), ("n", false)]));
+        assert!(ordered_of("select p.title from posts p union select u.name from users u order by title", &[("title", true)]));
+        assert!(ordered_of("select p.id, p.title from posts p order by p.id limit 5 offset 2", &[("id", false), ("title", true)]));
+        assert!(ordered_of("select s.title from (select p.id, p.title from posts p) s order by s.id", &[("title", true)]));
+        assert!(!ordered_of("select p.id, p.title from posts p", &[("id", false), ("title", true)]));
+        assert!(!ordered_of("select p.title from posts p order by p.title", &[("title", true)]));
+        assert!(!ordered_of("select u.name, p.title from users u join posts p on p.author_id = u.id order by u.id", &[("name", true), ("title", true)]));
+        assert!(!ordered_of("select u.name from users u left join profiles pr on pr.user_id = u.id order by pr.user_id", &[("name", true)]));
+        assert!(!ordered_of("select p.title from posts p union all select u.name from users u order by 1", &[("title", true)]));
+        // A sort key under another ordering than its column's, or an expression, counts for nothing.
+        assert!(!ordered_of("select u.id from users u order by u.email collate ci", &[("id", false)]));
+        assert!(!ordered_of("select u.id from users u order by u.id using >", &[("id", false)]));
+        assert!(!ordered_of("select p.id from posts p order by p.id + 0", &[("id", false)]));
+        // A bare name is the output column of that name first.
+        assert!(!ordered_of("select p.title as id, p.id as post_id from posts p order by id", &[("id", true), ("post_id", false)]));
+        // A sort key whose value may change from run to run reorders rows that do not tie.
+        assert!(!ordered_of("select u.id from users u order by random(), u.id", &[("id", false)]));
+        assert!(!ordered_of("select p.id from posts p order by row_number() over (), p.id", &[("id", false)]));
+        assert!(!ordered_of("select p.author_id, string_agg(p.title, ',') as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
+        assert!(!ordered_of("select p.author_id, string_agg(p.title, ',' order by p.score) as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
+        assert!(!ordered_of("select p.author_id, json_arrayagg(p.title returning jsonb) as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
+        assert!(ordered_of("select p.author_id, count(*) as n from posts p group by p.author_id order by n desc, p.author_id", &[("author_id", false), ("n", false)]));
+        assert!(!ordered_of("select p.id from posts p order by json_array(select q.title from posts q where q.author_id = p.author_id returning jsonb), p.id", &[("id", false)]));
+        // A WITH query's column computed from a parameter is the same on every run.
+        assert!(ordered_of("with input as (select $1::text as sort) select u.id, u.name from users u, input order by case when input.sort = 'name' then u.name end, u.id", &[("id", false), ("name", true)]));
+        assert!(!ordered_of("with input as (select random() as r) select u.id from users u, input order by input.r, u.id", &[("id", false)]));
+        assert!(!ordered_of("select p.id from posts p, (select random() - 0.5 as r) x, lateral (select p.score * x.r as n) t order by t.n, p.id", &[("id", false)]));
+        // A name a `*` expands to is the FROM's column of that name.
+        assert!(ordered_of("select * from users u order by email", &[("id", false), ("email", false), ("name", true), ("pinned_post", true)]));
+    }
+
+    #[test]
+    fn a_sort_probe_selects_each_sort_key_that_is_no_output_column() {
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(sort_probe("select id, title from posts order by 2, id", &names(&["id", "title"])), Some((None, vec![1, 0])));
+        let (text, at) = sort_probe("select title from posts order by score desc, id", &names(&["title"])).unwrap();
+        assert_eq!(at, vec![1, 2]);
+        assert!(text.unwrap().contains("score AS reylo_sort_0, id AS reylo_sort_1"));
+        assert_eq!(sort_probe("select title from posts union select name from users order by p.title", &names(&["title"])), None);
+        // An added column takes a name no output column and no sort key has.
+        let (text, _) = sort_probe("select title as reylo_sort_0 from posts order by id, reylo_sort_0", &names(&["reylo_sort_0"])).unwrap();
+        assert!(text.unwrap().contains("id AS reylo_sort_1"));
     }
 }

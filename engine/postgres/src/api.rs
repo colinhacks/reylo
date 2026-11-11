@@ -1,5 +1,5 @@
 //! The Postgres side of the request protocol ([`reylo_engine_core::api`]): what a describe is
-//! answered with, and [`Postgres`], whose round settles what the server's `pgreylo` extension
+//! answered with, and [`Postgres`], whose round settles what a server-side extension
 //! offers before the statement asks for anything ([`crate::extension`]).
 
 use crate::extension::{self, Server};
@@ -33,6 +33,10 @@ pub struct RawColumn {
     pub table: u32,
     #[serde(default)]
     pub attnum: i32,
+    /// The column's type modifier as RowDescription reports it (`varchar(20)`, `numeric(10,2)`);
+    /// -1, none, where the host sends none.
+    #[serde(default = "crate::pgtypes::no_typmod")]
+    pub typmod: i32,
 }
 
 /// Postgres, for [`reylo_engine_core::api::call`].
@@ -43,7 +47,7 @@ impl Database for Postgres {
     const FINGERPRINT: &'static str = crate::FINGERPRINT;
     type Describe = RawDescribe;
 
-    /// Never probes for `pgreylo`: the extension itself calls this, and an engine in the server
+    /// Never probes for a server-side extension: the extension itself calls this, and an engine in the server
     /// that asked the server's engine would not end.
     fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         crate::postgres::analyze(sql, host)
@@ -51,8 +55,11 @@ impl Database for Postgres {
 
     /// The tables libpg_query reads in the statement as it runs.
     fn tables(analysis: &Analysis) -> Option<Tables> {
+        if analysis.tables.is_some() {
+            return analysis.tables.clone();
+        }
         let parsed = crate::analyze::analyze(&analysis.rewritten.sql).ok()?;
-        Some(Tables { read: parsed.read_set, write: parsed.write_set })
+        Some(Tables { read: parsed.read_set, write: parsed.write_set, ..Default::default() })
     }
 
     /// The constraint errors the statement may raise, where it runs only the server's own code.
@@ -60,38 +67,47 @@ impl Database for Postgres {
         crate::errors::errors(analysis, host)
     }
 
-    /// One round of the replay, through the server's `pgreylo` extension where there is one: the
+    /// Whether the engine finds nothing in the statement that could write.
+    fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+        crate::errors::read_only(analysis, host)
+    }
+
+    /// One round of the replay, through the server's extension where there is one: the
     /// whole analysis from a server with this engine inside, a round's needs in one query from a
     /// server with another build, and the needs as they are otherwise.
     fn round(sql: &str, answers: &Answers) -> Response {
-        let host = Host::new(answers);
-        // What the server offers is settled before the statement asks for anything: were the
-        // statement's own needs asked in the same round, a statement that settles in one round would
-        // be done before the answer came, and the extension would never be used.
-        let Some(server) = extension::server(&host) else { return Response::Need { needs: host.needs() } };
-        // A structured parameter, a typed JSON one and a cast to `nullable(…)` are expanded before
-        // the analysis, and the server's answer carries neither the expansion nor the lists the
-        // run time writes again, so such a statement is analyzed here, with the server answering
-        // its needs.
-        if server == Server::Same && !reylo_engine_core::structured::present(sql, Dialect::Postgres) {
-            match extension::analyze(sql, &host) {
-                Some(Some(analysis)) => return with_facts::<Postgres>(analysis, &host),
-                Some(None) => {}
-                None => return Response::Need { needs: host.needs() },
-            }
-        }
-        match Self::analyze(sql, &host) {
-            Some(analysis) => with_facts::<Postgres>(analysis, &host),
-            None => {
-                let needs = host.needs();
-                let bundled = matches!(server, Server::Same | Server::Other { answers: true }) && !extension::bundle_failed(&needs, answers);
-                Response::Need { needs: if bundled { extension::bundle(needs) } else { needs } }
-            }
-        }
+        round_of(sql, answers)
     }
 
     fn unbundle(answers: &mut Answers) {
         extension::unbundle(answers)
+    }
+}
+
+fn round_of(sql: &str, answers: &Answers) -> Response {
+    let host = Host::new(answers);
+    // What the server offers is settled before the statement asks for anything: were the
+    // statement's own needs asked in the same round, a statement that settles in one round would
+    // be done before the answer came, and the extension would never be used.
+    let Some(server) = extension::server(&host) else { return Response::Need { needs: host.needs() } };
+    // A structured parameter, a typed JSON one and a cast to `nullable(…)` are expanded before
+    // the analysis, and the server's answer carries neither the expansion nor the lists the
+    // run time writes again, so such a statement is analyzed here, with the server answering
+    // its needs.
+    if server == Server::Same && !reylo_engine_core::structured::present(sql, Dialect::Postgres) {
+        match extension::analyze(sql, &host) {
+            Some(Some(analysis)) => return with_facts::<Postgres>(analysis, &host),
+            Some(None) => {}
+            None => return Response::Need { needs: host.needs() },
+        }
+    }
+    match Postgres::analyze(sql, &host) {
+        Some(analysis) => with_facts::<Postgres>(analysis, &host),
+        None => {
+            let needs = host.needs();
+            let bundled = matches!(server, Server::Same | Server::Other { answers: true }) && !extension::bundle_failed(&needs, answers);
+            Response::Need { needs: if bundled { extension::bundle(needs) } else { needs } }
+        }
     }
 }
 

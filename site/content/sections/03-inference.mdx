@@ -2,7 +2,6 @@
 title: "Inference"
 ---
 
-## Inference
 
 Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
 
@@ -22,7 +21,7 @@ To type a query, Reylo has your live database prepare it, without running it, an
 
 <Details summary="The TypeScript type of each SQL type, in each dialect" id="data-types">
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`.
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
 
 <DialectTabs>
 <Dialect value="Postgres">
@@ -41,15 +40,17 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 | `timestamptz` | `string`, the instant in UTC, as `2026-10-20T08:00:00.123456Z` |
 | `time`, `timetz` | `string` |
 | `interval` | `string`, an ISO 8601 duration, as `P1DT2H3M4S` |
-| `json`, `jsonb` | [typed by its schema or the query](#json) |
+| `json`, `jsonb` | `Json`, any JSON value, unless [its schema or the query](#json) types it |
 | `bytea` | `Uint8Array` |
 | An array | an array of its element type, a `NULL` element `null` |
 | An enum | the union of its labels |
 | A domain | its base type |
-| A row value | `string` |
+| A row value of a table, a subquery or a composite type | an object of its fields |
+| `point`, `box`, `circle` and the other geometric types | an object of its fields, as `{ x, y }` |
+| A range | an object of its bounds, as `{ lower: 1, upper: 5, bounds: "[)" }`; a multirange an array of them |
 | pgvector's `vector`, `halfvec` | `number[]` |
 | `hstore` | `Record<string, string \| null>` |
-| Every other type (`inet`, `cidr`, ranges, `point`, `tsvector`, `xml`, …) | a `string`, as the database writes it |
+| Every other type (`inet`, `cidr`, `tsvector`, `xml`, …) | a `string`, as the database writes it |
 
 </Dialect>
 <Dialect value="MySQL">
@@ -63,12 +64,12 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 | `DECIMAL` | `string` |
 | `FLOAT`, `DOUBLE` | `number` |
 | `CHAR`, `VARCHAR`, `TEXT` | `string` |
-| `ENUM` | `string` |
-| `SET` | `string`, as `a,b` |
+| `ENUM` | the union of its labels |
+| `SET` | a `Set` of its labels |
 | `DATE` | `string`, as `2026-10-20` |
 | `DATETIME`, `TIMESTAMP` | `string`, as `2026-10-20T10:00:00.123` |
 | `TIME` | `string` |
-| `JSON` | [typed by its schema or the query](#json) |
+| `JSON` | `Json`, any JSON value, unless [its schema or the query](#json) types it |
 | `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Uint8Array` |
 | `VECTOR` | `number[]` |
 
@@ -91,13 +92,13 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 </Dialect>
 </DialectTabs>
 
-For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types) and [SQLite](/sqlite#data-types).
+For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types), [SQLite](/sqlite#data-types) and [DuckDB](/duckdb#data-types).
 
 </Details>
 
-At run time, the [preload](#setup-node) or a bundler [plugin](#plugins) turns the same file into a module that runs the query through your driver.
+At run time, the [preload](/#setup-node) or a bundler [plugin](/#plugins) turns the same file into a module that runs the query through your driver.
 
-Reylo caches each answer in [`.reylo/`](#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
+Reylo caches each answer in [`.reylo/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
 
 <Details summary="Where each type comes from, in each dialect" id="sources">
 
@@ -112,6 +113,7 @@ Reylo sends the query to the live database [prepared](https://www.postgresql.org
 | Column types | the server's description; an enum as its labels, a domain as its base type, a JSON column as what its JSON Schema `CHECK` admits |
 | Nullability | the catalog's `NOT NULL`, outer joins, the expressions |
 | Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
+| Nested rows | an `array(select r from (…) r)` of a subquery's or a table's whole rows, typed field by field |
 | Nested JSON | built with `jsonb_build_object`, `jsonb_agg` or `to_jsonb` of a row, typed from their arguments |
 
 </Dialect>
@@ -147,20 +149,7 @@ Reylo reads the schema from the database file and [prepares](https://sqlite.org/
 
 </Details>
 
-### Column types
-
-Each column comes back with its type:
-
-<Inferred>
-
-```sql file="inferred_users.sql" dialect="all"
-select id, name
-from users
-```
-
-</Inferred>
-
-### Named parameters [#naming]
+## Named parameters [#naming]
 
 For convenience, there is some Reylo-specific syntax that can be used inside your `.sql` files. This syntax is transpiled into the idiomatic form for your database's dialect.
 
@@ -176,7 +165,7 @@ where id = :id
 
 </Inferred>
 
-### Casts [#casts]
+## Casts [#casts]
 
 Where the query doesn't pin down a parameter's type, cast it. Reylo compiles the cast to each database's own:
 
@@ -192,7 +181,7 @@ where name like concat('%', :q::text, '%')
 
 <Details summary="When a parameter's type cannot be inferred" id="a-parameter-nothing-types">
 
-It's an error that says to [cast it](#casts), unless [`strict_params: false`](#strict_params) types it `unknown`.
+It's an error that says to [cast it](#casts), unless [`allow_untyped_params: true`](/configuration#allow_untyped_params) types it `unknown`.
 
 <DialectTabs>
 <Dialect value="Postgres">
@@ -220,7 +209,21 @@ A call to a function your application registers fails the type check, cast or no
 
 </Details>
 
-### Left joins
+## Column types
+
+Each column comes back with its type:
+
+<Inferred>
+
+```sql file="inferred_users.sql" dialect="all"
+select id, name
+from users
+where role = :role
+```
+
+</Inferred>
+
+## Left joins
 
 A left join makes the joined table's columns nullable:
 
@@ -230,11 +233,12 @@ A left join makes the joined table's columns nullable:
 select u.name, p.title
 from users u
 left join posts p on p.user_id = u.id
+where u.id = :user_id::int
 ```
 
 </Inferred>
 
-A null check on one joined column makes the whole joined row non-null:
+A test in the `where` that fails on null, like a comparison, makes the whole joined row non-null:
 
 <Inferred>
 
@@ -242,12 +246,12 @@ A null check on one joined column makes the whole joined row non-null:
 select u.name, p.title
 from users u
 left join posts p on p.user_id = u.id
-where p.published_at is not null
+where p.published_at > :since
 ```
 
 </Inferred>
 
-### Computed columns
+## Computed columns
 
 Reylo infers which computed columns can never be null:
 
@@ -258,11 +262,12 @@ select u.name,
   coalesce(u.email, '') as email,
   exists (select 1 from posts p where p.user_id = u.id) as has_posts
 from users u
+where u.role = :role
 ```
 
 </Inferred>
 
-### Nullable parameters
+## Nullable parameters
 
 To accept null, cast a parameter to `nullable(…)`. Leaving it out passes `null`:
 
@@ -276,9 +281,9 @@ where user_id = coalesce(:user_id::nullable(int), user_id)
 
 </Inferred>
 
-A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
+A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds; cast it to `nullable(…)` to pass SQL's `NULL` instead.
 
-### Dynamic sorting
+## Dynamic sorting
 
 To pick the sort order at run time, order by a `case` on a parameter:
 
@@ -297,7 +302,7 @@ order by
 
 </Inferred>
 
-### Dynamic filtering
+## Dynamic filtering
 
 To filter a list by a form's values, pass them as one [JSON parameter](#typed-json). Its schema says what each filter takes and what it defaults to, and Reylo checks it before the query runs:
 
@@ -413,7 +418,7 @@ import searchPosts from "./search_posts.sql";
 const posts = await searchPosts.run(db, { filters: await request.json() });
 ```
 
-### Unique keys
+## Unique keys
 
 Reylo infers each query's cardinality, how many rows it returns. A query that matches a unique key returns one row or null:
 
@@ -492,7 +497,7 @@ A unique index on an expression or with a `where` gives `many`.
 
 At run time, `.run()` throws rather than return a row count its type rules out.
 
-### Aggregates
+## Aggregates
 
 An aggregate without a group by returns exactly one row:
 
@@ -518,15 +523,85 @@ where user_id = :user_id::int
 
 </Inferred>
 
-### Subqueries
+A rollup adds a row for the total, whose grouped column is null:
+
+<Inferred>
+
+```sql file="rollups.sql" dialect="postgres" play="Rollups"
+select user_id, count(*)::int as posts
+from posts
+group by rollup (user_id)
+order by user_id
+```
+
+```sql file="rollups.sql" dialect="mysql"
+select user_id, count(*) as posts
+from posts
+group by user_id with rollup
+order by user_id
+```
+
+</Inferred>
+
+## Single values [#values]
+
+A column with no name returns its values instead of rows:
+
+<Inferred>
+
+```sql file="post_total.sql" dialect="postgres"
+select count(*)::int
+from posts
+where user_id = :user_id::int
+```
+
+```sql file="post_total.sql" dialect="mysql"
+select count(*)
+from posts
+where user_id = :user_id::int
+```
+
+```sql file="post_total.sql" dialect="sqlite"
+select count(*)
+from posts
+where user_id = :user_id::int
+```
+
+</Inferred>
+
+An expression with no `as` has no name of its own, only what your database makes up for it, which can differ by driver. Add an `as` to get rows back, as in the [query above](#aggregates). A column read as it is, like `select id`, already has a name and keeps its rows.
+
+Where such a value may be null and the query may also match no row, `null` stands for both. Name the column to tell them apart.
+
+Among several columns, a made-up name that isn't an identifier, like `count(*)` or `?column?`, is a type error. Name the column with `as`.
+
+## Window functions
+
+Reylo types each window function: a row number is never null, while `lag()` is null on the first row:
+
+<Inferred>
+
+```sql file="window_functions.sql" dialect="all"
+select id, title,
+  row_number() over (
+    partition by user_id
+    order by published_at
+  ) as n,
+  lag(title) over (order by id) as prev
+from posts
+```
+
+</Inferred>
+
+## Subqueries
 
 Run unrelated subqueries side by side, in one query and one round trip. With no `from`, the query returns exactly one row, and `.run()` resolves to it:
 
 <Inferred>
 
 ```sql file="dashboard.sql" dialect="postgres"
--- the five latest posts
-with recent as (select id, title from posts order by id desc limit 5)
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
 select
   (select count(*)::int from users) as user_count,
   (select count(*)::int from posts) as post_count,
@@ -540,8 +615,8 @@ select
 ```
 
 ```sql file="dashboard.sql" dialect="mysql"
--- the five latest posts
-with recent as (select id, title from posts order by id desc limit 5)
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
 select
   (select count(*) from users) as user_count,
   (select count(*) from posts) as post_count,
@@ -555,8 +630,8 @@ select
 ```
 
 ```sql file="dashboard.sql" dialect="sqlite"
--- the five latest posts
-with recent as (select id, title from posts order by id desc limit 5)
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
 select
   (select count(*) from users) as user_count,
   (select count(*) from posts) as post_count,
@@ -571,7 +646,37 @@ select
 
 </Inferred>
 
-### Returning inserts
+A lateral join runs its subquery once per row, here each user's latest post, or null for a user with none:
+
+<Inferred>
+
+```sql file="lateral_joins.sql" dialect="postgres" play="Lateral joins"
+select u.name, p.title, p.published_at
+from users u
+left join lateral (
+  select title, published_at
+  from posts
+  where user_id = u.id
+  order by published_at desc nulls last
+  limit 1
+) p on true
+```
+
+```sql file="lateral_joins.sql" dialect="mysql"
+select u.name, p.title, p.published_at
+from users u
+left join lateral (
+  select title, published_at
+  from posts
+  where user_id = u.id
+  order by published_at desc
+  limit 1
+) p on true
+```
+
+</Inferred>
+
+## Returning rows [#returning-inserts]
 
 An insert that returns its row resolves to exactly that row:
 
@@ -591,7 +696,42 @@ returning id
 
 </Inferred>
 
-### Enums [#unions]
+So does an upsert, whether it inserts the row or updates it:
+
+<Inferred>
+
+```sql file="upserts.sql" dialect="postgres" play="Upserts"
+insert into users (name, email)
+values (:name, :email::text)
+on conflict (email) do update
+  set name = excluded.name
+returning id, name
+```
+
+```sql file="upserts.sql" dialect="sqlite"
+insert into users (name, email)
+values (:name, :email::text)
+on conflict (email) do update
+  set name = excluded.name
+returning id, name
+```
+
+</Inferred>
+
+On Postgres 18, an update can return its values from before and after, as `old` and `new`:
+
+<Inferred>
+
+```sql file="old_and_new_values.sql" dialect="postgres" play="Old and new values"
+update users
+set name = :name
+where id = :id
+returning old.name as old_name, new.name as new_name
+```
+
+</Inferred>
+
+## Enums [#unions]
 
 A text column whose check constraint lists its values is a union of them, as a Postgres enum is:
 
@@ -607,11 +747,13 @@ create table events (
 ```sql file="inferred_event_kinds.sql" dialect="postgres"
 select id, kind
 from events
+order by id desc
+limit :limit::int
 ```
 
 </Inferred>
 
-### JSON aggregation [#json]
+## JSON aggregation [#json]
 
 Type information bubbles up through JSON aggregation:
 
@@ -622,6 +764,7 @@ select u.name,
   jsonb_agg(jsonb_build_object('id', p.id, 'title', p.title)) as posts
 from users u
 join posts p on p.user_id = u.id
+where p.published_at > :since
 group by u.id
 ```
 
@@ -630,6 +773,7 @@ select u.name,
   json_arrayagg(json_object('id', p.id, 'title', p.title)) as posts
 from users u
 join posts p on p.user_id = u.id
+where p.published_at > :since
 group by u.id
 ```
 
@@ -638,37 +782,37 @@ select u.name,
   json_group_array(json_object('id', p.id, 'title', p.title)) as posts
 from users u
 join posts p on p.user_id = u.id
+where p.published_at > :since
 group by u.id
 ```
 
 </Inferred>
 
-### Nested fetching
+## Nested fetching
 
-Fetch each row's related rows with an aggregated subquery: it collects them into JSON, and Reylo types every field inside it:
+Fetch each row's related rows with a subquery. Postgres collects them into an array of rows, MySQL and SQLite into JSON, and Reylo types every field:
 
 <Inferred>
 
 ```sql file="users_with_posts.sql" dialect="postgres"
 select u.id, u.name,
   -- every post, as an array
-  (
-    select coalesce(jsonb_agg(jsonb_build_object(
-      'id', p.id,
-      'title', p.title
-    ) order by p.id), '[]')
-    from posts p
-    where p.user_id = u.id
+  array(
+    select p from (
+      select id, title from posts where user_id = u.id order by id
+    ) p
   ) as posts,
   -- the latest post, or null
   (
-    select jsonb_build_object('id', p.id, 'title', p.title)
-    from posts p
-    where p.user_id = u.id
-    order by p.published_at desc nulls last
-    limit 1
+    select p from (
+      select id, title from posts
+      where user_id = u.id
+      order by published_at desc nulls last
+      limit 1
+    ) p
   ) as latest_post
 from users u
+where u.id = :id::int
 ```
 
 ```sql file="users_with_posts.sql" dialect="mysql"
@@ -691,6 +835,7 @@ select u.id, u.name,
     limit 1
   ) as latest_post
 from users u
+where u.id = :id::int
 ```
 
 ```sql file="users_with_posts.sql" dialect="sqlite"
@@ -713,11 +858,27 @@ select u.id, u.name,
     limit 1
   ) as latest_post
 from users u
+where u.id = :id::int
 ```
 
 </Inferred>
 
-### JSON Schema [#json-schema]
+On Postgres, each field of an array of rows is read as a column is, so a `bigint` stays exact. [Inside JSON, values can differ](/postgres#json). JSON is still the smaller result when rows nest three levels deep and hold JSON documents, since a row's text escapes the quotes of what it holds at each level:
+
+<Inferred>
+
+```sql file="users_with_posts_json.sql" dialect="postgres"
+select u.id,
+  (
+    select coalesce(jsonb_agg(p), '[]')
+    from (select id, title from posts where user_id = u.id order by id) p
+  ) as posts
+from users u
+```
+
+</Inferred>
+
+## JSON Schema [#json-schema]
 
 Declare a JSON Schema, and Reylo types the JSON it describes. A JSON column declares one in a check constraint:
 
@@ -758,16 +919,18 @@ create table events (
 ```sql file="inferred_event_payloads.sql" dialect="postgres"
 select id, payload
 from events
+where id = :id::int
 ```
 
 ```sql file="inferred_event_payloads.sql" dialect="mysql"
 select id, payload
 from events
+where id = :id::int
 ```
 
 </Inferred>
 
-### JSON parameters [#typed-json]
+## JSON parameters [#typed-json]
 
 A JSON parameter declares its schema in its cast to `json` or `jsonb`, and Reylo infers the parameter's type from it:
 
@@ -855,7 +1018,7 @@ values (:payload)
 
 </Inferred>
 
-### Filtering by a list
+## Filtering by a list
 
 Pass the list as one parameter:
 
@@ -895,7 +1058,7 @@ where id in (select j.value from input, json_each(input.ids) as j)
 
 </Inferred>
 
-### Bulk inserts
+## Bulk inserts
 
 Pass the rows as one [JSON parameter](#typed-json): the schema in its cast types them, and Reylo checks every row before the statement runs:
 
@@ -968,7 +1131,7 @@ returning id
 
 </Inferred>
 
-### Nested inserts
+## Nested inserts
 
 Users with their posts, in one parameter. The posts find their user by `email`, a unique key.
 
@@ -1181,7 +1344,7 @@ join json_each(u.value -> 'posts') as p
 </Dialect>
 </DialectTabs>
 
-### Discriminated unions with `oneOf` [#oneof]
+## Discriminated unions with `oneOf` [#oneof]
 
 A `oneOf` in a schema is a [union](#unions). Give each member a key with one value, and it is a discriminated union, which TypeScript narrows on that key:
 
@@ -1243,11 +1406,13 @@ create table events (
 ```sql file="inferred_event_payloads_union.sql" dialect="postgres"
 select id, payload
 from events
+where id = :id::int
 ```
 
 ```sql file="inferred_event_payloads_union.sql" dialect="mysql"
 select id, payload
 from events
+where id = :id::int
 ```
 
 </Inferred>

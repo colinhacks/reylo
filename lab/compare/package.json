@@ -1,0 +1,26 @@
+{
+  "name": "reylo-lab-compare",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@duckdb/node-api": "2.0.0-r.1",
+    "@pgtyped/cli": "2.4.3",
+    "@pgtyped/runtime": "2.4.2",
+    "@prisma/client": "7.10.1",
+    "@ts-safeql/eslint-plugin": "5.4.2",
+    "@ts-safeql/plugin-postgres-js": "4.3.0",
+    "eslint": "9.39.5",
+    "libpg-query": "18.2.2",
+    "better-sqlite3": "12.11.1",
+    "mysql2": "3.15.3",
+    "pg": "8.23.1",
+    "postgres": "3.4.9",
+    "postgres-typed-sql": "0.1.0-beta.22",
+    "prisma": "7.10.1",
+    "reylo": "0.7.0",
+    "typesql-cli": "0.24.0",
+    "typescript": "5.9.3",
+    "typescript-7": "npm:typescript@7.1.0-beta",
+    "typescript-eslint": "8.72.1"
+  }
+}

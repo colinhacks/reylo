@@ -1,39 +1,40 @@
-agg_outer_column_named_like_item.sql: many () -> { j: [text?]? }
-agg_outer_column_named_like_item_coalesce.sql: many () -> { j: [text?]? }
-array_subquery_outer.sql: many () -> { j: { names: [text]? } }
-array_subquery_own.sql: many () -> { j: { titles: [text] } }
-field_outer_column_in_expression.sql: many () -> { j: { p: text? }? }
-field_outer_column_in_subquery.sql: many () -> { j: { x: { n: int8? }? } }
-field_outer_column_named_like_item.sql: many () -> { j: { p: text? }? }
-field_subquery_bare_count.sql: many () -> { j: { n: int8 } }
-field_subquery_column.sql: many () -> { j: { first: text? } }
-field_subquery_count.sql: many () -> { j: { n: int8 } }
-field_subquery_key.sql: many () -> { j: { first: text? } }
-field_subquery_outer_count.sql: many () -> { j: { n: int8? } }
-field_subquery_param.sql: many (1: text) -> { j: { p: text? } }
+agg_outer_column_named_like_item.sql: many () -> { j: jsonb text?[]? }
+agg_outer_column_named_like_item_coalesce.sql: many () -> { j: jsonb text?[]? }
+array_subquery_outer.sql: many () -> { j: json { names: text[]? } }
+array_subquery_own.sql: many () -> { j: json { titles: text[] } }
+bare_aggregate_subquery.sql: many () -> { ps: jsonb ({ id: int8 })[]? }
+field_outer_column_in_expression.sql: many () -> { j: jsonb { p: text? }? }
+field_outer_column_in_subquery.sql: many () -> { j: jsonb { x: { n: int8? }? } }
+field_outer_column_named_like_item.sql: many () -> { j: jsonb { p: text? }? }
+field_subquery_bare_count.sql: many () -> { j: json { n: int8 } }
+field_subquery_column.sql: many () -> { j: json { first: text? } }
+field_subquery_count.sql: many () -> { j: json { n: int8 } }
+field_subquery_key.sql: many () -> { j: json { first: text? } }
+field_subquery_outer_count.sql: many () -> { j: json { n: int8? } }
+field_subquery_param.sql: many (1: text) -> { j: json { p: text? } }
 returning_leaf_target_named_by_with.sql: many () -> { e: text? }
-returning_target_named_by_with.sql: many (n: int4) -> { j: json? }
-row_agg_coalesce_top.sql: one () -> { posts: [posts{ id: int8, user_id: int8, title: text }] }
-row_alias.sql: many () -> { j: { id: int8, name: text, u: json?, p: text? } }
-row_alias_beside_function.sql: many () -> { j: json }
-row_alias_is_a_column.sql: many () -> { j: json? }
-row_alias_is_an_outer_column.sql: many () -> { id: int8, j: json? }
-row_left_join.sql: many () -> { id: int8, j: { id: int8, user_id: int8, title: text }? }
-row_subquery_key.sql: many () -> { id: int8, j: { id: int8, user_id: int8, title: text }? }
-row_subquery_limit.sql: many () -> { id: int8, j: { id: int8, user_id: int8, title: text }? }
-scalar_column_agg_coalesce.sql: many () -> { id: int8, ids: [int8] }
-scalar_count.sql: many () -> { id: int8, n: int8 }
-scalar_row_agg_bare.sql: many () -> { id: int8, posts: [posts{ id: int8, user_id: int8, title: text }]? }
-scalar_row_agg_coalesce.sql: many () -> { id: int8, posts: [posts{ id: int8, user_id: int8, title: text }] }
-scalar_row_agg_coalesce_cast.sql: many () -> { id: int8, posts: [posts{ id: int8, user_id: int8, title: text }] }
-scalar_row_agg_coalesce_json.sql: many () -> { id: int8, posts: [posts{ id: int8, user_id: int8, title: text }] }
-scalar_row_agg_uncorrelated.sql: one () -> { posts: [posts{ id: int8, user_id: int8, title: text }] }
-scalar_row_agg_uncorrelated_from.sql: many () -> { id: int8, posts: [posts{ id: int8, user_id: int8, title: text }] }
-scalar_row_array_agg_bare.sql: many () -> { id: int8, rows: posts{ id: int8, user_id: int8, title: text }[]? }
-scalar_row_array_agg_built.sql: many () -> { id: int8, rows: posts{ id: int8?, user_id: int8?, title: text? }[] }
-scalar_row_array_agg_coalesce.sql: many () -> { id: int8, rows: posts{ id: int8, user_id: int8, title: text }[] }
-scalar_row_array_agg_default_rows.sql: many () -> { id: int8, rows: posts{ id: int8?, user_id: int8?, title: text? }[] }
-scalar_row_array_agg_in_json.sql: many () -> { id: int8, j: { rows: (posts{ id: int8, user_id: int8, title: text }!)[] } }
-scalar_row_array_agg_outer_column.sql: many () -> { rows: text[]? }
-scalar_row_array_agg_outer_joined.sql: many () -> { id: int8, rows: posts{ id: int8, user_id: int8, title: text }[]? }
-scalar_row_array_agg_uncorrelated.sql: one () -> { rows: posts{ id: int8, user_id: int8, title: text }[] }
+returning_target_named_by_with.sql: many (n: int4) -> { j: jsonb? }
+row_agg_coalesce_top.sql: one () -> { posts: jsonb (public.posts{ id: int8, user_id: int8, title: text })[] }
+row_alias.sql: many () -> { j: jsonb { id: int8, name: text, u: jsonb?, p: text? } }
+row_alias_beside_function.sql: many () -> { j: jsonb }
+row_alias_is_a_column.sql: many () -> { j: jsonb? }
+row_alias_is_an_outer_column.sql: many () -> { id: int8, j: jsonb? } key (id)
+row_left_join.sql: many () -> { id: int8, j: jsonb { id: int8, user_id: int8, title: text }? }
+row_subquery_key.sql: many () -> { id: int8, j: json { id: int8, user_id: int8, title: text }? } key (id)
+row_subquery_limit.sql: many () -> { id: int8, j: jsonb { id: int8, user_id: int8, title: text }? } key (id)
+scalar_column_agg_coalesce.sql: many () -> { id: int8, ids: jsonb int8[] } key (id)
+scalar_count.sql: many () -> { id: int8, n: int8 } key (id)
+scalar_row_agg_bare.sql: many () -> { id: int8, posts: jsonb (public.posts{ id: int8, user_id: int8, title: text })[]? } key (id)
+scalar_row_agg_coalesce.sql: many () -> { id: int8, posts: jsonb (public.posts{ id: int8, user_id: int8, title: text })[] } key (id)
+scalar_row_agg_coalesce_cast.sql: many () -> { id: int8, posts: jsonb (public.posts{ id: int8, user_id: int8, title: text })[] } key (id)
+scalar_row_agg_coalesce_json.sql: many () -> { id: int8, posts: json (public.posts{ id: int8, user_id: int8, title: text })[] } key (id)
+scalar_row_agg_uncorrelated.sql: one () -> { posts: jsonb (public.posts{ id: int8, user_id: int8, title: text })[] }
+scalar_row_agg_uncorrelated_from.sql: many () -> { id: int8, posts: jsonb (public.posts{ id: int8, user_id: int8, title: text })[] } key (id)
+scalar_row_array_agg_bare.sql: many () -> { id: int8, rows: (public.posts{ id: int8, user_id: int8, title: text }?)[]? } key (id)
+scalar_row_array_agg_built.sql: many () -> { id: int8, rows: (public.posts{ id: int8?, user_id: int8?, title: text? }?)[] } key (id)
+scalar_row_array_agg_coalesce.sql: many () -> { id: int8, rows: (public.posts{ id: int8, user_id: int8, title: text }?)[] } key (id)
+scalar_row_array_agg_default_rows.sql: many () -> { id: int8, rows: (public.posts{ id: int8?, user_id: int8?, title: text? }?)[] } key (id)
+scalar_row_array_agg_in_json.sql: many () -> { id: int8, j: jsonb { rows: (public.posts{ id: int8, user_id: int8, title: text })[] } } key (id)
+scalar_row_array_agg_outer_column.sql: many () -> { rows: text?[]? }
+scalar_row_array_agg_outer_joined.sql: many () -> { id: int8, rows: (public.posts{ id: int8, user_id: int8, title: text }?)[]? } key (id)
+scalar_row_array_agg_uncorrelated.sql: one () -> { rows: (public.posts{ id: int8, user_id: int8, title: text }?)[] }

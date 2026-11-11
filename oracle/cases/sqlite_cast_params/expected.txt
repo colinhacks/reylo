@@ -1,6 +1,6 @@
-coalesced.sql: many (n: integer?, doc: json?, guard: json?, id: integer) -> { n: integer?, doc: text? }
-update_row_value.sql: maybeOne (name: text, email: text, id: integer) -> { name: text, email: text? }
-update_set.sql: maybeOne (email: text, name: text, n: integer, doc: text, id: integer) -> { email: text?, n: integer?, doc: text? }
-upsert.sql: one (name: text, email: text) -> { id: integer }
-upsert_set.sql: one (email: text, n: integer, name: text) -> { email: text?, n: integer? }
-values_rows.sql: many (name: text, email: text, score: real, n: integer, name2: text, email2: text, score2: numeric, n2: integer) -> { id: integer, email: text?, n: integer? }
+coalesced.sql: many (n: int64?, doc: json?, guard: json?, id: int64) -> { n: INTEGER?, doc: TEXT(utf8)? }
+update_row_value.sql: at_most_one (name: text(utf8), email: text(utf8), id: int64) -> { name: TEXT(utf8), email: TEXT(utf8)? }
+update_set.sql: at_most_one (email: text(utf8), name: text(utf8), n: int64, doc: text(utf8), id: int64) -> { email: TEXT(utf8)?, n: INTEGER?, doc: TEXT(utf8)? }
+upsert.sql: one (name: text(utf8), email: text(utf8)) -> { id: INTEGER }
+upsert_set.sql: one (email: text(utf8), n: int64, name: text(utf8)) -> { email: TEXT(utf8)?, n: INTEGER? }
+values_rows.sql: many (name: text(utf8), email: text(utf8), score: float(11,52), n: int64, name2: text(utf8), email2: text(utf8), score2: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), n2: int64) -> { id: INTEGER, email: TEXT(utf8)?, n: INTEGER? }

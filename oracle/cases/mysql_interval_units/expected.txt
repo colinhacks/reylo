@@ -1,11 +1,11 @@
-aggregate.sql: one () -> { n: int8 }
-date_day_hour.sql: maybeOne (id: int4) -> { later: timestamp? }
-date_year_month.sql: maybeOne (id: int4) -> { later: date? }
-datetime_day_hour.sql: maybeOne (id: int4) -> { id: int4, later: timestamp? }
-extract_compound.sql: maybeOne (id: int4) -> { dm: int8?, ym: int8|int4? }
-json_shape.sql: maybeOne (id: int4) -> { doc: { later: timestamp?, day: date? } }
-no_from_minute_second.sql: one () -> { later: text? }
-operator_limit.sql: maybeOne () -> { id: int4, later: timestamp? }
-placeholder_hour_minute.sql: maybeOne (span: text, id: int4) -> { later: timestamp? }
-timestamp_second_microsecond.sql: maybeOne (id: int4) -> { earlier: timestamp? }
-where_day_second.sql: maybeOne (id: int4) -> { id: int4 }
+aggregate.sql: one () -> { n: bigint }
+date_day_hour.sql: at_most_one (id: int32) -> { later: datetime? }
+date_year_month.sql: at_most_one (id: int32) -> { later: date? }
+datetime_day_hour.sql: at_most_one (id: int32) -> { id: int, later: datetime? }
+extract_compound.sql: at_most_one (id: int32) -> { dm: bigint?, ym: bigint | int? }
+json_shape.sql: at_most_one (id: int32) -> { doc: json { later: datetime?, day: date? } }
+no_from_minute_second.sql: one () -> { later: char? }
+operator_limit.sql: at_most_one () -> { id: int, later: datetime? }
+placeholder_hour_minute.sql: at_most_one (span: varchar, id: int32) -> { later: datetime? }
+timestamp_second_microsecond.sql: at_most_one (id: int32) -> { earlier: datetime? }
+where_day_second.sql: at_most_one (id: int32) -> { id: int }

@@ -1,18 +1,49 @@
 // The runtime query object behind `import query from "./file.sql"`.
 // Types come from the content mapper; values come from the runtime loader.
 import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
+import type { Plan } from "./codecs.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
+import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
+import type { RowBuilder } from "./row.ts";
 import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
-import { DecodeError, ParameterError, type Columns } from "./values.ts";
+import { DecodeError, ParameterError, type Columns, type JsonNumbers } from "./values.ts";
 import { readQueryError, readQueryErrorSync, type QueryError } from "./query-error.ts";
 import { listening, type QueryTrace } from "./trace.ts";
+import { buildTime, type AnalyzeInput, type StatementDescriptor } from "./build-time.ts";
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
 export type { QueryTrace } from "./trace.ts";
+export type { StandardQueryV1 } from "./standard-query.ts";
 export { checks } from "./checks.ts";
-export type { MysqlCode, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
+export type { AnalyzeInput } from "./build-time.ts";
+export type * as TypeDefs from "../spec/index.ts";
+export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresErrorFields, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteErrorFields, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
+
+/**
+ * One statement's types as plain data that serializes to JSON, in Reylo Type Defs: its parameters and
+ * columns with their types and nullability, its cardinality, its kind, and `sql` with the database's
+ * own placeholders. It is what `reylo analyze` prints, for a tool that reads a statement's types
+ * rather than running it.
+ *
+ * It reads the database the type check reads (`direct_url` in the project file, else `DATABASE_URL`),
+ * unless `url` names another, and the project file's `allow_untyped_params`. A statement the database or the
+ * engine refuses comes back with its diagnostics, each at its place, and no columns. It rejects only
+ * where it cannot analyze at all: no database named, a project file it cannot read, no engine to run,
+ * or a database it cannot reach. Calls with the same URL share one connection, which closes a moment
+ * after the last. Each reads the catalog as it stands when it is made, so a migration run between two
+ * calls shows in the second.
+ *
+ * It runs on Node and Bun, at build time or in a script, and the bundle of an app that does not call
+ * it holds none of it.
+ *
+ * @preview Reylo Type Defs is at version 0.1.0, and until 1.0.0 a new version may change
+ * anything in it. Each descriptor names its version in `$schema`.
+ */
+export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor> {
+  return buildTime().analyze(input);
+}
 
 /** How many rows a statement returns: `none` is a data-modifying statement without RETURNING. */
 export type Cardinality = "many" | "one" | "maybeOne" | "none";
@@ -20,24 +51,42 @@ export type Cardinality = "many" | "one" | "maybeOne" | "none";
 export type Materialize<Row, C extends Cardinality> = C extends "many" ? Row[] : C extends "one" ? Row : C extends "none" ? void : Row | null;
 
 /**
+ * Any JSON value: what a `json` or `jsonb` value is when nothing in the schema or the statement
+ * gives its shape, and what any value inside JSON a statement builds is where Reylo cannot type it.
+ * A key's value may be `undefined`, which a read of a missing key gives and `JSON.stringify` leaves
+ * out of a parameter.
+ */
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
+/** A Postgres array column under `allow_nested_arrays: true`: an array of `T` at any depth, since Postgres doesn't enforce an array's dimensions. */
+export type NestedArray<T> = (T | NestedArray<T>)[];
+
+/**
+ * What a JSON parameter with no schema takes: any value `JSON.stringify` writes as JSON, as `.run()`
+ * sends it. That is `Json`, and at any depth a value with a `toJSON()`, such as a `Date` or a
+ * Temporal value, which writes itself as its text.
+ */
+export type JsonInput = string | number | boolean | null | { toJSON(key: string): unknown } | { readonly [key: string]: JsonInput | undefined } | readonly JsonInput[];
+
+/**
  * The shape of a row value as JSON: a BigInt is the integer it is (JSON.stringify refuses one, so a
  * serializer writes it, as `JSON.rawJSON(String(v))` does), and a Temporal value or a byte array
  * becomes text.
  */
-export type Json<T> = T extends bigint
+export type AsJson<T> = T extends bigint
   ? number
   : T extends Date | Uint8Array | { toJSON(): string }
   ? string
   : T extends readonly (infer U)[]
-    ? Json<U>[]
+    ? AsJson<U>[]
     : T extends object
-      ? { [K in keyof T]: Json<T[K]> }
+      ? { [K in keyof T]: AsJson<T[K]> }
       : T;
 
 export type ReyloTypes<Params, Row, C extends Cardinality> = {
   readonly element: Row;
   readonly cardinality: C;
-  readonly json: Materialize<Json<Row>, C>;
+  readonly json: Materialize<AsJson<Row>, C>;
   readonly input: Params;
 };
 
@@ -50,14 +99,12 @@ export type TryResult<Value, E> = { readonly value: Value; readonly error?: unde
 
 /** A query: its statement, its parameters and result types (`Params`, `Row`), and the error its database may raise (`E`). */
 export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E = QueryError<D>>
-  extends StandardTypedV1<Params, Materialize<Row, C>>, StandardJSONSchemaV1<Params, Materialize<Row, C>> {
+  extends StandardTypedV1<Params, Materialize<Row, C>>, StandardJSONSchemaV1<Params, Materialize<Row, C>>, StandardQueryV1<Params, Materialize<Row, C>, D> {
   readonly dialect: D;
-  // `sql` and `raw` carry no doc comment here: each module declares them again with its statement
-  // and what they are (src/doc-comment.ts, `sqlNote` and `RAW_NOTE`), and TypeScript would show
-  // this one first, run together with that one. `sql` is the base text: a structured parameter
-  // (`::rows`, `::row`, src/rows.ts) in a MySQL insert has its column lists written again for the
-  // keys each call carries. Said here and not in `sqlNote`, whose text the docs site shows in its
-  // hovers, which leave structured parameters out.
+  // `sql` and `raw` carry no doc comment: each module declares them as their own text, which a
+  // hover shows. `sql` is the base text: a structured parameter (`::rows`, `::row`, src/rows.ts) in a
+  // MySQL insert has its column lists written again for the keys each call carries, and the
+  // statement Reylo sends ends with the comment naming its file, which `sql` leaves out.
   readonly sql: string;
   readonly raw: string;
   /** Parameter names in binding order. */
@@ -68,11 +115,17 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E 
    */
   readonly source: string | undefined;
   readonly cardinality: C;
+  /**
+   * Whether the engine finds nothing in the statement that could write, so that it can be run again after a lost
+   * connection. False for any write, and for a query that locks rows or may call a volatile function.
+   */
+  readonly readOnly: boolean;
   /** The JSON Schema (2020-12) of the parameters, as the object `run` takes. */
   readonly inputSchema: Record<string, unknown>;
   /** The JSON Schema (2020-12) of the result as JSON: what `run` returns, written as JSON, a BigInt as the integer it is. */
   readonly outputSchema: Record<string, unknown>;
-  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>>;
+  /** Standard JSON Schema's `jsonSchema` and Standard Query's `query`: a driver that supports Standard Query runs the import with the same input and output as `.run()`. */
+  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>> & StandardQueryV1.Props<Params, Materialize<Row, C>, D> & { readonly query: { readonly cardinality: C; output(rows: readonly Record<string, unknown>[]): Materialize<Row, C> } };
   readonly "~reylo": ReyloTypes<Params, Row, C>;
   /**
    * Runs the statement on the client, or on a transaction or connection taken from it. The
@@ -118,17 +171,41 @@ export type QueryDefinition = {
   inputs?: Inputs;
   /** Each output column's name and kind (src/values.ts), in order: every build step puts them in the module, and the run time gives each value its kind by them. */
   columns?: Columns;
+  /** Where each Postgres JSON column, by position beside `columns`, holds a float or a decimal that may be NaN or an infinity, which Postgres writes there as text, `null` for one that holds none: a build step puts it in the module, and the run time gives each such value as the number it is. */
+  nonFinite?: readonly (JsonNumbers | null)[];
+  /** Each row as an object of the columns' names, one shape for every row (src/row.ts): every build step writes it beside `columns`; a query defined by hand without it builds the same object in a loop. */
+  row?: RowBuilder;
+  /** The result key: output columns, by name, no two rows of the result agree on all of, where the analysis proves one for a result that can hold more than one row. A build step puts it in the module; the query's Standard Query `key` (src/standard-query.ts). */
+  key?: readonly string[];
+  /** Whether the statement's ORDER BY orders its rows totally, so the order is the same on every run, where the analysis proves it. A build step puts it in the module; the query's Standard Query `ordered` (src/standard-query.ts). */
+  ordered?: boolean;
+  /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts): a build step writes them where there are any. */
+  codecs?: Readonly<Record<string, Plan>>;
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
   structured?: readonly Structured[];
   /** The catalog facts the statement relied on, which the run time checks before it runs (src/fresh.ts). */
   fresh?: Fresh;
   /** The `.sql` file, relative to the project's root and written with `/`: the query's `source`. Every build step puts it in the module. */
   source?: string;
+  /** Whether a Postgres array column may hold nested arrays, as a build step writes where the project file says `allow_nested_arrays: true`: none is refused. */
+  nestedArrays?: boolean;
+  /** Whether the statement Reylo sends carries a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
+  sqlcommenter?: boolean;
   cardinality?: Cardinality;
+  /** Whether the result is the one column's values rather than rows that hold them, as a build step writes where the statement gives the column no name: the query's `Row` is that value's type. */
+  value?: boolean;
+  /** Whether the engine finds nothing in the statement that could write: the query's `readOnly`. */
+  readOnly?: boolean;
   jsonSchema?: { input: Record<string, unknown>; output: Record<string, unknown> };
   /** The checks of a typed JSON, structured or cast parameter, `checks` from "reylo": a build step passes them where the statement has one, so that an app none of whose statements has one bundles none of them. */
   checks?: Checks;
 };
+
+/** The value of a row of one column. Its key is a name the database or the driver made up, which can differ from the one the analysis read, so the value is read without it. */
+function onlyValue(row: unknown): unknown {
+  for (const name in row as Record<string, unknown>) return (row as Record<string, unknown>)[name];
+  return undefined;
+}
 
 export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(
   def: QueryDefinition & { dialect: D; cardinality?: C },
@@ -148,9 +225,17 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     order: def.order,
     inputs: def.inputs,
     columns: def.columns,
+    nonFinite: def.nonFinite,
+    row: def.row,
+    key: def.key,
+    ordered: def.ordered,
+    cardinality,
+    codecs: def.codecs,
     structured: def.structured,
     fresh: def.fresh,
     source: def.source,
+    sqlcommenter: def.sqlcommenter,
+    nestedArrays: def.nestedArrays,
     checks: def.checks,
   };
   let compiled: string | undefined;
@@ -165,6 +250,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     params: def.params,
     source: def.source,
     cardinality,
+    readOnly: def.readOnly ?? false,
     get inputSchema() {
       return def.jsonSchema?.input ?? missingSchema();
     },
@@ -178,6 +264,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
         input: () => def.jsonSchema?.input ?? missingSchema(),
         output: () => def.jsonSchema?.output ?? missingSchema(),
       },
+      query: standardQuery(module, (rows) => materialize(rows as Row[])) as ReturnType<typeof standardQuery<D, Materialize<Row, C>>> & { readonly cardinality: C },
     },
     "~reylo": undefined as unknown as ReyloTypes<Params, Row, C>,
     run: ((client: ClientFor<D>, params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["run"],
@@ -249,18 +336,19 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     }
     return error;
   }
+  const element = def.value ? onlyValue : (row: unknown) => row;
   function materialize(rows: Row[]): Materialize<Row, C> {
     switch (cardinality) {
       case "none":
         return undefined as Materialize<Row, C>;
       case "many":
-        return rows as Materialize<Row, C>;
+        return (def.value ? rows.map(onlyValue) : rows) as Materialize<Row, C>;
       case "one":
         if (rows.length !== 1) throw new Error(`${where}Expected exactly one row, got ${rows.length}`);
-        return rows[0] as Materialize<Row, C>;
+        return element(rows[0]) as Materialize<Row, C>;
       default:
         if (rows.length > 1) throw new Error(`${where}Expected at most one row, got ${rows.length}`);
-        return (rows[0] ?? null) as Materialize<Row, C>;
+        return (rows.length ? element(rows[0]) : null) as Materialize<Row, C>;
     }
   }
   return query;

@@ -4,21 +4,19 @@ import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { renderType } from "../src/render.ts";
+import { defineQuery } from "../src/index.ts";
+import { DRIVERS, PG, MYSQL, INDEX } from "./helpers.ts";
 
 // Reylo's one representation per SQL type (src/values.ts), on the real drivers, each set up by the
 // app against it: the module a build step writes, run on each, must give the same rows, and each
 // app's own query keeps the app's settings (the failing control). Postgres and MySQL run on
 // throwaway servers (REYLO_TEST_PG, REYLO_TEST_MYSQL), each test in a database of its own; the
 // drivers are lab/drivers'.
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const INDEX = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href;
 const drivers = existsSync(join(DRIVERS, "pg")) || "lab/drivers is not installed";
 const pgLive = !PG ? "REYLO_TEST_PG names no server" : drivers === true ? false : drivers;
 const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : drivers === true ? false : drivers;
@@ -50,7 +48,7 @@ async function built(root: string, url: string, name: string, sql: string) {
 /** Rows compared by value: a driver's own row prototype and a Buffer's are not Reylo's to set. No value Reylo returns is a Date. */
 const plain = (v: unknown): unknown => {
   if (v instanceof Date) throw new assert.AssertionError({ message: `a Date in Reylo's rows: ${v.toISOString()}` });
-  return v instanceof Uint8Array ? { bytes: [...v] } : Array.isArray(v) ? v.map(plain) : v !== null && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)])) : v;
+  return v instanceof Uint8Array ? { bytes: [...v] } : v instanceof Set ? new Set([...v].map(plain)) : Array.isArray(v) ? v.map(plain) : v !== null && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)])) : v;
 };
 
 const PG_SCHEMA = `create type mood as enum ('ok', 'sad');
@@ -59,23 +57,30 @@ create type pair as (a int, b text);
 create table t (
   id int primary key, created_by int8, b bool, i2 int2, f4 float4, f8 float8, n numeric, d date, ts timestamp(6), tstz timestamptz, tm time, iv interval,
   j json, jb jsonb, by bytea, e mood, u uuid, p pair, r int4range,
-  a_i4 int4[], a_i8 int8[], a_n numeric[], a_tx text[], a_e mood[], a_dom posint[], a_p pair[], a_ts timestamp[], a_tstz timestamptz[], a_by bytea[], a_iv interval[]
+  a_i4 int4[], a_i8 int8[], a_n numeric[], a_tx text[], a_e mood[], a_dom posint[], a_p pair[], a_ts timestamp[], a_tstz timestamptz[], a_by bytea[], a_iv interval[], pt point, a_bx box[]
 );
 insert into t values (1, 9007199254740993, true, 2, 1.5, 2.2, 12345678901234567890.123456789, '2026-10-20', '2026-10-20 10:00:00.123456', '2026-10-20 10:00:00.123456+02', '10:00:00',
   '1 year 2 mons 3 days 04:05:06.789', '{"a":1}', '{"big":1}', '\\x0102ff', 'sad', 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', '(1,"x,y")', '[1,5)',
-  '{1,NULL,3}', '{9007199254740993}', '{1.5,12345678901234567890.1}', '{a,NULL,"NULL","b,c"}', '{ok,sad}', '{1,2}', array['(1,x)'::pair], '{"2026-10-20 10:00:00.5"}', '{"2026-10-20 10:00:00+00"}', '{"\\\\x01"}', '{"1 day"}'),
-  (2, null, null, null, null, null, null, 'infinity', '0044-03-15 12:00:00 BC', '0001-01-01 00:00:00+00', null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null)`;
+  '{1,NULL,3}', '{9007199254740993}', '{1.5,12345678901234567890.1}', '{a,NULL,"NULL","b,c"}', '{ok,sad}', '{1,2}', array['(1,x)'::pair], '{"2026-10-20 10:00:00.5"}', '{"2026-10-20 10:00:00+00"}', '{"\\\\x01"}', '{"1 day"}', '(1.5,-2)', '{(3,4),(1,2);(1,1),(0,0)}'),
+  (2, null, null, null, null, null, null, 'infinity', '0044-03-15 12:00:00 BC', '0001-01-01 00:00:00+00', null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null),
+  (3, null, null, null, null, null, null, '0002-06-01 BC', '10000-01-01 00:00:00', null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, '{"0002-06-01 12:00:00 BC","12345-01-01 00:00:00.5",infinity}', null, null, null, null, null)`;
 const PG_SELECT = "select * from t order by id";
 const PG_ROWS = [
   {
     id: 1, created_by: 9007199254740993n, b: true, i2: 2, f4: 1.5, f8: 2.2, n: "12345678901234567890.123456789", d: "2026-10-20", ts: "2026-10-20T10:00:00.123456",
     tstz: "2026-10-20T08:00:00.123456Z", tm: "10:00:00", iv: "P1Y2M3DT4H5M6.789S", j: { a: 1 }, jb: { big: 1 }, by: { bytes: [1, 2, 255] }, e: "sad",
-    u: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", p: '(1,"x,y")', r: "[1,5)", a_i4: [1, null, 3], a_i8: [9007199254740993n], a_n: ["1.5", "12345678901234567890.1"],
-    a_tx: ["a", null, "NULL", "b,c"], a_e: ["ok", "sad"], a_dom: [1, 2], a_p: '{"(1,x)"}', a_ts: ["2026-10-20T10:00:00.5"], a_tstz: ["2026-10-20T10:00:00Z"], a_by: [{ bytes: [1] }], a_iv: ["P1D"],
+    u: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", p: { a: 1, b: "x,y" }, r: { lower: 1, upper: 5, bounds: "[)" }, a_i4: [1, null, 3], a_i8: [9007199254740993n], a_n: ["1.5", "12345678901234567890.1"],
+    a_tx: ["a", null, "NULL", "b,c"], a_e: ["ok", "sad"], a_dom: [1, 2], a_p: [{ a: 1, b: "x" }], a_ts: ["2026-10-20T10:00:00.500000"], a_tstz: ["2026-10-20T10:00:00.000000Z"], a_by: [{ bytes: [1] }], a_iv: ["P1D"],
+    pt: { x: 1.5, y: -2 }, a_bx: [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }, { high: { x: 1, y: 1 }, low: { x: 0, y: 0 } }],
   },
   {
-    id: 2, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "infinity", ts: "0044-03-15T12:00:00 BC", tstz: "0001-01-01T00:00:00Z", tm: null, iv: null,
-    j: null, jb: null, by: null, e: null, u: null, p: null, r: null, a_i4: null, a_i8: null, a_n: null, a_tx: null, a_e: null, a_dom: null, a_p: null, a_ts: null, a_tstz: null, a_by: null, a_iv: null,
+    id: 2, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "infinity", ts: "-000043-03-15T12:00:00.000000", tstz: "0001-01-01T00:00:00.000000Z", tm: null, iv: null,
+    j: null, jb: null, by: null, e: null, u: null, p: null, r: null, a_i4: null, a_i8: null, a_n: null, a_tx: null, a_e: null, a_dom: null, a_p: null, a_ts: null, a_tstz: null, a_by: null, a_iv: null, pt: null, a_bx: null,
+  },
+  {
+    id: 3, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "-000001-06-01", ts: "+010000-01-01T00:00:00.000000", tstz: null, tm: null, iv: null,
+    j: null, jb: null, by: null, e: null, u: null, p: null, r: null, a_i4: null, a_i8: null, a_n: null, a_tx: null, a_e: null, a_dom: null, a_p: null,
+    a_ts: ["-000001-06-01T12:00:00.000000", "+012345-01-01T00:00:00.500000", "infinity"], a_tstz: null, a_by: null, a_iv: null, pt: null, a_bx: null,
   },
 ];
 
@@ -108,6 +113,9 @@ test("Postgres: one row on every driver, however the app set its driver up; the 
     const control = (await client.query("select created_by, tstz from t where id = 1")).rows[0];
     assert.equal(control.created_by, "9007199254740993", "the control: the app's own query, an int8 its text");
     assert.ok(control.tstz instanceof Date, "the control: pg's own timestamptz, a Date");
+    // A query defined by hand carries no columns, so its types are read from the catalog as it runs.
+    const byHand = defineQuery({ dialect: "postgres", sql: PG_SELECT, params: [], cardinality: "many" });
+    assert.deepEqual(plain(await byHand.run(client)), PG_ROWS, "pg Client, a query defined by hand");
     await client.end();
     const pool = new pg.Pool({ connectionString: url.href, max: 2, types: { getTypeParser: (oid: number, f?: string) => (oid === 1184 ? (x: string) => `app:${x}` : pg.types.getTypeParser(oid, f)) } });
     pool.on("connect", (c: any) => c.setTypeParser(1082, (x: string) => `connect:${x}`));
@@ -181,7 +189,7 @@ const MYSQL_SCHEMA = [
   "insert into odd values (1, 2)",
 ];
 const MYSQL_ROWS = [
-  { id: 1, a: "2026-03-08T09:31:00.000", a0: "2026-03-08T09:31:00", c: "2026-03-08", d: 18446744073709551615n, d2: -9007199254740993n, e: "1.100000000000000001", f: { k: [1, 2] }, g: true, h: { bytes: [129] }, i: "x,z", j: "b", k: true, l: 2026, n: 2.2, o: { bytes: [1, 2, 255] }, q: "10:00:00.50", s: "hi", n2: 2n, first: true },
+  { id: 1, a: "2026-03-08T09:31:00.000", a0: "2026-03-08T09:31:00", c: "2026-03-08", d: 18446744073709551615n, d2: -9007199254740993n, e: "1.100000000000000001", f: { k: [1, 2] }, g: true, h: { bytes: [129] }, i: new Set(["x", "z"]), j: "b", k: true, l: 2026, n: 2.2, o: { bytes: [1, 2, 255] }, q: "10:00:00.50", s: "hi", n2: 2n, first: true },
   { id: 2, a: null, a0: null, c: null, d: null, d2: null, e: null, f: null, g: null, h: null, i: null, j: null, k: null, l: null, n: null, o: null, q: null, s: null, n2: 2n, first: false },
 ];
 

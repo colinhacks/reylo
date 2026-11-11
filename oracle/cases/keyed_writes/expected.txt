@@ -1,0 +1,36 @@
+casted_insert.sql: at_most_one (id: int4) -> { id: int4 }
+conditional_upsert.sql: one (id: int4) -> { id: int4 }
+delete_using_many.sql: many () -> { id: int4 }
+delete_using_table_pinned.sql: at_most_one (id: int4) -> { id: int4, name: text? }
+delete_using_with.sql: at_most_one (id: int4) -> { id: int4 }
+emptied_insert.sql: at_most_one (id: int4) -> { id: int4 }
+handler_insert.sql: at_most_one (id: int4) -> { id: int4 }
+insert_select_conflict.sql: one (id: int4) -> { id: int4 }
+insert_select_filtered.sql: at_most_one (id: int4) -> { id: int4 }
+insert_select_no_from.sql: one (id: int4) -> { id: int4 }
+insert_select_nothing.sql: at_most_one (id: int4) -> { id: int4 }
+insert_select_table.sql: many () -> { id: int4 }
+insert_select_with.sql: one (id: int4) -> { id: int4 }
+no_returns_upsert.sql: one (id: int4) -> { id: int4 }
+old_on_update_upsert.sql: one (id: int4) -> { id: int4 }
+olds_insert.sql: at_most_one (id: int4) -> { id: int4 }
+other_insert.sql: at_most_one (id: int4) -> { id: int4 }
+parent_and_child_in_one_statement.sql: many (id: int4) -> { id: int4, name: text }
+parent_update_by_key.sql: at_most_one (id: int4) -> { id: int4 }
+parent_upsert.sql: at_most_one (id: int4) -> { id: int4 }
+selected_insert.sql: at_most_one (id: int4) -> { id: int4 }
+shadowed_insert.sql: at_most_one (id: int4) -> { id: int4 }
+skipping_insert.sql: at_most_one (id: int4) -> { id: int4 }
+stamped_all_insert.sql: one (id: int4) -> { id: int4 }
+stamped_all_upsert.sql: one (id: int4) -> { id: int4 }
+stamped_parent_upsert.sql: one (id: int4) -> { id: int4 }
+stamped_upsert.sql: one (id: int4) -> { id: int4 }
+suppressed_upsert.sql: at_most_one (id: int4) -> { id: int4 }
+update_from_pinned_table.sql: at_most_one (id: int4) -> { id: int4 }
+update_from_table_on_join.sql: many () -> { id: int4 }
+update_from_table_pinned.sql: at_most_one (id: int4) -> { id: int4, body: text }
+update_from_with.sql: at_most_one (id: int4) -> { id: int4 }
+update_from_with_many.sql: many () -> { id: int4 }
+update_from_with_nonkey.sql: many (id: int4) -> { id: int4 }
+update_from_with_two_keys.sql: at_most_one (id: int4, name: text) -> { id: int4 }
+with_write_joined_key.sql: at_most_one (id: int4, acct: int4) -> { id: int4, name: text }

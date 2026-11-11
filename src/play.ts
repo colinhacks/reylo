@@ -30,7 +30,7 @@ It opens the page in the browser; --no-open leaves it closed, for a script or an
 type Backend = {
   dialect: Dialect;
   label: string;
-  /** What the project file sets that Reylo does not read (`url` alone), said once, as `reylo generate` says it. */
+  /** What the project file sets that Reylo does not read (`url` alone), said once, as `reylo analyze` says it. */
   notice?: string;
   schema: string;
   catalog: Catalog;
@@ -162,9 +162,9 @@ async function databaseBackend(session: Session): Promise<Backend> {
       if (!outcome.ok) return playResult(sql, dialect, { error: { message: outcome.message, code: outcome.code } }, { width, ms });
       let lexed;
       try {
-        lexed = session.lex(sql);
+        lexed = await session.lex(sql);
       } catch {}
-      return playResult(sql, dialect, { analysis: outcome.analysis, lexed }, { strictParams: project.strictParams, width, ms });
+      return playResult(sql, dialect, { analysis: outcome.analysis, lexed }, { strictParams: project.strictParams, allowNestedArrays: project.allowNestedArrays && dialect === "postgres", width, ms });
     },
     close: () => session.close(),
   };
@@ -274,8 +274,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, backend: Backen
   // reads the schema through the playground.
   const local = (host: string | undefined) => !!host && [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(host);
   const origin = req.headers.origin;
-  if (!local(req.headers.host) || (origin !== undefined && !local(origin.replace(/^http:\/\//, "")))) return send(res, 403, { error: "the playground answers this machine's own pages and tools only" });
+  const refused = () => send(res, 403, { error: "the playground answers this machine's own pages and tools only" });
+  if (!local(req.headers.host) || (origin !== undefined && !local(origin.replace(/^http:\/\//, "")))) return refused();
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  // Another site's image, script or link is a GET with no Origin. A browser still says where such a
+  // request comes from: the page's own (`same-origin`) and an address typed or opened (`none`) reach
+  // the API, and a tool sends no such header.
+  const site = req.headers["sec-fetch-site"];
+  if (url.pathname.startsWith("/api/") && site !== undefined && site !== "same-origin" && site !== "none") return refused();
 
   if (url.pathname === "/api/analyze") {
     let sql: string | null = url.searchParams.get("q") ?? url.searchParams.get("sql");
@@ -297,11 +303,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, backend: Backen
   if (url.pathname === "/api/page") return send(res, 200, { dialect: backend.dialect, label: backend.label, schema: backend.schema, catalog: backend.catalog });
 
   // The page's files; any other path is the page, which reads its query from the address.
-  const file = url.pathname === "/" ? join(page, "index.html") : join(page, decodeURIComponent(url.pathname));
+  const file = url.pathname === "/" ? join(page, "index.html") : join(page, decoded(url.pathname));
   const inside = file.startsWith(page + sep) && existsSync(file) && statSync(file).isFile();
   const path = inside ? file : join(page, "index.html");
   res.writeHead(200, { "content-type": TYPES[extname(path)] ?? "application/octet-stream", "cache-control": "no-cache", "x-content-type-options": "nosniff" });
   res.end(readFileSync(path));
+}
+
+/** A path with its escapes read, or as it is where one is malformed (`/%zz`), which names no file. */
+function decoded(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {

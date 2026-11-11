@@ -5,6 +5,7 @@
 // takes its turn here.
 import type { PGlite } from "@electric-sql/pglite";
 import type { EngineIo } from "../../../src/engine-core.ts";
+import { catalog, CATALOG_QUERIES, type Catalog } from "../../../src/play-catalog.ts";
 
 const enc = new TextEncoder();
 function message(type: string, body: Uint8Array): Uint8Array {
@@ -48,7 +49,7 @@ export function pgliteIo(pg: PGlite): EngineIo {
     describe(text) {
       return serial(async () => {
         const { messages } = await pg.execProtocol(describeMessage(text), { throwOnError: false });
-        const out = { params: [] as { oid: number }[], columns: [] as { name: string; oid: number; table: number; attnum: number }[] };
+        const out = { params: [] as { oid: number }[], columns: [] as { name: string; oid: number; table: number; attnum: number; typmod: number }[] };
         for (const m of messages as any[]) {
           if (m.name === "error") {
             const err = new Error(m.message) as Error & { code?: string; position?: string };
@@ -57,7 +58,7 @@ export function pgliteIo(pg: PGlite): EngineIo {
             throw err;
           }
           if (m.name === "parameterDescription") out.params = (m.dataTypeIDs as number[]).map((oid) => ({ oid }));
-          if (m.name === "rowDescription") out.columns = (m.fields as any[]).map((f) => ({ name: f.name, oid: f.dataTypeID, table: f.tableID, attnum: f.columnID }));
+          if (m.name === "rowDescription") out.columns = (m.fields as any[]).map((f) => ({ name: f.name, oid: f.dataTypeID, table: f.tableID, attnum: f.columnID, typmod: f.dataTypeModifier }));
         }
         return out;
       });
@@ -69,4 +70,10 @@ export function pgliteIo(pg: PGlite): EngineIo {
       });
     },
   };
+}
+
+/** What the editor completes from the playground's Postgres, as `reylo play` reads a database's: at build time for the sample schema (lib/live/play-data.ts), and in the worker for a schema of the reader's own. */
+export async function readCatalog(io: Pick<EngineIo, "query">): Promise<Catalog> {
+  const q = CATALOG_QUERIES.postgres;
+  return catalog("postgres", await io.query(q.tables, []), await io.query(q.functions!, []), await io.query(q.types!, []));
 }

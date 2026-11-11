@@ -7,3 +7,4 @@ create table posts (id int auto_increment primary key, user_id int not null, tit
 create algorithm = merge view merged as select id, user_id, id + 1 as next, upper(title) as shout from posts;
 create view plain as select id, user_id, id + 1 as next from posts;
 create algorithm = temptable view temp as select id, user_id, id + 1 as next from posts;
+create view outer_plain as select users.id, users.name, plain.next from users left join plain on plain.user_id = users.id;

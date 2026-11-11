@@ -54,12 +54,13 @@ Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/ty
 
 Reylo is the perfect option for the agent era:
 
-- 💪 **The full power of SQL** — any statement, function, operator or syntax your database supports, in its own dialect.
-- 🌵 **DRY** — the types come from the SQL itself: no hand-written row types, no schema file to keep in sync.
-- 🎯 **Checked against your database** — a misspelled column, a wrong parameter or a dropped table is a type error, in `tsc` and in your editor.
-- 🤖 **Agent-friendly** — each fact lives in one place, so an agent cannot leave a stale type behind, and the type check finds every caller it missed.
-- 🧩 **Postgres, MySQL and SQLite** — bring your own driver: `pg`, postgres.js, `mysql2`, `better-sqlite3`, `Bun.sql`, Cloudflare D1 and [more](#supported-drivers).
-- ⚡ **No codegen** — the type checker asks Reylo directly: no generated files, no watcher.
+- 💪 **The full power of SQL** — any syntax, function or operator your database supports
+- 🌵 **DRY** — no redundant hand-written types
+- 🎯 **Checked against your database** — a misspelled column is a type error
+- 🤖 **Agent-friendly** — DRY code is more maintainable for agents
+- 🧩 **Postgres, MySQL, SQLite and DuckDB** (preview) — Neon, PlanetScale, Cloudflare D1, Turso and more
+- 🔌 **Bring your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](#supported-drivers)
+- ⚡ **No codegen** — no generated files, no watcher
 
 ## Setup
 
@@ -67,13 +68,12 @@ To install Reylo, you'll need:
 
 - **TypeScript 7.1 (currently in beta).** The first release with content mappers.
 - **Node 24 or later.**
-- **A running dev database.** Postgres, MySQL 8.0.22 or later, or a SQLite file: Reylo reads your current schema from it.
+- **A running dev database.** Postgres, MySQL 8.0.22 or later, or a SQLite or DuckDB file: Reylo reads your current schema from it.
 
-Install Reylo, the engine for your database and TypeScript 7.1:
+Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
 ```sh
 npm install reylo
-npm install -D @reylosql/postgres  # or mysql, sqlite
 npm install -D typescript@beta
 ```
 
@@ -104,7 +104,7 @@ Point Reylo at your dev database with `DATABASE_URL`, in your environment or in 
 
 ```sh
 # .env
-DATABASE_URL=postgres://localhost:5432/app  # or mysql://…, or file:./app.db for SQLite
+DATABASE_URL=postgres://localhost:5432/app  # or mysql://…, file:./app.db for SQLite, duckdb:./app.duckdb for DuckDB
 ```
 
 To make `.sql` imports work at run time too, load Reylo where your code runs. On Node:
@@ -114,6 +114,12 @@ node --env-file=.env --import reylo/register main.ts
 ```
 
 For Bun, Nub, Vite, Next.js, esbuild, webpack, Rspack, Cloudflare Workers and Jest, add [the plugin for your setup](https://reylo.dev/#plugins), or copy its complete [example project](https://github.com/colinhacks/reylo/tree/main/examples). To see the types as you type, set up [your editor](https://reylo.dev/#editors).
+
+To give your coding agent Reylo's rules for writing and running queries, install its skill:
+
+```sh
+npx skills add colinhacks/reylo --skill using-reylo
+```
 
 ## Usage
 
@@ -162,10 +168,11 @@ Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a D
 - **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`
 - **MySQL** — `mysql2`, `mariadb`, PlanetScale, `Bun.sql`
 - **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
+- **DuckDB** — `@duckdb/node-api`, which also types DuckDB's statements
 
 ## Documentation
 
-[reylo.dev](https://reylo.dev) covers the rest: every plugin and editor, configuration, errors, each database's data types and edge cases, and advanced examples. Agents can read it all as Markdown at [reylo.dev/llms.txt](https://reylo.dev/llms.txt).
+[reylo.dev](https://reylo.dev) covers the rest: every plugin and editor, configuration, errors, each database's data types and edge cases, and advanced examples. Agents can read it all as Markdown at [reylo.dev/llms.txt](https://reylo.dev/llms.txt). To move a Prisma project's queries to Reylo, see [Migrating from Prisma](https://reylo.dev/prisma).
 
 ## License
 

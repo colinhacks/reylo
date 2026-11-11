@@ -18,21 +18,21 @@
 //!
 //! This module is pure: `plan` reads the parse tree and synthesizes statement text, `resolve`
 //! turns the describes of that text into the column's `Type`. The build owns the round trips.
-//! The framework reads it too, and renders the `Type` to JSON Schema itself.
+//! A host may read it too, and render the `Type` to JSON Schema itself.
 
 use crate::dialect::Dialect;
 use crate::infer::Trust;
 use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::{oid, TypeRegistry};
 use crate::returning::Rows;
-use crate::types::{DescribedColumn, Field, Type};
+use crate::types::{DescribedColumn, Field, JsonType, Kind, Position, Type};
 use pg_query::protobuf::{self, node::Node as NodeEnum, AStar, ColumnRef, Node, ParseResult, RawStmt, ResTarget, SelectStmt};
 use serde_json::Value;
 use std::collections::HashSet;
 
 /// `json_build_object(k, v, …)` and its jsonb twin: the main case. `json_object` is SQLite's
-/// spelling of it; Postgres's own `json_object` takes arrays, whose arguments are never the
-/// literal keys this reads, so it falls through unrecognised there.
+/// spelling of it; Postgres's own `json_object` takes arrays, whose string literals are no keys, so
+/// the build reads it there as one value.
 const OBJECT_FNS: &[&str] = &["json_build_object", "jsonb_build_object", "json_object"];
 /// `json_agg(x)` and its jsonb twin: the same shape, as an array. `json_group_array` is
 /// SQLite's, and it answers `[]` rather than NULL over an empty group.
@@ -41,9 +41,16 @@ const AGG_FNS: &[&str] = &["json_agg", "jsonb_agg", "json_group_array"];
 const TOTAL_AGG_FNS: &[&str] = &["json_group_array"];
 /// A whole row, so the shape is the relation's own columns.
 const ROW_FNS: &[&str] = &["to_json", "to_jsonb", "row_to_json"];
+/// `json_build_array(a, b, …)` and its jsonb twin: an array of exactly those values, in order.
+const TUPLE_FNS: &[&str] = &["json_build_array", "jsonb_build_array"];
+/// `array_to_json(a)`: the JSON array of a Postgres array's elements, NULL for a NULL array.
+const ARRAY_TO_JSON: &str = "array_to_json";
+/// `array_agg(x)`: a Postgres array of `x`, read as a shape only for a whole row of no type the
+/// catalog has ([`Builder::anonymous_row`]).
+const ARRAY_AGG: &str = "array_agg";
 /// Every function name the shapes read on Postgres, for the trust check ([`Trust::shadowed`]): a
 /// name a user has also defined may resolve to that function, which builds what it likes.
-pub const POSTGRES_FUNCTIONS: &[&str] = &["json_build_object", "jsonb_build_object", "json_object", "json_agg", "jsonb_agg", "json_group_array", "to_json", "to_jsonb", "row_to_json"];
+pub const POSTGRES_FUNCTIONS: &[&str] = &["json_build_object", "jsonb_build_object", "json_object", "json_agg", "jsonb_agg", "json_group_array", "to_json", "to_jsonb", "row_to_json", "json_build_array", "jsonb_build_array", "array_to_json", "array_agg"];
 
 /// How many synthesized statements one statement may cost. A nested fetch needs one; a shape
 /// with an aggregate under an object needs two. The cap keeps a pathological statement from
@@ -182,12 +189,12 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         NodeEnum::SelectStmt(s) => s.window_clause.clone(),
         _ => Vec::new(),
     };
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields, lockstep: crate::infer::targets_lockstep(top, &targets, dialect, trust) };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
-        if !is_constructor(val) && !builder.reads_lateral(val) {
+        if !is_constructor(val) && !builder.reads_lateral(val) && !builder.reads_anonymous_row(val) {
             continue;
         }
         let Some(name) = target_name(rt) else { continue };
@@ -238,9 +245,53 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
 /// Turn one shape plus its probes' describes into the column's type.
 pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistry, param_oids: &[u32]) -> Resolved {
     let mut unresolved = Vec::new();
-    let ctx = ResolveCtx { probes, registry, param_oids };
+    let ctx = ResolveCtx { probes, registry, param_oids, document: true };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
-    Resolved { ty, non_null, unresolved }
+    Resolved { ty: document(ty), non_null, unresolved }
+}
+
+/// Turn the shape of a whole row of no type the catalog has, or of an array of such rows, at a SQL
+/// position into the column's type, under Postgres's names for it: `record`, and `_record` for an
+/// array, of any depth as every Postgres array is ([`Builder::anonymous_row`]). `None` where the
+/// shape resolves to no row's fields, or to no array of them: the describe's type stands then.
+pub fn resolve_row(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistry, param_oids: &[u32]) -> Option<Resolved> {
+    let mut unresolved = Vec::new();
+    let ctx = ResolveCtx { probes, registry, param_oids, document: false };
+    let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
+    let ty = match ty.kind {
+        Kind::Record(_) => ty.named("record"),
+        // One dimension: a row is no array, so nothing in it can add another.
+        Kind::Array(array) if matches!(array.element.ty.kind, Kind::Record(_)) => {
+            let element = Position { ty: array.element.ty.named("record"), nullable: array.element.nullable };
+            Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), any_depth: false, ..array })).named("_record")
+        }
+        _ => return None,
+    };
+    Some(Resolved { ty, non_null, unresolved })
+}
+
+/// A JSON document of `content`, what a shape resolves to inside one: a document as it is, and
+/// anything else, an object, an array or a SQL value, the content of a document that holds it.
+pub fn document(content: Type) -> Type {
+    if content.is_json() {
+        content
+    } else {
+        Type::json_of(Position::non_null(content))
+    }
+}
+
+/// What a document holds, as a value inside another document: the content a statement built, or
+/// the document itself (any JSON, or the values a schema admits).
+pub fn content(ty: Type) -> Type {
+    match ty.kind {
+        Kind::Json(JsonType { content: Some(content), .. }) => content.ty,
+        kind => Type { kind, ..ty },
+    }
+}
+
+/// Whether a type is a JSON array a statement built (`json_agg`).
+pub fn is_list(ty: &Type) -> bool {
+    matches!(&ty.kind, Kind::Json(JsonType { content: Some(c), .. }) if matches!(c.ty.kind, Kind::Array(_)))
 }
 
 /// Every oid a resolved shape reads, so the host can be asked for the ones the registry lacks.
@@ -248,6 +299,7 @@ pub fn oids(shape: &Shape, probes: &[Option<Outcome>], param_oids: &[u32], out: 
     match shape {
         Shape::Object { fields, .. } => fields.iter().for_each(|(_, s)| oids(s, probes, param_oids, out)),
         Shape::Array { items, .. } => oids(items, probes, param_oids, out),
+        Shape::Tuple { items, .. } => items.iter().for_each(|s| oids(s, probes, param_oids, out)),
         Shape::Nullable(inner) => oids(inner, probes, param_oids, out),
         Shape::Column { probe, index } => {
             if let Some(col) = probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
@@ -258,6 +310,10 @@ pub fn oids(shape: &Shape, probes: &[Option<Outcome>], param_oids: &[u32], out: 
             if let Some(o) = probes.get(*probe).and_then(|o| o.as_ref()) {
                 out.extend(o.columns.iter().map(|c| c.type_oid));
             }
+        }
+        Shape::RowOrValue { row, value } => {
+            oids(&Shape::Row { probe: *row }, probes, param_oids, out);
+            oids(value, probes, param_oids, out);
         }
         Shape::Param(n) => out.extend(param_oids.get((*n as usize).saturating_sub(1)).copied()),
         Shape::Unknown => {}
@@ -355,6 +411,10 @@ struct Builder<'a> {
     windows: Vec<Node>,
     /// The columns the statement's own rows may have ([`crate::infer::row_fields`]).
     fields: HashSet<String>,
+    /// Whether the top statement's select list may call more than one set-returning function,
+    /// which the server runs in step: a shorter one is NULL in the rows a longer one goes on for,
+    /// which a probe of one of them alone never shows ([`crate::infer::targets_lockstep`]).
+    lockstep: bool,
 }
 
 /// A target of a LATERAL subquery that builds JSON ([`Builder::lateral_target`]).
@@ -414,6 +474,10 @@ impl Builder<'_> {
                 // else's function, and so may be an unqualified one a user also defined
                 // (`jsonb_build_object(text, text)` matches a call better than the built-in).
                 let Some(name) = crate::infer::builtin_name(&f.funcname).filter(|n| self.trust.builtin(n)) else { return self.leaf(expr) };
+                // Postgres's own `json_object` takes arrays of keys and values, or one array of both.
+                if self.dialect == Dialect::Postgres && name == "json_object" {
+                    return self.leaf(expr);
+                }
                 if OBJECT_FNS.contains(&name.as_str()) {
                     if f.args.len() % 2 != 0 {
                         return Shape::Unknown;
@@ -421,10 +485,13 @@ impl Builder<'_> {
                     let mut fields = Vec::with_capacity(f.args.len() / 2);
                     for pair in f.args.chunks(2) {
                         let Some(key) = string_const(&pair[0]) else { return Shape::Unknown };
-                        fields.push((key, self.walk(&pair[1])));
+                        let value = self.walk(&pair[1]);
+                        set_field(&mut fields, key, value);
                     }
                     Shape::Object { fields, non_null: true }
-                } else if AGG_FNS.contains(&name.as_str()) {
+                } else if AGG_FNS.contains(&name.as_str()) || (self.dialect == Dialect::Postgres && name == ARRAY_AGG && f.args.len() == 1 && !f.agg_star && !f.func_variadic && self.anonymous_row(&f.args[0])) {
+                    // `array_agg(s)` of an item whose row has no type of the catalog's is an
+                    // array of those rows, NULL over no rows as `json_agg` is.
                     if f.args.len() != 1 {
                         return Shape::Unknown;
                     }
@@ -446,6 +513,14 @@ impl Builder<'_> {
                     let shape = self.aggregate(f, non_null);
                     self.under_aggregate = outer;
                     shape
+                } else if self.dialect == Dialect::Postgres && TUPLE_FNS.contains(&name.as_str()) {
+                    // `VARIADIC` passes the items as one array, which the build does not read.
+                    if f.func_variadic {
+                        return Shape::Unknown;
+                    }
+                    Shape::Tuple { items: f.args.iter().map(|a| self.walk(a)).collect(), non_null: true, skips_nulls: false }
+                } else if self.dialect == Dialect::Postgres && name == ARRAY_TO_JSON {
+                    self.array_to_json(f)
                 } else if ROW_FNS.contains(&name.as_str()) {
                     // A bare name is a column before it is a FROM item, of the innermost query
                     // that has one of that name: it is the item's whole row only when no FROM in
@@ -462,6 +537,35 @@ impl Builder<'_> {
                     self.leaf(expr)
                 }
             }
+            // `JSON_OBJECT(k: v, …)` builds an object of its literal keys, a NULL value written as a
+            // JSON `null`. `ABSENT ON NULL` leaves a NULL value's key out, which no field type
+            // says, and a value `FORMAT JSON` is parsed as JSON, of no shape the build reads.
+            Some(NodeEnum::JsonObjectConstructor(c)) if self.dialect == Dialect::Postgres => {
+                if c.absent_on_null || !returns_json(c.output.as_ref()) {
+                    return if returns_json(c.output.as_ref()) { Shape::Unknown } else { self.leaf(expr) };
+                }
+                let mut fields = Vec::with_capacity(c.exprs.len());
+                for pair in &c.exprs {
+                    let Some(NodeEnum::JsonKeyValue(kv)) = pair.node.as_ref() else { return Shape::Unknown };
+                    let (Some(key), Some(value)) = (kv.key.as_deref().and_then(string_const), kv.value.as_deref()) else { return Shape::Unknown };
+                    let value = self.json_value(value);
+                    set_field(&mut fields, key, value);
+                }
+                Shape::Object { fields, non_null: true }
+            }
+            // `JSON_ARRAY(a, b, …)` builds an array of its values, leaving a NULL one out unless
+            // `NULL ON NULL` writes it as a JSON `null`.
+            Some(NodeEnum::JsonArrayConstructor(c)) if self.dialect == Dialect::Postgres => {
+                if !returns_json(c.output.as_ref()) {
+                    return self.leaf(expr);
+                }
+                let mut items = Vec::with_capacity(c.exprs.len());
+                for item in &c.exprs {
+                    let Some(NodeEnum::JsonValueExpr(value)) = item.node.as_ref() else { return Shape::Unknown };
+                    items.push(self.json_value(value));
+                }
+                Shape::Tuple { items, non_null: true, skips_nulls: c.absent_on_null }
+            }
             // `coalesce(x, …)` is `x` where `x` stands alone or is never NULL, and an array under
             // `'[]'` is that array or an empty one, so never NULL. Under any other default it may be
             // that default, of any shape, so it is one value the build reads as it is.
@@ -471,8 +575,8 @@ impl Builder<'_> {
                 let drafted = self.drafts.clone();
                 match (self.walk(first), &c.args[1..]) {
                     (shape, []) => shape,
-                    (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. }), _) => shape,
-                    (Shape::Array { items, .. }, [default]) if crate::infer::is_empty_array(default) => Shape::Array { items, non_null: true },
+                    (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. } | Shape::Tuple { non_null: true, .. }), _) => shape,
+                    (Shape::Array { items, .. }, [default]) if crate::infer::is_empty_array(default) || (is_array_agg(first) && is_empty_sql_array(default)) => Shape::Array { items, non_null: true },
                     // A placeholder is the whole's type under a default that cannot widen it, and it
                     // resolves nullable. Under any other one the whole is no probe's to read, since a
                     // probe binds nothing: `coalesce($1::int, 1.5)` is a numeric.
@@ -508,9 +612,13 @@ impl Builder<'_> {
             Some(NodeEnum::ColumnRef(_)) if star_alias(expr).is_some() => self.whole(&star_alias(expr).expect("a star alias")),
             // A column of a LATERAL subquery that the subquery builds: the shape of what it builds
             // there. A WITH query's or another subquery's is a statement of its own, which the
-            // probe reading the column follows ([`Outcome::built`]).
+            // probe reading the column follows ([`Outcome::built`]). A bare name that is no column
+            // but an item's (`jsonb_agg(s)`) is the item's whole row, as `s.*` is, where the row is
+            // of no type the catalog has: a derived table's or a WITH query's describes as
+            // `record`, of no fields, where its probe's columns are its fields.
             Some(NodeEnum::ColumnRef(_)) => match self.lateral_target(expr) {
                 Some(lateral) => self.lateral(lateral),
+                None if self.anonymous_row(expr) => self.whole(&bare_alias(expr).expect("an item's alias")),
                 None => self.leaf(expr),
             },
             // A CASE whose one branch builds JSON and whose others are NULL: that branch's shape,
@@ -519,10 +627,40 @@ impl Builder<'_> {
                 Some(built) => force_nullable(self.walk(built)),
                 None => self.leaf(expr),
             },
+            // A cast to JSON of what the statement builds is that value, in its shape. Of anything
+            // else (a text column, a literal, a parameter) it is JSON the build knows nothing of:
+            // the cast is then the value to read, of type `json` or `jsonb`, never its operand's,
+            // and it may be JSON's null (`'null'::jsonb`), which a document holds as a null.
             Some(NodeEnum::TypeCast(t)) => match (t.arg.as_deref(), casts_to_json(t)) {
-                (Some(arg), true) => self.walk(arg),
+                (Some(arg), true) => {
+                    // What the walk drafts for the operand goes unread where the cast is the value.
+                    let drafted = self.drafts.clone();
+                    match self.walk(arg) {
+                        shape if builds(&shape) => shape,
+                        _ => {
+                            self.drafts = drafted;
+                            Shape::Nullable(Box::new(self.leaf(expr)))
+                        }
+                    }
+                }
                 _ => self.leaf(expr),
             },
+            // `array(select c from (…) c)`: `{}` over no rows, never NULL, as `array_to_json` of it reads it.
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 && self.array_of_rows(s) => {
+                let Some(select) = s.subselect.as_deref().and_then(as_select) else { return Shape::Unknown };
+                let Some(inner) = single_target(select).and_then(|rt| rt.val.clone()) else { return Shape::Unknown };
+                let withs = self.withs.last().cloned().unwrap_or_default().with(select.with_clause.as_ref(), self.columns);
+                self.next_ctx += 1;
+                self.stack.push((self.next_ctx, select.from_clause.clone(), None));
+                self.withs.push(withs);
+                let rows = self.rows.take();
+                self.rows = rows.as_ref().map(|r| r.under(&select.from_clause));
+                let items = self.walk(&inner);
+                self.rows = rows;
+                self.withs.pop();
+                self.stack.pop();
+                Shape::Array { items: Box::new(items), non_null: true }
+            }
             Some(NodeEnum::SubLink(s)) => {
                 if s.sub_link_type != protobuf::SubLinkType::ExprSublink as i32 {
                     return Shape::Unknown;
@@ -558,6 +696,59 @@ impl Builder<'_> {
                 }
             }
             _ => self.leaf(expr),
+        }
+    }
+
+    /// One value of `JSON_OBJECT` or `JSON_ARRAY`: its expression's shape, or nothing for one
+    /// `FORMAT JSON` parses as JSON.
+    fn json_value(&mut self, value: &protobuf::JsonValueExpr) -> Shape {
+        let parsed = value.format.as_ref().is_some_and(|f| f.format_type != protobuf::JsonFormatType::JsFormatDefault as i32 && f.format_type != protobuf::JsonFormatType::Undefined as i32);
+        match value.raw_expr.as_deref() {
+            Some(raw) if !parsed => self.walk(raw),
+            _ => Shape::Unknown,
+        }
+    }
+
+    /// `array_to_json(ARRAY(SELECT x …))`, an array of the values of `x`, never NULL, and
+    /// `array_to_json(array_agg(x))`, as `json_agg(x)` is. `array_to_json` of any other array, and
+    /// its form with `pretty`, which is NULL for a NULL `pretty`, are values the build reads as
+    /// they are.
+    fn array_to_json(&mut self, f: &protobuf::FuncCall) -> Shape {
+        let [arg] = f.args.as_slice() else { return Shape::Unknown };
+        match arg.node.as_ref() {
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => {
+                let Some(select) = s.subselect.as_deref().and_then(as_select) else { return Shape::Unknown };
+                if select.with_clause.is_some() || has_grouping_sets(select) || !select.values_lists.is_empty() || select.op != protobuf::SetOperation::SetopNone as i32 {
+                    return Shape::Unknown;
+                }
+                let Some(inner) = single_target(select).and_then(|rt| rt.val.clone()) else { return Shape::Unknown };
+                let withs = self.withs.last().cloned().unwrap_or_default().with(select.with_clause.as_ref(), self.columns);
+                self.next_ctx += 1;
+                self.stack.push((self.next_ctx, select.from_clause.clone(), None));
+                self.withs.push(withs);
+                let rows = self.rows.take();
+                self.rows = rows.as_ref().map(|r| r.under(&select.from_clause));
+                let items = self.walk(&inner);
+                self.rows = rows;
+                self.withs.pop();
+                self.stack.pop();
+                Shape::Array { items: Box::new(items), non_null: true }
+            }
+            Some(NodeEnum::FuncCall(inner)) if crate::infer::builtin_name(&inner.funcname).is_some_and(|n| n == "array_agg" && self.trust.builtin(&n)) && inner.args.len() == 1 && !inner.func_variadic && !inner.agg_star => {
+                // An aggregate of the top statement's own under a plain GROUP BY, or over a frame
+                // that holds the current row, has a row; anywhere else it may be NULL.
+                let has_a_row = match inner.over.as_deref() {
+                    Some(over) => crate::infer::frame_holds_current_row(over, &self.windows),
+                    None => self.grouped,
+                };
+                let non_null = has_a_row && self.stack.len() == 1 && inner.agg_filter.is_none();
+                let outer = self.under_aggregate;
+                self.under_aggregate |= inner.over.is_none() && self.stack.len() == 1;
+                let shape = self.aggregate(inner, non_null);
+                self.under_aggregate = outer;
+                shape
+            }
+            _ => self.leaf(&Node { node: Some(NodeEnum::FuncCall(Box::new(f.clone()))) }),
         }
     }
 
@@ -702,8 +893,38 @@ impl Builder<'_> {
         match self.rows.as_ref().and_then(|r| r.whole(alias)).map(|(target, missing)| (target.to_string(), missing)) {
             Some((target, true)) => force_nullable(self.row(&target)),
             Some((target, false)) => self.row(&target),
-            None => self.row(alias),
+            None => self.row_or_value(alias),
         }
+    }
+
+    /// `alias.*`, where the alias may be a function's: a function that returns one value of no
+    /// row type gives that value for it (`makeWholeRowVar`), which its row's describe does not
+    /// tell from a row of one column. So the same reference read as a value says which it is:
+    /// `coalesce` of one argument is that argument, and reads `alias.*` as an expression does.
+    /// Its type also names the row's fields where an alias renames the item's columns: a row of a
+    /// named type (a table's, a view's, a function's that returns one) keeps the type's own names,
+    /// which `alias.*` in a select list does not show.
+    fn row_or_value(&mut self, alias: &str) -> Shape {
+        let row = self.row(alias);
+        let (Shape::Row { probe }, true) = (&row, self.one_function(alias) || self.renamed(alias)) else { return row };
+        let probe = *probe;
+        let star = star_of(alias);
+        let whole = Node { node: Some(NodeEnum::CoalesceExpr(Box::new(protobuf::CoalesceExpr { args: vec![star], location: -1, ..Default::default() }))) };
+        // Whether a function's value is NULL is not read: it is a value the function returned.
+        let value = force_nullable(self.leaf(&whole));
+        Shape::RowOrValue { row: probe, value: Box::new(value) }
+    }
+
+    /// Whether the innermost FROM with an item of this name reads it from one function with no
+    /// ordinality column: any other item's whole row is a row, whatever it holds.
+    fn one_function(&self, alias: &str) -> bool {
+        self.stack.iter().rev().find_map(|(_, from, _)| from.iter().find_map(|item| function_item(item, alias))).unwrap_or(false)
+    }
+
+    /// Whether the innermost FROM with an item of this name gives a table or a function its own
+    /// names for their columns (`comments c (a, b)`).
+    fn renamed(&self, alias: &str) -> bool {
+        self.stack.iter().rev().find_map(|(_, from, _)| from.iter().find_map(|item| renamed_item(item, alias))).unwrap_or(false)
     }
 
     /// One value expression, as a column of the probe for the constructor's own `FROM` context.
@@ -754,9 +975,10 @@ impl Builder<'_> {
             },
         };
         let index = self.drafts[probe].items.len();
+        let in_step = self.lockstep && self.stack.len() == 1 && crate::infer::set_calls(&expr, self.trust) > 0;
         self.drafts[probe].items.push(expr);
         let shape = Shape::Column { probe, index };
-        if missing || self.nulled_by_grouping() {
+        if missing || in_step || self.nulled_by_grouping() {
             Shape::Nullable(Box::new(shape))
         } else {
             shape
@@ -791,6 +1013,48 @@ impl Builder<'_> {
         names.iter().any(|n| !here.shows(n) && around.iter().any(|l| !l.lacks(n)))
     }
 
+    /// Whether `expr` is a bare name that is no column but the whole row of an item whose row is of
+    /// no type the catalog has (`s` of a derived table `s`), which describes as `record`, of no
+    /// fields, and which a probe of `s.*` reads field by field. A table's row describes as the
+    /// table's type, with its columns.
+    fn anonymous_row(&self, expr: &Node) -> bool {
+        bare_alias(expr).is_some_and(|alias| self.stack.iter().zip(&self.withs).any(|((_, from, _), withs)| Level::of(from, withs, self.columns).names_anonymous(&alias)) && self.no_column(&alias))
+    }
+
+    /// Whether a target of the statement's own is such a row at a SQL position, which the describe
+    /// types `record` or `record[]` ([`Builder::anonymous_row`]): the row itself, an `array_agg` of
+    /// it, under a `coalesce`, or as a scalar subquery's one target over its own FROM.
+    fn reads_anonymous_row(&self, expr: &Node) -> bool {
+        match expr.node.as_ref() {
+            Some(NodeEnum::ColumnRef(_)) => self.anonymous_row(expr),
+            Some(NodeEnum::FuncCall(f)) => is_array_agg(expr) && f.args.first().is_some_and(|a| self.anonymous_row(a)),
+            Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|a| self.reads_anonymous_row(a)),
+            // `array(select c from (…) c)`: an array of the whole rows of its own FROM.
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => self.array_of_rows(s),
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ExprSublink as i32 => {
+                let Some(select) = s.subselect.as_deref().and_then(as_select).filter(|s| s.with_clause.is_none()) else { return false };
+                let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return false };
+                let level = Level::of(&select.from_clause, self.withs.last().unwrap_or(&Withs::default()), self.columns);
+                let row = |a: &Node| bare_alias(a).is_some_and(|alias| level.names_anonymous(&alias) && level.lacks(&alias));
+                match inner.node.as_ref() {
+                    Some(NodeEnum::FuncCall(f)) => is_array_agg(inner) && f.args.first().is_some_and(row),
+                    Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|a| is_array_agg(a) && matches!(a.node.as_ref(), Some(NodeEnum::FuncCall(f)) if f.args.first().is_some_and(row))),
+                    _ => row(inner),
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether an `ARRAY(SELECT c FROM … c)` collects the whole rows of an item of its own FROM whose row is of no type the catalog has, where the name is no column of that FROM.
+    fn array_of_rows(&self, s: &protobuf::SubLink) -> bool {
+        let Some(select) = s.subselect.as_deref().and_then(as_select).filter(|s| s.with_clause.is_none() && s.values_lists.is_empty() && s.op == protobuf::SetOperation::SetopNone as i32 && !has_grouping_sets(s)) else { return false };
+        let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return false };
+        let level = Level::of(&select.from_clause, self.withs.last().unwrap_or(&Withs::default()), self.columns);
+        // A name that is a column of any FROM in scope is that column, before an item's whole row.
+        bare_alias(inner).is_some_and(|alias| level.names(&alias) == Some(true) && level.lacks(&alias) && !self.ahead && self.no_column(&alias))
+    }
+
     /// Whether no FROM in scope shows a column of this name, for certain.
     fn no_column(&self, name: &str) -> bool {
         self.ahead || self.stack.iter().zip(&self.withs).all(|((_, from, _), withs)| Level::of(from, withs, self.columns).lacks(name))
@@ -803,13 +1067,7 @@ impl Builder<'_> {
             return Shape::Unknown;
         }
         let Some(probe) = self.draft(Some(alias.to_string())) else { return Shape::Unknown };
-        let star = Node {
-            node: Some(NodeEnum::ColumnRef(ColumnRef {
-                fields: vec![string_node(alias), Node { node: Some(NodeEnum::AStar(AStar {})) }],
-                location: -1,
-            })),
-        };
-        self.drafts[probe].items.push(star);
+        self.drafts[probe].items.push(star_of(alias));
         Shape::Row { probe }
     }
 
@@ -913,8 +1171,9 @@ fn is_constructor(expr: &Node) -> bool {
     match expr.node.as_ref() {
         Some(NodeEnum::FuncCall(f)) => {
             let name = func_name(f).unwrap_or_default();
-            OBJECT_FNS.contains(&name.as_str()) || AGG_FNS.contains(&name.as_str()) || ROW_FNS.contains(&name.as_str())
+            OBJECT_FNS.contains(&name.as_str()) || AGG_FNS.contains(&name.as_str()) || ROW_FNS.contains(&name.as_str()) || TUPLE_FNS.contains(&name.as_str()) || name == ARRAY_TO_JSON
         }
+        Some(NodeEnum::JsonObjectConstructor(_) | NodeEnum::JsonArrayConstructor(_)) => true,
         Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(is_constructor),
         Some(NodeEnum::TypeCast(t)) => casts_to_json(t) && t.arg.as_deref().is_some_and(is_constructor),
         Some(NodeEnum::CaseExpr(c)) => case_branch(c).is_some(),
@@ -927,6 +1186,20 @@ fn is_constructor(expr: &Node) -> bool {
                     .and_then(|rt| rt.val.clone())
                     .is_some_and(|v| is_constructor(&v))
         }
+        _ => false,
+    }
+}
+
+/// Whether `expr` is a one-argument `array_agg(…)`, not a window's.
+fn is_array_agg(expr: &Node) -> bool {
+    matches!(expr.node.as_ref(), Some(NodeEnum::FuncCall(f)) if func_name(f).is_some_and(|n| n == ARRAY_AGG) && f.args.len() == 1 && !f.agg_star && !f.func_variadic && f.over.is_none())
+}
+
+/// Whether `expr` is an empty Postgres array: `'{}'`, under casts.
+fn is_empty_sql_array(expr: &Node) -> bool {
+    match expr.node.as_ref() {
+        Some(NodeEnum::AConst(c)) => matches!(&c.val, Some(protobuf::a_const::Val::Sval(s)) if s.sval == "{}"),
+        Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(is_empty_sql_array),
         _ => false,
     }
 }
@@ -1041,6 +1314,50 @@ fn left_of(from: &[Node], alias: &str) -> Option<Vec<Node>> {
     Some(left)
 }
 
+/// `alias.*`.
+fn star_of(alias: &str) -> Node {
+    Node {
+        node: Some(NodeEnum::ColumnRef(ColumnRef {
+            fields: vec![string_node(alias), Node { node: Some(NodeEnum::AStar(AStar {})) }],
+            location: -1,
+        })),
+    }
+}
+
+/// Of the item of a FROM that goes by `alias`, inside the joins of `node` where it is one, whether
+/// it reads one function with no ordinality column; `None` where no item goes by it. A join with
+/// an alias of its own hides the names inside it.
+fn function_item(node: &Node, alias: &str) -> Option<bool> {
+    let named = |a: Option<&protobuf::Alias>| a.is_some_and(|a| a.aliasname == alias);
+    match node.node.as_ref()? {
+        NodeEnum::RangeFunction(f) => match &f.alias {
+            Some(a) => a.aliasname == alias,
+            None => crate::infer::function_item_name(f).as_deref() == Some(alias),
+        }
+        .then_some(f.functions.len() == 1 && !f.ordinality),
+        NodeEnum::JoinExpr(j) if j.alias.is_some() => named(j.alias.as_ref()).then_some(false),
+        NodeEnum::JoinExpr(j) => j.larg.as_deref().and_then(|n| function_item(n, alias)).or_else(|| j.rarg.as_deref().and_then(|n| function_item(n, alias))),
+        _ => (item_alias(node).as_deref() == Some(alias)).then_some(false),
+    }
+}
+
+/// Of the item of a FROM that goes by `alias`, as [`function_item`] finds it, whether its alias
+/// names columns of a table or a function, whose row may keep its type's names for them.
+fn renamed_item(node: &Node, alias: &str) -> Option<bool> {
+    let named = |a: Option<&protobuf::Alias>| a.is_some_and(|a| a.aliasname == alias);
+    let renames = |a: Option<&protobuf::Alias>| a.is_some_and(|a| !a.colnames.is_empty());
+    match node.node.as_ref()? {
+        NodeEnum::RangeVar(rv) => (item_alias(node).as_deref() == Some(alias)).then(|| renames(rv.alias.as_ref())),
+        NodeEnum::RangeFunction(f) => match &f.alias {
+            Some(a) => (a.aliasname == alias).then(|| renames(Some(a))),
+            None => (crate::infer::function_item_name(f).as_deref() == Some(alias)).then_some(false),
+        },
+        NodeEnum::JoinExpr(j) if j.alias.is_some() => named(j.alias.as_ref()).then_some(false),
+        NodeEnum::JoinExpr(j) => j.larg.as_deref().and_then(|n| renamed_item(n, alias)).or_else(|| j.rarg.as_deref().and_then(|n| renamed_item(n, alias))),
+        _ => (item_alias(node).as_deref() == Some(alias)).then_some(false),
+    }
+}
+
 /// The name a FROM item goes by: its alias, or a table's own name.
 fn item_alias(node: &Node) -> Option<String> {
     match node.node.as_ref()? {
@@ -1121,6 +1438,7 @@ fn force_nullable(shape: Shape) -> Shape {
     match shape {
         Shape::Object { fields, .. } => Shape::Object { fields, non_null: false },
         Shape::Array { items, .. } => Shape::Array { items, non_null: false },
+        Shape::Tuple { items, skips_nulls, .. } => Shape::Tuple { items, non_null: false, skips_nulls },
         Shape::Unknown | Shape::Nullable(_) => shape,
         // A column, a whole row or a parameter says nothing of the row it is read from.
         other => Shape::Nullable(Box::new(other)),
@@ -1272,15 +1590,54 @@ struct ResolveCtx<'a> {
     probes: &'a [Option<Outcome>],
     registry: &'a TypeRegistry,
     param_oids: &'a [u32],
+    /// Whether the shape is read as JSON, where a row is an object, which keeps the last of two
+    /// fields of one name; a row at a SQL position is read by position, every field in its place.
+    document: bool,
+}
+
+/// `fields` with the last of each name, where the first of it stood.
+fn last_of_each_name(fields: Vec<Field>) -> Vec<Field> {
+    let mut out: Vec<Field> = Vec::with_capacity(fields.len());
+    for field in fields {
+        match out.iter_mut().find(|f| f.name == field.name) {
+            Some(first) => *first = field,
+            None => out.push(field),
+        }
+    }
+    out
 }
 
 impl ResolveCtx<'_> {
+    /// The probe's column a `RowOrValue`'s value reads.
+    fn whole_value(&self, value: &Shape) -> Option<&DescribedColumn> {
+        match value {
+            Shape::Nullable(inner) => self.whole_value(inner),
+            Shape::Column { probe, index } => self.probes.get(*probe)?.as_ref()?.columns.get(*index),
+            _ => None,
+        }
+    }
+
+    /// The field names of the composite type a column is of, through a domain; `None` for a
+    /// `record`, or a type the registry does not hold.
+    fn field_names(&self, col: &DescribedColumn) -> Option<Vec<String>> {
+        let t = self.registry.get(self.registry.resolve_domain(col.type_oid))?;
+        (t.kind == crate::pgtypes::TypeKind::Composite && col.type_oid != oid::RECORD && !t.fields.is_empty()).then(|| t.fields.iter().map(|f| f.name.clone()).collect())
+    }
+
+    /// Whether a value of this column is a row: `record`, a composite type, or a domain over one.
+    fn is_row(&self, col: &DescribedColumn) -> bool {
+        col.type_oid == oid::RECORD || self.registry.get(self.registry.resolve_domain(col.type_oid)).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Composite)
+    }
+
     /// A probe's column as a type: what the catalog says of it, with what the probe's own
     /// analysis said of an array it builds (`array[x, null]` holds a NULL element) and of the
-    /// values and the document a CHECK keeps it to, as a result column gets them.
+    /// values, the document and the non-finite values a CHECK keeps it to or out of, as a result
+    /// column gets them, under the type modifier its describe reported (`varchar(20)`'s size).
     fn column(&self, col: &DescribedColumn) -> Type {
-        let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
-        crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref()), col.document.as_ref())
+        let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { crate::postgres::nest(col, self.registry) };
+        // A built array of arrays carries its elements' nullability at its innermost level, as a result column does.
+        let items = if col.nested.is_some() { None } else { col.nullable_items };
+        col.facts.apply(col.non_finite.apply(crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, items), col.values.as_deref(), self.registry.holds_strings(col.type_oid)), col.document.as_ref())))
     }
 
     /// One shape as (type, whether the value can never be null).
@@ -1291,14 +1648,50 @@ impl ResolveCtx<'_> {
                     .iter()
                     .map(|(key, value)| {
                         let (ty, non_null) = self.node(value, &join(path, key), unresolved);
-                        Field { name: key.clone(), ty, nullable: !non_null }
+                        Field::new(key.clone(), ty, !non_null)
                     })
                     .collect();
-                (Type::Object { fields }, *non_null)
+                (Type::record(fields), *non_null)
             }
             Shape::Array { items, non_null } => {
                 let (of, items_non_null) = self.node(items, &join(path, "[]"), unresolved);
-                (Type::List { of: Box::new(of), nullable_items: !items_non_null }, *non_null)
+                (Type::array(Position::new(of, !items_non_null)), *non_null)
+            }
+            // A tuple is the JSON Schema of an array of exactly its items, each as the database
+            // writes it inside a document. Where NULL items are left out and one may be NULL,
+            // the places shift: an array of any of the items, as many at most.
+            Shape::Tuple { items, non_null, skips_nulls } => {
+                use reylo_engine_core::schema::{nullable, SchemaOptions};
+                // A domain is written as its base type, whose name the schema's rules key on.
+                let items: Vec<(Type, bool)> = items
+                    .iter()
+                    .map(|item| {
+                        let (ty, non_null) = self.node(item, &join(path, "[]"), unresolved);
+                        let bases = self.registry.domain_bases(&ty.names());
+                        (ty.renamed(&|name| bases.get(name).cloned()), non_null)
+                    })
+                    .collect();
+                let schema = if *skips_nulls && items.iter().any(|(_, non_null)| !non_null) {
+                    let mut members: Vec<Value> = Vec::new();
+                    for (ty, _) in &items {
+                        let member = ty.json_schema(SchemaOptions::IN_JSON);
+                        if !members.contains(&member) {
+                            members.push(member);
+                        }
+                    }
+                    let one = if members.len() == 1 { members.remove(0) } else { serde_json::json!({ "anyOf": members }) };
+                    serde_json::json!({ "type": "array", "items": one, "maxItems": items.len() })
+                } else if items.is_empty() {
+                    // JSON Schema 2020-12 refuses an empty `prefixItems`, so no items is `items: false` alone.
+                    serde_json::json!({ "type": "array", "items": false })
+                } else {
+                    let prefix: Vec<Value> = items.iter().map(|(ty, non_null)| {
+                        let schema = ty.json_schema(SchemaOptions::IN_JSON);
+                        if *non_null { schema } else { nullable(schema) }
+                    }).collect();
+                    serde_json::json!({ "type": "array", "prefixItems": prefix, "items": false, "minItems": items.len() })
+                };
+                (Type::json_schema_of(schema), *non_null)
             }
             Shape::Column { probe, index } => match self.probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| Some((o.columns.get(*index)?, o.built.get(*index).and_then(Option::as_ref)))) {
                 // JSON a WITH query or a derived table builds, NULL where the item's row has it so
@@ -1310,12 +1703,12 @@ impl ResolveCtx<'_> {
                         p if p.starts_with("[]") => display_path(&format!("{path}{p}")),
                         p => display_path(&join(path, p)),
                     }));
-                    (built.ty.clone(), built.non_null && !col.nullable)
+                    (content(built.ty.clone()), built.non_null && !col.nullable)
                 }
                 Some((col, None)) if col.type_oid != oid::UNKNOWN => (self.column(col), !col.nullable),
                 _ => {
                     unresolved.push(display_path(path));
-                    (Type::Unknown, false)
+                    (Type::unknown(), false)
                 }
             },
             Shape::Row { probe } => match self.probes.get(*probe).and_then(|o| o.as_ref()) {
@@ -1325,25 +1718,59 @@ impl ResolveCtx<'_> {
                         .iter()
                         .enumerate()
                         .map(|(i, col)| {
+                            // A field the item builds, a nested array of rows: what it builds, NULL only where that is.
+                            let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
+                            if let Some(built) = outcome.built.get(i).and_then(Option::as_ref).filter(|b| !b.ty.is_json()) {
+                                // NULL where the item builds it so, or where a join pads the item that holds it.
+                                return Field::new(col.name.clone(), built.ty.clone(), !built.non_null || (col.nullable && present));
+                            }
                             let ty = if col.type_oid == oid::UNKNOWN {
                                 unresolved.push(display_path(&join(path, &col.name)));
-                                Type::Unknown
+                                Type::unknown()
                             } else {
                                 self.column(col)
                             };
                             // A field is as the read with the row there has it: the outer join that
                             // nulls the object nulls none of a row that exists.
                             let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
-                            Field { name: col.name.clone(), ty, nullable: col.nullable && present }
+                            Field::new(col.name.clone(), ty, col.nullable && present)
                         })
                         .collect();
+                    let fields = if self.document { last_of_each_name(fields) } else { fields };
                     // An outer join can null the whole row, which is then every column NULL: a
                     // column the probe proved non-null says the row is there.
-                    (Type::Object { fields }, !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
+                    (Type::record(fields), !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
                 }
                 None => {
                     unresolved.push(display_path(path));
-                    (Type::Unknown, false)
+                    (Type::unknown(), false)
+                }
+            },
+            Shape::RowOrValue { row, value } => match self.whole_value(value).map(|col| (self.is_row(col), self.field_names(col))) {
+                // A row of a named type keeps its type's names, whatever an alias calls its columns;
+                // a `record`'s are the ones its columns go by.
+                Some((true, Some(names))) => match self.node(&Shape::Row { probe: *row }, path, unresolved) {
+                    (Type { kind: Kind::Record(record), .. }, non_null) if record.fields.len() == names.len() => {
+                        let fields = record.fields.into_iter().zip(names).map(|(field, name)| Field { name, ..field }).collect();
+                        (Type::record(if self.document { last_of_each_name(fields) } else { fields }), non_null)
+                    }
+                    (Type { kind: Kind::Record(_), .. }, _) => {
+                        unresolved.push(display_path(path));
+                        (Type::unknown(), false)
+                    }
+                    other => other,
+                },
+                // Only a `record` takes the names its columns go by; a named type whose fields the
+                // registry cannot give has names the build does not know.
+                Some((true, None)) if self.whole_value(value).is_some_and(|col| col.type_oid == oid::RECORD) => self.node(&Shape::Row { probe: *row }, path, unresolved),
+                Some((true, None)) => {
+                    unresolved.push(display_path(path));
+                    (Type::unknown(), false)
+                }
+                Some((false, _)) => self.node(value, path, unresolved),
+                None => {
+                    unresolved.push(display_path(path));
+                    (Type::unknown(), false)
                 }
             },
             // A placeholder carries the type the statement's own describe gave it; whether it
@@ -1353,12 +1780,12 @@ impl ResolveCtx<'_> {
                 Some(o) => (self.registry.render(*o), false),
                 None => {
                     unresolved.push(display_path(path));
-                    (Type::Unknown, false)
+                    (Type::unknown(), false)
                 }
             },
             Shape::Unknown => {
                 unresolved.push(display_path(path));
-                (Type::Unknown, false)
+                (Type::unknown(), false)
             }
         }
     }
@@ -1452,7 +1879,7 @@ pub(crate) fn single_target(select: &SelectStmt) -> Option<&ResTarget> {
 }
 
 /// The name the result column carries: its alias, else the name Postgres derives.
-fn target_name(rt: &ResTarget) -> Option<String> {
+pub(crate) fn target_name(rt: &ResTarget) -> Option<String> {
     if !rt.name.is_empty() {
         return Some(rt.name.clone());
     }
@@ -1523,6 +1950,15 @@ pub(crate) fn is_star(node: &Node) -> bool {
     }
 }
 
+/// A key and its value added to an object's fields. A key given twice holds the last value given
+/// for it: `jsonb` keeps that pair alone, and `json` writes both, of which a parser keeps the last.
+fn set_field(fields: &mut Vec<(String, Shape)>, key: String, value: Shape) {
+    match fields.iter_mut().find(|(k, _)| *k == key) {
+        Some(field) => field.1 = value,
+        None => fields.push((key, value)),
+    }
+}
+
 /// A literal string, which is the only thing a key may be.
 fn string_const(node: &Node) -> Option<String> {
     match node.node.as_ref()? {
@@ -1542,9 +1978,27 @@ fn keeps_param_type(node: &Node) -> bool {
     matches!(node.node.as_ref(), Some(NodeEnum::AConst(c)) if c.isnull || matches!(c.val, Some(Val::Sval(_) | Val::Ival(_) | Val::Boolval(_))))
 }
 
+/// Whether `JSON_OBJECT` or `JSON_ARRAY` returns JSON: by default, or `RETURNING json` or `jsonb`.
+fn returns_json(output: Option<&protobuf::JsonOutput>) -> bool {
+    output.and_then(|o| o.type_name.as_ref()).is_none_or(|t| t.array_bounds.is_empty() && crate::infer::builtin_name(&t.names).is_some_and(|n| n == "json" || n == "jsonb"))
+}
+
+/// Whether a shape is JSON the statement builds, alone or where it may be NULL (a scalar
+/// subquery's). A value read as it is (a column, a placeholder), nullable or not, is none: a leaf
+/// is nullable under grouping sets, in a RETURNING's old or new row and beside a set-returning call.
+fn builds(shape: &Shape) -> bool {
+    match shape {
+        Shape::Object { .. } | Shape::Array { .. } | Shape::Tuple { .. } => true,
+        Shape::Nullable(inner) => builds(inner),
+        _ => false,
+    }
+}
+
+/// Whether a cast is to `json` or `jsonb` itself: `x::jsonb[]` is an array of them.
 fn casts_to_json(t: &protobuf::TypeCast) -> bool {
     t.type_name
         .as_ref()
+        .filter(|tn| tn.array_bounds.is_empty())
         .and_then(|tn| last_string(&tn.names))
         .is_some_and(|n| n == "json" || n == "jsonb")
 }
@@ -1595,11 +2049,16 @@ fn bare_alias(node: &Node) -> Option<String> {
     }
 }
 
-/// The placeholder this expression is, through any casts.
+/// The placeholder this expression is, alone or under the one cast that types it: its type is then
+/// the value's. Under a second cast the value is of that cast's type (`$1::int::text` is a text),
+/// which no describe of the statement reports for the placeholder.
 fn param_number(node: &Node) -> Option<i32> {
     match node.node.as_ref()? {
         NodeEnum::ParamRef(p) => Some(p.number),
-        NodeEnum::TypeCast(t) => param_number(t.arg.as_deref()?),
+        NodeEnum::TypeCast(t) => match t.arg.as_deref()?.node.as_ref()? {
+            NodeEnum::ParamRef(p) => Some(p.number),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1747,13 +2206,6 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_aggregate_stays_nullable() {
-        let p = shapes("SELECT (SELECT jsonb_agg(jsonb_build_object('id', c.id)) FROM comments c) AS cs FROM posts p");
-        let Shape::Array { non_null, .. } = &p.columns[0].1 else { panic!() };
-        assert!(!non_null);
-    }
-
-    #[test]
     fn a_subquery_that_does_not_aggregate_is_nullable() {
         // One row is not guaranteed, so the object can come back NULL even though the
         // constructor itself never does.
@@ -1827,6 +2279,55 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_row_with_no_probe_answered_is_no_row_at_a_sql_position() {
+        let registry = TypeRegistry::with_builtins();
+        let row = Shape::Row { probe: 0 };
+        let rows = Shape::Array { items: Box::new(row.clone()), non_null: false };
+        // A probe the engine never ran, or one past its budget: the describe's type stands.
+        for shape in [&row, &rows] {
+            assert!(resolve_row(shape, &[None], &registry, &[]).is_none(), "{shape:?}");
+            assert!(resolve_row(shape, &[], &registry, &[]).is_none(), "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn a_key_given_twice_holds_its_last_value() {
+        let column = |index| Shape::Column { probe: 0, index };
+        let fields = vec![("id".to_string(), column(2)), ("name".to_string(), column(1))];
+        for sql in ["SELECT jsonb_build_object('id', u.id, 'name', u.name, 'id', u.email) AS o FROM users u", "SELECT json_build_object('id', u.id, 'name', u.name, 'id', u.email) AS o FROM users u", "SELECT JSON_OBJECT('id': u.id, 'name': u.name, 'id': u.email) AS o FROM users u"] {
+            assert_eq!(shapes(sql).columns[0].1, Shape::Object { fields: fields.clone(), non_null: true }, "{sql}");
+        }
+    }
+
+    #[test]
+    fn postgres_own_json_object_reads_its_strings_as_no_keys() {
+        assert_eq!(shapes("SELECT json_object('{a}', '{b}') AS o").columns[0].1, Shape::Column { probe: 0, index: 0 });
+    }
+
+    #[test]
+    fn a_function_item_s_whole_row_may_be_its_one_value() {
+        let nullable = |shape: Shape| Shape::Nullable(Box::new(shape));
+        for sql in ["SELECT to_jsonb(f.*) AS o FROM many_bodies(1) f", "SELECT to_jsonb(f.*) AS o FROM rows from (many_bodies(1)) f", "SELECT to_jsonb(many_bodies.*) AS o FROM many_bodies(1)", "SELECT to_jsonb(f.*) AS o FROM users u JOIN many_bodies(u.id) f ON true"] {
+            let p = shapes(sql);
+            let row_probe = p.probes.iter().position(|probe| probe.sql.contains(".*")).expect("a probe of the star");
+            let value_probe = p.probes.iter().position(|probe| probe.sql.contains("COALESCE(")).expect("a probe of the value");
+            assert_eq!(p.columns[0].1, Shape::RowOrValue { row: row_probe, value: Box::new(nullable(Shape::Column { probe: value_probe, index: 0 })) }, "{sql}");
+        }
+        // WITH ORDINALITY, two functions, or any other item's whole row is a row.
+        for sql in ["SELECT to_jsonb(f.*) AS o FROM many_bodies(1) WITH ORDINALITY f", "SELECT to_jsonb(f.*) AS o FROM rows from (many_bodies(1), many_bodies(2)) f", "SELECT to_jsonb(u.*) AS o FROM users u"] {
+            assert_eq!(shapes(sql).columns[0].1, Shape::Row { probe: 0 }, "{sql}");
+        }
+        // An alias that renames a table's or a function's columns reads the row's type for its
+        // names; a subquery's renamed columns are its row's own.
+        for sql in ["SELECT to_jsonb(c) AS o FROM users c (a, b)", "SELECT to_jsonb(c.*) AS o FROM users c (a)", "SELECT to_jsonb(c.*) AS o FROM many_bodies(1) c (a)"] {
+            assert!(matches!(shapes(sql).columns[0].1, Shape::RowOrValue { .. }), "{sql}");
+        }
+        assert_eq!(shapes("SELECT to_jsonb(s) AS o FROM (SELECT 1 AS x) s (y)").columns[0].1, Shape::Row { probe: 0 });
+        // A subquery's item of that name hides a function around it.
+        assert!(!format!("{:?}", shapes("SELECT (SELECT to_jsonb(f.*) FROM users f) AS o FROM many_bodies(1) f").columns[0].1).contains("RowOrValue"));
+    }
+
+    #[test]
     fn a_whole_row_probes_the_star() {
         let p = shapes("SELECT to_jsonb(u) AS author FROM users u");
         assert_eq!(p.probes[0].sql, "SELECT u.* FROM users u");
@@ -1859,6 +2360,22 @@ mod tests {
             assert!(shapes(sql).columns.is_empty(), "{sql}");
         }
         assert_eq!(probes_ahead("SELECT to_jsonb(u) AS author FROM unlisted u")[0].sql, "SELECT u.* FROM unlisted u");
+        // A bare name of an item whose row is of no type the catalog has, a derived table's or a
+        // WITH query's, is its whole row wherever it stands, which describes as `record`; a
+        // table's describes as the table's type and stays a value of its own.
+        for sql in ["SELECT jsonb_agg(s) AS rows FROM (SELECT id, title FROM posts) s", "WITH s AS (SELECT id, title FROM posts) SELECT jsonb_agg(s) AS rows FROM s"] {
+            let p = shapes(sql);
+            assert_eq!(p.columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false }, "{sql}");
+            assert!(p.probes[0].sql.contains("SELECT s.* FROM"), "{sql}: {}", p.probes[0].sql);
+        }
+        assert_ne!(shapes("SELECT jsonb_agg(u) AS rows FROM users u").columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false });
+        // So is one at a SQL position, alone, under `array_agg` (`coalesce(…, '{}')` never NULL),
+        // and as a scalar subquery's one target, which the describe types `record` or `record[]`.
+        assert_eq!(shapes("SELECT s FROM (SELECT id FROM posts) s").columns[0].1, Shape::Row { probe: 0 });
+        assert_eq!(shapes("SELECT coalesce(array_agg(s), '{}') AS rows FROM (SELECT id FROM posts) s").columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: true });
+        assert!(matches!(shapes("SELECT u.id, (SELECT array_agg(c) FROM (SELECT id FROM comments) c) AS cs FROM users u").columns[0].1, Shape::Array { .. }));
+        // A bare name that is a column is the column, however an item is called.
+        assert!(shapes("SELECT array_agg(id) AS ids FROM (SELECT id FROM posts) id").columns.is_empty());
         assert!(needs_columns("SELECT to_jsonb(u) AS author FROM users u") && needs_columns("SELECT row_to_json(u) FROM users u"));
         assert!(needs_columns("SELECT (SELECT json_agg(p.id) FROM posts p) AS ids") && !needs_columns("SELECT json_agg(p.id) AS ids FROM posts p"));
     }
@@ -1870,8 +2387,8 @@ mod tests {
         let resolved = |sql: &str| resolve(&shapes(sql).columns[0].1, &[Some(Outcome { columns: found.clone(), outer_join: false, present: None, built: Vec::new() })], &registry, &[]);
         // Whether the column is nullable, and whether the first field of the object it is.
         let whole = |sql: &str| !resolved(sql).non_null;
-        let field = |sql: &str| match resolved(sql).ty {
-            Type::Object { fields } => fields[0].nullable,
+        let field = |sql: &str| match content(resolved(sql).ty).kind {
+            Kind::Record(r) => r.fields[0].nullable,
             other => panic!("{other:?}"),
         };
         // A column, a whole row and an aggregate of the query around the subquery.
@@ -1891,6 +2408,30 @@ mod tests {
         let p = plan("SELECT json_build_object('n', (SELECT count(*) FROM posts)) AS o FROM users u", Dialect::Postgres, &trust, &Columns::default());
         let Shape::Object { fields, .. } = &p.columns[0].1 else { panic!() };
         assert!(matches!(fields[0].1, Shape::Nullable(_)));
+    }
+
+    #[test]
+    fn an_array_built_of_values_is_a_tuple_of_them() {
+        let tuple = |sql: &str| match shapes(sql).columns.into_iter().next().map(|(_, s)| s) {
+            Some(Shape::Tuple { items, non_null, skips_nulls }) => Some((items.len(), non_null, skips_nulls)),
+            _ => None,
+        };
+        assert_eq!(tuple("SELECT json_build_array(1, u.name) AS a FROM users u"), Some((2, true, false)));
+        assert_eq!(tuple("SELECT jsonb_build_array() AS a"), Some((0, true, false)));
+        assert_eq!(tuple("SELECT json_build_array(VARIADIC ARRAY[1, 2]) AS a"), None);
+        // JSON_ARRAY leaves a NULL value out unless NULL ON NULL writes it.
+        assert_eq!(tuple("SELECT JSON_ARRAY(1, u.name) AS a FROM users u"), Some((2, true, true)));
+        assert_eq!(tuple("SELECT JSON_ARRAY(1, u.name NULL ON NULL) AS a FROM users u"), Some((2, true, false)));
+        assert_eq!(tuple("SELECT JSON_ARRAY(1 RETURNING text) AS a"), None);
+        // JSON_OBJECT of literal keys is an object, unless a NULL value's key may be left out.
+        assert!(matches!(&shapes("SELECT JSON_OBJECT('n': u.name, 'id': u.id) AS o FROM users u").columns[0].1, Shape::Object { fields, non_null: true } if fields.len() == 2));
+        assert!(shapes("SELECT JSON_OBJECT('n': u.name ABSENT ON NULL) AS o FROM users u").columns.is_empty());
+        assert!(matches!(&shapes("SELECT JSON_OBJECT('n': u.name FORMAT JSON) AS o FROM users u").columns[0].1, Shape::Object { fields, .. } if fields[0].1 == Shape::Unknown));
+        // array_to_json of ARRAY(SELECT …) is an array of the subquery's values, never NULL; of
+        // array_agg, as json_agg is.
+        assert!(matches!(&shapes("SELECT array_to_json(ARRAY(SELECT p.title FROM posts p)) AS t").columns[0].1, Shape::Array { non_null: true, .. }));
+        assert!(matches!(&shapes("SELECT array_to_json(array_agg(p.title)) AS t FROM posts p").columns[0].1, Shape::Array { non_null: false, .. }));
+        assert!(matches!(&shapes("SELECT p.user_id, array_to_json(array_agg(p.title)) AS t FROM posts p GROUP BY p.user_id").columns[0].1, Shape::Array { non_null: true, .. }));
     }
 
     #[test]
@@ -2012,37 +2553,6 @@ mod tests {
     }
 
     #[test]
-    fn a_dml_statement_whose_with_names_its_target_has_no_shapes() {
-        assert!(shapes("WITH team AS (SELECT 1 AS motto) UPDATE team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
-        assert!(!shapes("WITH other AS (SELECT 1 AS motto) UPDATE team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
-        // A qualified target is the relation, whatever the WITH calls its name.
-        assert!(!shapes("WITH team AS (SELECT 1 AS motto) UPDATE public.team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
-    }
-
-    #[test]
-    fn a_grouping_set_nulls_a_value_but_a_plain_aggregates_argument() {
-        let leaf = |sql: &str| match &shapes(sql).columns[0].1 {
-            Shape::Object { fields, .. } => fields[0].1.clone(),
-            Shape::Array { items, .. } => (**items).clone(),
-            other => other.clone(),
-        };
-        assert!(matches!(leaf("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY ROLLUP (name)"), Shape::Nullable(_)));
-        assert!(matches!(leaf("SELECT jsonb_agg(name) OVER () AS o FROM team GROUP BY ROLLUP (name)"), Shape::Nullable(_)));
-        assert!(matches!(leaf("SELECT jsonb_agg(name) AS o FROM team GROUP BY ROLLUP (id)"), Shape::Column { .. }));
-        assert!(matches!(leaf("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY name"), Shape::Column { .. }));
-        // What is built is a grouping expression where it is grouped by, by name, position or
-        // expression, so nothing built is non-null; under a plain GROUP BY it is.
-        for sql in ["SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY ROLLUP (o)", "SELECT jsonb_build_object('a', jsonb_build_object('b', name)) AS o FROM team GROUP BY ROLLUP ((jsonb_build_object('b', name)))"] {
-            let Shape::Object { non_null, fields } = &shapes(sql).columns[0].1 else { panic!("{sql}") };
-            assert!(!non_null && !matches!(fields[0].1, Shape::Object { non_null: true, .. }), "{sql}");
-        }
-        assert!(matches!(shapes("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY o").columns[0].1, Shape::Object { non_null: true, .. }));
-        // A whole row under a grouping set, and a subquery with a grouping set of its own, are read as nothing.
-        assert!(shapes("SELECT to_jsonb(t) AS o FROM team t GROUP BY ROLLUP (t.id)").columns.is_empty());
-        assert!(shapes("SELECT (SELECT jsonb_build_object('n', name) FROM team GROUP BY CUBE (name) LIMIT 1) AS o").columns.is_empty());
-    }
-
-    #[test]
     fn a_lateral_subquery_is_read_in_its_own_context_and_the_items_left_of_it() {
         let p = shapes("SELECT u.id, x.items FROM users u LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('sku', p.sku)) AS items FROM products p WHERE p.org_id = u.org_id) x ON true");
         assert_eq!(p.columns.len(), 1);
@@ -2076,11 +2586,6 @@ mod tests {
         // A CASE whose ELSE builds goes by the constructor's name, one whose ELSE is NULL by `case`.
         assert_eq!(shapes("SELECT CASE WHEN id > 1 THEN NULL ELSE jsonb_build_object('a', 1) END FROM t").columns[0].0, "jsonb_build_object");
         assert_eq!(shapes("SELECT CASE WHEN id > 1 THEN jsonb_build_object('a', 1) END FROM t").columns[0].0, "case");
-    }
-
-    #[test]
-    fn a_subquery_with_a_with_of_its_own_is_read_as_nothing() {
-        assert!(shapes("SELECT (WITH team AS (SELECT 1 AS name) SELECT jsonb_agg(team.name) FROM team) AS v").columns.is_empty());
     }
 
     #[test]
@@ -2144,15 +2649,7 @@ mod tests {
     const BYTEA: u32 = 17;
 
     fn column(name: &str, type_oid: u32, type_name: &str, nullable: bool) -> DescribedColumn {
-        DescribedColumn { name: name.into(), type_oid, type_name: type_name.into(), nullable, nullable_items: None, values: None, document: None, whole_row: false }
-    }
-
-    fn scalar(name: &str) -> Type {
-        Type::Scalar { name: name.into() }
-    }
-
-    fn field(name: &str, ty: Type, nullable: bool) -> Field {
-        Field { name: name.into(), ty, nullable }
+        DescribedColumn { name: name.into(), type_oid, typmod: -1, type_name: type_name.into(), nullable, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
     }
 
     #[test]
@@ -2175,15 +2672,7 @@ mod tests {
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert!(r.non_null);
         assert!(r.unresolved.is_empty());
-        assert_eq!(
-            r.ty,
-            Type::List {
-                of: Box::new(Type::Object {
-                    fields: vec![field("id", scalar("uuid"), false), field("body", scalar("text"), false), field("score", scalar("int4"), true)],
-                }),
-                nullable_items: false,
-            }
-        );
+        assert_eq!(r.ty.short(), "json ({ id: uuid, body: text, score: int4? })[]");
     }
 
     #[test]
@@ -2192,15 +2681,32 @@ mod tests {
         let p = shapes("SELECT jsonb_build_object('id', p.id, 'title', p.title) AS post FROM posts p");
         let r = resolve(&p.columns[0].1, &[None], &registry, &[]);
         assert_eq!(r.unresolved, vec!["id", "title"]);
-        assert_eq!(r.ty, Type::Object { fields: vec![field("id", Type::Unknown, true), field("title", Type::Unknown, true)] });
+        assert_eq!(r.ty.short(), "json { id: unknown?, title: unknown? }");
         // The keys are still the SQL's own, and the object is still never null.
         assert!(r.non_null);
     }
 
     #[test]
+    fn a_renamed_row_takes_its_types_names_or_none() {
+        let registry = TypeRegistry::with_builtins();
+        let outcome = |columns: Vec<DescribedColumn>| Some(Outcome { columns, outer_join: false, present: None, built: Vec::new() });
+        let shape = Shape::RowOrValue { row: 0, value: Box::new(Shape::Nullable(Box::new(Shape::Column { probe: 1, index: 0 }))) };
+        let row = || outcome(vec![column("a", oid::INT8, "int8", false), column("name", oid::TEXT, "text", false)]);
+        // A `record` takes the names its columns go by.
+        let record = resolve(&shape, &[row(), outcome(vec![column("coalesce", oid::RECORD, "record", true)])], &registry, &[]);
+        assert_eq!(record.ty.short(), "json { a: int8, name: text }");
+        // A named row type whose fields the registry cannot give is no row whose names the build
+        // knows: the alias's names are never a named type's.
+        let mut registry = registry;
+        registry.insert_rows(&[vec![serde_json::json!(987_654), serde_json::json!("teams"), serde_json::json!("c")]]);
+        let named = resolve(&shape, &[row(), outcome(vec![column("coalesce", 987_654, "teams", true)])], &registry, &[]);
+        assert!(!named.unresolved.is_empty() && !named.ty.short().contains("a: int8"), "{}", named.ty.short());
+    }
+
+    #[test]
     fn a_column_sqlite_cannot_type_is_reported_not_guessed() {
         let registry = TypeRegistry::with_builtins();
-        let p = shapes("SELECT json_object('id', c.id, 'n', length(c.body)) AS x FROM comments c");
+        let p = shapes("SELECT json_build_object('id', c.id, 'n', length(c.body)) AS x FROM comments c");
         let outcome = Outcome {
             columns: vec![column("a0", oid::UUID, "uuid", false), column("a1", oid::UNKNOWN, "unknown", true)],
             outer_join: false,
@@ -2209,9 +2715,7 @@ mod tests {
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert_eq!(r.unresolved, vec!["n"]);
-        let Type::Object { fields } = &r.ty else { panic!("{:?}", r.ty) };
-        assert_eq!(fields[1], field("n", Type::Unknown, true));
-        assert_eq!(fields[0], field("id", scalar("uuid"), false));
+        assert_eq!(r.ty.short(), "json { id: uuid, n: unknown? }");
     }
 
     /// A value the database wrote into the JSON document is still the column's own type here; how
@@ -2229,12 +2733,7 @@ mod tests {
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert!(r.unresolved.is_empty());
-        assert_eq!(
-            r.ty,
-            Type::Object {
-                fields: vec![field("n", scalar("int8"), false), field("amount", scalar("numeric"), false), field("blob", scalar("bytea"), false)],
-            }
-        );
+        assert_eq!(r.ty.short(), "json { n: int8, amount: numeric, blob: bytea }");
     }
 
     #[test]
@@ -2244,7 +2743,7 @@ mod tests {
         let columns = vec![column("id", oid::UUID, "uuid", false), column("name", oid::TEXT, "text", true)];
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false, present: None, built: Vec::new() })], &registry, &[]);
         assert!(r.non_null);
-        assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
+        assert_eq!(r.ty.short(), "json { id: uuid, name: text? }");
         // An outer join in the probe's own analysis is what can null the whole row, unless a
         // column it proved non-null says the row is there (an unmatched row is every column NULL).
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
@@ -2252,11 +2751,11 @@ mod tests {
         let nullable: Vec<_> = columns.into_iter().map(|c| DescribedColumn { nullable: true, ..c }).collect();
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
-        assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), true), field("name", scalar("text"), true)] });
+        assert_eq!(r.ty.short(), "json { id: uuid?, name: text? }");
         // The read with the row there gives the fields of an object that exists their own.
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable, outer_join: true, present: Some(vec![false, true]), built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
-        assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
+        assert_eq!(r.ty.short(), "json { id: uuid, name: text? }");
     }
 
     #[test]
@@ -2305,7 +2804,7 @@ mod tests {
     fn a_path_an_item_could_not_type_goes_under_the_path_that_reads_it() {
         let registry = TypeRegistry::with_builtins();
         let p = shapes("SELECT jsonb_build_object('posts', ps.posts) AS author FROM ps");
-        let item = Type::List { of: Box::new(Type::Object { fields: vec![field("tags", Type::Unknown, true)] }), nullable_items: false };
+        let item = Type::json_of(Position::non_null(Type::array(Position::non_null(Type::record(vec![Field::new("tags", Type::unknown(), true)])))));
         let built = Built { ty: item, non_null: true, unresolved: vec!["[].tags".into(), "[]".into(), WHOLE.into()] };
         let outcome = Outcome { columns: vec![column("a0", oid::JSONB, "jsonb", false)], outer_join: false, present: None, built: vec![Some(built)] };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);

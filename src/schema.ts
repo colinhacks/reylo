@@ -1,21 +1,25 @@
 // The JSON Schema of a query's input and output: `query.inputSchema`, `query.outputSchema`, and
 // Standard Schema's `jsonSchema` converter. A build step writes both into the module. The
-// spellings are the engine's (engine/core/src/schema.rs, the framework's encoding table); what differs
-// is where a value stands. The output is the result as JSON writes it (`Json<T>` in src/index.ts)
+// spellings are the engine's (engine/core/src/schema.rs); what differs
+// is where a value stands. The output is the result as JSON writes it (`AsJson<T>` in src/index.ts)
 // of the value `run` returns, which is each type's one representation (src/values.ts, the same
 // table the run time decodes with): a 64-bit integer, a BigInt, as the JSON integer it is (what a
 // serializer that writes a BigInt exactly writes, `JSON.rawJSON(String(v))`; JSON.stringify itself
 // refuses a BigInt), a decimal its text, a timestamptz its ISO text in UTC, a date and a timestamp
 // the wall-clock text the server wrote. The input is the parameters the caller passes.
-import type { EngineType, JsonSchema } from "./engine-type.ts";
-import { scalarKind, type ScalarKind } from "./values.ts";
+import { bareName, nestsAnyDeep, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
+import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
+import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
+type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 type Schema = { [key: string]: unknown };
 type Analysis = {
-  params: readonly { name: string; type: EngineType; nullable: boolean; schema?: JsonSchema }[];
-  columns: readonly { name: string; type: EngineType; nullable: boolean }[];
-  cardinality: "one" | "maybeOne" | "many" | "none";
+  /** The prose written in comments before the statement, which describes both schemas. */
+  comment?: string;
+  params: readonly { name: string; type: EngineType; nullable?: boolean; optional?: boolean; comment?: string; schema?: JsonSchema; members?: readonly { written: string; schema?: JsonSchema }[] }[];
+  columns: readonly { name: string; type: EngineType; nullable?: boolean; comment?: string }[];
+  cardinality: "one" | "at_most_one" | "many" | "none";
+  value?: boolean;
 };
 
 /** The schema admitting null as well: a bare `type` gets `"null"` beside it, anything else an `anyOf` with null. */
@@ -28,14 +32,32 @@ function nullable(schema: Schema | JsonSchema): Schema | JsonSchema {
 /** A PostGIS geometry inside a document, which its cast to JSON writes as GeoJSON. */
 const GEOJSON: Schema = { type: "object", properties: { type: { type: "string" } }, required: ["type"], description: "a GeoJSON geometry" };
 
-/** A base type by its catalog name, standing where `inJson` says: inside a JSON document, as a parameter the caller passes, or as `run` returns it. */
-function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean): Schema {
-  if (name.includes("|")) return { anyOf: name.split("|").map((part) => scalar(part, dialect, inJson, input)) };
+/** A SQLite value's storage class, as the affinity of the declared type the engine traced it to names it, or of the value it computes. */
+function sqliteClass(t: EngineType): string {
+  const name = "label" in t ? (t.label ?? "") : "";
+  switch (t.kind) {
+    case "boolean": return "bool";
+    case "integer": return sqliteWide(name) ? "int8" : "integer";
+    case "float": return "real";
+    case "text": return "text";
+    case "bytes": return "blob";
+    case "union": {
+      if (/^bool(ean)?$/i.test(name.trim())) return "bool";
+      const affinity = sqliteAffinity(name);
+      return affinity === "integer" && sqliteWide(name) ? "int8" : affinity;
+    }
+    default: return "";
+  }
+}
+
+/** A value of a type with no structure of its own here, standing where `inJson` says: inside a JSON document, as a parameter the caller passes, or as `run` returns it. */
+function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean, inUnion = false): Schema {
+  const name = bareName(t);
   if (dialect === "sqlite") {
     // A SQLite INTEGER is a number as a parameter (src/render.ts), and its JSON spelling inside a
     // document; as `run` returns it, its kind's.
     if (inJson || input) {
-      switch (name) {
+      switch (sqliteClass(t)) {
         case "integer": case "int8": return { type: "integer", format: "int64" };
         case "real": return { type: "number", format: "double" };
         case "text": return { type: "string" };
@@ -45,66 +67,75 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
         default: return {};
       }
     }
-    const kinds = scalarKind(name, dialect).split("|");
+    const kinds = columnKind(t, dialect).split("|");
     if (kinds.length > 1) {
       // A NUMERIC: whichever storage class the row stored, an integer being a number too.
-      const types = [...new Set(kinds.map((k) => kindSchema(k as ScalarKind, name, dialect).type as string))];
-      return { type: types.includes("number") ? types.filter((t) => t !== "integer") : types };
+      const types = [...new Set(kinds.map((k) => kindSchema(k as ScalarKind, t, dialect).type as string))];
+      return { type: types.includes("number") ? types.filter((type) => type !== "integer") : types };
     }
-    return kindSchema(kinds[0] as ScalarKind, name, dialect);
+    return kindSchema(kinds[0] as ScalarKind, t, dialect);
   }
+  if (t.kind === "union" && !(dialect === "postgres" && (name === "inet" || name === "cidr"))) return { anyOf: t.members.map((m) => scalar(m, dialect, inJson, input, true)) };
+  const kind = columnKind(t, dialect);
   if (inJson) {
     // As the database writes the value inside a document.
-    // JSON has no number for a non-finite value, so Postgres writes a float's or a decimal's as text;
-    // MySQL stores none.
-    const nonFinite = { enum: ["NaN", "Infinity", "-Infinity"] };
-    switch (name) {
-      case "int8": return { type: "integer", format: "int64" };
-      case "float4": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "float" }, nonFinite] } : { type: "number", format: "float" };
-      case "float8": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "double" }, nonFinite] } : { type: "number", format: "double" };
-      case "numeric": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "decimal" }, nonFinite] } : { type: "number", format: "decimal" };
-      case "bytea": return { type: "string", format: "hex" };
-      // Postgres's own interval text: the run time converts a column's interval, never one inside a document.
-      case "interval": return { type: "string", description: "pg type interval" };
-      // A row whose columns were not read (a subquery's): an object of them.
-      case "record": return { type: "object" };
-      // An hstore: an object of its keys, each value text or null.
-      case "hstore": return { type: "object", additionalProperties: { type: ["string", "null"] } };
-      // PostGIS's cast to JSON: a GeoJSON geometry.
-      case "geometry": return GEOJSON;
-      // An oid is not one of the numbers JSON has a number for: Postgres writes its text.
-      case "oid": return { type: "string" };
-      // pgvector has no cast to JSON, so a vector inside a document is its text.
-      case "vector": case "halfvec": return { type: "string" };
+    // JSON has no number for a non-finite value, so Postgres writes a float's or a decimal's as text,
+    // which the run time gives as the number it is where the value stands on its own
+    // (src/render.ts, `jsonNumbers`); MySQL stores none.
+    if (t.kind === "integer" && name === "oid" && dialect === "postgres") return { type: "string" };
+    // An integer is a JSON number in there, a MySQL `tinyint(1)` too.
+    if (t.kind === "integer") return { type: "integer", format: t.bits > 32 || (t.bits === 32 && t.unsigned) ? "int64" : "int32" };
+    if (t.kind === "float" || t.kind === "decimal") {
+      const number = { type: "number", format: t.kind === "decimal" ? "decimal" : t.exponent_bits <= 8 ? "float" : "double" };
+      const text = [...(t.nan ? ["NaN"] : []), ...(t.infinity ? ["Infinity", "-Infinity"] : [])];
+      return dialect === "postgres" && inUnion && text.length ? { anyOf: [number, { enum: text }] } : number;
     }
+    if (kind === "bytes") return { type: "string", format: "hex" };
+    // Postgres's own interval text: the run time converts a column's interval, never one inside a document.
+    if (t.kind === "duration" && dialect === "postgres") return { type: "string", description: "pg type interval" };
+    // A row whose columns were not read (a subquery's): an object of them.
+    if (t.kind === "opaque" && name === "record") return { type: "object" };
+    // An hstore: an object of its keys, each value text or null.
+    if (kind === "hstore") return { type: "object", additionalProperties: { type: ["string", "null"] } };
+    // PostGIS's cast to JSON: a GeoJSON geometry.
+    if (t.kind === "geometry" && name === "geometry" && dialect === "postgres") return GEOJSON;
+    // pgvector has no cast to JSON, so a vector inside a document is its text.
+    if (kind === "vector") return { type: "string" };
+  } else if (input && dialect === "duckdb") {
+    // What DuckDB binds: a 64-bit or wider integer as a number, a BigInt or its digits; a decimal as its digits.
+    if (kind === "int8") return { type: ["integer", "string"], format: "int64" };
+    if (kind === "decimal") return { type: "string", format: "decimal" };
+    if (kind === "timestamp") return { type: "string", format: "date-time" };
   } else if (input) {
+    // A MySQL TINYINT(1) or BIT(1) column's parameter takes the truth value its rows return, or the integer it stores.
+    if (dialect === "mysql" && kind === "bool" && t.kind !== "boolean") return { anyOf: [{ type: "boolean" }, { type: "integer", format: "int32" }] };
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.
-    switch (name) {
-      case "int8": return { type: ["integer", "string"], format: "int64" };
-      case "numeric": return { type: "string", format: "decimal" };
-      case "timestamp": return { type: "string", format: "date-time" };
-    }
+    if (kind === "int8") return { type: ["integer", "string"], format: "int64" };
+    if (kind === "decimal") return { type: "string", format: "decimal" };
+    if (kind === "timestamp") return { type: "string", format: "date-time" };
   }
-  const kind = scalarKind(name, dialect);
-  if (kind.includes("|")) return { anyOf: kind.split("|").map((k) => kindSchema(k as ScalarKind, name, dialect)) };
-  const schema = kindSchema(kind as ScalarKind, name, dialect);
+  // A SET inside a document is its text, its members joined by commas.
+  if (inJson && t.kind === "set") return { type: "string" };
+  if (kind.includes("|")) return { anyOf: kind.split("|").map((k) => kindSchema(k as ScalarKind, t, dialect)) };
+  const schema = kindSchema(kind as ScalarKind, t, dialect);
   if (kind !== "text") return schema;
-  switch (name) {
-    case "text": case "varchar": case "bpchar": case "name": case "char": case "citext": return { type: "string" };
+  switch (t.kind) {
+    case "text": case "set": return { type: "string" };
     case "uuid": return { type: "string", format: "uuid" };
-    case "time": return { type: "string", format: "time" };
-    case "unknown": return {};
-    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : "pg"} type ${name}` };
+    // RFC 3339's time, which JSON Schema's `time` format names, needs an offset and stops at 23:59:60.
+    case "time": return t.zone === undefined ? { type: "string", description: "a time of day without a time zone (10:00:00.5)" } : { type: "string", description: `pg type ${name}` };
+    case "duration": return { type: "string", description: "a length of time as MySQL writes it, up to 838:59:59 either way (-12:00:00.5)" };
+    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : dialect === "duckdb" ? "DuckDB" : "pg"} type ${name || t.kind}` };
   }
 }
 
 /** The JSON form of a value of `kind` as `run` returns it, once JSON: each kind's one representation (src/values.ts). */
-function kindSchema(kind: ScalarKind, name: string, dialect: Dialect): Schema {
+function kindSchema(kind: ScalarKind, t: EngineType, dialect: Dialect): Schema {
   switch (kind) {
     case "bool": return { type: "boolean" };
-    // A SQLite INTEGER is 64 bits wide, and so is an oid's range past int4's.
-    case "int": return name === "oid" || dialect === "sqlite" ? { type: "integer", format: "int64" } : { type: "integer", format: "int32" };
-    case "float": return name === "float4" ? { type: "number", format: "float" } : { type: "number", format: "double" };
+    // A SQLite INTEGER is 64 bits wide, and so is an unsigned 32-bit integer's range past int4's.
+    case "int": return t.kind === "integer" && t.bits <= 32 && !(t.bits === 32 && t.unsigned) && dialect !== "sqlite" ? { type: "integer", format: "int32" } : { type: "integer", format: "int64" };
+    case "float": return t.kind === "float" && t.exponent_bits <= 8 ? { type: "number", format: "float" } : { type: "number", format: "double" };
     // A BigInt, as the JSON integer it is.
     case "int8": return { type: "integer", format: "int64" };
     case "decimal": return { type: "string", format: "decimal" };
@@ -119,7 +150,13 @@ function kindSchema(kind: ScalarKind, name: string, dialect: Dialect): Schema {
     case "hstore": return { type: "object", additionalProperties: { type: ["string", "null"] } };
     case "text": return { type: "string" };
     case "json": return {};
+    case "geometry": return {};
     case "unknown": return {};
+    case "enum": return { type: "string" };
+    // A Set's members, which a Set holds once each; `JSON.stringify` writes a Set itself as `{}`.
+    case "set": return { type: "array", items: { type: "string" }, uniqueItems: true };
+    // A geometric type is an object of its fields, which `typeSchema` writes from its descriptor.
+    case "point": case "line": case "lseg": case "box": case "path": case "polygon": case "circle": return { type: kind === "lseg" || kind === "polygon" ? "array" : "object" };
   }
 }
 
@@ -137,51 +174,199 @@ function object(fields: readonly { name: string }[], field: (f: number) => Schem
   return { type: "object", properties, required, ...(closed ? { additionalProperties: false } : {}) };
 }
 
-/** The JSON Schema of a value of `t`, as a result column (`input` false) or a parameter the caller passes (`input` true), or a structured parameter's member (`inRow`). */
-export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJson = false, inRow = false): Schema | JsonSchema {
+/** The JSON Schema of a value of `t`, as a result column (`input` false) or a parameter the caller passes (`input` true), or a structured parameter's member (`inRow`); `members`, a structured parameter's column list as written. */
+export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJson = false, inRow = false, members?: readonly { written: string; schema?: JsonSchema }[], codecs: Codecs = {}): Schema | JsonSchema {
+  const schema = plainSchema(t, dialect, input, inJson, inRow, members, codecs);
+  // A value a codec gives another type stands by that type's form.
+  return !inJson && leafCodec(t, dialect, codecs) !== undefined ? schema : withFacts(schema, t, input);
+}
+
+/** A number the format writes as text, where JSON Schema can write it exactly. */
+function exactNumber(text: string, whole: boolean): number | undefined {
+  const value = Number(text);
+  return whole ? (Number.isSafeInteger(value) ? value : undefined) : Number.isFinite(value) ? value : undefined;
+}
+
+/** A `LIKE` pattern as the ECMA regular expression that matches the same whole values. */
+function likeRegex(source: string): string {
+  const literal = (c: string) => c.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  let out = "^";
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i]!;
+    if (c === "\\" && i + 1 < source.length) out += literal(source[++i]!);
+    else if (c === "%") out += "[\\s\\S]*";
+    else if (c === "_") out += "[\\s\\S]";
+    else out += literal(c);
+  }
+  return `${out}$`;
+}
+
+/**
+ * `schema` with the facts of `t` JSON Schema says the same way, each only where the value's form here
+ * makes it true: a text's size in code points and a `LIKE` pattern on a string, a number's bounds,
+ * divisor and values on a JSON number, within what a JSON number writes exactly, and an array's size
+ * on an array. A decimal given as its text takes no bounds. A parameter's exact size is a maximum,
+ * since `char(n)` pads a shorter value. A size in bytes or UTF-16 units and any other pattern
+ * dialect have no equivalent.
+ */
+function withFacts(schema: Schema | JsonSchema, t: EngineType, input: boolean): Schema | JsonSchema {
+  if (typeof schema !== "object" || schema === null) return schema;
+  const facts: Schema = {};
+  const sized = (size: { exact?: number; min?: number; max?: number }, low: string, high: string, atMost: boolean) => {
+    const min = atMost ? size.min : (size.exact ?? size.min);
+    const max = size.exact ?? size.max;
+    if (min !== undefined) facts[low] = min;
+    if (max !== undefined) facts[high] = max;
+  };
+  if (t.kind === "text" && schema.type === "string") {
+    if (t.size !== undefined && !("unit" in t.size && t.size.unit !== undefined)) sized(t.size, "minLength", "maxLength", input);
+    if (t.pattern?.dialect === "like") facts.pattern = likeRegex(t.pattern.source);
+  }
+  if ((t.kind === "integer" || t.kind === "float" || t.kind === "decimal") && (schema.type === "integer" || schema.type === "number")) {
+    const whole = t.kind === "integer";
+    const bound = (text: string | undefined, keyword: string) => {
+      const value = text === undefined ? undefined : exactNumber(text, whole);
+      if (value !== undefined) facts[keyword] = value;
+    };
+    bound(t.min, "minimum");
+    bound(t.max, "maximum");
+    if (!whole) {
+      bound(t.exclusive_min, "exclusiveMinimum");
+      bound(t.exclusive_max, "exclusiveMaximum");
+    }
+    if (t.kind !== "float") {
+      bound(t.multiple_of, "multipleOf");
+      const values = t.enum?.map((v) => exactNumber(v, whole));
+      if (values !== undefined && values.every((v) => v !== undefined)) facts.enum = values;
+    }
+  }
+  if (t.kind === "array" && schema.type === "array" && t.size !== undefined) sized(t.size, "minItems", "maxItems", false);
+  return Object.keys(facts).length ? { ...schema, ...facts } : schema;
+}
+
+/**
+ * `schema` with a comment as its description. A schema the statement's author wrote keeps its own
+ * description; one the type gave (a timestamp's format, say) sits beneath the comment, as it does
+ * beside null.
+ */
+function described(schema: Schema | JsonSchema, comment: string | undefined, written = false): Schema | JsonSchema {
+  if (comment === undefined) return schema;
+  if (schema === true) return { description: comment };
+  if (typeof schema !== "object" || schema === null) return schema;
+  return !written && "description" in schema ? { description: comment, allOf: [schema] } : { description: comment, ...schema };
+}
+
+function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: boolean, inRow: boolean, members: readonly { written: string; schema?: JsonSchema }[] | undefined, codecs: Codecs): Schema | JsonSchema {
+  // A family the project file's `js.codecs` gives another type is that type's JSON form, outside JSON.
+  const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
+  if (codec === "set:array" && t.kind === "set") return { ...CODEC_SCHEMA[codec], items: typeSchema(t.element.type, dialect, input) };
+  if (codec !== undefined) return CODEC_SCHEMA[codec];
+  const name = bareName(t);
+  const kind = columnKind(t, dialect);
+  // What the caller passes for a structured parameter: each key as a parameter of its type takes it.
+  if (members !== undefined) {
+    const record = t.kind === "record" ? t : t.kind === "array" && t.element.type.kind === "record" ? t.element.type : undefined;
+    if (record !== undefined) {
+      // A JSON member's schema as written, with its defaults and formats.
+      const row = object(record.fields, (i) => (record.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(members[i]?.schema ?? typeSchema(record.fields[i]!.type, dialect, true, false, true, undefined, codecs)), (i) => record.fields[i]!.optional === true, true);
+      return t.kind === "record" ? row : { type: "array", items: row };
+    }
+  }
   switch (t.kind) {
-    case "scalar": return scalar(t.name, dialect, inJson, input);
-    case "enum": return { type: "string", enum: t.labels };
+    case "text":
+      if (t.enum !== undefined) return { type: "string", enum: t.enum };
+      break;
     case "array": {
+      // A type Postgres writes as its text inside a document, or a client gets as its own (a
+      // bit string, a vector), is no array here.
+      // A segment and a polygon are arrays of their points outside JSON.
+      if (inJson ? (dialect === "postgres" && ["bit", "varbit", "vector", "halfvec", "sparsevec", "lseg", "polygon"].includes(name)) || (dialect === "mysql" && name === "bit") : !kind.endsWith("[]") && kind !== "lseg" && kind !== "polygon") break;
       // A result's elements may be null unless the statement shows they are not; a parameter's
       // are strict, but a structured parameter's member keeps them (src/render.ts).
-      const items = typeSchema(t.of, dialect, input, inJson, inRow);
-      return { type: "array", items: (input ? inRow || t.nullable_items : t.nullable_items !== false) ? nullable(items) : items };
+      const each = typeSchema(t.element.type, dialect, input, inJson, inRow, undefined, codecs);
+      const items = (input ? inRow : t.element.nullable) ? nullable(each) : each;
+      // An array the project lets nest holds its elements, or arrays of them at any depth.
+      return { type: "array", items: !input && nestsAnyDeep(t) ? { anyOf: [items, { type: "array" }] } : items };
     }
-    case "composite": return inJson ? object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true))) : { type: "string", description: `the row value of ${t.name} as Postgres prints it` };
-    case "object": return object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true)));
-    case "list": {
-      const items = typeSchema(t.of, dialect, input, true);
-      return { type: "array", items: t.nullable_items ? nullable(items) : items };
+    case "record": {
+      // A DuckDB struct's fields stand as a row's values do, each may be null.
+      if (dialect === "duckdb" && !inJson) {
+        return object(t.fields, (i) => nullable(typeSchema(t.fields[i]!.type, dialect, input, false, false, undefined, codecs)));
+      }
+      // A built-in geometric type is its text inside a document.
+      if (inJson && dialect === "postgres" && ["point", "line", "box", "path", "circle"].includes(name)) break;
+      // A row value is an object of its fields, and so is a geometric type outside a document.
+      return object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, inJson, false, undefined, codecs)));
     }
-    case "json": return t.schema ?? {};
-    // What the caller passes: each key as a parameter of its type takes it.
-    case "rows": {
-      // A JSON member's schema as written, with its defaults and formats.
-      const row = object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(t.fields[i]!.schema ?? typeSchema(t.fields[i]!.type, dialect, true, false, true)), (i) => t.fields[i]!.optional, true);
-      return t.one ? row : { type: "array", items: row };
+    case "set":
+      // A MySQL SET's members, each one of its labels where the column declares them; inside a
+      // document it is its text.
+      if (inJson || dialect !== "mysql") break;
+      return { type: "array", items: typeSchema(t.element.type, dialect, input), uniqueItems: true };
+    case "range":
+    case "multirange": {
+      // A Postgres range is an object of its bounds outside a document, where it is its text.
+      if (inJson || dialect !== "postgres") break;
+      const bound = typeSchema(t.subtype, dialect, input, false, false, undefined, codecs);
+      const range: Schema = { anyOf: [{ type: "object", properties: { empty: { const: true } }, required: ["empty"], additionalProperties: false }, { type: "object", properties: { lower: bound, upper: bound, bounds: { enum: [...RANGE_BOUNDS] } }, required: input ? [] : ["bounds"], additionalProperties: false }] };
+      return t.kind === "range" ? range : { type: "array", items: range };
     }
-    case "unknown": return {};
+    case "json":
+      // What a statement built: its keys and items are inside the document.
+      if (t.content !== undefined) {
+        const content = typeSchema(t.content.type, dialect, input, true);
+        return t.content.nullable ? nullable(content) : content;
+      }
+      return schemaOf(t) ?? {};
+    case "map":
+      // A DuckDB map as its entries, each a key and its value, in order.
+      if (dialect === "duckdb") return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input, false, false, undefined, codecs) : nullable(typeSchema(t.value.type, dialect, input, false, false, undefined, codecs)))) };
+      break;
+    case "tagged_union":
+      // A tagged union as its tag and its value; inside a document, whose form of it the engine
+      // does not read, any JSON.
+      if (inJson) return {};
+      return { anyOf: t.alternatives.map((a) => object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: a.tag } : (a.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(a.type, dialect, input, false, false, undefined, codecs))))) };
+    case "unknown":
+      return {};
   }
+  return scalar(t, dialect, inJson, input);
 }
 
 /** The query's input and output schemas: the parameters as an object, and the result as `run` returns it once JSON. */
-export function querySchemas(analysis: Analysis, dialect: Dialect): { input: Schema; output: Schema } {
+/** The JSON form of each codec's value: what `JSON.stringify` writes of it, a Temporal value's being its ISO 8601 text, which a SQLite column declared as a date gives where it otherwise holds any storage class. */
+const CODEC_SCHEMA: Readonly<Record<Codec, Schema>> = {
+  "decimal:number": { type: "number" },
+  "bytes:string": { type: "string", format: "byte", contentEncoding: "base64" },
+  date: { type: "string", format: "date" },
+  time: { type: "string", description: "a time of day without a time zone (10:00:00.5)" },
+  datetime: { type: "string", description: "a date and time without a time zone (2026-10-20T10:00:00.123456)" },
+  instant: { type: "string", format: "date-time" },
+  // RFC 3339's duration, which JSON Schema's `duration` format names, has no sign.
+  duration: { type: "string", description: "an ISO 8601 duration with its sign in front (P1Y2M3DT4H5M6.789S, -P1D)" },
+  // A SET's members, each once; `typeSchema` gives its items the members' own schema.
+  "set:array": { type: "array", items: { type: "string" }, uniqueItems: true },
+};
+
+export function querySchemas(analysis: Analysis, dialect: Dialect, codecs: Codecs = {}): { input: Schema; output: Schema } {
   // A typed JSON parameter's schema as written, with its defaults; one with a `default` at its root may be left out, as may one that takes null.
   const input = object(analysis.params, (i) => {
     const p = analysis.params[i]!;
-    const s = p.schema ?? typeSchema(p.type, dialect, true);
-    return p.nullable ? nullable(s) : s;
+    const s = p.schema ?? typeSchema(p.type, dialect, true, false, false, p.members, codecs);
+    return described(p.nullable ? nullable(s) : s, p.comment, p.schema !== undefined);
   }, (i) => {
     const p = analysis.params[i]!;
     const s = p.schema;
-    return p.nullable || (s !== null && typeof s === "object" && s !== undefined && "default" in s);
+    return p.nullable === true || p.optional === true || (s !== null && typeof s === "object" && s !== undefined && "default" in s);
   }, true);
-  const row = object(analysis.columns, (i) => {
-    const c = analysis.columns[i]!;
-    const s = typeSchema(c.type, dialect);
-    return c.nullable ? nullable(s) : s;
-  });
-  const output: Schema = analysis.cardinality === "many" ? { type: "array", items: row } : analysis.cardinality === "one" ? row : analysis.cardinality === "maybeOne" ? { anyOf: [row, { type: "null" }] } : { type: "null" };
-  return { input: { $schema: "https://json-schema.org/draft/2020-12/schema", ...input }, output: { $schema: "https://json-schema.org/draft/2020-12/schema", ...output } };
+  const column = (c: Analysis["columns"][number]) => {
+    const s = typeSchema(c.type, dialect, false, false, false, undefined, codecs);
+    return described(c.nullable ? nullable(s) : s, c.comment);
+  };
+  // A statement whose one column has no name gives that column's values.
+  const value = analysis.value ? analysis.columns[0] : undefined;
+  const row = value ? (column(value) as Schema) : object(analysis.columns, (i) => column(analysis.columns[i]!));
+  const output: Schema = analysis.cardinality === "many" ? { type: "array", items: row } : analysis.cardinality === "one" ? row : analysis.cardinality === "at_most_one" ? (value?.nullable ? row : { anyOf: [row, { type: "null" }] }) : { type: "null" };
+  const about = analysis.comment === undefined ? {} : { description: analysis.comment };
+  return { input: { $schema: "https://json-schema.org/draft/2020-12/schema", ...about, ...input }, output: { $schema: "https://json-schema.org/draft/2020-12/schema", ...about, ...output } };
 }

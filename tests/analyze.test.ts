@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,15 +8,14 @@ import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { mapperHandlers } from "../src/mapper-server.ts";
-import { connector, notMysql } from "../packages/mysql/describe.ts";
+import { mysqlStandIn } from "./mysql-stand-in.ts";
 import { refusedLogin, Unreachable } from "../src/connection.ts";
 import { defineQuery } from "../src/index.ts";
+import { DRIVERS, PG, mysqlDatabase, mysqlLive, postgresDatabase } from "./helpers.ts";
 
 // A throwaway Postgres server for the tests that need one, never a database anyone uses: each such
 // test makes a database of its own there and drops it after. The driver is the labs', never the
 // package's own.
-const PG = process.env.REYLO_TEST_PG;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
 const live = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 
 // A SQLite project: a package, its database, and DATABASE_URL naming it.
@@ -30,7 +28,7 @@ function project(): { root: string; env: Record<string, string> } {
   return { root, env: { DATABASE_URL: "file:./app.db" } };
 }
 
-// Each session stands for a process of its own: the type check, a build, reylo generate.
+// Each session stands for a process of its own: the type check, a build.
 async function analyze(root: string, env: Record<string, string>, sql: string, options: { force?: boolean } = {}) {
   const session = await Session.open(root, env);
   try {
@@ -42,12 +40,15 @@ async function analyze(root: string, env: Record<string, string>, sql: string, o
 
 const SELECT = "select id, name from users where id = :id";
 
+// A project file's command runs in the system's shell, cmd.exe on Windows, and these tests write theirs for a POSIX shell.
+const posixShell = process.platform === "win32" && "its command is written for a POSIX shell, and Windows runs it in cmd.exe";
+
 test("a statement is analyzed against the database once, and read from .reylo/ by every process after", async () => {
   const { root, env } = project();
   const first = await analyze(root, env, SELECT);
   assert.ok(first.ok);
   assert.equal(first.source, "database");
-  assert.equal(first.analysis.cardinality, "maybeOne");
+  assert.equal(first.analysis.cardinality, "at_most_one");
   assert.ok(first.entry.startsWith(join(root, ".reylo", "queries")));
   assert.ok(existsSync(first.entry));
   // The directory keeps itself out of git.
@@ -72,7 +73,67 @@ test("a change to the schema makes the entry stale, and the statement is analyze
   assert.equal(after.entry, before.entry);
 });
 
-test("without the database, .reylo/ answers as it is, and a statement it lacks is an error that names reylo generate", async () => {
+test("a database with the same schema at another URL reads the entry, and one with another schema writes its own", async () => {
+  const { root, env } = project();
+  const first = await analyze(root, env, SELECT);
+  assert.ok(first.ok);
+  assert.equal(first.source, "database");
+  // A copy of the file, as a fresh database built by the same migrations is.
+  cpSync(join(root, "app.db"), join(root, "fresh.db"));
+  const fresh = await analyze(root, { DATABASE_URL: "file:./fresh.db" }, SELECT);
+  assert.ok(fresh.ok);
+  assert.deepEqual([fresh.source, fresh.entry], ["cache", first.entry]);
+  const db = new DatabaseSync(join(root, "fresh.db"));
+  db.exec("alter table users add column email text");
+  db.close();
+  const changed = await analyze(root, { DATABASE_URL: "file:./fresh.db" }, SELECT);
+  assert.ok(changed.ok);
+  assert.equal(changed.source, "database");
+  assert.notEqual(changed.entry, first.entry);
+});
+
+test("a statement keeps the entries of a few databases, and the newest of them", async () => {
+  const { root, env } = project();
+  await analyze(root, env, SELECT);
+  for (let i = 0; i < 6; i++) {
+    cpSync(join(root, "app.db"), join(root, `build${i}.db`));
+    const db = new DatabaseSync(join(root, `build${i}.db`));
+    db.exec(`create table t${i} (id integer)`);
+    db.close();
+    const built = await analyze(root, { DATABASE_URL: `file:./build${i}.db` }, SELECT);
+    assert.ok(built.ok);
+    assert.equal(built.source, "database");
+    assert.ok(existsSync(built.entry));
+  }
+  assert.equal(readdirSync(join(root, ".reylo", "queries")).length, 4);
+});
+
+test("a session that still trusts its fingerprint takes another process's newer entry, and never writes the old schema back", async () => {
+  const { root, env } = project();
+  const sql = "select id from users where name = :name";
+  // A build step's session, kept open, which read the fingerprint moments ago.
+  const build = await Session.open(root, env);
+  try {
+    const before = await build.analyze(sql);
+    assert.ok(before.ok);
+    assert.equal(before.analysis.cardinality, "many");
+    const db = new DatabaseSync(join(root, "app.db"));
+    db.exec("create unique index users_name on users (name)");
+    db.close();
+    // The type check, a process of its own, analyzes the statement on the new schema.
+    const checked = await analyze(root, env, sql);
+    assert.ok(checked.ok);
+    assert.deepEqual([checked.source, checked.analysis.cardinality], ["database", "at_most_one"]);
+    const after = await build.analyze(sql);
+    assert.ok(after.ok);
+    assert.deepEqual([after.source, after.analysis.cardinality], ["cache", "at_most_one"]);
+    assert.equal((JSON.parse(readFileSync(after.entry, "utf8")) as { analysis: { cardinality: string } }).analysis.cardinality, "at_most_one");
+  } finally {
+    await build.close();
+  }
+});
+
+test("without the database, .reylo/ answers as it is, and a statement it lacks is an error that says where to fill it", async () => {
   const { root, env } = project();
   assert.ok((await analyze(root, env, SELECT)).ok);
   renameSync(join(root, "app.db"), join(root, "gone.db"));
@@ -82,7 +143,7 @@ test("without the database, .reylo/ answers as it is, and a statement it lacks i
   const missing = await analyze(root, env, "select name from users");
   assert.ok(!missing.ok);
   assert.equal(missing.code, 5);
-  assert.match(missing.message, /^Cannot open the database .*app\.db .*\.reylo has no analysis of this statement, so run reylo generate where the database can be reached\.$/);
+  assert.match(missing.message, /^Cannot open the database .*app\.db .*\.reylo has no analysis of this statement, so run the type check or a build where the database can be reached first\.$/);
   // --force asks the database even for a statement .reylo/ holds.
   const forced = await analyze(root, env, SELECT, { force: true });
   assert.ok(!forced.ok);
@@ -115,9 +176,7 @@ test("two databases the project uses in turn keep an entry each, so neither anal
 
 test("a build that cannot reach the database reads .reylo/ with another URL, with none, and in a copy of the project elsewhere", async () => {
   const { root, env } = project();
-  // The project installs its database's engine, which names the dialect where no URL does.
-  mkdirSync(join(root, "node_modules", "@reylosql"), { recursive: true });
-  symlinkSync(fileURLToPath(new URL("../packages/sqlite", import.meta.url)), join(root, "node_modules", "@reylosql", "sqlite"));
+  // The entries record their dialect, which names the database where no URL does.
   const typed = await analyze(root, env, SELECT);
   assert.ok(typed.ok);
   assert.equal(typed.source, "database");
@@ -157,10 +216,10 @@ test("the module a build step emits carries the analysis and reads nothing at ru
     assert.deepEqual(watched, [join(root, ".env")]);
     assert.equal(code, [
       `import { defineQuery } from "reylo";`,
-      `export const sql = "select id, name from users where id = ? /*file='user.sql'*/";`,
+      `export const sql = "select id, name from users where id = ?";`,
       `export const raw = ${JSON.stringify(SELECT)};`,
       `export const params = ["id"];`,
-      `export default defineQuery({ dialect: "sqlite", sql: raw, params, cardinality: "maybeOne", text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"scalar","name":"integer"},"nullable":false}}, columns: [["id","int"],["name","text"]], fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
+      `export default defineQuery({ dialect: "sqlite", sql: raw, params, cardinality: "maybeOne", readOnly: true, text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"integer","bits":64},"nullable":false}}, columns: [["id","int"],["name","text"]], row: (v) => ({ "id": v[0], "name": v[1] }), fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", sqlcommenter: true, jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
       ``,
     ].join("\n"));
     // A statement that relies on no catalog fact carries its file too, written with `/`.
@@ -173,7 +232,7 @@ test("the module a build step emits carries the analysis and reads nothing at ru
     // A build (a process of its own) that has neither the database nor the entry fails instead of guessing.
     for (const session of Session.opened()) await session.close();
     renameSync(join(root, "app.db"), join(root, "gone.db"));
-    await assert.rejects(sqlModule(file, "select name from users"), /user\.sql: Cannot open the database .*run reylo generate/);
+    await assert.rejects(sqlModule(file, "select name from users"), /user\.sql: Cannot open the database .*run the type check or a build where/);
   } finally {
     for (const session of Session.opened()) await session.close();
   }
@@ -185,10 +244,10 @@ test("one statement of another kind is a command: DDL resolves to nothing and ru
   const created = await analyze(root, env, ddl);
   assert.ok(created.ok);
   const { kind, cardinality, columns, params, diagnostics } = created.analysis;
-  assert.deepEqual({ kind, cardinality, columns, params, diagnostics }, { kind: "create", cardinality: "none", columns: [], params: [], diagnostics: [] });
+  assert.deepEqual({ kind, cardinality, columns, params, diagnostics }, { kind: "other", cardinality: "none", columns: [], params: [], diagnostics: [] });
   const db = new DatabaseSync(join(root, "app.db"));
   try {
-    assert.equal(await defineQuery({ dialect: "sqlite", sql: ddl, params: [], cardinality }).run(db), undefined);
+    assert.equal(await defineQuery({ dialect: "sqlite", sql: ddl, params: [], cardinality: cardinality === "at_most_one" ? "maybeOne" : cardinality }).run(db), undefined);
     // A command that returns rows has the columns SQLite names, of no known type and nullable.
     const listed = await analyze(root, env, "pragma index_list(users)");
     assert.ok(listed.ok);
@@ -278,15 +337,48 @@ test("a parameter as a whole sort key is an error the type check places, and a b
   }
 });
 
+test("a Postgres database built by the same migrations reads the entries of another, whatever its object ids", { skip: live }, async () => {
+  const migrations = `
+    create type mood as enum ('calm', 'loud');
+    create domain short as text check (length(value) < 9);
+    create table people (id serial primary key, mood mood not null, nick short, tags text[], born timestamptz default now());
+    create index on people (mood);
+    create function touch() returns trigger language plpgsql as $$ begin return new; end $$;
+    create trigger touch before update on people for each row execute function touch();
+    create function adults() returns setof people language sql stable as 'select * from people';
+    create view moods as select id, mood from people;
+    create policy everyone on people using (true);
+    comment on column people.nick is 'What they go by';
+  `;
+  const first = await postgresDatabase("reylo_same_first", migrations);
+  // Object ids are given out across a whole server, so that anything created first moves them.
+  const second = await postgresDatabase("reylo_same_second", `create table moved (id int); drop table moved; ${migrations}`);
+  const root = mkdtempSync(join(tmpdir(), "reylo-fingerprint-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const sql = "select id, mood, nick from people where id = :id";
+  try {
+    const typed = await analyze(root, { DATABASE_URL: first.url }, sql);
+    assert.ok(typed.ok);
+    assert.equal(typed.source, "database");
+    const fresh = await analyze(root, { DATABASE_URL: second.url }, sql);
+    assert.ok(fresh.ok);
+    assert.deepEqual([fresh.source, fresh.entry], ["cache", typed.entry]);
+    assert.deepEqual(fresh.analysis, typed.analysis);
+    // What the analysis said of the objects is the second database's to say too.
+    await second.sql.unsafe("alter table people alter column nick set not null");
+    const changed = await analyze(root, { DATABASE_URL: second.url }, sql);
+    assert.ok(changed.ok);
+    assert.equal(changed.source, "database");
+  } finally {
+    await first.drop();
+    await second.drop();
+  }
+});
+
 test("the Postgres fingerprint runs on the server, holds while nothing changes, and moves with each catalog the analysis reads, under a search path that puts a user's `||` first", { skip: live }, async () => {
-  const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_fingerprint_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const db = postgres(url.href, { max: 1, onnotice: () => {} });
+  const own = await postgresDatabase("reylo_fingerprint");
+  const url = new URL(own.url);
+  const db = own.sql;
   const root = mkdtempSync(join(tmpdir(), "reylo-fingerprint-"));
   writeFileSync(join(root, "package.json"), "{}");
   mkdirSync(join(root, "node_modules"));
@@ -301,7 +393,7 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
     }
   };
   try {
-    await db.unsafe(`create table a (x int, s text); create table b (x int, s text);
+    await db.unsafe(`create table a (x int, s text); create table b (x int, s text); create table m (v varchar(20), n numeric);
       create function skip() returns trigger language plpgsql as 'begin return null; end';
       create function to_one(boolean) returns int8 language sql as 'select 1::int8';
       create function plus(int, int) returns int language sql as 'select $1 + $2'`);
@@ -314,14 +406,15 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
     // reads, and the fingerprint moves with each change below.
     await db.unsafe(`create function cat_null(text, text) returns text language sql immutable as 'select null::pg_catalog.text';
       create operator public.|| (leftarg = text, rightarg = text, function = cat_null)`);
-    await admin.unsafe(`alter database ${name} set search_path = public, pg_catalog`);
+    await db.unsafe(`alter database ${url.pathname.slice(1)} set search_path = public, pg_catalog`);
     const hostile = await fingerprint();
     assert.notEqual(hostile, first);
     assert.equal(await fingerprint(), hostile);
     // Each change touches only a catalog the row count or the trust check reads: rows of b are read
     // by a scan of a, a BEFORE ROW trigger can skip an INSERT's row and a rule can replace it, a
     // key holds only under the index's collation, and a user's operator, cast, default argument,
-    // volatility or strictness decides which call the server makes and what it may answer.
+    // volatility or strictness decides which call the server makes and what it may answer, and a
+    // column's type modifier is the size, precision or scale its type carries.
     let last = hostile;
     for (const change of [
       "alter table b inherit a",
@@ -335,6 +428,23 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       "create or replace function plus(int, int default 1) returns int language sql as 'select $1 + $2'",
       "alter function plus(int, int) immutable",
       "alter function plus(int, int) strict",
+      // What a body returns, which an analysis reads: a body stored parsed keeps prosrc empty.
+      "create or replace function plus(int, int default 2) returns int language sql strict immutable as 'select $1 + $2'",
+      "alter function plus(int, int) set search_path = public",
+      "create function atomic_plus(a int) returns int language sql begin atomic select a + 1; end",
+      "create or replace function atomic_plus(a int) returns int language sql begin atomic select a + 2; end",
+      "alter table m alter column v type varchar(50)",
+      "alter table m alter column n type numeric(10,2)",
+      // A function's result columns and its arguments' names, which a call reads and its body may not.
+      "create function people() returns table (id int, name text) language sql as 'select 1, ''a''::text'",
+      "drop function people(); create function people() returns table (id int, full_name text) language sql as 'select 1, ''a''::text'",
+      "create function pair(out a int, out b int) language sql as 'select 1, 2'",
+      "drop function pair(); create function pair(out a bigint, out b int) language sql as 'select 1, 2'",
+      "create function named(x int) returns int language sql as 'select $1'",
+      "drop function named(int); create function named(y int) returns int language sql as 'select $1'",
+      // Whether an INSERT may give an identity column a value.
+      "alter table m add column id int generated by default as identity",
+      "alter table m alter column id set generated always",
     ]) {
       await db.unsafe(change);
       const next = await fingerprint();
@@ -343,46 +453,57 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       last = next;
     }
   } finally {
-    await db.end();
-    await admin.unsafe(`drop database if exists ${name}`);
-    await admin.end();
+    await own.drop();
   }
 });
 
-// A project on MySQL whose server is a stand-in: it answers version() with what the test sets, and
-// every other query with one row.
-function fakeMysql(): { root: string; serve(version: string): { queries: string[]; ended: () => boolean; restore: () => void } } {
+test("the MySQL fingerprint holds while nothing changes, and moves with a column's length, precision and scale, fractional seconds and character set, which its type carries, and with a CHECK's expression and whether it is enforced", { skip: mysqlLive }, async () => {
+  const own = await mysqlDatabase("reylo_fingerprint", "create table m (v varchar(20), n decimal(10,2), at datetime(3), body text character set latin1)");
+  await own.db.query(`create table docs (j json not null, constraint j_shape check (json_schema_valid('{"type":"object","properties":{"a":{"type":"integer"}}}', j)))`);
+  const root = mkdtempSync(join(tmpdir(), "reylo-fingerprint-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  mkdirSync(join(root, "node_modules"));
+  symlinkSync(join(DRIVERS, "mysql2"), join(root, "node_modules", "mysql2"));
+  // A session per call, as a process of its own, so that none answers from a fingerprint it took.
+  const fingerprint = async () => {
+    const session = await Session.open(root, { DATABASE_URL: own.url });
+    try {
+      return (await session.schema()).value;
+    } finally {
+      await session.close();
+    }
+  };
+  try {
+    let last = await fingerprint();
+    assert.match(last ?? "", /^[0-9a-f]{16}$/);
+    assert.equal(await fingerprint(), last);
+    // A TEXT's character set decides whether its size counts the bytes a client receives.
+    // A JSON column is typed by the schema its CHECK holds it to, while the CHECK is enforced.
+    const checks = [`alter table docs drop check j_shape, add constraint j_shape check (json_schema_valid('{"type":"object","properties":{"a":{"type":"string"}}}', j))`, "alter table docs alter check j_shape not enforced"];
+    for (const change of ["alter table m modify v varchar(50)", "alter table m modify n decimal(12,4)", "alter table m modify at datetime(6)", "alter table m modify body text character set utf8mb4", ...checks]) {
+      await own.db.query(change);
+      const next = await fingerprint();
+      assert.notEqual(next, last, change);
+      assert.equal(await fingerprint(), next, change);
+      last = next;
+    }
+  } finally {
+    await own.drop();
+  }
+});
+
+// A project on MySQL whose server is a stand-in (tests/mysql-stand-in.ts), named in .env so that a
+// build step, which reads the process's environment, finds it too.
+function standInProject(port: number): string {
   const root = mkdtempSync(join(tmpdir(), "reylo-not-mysql-"));
   writeFileSync(join(root, "package.json"), "{}");
-  // In .env, so that a build step, which reads the process's environment, finds it too.
-  writeFileSync(join(root, ".env"), "DATABASE_URL=mysql://root@db.internal:3307/app\n");
-  return {
-    root,
-    serve(version) {
-      const server = { version, queries: [] as string[], ended: false };
-      const real = connector.createConnection;
-      connector.createConnection = async () => ({
-        on() {},
-        async query(q: string | { sql: string }) {
-          const sql = typeof q === "string" ? q : q.sql;
-          server.queries.push(sql);
-          return [sql === "select version()" ? [[server.version]] : [["x"]], []];
-        },
-        async prepare() {
-          throw Object.assign(new Error("the stand-in prepares nothing"), { fatal: true });
-        },
-        async end() {
-          server.ended = true;
-        },
-      });
-      return { queries: server.queries, ended: () => server.ended, restore: () => void (connector.createConnection = real) };
-    },
-  };
+  writeFileSync(join(root, ".env"), `DATABASE_URL=mysql://root@127.0.0.1:${port}/app\n`);
+  return root;
 }
 
 test("a MariaDB server is refused by the type check, once per connection, with an error that says to type-check against MySQL", async () => {
-  const { root, serve } = fakeMysql();
-  const server = serve("11.8.2-MariaDB-ubu2404");
+  const server = await mysqlStandIn({ version: "11.8.2-MariaDB-ubu2404" });
+  const root = standInProject(server.port);
   const session = await Session.open(root, {});
   try {
     for (const sql of ["select 1 as one", "select 2 as two"]) {
@@ -391,7 +512,7 @@ test("a MariaDB server is refused by the type check, once per connection, with a
       assert.equal(outcome.code, 5);
       assert.equal(
         outcome.message,
-        `Cannot type-check against the database at db.internal:3307/app (DATABASE_URL in .env): it is MariaDB 11.8.2, and Reylo type-checks MySQL statements against MySQL. Point the type check's URL at a MySQL server, 8.4 or later, with the same schema.`,
+        `Cannot type-check against the database at 127.0.0.1:${server.port}/app (DATABASE_URL in .env): it is MariaDB 11.8.2, and Reylo type-checks MySQL statements against MySQL. Point the type check's URL at a MySQL server, 8.4 or later, with the same schema.`,
       );
     }
     // One connection asked once, then closed; nothing else ran on it.
@@ -409,14 +530,13 @@ test("a MariaDB server is refused by the type check, once per connection, with a
   } finally {
     if (saved !== undefined) process.env.DATABASE_URL = saved;
     for (const session of Session.opened()) await session.close();
-    server.restore();
+    await server.close();
   }
 });
 
 test("a MySQL server is not refused: the type check goes on to read its schema", async () => {
-  const { root, serve } = fakeMysql();
-  const server = serve("8.4.6");
-  const session = await Session.open(root, {});
+  const server = await mysqlStandIn({ version: "8.4.6" });
+  const session = await Session.open(standInProject(server.port), {});
   try {
     const schema = await session.schema();
     assert.ok(!schema.fatal);
@@ -425,53 +545,20 @@ test("a MySQL server is not refused: the type check goes on to read its schema",
     assert.equal(server.queries.length, 2);
   } finally {
     await session.close();
-    server.restore();
+    await server.close();
   }
 });
 
-// A MySQL stand-in that takes one password, and refuses any other as MySQL does (error 1045): at
-// the login, and at a later query on a connection whose password has expired since, as postgres.js
-// reports a refused login at its first query.
-function tokenMysql(accepted: () => string): { tried: string[]; open: () => number; restore: () => void } {
-  const tried: string[] = [];
-  let open = 0;
-  const refuse = () => Object.assign(new Error("Access denied for user 'root'@'localhost' (using password: YES)"), { code: "ER_ACCESS_DENIED_ERROR", errno: 1045, sqlState: "28000", fatal: true });
-  const real = connector.createConnection;
-  connector.createConnection = async (url: string) => {
-    const password = decodeURIComponent(new URL(url).password);
-    tried.push(password);
-    if (password !== accepted()) throw refuse();
-    open++;
-    let ended = false;
-    return {
-      on() {},
-      async query(q: string | { sql: string }) {
-        const sql = typeof q === "string" ? q : q.sql;
-        if (sql === "select version()") return [[["8.4.6"]], []];
-        // A turn of the event loop, so that calls made together are all waiting when one is refused.
-        await new Promise((resolve) => setImmediate(resolve));
-        if (password !== accepted()) throw refuse();
-        return [[["x"]], []];
-      },
-      async prepare() {
-        throw Object.assign(new Error("the stand-in prepares nothing"), { fatal: true });
-      },
-      async end() {
-        if (!ended) open--;
-        ended = true;
-      },
-    };
-  };
-  return { tried, open: () => open, restore: () => void (connector.createConnection = real) };
-}
+// A MySQL stand-in that takes one password, and refuses any other at the login as MySQL does (error 1045).
+const TOKENS = ["token-1", "token-2", "token-3"];
 
 test("a login the server refuses runs direct_url's command again, once, so that an expired token is replaced", async () => {
+  let current = "token-1";
+  const server = await mysqlStandIn({ version: "8.4.6", accepts: () => current, passwords: TOKENS });
   const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
   writeFileSync(join(root, "package.json"), "{}");
   writeFileSync(join(root, "token.txt"), "token-1");
-  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(cat token.txt)@db.internal:3307/app\n");
-  let current = "token-1";
-  const server = tokenMysql(() => current);
+  writeFileSync(join(root, ".reylo.yaml"), `direct_url: mysql://root:$(cat token.txt)@127.0.0.1:${server.port}/app\n`);
   const session = await Session.open(root, {});
   try {
     // The token the session read at its start has expired, and the command now prints the next.
@@ -491,45 +578,72 @@ test("a login the server refuses runs direct_url's command again, once, so that 
     assert.deepEqual(server.tried, ["token-1", "token-2", "token-2"]);
   } finally {
     await session.close();
-    server.restore();
+    await server.close();
   }
 });
 
-test("calls refused together when a token expires share one run of the command and one new connection", async () => {
+// The same on Postgres against the live server, where a role that does not exist is a refused login
+// (SQLSTATE 28000) as an expired password is.
+test("on Postgres, a login the server refuses runs direct_url's command again, once", { skip: live }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "reylo-pg-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const server = new URL(PG!);
+  writeFileSync(join(root, "role.txt"), "reylo_no_such_role");
+  writeFileSync(join(root, ".reylo.yaml"), `direct_url: postgres://$(cat role.txt)@${server.host}${server.pathname}\n`);
+  const session = await Session.open(root, {});
+  try {
+    // The role the session read at its start is refused, and the command now prints one that logs in.
+    writeFileSync(join(root, "role.txt"), server.username || "postgres");
+    const schema = await session.schema();
+    assert.equal(schema.error, undefined);
+    assert.match(schema.value ?? "", /^[0-9a-f]{16}$/);
+    // The connection the fresh URL opened is the one the analysis runs on.
+    const outcome = await session.analyze("select 1 as one", { force: true });
+    assert.deepEqual(outcome.ok && outcome.analysis.columns.map((c) => c.name), ["one"]);
+  } finally {
+    await session.close();
+  }
+});
+
+test("calls refused together when a token expires share one run of the command and one new connection", { skip: posixShell }, async () => {
+  let current = "token-1";
+  const server = await mysqlStandIn({ version: "8.4.6", accepts: () => current, passwords: TOKENS });
   const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
   writeFileSync(join(root, "package.json"), "{}");
   writeFileSync(join(root, "token.txt"), "token-1");
-  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(echo run >> runs.txt; cat token.txt)@db.internal:3307/app\n");
+  writeFileSync(join(root, ".reylo.yaml"), `direct_url: mysql://root:$(echo run >> runs.txt; cat token.txt)@127.0.0.1:${server.port}/app\n`);
   const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
-  let current = "token-1";
-  const server = tokenMysql(() => current);
   const session = await Session.open(root, {});
   try {
     assert.match((await session.schema()).value ?? "", /^[0-9a-f]{16}$/);
     const before = runs();
-    // The token expires under an open connection, and two reads of the schema are refused at once.
+    // The token expires while the session's connection is closed, and two reads of the schema then
+    // ask for one at once: the refused login runs the command once, for one new connection.
     current = "token-2";
     writeFileSync(join(root, "token.txt"), "token-2");
+    await session.release();
     const [changed, schema] = await Promise.all([session.recheck(), session.schema()]);
     assert.equal(changed, false);
     assert.match(schema.value ?? "", /^[0-9a-f]{16}$/);
     assert.equal(runs() - before, 1);
-    assert.deepEqual(server.tried, ["token-1", "token-2"]);
+    assert.deepEqual(server.tried, ["token-1", "token-1", "token-2"]);
     assert.equal(server.open(), 1);
   } finally {
     await session.close();
-    server.restore();
   }
+  // The engine's goodbye reaches the server before the session's close returns.
+  await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(server.open(), 0);
+  await server.close();
 });
 
-test("a session kept open runs a failed direct_url command again once its failure has stood a minute", async (t) => {
+test("a session kept open runs a failed direct_url command again once its failure has stood a minute", { skip: posixShell }, async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const server = await mysqlStandIn({ version: "8.4.6", accepts: () => "token-1", passwords: TOKENS });
   const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
   writeFileSync(join(root, "package.json"), "{}");
-  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(echo run >> runs.txt; cat token.txt)@db.internal:3307/app\n");
+  writeFileSync(join(root, ".reylo.yaml"), `direct_url: mysql://root:$(echo run >> runs.txt; cat token.txt)@127.0.0.1:${server.port}/app\n`);
   const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
-  const server = tokenMysql(() => "token-1");
   // The password manager is locked when the session opens, as the type check's may be at the editor's start.
   const session = await Session.open(root, {});
   try {
@@ -549,25 +663,26 @@ test("a session kept open runs a failed direct_url command again once its failur
     assert.equal(!later.ok && later.code, 5);
     assert.equal(session.project.error, undefined);
     assert.equal(runs(), 2);
-    assert.deepEqual(server.tried, ["token-1"]);
+    // The connection the stand-in drops at the prepare is opened once more for the same analysis.
+    assert.deepEqual(server.tried, ["token-1", "token-1"]);
   } finally {
     await session.close();
-    server.restore();
+    await server.close();
   }
 });
 
 test("the type check names the dialect of the project a kept session recovers to", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const server = await mysqlStandIn({ version: "8.4.6", accepts: () => "token-1", passwords: TOKENS });
   const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
   writeFileSync(join(root, "package.json"), "{}");
-  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(cat token.txt)@db.internal:3307/app\n");
-  const server = tokenMysql(() => "token-1");
+  writeFileSync(join(root, ".reylo.yaml"), `direct_url: mysql://root:$(cat token.txt)@127.0.0.1:${server.port}/app\n`);
   const mapper = mapperHandlers();
   const projectHandle = `recovers-${root}`;
   await mapper.openProject!({ projectHandle, configFileName: join(root, ".reylo.yaml") });
   const transform = async () => (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string; diagnostics: { code: number }[] };
   try {
-    // With no URL, and no engine installed in the project, the dialect is Postgres's.
+    // With no URL, and no entry in .reylo/ to name one, the dialect is Postgres's.
     const before = await transform();
     assert.deepEqual(before.diagnostics.map((d) => d.code), [11]);
     assert.match(before.text, /QueryError<"postgres">/);
@@ -580,7 +695,7 @@ test("the type check names the dialect of the project a kept session recovers to
     assert.match(after.text, /"many", "mysql", QueryError>/);
   } finally {
     await mapper.closeProject!({ projectHandle });
-    server.restore();
+    await server.close();
   }
 });
 
@@ -591,11 +706,4 @@ test("a refused login is told apart from a server that cannot be reached, on Pos
   assert.ok(refusedLogin(new Unreachable(Object.assign(new Error("Access denied"), { code: "ER_ACCESS_DENIED_ERROR", errno: 1045 }))));
   assert.ok(!refusedLogin(pg("3D000")));
   assert.ok(!refusedLogin(new Unreachable(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }))));
-});
-
-test("the server's version names MariaDB in either form it is given, and no MySQL", () => {
-  assert.equal(notMysql("11.8.2-MariaDB-ubu2404"), "MariaDB 11.8.2");
-  assert.equal(notMysql("5.5.5-10.11.6-MariaDB-0+deb12u1"), "MariaDB 10.11.6");
-  assert.equal(notMysql("10.6.21-MariaDB"), "MariaDB 10.6.21");
-  for (const mysql of ["8.4.6", "9.7.0", "8.0.36-PlanetScale", "8.0.40-0ubuntu0.24.04.1", undefined, null]) assert.equal(notMysql(mysql), undefined);
 });

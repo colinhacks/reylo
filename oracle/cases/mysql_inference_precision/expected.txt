@@ -1,23 +1,23 @@
-grouped_arrayagg.sql: many () -> { kind: text, payloads: [json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}] }
-grouped_arrayagg_nullable_items.sql: many () -> { id: int4, dates: [timestamp?] }
-grouped_arrayagg_objects.sql: many () -> { id: int4, posts: [{ title: text, at: timestamp? }] }
-grouped_rollup.sql: many () -> { kind: text?, ids: [int4]? }
-grouped_subquery.sql: many () -> { id: int4, titles: [text]? }
-grouped_window.sql: many () -> { id: int4, next: [int4]? }
-later_inner_join.sql: many () -> { body: text, title: text, name: text }
-later_left_join.sql: many () -> { body: text, title: text?, name: text? }
-ungrouped_arrayagg.sql: one () -> { payloads: [json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}]? }
-where_chain.sql: many () -> { name: text, title: text, body: text }
-where_coalesce.sql: many () -> { name: text, title: text?, published_at: timestamp? }
-where_comparison.sql: many () -> { name: text, title: text, published_at: timestamp? }
-where_is_null.sql: many () -> { name: text, title: text? }
-where_nested_join.sql: many () -> { name: text, title: text, body: text }
-where_not_in_subquery.sql: many () -> { name: text, title: text? }
-where_null_safe.sql: many () -> { name: text, title: text? }
-where_or_arms.sql: many () -> { name: text, title: text }
-where_or_not_strict.sql: many () -> { name: text, title: text?, published_at: timestamp? }
-where_reduces.sql: many () -> { name: text, title: text, published_at: timestamp }
-where_right_join.sql: many () -> { name: text, title: text }
-where_rollup.sql: many () -> { published_at: timestamp?, n: int8 }
-where_tested_bare.sql: many () -> { title: text?, published_at: timestamp, at: timestamp }
-where_tested_column.sql: many () -> { name: text, email: text }
+grouped_arrayagg.sql: many () -> { kind: varchar(≤10), payloads: json (json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true})[] }
+grouped_arrayagg_nullable_items.sql: many () -> { id: int, dates: json datetime?[] }
+grouped_arrayagg_objects.sql: many () -> { id: int, posts: json ({ title: varchar(≤80), at: datetime? })[] }
+grouped_rollup.sql: many () -> { kind: varchar?, ids: json int[]? }
+grouped_subquery.sql: many () -> { id: int, titles: json varchar(≤80)[]? }
+grouped_window.sql: many () -> { id: int, next: json int[]? }
+later_inner_join.sql: many () -> { body: varchar(≤80), title: varchar(≤80), name: varchar(≤40) }
+later_left_join.sql: many () -> { body: varchar(≤80), title: varchar(≤80)?, name: varchar(≤40)? }
+ungrouped_arrayagg.sql: one () -> { payloads: json (json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true})[]? }
+where_chain.sql: many () -> { name: varchar(≤40), title: varchar(≤80), body: varchar(≤80) }
+where_coalesce.sql: many () -> { name: varchar(≤40), title: varchar(≤80)?, published_at: datetime? }
+where_comparison.sql: many () -> { name: varchar(≤40), title: varchar(≤80), published_at: datetime? }
+where_is_null.sql: many () -> { name: varchar(≤40), title: varchar(≤80)? }
+where_nested_join.sql: many () -> { name: varchar(≤40), title: varchar(≤80), body: varchar(≤80) }
+where_not_in_subquery.sql: many () -> { name: varchar(≤40), title: varchar(≤80)? }
+where_null_safe.sql: many () -> { name: varchar(≤40), title: varchar(≤80)? }
+where_or_arms.sql: many () -> { name: varchar(≤40), title: varchar(≤80) }
+where_or_not_strict.sql: many () -> { name: varchar(≤40), title: varchar(≤80)?, published_at: datetime? }
+where_reduces.sql: many () -> { name: varchar(≤40), title: varchar(≤80), published_at: datetime }
+where_right_join.sql: many () -> { name: varchar(≤40), title: varchar(≤80) }
+where_rollup.sql: many () -> { published_at: datetime?, n: bigint }
+where_tested_bare.sql: many () -> { title: varchar(≤80)?, published_at: datetime, at: datetime }
+where_tested_column.sql: many () -> { name: varchar(≤40), email: varchar(≤80) }

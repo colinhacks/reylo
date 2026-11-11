@@ -11,6 +11,16 @@ on:
       - main
   # release.yml runs the whole of this before it stages anything, so a release passes every check
   workflow_call:
+  # A branch's checks with no pull request, and so no review: `gh workflow run test.yml --ref <branch>`. A release's run reads as this event too, since a called workflow takes its caller's, so what tells the two apart is `inputs.scope`, which only a dispatch of this file sets.
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "changed runs the checks the branch's changes from main reach, as a pull request does; everything runs every check and the type check on Windows"
+        type: choice
+        options:
+          - changed
+          - everything
+        default: changed
 
 permissions:
   contents: read
@@ -21,10 +31,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # What a pull request touches, which decides the engine's and the oracle's jobs below: a pull request
-  # that touches no engine, no oracle and no build or CI file skips both, and one that touches one
-  # database's engine runs the oracle's cases of that database alone. A push to main and a release run
-  # everything.
+  # What a pull request touches, which decides the engine's, the oracle's and the playground's jobs
+  # below: a pull request that touches no engine, no oracle and no build or CI file skips them all, and
+  # one that touches one database's engine runs the oracle's cases of that database alone. A push to
+  # main and a release run everything. A dispatch reads a branch's changes from main the same way.
   scope:
     if: ${{ !github.event.repository.private }}
     name: What the change touches
@@ -34,65 +44,121 @@ jobs:
       engine: ${{ steps.scope.outputs.engine }}
       tests: ${{ steps.scope.outputs.tests }}
       shards: ${{ steps.scope.outputs.shards }}
+      playground: ${{ steps.scope.outputs.playground }}
     steps:
       # A pull request's run checks out the merge of it into main: its first parent is main, so the
       # files between the two are the ones the pull request changes, without a token that reads pull requests.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || inputs.scope == 'changed'
         with:
           persist-credentials: false
-          fetch-depth: 2
+          # Strings: a bare 0 is false in an expression, so `&& 0 || 2` always gives 2.
+          fetch-depth: ${{ inputs.scope == 'changed' && '0' || '2' }}
       - name: Read the changed files
         id: scope
         env:
           EVENT: ${{ github.event_name }}
+          SCOPE: ${{ inputs.scope }}
         run: |
           # Every database, or the ones the change reaches.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-oracle'
-            echo 'shards=["postgres","sqlite","mysql-1","mysql-2","mysql-slow"]'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-duckdb -p reylo-engine -p reylo-engine-native -p reylo -p reylo-oracle'
+            echo 'shards=["postgres","sqlite","duckdb","mysql-1","mysql-2","mysql-slow"]'
+            echo playground=true
           }
-          if [ "$EVENT" != pull_request ]; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
-          if ! git rev-parse -q --verify HEAD^2 > /dev/null; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
-          # A renamed file counts at both paths, so a file moved out of a path that runs everything still does.
-          files=$(git diff --name-only --no-renames HEAD^1 HEAD)
-          echo "$files"
-          # Core, the crate the oracle answers through, the oracle's own code, the build, the code lists the
-          # oracle reads, the validators' measurements the engine's tests read, and CI itself reach every database.
-          if grep -qE '^(engine/(core|build-support|facade|wasm)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+          if [ "$SCOPE" = changed ]; then
+            base=$(git merge-base origin/main HEAD)
+          elif [ "$EVENT" = pull_request ] && git rev-parse -q --verify HEAD^2 > /dev/null; then
+            base=HEAD^1
+          else
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          postgres=false mysql=false sqlite=false
+          # A renamed file counts at both paths, so a file moved out of a path that runs everything still does.
+          files=$(git diff --name-only --no-renames "$base" HEAD)
+          echo "$files"
+          # Core, the crate the oracle answers through, the oracle's own code, the build, the code lists the
+          # oracle reads, the format's schema and examples the engine's tests and the oracle read, the validators'
+          # measurements the engine's tests read, and CI itself reach every database.
+          if grep -qE '^(\.cargo/|engine/(core|build-support|facade|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+            everything >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          postgres=false mysql=false sqlite=false duckdb=false binary=false
           while read -r file; do
             case "$file" in
               engine/postgres/*) postgres=true ;;
               engine/mysql/* | oracle/cases/mysql_*) mysql=true ;;
               engine/sqlite/* | oracle/cases/sqlite_*) sqlite=true ;;
+              engine/duckdb/* | oracle/cases/duckdb_*) duckdb=true ;;
+              engine/cli/*) binary=true ;;
               oracle/cases/*) postgres=true ;;
             esac
           done <<<"$files"
           tests='' shards=''
           $postgres && { tests="$tests -p reylo-engine-postgres"; shards="$shards,\"postgres\""; }
           $sqlite && { tests="$tests -p reylo-engine-sqlite"; shards="$shards,\"sqlite\""; }
+          $duckdb && { tests="$tests -p reylo-engine-duckdb"; shards="$shards,\"duckdb\""; }
           $mysql && { tests="$tests -p reylo-engine-mysql"; shards="$shards,\"mysql-1\",\"mysql-2\",\"mysql-slow\""; }
-          if [ -z "$shards" ]; then
+          # The binary's own crate, which links every database.
+          $binary && tests="$tests -p reylo"
+          if [ -z "$tests" ]; then
             { echo engine=false; echo tests=; echo 'shards=[]'; } >> "$GITHUB_OUTPUT"
           else
             { echo engine=true; echo "tests=$tests"; echo "shards=[${shards#,}]"; } >> "$GITHUB_OUTPUT"
           fi
+          # The playground's engine is Postgres's alone.
+          echo "playground=$postgres" >> "$GITHUB_OUTPUT"
+
+  # The `reylo` binary the loader's tests run (REYLO_ENGINE_PATH), built once per run from this commit's
+  # sources, on every pull request: the loader has no engine of its own. It is the release build
+  # without LTO, which the release's own build adds (binaries.yml), at a fraction of the link time
+  # and with every crate's object kept by sccache between runs. The depth a statement may nest holds
+  # under either, since the analysis runs on a stack of its own size (engine/core/src/stack.rs), and
+  # binaries.yml checks it on each platform's release build.
+  binary:
+    if: ${{ !github.event.repository.private }}
+    name: Build the reylo binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: binary
+      - run: engine/build.sh --prepare
+      - run: cargo build --release --locked -p reylo
+      - run: target/release/reylo --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reylo-test-linux-x64
+          path: target/release/reylo
+          if-no-files-found: error
+          retention-days: 3
+      - if: always()
+        run: sccache --show-stats
 
   test:
-    # This file lives in the private working repository too, which `scripts/publish/publish.ts` copies it from; CI runs in the public one only.
+    # A private copy of this repository runs none of these jobs.
     if: ${{ !github.event.repository.private }}
     name: Typecheck, test and build on Node 24
+    needs: binary
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Throwaway servers for the tests that run statements, on ports clear of the defaults: the loader's tests skip each database whose URL is unset, and this job fails on any skip.
+    # Throwaway servers for the tests that run statements, on ports clear of the defaults: the loader's tests skip each database whose URL is unset, and this job fails on any skip. Postgres 18 is pgvector's image of it, Postgres 18 with the extension installed, which a spec example's statement reads (spec/examples.ts).
     services:
       postgres:
-        image: postgres:18
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
@@ -124,12 +190,18 @@ jobs:
         with:
           nub-version: "0.9.6"
           node-version: "24"
+      # The binary the job above built, which every test that analyzes a statement starts. An artifact
+      # keeps no file mode, so its execute bit is set again.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: reylo-test-linux-x64
+          path: ${{ runner.temp }}/engine
+      - name: Name the binary for the tests
+        run: |
+          chmod +x "$RUNNER_TEMP/engine/reylo"
+          "$RUNNER_TEMP/engine/reylo" --version
+          echo "REYLO_ENGINE_PATH=$RUNNER_TEMP/engine/reylo" >> "$GITHUB_ENV"
       - run: nub install --frozen-lockfile
-      # The driver each engine package describes through, which its build bundles into it.
-      - run: nub install --frozen-lockfile
-        working-directory: packages/postgres
-      - run: nub install --frozen-lockfile
-        working-directory: packages/mysql
       # The docs site's toolchain, which builds reylo play's page into the reylo package.
       - run: nub install --frozen-lockfile
         working-directory: site
@@ -138,30 +210,28 @@ jobs:
         working-directory: lab/drivers
       - run: nub install --frozen-lockfile
         working-directory: lab/jest
-      # The Jest lab reaches the package and its database's engine through links into this checkout; nub install replaces node_modules, so the links come after it.
+      # The Jest lab reaches the package through a link into this checkout, and the engine through REYLO_ENGINE_PATH; nub install replaces node_modules, so the link comes after it.
       - name: Link the lab the tests load
-        run: |
-          link_lab () {
-            local dir="lab/$1" db="$2"
-            shift 2
-            mkdir -p "$dir/node_modules/@reylosql"
-            ln -sfn ../../.. "$dir/node_modules/reylo"
-            ln -sfn "../../../../packages/$db" "$dir/node_modules/@reylosql/$db"
-            for driver in "$@"; do ln -sfn "../../drivers/node_modules/$driver" "$dir/node_modules/$driver"; done
-          }
-          link_lab jest sqlite
+        run: ln -sfn ../../.. lab/jest/node_modules/reylo
       - run: nub run typecheck
       - name: Run the tests, none skipped
         run: |
           set -o pipefail
           nub run test 2>&1 | tee "$RUNNER_TEMP/test.log"
           grep -q '^ℹ skipped 0$' "$RUNNER_TEMP/test.log" || { echo "::error::a test was skipped"; exit 1; }
-      - run: nub run build
+      # dist/reylo and this machine's platform package, around the binary the tests ran.
+      - run: nub scripts/build.ts --binary "$REYLO_ENGINE_PATH"
 
-  # The engine's sources, which the job above only meets as the committed packages/<database>/engine.wasm
-  # (tests/fingerprint.test.ts checks each is their build): built natively, with no warning, and the tests
-  # of the crates the change reaches run. sccache keeps each crate's and each C file's object between runs,
-  # libpg_query's and SQLite's included, which rust-cache does not keep, since they are the workspace's own.
+  # The type check on Windows (windows.yml): on each push to main, within each release and on a dispatch
+  # of everything, never on a pull request, which does not wait on it.
+  windows:
+    if: ${{ !github.event.repository.private && github.event_name != 'pull_request' && inputs.scope != 'changed' }}
+    uses: ./.github/workflows/windows.yml
+
+  # The engine's sources, beyond the binary the loader's tests run: the whole workspace built natively,
+  # with no warning, and the tests of the crates the change reaches run. sccache keeps each crate's and
+  # each C file's object between runs, libpg_query's and SQLite's included, which rust-cache does not
+  # keep, since they are the workspace's own.
   engine:
     needs: scope
     if: ${{ !github.event.repository.private && needs.scope.outputs.engine == 'true' }}
@@ -189,10 +259,32 @@ jobs:
       - if: always()
         run: sccache --show-stats
 
+  # The docs site's playground engine, Postgres's engine as one WebAssembly component (engine/build.sh),
+  # which only a release builds and publishes (release.yml): built here too, so a change that breaks the
+  # wasm32-wasip2 build fails on its pull request rather than at the release.
+  playground:
+    needs: scope
+    if: ${{ !github.event.repository.private && needs.scope.outputs.playground == 'true' }}
+    name: Build the playground's engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # jco, from the root's install, transpiles the component.
+      - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
+        with:
+          nub-version: "0.9.6"
+          node-version: "24"
+      - run: nub install --frozen-lockfile
+      - run: .github/scripts/build-playground.sh "$RUNNER_TEMP/playground"
+
   # The soundness oracle (oracle/): every statement of oracle/cases is analyzed by the engine's sources and
   # run on live servers over seeded edge values, and a value that contradicts its inferred type or row count
-  # fails the case. The cases run in shards side by side: Postgres's, SQLite's, and MySQL's in three, one of
-  # them mysql_types alone, which takes as long as half the others together. Postgres 18 runs on the
+  # fails the case. The cases run in shards side by side: Postgres's, SQLite's, DuckDB's, and MySQL's in three, one of
+  # them mysql_types alone, which takes as long as half the others together. DuckDB's shard builds the oracle
+  # with DuckDB compiled from its sources (`--features duckdb`), which no other build of the workspace does. Postgres 18 runs on the
   # runner rather than in a container, because the json_schema_* cases call five validator extensions built
   # into it; its packages are cached, since Ubuntu's mirror has taken half an hour to send them.
   oracle:
@@ -297,14 +389,14 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          # A case's database is its name's prefix (`mysql_`, `sqlite_`, Postgres's none), as its `dialect` file says.
+          # A case's database is its name's prefix (`mysql_`, `sqlite_`, `duckdb_`, Postgres's none), as its `dialect` file says.
           cases='' n=0
           for dir in oracle/cases/*/; do
             name=${dir%/}
             name=${name##*/}
-            case "$name" in mysql_*) dialect=mysql ;; sqlite_*) dialect=sqlite ;; *) dialect=postgres ;; esac
+            case "$name" in mysql_*) dialect=mysql ;; sqlite_*) dialect=sqlite ;; duckdb_*) dialect=duckdb ;; *) dialect=postgres ;; esac
             case "$SHARD" in
-              postgres | sqlite) [ "$dialect" != "$SHARD" ] || cases="$cases ${dir%/}" ;;
+              postgres | sqlite | duckdb) [ "$dialect" != "$SHARD" ] || cases="$cases ${dir%/}" ;;
               mysql-slow) [ "$name" != mysql_types ] || cases="$cases ${dir%/}" ;;
               mysql-1 | mysql-2)
                 if [ "$dialect" = mysql ] && [ "$name" != mysql_types ]; then
@@ -314,12 +406,14 @@ jobs:
                 ;;
             esac
           done
+          features=''
           case "$SHARD" in
             postgres) servers="--url postgres://postgres@localhost:55432/postgres" ;;
             sqlite) servers='' ;;
+            duckdb) servers='' features='--features duckdb' ;;
             *) servers="--mysql-url mysql://root@127.0.0.1:53306" ;;
           esac
           # shellcheck disable=SC2086
-          cargo run -q -p reylo-oracle -- $servers --strict-coverage $cases
+          cargo run -q -p reylo-oracle $features -- $servers --strict-coverage $cases
       - if: always()
         run: sccache --show-stats

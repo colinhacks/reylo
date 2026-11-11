@@ -39,9 +39,12 @@ pub fn materialized(q: &Query, views: &HashSet<String>) -> Option<Query> {
         select.optimizer_hints.clear();
         merged |= select.from.iter().any(reads_merged);
         // A block that only selects every column of one table has nothing to null-extend the
-        // view's columns with, and is the shape a view is read through.
+        // view's columns with, and is the shape a view is read through. The view's own query may
+        // outer-join another view, merged into it, which the hint materializes.
         let alone = matches!(select.projection.as_slice(), [SelectItem::Wildcard(_)]) && matches!(select.from.as_slice(), [item] if item.joins.is_empty() && matches!(item.relation, TableFactor::Table { .. }));
-        if !alone {
+        if alone {
+            merged |= matches!(&select.from[0].relation, TableFactor::Table { name, .. } if matches!(name.0.last(), Some(ObjectNamePart::Identifier(last)) if views.contains(&last.value.to_ascii_lowercase())));
+        } else {
             for item in &mut select.from {
                 merged |= views_through_derived(item, views);
             }
@@ -387,7 +390,7 @@ mod tests {
         assert_eq!(wrapper(&q, &columns, false), "SELECT reylo_derived.reylo_0 AS `id`, coalesce(reylo_derived.reylo_1, 0) AS `n` FROM (SELECT id, (SELECT count(*) FROM posts) AS n FROM users) AS reylo_derived (reylo_0, reylo_1)");
         assert!(wrapper(&q, &columns, true).contains("coalesce(reylo_derived.reylo_1, 0) AS reylo_1"));
         assert!(wrapper(&q, &[("a`b".to_string(), None)], false).contains("AS `a``b`"));
-        let column = |r#type: u32, charset: u32| MysqlColumn { name: String::new(), r#type, flags: 0, charset, length: None, org_table: None, org_name: None };
+        let column = |r#type: u32, charset: u32| MysqlColumn { name: String::new(), r#type, flags: 0, charset, length: None, decimals: None, schema: None, org_table: None, org_name: None };
         assert_eq!(filler(&column(8, 63)), Some("0"));
         assert_eq!(filler(&column(253, 255)), Some("''"));
         assert_eq!(filler(&column(252, 63)), Some("X''"));

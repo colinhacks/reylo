@@ -1,0 +1,34 @@
+e01_lateral_outer_users.sql: many () -> { arr: (public.users{ id: int8?, name: text? }?)[]? }
+e02_lateral_cte.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+e03_derived_own_from.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+e04_nested_own_from.sql: one () -> { arr: (record{ id: int4, arr: (public.addr{ street: text?, zip: int4? }?)[]? })[] }
+e05_lateral_scalar.sql: many () -> { one: public.addr{ street: text?, zip: int4? }? }
+e06_lateral_left_join.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+e07_lateral_nested_level.sql: one () -> { arr: (record{ arr: (public.addr{ street: text?, zip: int4? }?)[]? })[] }
+e08_lateral_join_tree.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+e09_lateral_table_alias.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+e10_top_left_lateral_rs.sql: many () -> { id: int8, rs: (public.replies{ id: int8, comment_id: int8, body: text })[]? } key (id)
+e11_top_left_derived_rs.sql: many () -> { id: int8, rs: (record{ id: int8 })[]? } key (id)
+e12_top_right_rs.sql: many () -> { rs: (public.replies{ id: int8, comment_id: int8, body: text })[]? }
+e13_nested_left_derived_rs.sql: one () -> { arr: (record{ id: int8, rs: (record{ id: int8 })[]? })[] }
+e14_cte_left_rs.sql: many () -> { rs: (public.replies{ id: int8, comment_id: int8, body: text })[]? }
+e15_union_rs.sql: many () -> { rs: (public.replies{ id: int8?, comment_id: int8?, body: text? }?)[]? }
+e16_nested_union_rs.sql: one () -> { arr: (record{ rs: record?[]? })[] }
+e17_rollup_rs.sql: many () -> { rs: record?[]? }
+e18_lateral_rollup_expr.sql: many () -> { k: int8? }
+e19_nested_rollup_expr.sql: many () -> { id: int8?, arr: (record{ k: int8?, raw: int8? })[] }
+e20_lateral_grouping_sets.sql: many () -> { k: int8?, b: int8? }
+e21_lateral_right_join_inside.sql: many () -> { k: int8? }
+e22_nested_right_join_inside.sql: many () -> { id: int8, arr: (record{ k: int8? }?)[] } key (id)
+e23_lateral_full_join_inside.sql: many () -> { k: int8? }
+e24_lateral_aggregates_more.sql: many () -> { sa: text?, ba: bool?, aa: int8?[]?, ja: jsonb?, cb: int8 }
+e25_lateral_filter_grouped.sql: many () -> { s: numeric? }
+e26_nested_filter_grouped.sql: many () -> { id: int8, arr: (record{ post_id: int8, s: numeric?, m: int8? })[] } key (id)
+e27_lateral_window_frames.sql: many () -> { ex: numeric?, fv: int8?, lg: int8? }
+e28_nested_window_frames.sql: many () -> { id: int8, arr: (record{ id: int8, ex: numeric?, fv: int8? })[] } key (id)
+e29_nested_aggregates_more.sql: many () -> { id: int8, arr: (record{ sa: text?, ba: bool?, aa: int8?[]?, mf: int8? })[] } key (id)
+e30_lateral_group_having.sql: many () -> { k: int8?, n: int8? }
+e31_table_alias_outer_column.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }
+e32_table_alias_outer_column_scalar.sql: many () -> { one: public.addr{ street: text?, zip: int4? }? }
+e33_table_alias_outer_column_nested.sql: one () -> { arr: (record{ id: int4, rs: (public.addr{ street: text?, zip: int4? }?)[]? })[] }
+e34_table_alias_outer_deeper.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }

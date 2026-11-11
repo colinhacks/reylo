@@ -1,0 +1,1 @@
+select kind, any_value(n) as some_n, any_value(note) as some_note, percentile_cont(0.5) within group (order by amount) as median, percentile_disc(0.5) within group (order by at) as middle, mode() within group (order by mood) as usual, percentile_cont(0.5) within group (order by amount) filter (where n > 0) as filtered from events group by kind

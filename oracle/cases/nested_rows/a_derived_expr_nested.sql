@@ -1,0 +1,1 @@
+select p.id, array(select c from (select x.id, x.big + 1 as more, upper(x.body) as loud, coalesce(x.body, '') as text, array(select r from (select id from replies where comment_id = x.id) r) as rs from comments x where x.post_id = p.id) c) as comments from posts p

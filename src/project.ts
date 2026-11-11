@@ -8,16 +8,17 @@
 // a file. The URL's scheme names the dialect. The connection is
 // `direct_url`, else `${DATABASE_URL}`, and never `url`, which the file keeps for another use
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
-// `reylo generate`, once, and by the error a project with no connection gets; never by an error of
+// `reylo analyze` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
-// is that of the one engine the project installed.
+// is the one the project's `.reylo/` entries record.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { type Engine, MissingEngine, ENGINE_PACKAGES, enginePath } from "./engine.ts";
+import { fileURLToPath } from "node:url";
+import { type Engine, MissingEngine } from "./engine.ts";
+import type { Codecs } from "./codecs.ts";
 
-export type Dialect = "postgres" | "sqlite" | "mysql";
+export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
 /** What the engine reads out of `.reylo.yaml`: the keys the library looks at. */
 export type ProjectFile = {
@@ -25,13 +26,11 @@ export type ProjectFile = {
   url?: string;
   direct_url?: string;
   env?: string[];
-  strict_params?: boolean;
+  allow_untyped_params?: boolean;
+  allow_nested_arrays?: boolean;
   sqlcommenter?: boolean;
-  cli?: Cli;
+  js?: { codecs?: Codecs };
 };
-
-/** The files `reylo generate` analyzes, as globs relative to the project file's directory. */
-export type Cli = { include?: string[]; exclude?: string[] };
 
 export type ResolvedProject = {
   /** The project file, when there is one. */
@@ -39,12 +38,14 @@ export type ResolvedProject = {
   /** The directory a relative path in the project resolves against: the package's. */
   root: string;
   dialect: Dialect;
-  /** Whether a parameter the statement does not type is an error rather than `unknown`: true unless the file says `strict_params: false`. */
+  /** Whether a parameter the statement does not type is an error rather than `unknown`: true unless the file says `allow_untyped_params: true`. */
   strictParams: boolean;
-  /** Whether each statement ends with a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
+  /** Whether a Postgres array column may hold nested arrays, typed at any depth and with nothing refused: false unless the file says `allow_nested_arrays: true`. */
+  allowNestedArrays: boolean;
+  /** Whether each statement carries a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
   sqlcommenter: boolean;
-  /** Which files `reylo generate` analyzes: `include` replaces every `.sql` file, `exclude` adds to what is left out. */
-  cli: Cli;
+  /** The type `.run()` gives each family of values where the file's `js.codecs` names one (src/codecs.ts). */
+  codecs: Codecs;
   /** The connection the type check uses: `direct_url` when the file names one, else `DATABASE_URL`; never `url`. */
   url: string | undefined;
   /** Where the URL came from, for a diagnostic: never the URL itself. */
@@ -96,21 +97,31 @@ export function findProjectFile(from: string, env: Record<string, string | undef
   return PROJECT_FILES.map((name) => join(dir, name)).find((path) => existsSync(path));
 }
 
-/** Whether the project itself installed `dialect`'s engine, as against reylo's own install. */
-function installedIn(root: string, dialect: Dialect): boolean {
-  try {
-    createRequire(join(root, "package.json")).resolve(`${ENGINE_PACKAGES[dialect]}/engine.wasm`);
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** How many of `.reylo/`'s entries are read for the dialect where no URL names one. */
+const CACHED_READ = 32;
 
-/** The databases whose engine the project installed, else those reylo's own install has. */
-function installedEngines(root: string): Dialect[] {
-  const dialects = Object.keys(ENGINE_PACKAGES) as Dialect[];
-  const own = dialects.filter((d) => installedIn(root, d));
-  return own.length ? own : dialects.filter((d) => enginePath(d, root));
+/**
+ * The dialects the entries in the project's `.reylo/` record (src/analyze.ts), which name the
+ * database where no URL does: a build with no URL reads them. A few entries are read, which a
+ * project's are all of one dialect unless its database changed.
+ */
+function cachedDialects(root: string): Dialect[] {
+  const dir = join(root, ".reylo", "queries");
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const found = new Set<Dialect>();
+  for (const name of names.slice(0, CACHED_READ)) {
+    try {
+      const { dialect } = JSON.parse(readFileSync(join(dir, name), "utf8")) as { dialect?: unknown };
+      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite" || dialect === "duckdb") found.add(dialect);
+    } catch {}
+    if (found.size > 1) break;
+  }
+  return [...found];
 }
 
 /** The dialect a URL's scheme names, or undefined for a scheme reylo does not read. */
@@ -119,6 +130,7 @@ export function dialectOf(url: string): Dialect | undefined {
   if (scheme === "postgres" || scheme === "postgresql") return "postgres";
   if (scheme === "mysql" || scheme === "mariadb") return "mysql";
   if (scheme === "file" || scheme === "sqlite") return "sqlite";
+  if (scheme === "duckdb") return "duckdb";
   return undefined;
 }
 
@@ -158,6 +170,47 @@ type UrlPart = { text: string } | { command: string };
  * `direct_url` cut into its text and its `$(command)`s. A command ends at the `)` that balances
  * its `$(`, outside quotes, as in a shell. A `$(` left open is the offset it opens at.
  */
+/**
+ * `text` with each `${VAR}` replaced by `required(VAR)`, and each `${VAR:-fallback}` by `set(VAR)`,
+ * or where that is unset or empty by its fallback, read the same way, as a shell reads one. A
+ * `${` that opens neither stays as written.
+ */
+function interpolate(text: string, set: (name: string) => string | undefined, required: (name: string) => string): string {
+  let out = "";
+  let rest = text;
+  for (;;) {
+    const at = rest.indexOf("${");
+    if (at < 0) return out + rest;
+    out += rest.slice(0, at);
+    const after = rest.slice(at + 2);
+    const opened = /^([A-Za-z_][A-Za-z0-9_]*)(\}|:-)/.exec(after);
+    if (!opened) {
+      out += "${";
+      rest = after;
+    } else if (opened[2] === "}") {
+      out += required(opened[1]!);
+      rest = after.slice(opened[0].length);
+    } else {
+      const body = after.slice(opened[0].length);
+      let depth = 1;
+      let end = 0;
+      for (; end < body.length; end++) {
+        if (body.startsWith("${", end)) {
+          depth++;
+          end++;
+        } else if (body[end] === "}" && --depth === 0) break;
+      }
+      if (depth !== 0) {
+        out += "${";
+        rest = after;
+      } else {
+        out += set(opened[1]!) || interpolate(body.slice(0, end), set, required);
+        rest = body.slice(end + 1);
+      }
+    }
+  }
+}
+
 function urlParts(written: string): UrlPart[] | { open: number } {
   const parts: UrlPart[] = [];
   let text = "";
@@ -242,12 +295,14 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
 
 /**
  * The project `projectDir` belongs to. `engine` reads the project file: any database's engine does
- * (src/engine.ts, `anyEngine`), and where none is installed a project file is the project's error.
+ * (src/engine.ts, `anyEngine`), and where reylo has none to run a project file is the project's error.
+ * With `urlGiven`, a caller has named its own database, so the project's connection is left unread,
+ * and neither a command in `direct_url` nor a variable it names can fail.
  */
-export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env): ResolvedProject {
+export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env, options: { urlGiven?: boolean } = {}): ResolvedProject {
   const file = findProjectFile(projectDir, env);
   const root = file ? dirname(file) : packageDir(projectDir);
-  const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path) || path : path);
+  const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path).split(sep).join("/") || path : path);
   let config: ProjectFile = {};
   let error: string | undefined;
   if (file) {
@@ -291,7 +346,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   const missingUrl = urlAlone
     ? `No database URL: ${shown(file!)} sets url, which Reylo does not read; set direct_url there, or DATABASE_URL in the environment, .env.local or .env.`
     : `No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in ${file ? shown(file) : PROJECT_FILE}.`;
-  const written = config.direct_url;
+  const written = options.urlGiven ? undefined : config.direct_url;
   let refreshUrl: (() => string | undefined) | undefined;
   if (written !== undefined) {
     const missing: string[] = [];
@@ -306,7 +361,11 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
       // the `.env` files'.
       const texts = parts.map((part) =>
         "text" in part
-          ? part.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => {
+          ? interpolate(part.text, (name) => {
+              const hit = lookup(name);
+              if (hit?.value) sources.push(hit.source);
+              return hit?.value;
+            }, (name) => {
               const hit = lookup(name);
               if (!hit) missing.push(name);
               else sources.push(hit.source);
@@ -347,19 +406,34 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
         }
       } else url = texts.join("");
     }
-  } else {
+  } else if (!options.urlGiven) {
     const hit = lookup("DATABASE_URL");
     url = hit?.value;
     if (hit) urlSource = hit.source;
   }
   let dialect = url ? dialectOf(url) : "postgres";
-  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
+  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.`;
   // Either name, created or removed, changes the project.
   const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
-  // No URL names the database: the engine the project installed does, when it installed one, for
-  // `.reylo/`, which a build with no URL reads (src/analyze.ts).
-  const installed = url ? [] : installedEngines(root);
-  if (installed.length === 1) dialect = installed[0];
-  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, cli: config.cli ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
+  // No URL names the database: the entries of `.reylo/`, which a build with no URL reads
+  // (src/analyze.ts), do where they are all of one dialect.
+  const cached = url ? [] : cachedDialects(root);
+  if (cached.length === 1) dialect = cached[0];
+  return { file, root, dialect: dialect ?? "postgres", strictParams: !(config.allow_untyped_params ?? false), allowNestedArrays: config.allow_nested_arrays ?? false, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 
+/** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */
+export function duckdbPath(url: string, baseDir: string): string {
+  let raw = url.replace(/^duckdb:(\/\/)?/i, "");
+  if (raw === "" || raw === ":memory:") return ":memory:";
+  // On Windows, `duckdb:///C:/app.duckdb` names the drive, as a file URL does.
+  if (process.platform === "win32") raw = raw.replace(/^\/(?=[A-Za-z]:[\\/])/, "");
+  return isAbsolute(raw) ? raw : resolve(baseDir, raw);
+}
+
+/** `file:./dev.db`, `file:///abs/dev.db`, `sqlite:./dev.db`, `:memory:` → a path, relative ones resolved against baseDir. */
+export function sqlitePath(url: string, baseDir: string): string {
+  if (url === ":memory:" || url === "file::memory:") return ":memory:";
+  const raw = url.startsWith("file://") ? fileURLToPath(url) : url.replace(/^(file|sqlite):(\/\/)?/, "");
+  return isAbsolute(raw) ? raw : resolve(baseDir, raw);
+}

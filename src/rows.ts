@@ -6,15 +6,26 @@
 // written again without the keys a call leaves out, so every row of a call gives the same keys.
 // Nothing here changes a value: a value the database would round, truncate or read in a zone
 // nobody chose is refused.
-import type { EngineType } from "./engine-type.ts";
+import type { EngineType, JsonSchema } from "./engine-type.ts";
 import { validate, withDefaults } from "./json-schema.ts";
-import { describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned } from "./values.ts";
+import { columnKind, describe, given, hstoreText, ParameterError, postgresInterval, postgresLiteral, postgresYear, zoned } from "./values.ts";
 
 export { describe, zoned } from "./values.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
-export type RowsType = Extract<EngineType, { kind: "rows" }>;
-export type RowField = RowsType["fields"][number];
+type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
+/** A structured parameter's column list as written, by member, beside its type's fields. */
+export type Members = readonly { readonly written: string; readonly schema?: JsonSchema }[];
+/** One member: its field of the parameter's record and the type its column list writes. */
+export type RowField = { name: string; type: EngineType; written: string; nullable: boolean; optional: boolean; schema?: JsonSchema };
+/** A structured parameter: one row (`one`, a record) or an array of them, and its members. */
+export type RowsType = { one: boolean; fields: RowField[] };
+
+/** A structured parameter's rows from its type, a record or an array of records, and its members as written. */
+export function rowsOf(type: EngineType, members: Members): RowsType {
+  const record = type.kind === "record" ? type : type.kind === "array" && type.element.type.kind === "record" ? type.element.type : undefined;
+  const fields = (record?.fields ?? []).map((f, k) => ({ name: f.name, type: f.type, written: members[k]?.written ?? "", nullable: f.nullable === true, optional: f.optional === true, ...(members[k]?.schema === undefined ? {} : { schema: members[k]!.schema }) }));
+  return { one: type.kind === "record", fields };
+}
 
 /** One comma-separated list of an insert's expansion, as UTF-16 offsets into the module's `text`: an entry per member, in the column list's order. */
 export type StructuredList = { readonly start: number; readonly end: number; readonly entries: readonly string[] };
@@ -31,14 +42,6 @@ const INTEGERS: Record<string, readonly [bigint, bigint]> = {
   // SQLite's INTEGER is a 64-bit integer.
   integer: [-TWO_63, TWO_63 - BigInt(1)],
 };
-
-/**
- * A 64-bit integer, which JSON carries as digits: a string on Postgres, which reads one exactly, and
- * a bare number elsewhere (MySQL's `CAST(… AS SIGNED)` wraps a string out of range;
- * wiki/structured-params/verify.md). A Postgres or MySQL `int8` takes a number, a BigInt or a string
- * of digits, as its parameter type says; SQLite's `integer` takes a number or a BigInt (src/render.ts).
- */
-const WIDE = new Set(["int8", "integer"]);
 
 /** Raw JSON text for a value the writer puts in as it is. */
 class Raw {
@@ -74,8 +77,10 @@ export function prepareRows(name: string, type: RowsType, value: unknown, dialec
     }
     const keys = new Set<string>();
     const written: Record<string, unknown> = {};
+    // Defined, not assigned: an assignment to `__proto__` would set the row's prototype and write no key.
+    const put = (name: string, value: unknown) => void Object.defineProperty(written, name, { value, writable: true, enumerable: true, configurable: true });
     for (const f of type.fields) {
-      const v = r[f.name];
+      const v = given(r, f.name);
       if (v === undefined) {
         if (!f.optional) fail(`${where}"${f.name}" is ${f.written} not null, and the row leaves it out.`);
         continue;
@@ -83,7 +88,7 @@ export function prepareRows(name: string, type: RowsType, value: unknown, dialec
       keys.add(f.name);
       if (v === null) {
         if (!f.nullable) fail(`${where}"${f.name}" is ${f.written} not null, and the row gives null${f.optional ? `; leave the key out for the column's default` : ""}.`);
-        written[f.name] = null;
+        put(f.name, null);
         continue;
       }
       const checked = check(f.type, f.written, v, dialect, (message) => fail(`${where}"${f.name}" ${message}`));
@@ -92,8 +97,8 @@ export function prepareRows(name: string, type: RowsType, value: unknown, dialec
         const filled = withDefaults(f.schema, checked);
         const failure = validate(f.schema, filled);
         if (failure) fail(`${where}"${f.name}"${failure.path ? ` at ${failure.path}` : ""} ${failure.message}.`);
-        written[f.name] = filled;
-      } else written[f.name] = checked;
+        put(f.name, jsonMember(f, filled, dialect));
+      } else put(f.name, jsonMember(f, checked, dialect));
     }
     // One statement inserts every row of a call, so on MySQL, which copies no default, its column
     // list is the same for each: a key one row leaves out and another gives cannot have its
@@ -115,6 +120,15 @@ export function prepareRows(name: string, type: RowsType, value: unknown, dialec
   return { value: dialect === "postgres" ? shaped : write(shaped), present: keys };
 }
 
+/**
+ * A JSON member's value as JSON.stringify writes it, where the rows go to the database as JSON
+ * text: it reads a value's `toJSON()` (a Date's) and leaves out a key whose value is undefined, as
+ * a JSON parameter of its own is written. Postgres takes the rows as they are.
+ */
+function jsonMember(f: RowField, v: unknown, dialect: Dialect): unknown {
+  return dialect !== "postgres" && f.type.kind === "json" ? new Raw(JSON.stringify(v)) : v;
+}
+
 /** One value checked against its type, as the JSON the database reads; `fail` says why not. */
 function check(type: EngineType, written: string, v: unknown, dialect: Dialect, fail: (message: string) => never): unknown {
   switch (type.kind) {
@@ -126,56 +140,80 @@ function check(type: EngineType, written: string, v: unknown, dialect: Dialect, 
         fail(`is ${written}, which holds a JSON value: ${(e as Error).message}.`);
       }
       return v;
-    case "enum":
-      if (typeof v === "string" && (type.labels.length === 0 || type.labels.includes(v))) return v;
-      return fail(`is the enum ${type.name}, one of ${type.labels.map((l) => JSON.stringify(l)).join(", ")}; got ${describe(v)}.`);
-    case "array": {
-      if (!Array.isArray(v)) return fail(`is ${written}, an array; got ${describe(v)}.`);
-      const element = written.replace(/\s*\[\s*\]\s*$/, "");
-      return v.map((e, i) => (e === null ? null : check(type.of, element, e, dialect, (message) => fail(`element ${i + 1} ${message}`))));
-    }
-    case "scalar":
-      return scalar(type.name, written, v, dialect, fail);
-    default:
+    case "text":
+      if (type.enum !== undefined) {
+        if (typeof v === "string" && (type.enum.length === 0 || type.enum.includes(v))) return v;
+        return fail(`is the enum ${type.label ?? written}, one of ${type.enum.map((l) => JSON.stringify(l)).join(", ")}; got ${describe(v)}.`);
+      }
+      break;
+    case "array":
+      // A segment and a polygon, as a Postgres row value and a geometric type below.
+      if (dialect === "postgres" && ["lseg", "polygon"].includes(columnKind(type, dialect))) return postgresLiteral(type, v, (message) => fail(`is ${message}`));
+      if (columnKind(type, dialect).endsWith("[]")) {
+        if (!Array.isArray(v)) return fail(`is ${written}, an array; got ${describe(v)}.`);
+        const element = written.replace(/\s*\[\s*\]\s*$/, "");
+        return v.map((e, i) => (e === null ? null : check(type.element.type, element, e, dialect, (message) => fail(`element ${i + 1} ${message}`))));
+      }
+      break;
+    case "record":
+      // A Postgres row value, and a geometric type, as the text its input reads, from its object.
+      if (dialect === "postgres") return postgresLiteral(type, v, (message) => fail(`is ${message}`));
       return v;
+    case "range":
+    case "multirange":
+      if (dialect === "postgres") return postgresLiteral(type, v, (message) => fail(`is ${message}`));
+      break;
+    case "map":
+    case "unknown":
+      if (columnKind(type, dialect) !== "hstore") return v;
   }
+  return scalar(type, written, v, dialect, fail);
 }
 
-function scalar(name: string, written: string, v: unknown, dialect: Dialect, fail: (message: string) => never): unknown {
-  // `a|b` is either, where the database decides by the value.
-  if (name.includes("|")) {
-    for (const part of name.split("|")) {
+/** A whole number's range: two's complement in its bits, or from 0 where it is unsigned; SQLite's INTEGER 64 bits whatever it is declared. */
+function integerRange(type: EngineType, dialect: Dialect): readonly [bigint, bigint] | undefined {
+  if (type.kind !== "integer") return undefined;
+  const bits = BigInt(dialect === "sqlite" ? 64 : type.bits);
+  return type.unsigned ? [BigInt(0), BigInt(2) ** bits - BigInt(1)] : [-(BigInt(2) ** (bits - BigInt(1))), BigInt(2) ** (bits - BigInt(1)) - BigInt(1)];
+}
+
+function scalar(type: EngineType, written: string, v: unknown, dialect: Dialect, fail: (message: string) => never): unknown {
+  // A union is either, where the database decides by the value.
+  if (type.kind === "union") {
+    for (const member of type.members) {
       try {
-        return scalar(part, written, v, dialect, (message) => {
+        return scalar(member, written, v, dialect, (message) => {
           throw new TypeError(message);
         });
       } catch {}
     }
     return fail(`is ${written}; got ${describe(v)}.`);
   }
-  const range = INTEGERS[name];
+  const kind = columnKind(type, dialect);
+  const range = integerRange(type, dialect);
   if (range) {
-    const n = integer(range, name === "int8", written, v, fail, dialect !== "postgres");
-    if (!WIDE.has(name)) return Number(n);
+    // A 64-bit integer takes its digits too, as its parameter type says; it, and every SQLite
+    // integer, is written as its digits, which JSON reads exactly.
+    const wide = kind === "int8";
+    const n = integer(range, wide, written, v, fail, dialect !== "postgres");
+    if (!wide && dialect !== "sqlite") return Number(n);
     return dialect === "postgres" ? n.toString() : new Raw(n.toString());
   }
-  switch (name) {
-    case "float4":
-    case "float8":
-    case "real":
+  if (type.kind === "uuid") {
+    if (typeof v === "string" && /^\{?[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\}?$/i.test(v)) return v;
+    return fail(`is ${written}, a UUID in hexadecimal; got ${describe(v)}.`);
+  }
+  switch (kind) {
+    case "float":
       if (typeof v === "number" && Number.isFinite(v)) return v;
       return fail(`is ${written}, a finite number; got ${describe(v)}.`);
-    case "numeric":
+    case "decimal":
       return decimal(written, v, fail);
     case "bool":
       if (typeof v === "boolean") return v;
       return fail(`is ${written}, true or false; got ${describe(v)}.`);
-    case "text":
-    case "varchar":
-    case "bpchar":
-    case "char":
-    case "name":
-    case "citext": {
+    case "text": {
+      if (type.kind !== "text") break;
       if (typeof v !== "string") return fail(`is ${written}, a string; got ${describe(v)}.`);
       const n = /\(\s*(\d+)\s*\)/.exec(written)?.[1];
       // A length counts characters (code points), as Postgres and MySQL count them.
@@ -183,7 +221,6 @@ function scalar(name: string, written: string, v: unknown, dialect: Dialect, fai
       return v;
     }
     case "vector":
-    case "halfvec":
       // pgvector's vector, as `.run()` returns it, written as the text its input reads.
       if (Array.isArray(v) && v.length > 0 && v.every((e) => typeof e === "number" && Number.isFinite(e))) return JSON.stringify(v);
       if (typeof v === "string") return v;
@@ -193,9 +230,6 @@ function scalar(name: string, written: string, v: unknown, dialect: Dialect, fai
       if (v !== null && typeof v === "object") return hstoreText(v, (message) => fail(message.replace(/^is an hstore/, `is ${written}`)));
       if (typeof v === "string") return v;
       return fail(`is ${written}, an object of its keys whose values are strings or null; got ${describe(v)}.`);
-    case "uuid":
-      if (typeof v === "string" && /^\{?[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\}?$/i.test(v)) return v;
-      return fail(`is ${written}, a UUID in hexadecimal; got ${describe(v)}.`);
     case "timestamptz":
       // A string that names its zone, as `.run()` returns one; no Date.
       if (v instanceof Date) return fail(`is ${written}, which takes the instant as a string that names its zone, not a Date: pass date.toISOString() ("2026-10-12T19:06:48.282Z").`);
@@ -205,8 +239,7 @@ function scalar(name: string, written: string, v: unknown, dialect: Dialect, fai
     case "date":
       if (typeof v === "string") return dialect === "postgres" ? postgresYear(v) : v;
       return fail(`is ${written}, a wall-clock reading with no zone, which takes its text ("2026-10-12 19:06:48.282", "2026-10-12"), not a Date: drivers write a Date's time in different zones.${v instanceof Date ? "" : ` Got ${describe(v)}.`}`);
-    case "bytea":
-    case "blob": {
+    case "bytes": {
       // Binary data travels as hexadecimal text: Postgres's own `\x` form, and bare digits that
       // MySQL's and SQLite's readers decode with unhex().
       if (!(v instanceof Uint8Array)) return fail(`is ${written}, binary data, a Uint8Array; got ${describe(v)}.`);
@@ -221,12 +254,11 @@ function scalar(name: string, written: string, v: unknown, dialect: Dialect, fai
       if (typeof v === "string") return postgresInterval(v);
       if (typeof v === "number") return v;
       return fail(`is ${written}; got ${describe(v)}.`);
-    default:
-      // A type the run time has no rule for (time, inet, …) takes the text the database reads, and
-      // a number or a truth value as JSON writes them.
-      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
-      return fail(`is ${written}; got ${describe(v)}.`);
   }
+  // A type the run time has no rule for (time, inet, …) takes the text the database reads, and
+  // a number or a truth value as JSON writes them.
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
+  return fail(`is ${written}; got ${describe(v)}.`);
 }
 
 /** An integer in `range`, as a number, a BigInt or, where `digits`, a string of its digits. */
@@ -281,7 +313,7 @@ export function checkCast(name: string, written: string, type: EngineType, v: un
     return;
   }
   if (base === "uuid") {
-    scalar("uuid", written, v, dialect, fail);
+    scalar({ kind: "uuid" }, written, v, dialect, fail);
     return;
   }
   if (dialect === "mysql" && (base === "date" || base === "time" || base === "datetime" || base === "timestamp")) {

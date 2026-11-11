@@ -5,7 +5,7 @@ This lab answers whether `node --import reylo/register` makes a `.sql` import wo
 ```sh
 cd lab/jest
 nub install && ln -sfn ../../.. node_modules/reylo   # nub install removes the symlink; link it again after every install
-mkdir -p node_modules/@reylosql && ln -sfn ../../../../packages/sqlite node_modules/@reylosql/sqlite   # the SQLite engine, likewise
+(cd ../.. && cargo build --release -p reylo)         # the engine: the link finds the checkout's target/release/reylo, or REYLO_ENGINE_PATH names one
 node setup.mjs                                      # lab.db; .reylo.yaml points at it with file:./lab.db
 nub run test:cjs                                    # reylo/jest, CommonJS run: query.test.cjs
 nub run test:esm                                    # reylo/jest, --experimental-vm-modules: query.test.cjs and query.test.mjs
@@ -16,22 +16,9 @@ Watchman is broken on the machine the lab was written on, and Jest then exits 0 
 
 ## The preload under Jest
 
-The preload reaches every Jest process, and Jest never asks Node's loader for a test's modules. The tests in `probe/` load `query.sql` twice: once through Jest's `require`, and once through Node's own loader (`require("node:module")._load`, which Jest's wrapper copies from Node). Each run appends one line per test file to `probe.jsonl`.
+The preload reaches every Jest process, and Jest never asks Node's loader for a test's modules, so no preload types a test's `.sql` import (`tests/jest.test.ts` checks it).
 
-```sh
-NODE_OPTIONS="--import reylo/register" node node_modules/jest/bin/jest.js --no-watchman probe   # two workers
-node --import reylo/register node_modules/jest/bin/jest.js --no-watchman --runInBand probe     # the Jest process itself
-node node_modules/jest/bin/jest.js --no-watchman probe                                        # control: no preload
-```
-
-| Run | Process | Node's loader | Jest's `require` |
-| --- | --- | --- | --- |
-| `NODE_OPTIONS` preload | worker 1 and worker 2 (`processChild.js`) | loads, `run` is a function | `SyntaxError: Unexpected identifier 'id'` |
-| `node --import` preload, `--runInBand` | `jest.js` | loads, `run` is a function | `SyntaxError: Unexpected identifier 'id'` |
-| `node --import` preload, workers | workers inherit `execArgv` | loads, `run` is a function | `SyntaxError: Unexpected identifier 'id'` |
-| no preload (control) | workers | `SyntaxError` | `SyntaxError` |
-
-The same SyntaxError ends `query.test.cjs` and `query.test.mjs` under every preload form: `NODE_OPTIONS`, `node --import`, `nubx jest`, workers, `--runInBand`, `--experimental-vm-modules`, and `extensionsToTreatAsEsm: [".sql"]`. The cause is in `jest-runtime/build/index.js` (30.5.2):
+A `SyntaxError: Unexpected identifier 'id'` ends `query.test.cjs` and `query.test.mjs` under every preload form: `NODE_OPTIONS`, `node --import`, `nubx jest`, workers, `--runInBand`, `--experimental-vm-modules`, and `extensionsToTreatAsEsm: [".sql"]`. The cause is in `jest-runtime/build/index.js` (30.5.2):
 
 - A CommonJS module is read with `fs.readFileSync` (`FileCache.readFile`), passed through the `transform` entries, and compiled with `vm.compileFunction` in the test's context (`ModuleExecutor.exec` and `compile`). Node's `require` is never called.
 - An ES module is built as `new vm.SourceTextModule(code, { context })` from the same transform output (`EsmLoader`). Node's ESM loader is never called either.
@@ -59,5 +46,7 @@ A test that expects a wrong email fails in each passing config. The built packag
 ## Vitest
 
 Vitest needs only `reylo/vite` (`vitest.config.mjs`). Without the plugin, Vite fails to parse `query.sql`, and a wrong expectation fails the run.
+
+Vitest keeps a transformed module across runs on disk (`fsModuleCache`, on by default from Vitest 5.0.5; this lab's 5.0.3 has it off), keyed by its file's text, and in watch mode keeps that key until the file changes. A migration changes a `.sql` module and not its file, so the plugin's `configureVitest` has Vitest keep no `.sql` module. `tests/jest.test.ts` checks this in a project outside the repository with the cache on. Across runs, with a unique index added between them, the second run reads `maybeOne`. Under `vitest --watch`, the run after the type check writes the new analysis reads it too. Without the hook, both runs keep `many`. Vitest 5.0.5 behaves the same with no cache setting in its config.
 
 `tests/jest.test.ts` at the root runs the preload control, both Jest configs and Vitest, and skips when the lab is not installed.

@@ -1,47 +1,47 @@
-bare_middle_nested.sql: many () -> { n: int8? }
-bare_outer.sql: many () -> { n: int8? }
-bare_outer_case.sql: many () -> { n: int8? }
-bare_outer_derived.sql: many () -> { n: int8? }
-bare_outer_distinct.sql: many () -> { n: int8? }
-bare_outer_empty.sql: many () -> { n: int8? }
-bare_outer_expression.sql: many () -> { n: int8? }
-bare_outer_join.sql: many () -> { n: int8? }
-bare_outer_json.sql: many () -> { names: [text]? }
-bare_outer_json_object.sql: many () -> { names: [{ name: text }]? }
-bare_outer_nested.sql: many () -> { n: int8? }
-bare_outer_sum.sql: many () -> { n: numeric? }
-bare_outer_two.sql: many () -> { n: int8? }
-bare_outer_view.sql: many () -> { n: int8? }
-bare_outer_with_shadows.sql: many () -> { n: int8? }
-bare_own.sql: many () -> { n: int8 }
-bare_own_case.sql: many () -> { n: int8? }
-bare_own_correlated.sql: many () -> { id: int8, n: int8 }
-bare_own_derived.sql: many () -> { n: int8 }
-bare_own_distinct.sql: many () -> { n: int8 }
-bare_own_empty.sql: many () -> { n: int8 }
-bare_own_expression.sql: many () -> { n: int8 }
-bare_own_join.sql: many () -> { n: int8 }
-bare_own_json.sql: many () -> { titles: [text] }
-bare_own_json_object.sql: many () -> { titles: [{ title: text }] }
-bare_own_mixed.sql: many () -> { n: int8? }
-bare_own_sum.sql: many () -> { n: numeric }
-bare_own_view.sql: many () -> { n: int8 }
-bare_own_with.sql: many () -> { n: int8 }
-bit_or_outer.sql: many () -> { n: int8? }
-bit_or_own.sql: many () -> { n: int8 }
-constant.sql: many () -> { n: int8 }
-field_bare_outer_count.sql: many () -> { o: { n: unknown? } }
-field_outer_count.sql: many () -> { o: { id: int8, n: unknown? } }
-field_own_count.sql: many () -> { o: { id: int8, n: int8 } }
+bare_middle_nested.sql: many () -> { n: bigint? }
+bare_outer.sql: many () -> { n: bigint? }
+bare_outer_case.sql: many () -> { n: bigint? }
+bare_outer_derived.sql: many () -> { n: bigint? }
+bare_outer_distinct.sql: many () -> { n: bigint? }
+bare_outer_empty.sql: many () -> { n: bigint? }
+bare_outer_expression.sql: many () -> { n: bigint? }
+bare_outer_join.sql: many () -> { n: bigint? }
+bare_outer_json.sql: many () -> { names: json varchar(≤20)[]? }
+bare_outer_json_object.sql: many () -> { names: json ({ name: varchar(≤20) })[]? }
+bare_outer_nested.sql: many () -> { n: bigint? }
+bare_outer_sum.sql: many () -> { n: decimal? }
+bare_outer_two.sql: many () -> { n: bigint? }
+bare_outer_view.sql: many () -> { n: bigint? }
+bare_outer_with_shadows.sql: many () -> { n: bigint? }
+bare_own.sql: many () -> { n: bigint }
+bare_own_case.sql: many () -> { n: bigint? }
+bare_own_correlated.sql: many () -> { id: bigint, n: bigint }
+bare_own_derived.sql: many () -> { n: bigint }
+bare_own_distinct.sql: many () -> { n: bigint }
+bare_own_empty.sql: many () -> { n: bigint }
+bare_own_expression.sql: many () -> { n: bigint }
+bare_own_join.sql: many () -> { n: bigint }
+bare_own_json.sql: many () -> { titles: json varchar(≤20)[] }
+bare_own_json_object.sql: many () -> { titles: json ({ title: varchar(≤20) })[] }
+bare_own_mixed.sql: many () -> { n: bigint? }
+bare_own_sum.sql: many () -> { n: decimal }
+bare_own_view.sql: many () -> { n: bigint }
+bare_own_with.sql: many () -> { n: bigint }
+bit_or_outer.sql: many () -> { n: bigint? }
+bit_or_own.sql: many () -> { n: bigint }
+constant.sql: many () -> { n: bigint }
+field_bare_outer_count.sql: many () -> { o: json { n: unknown? } }
+field_outer_count.sql: many () -> { o: json { id: bigint, n: unknown? } }
+field_own_count.sql: many () -> { o: json { id: bigint, n: bigint } }
 group_concat_outer.sql: many () -> { n: text? }
-max_own.sql: many () -> { id: int8, last: int8? }
-no_column.sql: many () -> { n: int8 }
-no_column_correlated.sql: many () -> { id: int8, n: int8 }
-outer_in_where_only.sql: many () -> { id: int8, n: int8 }
-qualified_other_case.sql: many () -> { n: int8? }
-qualified_outer.sql: many () -> { n: int8? }
-qualified_outer_hidden.sql: many () -> { n: int8? }
-qualified_outer_json.sql: many () -> { names: [text]? }
-qualified_own.sql: many () -> { n: int8 }
-qualified_own_unaliased.sql: many () -> { n: int8 }
-std_outer.sql: many () -> { n: float8? }
+max_own.sql: many () -> { id: bigint, last: bigint? }
+no_column.sql: many () -> { n: bigint }
+no_column_correlated.sql: many () -> { id: bigint, n: bigint }
+outer_in_where_only.sql: many () -> { id: bigint, n: bigint }
+qualified_other_case.sql: many () -> { n: bigint? }
+qualified_outer.sql: many () -> { n: bigint? }
+qualified_outer_hidden.sql: many () -> { n: bigint? }
+qualified_outer_json.sql: many () -> { names: json varchar(≤20)[]? }
+qualified_own.sql: many () -> { n: bigint }
+qualified_own_unaliased.sql: many () -> { n: bigint }
+std_outer.sql: many () -> { n: double? }

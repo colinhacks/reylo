@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@cloudflare/workers-types": "^5.20260929.1",
+    "@duckdb/node-api": "^2.0.0-r.1",
     "@electric-sql/pglite": "^0.5.8",
     "@libsql/client": "^0.18.0",
     "@neondatabase/serverless": "^1.1.0",

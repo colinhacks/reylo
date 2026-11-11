@@ -1,48 +1,48 @@
 jsonb_cast_number.sql: many () -> { a: int4?, t: text }
 jsonb_null_cast.sql: many () -> { i: int4?, n: numeric?, b: bool?, f: float8?, l: int8?, h: int2?, r: float4?, t: text }
-not_enforced_check.sql: maybeOne (id: int4) -> { status: text }
-returning_alias_delete.sql: maybeOne (id: int4) -> { old_name: text, new_name: text? }
-returning_alias_exprs.sql: maybeOne (name: text, id: int4) -> { change: text, changed: bool, up: text, nick: text, old_nick: text? }
+not_enforced_check.sql: at_most_one (id: int4) -> { status: text }
+returning_alias_delete.sql: at_most_one (id: int4) -> { old_name: text, new_name: text? }
+returning_alias_exprs.sql: at_most_one (name: text, id: int4) -> { change: text, changed: bool, up: text, nick: text, old_nick: text? }
 returning_alias_insert.sql: one (id: int4, name: text) -> { old_name: text?, new_name: text }
-returning_alias_one.sql: maybeOne (name: text, id: int4) -> { old_name: text, new_name: text }
-returning_alias_stars.sql: maybeOne (id: int4) -> { id: int4?, name: text?, nick: text?, o: text?, id: int4, name: text, nick: text?, o: text? } !! reylo14: Columns 1 and 5 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 2 and 6 are both named "name", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 3 and 7 are both named "nick", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 4 and 8 are both named "o", and a row keeps only the last of them. Give one of them another name with `as`.
-returning_alias_update.sql: maybeOne (name: text, id: int4) -> { old_name: text, new_name: text }
+returning_alias_one.sql: at_most_one (name: text, id: int4) -> { old_name: text, new_name: text }
+returning_alias_stars.sql: at_most_one (id: int4) -> { id: int4?, name: text?, nick: text?, o: text?, id: int4, name: text, nick: text?, o: text? } !! reylo14: Columns 1 and 5 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 2 and 6 are both named "name", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 3 and 7 are both named "nick", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 4 and 8 are both named "o", and a row keeps only the last of them. Give one of them another name with `as`.
+returning_alias_update.sql: at_most_one (name: text, id: int4) -> { old_name: text, new_name: text }
 returning_alias_upsert.sql: one (id: int4, name: text) -> { old_name: text?, new_name: text, inserted: bool, was: text }
 returning_cast.sql: one (id: int4, name: text) -> { old_name: text?, old_v: varchar?, new_name: text }
 returning_column_named_alias.sql: one (id: int4, n: text) -> { the_column: text, old_n: text?, new_n: text }
-returning_column_named_alias_update.sql: maybeOne (o: text?, id: int4) -> { the_column: text?, old_o: text?, old_name: text }
+returning_column_named_alias_update.sql: at_most_one (o: text?, id: int4) -> { the_column: text?, old_o: text?, old_name: text }
 returning_error.sql: many (name: unknown, id: unknown) -> {  } !! reylo6: missing FROM-clause entry for table "old" (42P01)
-returning_exprs_delete.sql: maybeOne (id: int4) -> { old_shout: text, new_shout: text?, either: text, shout: text }
+returning_exprs_delete.sql: at_most_one (id: int4) -> { old_shout: text, new_shout: text?, either: text, shout: text }
 returning_exprs_insert.sql: one (id: int4, name: text) -> { inserted: bool, before: text, old_shout: text?, new_shout: text, up: text }
 returning_from_named_old.sql: many () -> { from_other: text, new_name: text, nick: text? }
-returning_json.sql: one (id: int4, name: text) -> { j: { old: text?, new: text, nick: text? } }
-returning_json_update.sql: maybeOne (name: text, id: int4) -> { j: { old: text, new: text, row: { id: int4, name: text, nick: text?, o: text? } } }
+returning_json.sql: one (id: int4, name: text) -> { j: json { old: text?, new: text, nick: text? } }
+returning_json_update.sql: at_most_one (name: text, id: int4) -> { j: json { old: text, new: text, row: { id: int4, name: text, nick: text?, o: text? } } }
 returning_merge_alias.sql: many (id: int4, name: text) -> { action: text, old_name: text?, new_name: text, cur: text, inserted: bool }
 returning_merge_by_source.sql: many () -> { action: text, source_name: text?, source_id: int4?, cur: text, old_name: text, new_name: text? }
 returning_merge_by_target.sql: many () -> { source_name: text, cur: text, old_name: text?, new_name: text }
 returning_merge_delete.sql: many () -> { old_name: text, new_name: text?, cur: text, source_name: text }
-returning_row_or_column.sql: maybeOne (name: text, id: int4) -> { before: json?, after: { id: int4, name: text, nick: text?, o: text? }, old_row: text?, n_name: text }
-returning_rows.sql: maybeOne (name: text, id: int4) -> { before: { id: int4, name: text, nick: text?, o: text? }, after: { id: int4, name: text, nick: text?, o: text? }, old_row: users{ id: int4, name: text, nick: text?, o: text? }, now_name: text, j: { id: int4, name: text, nick: text?, o: text? } }
-returning_rows_insert.sql: one (id: int4, name: text) -> { before: { id: int4, name: text, nick: text?, o: text? }?, after: { id: int4, name: text, nick: text?, o: text? }, old_row: users{ id: int4, name: text, nick: text?, o: text? }?, old_name: text?, old_shout: text? }
-returning_subquery.sql: maybeOne (name: text, id: int4) -> { same: int8, inner_old: text?, known: bool }
+returning_row_or_column.sql: at_most_one (name: text, id: int4) -> { before: jsonb?, after: jsonb { id: int4, name: text, nick: text?, o: text? }, old_row: text?, n_name: text }
+returning_rows.sql: at_most_one (name: text, id: int4) -> { before: jsonb { id: int4, name: text, nick: text?, o: text? }, after: jsonb { id: int4, name: text, nick: text?, o: text? }, old_row: public.users{ id: int4, name: text, nick: text?, o: text? }, now_name: text, j: json { id: int4, name: text, nick: text?, o: text? } }
+returning_rows_insert.sql: one (id: int4, name: text) -> { before: jsonb { id: int4, name: text, nick: text?, o: text? }?, after: jsonb { id: int4, name: text, nick: text?, o: text? }, old_row: public.users{ id: int4, name: text, nick: text?, o: text? }?, old_name: text?, old_shout: text? }
+returning_subquery.sql: at_most_one (name: text, id: int4) -> { same: int8, inner_old: text?, known: bool }
 returning_table_named_old.sql: one (id: int4, name: text) -> { from_table: text, new_name: text }
 returning_table_named_old_alias.sql: one (id: int4, name: text) -> { old_name: text?, from_table: text }
-returning_target_alias_new.sql: maybeOne (id: int4) -> { from_table: text, old_name: text }
+returning_target_alias_new.sql: at_most_one (id: int4) -> { from_table: text, old_name: text }
 returning_target_alias_old.sql: one (id: int4, name: text) -> { from_table: text, new_name: text }
-returning_update_named_old.sql: maybeOne (name: text, id: int4) -> { from_table: text, new_name: text }
-returning_using.sql: many (id: int4) -> { other_name: text, old_name: text, new_name: text?, name: text }
-returning_with_query.sql: maybeOne (id: int4) -> { was: text?, now: text? }
-returning_with_query_json.sql: many () -> { j: { now: text?, was: text? }, up: text?, was: text? }
-returning_with_query_param.sql: maybeOne (id: int4) -> { j: { now: text?, was: text? }, up: text? }
-temporal_conflict.sql: maybeOne (room: int4, during: int4range, who: text) -> { who: text } !! reylo13: ON CONFLICT (room, during) matches no unique index or constraint of `bookings`: none has exactly (room, during) as its key. The server prepares this statement and refuses every execution (42P10).
-temporal_conflict_any.sql: maybeOne (room: int4, during: int4range, who: text) -> { who: text }
+returning_update_named_old.sql: at_most_one (name: text, id: int4) -> { from_table: text, new_name: text }
+returning_using.sql: at_most_one (id: int4) -> { other_name: text, old_name: text, new_name: text?, name: text }
+returning_with_query.sql: at_most_one (id: int4) -> { was: text?, now: text? }
+returning_with_query_json.sql: many () -> { j: json { now: text?, was: text? }, up: text?, was: text? }
+returning_with_query_param.sql: at_most_one (id: int4) -> { j: json { now: text?, was: text? }, up: text? }
+temporal_conflict.sql: at_most_one (room: int4, during: int4range, who: text) -> { who: text } !! reylo13: ON CONFLICT (room, during) matches no unique index or constraint of `bookings`: none has exactly (room, during) as its key. The server prepares this statement and refuses every execution (42P10).
+temporal_conflict_any.sql: at_most_one (room: int4, during: int4range, who: text) -> { who: text }
 temporal_full_key.sql: many (room: int4, during: int4range) -> { who: text }
 temporal_period_join.sql: many (room: int4) -> { guest: text?, who: text }
 temporal_scalar.sql: many (room: int4) -> { who: text }
 temporal_subquery.sql: many (note: text) -> { note: text, who: text? }
 temporal_unique.sql: many (room: int4, during: int4range) -> { note: text? }
 uuid_functions.sql: many () -> { v7: uuid, v4: uuid, folded: text }
-virtual_columns.sql: maybeOne (id: int4) -> { v: int4, w: int4?, s: int4, k: 'pos' | 'neg' }
-virtual_filter.sql: many (v: int4) -> { id: int4 }
-virtual_insert.sql: one (id: int4, a: int4, b: int4?) -> { v: int4, w: int4?, s: int4, k: 'pos' | 'neg', next: int4 }
-virtual_star.sql: many () -> { id: int4, a: int4, b: int4?, v: int4, w: int4?, s: int4, k: 'pos' | 'neg' }
+virtual_columns.sql: at_most_one (id: int4) -> { v: int4, w: int4?, s: int4, k: text('pos' | 'neg') }
+virtual_filter.sql: many (v: int4) -> { id: int4 } key (id)
+virtual_insert.sql: one (id: int4, a: int4, b: int4?) -> { v: int4, w: int4?, s: int4, k: text('pos' | 'neg'), next: int4 }
+virtual_star.sql: many () -> { id: int4, a: int4, b: int4?, v: int4, w: int4?, s: int4, k: text('pos' | 'neg') } key (id)

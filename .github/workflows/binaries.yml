@@ -1,0 +1,172 @@
+# .github/workflows/binaries.yml
+
+name: binaries
+
+on:
+  # release.yml builds what it ships here: the binaries it packages and attaches, each one installed and run on its own platform first.
+  workflow_call:
+    outputs:
+      matrix:
+        description: The platforms of npm/platforms.json, as a matrix
+        value: ${{ jobs.platforms.outputs.matrix }}
+  # A pull request that changes how the binary is built, packaged, found or served is checked the same way on every platform, before a release meets it.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - engine/cli/**
+      - engine/native/**
+      - npm/**
+      - scripts/build.ts
+      - src/cli.ts
+      - src/native.ts
+      - src/engine.ts
+      - .cargo/**
+      - Cargo.lock
+      - .github/scripts/build-binary.sh
+      - .github/scripts/install-check.ts
+      - .github/workflows/binaries.yml
+      - .github/workflows/release.yml
+  # One platform's binary from any branch, to run on that platform with no build of its own: `gh workflow run binaries.yml --ref <branch> -f platform=darwin-arm64`, then `gh run download <run> -n engine-darwin-arm64`. Nothing is packed or installed.
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "A platform of npm/platforms.json"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# A pull request's new commit cancels the run of its last one; a release's run is never cancelled.
+concurrency:
+  group: binaries-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The platforms, from npm/platforms.json, which scripts/build.ts packages by too.
+  platforms:
+    runs-on: ubuntu-latest
+    name: Read the platforms
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: matrix
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          platforms=$(jq -c --arg platform "$PLATFORM" 'map(select($platform == "" or .platform == $platform))' npm/platforms.json)
+          [ "$platforms" != '[]' ] || { echo "::error::npm/platforms.json names no platform $PLATFORM"; exit 1; }
+          echo "matrix=$(jq -c '{include: .}' <<< "$platforms")" >> "$GITHUB_OUTPUT"
+
+  # The binary of each platform, built on a runner of its own architecture, Linux on glibc in the platform's manylinux container (.github/scripts/build-binary.sh says how each is made), from the commit and with no cache, so that nothing an earlier run left reaches what ships. Each is an artifact of the run, `engine-<platform>`, which the release packages and attaches to the GitHub release.
+  build:
+    needs: platforms
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    # Pinned by digest in npm/platforms.json, where this reads it from.
+    container: ${{ matrix.container || '' }} # zizmor: ignore[unpinned-images]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: ${{ github.event_name != 'pull_request' }}
+      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Node only, which the build script reads the platform table and the version with.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Build the binary
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: .github/scripts/build-binary.sh "$PLATFORM" "$RUNNER_TEMP/engines"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-${{ matrix.platform }}
+          path: ${{ runner.temp }}/engines/engine-${{ matrix.platform }}
+          if-no-files-found: error
+
+  # The nine packages, reylo and the eight engines, packed as npm would publish them, from the binaries above.
+  package:
+    needs: build
+    if: ${{ !inputs.platform }}
+    name: Pack the packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
+        with:
+          nub-version: "0.9.6"
+          node-version: "24"
+          cache: false
+      - run: nub install --frozen-lockfile
+      # The docs site's toolchain, which builds reylo play's page into the reylo package.
+      - run: nub install --frozen-lockfile
+        working-directory: site
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: engine-*
+          path: binaries
+      - run: nub scripts/build.ts --binaries binaries
+      - name: Pack each package
+        run: |
+          mkdir -p "$RUNNER_TEMP/packages"
+          for dir in dist/*/; do (cd "$dir" && npm pack --pack-destination "$RUNNER_TEMP/packages"); done
+          ls -l "$RUNNER_TEMP/packages"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packages
+          if-no-files-found: error
+          retention-days: 7
+
+  # Each platform's package installed as a project installs it, and run there: npm brings that platform's engine alone, which types a query with reylo analyze through the installed command, runs it under the reylo/register preload, and reads Postgres statements nested to its bound (.github/scripts/install-check.ts). Each runs on a machine of the platform: macOS on Intel on an Intel runner, and Linux in each of the platform's images, Node 24's Debian 11 (older than the build's runner), AlmaLinux 8 (glibc 2.28, the oldest the binary starts on) and Amazon Linux 2023 for glibc, and Alpine for musl.
+  install:
+    needs: [platforms, package]
+    name: Install and run (${{ matrix.platform }})
+    runs-on: ${{ matrix.check || matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: packages
+      - if: ${{ !matrix.images }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Install and run
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          IMAGES: ${{ toJSON(matrix.images) }}
+        run: |
+          if [ "$IMAGES" = null ]; then
+            node .github/scripts/install-check.ts packages "$PLATFORM"
+            exit 0
+          fi
+          for image in $(jq -r '.[]' <<< "$IMAGES"); do
+            echo "::group::$image"
+            docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w "$image" .github/scripts/with-node.sh node .github/scripts/install-check.ts packages "$PLATFORM"
+            echo "::endgroup::"
+          done

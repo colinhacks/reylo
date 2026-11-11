@@ -1,0 +1,11 @@
+[package]
+name = "sqlx-describe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
+sqlx = { version = "=0.9.0", features = ["postgres", "mysql", "sqlite", "runtime-tokio", "json"] }
+tokio = { version = "1", features = ["full"] }

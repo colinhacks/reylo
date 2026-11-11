@@ -1,0 +1,1 @@
+with recursive t as (select id, manager_id, name from staff where id = 1 union all select s.id, s.manager_id, s.name from staff s join t on s.manager_id = t.id) cycle id set is_cycle using path select * from t

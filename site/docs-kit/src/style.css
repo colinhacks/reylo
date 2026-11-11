@@ -174,8 +174,9 @@ html .prose {
     font-weight: 600;
   }
 
-  /* The link icon sits in the margin to the left of the heading, always visible; the button that
-     copies the section as Markdown sits at the right end of its line, as on Motherload's docs. */
+  /* The link icon sits in the margin to the left of the heading, shown while the heading is
+     hovered (below); the button that copies the section as Markdown sits at the right end of its
+     line, always visible, as on Motherload's docs. */
   .dk-heading {
     position: relative;
     display: flex;
@@ -218,15 +219,33 @@ html .prose {
     padding: 0.25rem;
     border-radius: 0.25rem;
     color: color-mix(in oklab, var(--color-fd-muted-foreground) 55%, transparent);
-    transition: color 120ms;
+    opacity: 0;
+    transition: color 120ms, opacity 150ms;
   }
 
   .dk-anchor:hover {
     color: var(--color-fd-muted-foreground);
   }
 
+  /* The icon is hidden until the reader hovers anywhere on the heading's row (the icon itself
+     included), and shown while the button has keyboard focus, so Tab still reaches it. Opacity
+     alone hides it: the button keeps its place and stays focusable, and nothing moves when it
+     fades in. A device without hover (a phone) shows it always, since nothing there could reveal
+     it. */
+  .dk-heading:hover .dk-anchor,
+  .dk-anchor:focus-visible {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    .dk-anchor {
+      opacity: 1;
+    }
+  }
+
   /* Below md the page's margin is narrower than the icon, which would be cut off at the window's
-     edge: the icon joins the copy button at the right end of the line, still always visible. */
+     edge: the icon joins the copy button at the right end of the line, still shown on hover and
+     focus, and always on a device without hover. */
   @media (width < 48rem) {
     .dk-anchor {
       position: static;
@@ -1136,9 +1155,10 @@ code {
   background: var(--dk-switch-on);
 }
 
-/* An accordion is a list of questions on the page itself: no box, no rules between them, each
+/* An accordion is a list of questions on the page itself: no box, a hairline between them, each
    question a row of its own with the chevron at its right end and its link icon in the margin to
-   its left, as a heading has it, and an open item's answer in a lighter rounded panel under it. */
+   its left, shown on hover as a heading's is, and an open item's answer in a lighter rounded panel
+   under it. */
 #nd-page .dk-accordions {
   border: 0;
   border-radius: 0;
@@ -1149,8 +1169,11 @@ code {
   border-top-width: 0;
   border-bottom-width: 0;
 }
+#nd-page .dk-accordions > * + * {
+  border-top: 1px solid var(--color-fd-border);
+}
 #nd-page .dk-accordions > [data-state] {
-  margin-bottom: 0.15rem;
+  margin-bottom: 0;
 }
 #nd-page .dk-accordions > [data-state] > h3 {
   position: relative;
@@ -1166,6 +1189,19 @@ code {
   top: 50%;
   translate: 0 -50%;
   color: color-mix(in oklab, var(--color-fd-muted-foreground) 55%, transparent);
+  opacity: 0;
+  transition: color 120ms, opacity 150ms;
+}
+/* As a heading's: shown while the question's row is hovered or the button has keyboard focus, and
+   always on a device without hover. */
+#nd-page .dk-accordions > [data-state] > h3:hover > button:not([aria-expanded]),
+#nd-page .dk-accordions > [data-state] > h3 > button:not([aria-expanded]):focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  #nd-page .dk-accordions > [data-state] > h3 > button:not([aria-expanded]) {
+    opacity: 1;
+  }
 }
 #nd-page .dk-accordions [data-dk-accordion-panel] > div {
   margin: 0 0 1rem;
@@ -1432,3 +1468,237 @@ html #nd-page .prose table {
   padding: 0.3125rem;
 }
 #nd-page .prose .dk-steps > h3 .dk-copy-section { order: 3; }
+
+/* ── The page list (`DocsShell`'s `pages`) ──────────────────────────────────────
+   A site of several pages: the pages on the left and the table of contents on the right, on
+   Fumadocs' own grid, the text column between them unchanged. Below 73.5rem the right column gives
+   way to the headings' strip above the page, as a window of 1176px holds 232 + 736 + 208; below
+   64rem the left column goes too, and the strip opens the same list full screen. Each column is
+   fixed for a page with no headings too, so the text never moves from one page to the next. The
+   !important beats Fumadocs' `layout:` variants, which set these on a `:has()`. */
+#nd-docs-layout[data-dk-pages] {
+  --fd-layout-width: calc(var(--fd-sidebar-width) + var(--dk-column) + 4rem + var(--fd-toc-width));
+}
+
+@media (min-width: 64rem) {
+  #nd-docs-layout[data-dk-pages] {
+    --fd-sidebar-width: 232px !important;
+  }
+}
+
+@media (min-width: 73.5rem) {
+  #nd-docs-layout[data-dk-pages]:not([data-dk-wide]) {
+    --fd-toc-width: 208px !important;
+  }
+}
+
+@media (min-width: 80rem) {
+  #nd-docs-layout[data-dk-pages] {
+    --fd-sidebar-width: 268px !important;
+  }
+
+  #nd-docs-layout[data-dk-pages]:not([data-dk-wide]) {
+    --fd-toc-width: 240px !important;
+  }
+}
+
+/* A wide page has no table of contents. At 56rem its 1rem here makes the three columns the width
+   of a page with one, so the list stays put from page to page. */
+@media (min-width: 80rem) {
+  #nd-docs-layout[data-dk-pages][data-dk-wide] {
+    --fd-toc-width: 1rem !important;
+  }
+}
+
+@media (max-width: 73.49rem) {
+  #nd-docs-layout[data-dk-pages] {
+    --fd-toc-width: 0px !important;
+    --fd-toc-popover-height: 2.5rem !important;
+  }
+
+  #nd-docs-layout[data-dk-pages] #nd-toc,
+  #nd-docs-layout[data-dk-pages] #nd-toc-placeholder {
+    display: none !important;
+  }
+
+  #nd-docs-layout[data-dk-pages] [data-toc-popover] {
+    display: block !important;
+  }
+}
+
+#dk-page-list {
+  grid-area: sidebar;
+  justify-self: end;
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  width: var(--fd-sidebar-width);
+  height: 100dvh;
+  padding: 2rem 1rem 0;
+}
+
+@media (max-width: 63.99rem) {
+  #dk-page-list {
+    display: none;
+  }
+}
+
+.dk-pages-brand {
+  flex: none;
+  margin-bottom: 1.5rem;
+}
+
+/* The margin and padding keep the current page's mark, out in the column's gutter, inside the scroller's clip. */
+.dk-pages-scroll {
+  flex: 1;
+  min-height: 0;
+  margin-inline-start: -0.75rem;
+  padding-inline-start: 0.75rem;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.dk-pages-group + .dk-pages-group {
+  margin-top: 1.75rem;
+}
+
+.dk-pages-label {
+  height: 1.5rem;
+  display: flex;
+  align-items: center;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-fd-headings);
+}
+
+/* A label's 24px row sits 4px over its first entry, so the label reads as the group's own. */
+.dk-pages-label + .dk-pages-item,
+.dk-pages-label + .dk-pages-link {
+  margin-top: 0.25rem;
+}
+
+/* The entries are the table of contents' size and spacing: 14.5px on a 20px line, 32px apart. */
+.dk-pages-item,
+.dk-pages-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 2rem;
+  font-size: 0.90625rem;
+  line-height: 1.25rem;
+  color: var(--color-fd-muted-foreground);
+  transition: color 120ms;
+}
+
+.dk-pages-item:hover,
+.dk-pages-link:hover {
+  color: var(--color-fd-foreground);
+}
+
+.dk-pages-item[aria-current='page'] {
+  color: var(--color-fd-headings);
+}
+
+.dk-pages-item[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: -0.75rem;
+  top: 0.4375rem;
+  bottom: 0.4375rem;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--dk-accent);
+}
+
+.dk-pages-out {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+/* The foot: a hairline, the links away from the docs, then the repository and the theme switch,
+   with `TocFooter`'s room under them for the note, clear of the address bubble Chrome shows. */
+.dk-pages-foot {
+  flex: none;
+  margin-top: 1rem;
+  padding: 1.25rem 0 5.5rem;
+  border-top: 1px solid var(--color-fd-border);
+}
+
+.dk-pages-menu {
+  grid-area: toc-popover;
+  justify-self: start;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 8.5rem;
+  height: 2.5rem;
+  padding-inline: 1rem;
+  font-size: 0.875rem;
+  color: var(--color-fd-muted-foreground);
+  border-inline-end: 1px solid var(--color-fd-border);
+  border-block-end: 1px solid var(--color-fd-border);
+  background: var(--color-fd-background);
+  cursor: pointer;
+}
+
+.dk-pages-menu > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (min-width: 64rem) {
+  .dk-pages-menu {
+    display: none;
+  }
+}
+
+/* A page with no headings has no strip of its own, so the button is the whole strip. */
+@media (max-width: 63.99rem) {
+  #nd-docs-layout[data-dk-pages]:not(:has([data-toc-popover])) .dk-pages-menu {
+    width: 100%;
+    border-inline-end: 0;
+  }
+
+  #nd-docs-layout[data-dk-pages] [data-toc-popover-trigger] {
+    padding-inline-start: 9.5rem;
+  }
+}
+
+.dk-pages-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  padding: 0 1rem;
+  background: var(--color-fd-background);
+}
+
+.dk-pages-sheet-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 3.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.dk-pages-sheet-head button {
+  display: flex;
+  padding: 0.5rem;
+  margin-inline-end: -0.5rem;
+  color: var(--color-fd-muted-foreground);
+  cursor: pointer;
+}
+
+.dk-pages-sheet .dk-pages-foot {
+  padding-bottom: 0.75rem;
+}

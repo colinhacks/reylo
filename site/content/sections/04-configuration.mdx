@@ -2,8 +2,6 @@
 title: "Configuration"
 ---
 
-## Configuration
-
 Configure Reylo in a `.reylo.yaml` (or `.reylo.yml`) file beside `package.json`. Every key is optional:
 
 ```yaml title=".reylo.yaml"
@@ -11,13 +9,15 @@ Configure Reylo in a `.reylo.yaml` (or `.reylo.yml`) file beside `package.json`.
 direct_url: ${DATABASE_URL}
 # the .env files Reylo reads (the default)
 env: [.env.local, .env]
-# an error for a parameter whose type cannot be inferred (the default)
-strict_params: true
+# a parameter whose type cannot be inferred is an error (the default)
+allow_untyped_params: false
+# a Postgres array column holds one dimension (the default)
+allow_nested_arrays: false
 # a comment naming each query's file, for your database's monitoring (the default)
 sqlcommenter: true
 ```
 
-### `direct_url`
+## `direct_url`
 
 The dev database Reylo reads your schema from. It defaults to `DATABASE_URL`, and its scheme names the dialect:
 
@@ -43,6 +43,12 @@ Point it at a direct connection, not a pooler: describing a query through a pool
 direct_url: postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/app
 ```
 
+A variable can fall back, as in a shell, when it is unset or empty:
+
+```yaml title=".reylo.yaml"
+direct_url: ${BUILD_DATABASE_URL:-${DATABASE_URL}}
+```
+
 To keep a password out of every file, `$(…)` runs a command, such as a password manager's or a cloud's token command, and puts what it prints in its place. Reylo runs it once per editor session or build, and again when the database refuses the login, as when a token expires.
 
 ```yaml title=".reylo.yaml"
@@ -50,7 +56,15 @@ To keep a password out of every file, `$(…)` runs a command, such as a passwor
 direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
 ```
 
-### `env`
+A type check or a build reads this database, so in CI and on your host it needs your migrations applied. The database a query runs on is the client you pass to `.run()`, so the two can differ.
+
+A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([Schema changes](/schema-changes)). To type it on the database it runs on:
+
+```sh
+DATABASE_URL_UNPOOLED="$PRODUCTION_URL" node --import reylo/register report.ts
+```
+
+## `env`
 
 The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that sets a variable wins, and the environment wins over every file.
 
@@ -59,18 +73,31 @@ The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that set
 env: [.env.development, .env]
 ```
 
-### `strict_params`
+## `allow_untyped_params`
 
-A [parameter whose type cannot be inferred](#a-parameter-nothing-types) is an error that says to [cast it](#casts). Set `strict_params: false` to type it `unknown` instead.
+Whether a [parameter whose type cannot be inferred](/inference#a-parameter-nothing-types) may stay `unknown`.
+
+By default it's an error that says to [cast it](/inference#casts).
 
 ```yaml title=".reylo.yaml"
-# the default is true
-strict_params: false
+# the default is false
+allow_untyped_params: true
 ```
 
-### `sqlcommenter`
+## `allow_nested_arrays`
 
-Each compiled query ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. Set `sqlcommenter: false` to leave it off.
+Whether a Postgres array column may hold nested arrays.
+
+Postgres doesn't track an array's dimensions, so by default Reylo types an array column with one, and `.run()` throws on a value of more. With this set, the column is typed at any depth, as `NestedArray<T>`, and nothing is refused.
+
+```yaml title=".reylo.yaml"
+# the default is false
+allow_nested_arrays: true
+```
+
+## `sqlcommenter`
+
+Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. On SQLite the comment opens the query instead, since SQLite would write it into the name of a last column with no alias. The query's [`.sql`](/usage#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
 
 ```yaml title=".reylo.yaml"
 # the default is true

@@ -1,15 +1,15 @@
 derived.sql: one () -> { m: text? }
-filter.sql: one () -> { mode: text? }
-grouped.sql: many () -> { mode: text? }
-having.sql: many () -> { mode: text? }
+filter.sql: one () -> { mode: text? } value
+grouped.sql: many () -> { mode: text } value
+having.sql: many () -> { mode: text? } value
 in_expression.sql: one () -> { top: text }
 in_subquery.sql: one () -> { m: text? }
-mode.sql: one () -> { mode: text? }
-mode_where.sql: one (id: int8) -> { mode: text? }
+mode.sql: one () -> { mode: text? } value
+mode_where.sql: one (id: int8) -> { mode: text? } value
 outer_level.sql: many () -> { m: text? }
 outer_level_coalesce.sql: many () -> { m: text? }
-percentile_cont_empty.sql: one () -> { percentile_cont: float8? }
-percentile_disc.sql: one () -> { percentile_disc: text? }
-rank.sql: one () -> { rank: int8? }
-user_defined.sql: one () -> { first_in_order: text? }
+percentile_cont_empty.sql: one () -> { percentile_cont: float8? } value
+percentile_disc.sql: one () -> { percentile_disc: text? } value
+rank.sql: one () -> { rank: int8? } value
+user_defined.sql: one () -> { first_in_order: text? } value
 with_set.sql: many () -> { mode: text?, g: int4 }

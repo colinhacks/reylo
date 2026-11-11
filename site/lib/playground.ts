@@ -15,14 +15,16 @@ import { compile } from '@mdx-js/mdx';
 import mysql from 'mysql2/promise';
 import postgres from 'postgres';
 import { Session } from '../../src/analyze.ts';
-import type { Analysis } from '../../src/engine.ts';
-import { ident, renderParamType, renderType } from '../../src/render.ts';
+import { analysisWithBases } from '../../src/engine-type.ts';
+import { ident, orNull, renderParamType, renderType } from '../../src/render.ts';
 import { schemaType } from '../scripts/schema-type.ts';
 import { mdxOptions } from './mdx-options.ts';
 import { pageFiles } from './page-files.ts';
-import { collectFiles, DIALECT_NAME, INFERRED_LAYOUT, SCHEMA_FILE, type Dialect } from './remark-mapper.ts';
+import { collectFiles, DIALECT_NAME, INFERRED_LAYOUT, SCHEMA_FILE, type Dialect as PageDialect } from './remark-mapper.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
 
+/** The dialects the playground tries a statement on: the main page's, each against its own schema. */
+type Dialect = Exclude<PageDialect, 'duckdb'>;
 const site = path.resolve(import.meta.dirname, '..');
 const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite'];
 const SERVERS: Record<Exclude<Dialect, 'sqlite'>, string> = {
@@ -150,21 +152,21 @@ function compileSql(sql: string, dialect: Dialect): string {
 }
 
 /** The statement's parameters, row and cardinality, as scripts/capture-types.ts renders a module, or the error the mapper would show. */
-async function typesOf(dialect: Dialect, schema: string, written: string): Promise<{ params?: string; row: string; cardinality: Analysis['cardinality'] } | { error: string }> {
+async function typesOf(dialect: Dialect, schema: string, written: string): Promise<{ params?: string; row: string; cardinality: string } | { error: string }> {
   const s = await session(dialect, schema);
   const json = new Map(jsonParams(written).map((p) => [p.name, schemaType(p.schema as never, dialect, `:${p.name}`)]));
   const outcome = await s.analyze(`${compileSql(written, dialect)}\n`);
   if (!outcome.ok) return { error: outcome.message };
-  const { analysis } = outcome;
+  const analysis = analysisWithBases(outcome.analysis);
   if (analysis.diagnostics.length) return { error: analysis.diagnostics.map((d) => d.message).join('\n') };
   const untyped = analysis.params.filter((q) => q.type.kind === 'unknown' && !json.has(q.name));
   if (untyped.length && s.project.strictParams) return { error: `Nothing in the statement types ${untyped.map((q) => `:${q.name}`).join(', ')}; give it a cast.` };
   const params = analysis.params.map((q) => {
-    const rendered = json.get(q.name) ?? (q.type.kind === 'unknown' ? 'unknown' : `${renderParamType(q.type, dialect)}${q.nullable ? ' | null' : ''}`);
+    const rendered = json.get(q.name) ?? (q.type.kind === 'unknown' ? 'unknown' : (q.nullable ? orNull(renderParamType(q.type, dialect, false, q.members)) : renderParamType(q.type, dialect, false, q.members)));
     return `${ident(q.name)}: ${rendered}`;
   });
-  const columns = analysis.columns.map((c) => `${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? ' | null' : ''}`);
-  return { params: params.length ? `{ ${params.join('; ')} }` : undefined, row: columns.length ? `{ ${columns.join('; ')} }` : 'never', cardinality: analysis.cardinality };
+  const columns = analysis.columns.map((c) => `${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`);
+  return { params: params.length ? `{ ${params.join('; ')} }` : undefined, row: columns.length ? `{ ${columns.join('; ')} }` : 'never', cardinality: analysis.cardinality === 'at_most_one' ? 'maybeOne' : analysis.cardinality };
 }
 
 /** A fenced block that no line of its text can close. */

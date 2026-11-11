@@ -1,17 +1,15 @@
 //! The project file, `.reylo.yaml`: the settings the content mapper reads, parsed once here so
-//! every host reads the same YAML the same way. The file is shared with Reylo Framework (decision
-//! 93 of its log): the framework reads the top-level `env` too and `url`, its connection, which
-//! the importer never reads (since 2026-10-21), and its own settings are the `api` section, which
-//! `framework/engine/src/config.rs` parses.
+//! every host reads the same YAML the same way. A host that serves the project's queries itself
+//! reads the file too: the top-level `env`, `url`, its connection, which the importer never reads,
+//! and its own settings, the `api` section, which it parses itself.
 //!
 //! A host finds the file (beside the project's `package.json`), reads it and hands the text over;
 //! what the file names outside itself (the environment, `.env` files, the database) is the host's
 //! to resolve, and a `${VAR}` in a URL stays as written. There is no dialect key: the URL's scheme
 //! names the dialect. A key the library does not know is an error, so a typo does not pass for a
-//! default; the framework's `api` section and `rest`, the section PorgREST would have read, are
-//! accepted as they are, and a top-level `$schema` (the JSON Schema an editor validates the file
-//! against, which `reylo schema --config` prints) is ignored. `cli` says which files `reylo
-//! generate` analyzes.
+//! default; the `api` and `rest` sections, which the importer does not read, are accepted as they
+//! are, and a top-level `$schema` (the JSON Schema an editor validates the file
+//! against, which `reylo schema --config` prints) is ignored.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,55 +19,161 @@ pub struct Project {
     /// The published schema an editor validates the file against; no host reads it.
     #[serde(rename = "$schema", default, skip_serializing)]
     pub schema: Option<serde_yaml::Value>,
-    /// Reylo Framework's connection, through which its queries run, usually `${DATABASE_URL}`.
-    /// Parsed for the framework: the importer's type check never connects through it (since
-    /// 2026-10-21), and tells a file that sets it without `direct_url` so.
+    /// The connection a host that serves the queries runs them through, usually `${DATABASE_URL}`.
+    /// Parsed for that host: the importer's type check never connects through it, and tells a file
+    /// that sets it without `direct_url` so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// The dev database the importer's type check reads, `${DATABASE_URL}` when absent: a
     /// connection that bypasses a pooler, since describing a statement through a transaction
-    /// pooler can fail. The importer's alone: the framework serves through `url`.
+    /// pooler can fail. The importer's alone: a host that serves the queries runs them through `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_url: Option<String>,
-    /// The `.env` files the importer and Reylo Framework read, relative to the project file
+    /// The `.env` files the importer and every other host read, relative to the project file
     /// (`.env.local`, then `.env`, when absent); the first that sets a variable wins, and the
     /// process environment wins over all of them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<Vec<String>>,
-    /// Whether a parameter the statement does not type is an error (`true`) or `unknown`. The key
-    /// was `strict` until 2026-10-20.
+    /// Whether a parameter the statement does not type is `unknown` (`true`) rather than an error.
+    /// The key was `strict` until 2026-10-20 and `strict_params`, the other way round, until 0.8.0.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub strict_params: Option<bool>,
+    pub allow_untyped_params: Option<bool>,
+    /// Whether a Postgres array column may hold nested arrays (`true`): typed at any depth, and
+    /// nothing refused. Off, it is typed with one dimension, and a value of more is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_nested_arrays: Option<bool>,
     /// Whether each statement the importer builds ends with a sqlcommenter comment naming its
     /// `.sql` file (`/*file='queries%2Fget_user.sql'*/`), which a database's monitoring reads as
     /// the statement's tags. On when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlcommenter: Option<bool>,
-    #[serde(default, skip_serializing_if = "Cli::is_empty")]
-    pub cli: Cli,
+    /// How the importer represents values in JavaScript and TypeScript.
+    #[serde(default, skip_serializing_if = "Js::is_empty")]
+    pub js: Js,
     #[serde(default, skip_serializing)]
     pub rest: Option<serde_yaml::Value>,
-    /// Reylo Framework's settings, which the framework parses.
+    /// The settings of a host that serves the queries, which that host parses.
     #[serde(default, skip_serializing)]
     pub api: Option<serde_yaml::Value>,
 }
 
-/// The files `reylo generate` analyzes, as globs relative to the project file: `include` replaces
-/// the default (every `.sql` file), and `exclude` adds to what is always left out (dependencies,
-/// build output, directories whose name starts with a dot, and what git ignores).
+/// The importer's JavaScript settings.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Cli {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclude: Option<Vec<String>>,
+pub struct Js {
+    #[serde(default, skip_serializing_if = "Codecs::is_empty")]
+    pub codecs: Codecs,
 }
 
-impl Cli {
+impl Js {
     fn is_empty(&self) -> bool {
-        self.include.is_none() && self.exclude.is_none()
+        self.codecs.is_empty()
     }
+}
+
+/// Each family of values and the TypeScript type `.run()` returns its values as, and takes its
+/// parameters as. A family is a kind of the type descriptor format (spec/index.ts), and a family
+/// left out keeps its default, the first value of its type here; every other value is exact, or
+/// refuses a value it cannot hold. A 64-bit integer has none: a bigint is its one exact type.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Codecs {
+    /// An exact decimal: Postgres's `numeric` and MySQL's and DuckDB's `DECIMAL`. A `number` refuses
+    /// a value a double cannot hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decimal: Option<DecimalCodec>,
+    /// Bytes: Postgres's `bytea`, MySQL's `BINARY`, `VARBINARY` and `BLOB`, and SQLite's and
+    /// DuckDB's `BLOB`. A `string` is their base64.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<BytesCodec>,
+    /// A date: `date`, MySQL's and DuckDB's `DATE`, a SQLite column declared `DATE`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<DateCodec>,
+    /// A time of day with no zone: Postgres's and DuckDB's `time`, a SQLite column declared
+    /// `TIME`. One that keeps its offset (`timetz`) keeps its text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<TimeCodec>,
+    /// A date and time of day as a wall clock reads, with no zone: Postgres's `timestamp`,
+    /// MySQL's `DATETIME` and `TIMESTAMP`, DuckDB's `TIMESTAMP`, a SQLite column declared
+    /// `DATETIME` or `TIMESTAMP`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datetime: Option<DateTimeCodec>,
+    /// An instant: Postgres's and DuckDB's `timestamptz`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instant: Option<InstantCodec>,
+    /// A duration: Postgres's `interval`, MySQL's `TIME`, DuckDB's `INTERVAL`. A
+    /// `Temporal.Duration` refuses one whose parts differ in sign, which it cannot hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<DurationCodec>,
+    /// A set of members: MySQL's `SET`, a `Set` by default, or an `Array` of its members.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set: Option<SetCodec>,
+}
+
+impl Codecs {
+    fn is_empty(&self) -> bool {
+        *self == Codecs::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecimalCodec {
+    String,
+    Number,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum BytesCodec {
+    Uint8Array,
+    #[serde(rename = "string")]
+    String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum DateCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.PlainDate")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum TimeCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.PlainTime")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum DateTimeCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.PlainDateTime")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum InstantCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.Instant")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum DurationCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.Duration")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum SetCodec {
+    Set,
+    Array,
 }
 
 /// Why the file does not parse, at byte offsets in its text.
@@ -95,29 +199,35 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
             _ => message,
         };
         let end = text[start.min(text.len())..].find(['\n', ':']).map_or(text.len(), |n| start + n);
-        // `strict` was renamed `strict_params` on 2026-10-20: the old key is unknown like any
-        // other, and its error names the new one.
-        let message = match message.strip_prefix("unknown field `strict`,") {
-            Some(_) => "unknown field `strict`: the key is `strict_params` since 2026-10-20".to_string(),
-            None => message,
+        // `strict` was renamed `strict_params` on 2026-10-20, and that became `allow_untyped_params`,
+        // reading the other way round, in 0.8.0: an old key is unknown like any other, and its
+        // error says what to write instead.
+        // The `cli` section said which files `reylo generate` analyzed, and went with it in 0.8.0.
+        let renamed = |key: &str| format!("unknown field `{key}`: the key is `allow_untyped_params` since 0.8.0, and reads the other way round: write `allow_untyped_params: true` for `{key}: false`, and delete `{key}: true`, the default");
+        let message = if message.starts_with("unknown field `strict`,") {
+            renamed("strict")
+        } else if message.starts_with("unknown field `strict_params`,") {
+            renamed("strict_params")
+        } else if message.starts_with("unknown field `cli`,") {
+            "unknown field `cli`: the section said which files reylo generate analyzed, and went with it in 0.8.0; delete it".to_string()
+        } else {
+            message
         };
         ConfigError { message: unmask_placeholders(message.trim_end()), start, end }
     })?;
     if masked != text {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
-        for list in [&mut project.env, &mut project.cli.include, &mut project.cli.exclude].into_iter().flatten() {
-            for item in list.iter_mut() {
-                *item = unmask_placeholders(item);
-            }
+        for item in project.env.iter_mut().flatten() {
+            *item = unmask_placeholders(item);
         }
     }
     Ok(project)
 }
 
 /// The text with each `${VAR}` spelled `$<VAR>`. A bare `${VAR}` inside a flow mapping or
-/// sequence is not YAML (its `{` opens a nested mapping), and the framework's `api` section is
-/// often written so (`jwt: { jwks: ${JWKS_URL} }`): the framework interpolates before it parses,
+/// sequence is not YAML (its `{` opens a nested mapping), and the `api` section is often
+/// written so (`jwt: { jwks: ${JWKS_URL} }`): the host that reads it interpolates before it parses,
 /// but the importer keeps a URL's `${VAR}` as written. The spelling has the same length, so an
 /// error's offsets still point into the text, and `unmask_placeholders` turns it back in what
 /// the parse returns. A text that already holds `$<` is parsed as written.
@@ -160,15 +270,16 @@ mod tests {
 
     #[test]
     fn reads_the_library_keys_and_leaves_the_later_sections_alone() {
-        let p = parse("url: ${DATABASE_URL}\ndirect_url: ${DIRECT_URL}\nenv: [.env]\nstrict_params: true\nsqlcommenter: false\ncli:\n  include: [src/**/*.sql]\n  exclude: [src/legacy/**]\napi:\n  routes: api\nrest:\n  anything: { x: 1 }\n").unwrap();
+        let p = parse("url: ${DATABASE_URL}\ndirect_url: ${DIRECT_URL}\nenv: [.env]\nallow_untyped_params: true\nallow_nested_arrays: true\nsqlcommenter: false\napi:\n  routes: api\nrest:\n  anything: { x: 1 }\n").unwrap();
         assert_eq!(p.url.as_deref(), Some("${DATABASE_URL}"));
         assert_eq!(p.direct_url.as_deref(), Some("${DIRECT_URL}"));
         assert_eq!(p.env, Some(vec![".env".to_string()]));
-        assert_eq!(p.strict_params, Some(true));
+        assert_eq!(p.allow_untyped_params, Some(true));
+        assert_eq!(p.allow_nested_arrays, Some(true));
         assert_eq!(p.sqlcommenter, Some(false));
         assert!(p.api.is_some() && p.rest.is_some());
         // What a host reads back: the later sections are not its business.
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "strict_params": true, "sqlcommenter": false, "cli": { "include": ["src/**/*.sql"], "exclude": ["src/legacy/**"] } }));
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "allow_untyped_params": true, "allow_nested_arrays": true, "sqlcommenter": false }));
         assert_eq!(parse("").unwrap(), Project::default());
         assert_eq!(parse("# nothing yet\n").unwrap(), Project::default());
     }
@@ -186,16 +297,46 @@ mod tests {
         let e = parse(text).unwrap_err();
         assert!(e.message.starts_with("unknown field `types`"), "{}", e.message);
         assert_eq!(&text[e.start..e.end], "types");
-        let e = parse("cli:\n  ignore: [x]\n").unwrap_err();
-        assert!(e.message.contains("unknown field `ignore`"), "{}", e.message);
-        let e = parse("strict_params: sometimes\n").unwrap_err();
+        let text = "cli:\n  include: [\"src/**/*.sql\"]\n";
+        let e = parse(text).unwrap_err();
+        assert_eq!(e.message, "unknown field `cli`: the section said which files reylo generate analyzed, and went with it in 0.8.0; delete it");
+        assert_eq!(&text[e.start..e.end], "cli");
+        let e = parse("allow_untyped_params: sometimes\n").unwrap_err();
         assert!(e.message.contains("invalid type"), "{}", e.message);
-        // `strict` was renamed `strict_params` on 2026-10-20, with no alias: the old key is
-        // unknown, and the error names the new one.
+        // The old names have no alias: each is unknown, and its error says what to write instead.
+        let e = parse("strict_params: false\n").unwrap_err();
+        assert_eq!(e.message, "unknown field `strict_params`: the key is `allow_untyped_params` since 0.8.0, and reads the other way round: write `allow_untyped_params: true` for `strict_params: false`, and delete `strict_params: true`, the default");
         let text = "url: postgres://x/db\nstrict: true\n";
         let e = parse(text).unwrap_err();
-        assert_eq!(e.message, "unknown field `strict`: the key is `strict_params` since 2026-10-20");
+        assert_eq!(e.message, "unknown field `strict`: the key is `allow_untyped_params` since 0.8.0, and reads the other way round: write `allow_untyped_params: true` for `strict: false`, and delete `strict: true`, the default");
         assert_eq!(&text[e.start..e.end], "strict");
+    }
+
+    #[test]
+    fn js_codecs_name_a_typescript_type_per_family() {
+        let text = "js:\n  codecs:\n    decimal: number\n    bytes: string\n    date: Temporal.PlainDate\n    time: Temporal.PlainTime\n    datetime: Temporal.PlainDateTime\n    instant: Temporal.Instant\n    duration: Temporal.Duration\n    set: Array\n";
+        let p = parse(text).unwrap();
+        assert_eq!(p.js.codecs.instant, Some(InstantCodec::Temporal));
+        assert_eq!(p.js.codecs.set, Some(SetCodec::Array));
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            serde_json::json!({ "js": { "codecs": { "decimal": "number", "bytes": "string", "date": "Temporal.PlainDate", "time": "Temporal.PlainTime", "datetime": "Temporal.PlainDateTime", "instant": "Temporal.Instant", "duration": "Temporal.Duration", "set": "Array" } } })
+        );
+        // A default spelled out is a setting like any other; an empty section reads back as none.
+        assert_eq!(serde_json::to_value(parse("js:\n  codecs:\n    set: Set\n    bytes: Uint8Array\n").unwrap()).unwrap(), serde_json::json!({ "js": { "codecs": { "set": "Set", "bytes": "Uint8Array" } } }));
+        assert_eq!(serde_json::to_value(parse("js:\n  codecs: {}\n").unwrap()).unwrap(), serde_json::json!({}));
+        // A family or a type the section does not know is an error that names what it takes.
+        let e = parse("js:\n  codecs:\n    instant: Date\n").unwrap_err();
+        assert!(e.message.contains("unknown variant `Date`, expected `string` or `Temporal.Instant`"), "{}", e.message);
+        let e = parse("js:\n  codecs:\n    decimal: number\n    interval: Temporal.Duration\n").unwrap_err();
+        assert!(e.message.contains("unknown field `interval`"), "{}", e.message);
+        // A 64-bit integer is always a bigint.
+        let e = parse("js:\n  codecs:\n    int64: string\n").unwrap_err();
+        assert!(e.message.contains("unknown field `int64`"), "{}", e.message);
+        let e = parse("js:\n  codecs:\n    local_datetime: Temporal.PlainDateTime\n").unwrap_err();
+        assert!(e.message.contains("unknown field `local_datetime`"), "{}", e.message);
+        let e = parse("js:\n  decode: {}\n").unwrap_err();
+        assert!(e.message.contains("unknown field `decode`, expected `codecs`"), "{}", e.message);
     }
 
     #[test]
@@ -215,7 +356,7 @@ mod tests {
         assert_eq!(p.url.as_deref(), Some("${DATABASE_URL}"));
         assert_eq!(p.direct_url.as_deref(), Some("${DIRECT_URL}"));
         assert_eq!(p.env, Some(vec!["${ENV_FILE}".to_string(), ".env".to_string()]));
-        assert_eq!(p.api.unwrap()["authenticators"]["clerk"]["jwt"]["jwks"].as_str(), Some("$<JWKS_URL>"), "the api section is the framework's to read");
+        assert_eq!(p.api.unwrap()["authenticators"]["clerk"]["jwt"]["jwks"].as_str(), Some("$<JWKS_URL>"), "the api section is its own host's to read");
         // The offsets of an error still point into the text as written.
         let text = "url: ${DATABASE_URL}\napi: { a: ${X} }\ndialect: x\n";
         let e = parse(text).unwrap_err();

@@ -7,10 +7,11 @@
     "rootDir": ".",
     "outDir": "dist/reylo"
   },
-  // reylo's own package: the run time and the entry points a project names, which load the
-  // build-time half from the engine package (src/engine-package.ts). The worker is started by its
-  // URL, so it is named here; the rest are what these import. `include` is emptied, since it would
-  // otherwise come from tsconfig.json.
+  // reylo's own package: the run time and the entry points a project names, and the build-time
+  // half they load by its path (src/tooling-loader.ts). What is loaded or started by a path rather
+  // than imported is named here (the build-time half, the preload's worker, the D1 proxy that
+  // src/sqlite-drivers.ts starts); the rest are what these import. `include` is emptied, since it
+  // would otherwise come from tsconfig.json.
   "include": [],
-  "files": ["src/index.ts", "src/register.ts", "src/register-worker.ts", "src/vite.ts", "src/esbuild.ts", "src/webpack.ts", "src/turbopack.ts", "src/next.ts", "src/jest.ts", "src/mapper.ts", "src/cli.ts"]
+  "files": ["src/index.ts", "src/register.ts", "src/register-worker.ts", "src/vite.ts", "src/esbuild.ts", "src/webpack.ts", "src/turbopack.ts", "src/next.ts", "src/jest.ts", "src/mapper.ts", "src/cli.ts", "src/tooling.ts", "src/d1-proxy.ts"]
 }

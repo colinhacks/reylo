@@ -1,0 +1,1 @@
+select isempty(span) as empty, lower_inf(span) as unbounded_below, upper_inf(span) as unbounded_above, lower_inc(span) as closed_below, upper_inc(span) as closed_above, isempty(spans) as none, upper_inf(spans) as multi_unbounded, lower(span) as starts from events

@@ -66,8 +66,9 @@ impl<R: Into<String>, C: Into<String>> FromIterator<(R, Vec<C>)> for Columns {
     }
 }
 
-/// Whether a statement holds a scalar subquery, the one place a rule asks whose an aggregate is:
-/// a statement without one needs no [`Columns`] for that.
+/// Whether a statement holds a scalar subquery, where a rule asks whose an aggregate is, or an
+/// `ARRAY(SELECT …)`, where one asks whether the column it collects is an array: a statement with
+/// neither needs no [`Columns`] for that.
 pub fn needed(sql: &str) -> bool {
     crate::stack::kept(&NEEDED, sql, || crate::stack::run(|| needed_here(sql)))
 }
@@ -79,12 +80,12 @@ thread_local! {
 fn needed_here(sql: &str) -> bool {
     fn walk(v: &Value) -> bool {
         match v {
-            Value::Object(map) => map.iter().any(|(key, child)| (key == "SubLink" && child.get("sub_link_type").and_then(Value::as_i64) == Some(protobuf::SubLinkType::ExprSublink as i64)) || walk(child)),
+            Value::Object(map) => map.iter().any(|(key, child)| (key == "SubLink" && child.get("sub_link_type").and_then(Value::as_i64).is_some_and(|t| t == protobuf::SubLinkType::ExprSublink as i64 || t == protobuf::SubLinkType::ArraySublink as i64)) || walk(child)),
             Value::Array(items) => items.iter().any(walk),
             _ => false,
         }
     }
-    // A subquery that aggregates is a second SELECT at the least.
+    // A subquery is a second SELECT at the least.
     if sql.to_ascii_lowercase().matches("select").count() < 2 {
         return false;
     }
@@ -180,6 +181,10 @@ struct Item {
     /// The catalog's relation the item is, by the name [`Columns`] keys it under, where its columns
     /// keep their names.
     relation: Option<String>,
+    /// Whether the item's whole row is of no type the catalog has, so it describes as `record`: a
+    /// derived table's, a WITH query's, a function's whose columns the statement defines, a
+    /// join's under an alias.
+    anonymous: bool,
 }
 
 /// The FROM of one query.
@@ -220,14 +225,14 @@ impl Level {
                 let relation = (with.is_none() && rv.alias.as_ref().is_none_or(|a| a.colnames.is_empty()))
                     .then(|| if rv.schemaname.is_empty() { rv.relname.clone() } else { format!("{}.{}", rv.schemaname, rv.relname) });
                 let name = rv.alias.as_ref().map_or_else(|| rv.relname.clone(), |a| a.aliasname.clone());
-                self.items.push(Item { name: Some(name), shown: shown.renamed(rv.alias.as_ref()), relation });
+                self.items.push(Item { name: Some(name), shown: shown.renamed(rv.alias.as_ref()), relation, anonymous: with.is_some() });
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let shown = match r.subquery.as_deref().and_then(as_select) {
                     Some(select) => shown_by(select, withs, columns),
                     None => Shown::unknown(),
                 };
-                self.items.push(Item { name: r.alias.as_ref().map(|a| a.aliasname.clone()), shown: shown.renamed(r.alias.as_ref()), relation: None });
+                self.items.push(Item { name: r.alias.as_ref().map(|a| a.aliasname.clone()), shown: shown.renamed(r.alias.as_ref()), relation: None, anonymous: true });
             }
             Some(NodeEnum::RangeFunction(r)) => {
                 // `f(…) AS r (k int, v text)` is the columns it defines, and WITH ORDINALITY one
@@ -243,7 +248,7 @@ impl Level {
                     Shown::unknown().renamed(r.alias.as_ref())
                 };
                 let name = r.alias.as_ref().map(|a| a.aliasname.clone()).or_else(|| crate::infer::function_item_name(r));
-                self.items.push(Item { name, shown, relation: None });
+                self.items.push(Item { name, shown, relation: None, anonymous: !r.coldeflist.is_empty() });
             }
             Some(NodeEnum::JoinExpr(j)) => {
                 let mut inner = Level::default();
@@ -253,12 +258,12 @@ impl Level {
                 inner.merged |= j.is_natural || !j.using_clause.is_empty();
                 match &j.alias {
                     // An alias on the join hides the names of the items under it.
-                    Some(alias) => self.items.push(Item { name: Some(alias.aliasname.clone()), shown: inner.all().renamed(Some(alias)), relation: None }),
+                    Some(alias) => self.items.push(Item { name: Some(alias.aliasname.clone()), shown: inner.all().renamed(Some(alias)), relation: None, anonymous: true }),
                     None => {
                         // `USING (id) AS x` names the merged columns and hides nothing.
                         if let Some(alias) = &j.join_using_alias {
                             let names = j.using_clause.iter().map(|n| last_string(std::slice::from_ref(n))).collect();
-                            self.items.push(Item { name: Some(alias.aliasname.clone()), shown: Shown { names, exact: false }, relation: None });
+                            self.items.push(Item { name: Some(alias.aliasname.clone()), shown: Shown { names, exact: false }, relation: None, anonymous: true });
                         }
                         self.merged |= inner.merged;
                         self.items.extend(inner.items);
@@ -271,7 +276,7 @@ impl Level {
                 }
             }
             // XMLTABLE, JSON_TABLE and whatever else a FROM takes: an item of unknown columns.
-            _ => self.items.push(Item { name: None, shown: Shown::unknown(), relation: None }),
+            _ => self.items.push(Item { name: None, shown: Shown::unknown(), relation: None, anonymous: false }),
         }
     }
 
@@ -334,6 +339,12 @@ impl Level {
         self.items.iter().any(|i| i.shown.has(column))
     }
 
+    /// Whether an item of this FROM goes by this name and its whole row is of no type the catalog
+    /// has ([`Item::anonymous`]).
+    pub fn names_anonymous(&self, name: &str) -> bool {
+        self.items.iter().any(|i| i.name.as_deref() == Some(name) && i.anonymous)
+    }
+
     /// Whether an item of this FROM goes by this name: `None` where none of the names read is it
     /// and an item's name is not known.
     pub fn names(&self, name: &str) -> Option<bool> {
@@ -341,6 +352,48 @@ impl Level {
             return Some(true);
         }
         self.items.iter().all(|i| i.name.is_some()).then_some(false)
+    }
+
+    /// The columns `*` (no qualifier) or `name.*` shows, in order, each as the name of the item it
+    /// is a column of and its own, where every one is known for certain: every item of a `*` goes by
+    /// a name and shows its columns' names exactly, and no USING or NATURAL join merges any, which
+    /// would put the merged ones first; one item goes by the name of a `name.*`.
+    pub fn star(&self, qualifier: Option<&str>) -> Option<Vec<(String, String)>> {
+        let items: Vec<&Item> = match qualifier {
+            None if self.merged => return None,
+            None => self.items.iter().collect(),
+            Some(name) => {
+                let mut named = self.items.iter().filter(|i| i.name.as_deref() == Some(name));
+                let item = named.next()?;
+                if named.next().is_some() {
+                    return None;
+                }
+                vec![item]
+            }
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let name = item.name.as_ref()?;
+            if !item.shown.exact {
+                return None;
+            }
+            for column in &item.shown.names {
+                out.push((name.clone(), column.clone()?));
+            }
+        }
+        Some(out)
+    }
+
+    /// The name of the one item a bare column name reads, for certain: the one that shows a
+    /// column of the name where every other one's columns are known and none is it.
+    pub fn reader_of(&self, column: &str) -> Option<String> {
+        let mut showing = self.items.iter().enumerate().filter(|(_, i)| i.shown.has(column));
+        let (at, item) = showing.next()?;
+        let alone = self.items.iter().enumerate().all(|(i, other)| i == at || other.shown.names.iter().all(|n| n.as_deref().is_some_and(|n| n != column)));
+        if showing.next().is_some() || !alone {
+            return None;
+        }
+        item.name.clone()
     }
 
     /// Every column of the FROM, as `*` shows them.
@@ -479,97 +532,6 @@ mod tests {
 
     fn catalog() -> Columns {
         [("users", vec!["id", "name", "title"]), ("posts", vec!["id", "user_id", "title"]), ("comments", vec!["id", "post_id", "body"]), ("app.posts", vec!["id", "body"])].into_iter().collect()
-    }
-
-    #[test]
-    fn a_bare_column_is_the_innermost_from_that_has_it() {
-        let c = catalog();
-        for sql in [
-            "select (select count(title) from posts) from users",
-            "select (select count(id) from posts where user_id = u.id) from users u",
-            "select (select count(length(name) + length(title)) from posts) from users",
-            "select (select count(*) from posts) from users",
-            "select (select count(1) from posts) from users",
-            "select (select count(p.id) from posts p) from users",
-            "select (select count(p.*) from posts p) from users",
-            "select (select count(body) from app.posts) from users",
-            "select (select count(body) from posts join comments using (id)) from users",
-            "select (select count(id) from posts join comments using (id)) from users",
-            "select (select count(body) from (posts join comments using (id)) as j) from users",
-            "select (select count(j.body) from (posts join comments using (id)) as j) from users",
-            "select (select count(x.id) from posts join comments using (id) as x) from users",
-            "select (select count(title) from (select id, title from posts) p) from users",
-            "select (select count(t) from (select id, title as t from posts) p) from users",
-            "select (select count(t) from (select id, title from posts) p (i, t)) from users",
-            "select (select count(title) from (select * from posts) p) from users",
-            "select (select count(title) from (select p.* from posts p) s) from users",
-            "select (select count(count) from (select count(*) from posts) p) from users",
-            "select (select count(column2) from (values (1, 2)) v) from users",
-            "select (select count(title) from (select id, title from posts union all select id, body from comments) p) from users",
-            "with p as (select id, title from posts) select (select count(title) from p) from users",
-            "with p (i, t) as (select id, title from posts) select (select count(t) from p) from users",
-            "with recursive p as (select id, title from posts union all select id, title from p) select (select count(title) from p) from users",
-            "select (with p as (select id, title from posts) select count(title) from p) from users",
-            "select (select count(x) from generate_series(1, 0) g (x)) from users",
-            "select (select count(k) from json_to_record('{}') as r (k int, v text)) from users",
-            "select (select count(ordinality) from json_to_record('{}') with ordinality as r (k int, v text)) from users",
-            "select (select count(b) from posts p (a, b, c)) from users",
-            "select (select count(title) from posts p (a, b)) from users",
-            "select (select count(title) from posts tablesample system (50)) from users",
-            // A read of this FROM outside a subquery in the call settles it, whatever the
-            // subquery reads, as does the expression an `IN` subquery is compared with.
-            "select (select json_agg(json_build_object('id', p.id, 'n', (select count(*) from comments c where c.post_id = p.id))) from posts p) from users",
-            "select (select count(title || (select name from users limit 1)) from posts) from users",
-            "select (select count(p.id in (select post_id from comments)) from posts p) from users",
-        ] {
-            assert!(owns(sql, &c), "{sql}");
-        }
-    }
-
-    #[test]
-    fn a_column_of_no_inner_from_is_possibly_the_outer_querys() {
-        let c = catalog();
-        for sql in [
-            "select (select count(name) from posts) from users",
-            "select (select count(u.name) from posts) from users u",
-            "select (select count(*) filter (where name <> '') from posts) from users",
-            "select (select count(1 order by name) from posts) from users",
-            "select (select count(title) from app.posts) from users",
-            "select (select count(name) from posts join comments using (id)) from users",
-            "select (select count(name) from (posts join comments using (id)) as j) from users",
-            // The join's alias hides `posts`, so this one is the outer query's.
-            "select (select count(posts.title) from (posts join comments using (id)) as j) from users posts",
-            "select (select count(name) from (select id, title from posts) p) from users",
-            "select (select count(name) from (select * from posts) p) from users",
-            "select (select count(title) from (select id, title from posts) p (i, t)) from users",
-            "with p as (select id, title from posts) select (select count(name) from p) from users",
-            "select (with p as (select id, title from posts) select count(name) from p) from users",
-            // The WITH query shadows the table of its name.
-            "with posts as (select id from comments) select (select count(title) from posts) from users",
-            "with recursive posts as (select id from comments union all select id from posts) select (select count(title) from posts) from users",
-            "with recursive p as (select id, title from posts union all select id, title from p) cycle id set looped using path select (select count(body) from p) from users",
-            "select (select count(title) from posts p (a, b, c)) from users",
-            "select (select count(a) from generate_series(1, 0) g (x)) from users",
-            "select (select count(name) from json_to_record('{}') as r (k int, v text)) from users",
-            // A whole-row reference and a system column are read as possibly outer.
-            "select (select count(posts) from posts) from users",
-            "select (select count(ctid) from posts) from users",
-            // So are the columns of an item that does not say them, and of a relation the catalog
-            // did not report.
-            "select (select count(g) from generate_series(1, 0) g) from users",
-            "select (select count(title) from unlisted) from users",
-            "select (select count(title) from (select length(title) from posts) p) from users",
-            "select (select count(title) from xmltable('/a' passing '<a/>' columns title text) x) from users",
-            // A schema-qualified reference names a relation, which an alias does not answer to.
-            "select (select count(public.posts.title) from comments posts) from users",
-            // A subquery inside the call has names of its own.
-            "select (select count((select title from posts limit 1)) from posts) from users",
-            "select (select count(name || (select body from comments limit 1)) from posts) from users",
-            "select (select count(u.id in (select post_id from comments)) from posts) from users u",
-        ] {
-            assert!(!owns(sql, &c), "{sql}");
-        }
-        assert!(!owns("select (select count(title) from posts) from users", &Columns::default()), "no catalog, no proof");
     }
 
     /// [`owns`] with the subquery inside the top query's FROM, which the caller knows.

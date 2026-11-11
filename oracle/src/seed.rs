@@ -31,11 +31,15 @@
 //!
 //! - a column the engine typed non-null holds no NULL, an array it typed with non-null elements
 //!   holds no NULL element, and a JSON field it typed non-null is never null;
-//! - a statement proven `one` returns exactly one row, and one proven `maybeOne` at most one.
+//! - a statement proven `one` returns exactly one row, and one proven `at_most_one` at most one;
+//! - no two rows agree on every column of the result key, a NULL counting as equal to another;
+//! - where the order is total, no two rows in a row tie on every sort key: a sort key that is no
+//!   output column is read from a copy of the statement that also selects it.
 //!
 //! A statement with no run that succeeded is in the report's `unchecked`, with its first error:
 //! nothing about it was checked.
 
+use reylo_engine_core::types::{ArrayType, DecimalType, DurationType, FloatType, JsonType, Kind, Size, TextType, Type};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -52,11 +56,13 @@ pub struct Report {
 }
 
 /// A seeded state: the edge state holds every pool whole, the plain state leaves out the values of
-/// extreme magnitude.
+/// extreme magnitude, and the empty state seeds no row at all (DuckDB's oracle alone runs it).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Scenario {
     Edges,
     Plain,
+    #[cfg(feature = "duckdb")]
+    Empty,
 }
 
 pub(crate) const SCENARIOS: [Scenario; 2] = [Scenario::Edges, Scenario::Plain];
@@ -66,6 +72,8 @@ impl Scenario {
         match self {
             Scenario::Edges => "edge values",
             Scenario::Plain => "plain values",
+            #[cfg(feature = "duckdb")]
+            Scenario::Empty => "no rows",
         }
     }
 }
@@ -545,8 +553,8 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                 let order: Vec<String> = analysis["rewritten"]["order"].as_array().map(|o| o.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
                 let params = analysis["params"].as_array().cloned().unwrap_or_default();
                 // Each placeholder `$n` is the n-th name of `order`; the value is that parameter's.
-                let text_of = |values: &[String]| {
-                    let mut text = rewritten.clone();
+                let fill = |base: &str, values: &[String]| {
+                    let mut text = base.to_string();
                     for (n, name) in order.iter().enumerate().rev() {
                         let index = params.iter().position(|p| p["name"].as_str() == Some(name)).unwrap_or(n);
                         let literal = values.get(index).cloned().unwrap_or_else(|| "NULL".into());
@@ -554,6 +562,20 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                         text = text.replace(&format!("${}", n + 1), &format!("({literal})::{ty}"));
                     }
                     text
+                };
+                let text_of = |values: &[String]| fill(&rewritten, values);
+                // An order the engine says is total is checked on each run: no two rows in a row tie
+                // on every sort key. A sort key that is no output column is read from a copy of the
+                // statement that selects it too.
+                let probe = if analysis["ordered"].as_bool() == Some(true) {
+                    let names: Vec<String> = analysis["columns"].as_array().into_iter().flatten().map(|c| c["name"].as_str().unwrap_or("").to_string()).collect();
+                    let probe = reylo_engine::postgres::cardinality::sort_probe(&rewritten, &names);
+                    if probe.is_none() {
+                        problems.push(format!("{file}: ordered, and the oracle cannot read its ORDER BY's sort keys to check it"));
+                    }
+                    probe
+                } else {
+                    None
                 };
                 for values in assignments(&bound.pools) {
                     let text = text_of(&values);
@@ -626,22 +648,55 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                         _ => None,
                     }).collect();
                     let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
-                    if (cardinality == "maybeOne" && rows.len() > 1) || (cardinality == "one" && rows.len() != 1) {
+                    if (cardinality == "at_most_one" && rows.len() > 1) || (cardinality == "one" && rows.len() != 1) {
                         problems.push(format!("{file}: proven {cardinality}, returned {} rows with ({})", rows.len(), values.join(", ")));
                     }
                     let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
+                    if let Some(why) = key_repeats(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
+                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                    }
+                    if let Some(why) = out_of_order(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
+                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                    }
+                    match &probe {
+                        Some((None, at)) => {
+                            if let Some(why) = ties(&rows, at) {
+                                problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                            }
+                        }
+                        Some((Some(wrapped), at)) => {
+                            client.batch_execute("SAVEPOINT q").await.map_err(|e| message(&e))?;
+                            let outcome = client.simple_query(&fill(wrapped, &values)).await;
+                            client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
+                            match outcome {
+                                Ok(messages) => {
+                                    let rows: Vec<&tokio_postgres::SimpleQueryRow> = messages.iter().filter_map(|m| match m {
+                                        tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
+                                        _ => None,
+                                    }).collect();
+                                    if let Some(why) = ties(&rows, at) {
+                                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                                    }
+                                }
+                                Err(e) if e.code() == Some(&SqlState::QUERY_CANCELED) => {}
+                                Err(e) => problems.push(format!("{file}: ordered, and the copy that selects its sort keys failed: {} with ({})", message(&e), values.join(", "))),
+                            }
+                        }
+                        None => {}
+                    }
                     for row in &rows {
                         for (i, col) in columns.iter().enumerate() {
                             let value = row.try_get(i).ok().flatten();
                             let name = col["name"].as_str().unwrap_or("?");
                             if value.is_none() {
-                                if !col["nullable"].as_bool().unwrap_or(true) {
+                                if !col["nullable"].as_bool().unwrap_or(false) {
                                     problems.push(format!("{file}: column {name} typed non-null is NULL with ({})", values.join(", ")));
                                 }
                                 continue;
                             }
-                            let delimiter = col["type_name"].as_str().and_then(|t| delimiters.get(t)).copied().unwrap_or(',');
-                            if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(true), delimiter) {
+                            // The delimiter the catalog gives the array type, by its name without its schema.
+                            let delimiter = col["type"]["label"].as_str().map(|n| n.rsplit('.').next().unwrap_or(n).trim_matches('"')).and_then(|t| delimiters.get(t)).copied().unwrap_or(',');
+                            if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(false), delimiter) {
                                 problems.push(format!("{file}: column {name} {why} with ({})", values.join(", ")));
                             }
                         }
@@ -657,31 +712,366 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
     Ok(report(statements, &tallies, timeout_ms, problems, notes))
 }
 
-/// Why a non-NULL value contradicts its type, if it does: a NULL element in an array typed without
-/// one, its elements separated by `delimiter`, or a null where a JSON object or list typed a
-/// value. A JSON `null` at the top is the column's null to the run time, so it contradicts a
-/// column typed non-null.
-fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
-    match ty["kind"].as_str() {
-        // A union of literals, from an enum or a CHECK list: the value is one of them.
-        Some("enum") => {
-            let labels: Vec<&str> = ty["labels"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-            (!labels.is_empty() && !labels.contains(&text)).then(|| format!("typed as one of {labels:?} holds {text:?}"))
+/// Why the rows of one run contradict an order the analysis says is total, if they do: two rows in
+/// a row hold the same text, or both NULL, in every column `at` names, the sort keys.
+fn ties(rows: &[&tokio_postgres::SimpleQueryRow], at: &[usize]) -> Option<String> {
+    let keys = |row: &tokio_postgres::SimpleQueryRow| at.iter().map(|&i| row.try_get(i).ok().flatten().map(String::from)).collect::<Vec<Option<String>>>();
+    rows.windows(2).enumerate().find_map(|(k, pair)| {
+        let (a, b) = (keys(pair[0]), keys(pair[1]));
+        (a == b).then(|| format!("ordered, and rows {} and {} tie on every sort key, as ({})", k + 1, k + 2, a.iter().map(|v| v.as_deref().map_or_else(|| "NULL".to_string(), |v| format!("'{v}'"))).collect::<Vec<_>>().join(", ")))
+    })
+}
+
+/// Why the rows of one run contradict the columns the analysis says they are sorted on, if they do:
+/// a NULL on the wrong side of a value, or two numbers the wrong way round. Each pair of rows is
+/// read column by column while they tie. Text and the other kinds sort by rules the server keeps,
+/// so a pair that differs in one is taken as sorted, as is a pair of numbers with no decimal text,
+/// such as `NaN`.
+fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+    let order = analysis["order"].as_array().filter(|o| !o.is_empty())?;
+    let keys: Vec<(usize, &str, bool, bool, bool)> = order
+        .iter()
+        .filter_map(|o| {
+            let name = o["column"].as_str()?;
+            let at = columns.iter().position(|c| c["name"].as_str() == Some(name))?;
+            let number = matches!(columns[at]["type"]["kind"].as_str(), Some("integer" | "decimal" | "float"));
+            Some((at, name, o["desc"].as_bool() == Some(true), o["nulls"].as_str() == Some("first"), number))
+        })
+        .collect();
+    if keys.len() != order.len() {
+        return Some("order names a column the statement does not return".into());
+    }
+    let rows: Vec<Vec<Option<&str>>> = rows.collect();
+    rows.windows(2).enumerate().find_map(|(k, pair)| {
+        for &(at, name, desc, nulls_first, number) in &keys {
+            let (a, b) = (pair[0].get(at).copied().flatten(), pair[1].get(at).copied().flatten());
+            match (a, b) {
+                (None, None) => continue,
+                (None, Some(_)) if nulls_first => return None,
+                (Some(_), None) if !nulls_first => return None,
+                (None, Some(_)) | (Some(_), None) => return Some(format!("sorted on {name} with NULLs {}, and rows {} and {} hold ({a:?}, {b:?})", if nulls_first { "first" } else { "last" }, k + 1, k + 2)),
+                (Some(a), Some(b)) => match decimal_cmp(a, b).filter(|_| number) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    Some(ordering) if (ordering == std::cmp::Ordering::Less) != desc => return None,
+                    Some(_) => return Some(format!("sorted on {name}{}, and rows {} and {} hold ({a}, {b})", if desc { " descending" } else { "" }, k + 1, k + 2)),
+                    None if a == b => continue,
+                    None => return None,
+                },
+            }
         }
-        Some("array") if !ty["nullable_items"].as_bool().unwrap_or(true) => array_has_null(text, delimiter).then(|| "typed with non-null elements holds a NULL element".to_string()),
-        Some("object") | Some("list") => {
+        None
+    })
+}
+
+/// Why the rows of one run contradict the analysis's result key, if they do: two rows agree on
+/// every column of the key, a NULL counting as equal to another NULL. Each row is its columns'
+/// text, in order, `None` for NULL.
+fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+    let rows: Vec<Vec<Option<&str>>> = rows.collect();
+    analysis["unique"].as_array()?.iter().find_map(|key| one_key_repeats(key.as_array()?, columns, rows.iter().cloned()))
+}
+
+fn one_key_repeats<'r>(key: &[Value], columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+    let names: Vec<&str> = key.iter().map(|k| k.as_str().unwrap_or("?")).collect();
+    let Some(at) = names.iter().map(|name| columns.iter().position(|c| c["name"].as_str() == Some(name))).collect::<Option<Vec<usize>>>() else {
+        return Some(format!("key ({}) names a column the statement does not return", names.join(", ")));
+    };
+    let mut seen = HashSet::new();
+    for row in rows {
+        let values: Vec<Option<&str>> = at.iter().map(|&i| row.get(i).copied().flatten()).collect();
+        if !seen.insert(values.clone()) {
+            if names.is_empty() {
+                return Some("an empty key says one row at most, and the statement returned more".into());
+            }
+            let shown: Vec<String> = values.iter().map(|v| v.map_or_else(|| "NULL".to_string(), |v| format!("'{v}'"))).collect();
+            return Some(format!("key ({}) repeats in two rows, as ({})", names.join(", "), shown.join(", ")));
+        }
+    }
+    None
+}
+
+/// Why a non-NULL value contradicts its type, if it does: a value outside the strings a text is
+/// kept to, a text longer or shorter than its size, a NaN or an infinity in a float or a decimal
+/// typed without one, a decimal of more digits than its precision and scale, a time, timestamp or
+/// interval finer than its tick or with a part its type leaves out, a bit string or a vector of
+/// another length, a NULL element in an array typed without one, its elements separated by
+/// `delimiter`, or a null where JSON a statement built typed a value. A JSON `null` at the top is
+/// the column's null to the run time, so it contradicts a column typed non-null.
+fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
+    let ty: Type = serde_json::from_value(ty.clone()).ok()?;
+    if let Some(why) = fact_contradiction(&ty, text) {
+        return Some(why);
+    }
+    match &ty.kind {
+        // A union of literals, from an enum or a CHECK list: the value is one of them.
+        Kind::Text(TextType { values: Some(values), .. }) => (!values.is_empty() && !values.iter().any(|v| v == text)).then(|| format!("typed as one of {values:?} holds {text:?}")),
+        // A type modifier's length, in code points: `varchar(20)` at most, `char(5)` exactly, as
+        // it pads what it stores.
+        Kind::Text(TextType { size: Some(size), ill_formed: None, .. }) if size.unit.is_none() => {
+            let size = if ty.label.as_deref() == Some("bpchar") { size.clone() } else { Size { exact: None, ..size.clone() } };
+            length_contradiction(&size, text.chars().count() as u64, "code points")
+        }
+        // Postgres prints a float's or a `numeric`'s non-finite values so.
+        Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) if matches!(text, "NaN" | "Infinity" | "-Infinity") => match text {
+            "NaN" if !nan => Some("typed without NaN holds NaN".to_string()),
+            "Infinity" | "-Infinity" if !infinity => Some(format!("typed without the infinities holds {text}")),
+            _ => None,
+        },
+        Kind::Decimal(decimal) => decimal_contradiction(decimal, text),
+        Kind::Time(time) => fraction_contradiction(&time.tick, text),
+        Kind::DateTime(dt) => fraction_contradiction(&dt.tick, text),
+        Kind::Instant(instant) => fraction_contradiction(&instant.tick, text),
+        Kind::Duration(duration) => interval_contradiction(duration, text),
+        // A bit string's length is its bits (`bit(7)`, `varbit(5)`), and a vector's its elements.
+        Kind::Array(ArrayType { size: Some(size), .. }) if matches!(ty.label.as_deref(), Some("bit" | "varbit")) => length_contradiction(size, text.chars().count() as u64, "bits"),
+        Kind::Array(ArrayType { size: Some(size), .. }) if ty.label.as_deref().is_some_and(|n| n.ends_with("vector") || n.ends_with("halfvec")) => {
+            let inner = text.trim_start_matches('[').trim_end_matches(']').trim();
+            length_contradiction(size, if inner.is_empty() { 0 } else { inner.split(',').count() as u64 }, "elements")
+        }
+        // A Postgres array, as its text shows it ([`postgres_array`]).
+        Kind::Array(array) if postgres_array(&ty) => {
+            // Each level over the innermost holds arrays, never NULL, so a NULL the text spells is
+            // an element of the innermost level.
+            let mut innermost = array;
+            while let Kind::Array(inner) = &innermost.element.ty.kind {
+                if !postgres_array(&innermost.element.ty) {
+                    break;
+                }
+                innermost = inner;
+            }
+            depth_contradiction(&ty, text).or_else(|| (!innermost.element.nullable && array_has_null(text, delimiter)).then(|| "typed with non-null elements holds a NULL element".to_string()))
+        }
+        Kind::Json(JsonType { content: Some(content), .. }) => {
             let json: Value = serde_json::from_str(text).ok()?;
             if json.is_null() {
                 return (!nullable).then(|| "holds the JSON null, typed non-null".to_string());
             }
-            json_contradiction(ty, &json, "")
+            json_contradiction(&content.ty, &json, "")
         }
-        Some("json") if ty.get("schema").is_some() => {
+        Kind::Json(JsonType { schema: Some(_), .. }) => {
             let json: Value = serde_json::from_str(text).ok()?;
-            json_contradiction(ty, &json, "")
+            json_contradiction(&ty, &json, "")
         }
         _ => None,
     }
+}
+
+/// Why a value breaks what a CHECK holds it to, if it does: a number's bounds and divisor, and a
+/// `like` or `ilike` pattern. A regular expression's dialect is the server's own, so it is left to
+/// the CHECK itself, which refused any row it does not match.
+fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
+    let breaks = |bounds: &reylo_engine_core::types::Bounds| -> Option<String> {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        let cmp = |v: &str| decimal_cmp(text, v);
+        if let Some(v) = bounds.min.as_deref() {
+            if cmp(v) == Some(Less) {
+                return Some(format!("typed at least {v} holds {text}"));
+            }
+        }
+        if let Some(v) = bounds.exclusive_min.as_deref() {
+            if matches!(cmp(v), Some(Less | Equal)) {
+                return Some(format!("typed above {v} holds {text}"));
+            }
+        }
+        if let Some(v) = bounds.max.as_deref() {
+            if cmp(v) == Some(Greater) {
+                return Some(format!("typed at most {v} holds {text}"));
+            }
+        }
+        if let Some(v) = bounds.exclusive_max.as_deref() {
+            if matches!(cmp(v), Some(Greater | Equal)) {
+                return Some(format!("typed below {v} holds {text}"));
+            }
+        }
+        None
+    };
+    let divides = |divisor: &Option<String>| divisor.as_deref().filter(|d| !is_multiple(text, d).unwrap_or(true)).map(|d| format!("typed as a multiple of {d} holds {text}"));
+    match &ty.kind {
+        Kind::Integer(i) => breaks(&i.bounds).or_else(|| divides(&i.multiple_of)),
+        Kind::Float(f) => breaks(&f.bounds),
+        Kind::Decimal(d) => breaks(&d.bounds).or_else(|| divides(&d.multiple_of)),
+        Kind::Text(TextType { pattern: Some(pattern), .. }) => {
+            let insensitive = match pattern.dialect {
+                reylo_engine_core::types::PatternDialect::Like => false,
+                reylo_engine_core::types::PatternDialect::Ilike => true,
+                _ => return None,
+            };
+            (!like_matches(text, &pattern.source, insensitive)).then(|| format!("typed as {:?} holds {text:?}", pattern.source))
+        }
+        _ => None,
+    }
+}
+
+/// Two plain decimals in text compared exactly; `None` where either is not one, as a non-finite
+/// value or a bound an exponent writes.
+fn decimal_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering::{Greater, Less};
+    // The sign, the whole digits without leading zeros, and the fraction without trailing ones.
+    fn parts(text: &str) -> Option<(bool, &str, &str)> {
+        let (minus, body) = match text.strip_prefix('-') {
+            Some(body) => (true, body),
+            None => (false, text.strip_prefix('+').unwrap_or(text)),
+        };
+        let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+        (!(whole.is_empty() && fraction.is_empty()) && whole.chars().chain(fraction.chars()).all(|c| c.is_ascii_digit())).then(|| (minus, whole.trim_start_matches('0'), fraction.trim_end_matches('0')))
+    }
+    let ((a_minus, a_whole, a_fraction), (b_minus, b_whole, b_fraction)) = (parts(a)?, parts(b)?);
+    let a_zero = a_whole.is_empty() && a_fraction.is_empty();
+    let b_zero = b_whole.is_empty() && b_fraction.is_empty();
+    match (a_minus && !a_zero, b_minus && !b_zero) {
+        (true, false) => return Some(Less),
+        (false, true) => return Some(Greater),
+        _ => {}
+    }
+    let magnitude = a_whole.len().cmp(&b_whole.len()).then_with(|| a_whole.cmp(b_whole)).then_with(|| a_fraction.cmp(b_fraction));
+    Some(if a_minus && !a_zero { magnitude.reverse() } else { magnitude })
+}
+
+/// Whether a plain decimal is a whole multiple of another; `None` where either does not fit.
+fn is_multiple(value: &str, divisor: &str) -> Option<bool> {
+    let scaled = |text: &str, digits: usize| -> Option<i128> {
+        let body = text.trim_start_matches(['-', '+']);
+        let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+        if fraction.len() > digits {
+            return None;
+        }
+        format!("{whole}{fraction}{}", "0".repeat(digits - fraction.len())).parse().ok()
+    };
+    let fraction = |text: &str| text.split_once('.').map_or(0, |(_, f)| f.trim_end_matches('0').len());
+    let digits = fraction(value).max(fraction(divisor));
+    let trimmed = |text: &str| if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text.to_string() };
+    let (value, divisor) = (scaled(&trimmed(value), digits)?, scaled(&trimmed(divisor), digits)?);
+    (divisor != 0).then(|| value % divisor == 0)
+}
+
+/// Whether a text matches a `LIKE` pattern, whole: `%` any run, `_` one character, `\\` the next
+/// character as it is. `ILIKE` folds case as far as Unicode's lower case does.
+fn like_matches(text: &str, pattern: &str, insensitive: bool) -> bool {
+    let fold = |s: &str| if insensitive { s.to_lowercase() } else { s.to_string() };
+    let (text, pattern): (Vec<char>, Vec<char>) = (fold(text).chars().collect(), fold(pattern).chars().collect());
+    fn at(text: &[char], pattern: &[char]) -> bool {
+        match pattern.split_first() {
+            None => text.is_empty(),
+            Some(('%', rest)) => (0..=text.len()).any(|i| at(&text[i..], rest)),
+            Some(('_', rest)) => !text.is_empty() && at(&text[1..], rest),
+            Some(('\\', rest)) if !rest.is_empty() => text.first() == rest.first() && at(&text[1..], &rest[1..]),
+            Some((c, rest)) => text.first() == Some(c) && at(&text[1..], rest),
+        }
+    }
+    at(&text, &pattern)
+}
+
+/// Why a length breaks a size, if it does.
+pub(crate) fn length_contradiction(size: &Size, n: u64, unit: &str) -> Option<String> {
+    let ok = size.exact.is_none_or(|e| n == e) && size.min.is_none_or(|m| n >= m) && size.max.is_none_or(|m| n <= m);
+    (!ok).then(|| format!("sized {size:?} holds {n} {unit}"))
+}
+
+/// Why a decimal's text breaks its precision and scale, if it does: more digits after the point
+/// than its scale, or more digits than its precision. A negative scale rounds to tens or hundreds,
+/// whose zeros the precision does not count, and a scale above the precision leaves zeros after the
+/// point (`0.000123` in a `numeric(3,6)`), which it does not count either.
+pub(crate) fn decimal_contradiction(decimal: &DecimalType, text: &str) -> Option<String> {
+    let digits = text.trim_start_matches(['-', '+']);
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    if whole.is_empty() && fraction.is_empty() || !whole.chars().chain(fraction.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if decimal.max_scale.is_some_and(|max| fraction.len() as i32 > max.max(0)) {
+        return Some(format!("typed with a scale of at most {:?} holds {text}", decimal.max_scale));
+    }
+    let precision = decimal.precision?;
+    let whole = whole.trim_start_matches('0');
+    let zeros = (-decimal.min_scale.unwrap_or(0)).max(0) as usize;
+    if zeros > 0 && !whole.is_empty() && !whole.ends_with(&"0".repeat(zeros)) {
+        return Some(format!("typed with a scale of {:?} holds {text}", decimal.min_scale));
+    }
+    let significant = format!("{whole}{fraction}").trim_start_matches('0').len().saturating_sub(zeros);
+    (significant > precision as usize).then(|| format!("typed with a precision of {precision} holds {text}"))
+}
+
+/// The fractional digits a tick allows: 3 for `"1/1000"`, 0 for `"1"`, none for a coarser one.
+pub(crate) fn tick_digits(tick: &str) -> Option<usize> {
+    match tick.split_once('/') {
+        Some(("1", denominator)) if denominator.starts_with('1') && denominator[1..].chars().all(|c| c == '0') => Some(denominator.len() - 1),
+        None if tick == "1" => Some(0),
+        _ => None,
+    }
+}
+
+/// The `HH:MM:SS[.f]` a time, a timestamp's or an interval's text holds, as its three parts.
+fn clock(text: &str) -> Option<(&str, &str, &str)> {
+    let at = text.find(':')?;
+    let start = text[..at].rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
+    let rest = &text[start..];
+    let hours = &rest[..rest.find(':')?];
+    let rest = &rest[hours.len() + 1..];
+    let minutes = rest.get(..2)?;
+    let rest = rest.get(3..)?;
+    let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+    Some((hours, minutes, &rest[..end]))
+}
+
+/// Why a time's or a timestamp's text is finer than its tick, if it is.
+fn fraction_contradiction(tick: &str, text: &str) -> Option<String> {
+    let allowed = tick_digits(tick)?;
+    let (_, _, seconds) = clock(text)?;
+    let digits = seconds.split_once('.').map_or(0, |(_, f)| f.len());
+    (digits > allowed).then(|| format!("ticking by {tick} holds {text}"))
+}
+
+/// Why an interval's text has a part its type leaves out, or is finer than its tick, if it does.
+fn interval_contradiction(duration: &DurationType, text: &str) -> Option<String> {
+    let has_days = duration.max.split('T').next().is_some_and(|date| date.contains('D'));
+    if !has_days && text.contains("day") {
+        return Some(format!("typed without days holds {text}"));
+    }
+    let Some((hours, minutes, seconds)) = clock(text) else { return None };
+    // Postgres prints a zero interval as `00:00:00`, whatever its fields.
+    let zero = hours.trim_start_matches('-').chars().all(|c| c == '0') && minutes == "00" && seconds.chars().all(|c| c == '0' || c == '.');
+    // A duration has a tick exactly when it has a time part.
+    let Some(tick) = &duration.tick else {
+        return (!zero).then(|| format!("typed without a time holds {text}"));
+    };
+    let fraction = seconds.split_once('.').map_or(0, |(_, f)| f.len());
+    let whole_seconds = seconds.split('.').next().unwrap_or("");
+    let coarse = match tick.as_str() {
+        "3600" => minutes != "00" || whole_seconds != "00" || fraction > 0,
+        "60" => whole_seconds != "00" || fraction > 0,
+        tick => tick_digits(tick).is_some_and(|allowed| fraction > allowed),
+    };
+    coarse.then(|| format!("ticking by {tick} holds {text}"))
+}
+
+/// Whether a type structured as an array is one in Postgres's text too: a type written otherwise
+/// (`bit`, `vector`) is not one here.
+fn postgres_array(ty: &Type) -> bool {
+    ty.label.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_'))
+}
+
+/// Why a Postgres array's text nests deeper or shallower than its type, if it does: a type fixes
+/// one dimension per level of arrays it nests, and an `any_depth` level allows any number more.
+/// An empty array has no dimensions, and fits any.
+fn depth_contradiction(ty: &Type, text: &str) -> Option<String> {
+    let body = if text.starts_with('[') { &text[text.find('=')? + 1..] } else { text };
+    if body.trim() == "{}" {
+        return None;
+    }
+    let depth = body.chars().take_while(|c| *c == '{').count();
+    let (mut levels, mut open, mut at) = (0, false, ty);
+    while let Kind::Array(array) = &at.kind {
+        // A type written otherwise in Postgres's text (`vector`) adds no braces.
+        if !postgres_array(at) {
+            break;
+        }
+        levels += 1;
+        if array.any_depth {
+            open = true;
+            break;
+        }
+        at = &array.element.ty;
+    }
+    (depth < levels || (!open && depth > levels)).then(|| format!("typed with {levels}{} dimensions holds {depth}", if open { " or more" } else { "" }))
 }
 
 fn array_has_null(text: &str, delimiter: char) -> bool {
@@ -714,105 +1104,85 @@ fn array_has_null(text: &str, delimiter: char) -> bool {
     found
 }
 
-fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
-    match ty["kind"].as_str() {
+fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
+    let at = if path.is_empty() { "the top" } else { path };
+    match &ty.kind {
         // A JSON column a CHECK holds to a JSON Schema: the value is one the engine's schema
         // admits, a JSON null included.
-        Some("json") => {
-            let schema = ty.get("schema")?;
-            let at = if path.is_empty() { "the top" } else { path };
-            (!reylo_engine_core::schema_type::admits(schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"))
+        Kind::Json(JsonType { schema: Some(_), .. }) => {
+            let schema = ty.schema().unwrap_or(Value::Bool(true));
+            (!reylo_engine_core::schema_type::admits(&schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"))
         }
         // A row value inside a document is an object of its fields, each key there.
-        Some("object") | Some("composite") => {
-            let at = if path.is_empty() { "the top" } else { path };
+        Kind::Record(record) if !written_as_text(ty) => {
             let Some(obj) = json.as_object() else { return Some(format!("holds {json} at {at}, typed an object")) };
-            for f in ty["fields"].as_array()? {
-                let name = f["name"].as_str()?;
-                let Some(v) = obj.get(name) else { return Some(format!("has no key {path}.{name}")) };
+            for f in &record.fields {
+                let Some(v) = obj.get(&f.name) else { return Some(format!("has no key {path}.{}", f.name)) };
                 // A null where the field's own schema admits one is the column's value.
-                if v.is_null() && !(f["type"]["kind"] == "json" && f["type"].get("schema").is_some_and(|s| reylo_engine_core::schema_type::admits(s, v))) {
-                    if !f["nullable"].as_bool().unwrap_or(true) {
-                        return Some(format!("has a null at {path}.{name}, typed non-null"));
+                if v.is_null() && !f.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, v)) {
+                    if !f.nullable {
+                        return Some(format!("has a null at {path}.{}, typed non-null", f.name));
                     }
                     continue;
                 }
-                if let Some(why) = json_contradiction(&f["type"], v, &format!("{path}.{name}")) {
+                if let Some(why) = json_contradiction(&f.ty, v, &format!("{path}.{}", f.name)) {
                     return Some(why);
                 }
             }
             None
         }
-        Some("list") => {
-            let at = if path.is_empty() { "the top" } else { path };
-            let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed a list")) };
-            for (i, item) in items.iter().enumerate() {
-                if item.is_null() && !(ty["of"]["kind"] == "json" && ty["of"].get("schema").is_some_and(|s| reylo_engine_core::schema_type::admits(s, item))) {
-                    if !ty["nullable_items"].as_bool().unwrap_or(true) {
-                        return Some(format!("has a null item at {path}[{i}], typed non-null"));
-                    }
-                    continue;
-                }
-                if let Some(why) = json_contradiction(&ty["of"], item, &format!("{path}[{i}]")) {
-                    return Some(why);
-                }
-            }
-            None
-        }
-        // Any array may hold NULL elements unless the statement builds it from values it shows are
-        // not (`nullable_items` false), as `src/render.ts` types it. Each element is of the element type.
-        Some("array") => {
-            let at = if path.is_empty() { "the top" } else { path };
+        // An array inside a document is a JSON array of its elements, each of the element type.
+        Kind::Array(array) if !written_as_text(ty) => {
             let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed an array")) };
             for (i, item) in items.iter().enumerate() {
-                if item.is_null() {
-                    if ty["nullable_items"].as_bool() == Some(false) {
+                if item.is_null() && !array.element.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, item)) {
+                    if !array.element.nullable {
                         return Some(format!("has a null element at {path}[{i}], typed non-null"));
                     }
                     continue;
                 }
-                if let Some(why) = json_contradiction(&ty["of"], item, &format!("{path}[{i}]")) {
+                // An `any_depth` array holds arrays of itself, where its element is no array itself.
+                let nested = array.any_depth && item.is_array() && !matches!(array.element.ty.kind, Kind::Array(_) | Kind::Json(_));
+                if let Some(why) = json_contradiction(if nested { ty } else { &array.element.ty }, item, &format!("{path}[{i}]")) {
                     return Some(why);
                 }
             }
             None
         }
-        // A value of a base type is of the kind the database writes it as inside a document, which
-        // is what `src/render.ts` types it as there: its table `json`, mirrored by `json_admits`.
-        Some("scalar") => {
-            let name = ty["name"].as_str()?;
-            let at = if path.is_empty() { "the top" } else { path };
-            (!name.split('|').any(|part| json_admits(part, json))).then(|| format!("holds {json} at {at}, typed as {name}"))
-        }
-        Some("enum") => {
-            let labels: Vec<&str> = ty["labels"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-            let at = if path.is_empty() { "the top" } else { path };
-            (!labels.is_empty() && !json.as_str().is_some_and(|s| labels.contains(&s))).then(|| format!("holds {json} at {at}, typed as one of {labels:?}"))
-        }
-        _ => None,
+        _ => (!json_admits(ty, json)).then(|| format!("holds {json} at {at}, typed as {}", ty.short())),
     }
 }
 
-/// Whether a JSON value inside a document is of the kind a value of the base type `name` is
-/// written as there, as `src/render.ts` types it (its table `json`): a number for the integers, a
-/// number or the text of a non-finite one for the floats and `numeric`, a boolean, an object for a
-/// row whose columns were not read and for an hstore, GeoJSON for a geometry, text for the rest it
-/// names, an oid among them. A type the table does not name renders `unknown`, which admits any value.
-fn json_admits(name: &str, json: &Value) -> bool {
-    match name {
-        "bool" => json.is_boolean(),
-        "int2" | "int4" | "int8" => json.is_number(),
-        "float4" | "float8" | "numeric" => json.is_number() || matches!(json.as_str(), Some("NaN" | "Infinity" | "-Infinity")),
-        "text" | "varchar" | "bpchar" | "name" | "char" | "citext" | "uuid" | "time" | "timetz" | "interval" | "date" | "timestamp" | "timestamptz" | "bytea" | "money" | "inet" | "cidr" | "macaddr" | "macaddr8" | "xml" | "bit" | "varbit" | "tsvector" | "tsquery" | "regclass" | "regtype" | "int4range" | "int8range" | "numrange" | "tsrange" | "tstzrange" | "daterange" | "int4multirange" | "int8multirange" | "nummultirange" | "tsmultirange" | "tstzmultirange" | "datemultirange" | "ltree" | "lquery" | "ltxtquery" | "oid" => json.is_string(),
-        // Types with no cast to JSON, built-in and the extensions', written as their text.
-        "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "pg_lsn" | "jsonpath" | "xid" | "xid8" | "regproc" | "regprocedure" | "regoper" | "regoperator" | "regnamespace" | "regrole" | "regcollation" | "regconfig" | "regdictionary" => json.is_string(),
-        "vector" | "halfvec" | "sparsevec" | "geography" | "box2d" | "box3d" | "spheroid" | "raster" | "cube" | "seg" | "ean13" | "isbn" | "isbn13" | "ismn" | "ismn13" | "issn" | "issn13" | "upc" | "query_int" | "h3index" | "hll" | "hll_hashval" | "ip4" | "ip4r" | "ip6" | "ip6r" | "ipaddress" | "iprange" | "ulid" | "prefix_range" | "mol" | "qmol" | "xqmol" | "reaction" | "bfp" | "sfp" | "roaringbitmap" | "s3vec" | "semver" | "semverrange" | "semvermultirange" | "unit" | "unitrange" | "unitmultirange" | "rabitq8" | "rabitq4" => json.is_string(),
-        // A geometry: GeoJSON, through PostGIS's cast to JSON.
-        "geometry" => json.get("type").is_some_and(Value::is_string),
-        // An hstore: an object of its keys, each value text or null.
-        "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
-        // A row whose columns were not read (a subquery's): an object of them.
-        "record" => json.is_object(),
+/// Whether Postgres writes a value of the type inside a document as its text, though the format
+/// structures it: a bit string, pgvector's vectors, the geometric types and the network types
+/// (the spec's facts on what Postgres writes inside its own JSON).
+fn written_as_text(ty: &Type) -> bool {
+    let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
+    matches!(name, "bit" | "varbit" | "vector" | "halfvec" | "sparsevec" | "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "inet" | "cidr")
+}
+
+/// Whether a JSON value inside a document is of the form Postgres writes a value of the type in
+/// there (the spec's facts): a boolean, a number for the integers but `oid` and for the floats and
+/// `numeric` (or the text of a non-finite one the type holds), an object for a row whose columns were not read,
+/// for an hstore and as GeoJSON for a geometry, and text for every other type the format names
+/// (a structured one written as its text among them). JSON, and a type the engine does not know,
+/// admit any value.
+fn json_admits(ty: &Type, json: &Value) -> bool {
+    let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
+    match &ty.kind {
+        _ if written_as_text(ty) => json.is_string(),
+        Kind::Boolean => json.is_boolean(),
+        Kind::Integer(_) if name == "oid" => json.is_string(),
+        Kind::Integer(_) => json.is_number(),
+        Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => {
+            json.is_number() || (*nan && json.as_str() == Some("NaN")) || (*infinity && matches!(json.as_str(), Some("Infinity" | "-Infinity")))
+        }
+        Kind::Text(_) | Kind::Uuid | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
+        Kind::Map(_) if name == "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
+        Kind::Geometry(_) if name == "geometry" => json.get("type").is_some_and(Value::is_string),
+        Kind::Geometry(_) => json.is_string(),
+        Kind::Opaque if name == "record" => json.is_object(),
+        Kind::Union(u) => u.members.iter().any(|m| json_admits(m, json)),
         _ => true,
     }
 }
@@ -922,7 +1292,7 @@ fn sqlite_tables(db: &rusqlite::Connection) -> Result<Vec<SqliteTable>, String> 
 }
 
 /// Run `run` with the connection interrupted once `ms` have passed.
-fn with_deadline<T>(db: &rusqlite::Connection, ms: u64, run: impl FnOnce() -> T) -> T {
+pub(crate) fn with_deadline<T>(db: &rusqlite::Connection, ms: u64, run: impl FnOnce() -> T) -> T {
     let deadline = Instant::now() + Duration::from_millis(ms);
     let _ = db.progress_handler(1000, Some(move || Instant::now() >= deadline));
     let out = run();
@@ -952,6 +1322,17 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
     let mut notes = Vec::new();
     let mut tallies: Vec<Tally> = statements.iter().map(|_| Tally::default()).collect();
     let tables = sqlite_tables(db)?;
+    // A driver's row holds each value under the name the statement it ran gives it, which is the key the type must declare.
+    for (file, sql, analysis) in statements {
+        if let Ok(stmt) = db.prepare(analysis["rewritten"]["sql"].as_str().unwrap_or(sql)) {
+            let named: Vec<&str> = stmt.column_names();
+            let declared: Vec<&str> = analysis["columns"].as_array().into_iter().flatten().map(|c| c["name"].as_str().unwrap_or("?")).collect();
+            // A statement the analysis refused declares none.
+            if !declared.is_empty() && named != declared {
+                problems.push(format!("{file}: columns are declared {declared:?} and run as {named:?}"));
+            }
+        }
+    }
     for scenario in SCENARIOS {
         let mut refused = HashSet::new();
         let seeded = begin_seeded(db, &tables, scenario, timeout_ms, &mut refused)?;
@@ -968,7 +1349,8 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                     .iter()
                     .enumerate()
                     .map(|(i, p)| {
-                        let declared = p["type_name"].as_str().unwrap_or("");
+                        let declared = sqlite_declared(&p["type"]);
+                        let declared = declared.as_str();
                         let mut values = sqlite_pool(declared, Scenario::Edges, false);
                         if !p["nullable"].as_bool().unwrap_or(false) {
                             values.retain(|v| *v != rusqlite::types::Value::Null);
@@ -997,18 +1379,18 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                         for (i, col) in columns.iter().enumerate() {
                             let name = col["name"].as_str().unwrap_or("?");
                             match row.get(i) {
-                                Some(rusqlite::types::Value::Null) if !col["nullable"].as_bool().unwrap_or(true) => {
+                                Some(rusqlite::types::Value::Null) if !col["nullable"].as_bool().unwrap_or(false) => {
                                     found.push(format!("{file}: column {name} typed non-null is NULL with ({shown})"));
                                 }
                                 // A truth value SQLite computes is 1 or 0; a column declared
                                 // BOOLEAN holds what was stored, which the run time refuses unless
                                 // it is one of them.
-                                Some(value) if col["type_name"] == "bool" && !matches!(value, rusqlite::types::Value::Null | rusqlite::types::Value::Integer(0 | 1)) => {
+                                Some(value) if col["type"]["kind"] == "boolean" && !matches!(value, rusqlite::types::Value::Null | rusqlite::types::Value::Integer(0 | 1)) => {
                                     found.push(format!("{file}: column {name} typed bool holds {value:?} with ({shown})"));
                                 }
                                 // A column declared 64 bits wide, and what passes one through,
                                 // is a BigInt to the run time, which only an INTEGER is.
-                                Some(value) if col["type_name"] == "int8" && !matches!(value, rusqlite::types::Value::Null | rusqlite::types::Value::Integer(_)) => {
+                                Some(value) if col["type"]["kind"] == "integer" && col["type"]["label"] == "BIGINT" && !matches!(value, rusqlite::types::Value::Null | rusqlite::types::Value::Integer(_)) => {
                                     found.push(format!("{file}: column {name} typed int8 holds {value:?} with ({shown})"));
                                 }
                                 // JSON a constructor built is text that parses as that JSON,
@@ -1019,7 +1401,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                     }
                                 }
                                 Some(rusqlite::types::Value::Text(text)) => {
-                                    if let Some(why) = contradiction(&col["type"], text, col["nullable"].as_bool().unwrap_or(true), ',') {
+                                    if let Some(why) = contradiction(&col["type"], text, col["nullable"].as_bool().unwrap_or(false), ',') {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
@@ -1040,7 +1422,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                     match outcome {
                         Ok(()) => {
                             tally.ran += 1;
-                            if (cardinality == "maybeOne" && returned > 1) || (cardinality == "one" && returned != 1) {
+                            if (cardinality == "at_most_one" && returned > 1) || (cardinality == "one" && returned != 1) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {returned} rows with ({shown})"));
                             }
                         }
@@ -1115,7 +1497,24 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
 /// Whether a SQLite column's type is JSON a constructor built (an object, a list, or the JSON
 /// Schema of a tuple or of an object of any keys), which the run time parses.
 fn is_built(ty: &Value) -> bool {
-    matches!(ty["kind"].as_str(), Some("object" | "list")) || (ty["kind"] == "json" && ty.get("schema").is_some())
+    ty["kind"] == "json" && (ty.get("content").is_some() || ty.get("schema").is_some())
+}
+
+/// The declared type a SQLite parameter's pool is laid out by: the affinity's name the engine's
+/// type for it stands for.
+fn sqlite_declared(ty: &Value) -> String {
+    let Ok(ty) = serde_json::from_value::<Type>(ty.clone()) else { return String::new() };
+    match (&ty.kind, ty.label.as_deref()) {
+        (Kind::Integer(_), Some("BIGINT")) => "int8",
+        (Kind::Integer(_), _) => "integer",
+        (Kind::Float(_), _) => "real",
+        (Kind::Text(_), _) => "text",
+        (Kind::Bytes(_), _) => "blob",
+        (Kind::Boolean, _) => "bool",
+        (Kind::Union(_), Some(name)) => return name.to_string(),
+        _ => "",
+    }
+    .to_string()
 }
 
 /// Why a SQLite value typed as built JSON contradicts its type, if it does: it is no text, the
@@ -1123,10 +1522,15 @@ fn is_built(ty: &Value) -> bool {
 /// writes an infinity as `9.0e+999`, which serde_json refuses as out of range and JSON.parse
 /// reads as one.
 fn built_contradiction(ty: &Value, value: &rusqlite::types::Value) -> Option<String> {
+    let ty: Type = serde_json::from_value(ty.clone()).ok()?;
     let rusqlite::types::Value::Text(text) = value else { return Some(format!("typed as built JSON holds {value:?}, which is no text")) };
     let parsed = serde_json::from_str::<Value>(text).or_else(|_| serde_json::from_str::<Value>(&text.replace("9.0e+999", "1.0e308")));
+    let content = match &ty.kind {
+        Kind::Json(JsonType { content: Some(content), .. }) => content.ty.clone(),
+        _ => ty,
+    };
     match parsed {
-        Ok(json) => built_value(ty, &json, ""),
+        Ok(json) => built_value(&content, &json, ""),
         Err(e) => Some(format!("typed as built JSON holds {text:?}, which is no JSON ({e})")),
     }
 }
@@ -1135,59 +1539,56 @@ fn built_contradiction(ty: &Value, value: &rusqlite::types::Value) -> Option<Str
 /// too) is a JSON integer, a REAL a number, a TEXT a string, a NUMERIC a number or a string; an
 /// object has exactly its keys, each null only where it may be; a list's items likewise; a JSON
 /// Schema admits the value. Any JSON (`unknown`, `json` without a schema) admits null.
-fn built_value(ty: &Value, json: &Value, path: &str) -> Option<String> {
+fn built_value(ty: &Type, json: &Value, path: &str) -> Option<String> {
     let at = if path.is_empty() { "the top".to_string() } else { path.to_string() };
-    let admits_null = |t: &Value| matches!(t["kind"].as_str(), Some("unknown")) || (t["kind"] == "json" && t.get("schema").is_none());
-    match ty["kind"].as_str() {
-        Some("scalar") => {
-            let fits = match ty["name"].as_str() {
-                Some("integer" | "int8") => json.is_i64() || json.is_u64(),
-                Some("real") => json.is_number(),
-                Some("text") => json.is_string(),
-                Some("numeric") => json.is_number() || json.is_string(),
-                _ => true,
-            };
-            (!fits).then(|| format!("holds {json} at {at}, typed {}", ty["name"]))
+    let admits_null = |t: &Type| t.is_unknown() || matches!(&t.kind, Kind::Json(JsonType { schema: None, content: None }));
+    match &ty.kind {
+        Kind::Integer(_) | Kind::Float(_) | Kind::Text(_) | Kind::Union(_) => {
+            let fits = ty.members().iter().any(|m| match &m.kind {
+                Kind::Integer(_) => json.is_i64() || json.is_u64(),
+                Kind::Float(_) => json.is_number(),
+                Kind::Text(_) => json.is_string(),
+                _ => false,
+            });
+            (!fits).then(|| format!("holds {json} at {at}, typed {}", ty.short()))
         }
-        Some("object") => {
+        Kind::Record(record) => {
             let Some(obj) = json.as_object() else { return Some(format!("holds {json} at {at}, typed an object")) };
-            let fields = ty["fields"].as_array().cloned().unwrap_or_default();
-            if let Some(extra) = obj.keys().find(|k| !fields.iter().any(|f| f["name"].as_str() == Some(k.as_str()))) {
+            if let Some(extra) = obj.keys().find(|k| !record.fields.iter().any(|f| &f.name == *k)) {
                 return Some(format!("has the key {extra:?} at {at}, which its type lacks"));
             }
-            for f in &fields {
-                let name = f["name"].as_str().unwrap_or("?");
-                let Some(v) = obj.get(name) else { return Some(format!("lacks the key {name:?} at {at}")) };
+            for f in &record.fields {
+                let Some(v) = obj.get(&f.name) else { return Some(format!("lacks the key {:?} at {at}", f.name)) };
                 if v.is_null() {
-                    if !f["nullable"].as_bool().unwrap_or(true) && !admits_null(&f["type"]) {
-                        return Some(format!("has a null at {path}.{name}, typed non-null"));
+                    if !f.nullable && !admits_null(&f.ty) {
+                        return Some(format!("has a null at {path}.{}, typed non-null", f.name));
                     }
                     continue;
                 }
-                if let Some(why) = built_value(&f["type"], v, &format!("{path}.{name}")) {
+                if let Some(why) = built_value(&f.ty, v, &format!("{path}.{}", f.name)) {
                     return Some(why);
                 }
             }
             None
         }
-        Some("list") => {
+        Kind::Array(array) => {
             let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed a list")) };
             for (i, item) in items.iter().enumerate() {
                 if item.is_null() {
-                    if !ty["nullable_items"].as_bool().unwrap_or(true) && !admits_null(&ty["of"]) {
+                    if !array.element.nullable && !admits_null(&array.element.ty) {
                         return Some(format!("has a null item at {path}[{i}], typed non-null"));
                     }
                     continue;
                 }
-                if let Some(why) = built_value(&ty["of"], item, &format!("{path}[{i}]")) {
+                if let Some(why) = built_value(&array.element.ty, item, &format!("{path}[{i}]")) {
                     return Some(why);
                 }
             }
             None
         }
-        Some("json") => {
-            let schema = ty.get("schema")?;
-            (!reylo_engine_core::schema_type::admits(schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"))
+        Kind::Json(JsonType { schema: Some(_), .. }) => {
+            let schema = ty.schema().unwrap_or(Value::Bool(true));
+            (!reylo_engine_core::schema_type::admits(&schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"))
         }
         _ => None,
     }
@@ -1366,19 +1767,19 @@ mod tests {
     #[test]
     fn built_json_is_held_to_its_type_down_to_each_value() {
         let text = |s: &str| rusqlite::types::Value::Text(s.into());
-        let scalar = |name: &str| json!({"kind": "scalar", "name": name});
-        let ty = json!({"kind": "object", "fields": [
-            {"name": "id", "type": scalar("integer"), "nullable": false},
-            {"name": "r", "type": scalar("real"), "nullable": true},
-            {"name": "doc", "type": {"kind": "unknown"}, "nullable": false},
-            {"name": "tags", "type": {"kind": "list", "of": scalar("text"), "nullable_items": false}, "nullable": false},
-            {"name": "pair", "type": {"kind": "json", "schema": {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}], "items": false, "minItems": 2}}, "nullable": false},
-        ]});
+        let utf8 = json!({"kind": "text", "ill_formed": "utf8"});
+        let ty = json!({"kind": "json", "content": {"type": {"kind": "record", "fields": [
+            {"name": "id", "type": {"kind": "integer", "bits": 64}},
+            {"name": "r", "type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true}, "nullable": true},
+            {"name": "doc", "type": {"kind": "unknown"}},
+            {"name": "tags", "type": {"kind": "array", "element": {"type": utf8}}},
+            {"name": "pair", "type": {"kind": "json", "schema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}], "items": false, "minItems": 2}}},
+        ]}}});
         assert_eq!(built_contradiction(&ty, &text(r#"{"id":1,"r":9.0e+999,"doc":null,"tags":["a"],"pair":[1,"a"]}"#)), None);
         assert_eq!(built_contradiction(&ty, &text(r#"{"id":1,"r":null,"doc":{"a":1},"tags":[],"pair":[1,"a"]}"#)), None);
         for (bad, why) in [
-            (r#"{"id":1.5,"r":1,"doc":1,"tags":[],"pair":[1,"a"]}"#, "holds 1.5 at .id, typed \"integer\""),
-            (r#"{"id":"1","r":1,"doc":1,"tags":[],"pair":[1,"a"]}"#, "holds \"1\" at .id, typed \"integer\""),
+            (r#"{"id":1.5,"r":1,"doc":1,"tags":[],"pair":[1,"a"]}"#, "holds 1.5 at .id, typed int64"),
+            (r#"{"id":"1","r":1,"doc":1,"tags":[],"pair":[1,"a"]}"#, "holds \"1\" at .id, typed int64"),
             (r#"{"r":1,"doc":1,"tags":[],"pair":[1,"a"]}"#, "lacks the key \"id\" at the top"),
             (r#"{"id":1,"r":1,"doc":1,"tags":[],"pair":[1,"a"],"x":1}"#, "has the key \"x\" at the top, which its type lacks"),
             (r#"{"id":null,"r":1,"doc":1,"tags":[],"pair":[1,"a"]}"#, "has a null at .id, typed non-null"),
@@ -1394,23 +1795,53 @@ mod tests {
     }
 
     #[test]
+    fn a_postgres_array_nests_as_deep_as_its_type_says() {
+        let int4 = json!({"kind": "integer", "bits": 32, "label": "int4"});
+        let column = json!({"kind": "array", "any_depth": true, "label": "_int4", "element": {"nullable": true, "type": int4}});
+        let flat = json!({"kind": "array", "label": "_int4", "element": {"nullable": true, "type": int4}});
+        let rows = json!({"kind": "array", "label": "_int4", "element": {"type": {"kind": "array", "label": "_int4", "element": {"type": int4}}}});
+        let stacked = json!({"kind": "array", "label": "_int4", "element": {"type": column}});
+        // A column's array holds any depth; one a statement builds holds the depth it shows.
+        assert_eq!(contradiction(&column, "{{1,2},{3,4}}", false, ','), None);
+        assert_eq!(contradiction(&flat, "{1,NULL}", false, ','), None);
+        assert_eq!(contradiction(&flat, "{{1,2}}", false, ',').as_deref(), Some("typed with 1 dimensions holds 2"));
+        assert_eq!(contradiction(&rows, "{{1,2},{3,4}}", false, ','), None);
+        assert_eq!(contradiction(&rows, "{1,2}", false, ',').as_deref(), Some("typed with 2 dimensions holds 1"));
+        assert_eq!(contradiction(&stacked, "[0:1]={{{1}},{{2}}}", false, ','), None);
+        assert_eq!(contradiction(&stacked, "{1}", false, ',').as_deref(), Some("typed with 2 or more dimensions holds 1"));
+        // An empty array fits any depth, and a NULL is an element of the innermost level.
+        assert_eq!(contradiction(&rows, "{}", false, ','), None);
+        assert_eq!(contradiction(&rows, "{{1,NULL}}", false, ',').as_deref(), Some("typed with non-null elements holds a NULL element"));
+        assert_eq!(contradiction(&stacked, "{{1,NULL}}", false, ','), None);
+        // A vector is an array in the type but no braces in Postgres's text, so it adds no dimension.
+        let float4 = json!({"kind": "float", "exponent_bits": 8, "mantissa_bits": 23});
+        let vector = json!({"kind": "array", "label": "public.vector", "element": {"type": float4}});
+        let vectors = json!({"kind": "array", "label": "public._vector", "element": {"type": {"kind": "array", "label": "public._vector", "element": {"type": vector}}}});
+        assert_eq!(contradiction(&vectors, r#"{{"[1,2]"}}"#, false, ','), None);
+        assert_eq!(contradiction(&vectors, r#"{"[1,2]"}"#, false, ',').as_deref(), Some("typed with 2 dimensions holds 1"));
+    }
+
+    #[test]
     fn a_postgres_document_is_of_the_kind_its_type_says() {
-        let scalar = |name: &str| json!({"kind": "scalar", "name": name});
-        let list = json!({"kind": "list", "of": scalar("int8"), "nullable_items": false});
-        let object = json!({"kind": "object", "fields": [{"name": "ids", "type": list.clone(), "nullable": false}]});
-        assert_eq!(contradiction(&list, "[1, 2]", false, ','), None);
-        assert_eq!(contradiction(&object, r#"{"ids": []}"#, false, ','), None);
+        let int8 = json!({"kind": "integer", "bits": 64, "label": "int8"});
+        let list = json!({"kind": "array", "element": {"type": int8}});
+        let document = |content: &Value| json!({"kind": "json", "label": "jsonb", "content": {"type": content}});
+        let object = json!({"kind": "record", "fields": [{"name": "ids", "type": list.clone()}]});
+        assert_eq!(contradiction(&document(&list), "[1, 2]", false, ','), None);
+        assert_eq!(contradiction(&document(&object), r#"{"ids": []}"#, false, ','), None);
         // `coalesce(jsonb_agg(…), '{}')` over no rows is `{}`, which no list type admits.
-        assert_eq!(contradiction(&list, "{}", false, ',').as_deref(), Some("holds {} at the top, typed a list"));
-        assert_eq!(contradiction(&object, "[]", false, ',').as_deref(), Some("holds [] at the top, typed an object"));
-        assert_eq!(contradiction(&object, r#"{"ids": {}}"#, false, ',').as_deref(), Some("holds {} at .ids, typed a list"));
+        assert_eq!(contradiction(&document(&list), "{}", false, ',').as_deref(), Some("holds {} at the top, typed an array"));
+        assert_eq!(contradiction(&document(&object), "[]", false, ',').as_deref(), Some("holds [] at the top, typed an object"));
+        assert_eq!(contradiction(&document(&object), r#"{"ids": {}}"#, false, ',').as_deref(), Some("holds {} at .ids, typed an array"));
         // The JSON null at the top is the column's null to the run time: wrong only where the column is non-null.
-        assert_eq!(contradiction(&object, "null", false, ',').as_deref(), Some("holds the JSON null, typed non-null"));
-        assert_eq!(contradiction(&object, "null", true, ','), None);
-        // Every key is there, and an array is an array.
-        assert_eq!(contradiction(&object, "{}", false, ',').as_deref(), Some("has no key .ids"));
-        let array = json!({"kind": "array", "of": scalar("int4"), "nullable_items": true});
-        assert_eq!(json_contradiction(&array, &json!({"a": 1}), ".xs").as_deref(), Some(r#"holds {"a":1} at .xs, typed an array"#));
+        assert_eq!(contradiction(&document(&object), "null", false, ',').as_deref(), Some("holds the JSON null, typed non-null"));
+        assert_eq!(contradiction(&document(&object), "null", true, ','), None);
+        // Every key is there, and a leaf is the form Postgres writes its type in.
+        assert_eq!(contradiction(&document(&object), "{}", false, ',').as_deref(), Some("has no key .ids"));
+        assert_eq!(contradiction(&document(&list), r#"["1"]"#, false, ',').as_deref(), Some(r#"holds "1" at [0], typed as int8"#));
+        let bits: Type = serde_json::from_value(json!({"kind": "array", "label": "bit", "element": {"type": {"kind": "boolean"}}})).unwrap();
+        assert_eq!(json_contradiction(&bits, &json!("101"), ".b"), None);
+        assert!(json_contradiction(&bits, &json!([true]), ".b").is_some());
     }
 
     #[test]
@@ -1497,7 +1928,7 @@ mod tests {
 
     #[test]
     fn a_null_element_is_found_between_the_types_own_delimiters() {
-        let points = json!({"kind": "array", "of": {"kind": "scalar", "name": "geometry"}, "nullable_items": false});
+        let points = json!({"kind": "array", "label": "public._geometry", "element": {"type": {"kind": "geometry", "label": "public.geometry"}}});
         let point = "0101000000000000000000F03F0000000000000040";
         // An array of geometries separates its elements with a colon, of boxes with a semicolon.
         assert_eq!(contradiction(&points, &format!("{{{point}:NULL}}"), false, ':').as_deref(), Some("typed with non-null elements holds a NULL element"));
@@ -1508,6 +1939,20 @@ mod tests {
         assert!(!array_has_null("{NULL:x}", ','));
         assert!(array_has_null("{a,NULL}", ','));
         assert!(!array_has_null(r#"{"NULL",b}"#, ','));
+    }
+
+    #[test]
+    fn a_decimal_counts_the_digits_its_precision_holds() {
+        let decimal = |precision: u32, scale: i32| DecimalType { precision: Some(precision), min_scale: Some(scale), max_scale: Some(scale), ..Default::default() };
+        // A scale above the precision leaves zeros after the point that are no significant digits.
+        assert_eq!(decimal_contradiction(&decimal(3, 6), "0.000123"), None);
+        assert!(decimal_contradiction(&decimal(3, 6), "0.001230").is_some());
+        assert_eq!(decimal_contradiction(&decimal(10, 2), "-99999999.99"), None);
+        assert!(decimal_contradiction(&decimal(10, 2), "999999999.99").is_some());
+        assert_eq!(decimal_contradiction(&decimal(5, 2), "0.50"), None);
+        // A negative scale's zeros before the point are not counted either.
+        assert_eq!(decimal_contradiction(&decimal(5, -2), "9999900"), None);
+        assert!(decimal_contradiction(&decimal(5, -2), "99999900").is_some());
     }
 
     #[test]

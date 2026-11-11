@@ -4,6 +4,7 @@
 //! checks and columns of the tables it writes and reads, which is all the run time reads from a
 //! MySQL message (src/query-error.ts).
 
+use reylo_engine_core::types::StatementKind;
 use crate::host::Host;
 use reylo_engine_core::api::{Analysis, Scope};
 use reylo_engine_core::dialect::Dialect;
@@ -59,16 +60,16 @@ fn list<'a>(names: impl Iterator<Item = &'a str>) -> String {
 /// [`ERRORS_QUERY`] for a statement of `kind` that reads and writes `tables`, or `None` where it is
 /// neither a query nor a write (a CALL), or writes what the parse cannot name (a table of another
 /// schema).
-fn request(kind: &str, tables: &Tables, sql: &str) -> Option<String> {
+fn request(kind: Option<StatementKind>, tables: &Tables, sql: &str) -> Option<String> {
     let unqualified = |t: &String| t.rsplit('.').next().unwrap_or(t).to_string();
     let written: Vec<String> = tables.write.iter().map(unqualified).collect();
     let read: Vec<String> = tables.read.iter().map(unqualified).collect();
-    if (kind != "select" && written.is_empty()) || written.iter().chain(&read).any(|t| t.contains('\\')) {
+    if (kind != Some(StatementKind::Select) && written.is_empty()) || written.iter().chain(&read).any(|t| t.contains('\\')) {
         return None;
     }
     let called = called(sql, Dialect::Mysql);
     // An INSERT changes no key but through ON DUPLICATE KEY UPDATE or as a REPLACE, which deletes.
-    let cascades = !written.is_empty() && (kind != "insert" || has_word(sql, Dialect::Mysql, &["update", "replace"]));
+    let cascades = !written.is_empty() && (kind != Some(StatementKind::Insert) || has_word(sql, Dialect::Mysql, &["update", "replace"]));
     Some(
         ERRORS_QUERY
             .replace("{written}", &list(written.iter().map(String::as_str)))
@@ -80,7 +81,7 @@ fn request(kind: &str, tables: &Tables, sql: &str) -> Option<String> {
 
 /// Asks [`ERRORS_QUERY`] in the statement's first round, beside its other needs, since it waits on
 /// nothing but the parse: asked only once the analysis is done, it would take a round of its own.
-pub fn prefetch(kind: &str, tables: &Tables, sql: &str, host: &Host) {
+pub fn prefetch(kind: Option<StatementKind>, tables: &Tables, sql: &str, host: &Host) {
     if let Some(query) = request(kind, tables, sql) {
         let _ = host.query(&query, Vec::new(), Scope::Statement);
     }
@@ -90,10 +91,43 @@ pub fn prefetch(kind: &str, tables: &Tables, sql: &str, host: &Host) {
 /// or a stored function, or where [`request`] has no query to ask.
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     let Some(tables) = &analysis.tables else { return Some(None) };
-    let Some(query) = request(&analysis.kind, tables, &analysis.rewritten.sql) else { return Some(None) };
+    let Some(query) = request(analysis.kind, tables, &analysis.rewritten.sql) else { return Some(None) };
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;
     let Ok(rows) = rows else { return Some(None) };
     Some(narrowed(&rows))
+}
+
+/// The built-ins that change something: a lock, the session's last insert id.
+const CHANGES_SOMETHING: [&str; 4] = ["get_lock", "release_lock", "release_all_locks", "last_insert_id"];
+
+/// One row per view a read of `{read}` reaches, the tables of a view of another schema among what it
+/// reaches: its definition as the server normalizes it, NULL where this session may not read it or
+/// it is of another schema, which [`ERRORS_QUERY`] does not look into.
+const VIEWS_QUERY: &str = "with recursive r(s, t) as ( \
+      select table_schema, table_name from information_schema.tables where table_schema = database() and table_name in ({read}) \
+      union select u.table_schema, u.table_name from information_schema.view_table_usage u join r on u.view_schema = r.s and u.view_name = r.t) \
+    select case when v.table_schema = database() then cast(v.view_definition as char) end from r \
+    join information_schema.views v on v.table_schema = r.s and v.table_name = r.t";
+
+/// Whether the engine finds nothing in the statement that could write: a SELECT that runs no stored function, as
+/// [`errors`] says, with no locking clause, no `INTO` and no variable assigned, that calls none of
+/// the built-ins that change something, itself or through a view, and reads nothing of another
+/// schema by name.
+pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+    let sql = &analysis.rewritten.sql;
+    let Some(tables) = &analysis.tables else { return Some(false) };
+    let changes = |sql: &str| called(sql, Dialect::Mysql).iter().any(|f| CHANGES_SOMETHING.contains(&f.as_str()));
+    if analysis.kind != Some(StatementKind::Select) || analysis.errors.is_none() || has_word(sql, Dialect::Mysql, &["for", "lock", "into"]) || sql.contains(":=") || changes(sql) {
+        return Some(false);
+    }
+    if tables.read.iter().any(|t| t.contains('.') || t.contains('\\')) {
+        return Some(false);
+    }
+    if tables.read.is_empty() {
+        return Some(true);
+    }
+    let Ok(views) = host.query(&VIEWS_QUERY.replace("{read}", &list(tables.read.iter().map(String::as_str))), Vec::new(), Scope::Statement)? else { return Some(false) };
+    Some(views.iter().all(|row| row.first().and_then(Value::as_str).is_some_and(|definition| !definition.is_empty() && !changes(definition))))
 }
 
 /// What [`ERRORS_QUERY`]'s rows say: nothing where one opens the statement.

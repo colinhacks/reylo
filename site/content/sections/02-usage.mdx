@@ -2,7 +2,8 @@
 title: "Usage"
 ---
 
-## Usage
+{/* Usage is basic usage only: the first example, then one h2 per member of an imported query (.sql, .run(), .runSync(), .try(), .with()). Anything else, such as tracing, goes in a section of its own or in the FAQ, never under Usage. */}
+
 
 Write a query in a `.sql` file, import it, and run it with your database driver. The query is your database's own SQL: any function, operator or syntax it supports works. Reylo uses your live dev database to compile the query and retrieve its types.
 
@@ -18,11 +19,11 @@ const user = await getUser.run(db, { id: 1 });
 select id, name, email from users where id = :id::int
 ```
 
-Pass your database client as the first argument of `.run()`: a pool, a client, or a connection or transaction taken from one, from any of the [supported drivers](#run).
+Pass your database client as the first argument of `.run()`: a pool, a client, or a connection or [transaction](#run) taken from one, from any of the [supported drivers](#run).
 
-### `.sql`
+## `.sql`
 
-To get the compiled query, as Reylo sends it to your database:
+To get the compiled query, with your database's own placeholders:
 
 ```ts
 import getUser from "./get_user.sql";
@@ -30,9 +31,9 @@ import getUser from "./get_user.sql";
 getUser.sql; // "select id, name, email from users where id = $1::int"
 ```
 
-To get the file's contents as written, before Reylo compiles its [parameters](#naming), use `.raw`. Its path, relative to your project, is `.source`, a name for your [logs and traces](#tracing); Reylo's own errors about the query start with it.
+To get the file's contents as written, before Reylo compiles its [parameters](/inference#naming), use `.raw`. Its path, relative to your project, is `.source`, a name for your [logs and traces](/observability); Reylo's own errors about the query start with it.
 
-### `.run()`
+## `.run()`
 
 To run an imported Reylo query, pass a database connection/pool into the `.run()` method along with any parameters:
 
@@ -46,362 +47,386 @@ const user = await getUser.run(db, { id: 1 });
 //    ^?
 ```
 
-Reylo has no driver of its own: it runs each query on your app's database client, from any of these drivers.
+Reylo has no driver of its own: it runs each query on your app's database client, from any of these drivers. Each example also runs two queries in a transaction, a client of its own that you pass to `.run()` the same way. Await each query in turn, since a connection runs one statement at a time; on Postgres an error aborts the transaction, so every later statement in it fails until it rolls back ([Database errors](/postgres#database-errors)).
 
-#### Postgres [#postgres-drivers]
+### Postgres [#postgres-drivers]
 
 ```ts twoslash tab="pg" dialect="postgres" tab-group="postgres-driver"
 import pg from "pg";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+const client = await db.connect();
+try {
+  await client.query("begin");
+  await createUser.run(client, { name: "Ada" });
+  await createUser.run(client, { name: "Grace" });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
 ```
 
 ```ts twoslash tab="postgres.js" dialect="postgres"
 import postgres from "postgres";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = postgres(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.begin(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="Bun.sql" dialect="postgres"
 import { SQL } from "bun";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new SQL(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.begin(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="PGlite" dialect="postgres"
 import { PGlite } from "@electric-sql/pglite";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new PGlite("./pgdata");
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="Neon" dialect="postgres"
-import { neon } from "@neondatabase/serverless";
+import { neon, Pool } from "@neondatabase/serverless";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
+// a query over HTTP
 const db = neon(process.env.DATABASE_URL);
-
 const user = await getUser.run(db, { id: 1 });
+
+// a transaction takes a Pool, over a WebSocket: both inserts land, or neither
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const client = await pool.connect();
+try {
+  await client.query("begin");
+  await createUser.run(client, { name: "Ada" });
+  await createUser.run(client, { name: "Grace" });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
 ```
 
 ```ts twoslash tab="pg-promise" dialect="postgres"
 import pgPromise from "pg-promise";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const pgp = pgPromise();
 const db = pgp(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.tx(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="Slonik" dialect="postgres"
 import { createPool } from "slonik";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = await createPool(process.env.DATABASE_URL!);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="@vercel/postgres" dialect="postgres"
 // deprecated on npm; type-checked against Reylo, not run in its tests
 import { sql } from "@vercel/postgres";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const user = await getUser.run(sql, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+const client = await sql.connect();
+try {
+  await client.query("begin");
+  await createUser.run(client, { name: "Ada" });
+  await createUser.run(client, { name: "Grace" });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
 ```
 
 ```ts twoslash tab="Drizzle" dialect="postgres"
 import { drizzle } from "drizzle-orm/node-postgres";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = drizzle(process.env.DATABASE_URL!);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
-Transactions are also supported.
-
-```ts twoslash tab="pg" dialect="postgres" tab-group="postgres-driver"
-import pg from "pg";
-import getUser from "./get_user.sql";
-const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-// ---cut---
-const client = await db.connect();
-try {
-  await client.query("begin");
-  await getUser.run(client, { id: 1 });
-  await client.query("commit");
-} catch (error) {
-  await client.query("rollback");
-  throw error;
-} finally {
-  client.release();
-}
-```
-
-```ts twoslash tab="postgres.js" dialect="postgres"
-import postgres from "postgres";
-import getUser from "./get_user.sql";
-const db = postgres(process.env.DATABASE_URL);
-// ---cut---
-await db.begin((tx) => getUser.run(tx, { id: 1 }));
-```
-
-```ts twoslash tab="Bun.sql" dialect="postgres"
-import { SQL } from "bun";
-import getUser from "./get_user.sql";
-const db = new SQL(process.env.DATABASE_URL);
-// ---cut---
-await db.begin((tx) => getUser.run(tx, { id: 1 }));
-```
-
-```ts twoslash tab="PGlite" dialect="postgres"
-import { PGlite } from "@electric-sql/pglite";
-import getUser from "./get_user.sql";
-const db = new PGlite("./pgdata");
-// ---cut---
-await db.transaction((tx) => getUser.run(tx, { id: 1 }));
-```
-
-```ts twoslash tab="Neon" dialect="postgres"
-import getUser from "./get_user.sql";
-// ---cut---
-import { Pool } from "@neondatabase/serverless";
-
-// a transaction takes a Pool, over a WebSocket
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const client = await pool.connect();
-try {
-  await client.query("begin");
-  await getUser.run(client, { id: 1 });
-  await client.query("commit");
-} catch (error) {
-  await client.query("rollback");
-  throw error;
-} finally {
-  client.release();
-}
-```
-
-```ts twoslash tab="pg-promise" dialect="postgres"
-import pgPromise from "pg-promise";
-import getUser from "./get_user.sql";
-const pgp = pgPromise();
-const db = pgp(process.env.DATABASE_URL);
-// ---cut---
-await db.tx((t) => getUser.run(t, { id: 1 }));
-```
-
-```ts twoslash tab="Slonik" dialect="postgres"
-import { createPool } from "slonik";
-import getUser from "./get_user.sql";
-const db = await createPool(process.env.DATABASE_URL!);
-// ---cut---
-await db.transaction((tx) => getUser.run(tx, { id: 1 }));
-```
-
-```ts twoslash tab="@vercel/postgres" dialect="postgres"
-import { sql } from "@vercel/postgres";
-import getUser from "./get_user.sql";
-// ---cut---
-const client = await sql.connect();
-try {
-  await client.query("begin");
-  await getUser.run(client, { id: 1 });
-  await client.query("commit");
-} catch (error) {
-  await client.query("rollback");
-  throw error;
-} finally {
-  client.release();
-}
-```
-
-```ts twoslash tab="Drizzle" dialect="postgres"
-import { drizzle } from "drizzle-orm/node-postgres";
-import getUser from "./get_user.sql";
-const db = drizzle(process.env.DATABASE_URL!);
-// ---cut---
-await db.transaction((tx) => getUser.run(tx, { id: 1 }));
-```
-
-#### MySQL [#mysql-drivers]
+### MySQL [#mysql-drivers]
 
 ```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
 import mysql from "mysql2/promise";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = mysql.createPool(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+const conn = await db.getConnection();
+try {
+  await conn.beginTransaction();
+  await createUser.run(conn, { name: "Ada" });
+  await createUser.run(conn, { name: "Grace" });
+  await conn.commit();
+} catch (error) {
+  await conn.rollback();
+  throw error;
+} finally {
+  conn.release();
+}
 ```
 
 ```ts twoslash tab="mariadb" dialect="mysql"
 // mariadb takes only a mariadb:// URL, which Reylo reads as MySQL
 import mariadb from "mariadb";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = mariadb.createPool(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+const conn = await db.getConnection();
+try {
+  await conn.beginTransaction();
+  await createUser.run(conn, { name: "Ada" });
+  await createUser.run(conn, { name: "Grace" });
+  await conn.commit();
+} catch (error) {
+  await conn.rollback();
+  throw error;
+} finally {
+  conn.release();
+}
 ```
 
 ```ts twoslash tab="PlanetScale" dialect="mysql"
 // @planetscale/database 1.x: a 2.0 client is a type error
 import { connect } from "@planetscale/database";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = connect({ url: process.env.DATABASE_URL });
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="Bun.sql" dialect="mysql"
 import { SQL } from "bun";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new SQL(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.begin(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="Drizzle" dialect="mysql"
 import { drizzle } from "drizzle-orm/mysql2";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = drizzle(process.env.DATABASE_URL!);
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
-Transactions are also supported.
-
-```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
-import mysql from "mysql2/promise";
-import getUser from "./get_user.sql";
-const db = mysql.createPool(process.env.DATABASE_URL);
-// ---cut---
-const conn = await db.getConnection();
-try {
-  await conn.beginTransaction();
-  await getUser.run(conn, { id: 1 });
-  await conn.commit();
-} catch (error) {
-  await conn.rollback();
-  throw error;
-} finally {
-  conn.release();
-}
-```
-
-```ts twoslash tab="mariadb" dialect="mysql"
-import mariadb from "mariadb";
-import getUser from "./get_user.sql";
-const db = mariadb.createPool(process.env.DATABASE_URL);
-// ---cut---
-const conn = await db.getConnection();
-try {
-  await conn.beginTransaction();
-  await getUser.run(conn, { id: 1 });
-  await conn.commit();
-} catch (error) {
-  await conn.rollback();
-  throw error;
-} finally {
-  conn.release();
-}
-```
-
-```ts twoslash tab="PlanetScale" dialect="mysql"
-import { connect } from "@planetscale/database";
-import getUser from "./get_user.sql";
-const db = connect({ url: process.env.DATABASE_URL });
-// ---cut---
-await db.transaction((tx) => getUser.run(tx, { id: 1 }));
-```
-
-```ts twoslash tab="Bun.sql" dialect="mysql"
-import { SQL } from "bun";
-import getUser from "./get_user.sql";
-const db = new SQL(process.env.DATABASE_URL);
-// ---cut---
-await db.begin((tx) => getUser.run(tx, { id: 1 }));
-```
-
-```ts twoslash tab="Drizzle" dialect="mysql"
-import { drizzle } from "drizzle-orm/mysql2";
-import getUser from "./get_user.sql";
-const db = drizzle(process.env.DATABASE_URL!);
-// ---cut---
-await db.transaction((tx) => getUser.run(tx, { id: 1 }));
-```
-
-#### SQLite [#sqlite-drivers]
+### SQLite [#sqlite-drivers]
 
 ```ts twoslash tab="better-sqlite3" dialect="sqlite" tab-group="sqlite-driver"
 import Database from "better-sqlite3";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new Database("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+// the function must not await, so it runs .runSync()
+db.transaction(() => {
+  createUser.runSync(db, { name: "Ada" });
+  createUser.runSync(db, { name: "Grace" });
+})();
 ```
 
 ```ts twoslash tab="node:sqlite" dialect="sqlite"
 import { DatabaseSync } from "node:sqlite";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new DatabaseSync("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+db.exec("begin");
+try {
+  createUser.runSync(db, { name: "Ada" });
+  createUser.runSync(db, { name: "Grace" });
+  db.exec("commit");
+} catch (error) {
+  db.exec("rollback");
+  throw error;
+}
 ```
 
 ```ts twoslash tab="bun:sqlite" dialect="sqlite"
 import { Database } from "bun:sqlite";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new Database("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+// the function must not await, so it runs .runSync()
+db.transaction(() => {
+  createUser.runSync(db, { name: "Ada" });
+  createUser.runSync(db, { name: "Grace" });
+})();
 ```
 
 ```ts twoslash tab="Bun.sql" dialect="sqlite"
 import { SQL } from "bun";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new SQL({ adapter: "sqlite", filename: "app.db" });
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.begin(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="libSQL" dialect="sqlite"
 import { createClient } from "@libsql/client";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = createClient({ url: "file:app.db" });
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+const tx = await db.transaction("write");
+try {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+  await tx.commit();
+} finally {
+  tx.close();
+}
 ```
 
 ```ts twoslash tab="Turso" dialect="sqlite"
 import { connect } from "@tursodatabase/database";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = await connect("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transactionAsync(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+})();
 ```
 
 ```ts twoslash tab="Cloudflare D1" dialect="sqlite"
@@ -414,139 +439,49 @@ export default {
     return Response.json(user);
   },
 };
+
+// D1 has no transaction a query can join: its batch() takes D1's own prepared statements
 ```
 
 ```ts twoslash tab="Durable Objects" dialect="sqlite"
 /// <reference types="@cloudflare/workers-types" />
 // ---cut---
 import { DurableObject } from "cloudflare:workers";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 export class Board extends DurableObject {
   user(id: number) {
     return getUser.runSync(this.ctx.storage.sql, { id });
   }
-}
-```
 
-```ts twoslash tab="sqlite3" dialect="sqlite"
-import sqlite3 from "sqlite3";
-import getUser from "./get_user.sql";
-
-const db = new sqlite3.Database("app.db");
-
-const user = await getUser.run(db, { id: 1 });
-```
-
-```ts twoslash tab="sqlite" dialect="sqlite"
-import { open } from "sqlite";
-import sqlite3 from "sqlite3";
-import getUser from "./get_user.sql";
-
-const db = await open({ filename: "app.db", driver: sqlite3.Database });
-
-const user = await getUser.run(db, { id: 1 });
-```
-
-```ts twoslash tab="Drizzle" dialect="sqlite"
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import getUser from "./get_user.sql";
-
-const db = drizzle("app.db");
-
-const user = await getUser.run(db, { id: 1 });
-```
-
-Transactions are also supported.
-
-```ts twoslash tab="better-sqlite3" dialect="sqlite" tab-group="sqlite-driver"
-import Database from "better-sqlite3";
-import getUser from "./get_user.sql";
-const db = new Database("app.db");
-// ---cut---
-// the function must not await, so it runs .runSync()
-db.transaction(() => getUser.runSync(db, { id: 1 }))();
-```
-
-```ts twoslash tab="node:sqlite" dialect="sqlite"
-import { DatabaseSync } from "node:sqlite";
-import getUser from "./get_user.sql";
-const db = new DatabaseSync("app.db");
-// ---cut---
-db.exec("begin");
-try {
-  getUser.runSync(db, { id: 1 });
-  db.exec("commit");
-} catch (error) {
-  db.exec("rollback");
-  throw error;
-}
-```
-
-```ts twoslash tab="bun:sqlite" dialect="sqlite"
-import { Database } from "bun:sqlite";
-import getUser from "./get_user.sql";
-const db = new Database("app.db");
-// ---cut---
-// the function must not await, so it runs .runSync()
-db.transaction(() => getUser.runSync(db, { id: 1 }))();
-```
-
-```ts twoslash tab="Bun.sql" dialect="sqlite"
-import { SQL } from "bun";
-import getUser from "./get_user.sql";
-const db = new SQL({ adapter: "sqlite", filename: "app.db" });
-// ---cut---
-await db.begin((tx) => getUser.run(tx, { id: 1 }));
-```
-
-```ts twoslash tab="libSQL" dialect="sqlite"
-import { createClient } from "@libsql/client";
-import getUser from "./get_user.sql";
-const db = createClient({ url: "file:app.db" });
-// ---cut---
-const tx = await db.transaction("write");
-try {
-  await getUser.run(tx, { id: 1 });
-  await tx.commit();
-} finally {
-  tx.close();
-}
-```
-
-```ts twoslash tab="Turso" dialect="sqlite"
-import { connect } from "@tursodatabase/database";
-import getUser from "./get_user.sql";
-const db = await connect("app.db");
-// ---cut---
-await db.transactionAsync((tx) => getUser.run(tx, { id: 1 }))();
-```
-
-```ts twoslash tab="Durable Objects" dialect="sqlite"
-/// <reference types="@cloudflare/workers-types" />
-import { DurableObject } from "cloudflare:workers";
-import getUser from "./get_user.sql";
-// ---cut---
-export class Board extends DurableObject {
-  user(id: number) {
-    return this.ctx.storage.transactionSync(() =>
-      getUser.runSync(this.ctx.storage.sql, { id }),
-    );
+  // two inserts in one transaction: both land, or neither
+  addPair() {
+    const sql = this.ctx.storage.sql;
+    this.ctx.storage.transactionSync(() => {
+      createUser.runSync(sql, { name: "Ada" });
+      createUser.runSync(sql, { name: "Grace" });
+    });
   }
 }
 ```
 
 ```ts twoslash tab="sqlite3" dialect="sqlite"
-import sqlite3 from "sqlite3";
-import getUser from "./get_user.sql";
-const db = new sqlite3.Database("app.db");
-// ---cut---
 import { promisify } from "node:util";
+import sqlite3 from "sqlite3";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
 
+const db = new sqlite3.Database("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
 const exec = promisify(db.exec.bind(db));
 await exec("begin");
 try {
-  await getUser.run(db, { id: 1 });
+  await createUser.run(db, { name: "Ada" });
+  await createUser.run(db, { name: "Grace" });
   await exec("commit");
 } catch (error) {
   await exec("rollback");
@@ -557,12 +492,18 @@ try {
 ```ts twoslash tab="sqlite" dialect="sqlite"
 import { open } from "sqlite";
 import sqlite3 from "sqlite3";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
+
 const db = await open({ filename: "app.db", driver: sqlite3.Database });
-// ---cut---
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
 await db.exec("begin");
 try {
-  await getUser.run(db, { id: 1 });
+  await createUser.run(db, { name: "Ada" });
+  await createUser.run(db, { name: "Grace" });
   await db.exec("commit");
 } catch (error) {
   await db.exec("rollback");
@@ -572,15 +513,45 @@ try {
 
 ```ts twoslash tab="Drizzle" dialect="sqlite"
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
+
 const db = drizzle("app.db");
-// ---cut---
-db.transaction((tx) => getUser.runSync(tx, { id: 1 }));
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+db.transaction((tx) => {
+  createUser.runSync(tx, { name: "Ada" });
+  createUser.runSync(tx, { name: "Grace" });
+});
 ```
 
-D1 has no transaction a query can join: its `batch()` takes D1's own prepared statements.
+### DuckDB [#duckdb-drivers]
 
-### `.runSync()`
+```ts tab="@duckdb/node-api"
+import { DuckDBInstance } from "@duckdb/node-api";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const instance = await DuckDBInstance.create("app.duckdb");
+const db = await instance.connect();
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction, on the connection itself: both land, or neither
+await db.run("begin");
+try {
+  await createUser.run(db, { name: "Ada" });
+  await createUser.run(db, { name: "Grace" });
+  await db.run("commit");
+} catch (error) {
+  await db.run("rollback");
+  throw error;
+}
+```
+
+## `.runSync()`
 
 For databases that support synchronous operations, you can use `.runSync()`.
 
@@ -603,7 +574,7 @@ const user = getUser.runSync(db, { id: 1 });
 //    ^?
 ```
 
-### `.try()`
+## `.try()`
 
 To get your database's errors as values, use `.try()`. It returns `{ value }`, or `{ error }` when the database refuses the query:
 
@@ -664,7 +635,20 @@ Each driver's error is read into the same fields, and the driver's own error is 
 
 On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
 
-### `.with()`
+## `.readOnly`
+
+To tell whether a query writes nothing, read `.readOnly`. It is `true` only where Reylo finds nothing that could write, so it's safe to run the query again after a lost connection:
+
+```ts twoslash
+import getUser from "./get_user.sql";
+
+getUser.readOnly;
+//      ^?
+```
+
+A write is `false`, and so is a query that locks rows or may call a volatile function, directly or through a view, a policy or an operator. A function of your own counts by the volatility it declares.
+
+## `.with()`
 
 To bind the query to a client, call `.with()`. It returns a function that takes the parameters:
 
@@ -674,41 +658,3 @@ import getUser from "./get_user.sql";
 const get = getUser.with(db);
 const user = await get({ id: 1 });
 ```
-
-### Tracing
-
-Reylo publishes every query it runs on Node's [tracing channel](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel) `reylo:query`, so your tracer or logger can wrap each one in a span:
-
-```ts twoslash
-type Span = { recordException(error: unknown): void; end(): void };
-declare const tracer: { startSpan(name: string, options: { attributes: Record<string, unknown> }): Span };
-// ---cut---
-import { tracingChannel } from "node:diagnostics_channel";
-import type { QueryTrace } from "reylo";
-
-const queries = tracingChannel<QueryTrace & { span: Span }>("reylo:query");
-
-queries.subscribe({
-  start(ctx) {
-    ctx.span = tracer.startSpan("db.query", {
-      attributes: {
-        "db.query.summary": ctx.query.source,
-        "db.query.text": ctx.query.sql,
-      },
-    });
-  },
-  error(ctx) {
-    ctx.span.recordException(ctx.error);
-  },
-  end(ctx) {
-    if (ctx.sync) ctx.span.end();
-  },
-  asyncEnd(ctx) {
-    ctx.span.end();
-  },
-});
-```
-
-Each event carries the `query`, its `params`, the `client`, and then its `result` or `error`. Calls to `.runSync()` and `.trySync()` set `sync` and end on `end`; every other call ends on `asyncEnd`.
-
-The channel is there on Node, on Bun, and on Cloudflare Workers with the `nodejs_compat` flag. Elsewhere, queries run untraced.

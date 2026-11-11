@@ -273,6 +273,11 @@ html:not(.dark) #nd-page.play .play-theme-dark {
   color: var(--color-fd-muted-foreground);
 }
 
+/* Each section of examples set apart from the one above it. */
+#nd-page.play .play-menu [role='group'] + [role='group'] {
+  margin-top: 12px;
+}
+
 #nd-page.play .play-menu-item {
   display: flex;
   align-items: center;
@@ -465,6 +470,97 @@ html:not(.dark) #nd-page.play .play-theme-dark {
 
 #nd-page.play .play-schema figure.shiki pre {
   padding-top: 0;
+}
+
+/* The schema's controls: Edit with its hairline, then Cancel and Apply while editing, Reset to sample
+   once the schema is the reader's own; the quiet ones show their hairline on hover only. */
+#nd-page.play .play-schema-head .play-button {
+  white-space: nowrap;
+}
+
+#nd-page.play .play-button-plain {
+  padding: 0 10px;
+  border-color: transparent;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page.play .play-button-primary {
+  padding: 0 12px;
+  border-color: var(--play-hover-border);
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  background: transparent;
+}
+
+#nd-page.play .play-button-plain:disabled {
+  border-color: transparent;
+}
+
+#nd-page.play .play-schema-tag {
+  font-size: var(--play-ui);
+  line-height: 20px;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page.play .play-schema-tag::before {
+  content: '·';
+  margin-right: 8px;
+}
+
+/* What Postgres said of the DDL, over it, the previous schema still loaded. */
+#nd-page.play .play-schema-error {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 0 var(--play-pad) 12px;
+  font-size: var(--play-ui);
+  line-height: 20px;
+  color: var(--color-fd-error);
+  flex-shrink: 0;
+}
+
+#nd-page.play .play-schema-error .play-dot {
+  flex-shrink: 0;
+  position: relative;
+  top: -1px;
+  background: var(--color-fd-error);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-fd-error) 22%, transparent);
+}
+
+/* On a phone, Reset to sample says the schema is the reader's own. */
+@media (width < 30rem) {
+  #nd-page.play .play-schema-tag {
+    display: none;
+  }
+}
+
+#nd-page.play .play-schema-kept {
+  display: block;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* The schema's editor at the schema's size: 12px on 20px lines. */
+#nd-page.play .play-schema-editor {
+  --play-code-lh: 20px;
+}
+
+/* A link with a schema of its own, before the page hydrates: the build's types are the sample's, so
+   none show, only the `…` of a statement waiting for its types. */
+html[data-play-schema] #nd-page.play .play-types[data-built] .play-row > figure {
+  display: none;
+}
+
+html[data-play-schema] #nd-page.play .play-types[data-built] .play-row::after {
+  content: '…';
+  display: block;
+  padding-top: 10px;
+  font: var(--dk-code-size) / var(--play-code-lh) var(--font-code);
+  color: var(--color-fd-muted-foreground);
 }
 
 /* The editor: CodeMirror in the place of the block's <pre>, the same font, size, padding and hanging indent. */
@@ -675,31 +771,15 @@ html:not(.dark) #nd-page.play .play-theme-dark {
     overflow: visible;
   }
 
+  /* The query keeps a fixed least height and the types take the rest, so the line between them stays put as a short query grows. */
   #nd-page.play .play-main {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(18rem, auto) 1fr;
   }
 
   #nd-page.play .play-side {
     border-left: 0;
     border-top: 1px solid var(--color-fd-border);
-  }
-
-  #nd-page.play .play-bar {
-    flex-wrap: wrap;
-    height: auto;
-    min-height: var(--play-head);
-    padding-block: 8px 4px;
-    row-gap: 0;
-  }
-
-  #nd-page.play .play-status {
-    order: 1;
-    flex-basis: 100%;
-    padding-bottom: 4px;
-  }
-
-  #nd-page.play .play-nav {
-    margin-left: auto;
   }
 
   #nd-page.play .play-pane-head {
@@ -727,4 +807,236 @@ html:not(.dark) #nd-page.play .play-theme-dark {
     width: 100%;
     margin-inline: 0;
   }
+}
+
+/* The status shares the brand's line until the bar is too narrow for both, about 455px. */
+@media (width < 30rem) {
+  #nd-page.play .play-bar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--play-head);
+    padding-block: 8px 4px;
+    row-gap: 0;
+  }
+
+  #nd-page.play .play-status {
+    order: 1;
+    flex-basis: 100%;
+    padding-bottom: 4px;
+  }
+
+  #nd-page.play .play-nav {
+    margin-left: auto;
+  }
+}
+
+/* The API link, a button drawn as the bar's links are. */
+#nd-page.play button.play-nav-link {
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The API dialog (lib/live/api-dialog.tsx): the page's popover, centred over a dimmed page, its
+   body scrolling under a fixed head. */
+#nd-page.play .play-api {
+  /* Centred in the window: the site's reset takes the browser's own margins away. */
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  height: fit-content;
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100dvh - 64px);
+  padding: 0;
+  border: 0;
+  border-radius: var(--play-radius-pop);
+  background: var(--play-surface-pop);
+  color: var(--color-fd-foreground);
+  box-shadow: var(--play-shadow-pop);
+  overflow: hidden;
+}
+
+#nd-page.play .play-api[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#nd-page.play .play-api::backdrop {
+  background: rgb(0 0 0 / 0.55);
+}
+
+#nd-page.play .play-api-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: var(--play-head);
+  padding: 0 calc(var(--play-pad) - 8px) 0 var(--play-pad);
+  border-bottom: 1px solid var(--color-fd-border);
+}
+
+#nd-page.play .play-api-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-api-body {
+  overflow: auto;
+  padding: 16px var(--play-pad) 24px;
+  font-size: var(--play-ui);
+  line-height: 1.6;
+}
+
+#nd-page.play .play-api-body p {
+  margin: 0 0 8px;
+}
+
+#nd-page.play .play-api-body section + section {
+  margin-top: 28px;
+}
+
+#nd-page.play .play-api-body h3 {
+  margin: 0 0 6px;
+  font-family: var(--font-code);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-api-body code {
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  color: var(--color-fd-headings);
+  overflow-wrap: anywhere;
+}
+
+#nd-page.play .play-api-code {
+  position: relative;
+  margin: 8px 0 12px;
+}
+
+#nd-page.play .play-api-code pre {
+  margin: 0;
+  padding: 10px 40px 10px 12px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: var(--play-radius);
+  background: var(--color-fd-background);
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--color-fd-foreground);
+}
+
+/* JSON keeps its lines and scrolls sideways where they are wider than the dialog. */
+#nd-page.play .play-api-code pre[data-nowrap] {
+  padding-right: 12px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+#nd-page.play .play-api-code > .dk-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  color: var(--color-fd-muted-foreground);
+  cursor: pointer;
+}
+
+#nd-page.play .play-api-copy-all {
+  height: 28px;
+  margin-right: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: var(--play-radius);
+  background: none;
+  color: var(--color-fd-muted-foreground);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+#nd-page.play :is(.play-api-code > .dk-code-copy, .play-api-copy-all):hover {
+  color: var(--color-fd-headings);
+}
+
+/* The About dialog (lib/live/about-dialog.tsx): the API dialog's box, its headings words rather than addresses. */
+#nd-page.play .play-about .play-api-body h3 {
+  font-family: var(--font-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#nd-page.play .play-about .play-api-body a {
+  color: var(--color-fd-headings);
+  text-decoration: underline;
+  text-decoration-color: var(--dk-accent);
+  text-underline-offset: 3px;
+}
+
+/* The pitch (the docs' playground): centred on the bar, over the space between the status and the
+   links, and dropped where the bar is too narrow to keep it clear of both. */
+#nd-page.play .play-bar {
+  position: relative;
+}
+
+#nd-page.play .play-pitch {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  margin: 0;
+  transform: translateX(-50%);
+  font-size: var(--play-ui);
+  font-weight: 500;
+  color: var(--color-fd-headings);
+  white-space: nowrap;
+}
+
+#nd-page.play .play-pitch a {
+  color: var(--color-fd-foreground);
+  text-decoration: underline;
+  text-decoration-color: var(--dk-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+#nd-page.play .play-pitch a:hover {
+  color: var(--color-fd-headings);
+}
+
+@media (width < 75rem) {
+  #nd-page.play .play-pitch {
+    display: none;
+  }
+}
+
+/* "Wrong type? Report it", small and dim at the types pane's bottom left, until hovered. */
+#nd-page.play .play-report {
+  flex: none;
+  margin: 0;
+  padding: 12px var(--play-pad) 16px;
+  font-size: 12px;
+}
+
+#nd-page.play .play-report a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: color-mix(in srgb, var(--color-fd-muted-foreground) 70%, transparent);
+  transition: color 120ms;
+}
+
+#nd-page.play .play-report a:hover {
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-report svg {
+  opacity: 0.8;
 }

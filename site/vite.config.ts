@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { docsKit } from 'docs-kit/vite';
 import { defineConfig } from 'vite';
+import { compareCards } from './lib/compare-cards.ts';
 import { live } from './lib/live/plugin.ts';
 import { playground } from './lib/playground-plugin.ts';
 import { mapperDependents } from './lib/remark-mapper.ts';
@@ -13,7 +14,7 @@ import * as mdxConfig from './source.config.ts';
 // dev server (lib/playground-plugin.ts), and the live card's files (lib/live/plugin.ts). `@/` is the site's root; `collections` is fumadocs-mdx's
 // generated .source/ (lib/source.ts).
 export default defineConfig({
-  plugins: [...docsKit(mdxConfig), mapperDependents(), playground(), live()],
+  plugins: [...docsKit(mdxConfig), mapperDependents(), playground(), live(), compareCards()],
   resolve: {
     alias: {
       '@': import.meta.dirname,
@@ -32,5 +33,7 @@ export default defineConfig({
   optimizeDeps: { exclude: ['@electric-sql/pglite'] },
   // @vercel/og (the link preview, app/routes/opengraph-image.tsx) loads its WebAssembly with a
   // `require` Vite's module runner cannot run, so Node loads it.
-  ssr: { external: ['@vercel/og'] },
+  // jco's preview2-shim, which the playground's build-time data runs the engine over, starts its I/O worker from a
+  // file beside its own module: it runs from node_modules, where that file is, rather than bundled.
+  ssr: { external: ['@vercel/og', '@bytecodealliance/preview2-shim'] },
 });
