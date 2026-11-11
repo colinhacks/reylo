@@ -1214,7 +1214,7 @@ await client.query("commit");
 client.release();
 ```
 
-A client created with `binary: true` isn't supported. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy, since Reylo tells one by its shape.
+A client created with `binary: true` isn't supported, and neither is pg's native client, `pg.native`, which ignores the type parsers a query passes. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy, since Reylo tells one by its shape.
 
 ### postgres.js
 
@@ -1258,7 +1258,7 @@ await db.tx(async (t) => {
 });
 ```
 
-A `receive` event that rewrites results isn't supported.
+A `receive` event that rewrites results isn't supported, and neither is a database initialized with `pgNative: true`, which runs on pg's native client.
 
 ### `slonik`
 
