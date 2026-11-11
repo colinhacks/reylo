@@ -7,7 +7,8 @@ import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/exe
 import { checks, defineQuery } from "../src/index.ts";
 import type { EngineType, JsonSchema } from "../src/engine-type.ts";
 import { array, checked, lite as liteType, my as myType, oneOf, pg as pgType, record } from "./descriptors.ts";
-import { DRIVERS, pgLive, postgresDatabase } from "./helpers.ts";
+import { existsSync } from "node:fs";
+import { DRIVERS, driver, MYSQL, mysqlDatabase, mysqlLive, pgLive, plain, postgresDatabase } from "./helpers.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
 // driver behaviour each one copies was checked against the real package (lab/driver-matrix).
@@ -778,7 +779,7 @@ test("postgres: Slonik, through a tag from its own createSqlTag that passes ever
 test("an unsupported client rejects, naming what it has and what reylo takes", async () => {
   await assert.rejects(() => execute({ connect() {}, end() {} } as never, pg) as Promise<unknown>, (e: TypeError) => e instanceof TypeError && /postgres statement on an object with connect, end\. It takes a client with query\(text, values\)/.test(e.message));
   // An object with Drizzle's select() but no session over a client is no Drizzle database.
-  await assert.rejects(() => execute({ $client: {}, select() {} } as never, pg) as Promise<unknown>, /object with select\. .*or a Drizzle database over one of them\./);
+  await assert.rejects(() => execute({ $client: {}, select() {} } as never, pg) as Promise<unknown>, /object with select\. .*or a Drizzle database or Knex instance over one of them\./);
   // Kysely and Prisma decode their values themselves, so each is told to pass the driver's client.
   class Kysely { selectFrom() {} executeQuery() {} transaction() {} }
   await assert.rejects(() => execute(new Kysely() as never, pg) as Promise<unknown>, /object with selectFrom, executeQuery, transaction\. .* Kysely decodes the values of its queries itself: pass the pool or database its dialect was made with\.$/);
@@ -820,6 +821,84 @@ test("a Drizzle database or transaction runs on the driver client its session ke
   // drizzle-orm/tidb-serverless answers with the rows themselves, is refused rather than read as no rows.
   const tidb = { $client: {}, select() {}, rollback() {}, session: { dialect: {}, client: { execute: async () => [row] } } };
   await assert.rejects(() => execute(tidb as never, my, { id: 1, name: "ada" }) as Promise<unknown>, /^TypeError: reylo ran this statement through execute\(\), as on PlanetScale's @planetscale\/database, and the client answered with an array rather than a result with rows\./);
+});
+
+// A Knex instance over a table `users (id, name)` holding (1, 'Ada'), checked as `run` takes it:
+// the instance runs on a connection its pool lends and gets back, and a transaction or savepoint on
+// the transaction's own, which a finished transaction no longer has.
+async function knexRuns(db: any, dialect: "postgres" | "mysql" | "sqlite") {
+  const pick: QueryModule = { dialect, sql: `select id, name from users where id = ${dialect === "postgres" ? ":id::int" : ":id"}`, params: ["id"] };
+  const add: QueryModule = { dialect, sql: "insert into users (id, name) values (:id, :name)", params: ["id", "name"] };
+  const ids: QueryModule = { dialect, sql: "select id from users order by id", params: [] };
+  assert.deepEqual(plain((await execute(db, pick, { id: 1 })) as object[]), [{ id: 1, name: "Ada" }]);
+  assert.deepEqual(plain((await execute(db, pick, { id: 1 })) as object[]), [{ id: 1, name: "Ada" }]);
+  assert.equal(db.client.pool.numUsed(), 0);
+  // Inside a transaction, a row Knex wrote is there, and the rollback takes Reylo's writes with it.
+  await assert.rejects(
+    db.transaction(async (trx: any) => {
+      await trx("users").insert({ id: 2, name: "Grace" });
+      assert.deepEqual(plain((await execute(trx, pick, { id: 2 })) as object[]), [{ id: 2, name: "Grace" }]);
+      await execute(trx, add, { id: 3, name: "Hopper" });
+      await trx.transaction((sp: any) => execute(sp, add, { id: 4, name: "Lovelace" }));
+      assert.deepEqual(plain((await execute(trx, ids)) as object[]), [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
+      throw new Error("roll back");
+    }),
+    /roll back/,
+  );
+  assert.deepEqual(plain((await execute(db, ids)) as object[]), [{ id: 1 }]);
+  let finished: unknown;
+  await db.transaction(async (trx: unknown) => void (finished = trx));
+  await assert.rejects(() => execute(finished as never, pick, { id: 1 }) as Promise<unknown>, /^Error: reylo cannot run a statement on a Knex transaction that has already committed or rolled back/);
+  // Knex's types cannot say which database an instance is for, so the run time does.
+  const other = dialect === "sqlite" ? "postgres" : "sqlite";
+  await assert.rejects(() => execute(db, { ...pick, dialect: other }) as Promise<unknown>, new RegExp(`^TypeError: reylo cannot run a ${other} statement on a Knex instance for ${db.client.driverName}, a ${dialect} driver`));
+  assert.equal(db.client.pool.numUsed(), 0);
+}
+
+const knexLive = !existsSync(join(DRIVERS, "knex")) ? "lab/drivers is not installed" : false;
+
+test("Knex: an instance or transaction over better-sqlite3 or sqlite3 runs on its connection; runSync refuses it", { skip: knexLive }, async () => {
+  const knex = driver("knex");
+  for (const client of ["better-sqlite3", "sqlite3"]) {
+    const db = knex({ client, connection: { filename: ":memory:" }, useNullAsDefault: true });
+    try {
+      await db.raw("create table users (id integer primary key, name text not null)");
+      await db("users").insert({ id: 1, name: "Ada" });
+      await knexRuns(db, "sqlite");
+      assert.throws(() => executeSync(db, lite, { id: 1, name: "ada" }), /this client answers through a promise/);
+    } finally {
+      await db.destroy();
+    }
+  }
+});
+
+test("Knex: an instance or transaction over pg runs on its connection", { skip: pgLive || knexLive }, async () => {
+  const own = await postgresDatabase("reylo_execute_knex", "create table users (id int primary key, name text not null); insert into users values (1, 'Ada')");
+  const db = driver("knex")({ client: "pg", connection: own.url, pool: { min: 0, max: 2 } });
+  try {
+    await knexRuns(db, "postgres");
+  } finally {
+    await db.destroy();
+    await own.drop();
+  }
+});
+
+test("Knex: an instance or transaction over mysql2 or mariadb runs on its connection", { skip: mysqlLive || knexLive }, async () => {
+  const own = await mysqlDatabase("reylo_execute_knex", "create table users (id int primary key, name text not null); insert into users values (1, 'Ada')");
+  const u = new URL(MYSQL!);
+  const connection = { host: u.hostname, port: Number(u.port), user: decodeURIComponent(u.username) || "root", password: decodeURIComponent(u.password), database: new URL(own.url).pathname.slice(1) };
+  try {
+    for (const client of ["mysql2", "mariadb"]) {
+      const db = driver("knex")({ client, connection, pool: { min: 0, max: 2 } });
+      try {
+        await knexRuns(db, "mysql");
+      } finally {
+        await db.destroy();
+      }
+    }
+  } finally {
+    await own.drop();
+  }
 });
 
 test("positional placeholders take an object keyed by number, bound by number on every dialect", async () => {
