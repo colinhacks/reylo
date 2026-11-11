@@ -60,7 +60,11 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
     // A statement that groups or aggregates keeps every expression of its select list outside an
     // aggregate's arguments valid under its GROUP BY, which a probe of them carries ([`group_of`]).
     let groups = group_of(select).into_iter().map(|g| (0, g)).collect();
-    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped, groups, in_aggregate: 0, windows: select.named_window.clone() };
+    let rolled = usize::from(crate::mysql_nulls::rolls_up(&select.group_by));
+    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped, groups, in_aggregate: 0, rolled, rowless: HashSet::new(), windows: select.named_window.clone() };
+    if b.may_be_rowless(select) {
+        b.rowless.insert(0);
+    }
     let mut columns = Vec::new();
     for item in &select.projection {
         // The server names an unaliased expression by its text, which no build reproduces
@@ -403,6 +407,15 @@ struct Builder<'a> {
     groups: HashMap<usize, Vec<Expr>>,
     /// How many aggregates of the query the walk stands in it is inside the arguments of.
     in_aggregate: usize,
+    /// How many of the queries in scope group WITH ROLLUP, whose super-aggregate rows hold NULL
+    /// in every column they group by, which a subquery reading the row reads too: a value read
+    /// outside an aggregate's arguments may be NULL there, whatever its probe says.
+    rolled: usize,
+    /// The context ids of the queries that may aggregate with no GROUP BY ([`Builder::may_be_rowless`]),
+    /// which return their one row over no rows too: a value that reads the row outside every
+    /// aggregate's call ([`crate::mysql::reads_row`]) is NULL there, which its probe, with no
+    /// aggregate of its own, never shows.
+    rowless: HashSet<usize>,
     /// The statement's WINDOW clause, which an OVER clause of its own SELECT names windows of.
     windows: Vec<ast::NamedWindowDefinition>,
 }
@@ -627,11 +640,17 @@ impl Builder<'_> {
                 if let Some(group) = group {
                     self.groups.insert(self.next_ctx, group);
                 }
+                if self.may_be_rowless(select) {
+                    self.rowless.insert(self.next_ctx);
+                }
+                let rolls_up = usize::from(crate::mysql_nulls::rolls_up(&select.group_by));
+                self.rolled += rolls_up;
                 self.stack.push(Level { ctx: self.next_ctx, from: select.from.clone(), with: q.with.clone() });
                 // The subquery's select list is outside its own aggregates, wherever it stands.
                 let in_aggregate = std::mem::take(&mut self.in_aggregate);
                 let shape = self.walk_as(inner, Reads::Result);
                 self.in_aggregate = in_aggregate;
+                self.rolled -= rolls_up;
                 self.stack.pop();
                 // A scalar subquery is one row only when it is an ungrouped aggregate of its own
                 // (`owns`); anything else can match nothing and hand back NULL, and for a plain
@@ -644,7 +663,7 @@ impl Builder<'_> {
                     shape
                 } else {
                     match shape {
-                        Shape::Column { .. } => Shape::Unknown,
+                        Shape::Column { .. } | Shape::Nullable(_) => Shape::Unknown,
                         other => force_nullable(other),
                     }
                 }
@@ -657,10 +676,13 @@ impl Builder<'_> {
     /// arguments, at any depth. Every aggregate its text names counts, but for those of a scalar
     /// subquery that are all that subquery's own.
     fn splits(&mut self, e: &Expr) -> bool {
-        let (mut calls, window) = aggregates_in(&e.to_string());
-        if window {
-            return true;
-        }
+        aggregates_in(&e.to_string()).1 || self.own_aggregates(e) > 0
+    }
+
+    /// How many aggregate calls an expression's text names, but for those of a scalar subquery
+    /// that are all that subquery's own ([`Builder::keeps_its_aggregates`]).
+    fn own_aggregates(&mut self, e: &Expr) -> usize {
+        let mut calls = aggregates_in(&e.to_string()).0;
         let mut inner = Vec::new();
         subqueries(e, &mut inner);
         for q in inner {
@@ -668,7 +690,7 @@ impl Builder<'_> {
                 calls = calls.saturating_sub(aggregates_in(&q.to_string()).0);
             }
         }
-        calls > 0
+        calls
     }
 
     /// Whether every aggregate a scalar subquery's text names is its own for certain
@@ -712,6 +734,18 @@ impl Builder<'_> {
             return None;
         }
         group_of(select)
+    }
+
+    /// Whether a query may aggregate with no GROUP BY, and so return one row over no rows: its
+    /// select list or HAVING calls an aggregate ([`crate::mysql::lone_aggregate`]), or an item of
+    /// its select list names one that is no scalar subquery's own ([`Builder::own_aggregates`]),
+    /// as an aggregate of the query's own inside a subquery is.
+    fn may_be_rowless(&mut self, select: &ast::Select) -> bool {
+        let ast::GroupByExpr::Expressions(keys, modifiers) = &select.group_by else { return false };
+        if !keys.is_empty() || !modifiers.is_empty() {
+            return false;
+        }
+        crate::mysql::lone_aggregate(select) || select.projection.iter().any(|i| matches!(i, SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } if self.own_aggregates(e) > 0))
     }
 
     /// Whether the walk stands in the select list of a query that groups or aggregates, outside the
@@ -771,7 +805,14 @@ impl Builder<'_> {
             Written::Number => {}
             _ => self.either.push((probe, index)),
         }
-        Shape::Column { probe, index }
+        // An aggregate's argument is read from the rows before they are grouped, which no
+        // super-aggregate row nulls and which exist wherever it is read.
+        let nulled = self.in_aggregate == 0 && (self.rolled > 0 || (self.rowless.contains(&ctx) && crate::mysql::reads_row(e, self.columns)));
+        if nulled {
+            Shape::Nullable(Box::new(Shape::Column { probe, index }))
+        } else {
+            Shape::Column { probe, index }
+        }
     }
 
     fn draft(&mut self) -> Option<usize> {
@@ -1126,6 +1167,26 @@ mod tests {
         // An aggregate of the query around the subquery is one value for all of its rows, never
         // grouped by its GROUP BY.
         assert_eq!(probes("select (select json_object('title', p.title, 'n', max(u.id)) from posts p group by p.title limit 1) as j from users u").len(), 1);
+    }
+
+    #[test]
+    fn a_value_beside_an_aggregate_with_no_group_by_or_under_a_rollup_may_be_null() {
+        let fields = |sql: &str| match plan(&query(sql), &Columns::new()).columns.pop() {
+            Some((_, Shape::Object { fields, .. })) => fields.into_iter().map(|(k, s)| (k, matches!(s, Shape::Nullable(_)))).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        let pairs = |list: &[(&str, bool)]| list.iter().map(|(k, n)| (k.to_string(), *n)).collect::<Vec<_>>();
+        // Over no rows the one row holds NULL in every column outside an aggregate's call, but a
+        // constant is itself, and the aggregate says its own.
+        assert_eq!(fields("select json_object('name', name, 't', true, 'n', count(*), 'a', json_arrayagg(id)) as o from users"), pairs(&[("name", true), ("t", false), ("n", false), ("a", false)]));
+        // Under a GROUP BY every group has a row; a window function is no aggregate.
+        assert_eq!(fields("select json_object('name', name, 'n', count(*)) as o from users group by name"), pairs(&[("name", false), ("n", false)]));
+        assert_eq!(fields("select json_object('id', id, 'r', row_number() over ()) as o from users"), pairs(&[("id", false), ("r", false)]));
+        // A super-aggregate row nulls what it groups by, in the row a subquery reads too.
+        assert_eq!(fields("select json_object('name', name, 'n', count(*)) as o from users group by name with rollup"), pairs(&[("name", true), ("n", true)]));
+        let sub = plan(&query("select (select json_object('k', u.id, 'c', count(*)) from posts p group by p.user_id limit 1) as o from users u group by u.id with rollup"), &Columns::new());
+        let Some((_, Shape::Object { fields, .. })) = sub.columns.first() else { panic!("{:?}", sub.columns) };
+        assert!(matches!(fields[0].1, Shape::Nullable(_)), "{fields:?}");
     }
 
     #[test]

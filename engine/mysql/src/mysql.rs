@@ -854,7 +854,7 @@ fn item_expr(item: &SelectItem) -> Option<&Expr> {
 /// Whether a SELECT is an aggregate with no GROUP BY: its select list or its HAVING calls one, or
 /// a subquery's WHERE there does, where an aggregate is an outer query's ([`calls_aggregate`]).
 /// An aggregate in an ORDER BY alone is an error.
-fn lone_aggregate(s: &Select) -> bool {
+pub(crate) fn lone_aggregate(s: &Select) -> bool {
     matches!(&s.group_by, GroupByExpr::Expressions(keys, modifiers) if keys.is_empty() && modifiers.is_empty())
         && (s.having.as_ref().is_some_and(calls_aggregate) || s.projection.iter().filter_map(item_expr).any(calls_aggregate))
 }
@@ -972,7 +972,7 @@ fn holds_subquery(e: &Expr) -> bool {
 /// Whether an expression reads a row of its query outside every aggregate's call: a column, or a
 /// subquery that may read the row it stands in ([`uncorrelated`]). A part the walk does not read
 /// counts as reading one.
-fn reads_row(e: &Expr, columns: &crate::mysql_shape::Columns) -> bool {
+pub(crate) fn reads_row(e: &Expr, columns: &crate::mysql_shape::Columns) -> bool {
     let reads = |e: &Expr| reads_row(e, columns);
     match e {
         Expr::Value(_) | Expr::TypedString { .. } => false,
@@ -2159,6 +2159,8 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
             }
             None => (Type::unknown(), false),
         },
+        // A value the query may hand back NULL whatever its probe says ([`crate::mysql_shape`]).
+        Shape::Nullable(inner) => (resolve(inner, outcomes, plan, flows, documents, views).0, false),
         _ => (Type::unknown(), false),
     }
 }

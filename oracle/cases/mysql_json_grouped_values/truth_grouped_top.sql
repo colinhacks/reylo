@@ -1,0 +1,1 @@
+select json_object('t', u.id = 1, 'i', u.id in (1, 2), 'nt', not (u.id = 1), 'bt', u.id between 1 and 2, 'lk', u.name like 'a%', 'isn', u.email is null, 'c', count(*) > 0, 'mx', max(p.id) = p.user_id, 'n', count(*)) as o from users u join posts p on p.user_id = u.id group by u.id, p.user_id
