@@ -144,26 +144,51 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// `NAME=value` lines of an env file, quotes around a value dropped.
+/// The variables an env file sets, none when it is missing or cannot be read: [`parse_env`]. A byte
+/// that is not UTF-8 reads as U+FFFD, as Node reads it.
 pub fn read_env_file(path: &Path) -> HashMap<String, String> {
-    let Ok(text) = std::fs::read_to_string(path) else { return HashMap::new() };
-    let mut out = HashMap::new();
-    for line in text.lines() {
-        let line = line.trim();
-        let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
-        let Some((name, value)) = line.split_once('=') else { continue };
-        let name = name.trim();
-        if name.is_empty() || !name.chars().enumerate().all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())) {
+    std::fs::read(path).map(|bytes| parse_env(&String::from_utf8_lossy(&bytes))).unwrap_or_default()
+}
+
+/// An env file's variables, read as dotenv and Node's `--env-file` read a well-formed file, so that
+/// Reylo reads the value the app does. A line ends at `\n`, `\r\n` or `\r`, and is `NAME=value`,
+/// `export ` before it or not; a line
+/// whose first character is `#`, or that has no `=`, sets nothing. A value in double, single or back
+/// quotes is what lies between them, lines included, with `\n` a newline in double quotes, and the
+/// rest of the line after the closing quote is left out; any other value is its line up to the first
+/// `#`, spaces and tabs trimmed. The type check reads env files the same way (`readEnvFile` in
+/// src/project.ts), and both are held to env-file-cases.json.
+fn parse_env(text: &str) -> HashMap<String, String> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text).replace("\r\n", "\n").replace('\r', "\n");
+    let blank = |c: char| c == ' ' || c == '\t';
+    let line_end = |from: usize| text[from..].find('\n').map_or(text.len(), |n| from + n);
+    let mut vars = HashMap::new();
+    let mut at = 0;
+    while at < text.len() {
+        let mut end = line_end(at);
+        let line = &text[at..end];
+        let Some(eq) = line.find('=').filter(|_| !line.trim_start_matches(blank).starts_with('#')) else {
+            at = end + 1;
             continue;
-        }
-        let value = value.trim();
-        let value = match (value.chars().next(), value.chars().last()) {
-            (Some(a @ ('"' | '\'')), Some(b)) if a == b && value.len() >= 2 => &value[1..value.len() - 1],
-            _ => value,
         };
-        out.insert(name.to_string(), value.to_string());
+        let name = line[..eq].trim_matches(blank);
+        let name = name.strip_prefix("export").filter(|rest| rest.starts_with(blank)).map_or(name, |rest| rest.trim_start_matches(blank));
+        let start = at + eq + 1 + line[eq + 1..].find(|c| !blank(c)).unwrap_or(line.len() - eq - 1);
+        let quote = text[start..].chars().next().filter(|c| matches!(c, '"' | '\'' | '`'));
+        let value = match quote.and_then(|q| text[start + 1..].find(q).map(|n| (q, start + 1 + n))) {
+            Some((q, close)) => {
+                end = line_end(close);
+                let inner = &text[start + 1..close];
+                if q == '"' { inner.replace("\\n", "\n") } else { inner.to_string() }
+            }
+            None => text[start..end].split('#').next().unwrap_or_default().trim_end_matches(blank).to_string(),
+        };
+        if !name.is_empty() && name.chars().enumerate().all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())) {
+            vars.insert(name.to_string(), value);
+        }
+        at = end + 1;
     }
-    out
+    vars
 }
 
 /// The 1-based line and column of a byte offset.
@@ -570,15 +595,25 @@ mod tests {
     }
 
     #[test]
+    fn reads_env_files_as_the_type_check_does() {
+        // The type check's reader is held to the same cases (tests/project.test.ts).
+        let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!("env-file-cases.json")).unwrap();
+        for case in cases {
+            let vars: HashMap<String, String> = serde_json::from_value(case["vars"].clone()).unwrap();
+            assert_eq!(parse_env(case["env"].as_str().unwrap()), vars, "{}", case["case"]);
+        }
+    }
+
+    #[test]
     fn reads_env_files() {
         let dir = std::env::temp_dir().join(format!("reylo-env-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(".env"), "export A=1\nB='two words'\n# C=3\nD=\"x=y\"\n").unwrap();
-        let vars = read_env_file(&dir.join(".env"));
-        assert_eq!(vars.get("A").map(String::as_str), Some("1"));
-        assert_eq!(vars.get("B").map(String::as_str), Some("two words"));
-        assert_eq!(vars.get("C"), None);
-        assert_eq!(vars.get("D").map(String::as_str), Some("x=y"));
+        // A file that cannot be read sets nothing, as a missing one does; a byte that is not UTF-8 loses only itself.
+        std::fs::create_dir_all(dir.join("dir.env")).unwrap();
+        assert!(read_env_file(&dir.join("dir.env")).is_empty());
+        std::fs::write(dir.join("bytes.env"), b"A=caf\xe9\nB=2\n").unwrap();
+        assert_eq!(read_env_file(&dir.join("bytes.env")), HashMap::from([("A".to_string(), "caf\u{fffd}".to_string()), ("B".to_string(), "2".to_string())]));
+        std::fs::write(dir.join(".env"), "export A=1\n").unwrap();
         std::fs::write(dir.join(".reylo.yaml"), "allow_untyped_params: true\n").unwrap();
         let p = Project::resolve(&dir, HashMap::new()).unwrap();
         assert!(p.expand("url", "${A}-${MISSING_VAR_X}").unwrap_err().contains("${MISSING_VAR_X}"));

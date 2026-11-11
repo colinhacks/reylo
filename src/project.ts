@@ -134,14 +134,52 @@ export function dialectOf(url: string): Dialect | undefined {
   return undefined;
 }
 
+/**
+ * An env file's variables, none when it is missing or cannot be read, read as dotenv and Node's
+ * `--env-file` read a well-formed file, so that Reylo reads the value the app does. A line ends at
+ * `\n`, `\r\n` or `\r`, and is `NAME=value`, `export `
+ * before it or not; a line whose first character is `#`, or that has no `=`, sets nothing. A value
+ * in double, single or back quotes is what lies between them, lines included, with `\n` a newline in
+ * double quotes, and the rest of the line after the closing quote is left out; any other value is
+ * its line up to the first `#`, spaces and tabs trimmed. Node's own `parseEnv` is not used: a line
+ * whose empty value ends in a space takes the next line as its value there. The binary reads env
+ * files the same way (`parse_env` in engine/cli/src/project.rs), and both are held to
+ * engine/cli/src/env-file-cases.json.
+ */
 export function readEnvFile(path: string): Record<string, string> {
-  if (!existsSync(path)) return {};
-  const out: Record<string, string> = {};
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (m) out[m[1]!] = m[2]!.replace(/^(["'])(.*)\1$/, "$2");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  } catch {
+    return {};
   }
-  return out;
+  const lineEnd = (from: number) => {
+    const n = text.indexOf("\n", from);
+    return n < 0 ? text.length : n;
+  };
+  const vars: Record<string, string> = Object.create(null);
+  for (let at = 0; at < text.length; ) {
+    let end = lineEnd(at);
+    const line = text.slice(at, end);
+    const eq = /^[ \t]*#/.test(line) ? -1 : line.indexOf("=");
+    if (eq < 0) {
+      at = end + 1;
+      continue;
+    }
+    const name = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*$/.exec(line.slice(0, eq))?.[1];
+    const start = at + eq + 1 + /^[ \t]*/.exec(line.slice(eq + 1))![0].length;
+    const quote = /["'`]/.test(text[start] ?? "") ? text[start]! : undefined;
+    const close = quote ? text.indexOf(quote, start + 1) : -1;
+    let value: string;
+    if (close >= 0) {
+      end = lineEnd(close);
+      value = text.slice(start + 1, close);
+      if (quote === '"') value = value.replaceAll("\\n", "\n");
+    } else value = text.slice(start, end).split("#")[0]!.replace(/[ \t]+$/, "");
+    if (name) vars[name] = value;
+    at = end + 1;
+  }
+  return vars;
 }
 
 /** 1-based line and column of a byte offset, for a message that names the place in the file. */

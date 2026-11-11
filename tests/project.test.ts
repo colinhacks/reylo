@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { engine } from "../src/engine.ts";
-import { findProjectFile, resolveProject } from "../src/project.ts";
+import { findProjectFile, readEnvFile, resolveProject } from "../src/project.ts";
 import { Session } from "../src/analyze.ts";
 
 // The engine's core reads the project file, whichever database's engine is asked.
@@ -18,6 +18,17 @@ function tree(files: Record<string, string>): string {
   }
   return root;
 }
+
+test("an env file reads as dotenv reads it, and as the binary reads it", () => {
+  // The binary's reader is held to the same cases (engine/cli/src/project.rs).
+  const cases: { case: string; env: string; vars: Record<string, string> }[] = JSON.parse(readFileSync(new URL("../engine/cli/src/env-file-cases.json", import.meta.url), "utf8"));
+  for (const c of cases) assert.deepEqual({ ...readEnvFile(join(tree({ ".env": c.env }), ".env")) }, c.vars, c.case);
+  // A file that cannot be read sets nothing, as a missing one does; a byte that is not UTF-8 loses only itself.
+  const root = tree({ ".env/x": "" });
+  assert.deepEqual({ ...readEnvFile(join(root, ".env")) }, {});
+  writeFileSync(join(root, "bytes.env"), Buffer.from("A=caf\xe9\nB=2\n", "latin1"));
+  assert.deepEqual({ ...readEnvFile(join(root, "bytes.env")) }, { A: "caf�", B: "2" });
+});
 
 // A project file's command runs in the system's shell, cmd.exe on Windows, and these tests write theirs for a POSIX shell.
 const posixShell = process.platform === "win32" && "its command is written for a POSIX shell, and Windows runs it in cmd.exe";
