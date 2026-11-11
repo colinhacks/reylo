@@ -312,7 +312,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 **Aggregates beside columns**
 
-Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `Json` values.
+Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows, and so can one inside a scalar subquery, beside the subquery's own columns. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `Json` values, as does one in a subquery whose aggregate reads only the columns of a query around it, which makes it that query's aggregate.
 
 <Inferred>
 

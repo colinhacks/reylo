@@ -242,6 +242,8 @@ from orders o
 join users u on u.id = o.user_id
 ```
 
+Inside `json_object`, an aggregate can sit beside the query's columns wherever its `group by` allows, in a scalar subquery too: `json_object('name', u.name, 'posts', count(*))` with `group by u.id` is `{ name: string; posts: number }`. With `group by 1`, or a `group by` by an alias from the select list, an object that mixes the two has `Json` values.
+
 A schema's type carries through `json_arrayagg`:
 
 ```ts twoslash tab="main.ts"
