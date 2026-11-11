@@ -1496,9 +1496,12 @@ impl Analyzer<'_> {
                 Fact { ty: arithmetic(&l.ty, &r.ty), non_null: l.non_null && r.non_null }
             }
             "/" | "%" => {
-                // A zero divisor gives NULL; a literal divisor is one the statement rules out.
+                // A zero divisor gives NULL; a literal divisor is one the statement rules out. `%`
+                // divides by its divisor cast to INTEGER, which truncates toward zero and
+                // saturates as `as i64` does, so `x % 0.5` is NULL on every row.
                 let (l, r) = (arg(&n.left), arg(&n.right));
-                let literal_divisor = n.right.as_deref().is_some_and(|d| matches!(d.op.as_str(), "integer" | "float") && d.value.as_deref().and_then(|v| v.parse::<f64>().ok()).is_some_and(|v| v != 0.0));
+                let divisor = n.right.as_deref().filter(|d| matches!(d.op.as_str(), "integer" | "float")).and_then(|d| d.value.as_deref()?.parse::<f64>().ok());
+                let literal_divisor = divisor.is_some_and(|v| if n.op == "%" { v as i64 != 0 } else { v != 0.0 });
                 Fact { ty: arithmetic(&l.ty, &r.ty), non_null: l.non_null && r.non_null && literal_divisor }
             }
             "||" => {
@@ -4677,6 +4680,27 @@ mod tests {
         // A function of the name the host registers is called in the built-in's place.
         assert_eq!(odd(&listed(&[-1, 3])), 0);
         assert_eq!(odd(&Extras { total: vec![TotalFunction { name: "JSON_OBJECT".into(), arity: 3, returns: Affinity::Text }], host: None }), 0);
+    }
+
+    #[test]
+    fn a_modulo_by_a_fractional_literal_under_one_is_nullable() {
+        // SQLite casts both `%` operands to INTEGER, so 0.5 truncates to 0 and the remainder is
+        // NULL on every row. `/ 0.5` stays non-null: division keeps the float.
+        let schema = vec!["create table items (id integer primary key, qty integer not null)".to_string()];
+        let typed = |sql: &str| {
+            let a = analyze_ddl(sql, &schema, &Extras::default()).analysis;
+            assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
+            col(&a, "r")
+        };
+        assert_eq!(typed("select qty % 0.5 as r from items"), ("real".into(), true));
+        assert_eq!(typed("select qty % 0.99 as r from items"), ("real".into(), true));
+        assert_eq!(typed("select qty % 1e-3 as r from items"), ("real".into(), true));
+        assert_eq!(typed("select qty % 2.5 as r from items"), ("real".into(), false));
+        assert_eq!(typed("select qty % 2 as r from items"), ("integer".into(), false));
+        // The cast saturates: an infinite divisor is the largest INTEGER.
+        assert_eq!(typed("select qty % 1e999 as r from items"), ("real".into(), false));
+        assert_eq!(typed("select qty / 0.5 as r from items"), ("real".into(), false));
+        assert_eq!(typed("select qty / 0 as r from items"), ("integer".into(), true));
     }
 
     #[test]
