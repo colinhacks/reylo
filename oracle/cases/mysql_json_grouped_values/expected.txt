@@ -90,7 +90,7 @@ rowless_mid_one_row_sub.sql: one () -> { o: json { n: bigint, s: { c: bigint, k:
 rowless_strings.sql: one () -> { o: json { k: varchar?, c: varchar, a: int[]? } }
 rowless_uncorrelated_sub.sql: one () -> { o: json? }
 rowless_window.sql: one () -> { o: json { r: bigint, l: boolean | bigint?, n: bigint, f: varchar? } }
-sibling_rollup_then_plain.sql: many () -> { id: int, a: json { t: unknown?, c: unknown? }?, b: json { t: varchar(≤20), a: int[] }? }
+sibling_rollup_then_plain.sql: many () -> { id: int | bigint, a: json { t: unknown?, c: unknown? }?, b: json { t: varchar(≤20), a: int[] }? }
 single_row_stats.sql: one () -> { o: json { vs: double?, ss: double?, sd: double?, v: double?, ba: bigint }? }
 single_row_stats_top.sql: many () -> { o: json { vs: double?, ss: double?, sd: double? } }
 st_collect_sub.sql: one () -> { o: json { k: varchar?, g: geometry? }? }

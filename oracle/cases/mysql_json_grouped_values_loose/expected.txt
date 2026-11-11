@@ -68,7 +68,7 @@ rowless_sub_arrayagg_value.sql: one () -> { o: json { n: bigint, s: int[]? } }
 rowless_sub_cast.sql: one () -> { o: json { n: bigint, s: { c: bigint }? } }
 rowless_sub_in_case.sql: one () -> { o: json { n: bigint, s: json? } }
 rowless_sub_in_coalesce.sql: one () -> { o: json { n: bigint, s: unknown? } }
-sibling_rollups.sql: many () -> { id: int, a: json { t: varchar(≤20)?, c: bigint? }?, b: json { k: varchar(≤20), c: bigint }? }
+sibling_rollups.sql: many () -> { id: int | bigint, a: json { t: varchar(≤20)?, c: bigint? }?, b: json { k: varchar(≤20), c: bigint }? }
 st_collect_sub.sql: one () -> { o: json { k: varchar(≤20)?, g: geometry? }? }
 st_collect_top.sql: many () -> { o: json { k: varchar(≤20)?, g: geometry? } }
 top_no_group_expr.sql: one () -> { o: json { x: varchar?, i: bigint?, t: boolean | bigint?, n: bigint } }
