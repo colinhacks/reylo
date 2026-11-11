@@ -1496,22 +1496,12 @@ impl Analyzer<'_> {
                 Fact { ty: arithmetic(&l.ty, &r.ty), non_null: l.non_null && r.non_null }
             }
             "/" | "%" => {
-                // A zero divisor gives NULL; a literal divisor is one the statement rules out.
-                // `%` casts both operands to INTEGER first
-                // (https://sqlite.org/lang_expr.html#binaryops), so a fractional literal that
-                // truncates to 0 (0.5, 0.99, 1e-3) is a zero divisor too. `/` keeps the float.
+                // A zero divisor gives NULL; a literal divisor is one the statement rules out. `%`
+                // divides by its divisor cast to INTEGER, which truncates toward zero and
+                // saturates as `as i64` does, so `x % 0.5` is NULL on every row.
                 let (l, r) = (arg(&n.left), arg(&n.right));
-                let modulo = n.op == "%";
-                let literal_divisor = n.right.as_deref().is_some_and(|d| {
-                    matches!(d.op.as_str(), "integer" | "float")
-                        && d.value.as_deref().and_then(|v| v.parse::<f64>().ok()).is_some_and(|v| {
-                            if modulo {
-                                v.trunc() != 0.0
-                            } else {
-                                v != 0.0
-                            }
-                        })
-                });
+                let divisor = n.right.as_deref().filter(|d| matches!(d.op.as_str(), "integer" | "float")).and_then(|d| d.value.as_deref()?.parse::<f64>().ok());
+                let literal_divisor = divisor.is_some_and(|v| if n.op == "%" { v as i64 != 0 } else { v != 0.0 });
                 Fact { ty: arithmetic(&l.ty, &r.ty), non_null: l.non_null && r.non_null && literal_divisor }
             }
             "||" => {
@@ -4707,6 +4697,8 @@ mod tests {
         assert_eq!(typed("select qty % 1e-3 as r from items"), ("real".into(), true));
         assert_eq!(typed("select qty % 2.5 as r from items"), ("real".into(), false));
         assert_eq!(typed("select qty % 2 as r from items"), ("integer".into(), false));
+        // The cast saturates: an infinite divisor is the largest INTEGER.
+        assert_eq!(typed("select qty % 1e999 as r from items"), ("real".into(), false));
         assert_eq!(typed("select qty / 0.5 as r from items"), ("real".into(), false));
         assert_eq!(typed("select qty / 0 as r from items"), ("integer".into(), true));
     }
