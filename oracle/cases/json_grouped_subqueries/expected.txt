@@ -50,6 +50,9 @@ no_from_own.sql: many () -> { j: jsonb { m: int4?, c: int8, a: int4[]? } }
 null_funcs_grouped_sub.sql: one () -> { j: jsonb { ni: int4?, y: int4?, m: text?, c: int8, z: int4? }? }
 order_outer.sql: many () -> { j: jsonb { t: unknown?, s: unknown? }? }
 outer_col_in_inner_agg.sql: many () -> { j: jsonb { m: int8, a: int8[], c: int8 }? }
+own_empty_set.sql: one () -> { j: jsonb? }
+own_rollup.sql: one () -> { j: jsonb? }
+own_rollup_empty.sql: one () -> { j: jsonb? }
 returning_sub.sql: many () -> { j: jsonb { c: int8, m: int4, a: text[] }? }
 shadow_alias.sql: many () -> { j: jsonb { m: int8, c: int8 }? }
 single_row_stats.sql: one () -> { j: jsonb { sd: numeric?, vs: numeric?, c: float8?, sl: float8?, cs: float8? }? }
