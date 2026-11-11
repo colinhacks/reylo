@@ -1,0 +1,1 @@
+select (select json_object('a', count(*) > 0, 'b', max(p.n) = 1 and p.id = 1, 'c', not (count(*) = 0), 'd', count(*) in (1, 2), 'e', isnull(max(p.tag)), 'f', coalesce(max(p.n) = 1, false), 'g', if(count(*) > 0, true, false), 'n', count(*)) from posts p group by p.id order by p.id limit 1) as o

@@ -854,7 +854,7 @@ fn item_expr(item: &SelectItem) -> Option<&Expr> {
 /// Whether a SELECT is an aggregate with no GROUP BY: its select list or its HAVING calls one, or
 /// a subquery's WHERE there does, where an aggregate is an outer query's ([`calls_aggregate`]).
 /// An aggregate in an ORDER BY alone is an error.
-fn lone_aggregate(s: &Select) -> bool {
+pub(crate) fn lone_aggregate(s: &Select) -> bool {
     matches!(&s.group_by, GroupByExpr::Expressions(keys, modifiers) if keys.is_empty() && modifiers.is_empty())
         && (s.having.as_ref().is_some_and(calls_aggregate) || s.projection.iter().filter_map(item_expr).any(calls_aggregate))
 }
@@ -972,7 +972,7 @@ fn holds_subquery(e: &Expr) -> bool {
 /// Whether an expression reads a row of its query outside every aggregate's call: a column, or a
 /// subquery that may read the row it stands in ([`uncorrelated`]). A part the walk does not read
 /// counts as reading one.
-fn reads_row(e: &Expr, columns: &crate::mysql_shape::Columns) -> bool {
+pub(crate) fn reads_row(e: &Expr, columns: &crate::mysql_shape::Columns) -> bool {
     let reads = |e: &Expr| reads_row(e, columns);
     match e {
         Expr::Value(_) | Expr::TypedString { .. } => false,
@@ -1007,10 +1007,13 @@ fn uncorrelated(q: &Query, columns: &crate::mysql_shape::Columns) -> bool {
             Expr::Value(_) | Expr::TypedString { .. } => true,
             Expr::Identifier(i) => own.iter().all(|(_, columns)| columns.is_some()) && own.iter().any(|(_, columns)| columns.is_some_and(|c| c.contains(&i.value.to_ascii_lowercase()))),
             Expr::CompoundIdentifier(parts) => matches!(parts.as_slice(), [qualifier, _] if own.iter().any(|(name, _)| *name == qualifier.value)),
+            // A window, a FILTER, an ordered set and a call's clauses (`group_concat`'s ORDER BY and
+            // SEPARATOR) are parts the walk does not read, which may name a column of a query around.
+            Expr::Function(f) if f.over.is_some() || f.filter.is_some() || !f.within_group.is_empty() => false,
             Expr::Function(f) => match &f.args {
                 ast::FunctionArguments::None => true,
                 ast::FunctionArguments::Subquery(_) => false,
-                ast::FunctionArguments::List(list) => list.args.iter().all(|a| match a {
+                ast::FunctionArguments::List(list) => list.clauses.is_empty() && list.args.iter().all(|a| match a {
                     FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) | FunctionArg::Named { arg: FunctionArgExpr::Expr(x), .. } | FunctionArg::ExprNamed { arg: FunctionArgExpr::Expr(x), .. } => all(x),
                     // `count(*)` reads no column.
                     FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => true,
@@ -2187,6 +2190,8 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
             }
             None => (Type::unknown(), false),
         },
+        // A value the query may hand back NULL whatever its probe says ([`crate::mysql_shape`]).
+        Shape::Nullable(inner) => (resolve(inner, outcomes, plan, flows, documents, views).0, false),
         _ => (Type::unknown(), false),
     }
 }

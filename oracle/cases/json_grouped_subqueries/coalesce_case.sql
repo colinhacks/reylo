@@ -1,0 +1,1 @@
+select (select jsonb_build_object('c', coalesce(max(p.score), 0), 'k', case when count(*) > 1 then max(p.title) end, 'a', coalesce(jsonb_agg(p.score), '[]'), 'z', coalesce(max(p.tag), min(p.tag))) from posts p group by p.user_id order by p.user_id limit 1) as j

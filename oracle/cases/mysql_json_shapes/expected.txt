@@ -44,7 +44,7 @@ nested_fetch_unguarded.sql: many () -> { id: int, posts: json ({ id: int })[]? }
 nested_in_object.sql: many () -> { o: json { id: int, posts: ({ id: int })[], n: bigint, first: unknown? } }
 nested_object_first.sql: many () -> { id: int, first: json { id: int, title: varchar(≤20) }? }
 nested_two_levels.sql: many () -> { o: json { id: int, posts: ({ id: int, author: { name: varchar(≤20) }? })[] } }
-object_aggregate_field.sql: one () -> { o: json { n: unknown?, max: unknown?, names: unknown?[]? } }
+object_aggregate_field.sql: one () -> { o: json { n: bigint, max: int?, names: varchar(≤20)[]? } }
 object_alias_of_column.sql: many () -> { o: varchar(≤20), name: json { id: int } }
 object_array_value.sql: many () -> { o: json { id: int, pair: json? } }
 object_backticked_constructor.sql: many () -> { o: json?, l: json? }
@@ -60,7 +60,9 @@ object_every_type.sql: many () -> { o: json { flag: tinyint(1), score: decimal(1
 object_expressions.sql: many () -> { o: json { next: bigint, upper: varchar?, len: bigint, half: decimal?, null: unknown?, one: bigint, text: varchar, now: datetime, sum: decimal? } }
 object_from_dual.sql: one () -> { o: json { one: bigint, t: boolean, n: unknown? } }
 object_geometry.sql: one () -> { o: json { pt: geometry? } }
-object_group.sql: many () -> { o: json { id: unknown?, n: unknown?, last: unknown? } }
+object_group.sql: many () -> { o: json { id: int, n: bigint, last: int? } }
+object_group_subquery.sql: one () -> { j: json { name: varchar(≤20), posts: bigint }? }
+object_group_subquery_limit.sql: one () -> { j: json { name: varchar(≤20), posts: bigint }? }
 object_guarded.sql: many () -> { first: json? }
 object_guarded_same_shape.sql: many () -> { first: json? }
 object_guarded_string.sql: many () -> { first: text }
@@ -80,14 +82,14 @@ object_through_function.sql: many () -> { merged: json?, inserted: json? }
 object_truth_all_aggregated.sql: one () -> { o: json { c: boolean?, n: bigint, l: boolean, t: boolean | bigint, both: boolean? } }
 object_truth_any_value.sql: many () -> { o: json { any_value: boolean | bigint } }
 object_truth_bang.sql: many () -> { o: json { bang: boolean | bigint, bang_sum: bigint } }
-object_truth_beside_aggregate.sql: many () -> { o: json { t: unknown?, m: unknown?, c: unknown?, l: unknown? } }
+object_truth_beside_aggregate.sql: many () -> { o: json { t: boolean | bigint, m: bigint?, c: boolean?, l: boolean } }
 object_truth_beside_list.sql: many () -> { o: json { t: boolean | bigint, titles: varchar(≤20)[] } }
 object_truth_beside_outer_aggregate.sql: many () -> { o: json { e: boolean | bigint, n: unknown? } }
 object_truth_beside_subquery.sql: many () -> { o: json { t: boolean, posts: ({ id: int, first: boolean })[] } }
 object_truth_beside_window.sql: many () -> { o: json { t: boolean | bigint, w: bigint } }
 object_truth_collate.sql: many () -> { o: json { collate: boolean?, whole: varchar? } }
 object_truth_functions.sql: many () -> { o: json { isnull: boolean | bigint, regexp_like: boolean | bigint, strcmp: boolean | bigint, json_valid: boolean | bigint?, json_contains: boolean | bigint?, length: bigint, bit_count: boolean | bigint } }
-object_truth_in_nested_object.sql: many () -> { o: json { o: { t: unknown? }, m: unknown? } }
+object_truth_in_nested_object.sql: many () -> { o: json { o: { t: boolean }, m: bigint? } }
 object_truth_interval.sql: many () -> { o: json { interval: boolean | bigint } }
 object_truth_member.sql: many () -> { o: json { member: boolean | bigint? } }
 object_truth_numbers.sql: many () -> { o: json { if: bigint, case: bigint, coalesce: bigint, plus: bigint, flag: tinyint(1), cast: bigint, ifnull: bigint, nullif: bigint?, least: boolean | bigint, nested: boolean, minus: bigint } }

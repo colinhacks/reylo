@@ -1,0 +1,1 @@
+with d as (select u.id, (select jsonb_build_object('a', jsonb_agg(p.id), 'm', max(p.n)) from posts p where p.user_id = u.id group by p.tag order by 1 limit 1) as j from users u) select d.id, d.j from users x left join d on d.id = x.id

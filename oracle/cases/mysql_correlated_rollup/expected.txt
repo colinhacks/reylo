@@ -4,7 +4,7 @@ full.sql: many () -> { id: int | bigint, o: json { t: unknown?, k: unknown?, c: 
 no_order.sql: many () -> { id: int | bigint, o: json { t: unknown?, k: unknown?, c: unknown? }? }
 no_outer_group.sql: many () -> { id: int | bigint, o: json { t: unknown?, k: unknown?, c: unknown? }? }
 no_outer_in_json.sql: many () -> { id: int | bigint, o: json { t: unknown?, c: unknown? }? }
-no_rollup.sql: many () -> { id: int, o: json { t: unknown?, k: unknown?, c: unknown? }? }
+no_rollup.sql: many () -> { id: int, o: json { t: varchar(≤20), k: int, c: bigint }? }
 outer_key_selected.sql: many () -> { id: int | bigint, o: int | bigint? }
 outer_n.sql: many () -> { n: int | bigint, o: json { k: unknown?, c: unknown? }? }
 uncorrelated.sql: many () -> { id: int | bigint, o: json { t: unknown?, c: unknown? }? }

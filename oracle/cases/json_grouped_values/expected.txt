@@ -10,5 +10,13 @@ group_by_alias_beside.sql: many () -> { j: jsonb { name: unknown?, n: unknown? }
 group_by_position.sql: many () -> { j: jsonb { name: unknown?, n: unknown? }, id: int8 } key (id)
 left_join_sum.sql: many () -> { j: jsonb { name: text, total: int8?, best: text? } }
 max_beside_column.sql: many () -> { j: jsonb { name: text, best: text } }
+subquery_correlated.sql: many () -> { id: int8, j: jsonb { score: int4?, n: int8 }? } key (id)
+subquery_grouped.sql: one () -> { j: jsonb { name: text, posts: int8 }? }
+subquery_grouped_agg.sql: one () -> { j: jsonb { name: text, titles: text?[], best: int4? }? }
+subquery_grouped_limit.sql: one () -> { j: jsonb { name: text, posts: int8 }? }
+subquery_grouped_top.sql: one () -> { j: jsonb { name: text, posts: int8 }? }
+subquery_in_aggregate.sql: one () -> { total: int8, top: jsonb { name: text, posts: int8 }? }
+subquery_outer_aggregate.sql: many () -> { j: jsonb { title: unknown?, name: unknown? }? }
+subquery_ungrouped_mix.sql: one () -> { j: jsonb { titles: text[]?, n: int8 } }
 sum_beside_column.sql: many () -> { j: jsonb { name: text, total: int8? } }
 ungrouped_mix.sql: one () -> { j: jsonb { titles: text[]?, n: int8 } }
