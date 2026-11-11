@@ -15,7 +15,13 @@ test("reylo/vite resolves a relative .sql import to its file before any other pl
   mkdirSync(join(root, "queries"));
   writeFileSync(join(root, "queries", "get_user.sql"), "select 1 as one");
   const importer = join(root, "src", "worker.ts");
-  const resolveId = reylo().resolveId.handler;
+  const plugin = reylo();
+  // A host that reads hook filters calls a handler only for the ids its filter admits, so every import resolved here must pass resolveId's filter, and the file it resolves to load's.
+  const resolveId = (source: string, from: string | undefined) => {
+    const path = plugin.resolveId.handler(source, from);
+    if (path !== null) assert.ok(plugin.resolveId.filter.id.test(source) && plugin.load.filter.id.test(path), source);
+    return path;
+  };
   assert.equal(resolveId("../queries/get_user.sql", importer), join(root, "queries", "get_user.sql"));
   assert.equal(resolveId("./get_user.sql", join(root, "queries", "index.ts")), join(root, "queries", "get_user.sql"));
   // Vite's importer may carry a query.

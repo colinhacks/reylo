@@ -6,6 +6,8 @@
 // "pre"`, wherever it is listed): the Cloudflare Vite plugin (`@cloudflare/vite-plugin` 1.64) makes
 // every `.sql` import in a Worker an external text module in its own resolveId, so the import never
 // reached `load`, and `.run` was undefined on the string it gave (examples/cloudflare-workers).
+//
+// Both hooks carry a filter, so a host that reads one (Vite from 6.3, Rollup from 4.38, Rolldown) calls them only for a `.sql` id, and Rolldown makes no call into JavaScript for any other module. Each handler checks the id again for an older host, which calls it for every module.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { releaseConnections, tooling } from "./engine-package.ts";
