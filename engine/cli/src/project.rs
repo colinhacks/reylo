@@ -167,10 +167,13 @@ pub fn read_env_file(path: &Path) -> HashMap<String, String> {
 }
 
 /// Why a file could not be read, as the type check says it (`unreadable` in src/project.ts).
-fn unreadable(e: &std::io::Error) -> String {
+/// A directory is named as one, though Windows refuses to open one as access denied.
+fn unreadable(path: &Path, e: &std::io::Error) -> String {
+    if path.is_dir() {
+        return "it is a directory".into();
+    }
     match e.kind() {
         std::io::ErrorKind::NotFound => "it does not exist".into(),
-        std::io::ErrorKind::IsADirectory => "it is a directory".into(),
         std::io::ErrorKind::PermissionDenied => "permission to read it is denied".into(),
         _ => e.to_string(),
     }
@@ -197,7 +200,7 @@ impl Project {
         }
         let mut config = config::Project::default();
         if let Some(path) = &file {
-            let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {}.", shown(cwd, path), unreadable(&e)))?;
+            let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {}.", shown(cwd, path), unreadable(path, &e)))?;
             if let Some(at) = types_key(&text) {
                 return Err(format!("{}:{}: types: the types section was removed on 2026-10-20. Reylo now gives every value one type on every driver, whatever the driver's settings: a 64-bit integer is a BigInt, a decimal its exact text, a timestamptz its ISO 8601 text in UTC, a date and a timestamp their text, JSON parsed and binary data a Uint8Array. Delete the section.", shown(cwd, path), place(&text, at)));
             }
@@ -412,13 +415,18 @@ fn signal_name(status: &std::process::ExitStatus) -> String {
 }
 
 /// A path as messages write it, as the type check writes it (Node's `path.relative`): from the
-/// working directory, with `/`, `..` where it lies above it (`../.reylo.yaml`), and whole where it
-/// is the working directory itself or on another drive.
+/// working directory, with `/`, `..` where it lies above it (`../.reylo.yaml`), whole where it is
+/// the working directory itself, and whole with `/` where it is on another drive. Windows compares
+/// the parts whatever their case, as Node does there.
 fn shown(cwd: &Path, path: &Path) -> String {
     let (from, to) = (lexical(cwd), lexical(path));
-    let common = from.components().zip(to.components()).take_while(|(a, b)| a == b).count();
-    if common == 0 || from == to {
+    let same = |a: &std::path::Component, b: &std::path::Component| if cfg!(windows) { a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase() } else { a == b };
+    let common = from.components().zip(to.components()).take_while(|(a, b)| same(a, b)).count();
+    if common == from.components().count() && common == to.components().count() {
         return path.to_string_lossy().into_owned();
+    }
+    if common == 0 {
+        return to.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
     }
     let up = from.components().skip(common).map(|_| "..".to_string());
     up.chain(to.components().skip(common).map(|c| c.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>().join("/")

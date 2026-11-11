@@ -167,6 +167,9 @@ test("analyze names each file and where the URL came from as the type check does
   writeFileSync(join(root, ".reylo.yml"), "allow_untyped_params: true\n");
   assert.equal(analyzeIn(root, ["--sql", "select 1"], { REYLO_CONFIG: "" }).stderr, "reylo analyze: .reylo.yaml and .reylo.yml are both project files; keep one.\n");
   assert.equal(analyzeIn(root, ["--sql", "select 1"], { REYLO_CONFIG: "missing.yaml" }).stderr, "reylo analyze: Cannot read missing.yaml: it does not exist.\n");
+  // A directory is named as one, which Windows refuses to open as access denied.
+  mkdirSync(join(root, "conf"));
+  assert.equal(analyzeIn(root, ["--sql", "select 1"], { REYLO_CONFIG: "conf" }).stderr, "reylo analyze: Cannot read conf: it is a directory.\n");
 });
 
 test("analyze names a file: URL Node reads as no file, and where it came from", { skip: process.platform === "win32" && "Windows reads a URL's host as a share" }, () => {
