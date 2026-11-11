@@ -96,8 +96,16 @@ test("the project file may be named .reylo.yml, and both names beside one packag
   assert.equal(none.watched.filter((path) => /\.reylo\.ya?ml$/.test(path)).length, 2);
   const both = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./a.db\n", ".reylo.yml": "direct_url: file:./b.db\n" });
   assert.equal(resolveProject(e, both, {}).error, ".reylo.yaml and .reylo.yml are both project files; keep one.");
-  // REYLO_CONFIG names the one file, whatever sits beside it.
+  // REYLO_CONFIG names the one file, whatever sits beside it; empty, it names none, and the two still are.
   assert.equal(resolveProject(e, both, { REYLO_CONFIG: join(both, ".reylo.yml") }).error, undefined);
+  assert.equal(resolveProject(e, both, { REYLO_CONFIG: "" }).error, ".reylo.yaml and .reylo.yml are both project files; keep one.");
+  // Two files are said before what is wrong inside one, which keeping the other may leave moot.
+  const bothBroken = tree({ "package.json": "{}", ".reylo.yaml": "types:\n  int8: number\n", ".reylo.yml": "direct_url: file:./b.db\n" });
+  assert.equal(resolveProject(e, bothBroken, {}).error, ".reylo.yaml and .reylo.yml are both project files; keep one.");
+  // A file REYLO_CONFIG names that cannot be read is said so, in the words `reylo analyze` uses.
+  const unread = tree({ "package.json": "{}", "conf/.keep": "" });
+  assert.equal(resolveProject(e, unread, { REYLO_CONFIG: join(unread, "missing.yaml") }).error, "Cannot read missing.yaml: it does not exist.");
+  assert.equal(resolveProject(e, unread, { REYLO_CONFIG: join(unread, "conf") }).error, "Cannot read conf: it is a directory.");
 });
 
 test("a types section, removed on 2026-10-20, is refused where it stands, whatever it holds; package.json decides no type", async () => {
@@ -136,6 +144,10 @@ test("a key the library does not know, and a variable nothing sets, are errors t
   const r = resolveProject(e, unset, {});
   assert.equal(r.url, undefined);
   assert.match(r.error!, /^\.reylo\.yaml: "direct_url" names \$\{NOPE\}, which neither the environment nor/);
+  // A name starts with a letter or `_`, as in a shell: `${1X}` is text.
+  assert.equal(fallback("postgres://h/${1X}", { "1X": "one" }).url, "postgres://h/${1X}");
+  // A column counts characters, as `reylo analyze` counts them.
+  assert.match(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": '{env: ["\u{1F600}"], bogus: 2}\n' }), {}).error!, /^\.reylo\.yaml:1:14: unknown field `bogus`/);
   // A scheme reylo does not read names no dialect.
   const odd = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: ./dev.db\n" });
   assert.match(resolveProject(e, odd, {}).error!, /^Cannot tell the database from the URL \("direct_url" in \.reylo\.yaml\)/);
@@ -190,12 +202,31 @@ test("a command that fails, prints nothing or is left open is an error that name
   assert.equal(r.error, `.reylo.yaml: "direct_url" runs \`echo 'no item matches' >&2; exit 3\`, which exited with code 3: no item matches.`);
   const empty = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(true)@h/app\n" });
   assert.equal(resolveProject(e, empty, {}).error, '.reylo.yaml: "direct_url" runs `true`, which printed nothing.');
+  // Every carriage return and line feed it ends with is dropped, as `reylo analyze` drops them.
+  const returns = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(printf 'pw\\r')@h/app\n" });
+  assert.equal(resolveProject(e, returns, {}).url, "postgres://app:pw@h/app");
+  const onlyReturn = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(printf '\\r\\n')@h/app\n" });
+  assert.equal(resolveProject(e, onlyReturn, {}).error, ".reylo.yaml: \"direct_url\" runs `printf '\\r\\n'`, which printed nothing.");
   const open = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(printf x@h/app\n" });
   assert.equal(resolveProject(e, open, {}).error, '.reylo.yaml: "direct_url" opens $( at column 16 and never closes it.');
+  // Its column counts characters, as `reylo analyze` counts them.
+  const wide = tree({ "package.json": "{}", ".reylo.yaml": 'direct_url: "postgres://\u00fc\u{1F600}:$(printf x@h/app"\n' });
+  assert.equal(resolveProject(e, wide, {}).error, '.reylo.yaml: "direct_url" opens $( at column 15 and never closes it.');
+  // A command a signal ends is said so, the signal named.
+  const killed = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(kill -TERM $$)@h/app\n" });
+  assert.equal(resolveProject(e, killed, {}).error, '.reylo.yaml: "direct_url" runs `kill -TERM $$`, which ended on SIGTERM.');
   // A variable nothing sets is said first, and the command, which may ask for a password, never runs.
   const unset = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://${NOPE}:$(touch ran; printf x)@h/app\n" });
   assert.match(resolveProject(e, unset, {}).error!, /names \$\{NOPE\}/);
   assert.equal(existsSync(join(unset, "ran")), false);
+});
+
+test("a file: URL Node reads as no file is an error that names it and where it came from", { skip: process.platform === "win32" && "Windows reads a URL's host as a share" }, async () => {
+  const e = await engine("postgres");
+  const root = tree({ "package.json": "{}" });
+  assert.equal(resolveProject(e, root, { DATABASE_URL: "file://db.example/app.db" }).error, "Cannot read the SQLite URL file://db.example/app.db (DATABASE_URL in the environment): its host must be localhost or empty, not db.example.");
+  assert.equal(resolveProject(e, root, { DATABASE_URL: "file:///var/a%2Fb.db" }).error, "Cannot read the SQLite URL file:///var/a%2Fb.db (DATABASE_URL in the environment): its path encodes a separator.");
+  assert.equal(resolveProject(e, root, { DATABASE_URL: "file://localhost/var/app.db" }).error, undefined);
 });
 
 // The type check never reads url, and a file that sets it alone is told to set direct_url.

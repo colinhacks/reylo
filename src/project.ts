@@ -191,11 +191,19 @@ export function readEnvFile(path: string): Record<string, string> {
   return vars;
 }
 
-/** 1-based line and column of a byte offset, for a message that names the place in the file. */
+/** 1-based line and column of a byte offset, for a message that names the place in the file: the column in characters, as `reylo analyze` counts it. */
 function place(text: string, offset: number): string {
   const before = Buffer.from(text, "utf8").subarray(0, offset).toString("utf8");
   const lines = before.split("\n");
-  return `${lines.length}:${lines.at(-1)!.length + 1}`;
+  return `${lines.length}:${[...lines.at(-1)!].length + 1}`;
+}
+
+/** Why a file could not be read, as `reylo analyze` says it (`unreadable` in engine/cli/src/project.rs). */
+function unreadable(e: NodeJS.ErrnoException): string {
+  if (e.code === "ENOENT") return "it does not exist";
+  if (e.code === "EISDIR") return "it is a directory";
+  if (e.code === "EACCES" || e.code === "EPERM") return "permission to read it is denied";
+  return e.message;
 }
 
 /**
@@ -333,7 +341,7 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
   } else if (run.status !== 0) {
     outcome = { error: `which ${run.status === null ? `ended on ${run.signal}` : `exited with code ${run.status}`}${said ? `: ${said}` : ""}` };
   } else {
-    const value = run.stdout.replace(/(\r?\n)+$/, "");
+    const value = run.stdout.replace(/[\r\n]+$/, "");
     outcome = value ? { value } : { error: "which printed nothing" };
   }
   commandOutputs.set(key, "value" in outcome ? outcome : { ...outcome, at: Date.now() });
@@ -357,7 +365,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     try {
       text = readFileSync(file, "utf8");
     } catch (e) {
-      error = `Cannot read ${shown(file)}: ${(e as Error).message}`;
+      error = `Cannot read ${shown(file)}: ${unreadable(e as NodeJS.ErrnoException)}.`;
     }
     const types = text === undefined ? null : TYPES_KEY.exec(text);
     if (types) {
@@ -401,7 +409,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     const parts = urlParts(written);
     urlSource = `"direct_url" in ${shown(file!)}`;
     if ("open" in parts) {
-      error ??= `${shown(file!)}: "direct_url" opens $( at column ${parts.open + 1} and never closes it.`;
+      error ??= `${shown(file!)}: "direct_url" opens $( at column ${[...written.slice(0, parts.open)].length + 1} and never closes it.`;
     } else {
       // The text's ${VAR}s are Reylo's; a command's are its shell's, so that no value is read as
       // shell syntax, and its shell sees the variables the text would: the environment's, then
@@ -460,6 +468,8 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   }
   let dialect = url ? dialectOf(url) : "postgres";
   if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.`;
+  const unusable = url && dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
+  if (unusable) error ??= `Cannot read the SQLite URL ${url} (${urlSource}): ${unusable}.`;
   // Either name, created or removed, changes the project.
   const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
   // No URL names the database: the entries of `.reylo/`, which a build with no URL reads
@@ -478,9 +488,28 @@ export function duckdbPath(url: string, baseDir: string): string {
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
 
+/**
+ * Why a `file://` URL names no file Node reads, as `reylo analyze` says it (`file_url_path` in
+ * engine/cli/src/project.rs), or undefined where it names one or is no `file://` URL.
+ */
+export function sqliteUrlProblem(url: string): string | undefined {
+  if (!url.startsWith("file://")) return undefined;
+  try {
+    fileURLToPath(url);
+    return undefined;
+  } catch (e) {
+    const { code, message } = e as NodeJS.ErrnoException;
+    if (code === "ERR_INVALID_FILE_URL_HOST") return `its host must be localhost or empty, not ${/^file:\/\/([^/?#]*)/.exec(url)![1]}`;
+    if (code === "ERR_INVALID_FILE_URL_PATH") return /absolute/.test(message) ? "its path must be absolute, with a drive letter" : "its path encodes a separator";
+    return message;
+  }
+}
+
 /** `file:./dev.db`, `file:///abs/dev.db`, `sqlite:./dev.db`, `:memory:` → a path, relative ones resolved against baseDir. */
 export function sqlitePath(url: string, baseDir: string): string {
   if (url === ":memory:" || url === "file::memory:") return ":memory:";
+  const unusable = sqliteUrlProblem(url);
+  if (unusable) throw new Error(`Cannot read the SQLite URL ${url}: ${unusable}.`);
   const raw = url.startsWith("file://") ? fileURLToPath(url) : url.replace(/^(file|sqlite):(\/\/)?/, "");
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
