@@ -143,10 +143,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
 /// command can't run without a database.
 fn settings(args: &Args, need_url: bool) -> Result<Options, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let project = Project::resolve(&cwd, std::env::vars().collect())?;
+    let project = Project::resolve(&cwd, environment())?;
     let url = match args.values.get("url") {
         Some(url) => url.clone(),
-        None => project.type_check_url().unwrap_or_default().unwrap_or_default(),
+        None => project.type_check_url().unwrap_or_default().map(|(url, _)| url).unwrap_or_default(),
     };
     if url.is_empty() && need_url {
         return Err("no database: set direct_url in .reylo.yaml, or DATABASE_URL".into());
@@ -166,6 +166,11 @@ fn settings(args: &Args, need_url: bool) -> Result<Options, String> {
         cache: home.join(".cache"),
         root: project.root.clone(),
     })
+}
+
+/// The process environment, a variable that isn't UTF-8 read lossily, as `reylo analyze` reads it.
+fn environment() -> std::collections::HashMap<String, String> {
+    std::env::vars_os().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned())).collect()
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -314,7 +319,7 @@ fn run_group(command: &str, parsed: &Args, log: &mut dyn FnMut(&str), sql: &mut 
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     let opts = settings(parsed, command != "migrate lint")?;
     // The home directory is no project's (project.rs), so nothing makes one there.
-    if matches!(command, "migrate init" | "migrate history pull") && project::is_home(&opts.root, &std::env::vars().collect()) {
+    if matches!(command, "migrate init" | "migrate history pull") && project::is_home(&opts.root, &environment()) {
         return Err(format!("{} won't write into your home directory: run it in your project's directory", command.trim_start_matches("migrate ")));
     }
     // These start from the database; the rest need a project to work on.

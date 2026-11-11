@@ -89,13 +89,13 @@ pub fn dialect_of(url: &str) -> Option<&'static str> {
 
 /// `file:./dev.db`, `file:///abs/dev.db`, `sqlite:./dev.db`, `:memory:` → a path, a relative one
 /// resolved against `root` (`sqlitePath` in src/project.ts). A `file://` URL is read as Node's
-/// `fileURLToPath` reads it, or refused as it refuses it.
+/// `fileURLToPath` reads it, or refused where it refuses it, with why (`sqliteUrlProblem`).
 pub fn sqlite_path(url: &str, root: &Path) -> Result<String, String> {
     if url == ":memory:" || url == "file::memory:" {
         return Ok(":memory:".into());
     }
     let raw = match url.strip_prefix("file://") {
-        Some(rest) => file_url_path(rest, cfg!(windows)).map_err(|why| format!("Cannot read the SQLite URL {url}: {why}."))?,
+        Some(rest) => file_url_path(rest, cfg!(windows))?,
         None => {
             let rest = url.strip_prefix("file:").or_else(|| url.strip_prefix("sqlite:")).unwrap_or(url);
             rest.strip_prefix("//").unwrap_or(rest).to_string()
@@ -219,7 +219,20 @@ fn parse_env(text: &str) -> HashMap<String, String> {
     vars
 }
 
-/// The 1-based line and column of a byte offset.
+/// Why a file could not be read, as the type check says it (`unreadable` in src/project.ts).
+/// A directory is named as one, though Windows refuses to open one as access denied.
+fn unreadable(path: &Path, e: &std::io::Error) -> String {
+    if path.is_dir() {
+        return "it is a directory".into();
+    }
+    match e.kind() {
+        std::io::ErrorKind::NotFound => "it does not exist".into(),
+        std::io::ErrorKind::PermissionDenied => "permission to read it is denied".into(),
+        _ => e.to_string(),
+    }
+}
+
+/// The 1-based line and column of a byte offset, the column in characters.
 fn place(text: &str, offset: usize) -> String {
     let before = &text[..offset.min(text.len())];
     let line = before.matches('\n').count() + 1;
@@ -231,18 +244,20 @@ impl Project {
     pub fn resolve(cwd: &Path, env: HashMap<String, String>) -> Result<Project, String> {
         let file = find(cwd, &env);
         let root = file.as_deref().and_then(Path::parent).map(Path::to_path_buf).or_else(|| package_dir(cwd, &env)).unwrap_or_else(|| cwd.to_path_buf());
+        // Both names beside one another: whichever were read, edits to the other would do nothing.
+        // Said before anything wrong inside one, which keeping the other may leave moot. An empty
+        // REYLO_CONFIG names no file, as `find` reads it.
+        let both: Vec<PathBuf> = PROJECT_FILES.iter().map(|name| root.join(name)).collect();
+        if env.get("REYLO_CONFIG").is_none_or(|f| f.is_empty()) && both.iter().all(|p| p.exists()) {
+            return Err(format!("{} are both project files; keep one.", both.iter().map(|p| shown(cwd, p)).collect::<Vec<_>>().join(" and ")));
+        }
         let mut config = config::Project::default();
         if let Some(path) = &file {
-            let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", shown(cwd, path)))?;
+            let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {}.", shown(cwd, path), unreadable(path, &e)))?;
             if let Some(at) = types_key(&text) {
                 return Err(format!("{}:{}: types: the types section was removed on 2026-10-20. Reylo now gives every value one type on every driver, whatever the driver's settings: a 64-bit integer is a BigInt, a decimal its exact text, a timestamptz its ISO 8601 text in UTC, a date and a timestamp their text, JSON parsed and binary data a Uint8Array. Delete the section.", shown(cwd, path), place(&text, at)));
             }
             config = config::parse(&text).map_err(|e| format!("{}:{}: {}", shown(cwd, path), place(&text, e.start), e.message))?;
-        }
-        // Both names beside one another: whichever were read, edits to the other would do nothing.
-        let both: Vec<PathBuf> = PROJECT_FILES.iter().map(|name| root.join(name)).collect();
-        if !env.contains_key("REYLO_CONFIG") && both.iter().all(|p| p.exists()) {
-            return Err(format!("{} are both project files; keep one.", both.iter().map(|p| shown(cwd, p)).collect::<Vec<_>>().join(" and ")));
         }
         let env_files = config.env.clone().unwrap_or_else(|| DEFAULT_ENV_FILES.iter().map(|s| s.to_string()).collect()).iter().map(|f| root.join(f)).collect();
         Ok(Project { file, root, cwd: cwd.to_path_buf(), config, env_files, env })
@@ -273,12 +288,13 @@ impl Project {
         self.config.direct_url.as_deref().is_some_and(|u| url_parts(u).is_ok_and(|parts| parts.iter().any(|p| matches!(p, Part::Command(_)))))
     }
 
-    /// A variable from the environment, else the first env file that sets it.
-    pub fn lookup(&self, name: &str) -> Option<String> {
+    /// A variable from the environment, else the first env file that sets it, and where it was set,
+    /// for a message: `DATABASE_URL in .env`.
+    fn found(&self, name: &str) -> Option<(String, String)> {
         if let Some(v) = self.env.get(name) {
-            return Some(v.clone());
+            return Some((v.clone(), format!("{name} in the environment")));
         }
-        self.env_files.iter().find_map(|p| read_env_file(p).get(name).cloned())
+        self.env_files.iter().find_map(|p| read_env_file(p).remove(name).map(|v| (v, format!("{name} in {}", shown(&self.cwd, p)))))
     }
 
     fn shown_file(&self) -> String {
@@ -288,34 +304,41 @@ impl Project {
     /// Each `${VAR}` replaced, or the variables nothing sets: a `migrate` setting's value.
     pub fn expand(&self, key: &str, text: &str) -> Result<String, String> {
         let mut missing = Vec::new();
-        let out = self.substitute(text, &mut missing);
+        let out = self.substitute(text, &mut missing, &mut Vec::new());
         if missing.is_empty() { Ok(out) } else { Err(self.unset(key, &missing)) }
     }
 
-    /// `text` with each `${VAR}` replaced, the variables nothing sets added to `missing`, and each
-    /// `${VAR:-fallback}` by its variable, or where that is unset or empty by its fallback, read the
-    /// same way, as a shell reads one. A `${` that opens neither stays as written.
-    fn substitute(&self, text: &str, missing: &mut Vec<String>) -> String {
+    /// `text` with each `${VAR}` replaced, the variables nothing sets added to `missing` and where
+    /// each one read was set to `sources`, and each `${VAR:-fallback}` by its variable, or where that
+    /// is unset or empty by its fallback, read the same way, as a shell reads one. A name starts with
+    /// a letter or `_`, and a `${` that opens neither stays as written.
+    fn substitute(&self, text: &str, missing: &mut Vec<String>, sources: &mut Vec<String>) -> String {
         let mut out = String::new();
         let mut rest = text;
         while let Some(at) = rest.find("${") {
             out.push_str(&rest[..at]);
             let after = &rest[at + 2..];
-            let name_len = after.find(|c: char| !(c == '_' || c.is_ascii_alphanumeric())).unwrap_or(after.len());
+            let name_len = if after.starts_with(|c: char| c.is_ascii_digit()) { 0 } else { after.find(|c: char| !(c == '_' || c.is_ascii_alphanumeric())).unwrap_or(after.len()) };
             let name = &after[..name_len];
             let tail = &after[name_len..];
             let body = tail.strip_prefix(":-").filter(|_| !name.is_empty());
             let closes = body.and_then(fallback_end);
             if !name.is_empty() && tail.starts_with('}') {
-                match self.lookup(name) {
-                    Some(v) => out.push_str(&v),
+                match self.found(name) {
+                    Some((v, source)) => {
+                        out.push_str(&v);
+                        sources.push(source);
+                    }
                     None => missing.push(format!("${{{name}}}")),
                 }
                 rest = &tail[1..];
             } else if let (Some(body), Some(end)) = (body, closes) {
-                match self.lookup(name).filter(|v| !v.is_empty()) {
-                    Some(v) => out.push_str(&v),
-                    None => out.push_str(&self.substitute(&body[..end], missing)),
+                match self.found(name).filter(|(v, _)| !v.is_empty()) {
+                    Some((v, source)) => {
+                        out.push_str(&v);
+                        sources.push(source);
+                    }
+                    None => out.push_str(&self.substitute(&body[..end], missing, sources)),
                 }
                 rest = &body[end + 1..];
             } else {
@@ -329,20 +352,22 @@ impl Project {
 
     /// The message for a key that names variables nothing sets.
     fn unset(&self, key: &str, missing: &[String]) -> String {
-        let files = self.env_files.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect::<Vec<_>>().join(" nor ");
+        let files = self.env_files.iter().map(|p| shown(&self.cwd, p)).collect::<Vec<_>>().join(" nor ");
         format!("{}: \"{key}\" names {}, which neither the environment nor {files} sets.", self.shown_file(), missing.join(", "))
     }
 
-    /// The type check's connection: `direct_url`, its `$(command)`s run, else `DATABASE_URL`.
-    pub fn type_check_url(&self) -> Result<Option<String>, String> {
-        let Some(written) = &self.config.direct_url else { return Ok(self.lookup("DATABASE_URL")) };
-        let parts = url_parts(written).map_err(|open| format!("{}: \"direct_url\" opens $( at column {} and never closes it.", self.shown_file(), open + 1))?;
+    /// The type check's connection, `direct_url`, its `$(command)`s run, else `DATABASE_URL`, and
+    /// where it came from, for a message: `"direct_url" in .reylo.yaml, DB_PASSWORD in .env`.
+    pub fn type_check_url(&self) -> Result<Option<(String, String)>, String> {
+        let Some(written) = &self.config.direct_url else { return Ok(self.found("DATABASE_URL")) };
+        let parts = url_parts(written).map_err(|open| format!("{}: \"direct_url\" opens $( at column {} and never closes it.", self.shown_file(), written[..open].chars().count() + 1))?;
         let encoded = in_userinfo(&parts);
         // Every `${VAR}` of the text first: a project that cannot be used anyway runs no command,
         // so that it asks for no password.
         let mut missing = Vec::new();
+        let mut sources = vec![format!("\"direct_url\" in {}", self.shown_file())];
         let texts: Vec<Option<String>> = parts.iter().map(|part| match part {
-            Part::Text(t) => Some(self.substitute(t, &mut missing)),
+            Part::Text(t) => Some(self.substitute(t, &mut missing, &mut sources)),
             Part::Command(_) => None,
         }).collect();
         if !missing.is_empty() {
@@ -358,7 +383,7 @@ impl Project {
                 }
             }
         }
-        Ok(Some(url))
+        Ok(Some((url, sources.join(", "))))
     }
 
     fn command_output(&self, command: &str) -> Result<String, String> {
@@ -413,7 +438,7 @@ impl Project {
             let said = String::from_utf8_lossy(&out.stderr).lines().map(str::trim).find(|l| !l.is_empty()).map(|l| format!(": {}", l.chars().take(300).collect::<String>())).unwrap_or_default();
             return Err(match out.status.code() {
                 Some(code) => format!("which exited with code {code}{said}"),
-                None => format!("which ended on a signal{said}"),
+                None => format!("which ended on {}{said}", signal_name(&out.status)),
             });
         }
         let value = String::from_utf8_lossy(&out.stdout).trim_end_matches(['\r', '\n']).to_string();
@@ -425,12 +450,55 @@ impl Project {
     }
 }
 
-/// A path as messages write it: from the working directory, with `/`, where it is under it.
-fn shown(cwd: &Path, path: &Path) -> String {
-    match path.strip_prefix(cwd) {
-        Ok(rest) if !rest.as_os_str().is_empty() => rest.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"),
-        _ => path.to_string_lossy().into_owned(),
+/// The signal that ended a process, named as Node names it (`SIGTERM`), or by its number where
+/// its name differs between systems.
+fn signal_name(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        // The numbers POSIX systems share.
+        const NAMES: &[(i32, &str)] = &[(1, "SIGHUP"), (2, "SIGINT"), (3, "SIGQUIT"), (4, "SIGILL"), (5, "SIGTRAP"), (6, "SIGABRT"), (8, "SIGFPE"), (9, "SIGKILL"), (11, "SIGSEGV"), (13, "SIGPIPE"), (14, "SIGALRM"), (15, "SIGTERM")];
+        if let Some(signal) = status.signal() {
+            return NAMES.iter().find(|(n, _)| *n == signal).map_or_else(|| format!("signal {signal}"), |(_, name)| name.to_string());
+        }
     }
+    let _ = status;
+    "a signal".into()
+}
+
+/// A path as messages write it, as the type check writes it (Node's `path.relative`): from the
+/// working directory, with `/`, `..` where it lies above it (`../.reylo.yaml`), whole where it is
+/// the working directory itself, and whole with `/` where it is on another drive. Windows compares
+/// the parts whatever their case, as Node does there.
+fn shown(cwd: &Path, path: &Path) -> String {
+    let (from, to) = (lexical(cwd), lexical(path));
+    let same = |a: &std::path::Component, b: &std::path::Component| if cfg!(windows) { a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase() } else { a == b };
+    let common = from.components().zip(to.components()).take_while(|(a, b)| same(a, b)).count();
+    if common == from.components().count() && common == to.components().count() {
+        return path.to_string_lossy().into_owned();
+    }
+    if common == 0 {
+        return to.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+    }
+    let up = from.components().skip(common).map(|_| "..".to_string());
+    up.chain(to.components().skip(common).map(|c| c.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>().join("/")
+}
+
+/// A path with its `.` and `..` resolved by name alone, as Node's `path.resolve` does.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !matches!(out.components().next_back(), None | Some(std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+                    out.pop();
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -566,9 +634,55 @@ mod tests {
         // Both names beside one package.json are one too many.
         std::fs::write(root.join("app/.reylo.yaml"), "").unwrap();
         assert!(Project::resolve(&sub, HashMap::new()).err().unwrap().ends_with("are both project files; keep one."));
+        // An empty REYLO_CONFIG names no file, so the two still are; and that is said before what is wrong inside one.
+        let empty = || HashMap::from([("REYLO_CONFIG".to_string(), String::new())]);
+        assert_eq!(Project::resolve(&sub, empty()).err().unwrap(), "../../.reylo.yaml and ../../.reylo.yml are both project files; keep one.");
+        std::fs::write(root.join("app/.reylo.yaml"), "types:\n  int8: number\n").unwrap();
+        assert!(Project::resolve(&sub, HashMap::new()).err().unwrap().ends_with("are both project files; keep one."));
         std::fs::remove_file(root.join("app/.reylo.yaml")).unwrap();
         std::fs::write(root.join("app/.reylo.yml"), "allow_untyped_params: true\ntypes:\n  int8: number\n").unwrap();
         assert!(Project::resolve(&sub, HashMap::new()).err().unwrap().contains(":2:1: types: the types section was removed on 2026-10-20."));
+        // A file REYLO_CONFIG names that cannot be read is said so, in the type check's words.
+        let config = |file: &str| HashMap::from([("REYLO_CONFIG".to_string(), file.to_string())]);
+        assert_eq!(Project::resolve(&sub, config("missing.yaml")).err().unwrap(), "Cannot read missing.yaml: it does not exist.");
+        std::fs::create_dir_all(sub.join("conf")).unwrap();
+        assert_eq!(Project::resolve(&sub, config("conf")).err().unwrap(), "Cannot read conf: it is a directory.");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn says_where_each_value_came_from_as_the_type_check_does() {
+        if cfg!(unix) {
+            // A path from the working directory, as Node's path.relative writes it.
+            assert_eq!(shown(Path::new("/app/src"), Path::new("/app/.reylo.yaml")), "../.reylo.yaml");
+            assert_eq!(shown(Path::new("/app"), Path::new("/app/config/.env")), "config/.env");
+            assert_eq!(shown(Path::new("/app"), Path::new("/app/./x/../shared.env")), "shared.env");
+            assert_eq!(shown(Path::new("/app"), Path::new("/app/../shared.env")), "../shared.env");
+            assert_eq!(shown(Path::new("/app"), Path::new("/app/.")), "/app/.");
+        }
+        let root = std::env::temp_dir().join(format!("reylo-where-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sub = root.join("src");
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("package.json"), "{}").unwrap();
+        std::fs::write(root.join("config/.env"), "DB_PASSWORD=pw\n").unwrap();
+        let resolve = |yaml: &str, env: &[(&str, &str)]| {
+            std::fs::write(root.join(".reylo.yaml"), yaml).unwrap();
+            Project::resolve(&sub, env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()).unwrap().type_check_url()
+        };
+        let found = |url: &str, source: &str| Ok(Some((url.to_string(), source.to_string())));
+        // Each variable read, where it was set; a name starts with a letter or `_`, so `${1X}` is text.
+        let yaml = "direct_url: postgres://u:${DB_PASSWORD}@${DB_HOST:-h}/${1X}\nenv: [config/.env, ../shared.env]\n";
+        assert_eq!(resolve(yaml, &[("1X", "one")]), found("postgres://u:pw@h/${1X}", "\"direct_url\" in ../.reylo.yaml, DB_PASSWORD in ../config/.env"));
+        assert_eq!(resolve(yaml, &[("DB_HOST", "db")]), found("postgres://u:pw@db/${1X}", "\"direct_url\" in ../.reylo.yaml, DB_PASSWORD in ../config/.env, DB_HOST in the environment"));
+        assert_eq!(resolve("env: [config/.env]\n", &[("DATABASE_URL", "postgres://x/db")]), found("postgres://x/db", "DATABASE_URL in the environment"));
+        std::fs::write(root.join("config/.env"), "DATABASE_URL=postgres://y/db\n").unwrap();
+        assert_eq!(resolve("env: [config/.env]\n", &[]), found("postgres://y/db", "DATABASE_URL in ../config/.env"));
+        // A variable nothing sets names each env file as the working directory reaches it.
+        assert_eq!(resolve("direct_url: postgres://${NOPE}/db\nenv: [config/.env, ../shared.env]\n", &[]), Err("../.reylo.yaml: \"direct_url\" names ${NOPE}, which neither the environment nor ../config/.env nor ../../shared.env sets.".to_string()));
+        // A column counts characters.
+        assert_eq!(resolve("direct_url: \"postgres://ü😀:$(x\"\n", &[]), Err("../.reylo.yaml: \"direct_url\" opens $( at column 15 and never closes it.".to_string()));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -635,7 +749,11 @@ mod tests {
         // A command that writes more than a pipe holds to each stream before its answer finishes.
         std::fs::write(dir.join(".reylo.yaml"), "direct_url: postgres://u:$(head -c 200000 /dev/zero | tr '\\0' x >&2; head -c 200000 /dev/zero >/dev/null; echo pw)@h/app\n").unwrap();
         let p = Project::resolve(&dir, HashMap::new()).unwrap();
-        assert_eq!(p.type_check_url().unwrap().as_deref(), Some("postgres://u:pw@h/app"));
+        assert_eq!(p.type_check_url().unwrap().map(|(url, _)| url).as_deref(), Some("postgres://u:pw@h/app"));
+        // A command a signal ends is said so, the signal named.
+        std::fs::write(dir.join(".reylo.yaml"), "direct_url: postgres://u:$(kill -TERM $$)@h/app\n").unwrap();
+        let p = Project::resolve(&dir, HashMap::new()).unwrap();
+        assert_eq!(p.type_check_url().unwrap_err(), ".reylo.yaml: \"direct_url\" runs `kill -TERM $$`, which ended on SIGTERM.");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

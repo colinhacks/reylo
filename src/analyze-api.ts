@@ -11,7 +11,7 @@ import { NotMysql, reason, refusedLogin } from "./connection.ts";
 import { duckdbDatabase } from "./duckdb.ts";
 import { AnswerCache, anyEngine, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
 import { placeholdersOf, untypedParams } from "./module-types.ts";
-import { dialectOf, duckdbPath, PROJECT_FILE, resolveProject, sqlitePath, type Dialect as Database } from "./project.ts";
+import { dialectOf, duckdbPath, PROJECT_FILE, resolveProject, sqlitePath, sqliteUrlProblem, type Dialect as Database } from "./project.ts";
 
 /** The format version `analyze` writes, as the URL of its JSON Schema (spec/typedefs.schema.json), which the type holds to the spec's. */
 const SCHEMA: StatementDescriptor["$schema"] = "https://reylo.dev/typedefs/0.1.0.json";
@@ -35,6 +35,8 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
   // A relative path in a URL the caller named is the caller's, from the working directory; one in the
   // project's URL is from the project's root, as the type check reads it.
   const base = given === undefined ? project.root : cwd;
+  const unusable = dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
+  if (unusable) throw new Error(`Cannot read the SQLite URL ${url} (the url given): ${unusable}.`);
   const strict: Strict = { params: project.strictParams, file: project.file ? basename(project.file) : PROJECT_FILE };
   if (dialect === "duckdb") return analyzeDuckdb(duckdbPath(url, base), project.root, sql, strict);
   const target = (u: string) => (dialect === "sqlite" ? sqlitePath(u, base) : u);
