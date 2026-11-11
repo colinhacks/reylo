@@ -296,12 +296,12 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
     Some(Catalog { tables, row_makers, table_macros: read_macros, user_macros })
 }
 
-/// `unnest` and every macro whose definition calls it or another such macro, by name.
 /// The macros in `macros` a user defined, by name ([`MACROS_QUERY`]).
 fn user_macros(macros: &[Vec<Value>]) -> HashSet<String> {
     macros.iter().filter(|r| r.get(2).and_then(as_bool) == Some(true)).filter_map(|r| Some(as_str(r.first()?)?.to_string())).collect()
 }
 
+/// `unnest` and every macro whose definition calls it or another such macro, by name.
 fn row_makers(macros: Vec<Vec<Value>>) -> HashSet<String> {
     let definitions: Vec<(String, String)> = macros.iter().filter_map(|r| Some((as_str(r.first()?)?.to_string(), as_str(r.get(1)?)?.to_lowercase()))).collect();
     let mut makers: HashSet<String> = HashSet::from(["unnest".to_string()]);
