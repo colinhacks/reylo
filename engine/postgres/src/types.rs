@@ -97,6 +97,15 @@ pub struct CheckFacts {
     pub multiple_of: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<Pattern>,
+    /// The RFC 9562 version a `uuid` column's `uuid_extract_version` is held equal to, which says
+    /// nothing alone: the function is NULL for a UUID of another variant, and a CHECK lets NULL
+    /// through. A target that makes a UUID whole (`uuidv7()`) has its version too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u8>,
+    /// Whether a CHECK holds `uuid_extract_version` of the column non-null, which keeps out every
+    /// UUID of another variant, so that `version` holds of every value.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub version_not_null: bool,
 }
 
 impl CheckFacts {
@@ -105,8 +114,8 @@ impl CheckFacts {
     }
 
     /// What two CHECKs hold a value to together: the tighter of each bound, and at equal values the
-    /// exclusive one. The type has one divisor and one pattern, so the first of each stands; either
-    /// is true of every value.
+    /// exclusive one. The type has one divisor, one pattern and one version, so the first of each
+    /// stands; either is true of every value, and two versions leave no value but NULL.
     pub fn and(self, other: CheckFacts) -> CheckFacts {
         let tighter = |a: Option<(String, bool)>, b: Option<(String, bool)>, above: bool| match (a, b) {
             (Some(a), Some(b)) => {
@@ -121,7 +130,14 @@ impl CheckFacts {
             }
             (a, b) => a.or(b),
         };
-        CheckFacts { min: tighter(self.min, other.min, true), max: tighter(self.max, other.max, false), multiple_of: self.multiple_of.or(other.multiple_of), pattern: self.pattern.or(other.pattern) }
+        CheckFacts {
+            min: tighter(self.min, other.min, true),
+            max: tighter(self.max, other.max, false),
+            multiple_of: self.multiple_of.or(other.multiple_of),
+            pattern: self.pattern.or(other.pattern),
+            version: self.version.or(other.version),
+            version_not_null: self.version_not_null || other.version_not_null,
+        }
     }
 
     /// `ty` with these facts, where it is of a kind that holds them. A bound its width or its
@@ -167,6 +183,10 @@ impl CheckFacts {
             Kind::Text(mut t) if t.values.is_none() => {
                 t.pattern = self.pattern.clone().or(t.pattern);
                 Kind::Text(t)
+            }
+            Kind::Uuid(mut u) if self.version_not_null => {
+                u.version = self.version.or(u.version);
+                Kind::Uuid(u)
             }
             kind => kind,
         };

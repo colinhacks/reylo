@@ -42,7 +42,7 @@ pub enum Kind {
     Decimal(DecimalType),
     Text(TextType),
     Bytes(BytesType),
-    Uuid,
+    Uuid(UuidType),
     Array(ArrayType),
     Record(RecordType),
     Json(JsonType),
@@ -243,6 +243,14 @@ pub enum PatternDialect {
 pub struct BytesType {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<Size>,
+}
+
+/// A 128-bit identifier: any 128 bits, unless `version` names the RFC 9562 version every value has.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UuidType {
+    /// Each value is of RFC 9562's variant and has this version, from 1 to 8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u8>,
 }
 
 /// A sequence of `element`s; `any_depth` where an element may itself be an array of them.
@@ -714,7 +722,7 @@ impl Kind {
             Kind::Decimal(_) => 3,
             Kind::Text(_) => 4,
             Kind::Bytes(_) => 5,
-            Kind::Uuid => 6,
+            Kind::Uuid(_) => 6,
             Kind::Array(_) => 7,
             Kind::Record(_) => 8,
             Kind::Json(_) => 9,
@@ -746,7 +754,7 @@ impl Kind {
             Kind::Decimal(_) => "decimal",
             Kind::Text(_) => "text",
             Kind::Bytes(_) => "bytes",
-            Kind::Uuid => "uuid",
+            Kind::Uuid(_) => "uuid",
             Kind::Array(_) => "array",
             Kind::Record(_) => "record",
             Kind::Json(_) => "json",
@@ -834,7 +842,7 @@ impl Type {
     }
 
     pub fn uuid() -> Type {
-        Kind::Uuid.into()
+        Kind::Uuid(UuidType::default()).into()
     }
 
     pub fn array(element: Position) -> Type {
@@ -999,7 +1007,7 @@ impl Type {
     /// its name (else its kind), then what narrows it in parentheses: an enum's values
     /// (`varchar('a' | 'b')`), a size (`varchar(≤255)`, `bytes(=6)`), a decimal's precision and
     /// scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`) and divisor
-    /// (`int4(×5)`). An array is its element and
+    /// (`int4(×5)`), a uuid's version (`uuid(v7)`). An array is its element and
     /// `[]`, `?` after an element that may be null (`text?[]`); a record is its fields
     /// (`point{ x: float8, y: float8 }`, `?` after a field that may be null and before one that
     /// may be absent); JSON a statement built is its content after its name (`json { id: int4 }`),
@@ -1046,6 +1054,7 @@ impl Type {
                 with(facts)
             }
             Kind::Bytes(b) => with(size(&b.size)),
+            Kind::Uuid(u) => with(u.version.map(|v| format!("v{v}")).into_iter().collect()),
             Kind::Array(a) => {
                 let element = position_short(&a.element);
                 let sized = match &a.size {
@@ -1140,6 +1149,11 @@ impl Type {
                     return fail("a whole-number kind writes its bounds inclusive".into());
                 }
                 check_order(&i.bounds, decimal_order).or_else(fail)?;
+            }
+            Kind::Uuid(u) => {
+                if u.version.is_some_and(|v| !(1..=8).contains(&v)) {
+                    return fail("a uuid's version is from 1 to 8".into());
+                }
             }
             Kind::Float(f) => {
                 if f.exponent_bits == 0 || f.mantissa_bits == 0 {
@@ -1433,6 +1447,7 @@ mod tests {
         round_trip(json!({"kind": "xml", "fragment": true, "label": "xml"}));
         round_trip(json!({"kind": "opaque", "label": "ltree"}));
         round_trip(json!({"kind": "uuid", "label": "uuid"}));
+        round_trip(json!({"kind": "uuid", "version": 7, "label": "uuid"}));
         round_trip(json!({"kind": "datetime", "tick": "1/1000000", "label": "timestamp"}));
         round_trip(json!({"kind": "multirange", "subtype": {"kind": "integer", "bits": 32, "label": "int4"}, "label": "int4multirange"}));
     }
@@ -1463,6 +1478,8 @@ mod tests {
         refused(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "min": "0", "exclusive_min": "0"}));
         refused(json!({"kind": "integer", "bits": 32, "exclusive_min": "0"}));
         refused(json!({"kind": "integer", "bits": 32, "min": "5", "max": "1"}));
+        refused(json!({"kind": "uuid", "version": 9}));
+        refused(json!({"kind": "uuid", "version": 0}));
         refused(json!({"kind": "text", "size": {"exact": 3, "max": 4}}));
         refused(json!({"kind": "text", "size": {"min": 4, "max": 4}}));
         refused(json!({"kind": "text", "size": {"unit": "utf16_unit", "encoding": "UTF-8", "max": 4}}));

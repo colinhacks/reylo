@@ -245,7 +245,9 @@ fn scalars(col: &Column, scenario: Scenario) -> Vec<String> {
         (_, "D", _) => &["'2026-01-01'", "'infinity'", "'-infinity'", "'2026-01-01 12:00'", "'12:00'"],
         (_, "T", _) => &["'1 day'", "'infinity'"],
         (_, "U", "json" | "jsonb") => &["'null'", "'{}'", "'{\"a\": 1}'", "'[]'"],
-        (_, "U", "uuid") => &["'00000000-0000-0000-0000-000000000001'", "'00000000-0000-0000-0000-000000000002'"],
+        // Two of no RFC 9562 variant, one of them with a 7 where the version stands, and one each of
+        // versions 4 and 7.
+        (_, "U", "uuid") => &["'00000000-0000-0000-0000-000000000001'", "'00000000-0000-0000-0000-000000000002'", "'00000000-0000-7000-0000-000000000003'", "'3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d'", "'019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071'"],
         // An address of each family, a host inside a network (which cidr refuses), a network, and
         // the networks that hold every address.
         (_, "I", _) => &["'10.0.0.1'", "'192.168.1.5/24'", "'::1'", "'::ffff:10.0.0.1'", "'10.0.0.0/8'", "'2001:db8::/32'", "'0.0.0.0/0'", "'::/0'"],
@@ -856,8 +858,8 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
     }
 }
 
-/// Why a value breaks what a CHECK holds it to, if it does: a number's bounds and divisor, and a
-/// `like` or `ilike` pattern. A regular expression's dialect is the server's own, so it is left to
+/// Why a value breaks what a CHECK holds it to, if it does: a number's bounds and divisor, a UUID's
+/// version, and a `like` or `ilike` pattern. A regular expression's dialect is the server's own, so it is left to
 /// the CHECK itself, which refused any row it does not match.
 fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
     let breaks = |bounds: &reylo_engine_core::types::Bounds| -> Option<String> {
@@ -890,6 +892,13 @@ fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
         Kind::Integer(i) => breaks(&i.bounds).or_else(|| divides(&i.multiple_of)),
         Kind::Float(f) => breaks(&f.bounds),
         Kind::Decimal(d) => breaks(&d.bounds).or_else(|| divides(&d.multiple_of)),
+        // RFC 9562's text form: the version is the 13th hex digit, and the variant the 17th, from
+        // 8 to b.
+        Kind::Uuid(reylo_engine_core::types::UuidType { version: Some(version) }) => {
+            let digits: Vec<u32> = text.chars().filter(|c| *c != '-').filter_map(|c| c.to_digit(16)).collect();
+            let holds = digits.len() == 32 && digits[12] == u32::from(*version) && (8..=11).contains(&digits[16]);
+            (!holds).then(|| format!("typed as a version {version} UUID holds {text}"))
+        }
         Kind::Text(TextType { pattern: Some(pattern), .. }) => {
             let insensitive = match pattern.dialect {
                 reylo_engine_core::types::PatternDialect::Like => false,
@@ -1177,7 +1186,7 @@ fn json_admits(ty: &Type, json: &Value) -> bool {
         Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => {
             json.is_number() || (*nan && json.as_str() == Some("NaN")) || (*infinity && matches!(json.as_str(), Some("Infinity" | "-Infinity")))
         }
-        Kind::Text(_) | Kind::Uuid | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
+        Kind::Text(_) | Kind::Uuid(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
         Kind::Map(_) if name == "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
         Kind::Geometry(_) if name == "geometry" => json.get("type").is_some_and(Value::is_string),
         Kind::Geometry(_) => json.is_string(),

@@ -99,8 +99,8 @@ macro_rules! base_type {
 /// `$1` is a relation's oid:
 /// one row per validated, enforced CHECK on a column of it, the table's on that column alone (and
 /// inherited by any child a scan reads) or the column's domain's, where the column holds `text`
-/// or `varchar` under a deterministic collation, `json` or `jsonb`, an integer, a float or `numeric`, or an
-/// array: `(relation, attnum, the column's name, the CHECK as the server prints it, and per
+/// or `varchar` under a deterministic collation, `json` or `jsonb`, an integer, a float or `numeric`, a
+/// `uuid`, or an array: `(relation, attnum, the column's name, the CHECK as the server prints it, and per
 /// function the CHECK calls, its name, its extension's name and that extension's version, in three
 /// arrays, then the column's type and that type's base type, and whether its collation is
 /// deterministic)`. A CHECK `NOT ENFORCED` (PostgreSQL
@@ -137,7 +137,7 @@ pub const CHECKS_QUERY: &str = concat!(
     " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.json'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.jsonb'::pg_catalog.regtype::pg_catalog.oid]) \
         OR ",
     base_type!(),
-    " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.int2'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.int4'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.int8'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.float4'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.float8'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.numeric'::pg_catalog.regtype::pg_catalog.oid]) \
+    " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.int2'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.int4'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.int8'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.float4'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.float8'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.numeric'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.uuid'::pg_catalog.regtype::pg_catalog.oid]) \
         OR t.typcategory OPERATOR(pg_catalog.=) 'A'::pg_catalog.\"char\")"
 );
 /// Whether each column of the named relations refuses null, for a parameter written to it
@@ -1830,6 +1830,15 @@ impl<'a> Engine<'a> {
                 col.facts = facts.clone();
             }
         }
+        // A UUID a target makes whole has the version of the function that made it (`uuidv7()`).
+        if let Some(versions) = infer::uuid_versions(sql, trust).filter(|v| v.len() == described.columns.len()) {
+            for (col, version) in described.columns.iter_mut().zip(versions) {
+                if let (Some(version), crate::pgtypes::oid::UUID) = (version, col.type_oid) {
+                    col.facts.version = Some(version);
+                    col.facts.version_not_null = true;
+                }
+            }
+        }
         *self.written.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.sources.get(key)?.clone()))).collect();
         *self.written_values.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.values.get(key)?.clone()))).collect();
         *self.written_facts.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.facts.get(key)?.clone()))).collect();
@@ -2012,14 +2021,22 @@ impl<'a> Engine<'a> {
                 let known = out.non_finite.entry(key).or_default();
                 *known = known.and(kept_out);
             }
-            if let Some(facts) = check_facts(text, name, types, deterministic, trust).filter(|f| !f.is_none()) {
-                let known = out.facts.remove(&key).unwrap_or_default();
-                out.facts.insert(key, known.and(facts));
-            }
             let calls: Vec<(String, String, String)> = match (row.get(4).and_then(as_strings), row.get(5).and_then(as_strings), row.get(6).and_then(as_strings)) {
                 (Some(names), Some(extensions), Some(versions)) => names.into_iter().zip(extensions).zip(versions).map(|((n, e), v)| (n, e, v)).collect(),
                 _ => Vec::new(),
             };
+            if let Some(mut facts) = check_facts(text, name, types, deterministic, trust) {
+                // A built-in function is pinned, so the catalog records no dependency on it: a call
+                // of `uuid_extract_version` that resolved to a user's function, as one over a domain
+                // may, lists it among the calls.
+                if calls.iter().any(|(n, _, _)| n == "uuid_extract_version") {
+                    (facts.version, facts.version_not_null) = (None, false);
+                }
+                if !facts.is_none() {
+                    let known = out.facts.remove(&key).unwrap_or_default();
+                    out.facts.insert(key, known.and(facts));
+                }
+            }
             // A built-in function is pinned, so the catalog records no dependency on it: a call of
             // `array_position` that resolved to a user's function lists it among the calls, and so
             // does a cast that runs one, which may turn NULL into a value.
@@ -3990,10 +4007,30 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
             _ => None,
         }
     }
+    // `uuid_extract_version` of the bare column, a `uuid`, and the type of the column it reads.
+    let version_of = |node: &Node| -> Option<Operand> {
+        let N::FuncCall(f) = node.node.as_ref()? else { return None };
+        let [arg] = f.args.as_slice() else { return None };
+        let plain = !f.agg_star && !f.func_variadic && f.over.is_none() && f.agg_order.is_empty() && f.agg_filter.is_none();
+        (plain && types.1 == Some(oid::UUID) && crate::infer::builtin_name(&f.funcname).as_deref() == Some("uuid_extract_version")).then_some(())?;
+        bare(arg)
+    };
     type Compared = Vec<(String, [Operand; 2])>;
     let mut out = CheckFacts::default();
     let mut compared: Compared = Vec::new();
+    // The operand types of each `uuid_extract_version` the facts rest on.
+    let mut called: Vec<Operand> = Vec::new();
     let mut read = |node: &Node| -> Option<()> {
+        // `uuid_extract_version(id) IS NOT NULL`, which keeps out every UUID of a variant other
+        // than RFC 9562's, whose version the function leaves NULL.
+        if let N::NullTest(t) = node.node.as_ref()? {
+            if t.nulltesttype != NullTestType::IsNotNull as i32 {
+                return None;
+            }
+            called.push(version_of(t.arg.as_deref()?)?);
+            out = std::mem::take(&mut out).and(CheckFacts { version_not_null: true, ..CheckFacts::default() });
+            return Some(());
+        }
         let N::AExpr(e) = node.node.as_ref()? else { return None };
         if e.kind != AExprKind::AexprOp as i32 || e.name.len() != 1 {
             return None;
@@ -4021,6 +4058,25 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
                 }
                 let one = CheckFacts { min: above.then(|| (value.clone(), exclusive)), max: (!above).then(|| (value.clone(), exclusive)), ..CheckFacts::default() };
                 out = std::mem::take(&mut out).and(one);
+            }
+            // `uuid_extract_version(id) = 7`, a version from 1 to 8, the function's `smallint` compared
+            // with the constant's type.
+            "=" if version_of(l).is_some() || version_of(r).is_some() => {
+                let (column, value, operands) = match (version_of(l), version_of(r)) {
+                    (Some(column), _) => {
+                        let (value, ty) = number(r)?;
+                        (column, value, [Operand::Is(oid::INT2), ty])
+                    }
+                    (None, Some(column)) => {
+                        let (value, ty) = number(l)?;
+                        (column, value, [ty, Operand::Is(oid::INT2)])
+                    }
+                    (None, None) => return None,
+                };
+                let version = value.parse::<u8>().ok().filter(|v| (1..=8).contains(v))?;
+                compared.push((op.clone(), operands));
+                called.push(column);
+                out = std::mem::take(&mut out).and(CheckFacts { version: Some(version), ..CheckFacts::default() });
             }
             "=" => {
                 let (left, zero) = if number(r).is_some_and(|(v, _)| v == "0") { (l, r) } else if number(l).is_some_and(|(v, _)| v == "0") { (r, l) } else { return None };
@@ -4078,7 +4134,8 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
     for node in each {
         read(node);
     }
-    compared.iter().all(|(op, operands)| trust.resolves(Kind::Infix, op, operands).is_some()).then_some(out)
+    let resolved = compared.iter().all(|(op, operands)| trust.resolves(Kind::Infix, op, operands).is_some());
+    (resolved && called.iter().all(|column| trust.resolves(Kind::Function, "uuid_extract_version", std::slice::from_ref(column)).is_some())).then_some(out)
 }
 
 /// A described column's type, a built array of arrays at its depth ([`infer::Nesting`]) under the
@@ -4730,7 +4787,7 @@ fn total_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, co
 
 /// Whether values of `ty` have no collation: a number, a truth value, bytes, a UUID or a time.
 fn uncollated(ty: &Type) -> bool {
-    matches!(ty.kind, TyKind::Boolean | TyKind::Integer(_) | TyKind::Float(_) | TyKind::Decimal(_) | TyKind::Bytes(_) | TyKind::Uuid | TyKind::Date(_) | TyKind::Time(_) | TyKind::DateTime(_) | TyKind::Instant(_) | TyKind::Duration(_))
+    matches!(ty.kind, TyKind::Boolean | TyKind::Integer(_) | TyKind::Float(_) | TyKind::Decimal(_) | TyKind::Bytes(_) | TyKind::Uuid(_) | TyKind::Date(_) | TyKind::Time(_) | TyKind::DateTime(_) | TyKind::Instant(_) | TyKind::Duration(_))
 }
 
 #[cfg(test)]
@@ -5075,6 +5132,34 @@ mod tests {
         let shadowed = Trust { shadowed: ["=".to_string()].into_iter().collect(), ..Default::default() };
         assert_eq!(check_values("status = 'a'::text", "status", text, &shadowed), None);
         assert_eq!(with_values(Type::text().named("bpchar"), Some(&["a".to_string()]), false), Type::text().named("bpchar"));
+    }
+
+    #[test]
+    fn a_check_holds_a_uuid_to_its_version_only_beside_a_non_null_one() {
+        use crate::types::{Kind as K, UuidType};
+        let trust = Trust::default();
+        let facts = |text: &str| check_facts(text, "id", (Some(oid::UUID), Some(oid::UUID)), true, &trust).unwrap();
+        let version = |facts: CheckFacts| match facts.apply(Type::uuid()).kind {
+            K::Uuid(UuidType { version }) => version,
+            _ => panic!(),
+        };
+        // `uuid_extract_version` is NULL for a UUID of a variant other than RFC 9562's, and a CHECK
+        // lets NULL through.
+        assert_eq!(version(facts("uuid_extract_version(id) = 7")), None);
+        assert_eq!(version(facts("(uuid_extract_version(id) = 7) AND (uuid_extract_version(id) IS NOT NULL)")), Some(7));
+        assert_eq!(version(facts("(uuid_extract_version(id) IS NOT NULL) AND (4 = uuid_extract_version(id))")), Some(4));
+        assert_eq!(version(facts("(id IS NULL) OR ((uuid_extract_version(id) = 7) AND (uuid_extract_version(id) IS NOT NULL))")), Some(7));
+        // Two CHECKs together.
+        assert_eq!(version(facts("uuid_extract_version(id) = 7").and(facts("uuid_extract_version(id) IS NOT NULL"))), Some(7));
+        // No version outside 1 to 8, and none of another column or of a column of another type.
+        assert_eq!(version(facts("(uuid_extract_version(id) = 9) AND (uuid_extract_version(id) IS NOT NULL)")), None);
+        assert!(facts("(uuid_extract_version(other) = 7) AND (uuid_extract_version(other) IS NOT NULL)").is_none());
+        assert!(check_facts("(uuid_extract_version(id) = 7) AND (uuid_extract_version(id) IS NOT NULL)", "id", (Some(oid::TEXT), Some(oid::TEXT)), true, &trust).unwrap().is_none());
+        // A domain's, on `VALUE`.
+        assert_eq!(check_facts("(uuid_extract_version(VALUE) = 7) AND (uuid_extract_version(VALUE) IS NOT NULL)", "value", (Some(16500), Some(oid::UUID)), true, &trust).unwrap().version, Some(7));
+        // A function of the name a user also defined proves nothing.
+        let shadowed = Trust { shadowed: HashSet::from(["uuid_extract_version".to_string()]), ..Trust::default() };
+        assert_eq!(check_facts("(uuid_extract_version(id) = 7) AND (uuid_extract_version(id) IS NOT NULL)", "id", (Some(oid::UUID), Some(oid::UUID)), true, &shadowed), None);
     }
 
     #[test]
