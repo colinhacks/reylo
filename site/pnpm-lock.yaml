@@ -128,7 +128,10 @@ importers:
         version: 12.11.1
       drizzle-orm:
         specifier: 0.45.4
-        version: 0.45.4(@cloudflare/workers-types@5.20260929.1)(@electric-sql/pglite@0.5.11)(@libsql/client@0.18.0)(@neondatabase/serverless@1.1.0)(@planetscale/database@1.20.2)(@types/better-sqlite3@9.6.0)(@types/pg@8.23.1)(@vercel/postgres@0.10.0)(better-sqlite3@12.11.1)(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)(sqlite3@6.0.1(node-gyp@12.4.0))
+        version: 0.45.4(@cloudflare/workers-types@5.20260929.1)(@electric-sql/pglite@0.5.11)(@libsql/client@0.18.0)(@neondatabase/serverless@1.1.0)(@planetscale/database@1.20.2)(@types/better-sqlite3@9.6.0)(@types/pg@8.23.1)(@vercel/postgres@0.10.0)(better-sqlite3@12.11.1)(knex@3.3.0(better-sqlite3@12.11.1)(mariadb@3.5.4)(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(pg-query-stream@4.17.0(pg@8.23.0))(sqlite3@6.0.1(node-gyp@12.4.0)))(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)(sqlite3@6.0.1(node-gyp@12.4.0))
+      knex:
+        specifier: 3.3.0
+        version: 3.3.0(better-sqlite3@12.11.1)(mariadb@3.5.4)(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(pg-query-stream@4.17.0(pg@8.23.0))(sqlite3@6.0.1(node-gyp@12.4.0))
       mariadb:
         specifier: 3.5.4
         version: 3.5.4
@@ -2066,8 +2069,15 @@ packages:
   color-name@1.1.4:
     resolution: {integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==}
 
+  colorette@2.0.19:
+    resolution: {integrity: sha512-3tlv/dIP7FWvj3BsbHrGLJ6l/oKh1O3TcgBqMn+yyCagOxc23fyzDS6HypQbgxWbkpDnf52p1LuR4eWDQ/K9WQ==}
+
   comma-separated-tokens@2.0.3:
     resolution: {integrity: sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==}
+
+  commander@10.0.1:
+    resolution: {integrity: sha512-y4Mg2tXshplEbSGzx7amzPwKKOCGuoSRP/CjEdwwk0FOGlUbq6lKuoyDZTNZkmxHdJtp54hdfY/JUrdL7Xfdug==}
+    engines: {node: '>=14'}
 
   compute-scroll-into-view@3.1.1:
     resolution: {integrity: sha512-VRhuHOLoKYOy4UbilLbUzbYg93XLjv2PncJC50EuTWPA3gaja1UjBsUP/D/9/juV3vQFr6XBEzn9KCAHdUvOHw==}
@@ -2103,6 +2113,15 @@ packages:
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
+
+  debug@4.3.4:
+    resolution: {integrity: sha512-PRWFHuSU3eDtQJPvnNY7Jcket1j0t5OuOsFzPPzsekD52Zl8qUfFIPEiswXqIvHWGVHOgX+7G/vCNNhehwxfkQ==}
+    engines: {node: '>=6.0'}
+    peerDependencies:
+      supports-color: '*'
+    peerDependenciesMeta:
+      supports-color:
+        optional: true
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -2321,6 +2340,15 @@ packages:
     resolution: {integrity: sha512-/veY75JbMK4j1yjvuUxuVsiS/hr/4iHs9FTT6cgTexxdE0Ly/glccBAkloH/DofkjRbZU3bnoj38mOmhkZ0lHw==}
     engines: {node: '>=12'}
 
+  esm@3.2.25:
+    resolution: {integrity: sha512-U1suiZ2oDVWv4zPO56S0NcR5QriEahGtdN2OR6FiOG4WJvcjBVFB0qI4+eKoWFH483PKGuLuu6V8Z4T5g63UVA==}
+    engines: {node: '>=6'}
+    peerDependencies:
+      internal: '*'
+    peerDependenciesMeta:
+      internal:
+        optional: true
+
   estree-util-attach-comments@3.0.0:
     resolution: {integrity: sha512-cKUwm/HUcTDsYh/9FgnuFqpfquUbwIqwKM26BVCGDPVgvaCl/nDCCjUfiLlx6lsEZ3Z4RFxNbOQ60pkaEwFxGw==}
 
@@ -2532,6 +2560,9 @@ packages:
       takumi-js:
         optional: true
 
+  function-bind@1.1.2:
+    resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
+
   generate-function@2.3.1:
     resolution: {integrity: sha512-eeB5GfMNeevm/GRYq20ShmsaGcmI81kIX2K9XQx5miC8KdHaC6Jm0qQ8ZNeGOi7wYB8OsdxKs+Y2oVuTFuVwKQ==}
 
@@ -2542,6 +2573,13 @@ packages:
   get-nonce@1.0.1:
     resolution: {integrity: sha512-FJhYRoDaiatfEkUK8HKlicmu/3SGFD51q3itKDGoSTysQJBnfOcxU5GxnhE1E6soB76MbT0MBtnKJuXyAx+96Q==}
     engines: {node: '>=6'}
+
+  get-package-type@0.1.0:
+    resolution: {integrity: sha512-pjzuKtY64GYfWizNAJ0fr9VqttZkNiK2iS430LtIHzjBEr6bX8Am2zm4sW4Ro5wjWW5cAlRL1qAMTcXbjNAO2Q==}
+    engines: {node: '>=8.0.0'}
+
+  getopts@2.3.0:
+    resolution: {integrity: sha512-5eDf9fuSXwxBL6q5HX+dhDj+dslFGWzU5thZ9kNKUkcPtaPdatmUFKwHFrLb/uf/WpA4BHET+AX3Scl56cAjpA==}
 
   github-from-package@0.0.0:
     resolution: {integrity: sha512-SyHy3T1v2NUXn29OsWdxmK6RwHD+vkj3v8en8AOBZ1wBQ/hCAQ5bAQTD02kW4W9tUp/3Qh6J8r9EvntiyCmOOw==}
@@ -2558,6 +2596,10 @@ packages:
 
   has-property-descriptors@1.0.2:
     resolution: {integrity: sha512-55JNKuIW+vq4Ke1BjOTjM2YctQIvCT7GFzHwmfZPGo5wnrgkid0YQtnAleFSqumZm4az3n2BS+erby5ipJdgrg==}
+
+  hasown@2.0.4:
+    resolution: {integrity: sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==}
+    engines: {node: '>= 0.4'}
 
   hast-util-from-parse5@8.0.3:
     resolution: {integrity: sha512-3kxEVkEKt0zvcZ3hCRYI8rqrgwtlIOFMWkbclACvjlDw8Li9S2hk/d51OI0nr/gIpdMHNepwgOKqZ/sy0Clpyg==}
@@ -2609,11 +2651,19 @@ packages:
   inline-style-parser@0.2.7:
     resolution: {integrity: sha512-Nb2ctOyNR8DqQoR0OwRG95uNWIC0C1lCgf5Naz5H6Ji72KZ8OcFZLz2P5sNgwlyoJ8Yif11oMuYs5pBQa86csA==}
 
+  interpret@2.2.0:
+    resolution: {integrity: sha512-Ju0Bz/cEia55xDwUWEa8+olFpCiQoypjnQySseKtmjNrnps3P+xfpUmGr90T7yjlVJmOtybRvPXhKMbHr+fWnw==}
+    engines: {node: '>= 0.10'}
+
   is-alphabetical@2.0.1:
     resolution: {integrity: sha512-FWyyY60MeTNyeSRpkM2Iry0G9hpr7/9kD40mD/cGQEuilcZYS4okz8SN2Q6rLCJ8gbCt6fN+rC+6tMGS99LaxQ==}
 
   is-alphanumerical@2.0.1:
     resolution: {integrity: sha512-hmbYhX/9MUMF5uh7tOXyK/n0ZvWpad5caBA17GsC6vyuCqaWliRG5K1qS9inmUhEMaOBIW7/whAnSwveW/LtZw==}
+
+  is-core-module@2.18.0:
+    resolution: {integrity: sha512-qyax9fgaKOEC4qK8WZn7Q4IcoZC9RC1O1fFxRcRTq/oMMkWT/uXpqpXa12kzWR409zAt1drYN9N9BO26UmBCmw==}
+    engines: {node: '>= 0.4'}
 
   is-decimal@2.0.1:
     resolution: {integrity: sha512-AAB9hiomQs5DXWcRB1rqsxGUstbRroFOPPVAomNk/3XHR5JyEZChOyTWe2oayKnsSsr/kcGqF+z6yuH6HHpN0A==}
@@ -2658,6 +2708,43 @@ packages:
     resolution: {integrity: sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==}
     engines: {node: '>=6'}
     hasBin: true
+
+  knex@3.3.0:
+    resolution: {integrity: sha512-LgWl031hNuLv9Lhxdd9093zULa2aNcoP04Bk29e5NidgRcEr/T0rAr2WYi4BhjTiCDoQiRU56meUE5rppLKZzQ==}
+    engines: {node: '>=16'}
+    hasBin: true
+    peerDependencies:
+      better-sqlite3: '*'
+      mariadb: '*'
+      mysql: '*'
+      mysql2: '*'
+      oracledb: '*'
+      pg: '*'
+      pg-native: '*'
+      pg-query-stream: ^4.14.0
+      sqlite3: '*'
+      tedious: '*'
+    peerDependenciesMeta:
+      better-sqlite3:
+        optional: true
+      mariadb:
+        optional: true
+      mysql:
+        optional: true
+      mysql2:
+        optional: true
+      oracledb:
+        optional: true
+      pg:
+        optional: true
+      pg-native:
+        optional: true
+      pg-query-stream:
+        optional: true
+      sqlite3:
+        optional: true
+      tedious:
+        optional: true
 
   libsql@0.5.29:
     resolution: {integrity: sha512-8lMP8iMgiBzzoNbAPQ59qdVcj6UaE/Vnm+fiwX4doX4Narook0a4GPKWBEv+CR8a1OwbfkgL18uBfBjWdF0Fzg==}
@@ -3045,6 +3132,9 @@ packages:
       react-dom:
         optional: true
 
+  ms@2.1.2:
+    resolution: {integrity: sha512-sGkPx+VjMtmA6MX27oA4FBFELFCZZ4S4XqeGOXCv68tT+jb3vk/RyaKWP0PTKyWtmLSM0b+adUTEvbs1PEaH2w==}
+
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
@@ -3173,6 +3263,9 @@ packages:
   parse5@7.3.0:
     resolution: {integrity: sha512-IInvU7fabl34qmi9gY8XOVxhYyMyuH2xUNpb2q8/Y+7552KlejkRvqvD19nMoUW/uQGGbqNpA6Tufu5FL5BZgw==}
 
+  path-parse@1.0.7:
+    resolution: {integrity: sha512-LDJzPVEEEPR+y48z93A0Ed0yXb8pAByGWo/k5YYdYgpY2/2EsOsksJrq7lOHxryrVOn1ejG6oAp8ahvOIQD8sw==}
+
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
 
@@ -3181,6 +3274,14 @@ packages:
 
   pg-connection-string@2.14.1:
     resolution: {integrity: sha512-qR3kGNPBLpCNtz0evbKA0Y/MRFXwSSdT+pTJvYp/bXTcReZbvX1kzF0IyTc1QnxqF7AZbOeBhNL8R5mYQZV/MA==}
+    peerDependencies:
+      pg: '*'
+    peerDependenciesMeta:
+      pg:
+        optional: true
+
+  pg-connection-string@2.6.2:
+    resolution: {integrity: sha512-ch6OwaeaPYcova4kKZ15sbJ2hKb/VP48ZD2gE7i1J+L4MspCtBMAx8nMgz7bksc7IojCIIWuEhHibSMFH8m8oA==}
     peerDependencies:
       pg: '*'
     peerDependenciesMeta:
@@ -3401,6 +3502,10 @@ packages:
     resolution: {integrity: sha512-Kko+Y5XQ6fM+Ce3dq3m9YGxnacYZYl9cA1wZjaF3Vbry2L3i1qVg8+CAgNPsXRArPMUMCaOR7oa9Nqntc43JKA==}
     engines: {node: '>= 20.19.0'}
 
+  rechoir@0.8.0:
+    resolution: {integrity: sha512-/vxpCXddiX8NGfGO/mTafwjq4aFa/71pvamip0++IQk3zG8cbCj0fifNPrjjF1XMXUne91jL9OoxmdykoEtifQ==}
+    engines: {node: '>= 10.13.0'}
+
   recma-build-jsx@1.0.0:
     resolution: {integrity: sha512-8GtdyqaBcDfva+GUKDr3nev3VpKAhup1+RvkMvUxURHpW7QyIvk9F5wz7Vzo06CEMSilw6uArgRqhpiUcWp8ew==}
 
@@ -3450,6 +3555,15 @@ packages:
 
   reselect@5.3.0:
     resolution: {integrity: sha512-XGoLeRAVzUTcJ1qkxPQhDJyIZ5d6zzZD9nT7AEZOaaU9UbWclhycElmhO+VD5bFeLuzhPBaOV2oXC8uG35ZSpg==}
+
+  resolve-from@5.0.0:
+    resolution: {integrity: sha512-qYg9KP24dD5qka9J47d0aVky0N+b4fTU89LN9iDnjB5waksiC49rvMB0PrUJQGoTmH50XPiqOvAjDfaijGxYZw==}
+    engines: {node: '>=8'}
+
+  resolve@1.22.14:
+    resolution: {integrity: sha512-1ZjYvR9sbkiwC5+9QHetqW5HmA2pHRMaoupD01t2HlYnV/vydC2zPwLixhsMieSWVZt0JJRg5LVIk0Ow1D/TrA==}
+    engines: {node: '>= 0.4'}
+    hasBin: true
 
   roarr@7.21.7:
     resolution: {integrity: sha512-6X9ID9jb83kPkDxm5xLb9rZdGm6ksdDjpeL0iW5weKelJFi+NVBSowRpEuH8CdpX2x+7RW0TZaezibE7yQB7pg==}
@@ -3613,6 +3727,10 @@ packages:
       babel-plugin-macros:
         optional: true
 
+  supports-preserve-symlinks-flag@1.0.0:
+    resolution: {integrity: sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==}
+    engines: {node: '>= 0.4'}
+
   tailwindcss@4.3.3:
     resolution: {integrity: sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==}
 
@@ -3630,6 +3748,14 @@ packages:
   tar@7.5.22:
     resolution: {integrity: sha512-MFO/QzvtAOmJbkhOaCTvbGcFN9L9b+JunIsDwaKljSOdcLMea3NJ1k9Usz/rjdfSXTq4dfzfeS7W4p4YOAAHeA==}
     engines: {node: '>=18'}
+
+  tarn@3.1.2:
+    resolution: {integrity: sha512-3RTvqKZcK/17jnJ8rMKFXbyNogywTs1z0gVPPwFsJGX46rkmUHOdIaSQ/aVO1rS7nH+soiXiWk7rvUXxndm8Dg==}
+    engines: {node: '>=8.0.0'}
+
+  tildify@2.0.0:
+    resolution: {integrity: sha512-Cc+OraorugtXNfs50hU9KS369rFXCfgGLpfCfvlc+Ud5u6VWmUQsOAa9HbTvheQdYnrdJqqv1e5oIqXppMYnSw==}
+    engines: {node: '>=8'}
 
   tiny-inflate@1.0.3:
     resolution: {integrity: sha512-pkY1fj1cKHb2seWDy0B16HeWyczlJA9/WW3u3c4z/NiWDsO3DOU5D7nhTLE9CF0yXv/QZFY7sEJmj24dK+Rrqw==}
@@ -5481,7 +5607,11 @@ snapshots:
 
   color-name@1.1.4: {}
 
+  colorette@2.0.19: {}
+
   comma-separated-tokens@2.0.3: {}
+
+  commander@10.0.1: {}
 
   compute-scroll-into-view@3.1.1: {}
 
@@ -5508,6 +5638,10 @@ snapshots:
       postcss-value-parser: 4.2.0
 
   csstype@3.2.3: {}
+
+  debug@4.3.4:
+    dependencies:
+      ms: 2.1.2
 
   debug@4.4.3:
     dependencies:
@@ -5551,7 +5685,7 @@ snapshots:
     dependencies:
       dequal: 2.0.3
 
-  drizzle-orm@0.45.4(@cloudflare/workers-types@5.20260929.1)(@electric-sql/pglite@0.5.11)(@libsql/client@0.18.0)(@neondatabase/serverless@1.1.0)(@planetscale/database@1.20.2)(@types/better-sqlite3@9.6.0)(@types/pg@8.23.1)(@vercel/postgres@0.10.0)(better-sqlite3@12.11.1)(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)(sqlite3@6.0.1(node-gyp@12.4.0)):
+  drizzle-orm@0.45.4(@cloudflare/workers-types@5.20260929.1)(@electric-sql/pglite@0.5.11)(@libsql/client@0.18.0)(@neondatabase/serverless@1.1.0)(@planetscale/database@1.20.2)(@types/better-sqlite3@9.6.0)(@types/pg@8.23.1)(@vercel/postgres@0.10.0)(better-sqlite3@12.11.1)(knex@3.3.0(better-sqlite3@12.11.1)(mariadb@3.5.4)(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(pg-query-stream@4.17.0(pg@8.23.0))(sqlite3@6.0.1(node-gyp@12.4.0)))(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)(sqlite3@6.0.1(node-gyp@12.4.0)):
     dependencies:
       '@cloudflare/workers-types': 5.20260929.1
       '@electric-sql/pglite': 0.5.11
@@ -5567,6 +5701,8 @@ snapshots:
       postgres: 3.4.9
       react: 19.2.8
       sqlite3: 6.0.1(node-gyp@12.4.0)
+    optionalDependencies:
+      knex: 3.3.0(better-sqlite3@12.11.1)(mariadb@3.5.4)(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(pg-query-stream@4.17.0(pg@8.23.0))(sqlite3@6.0.1(node-gyp@12.4.0))
 
   electron-to-chromium@1.5.459: {}
 
@@ -5640,6 +5776,8 @@ snapshots:
   escape-html@1.0.3: {}
 
   escape-string-regexp@5.0.0: {}
+
+  esm@3.2.25: {}
 
   estree-util-attach-comments@3.0.0:
     dependencies:
@@ -5832,6 +5970,8 @@ snapshots:
       shiki: 4.4.3
       unist-util-visit: 5.1.0
 
+  function-bind@1.1.2: {}
+
   generate-function@2.3.1:
     dependencies:
       is-property: 1.0.2
@@ -5839,6 +5979,10 @@ snapshots:
   gensync@1.0.0-beta.2: {}
 
   get-nonce@1.0.1: {}
+
+  get-package-type@0.1.0: {}
+
+  getopts@2.3.0: {}
 
   github-from-package@0.0.0: {}
 
@@ -5851,6 +5995,10 @@ snapshots:
   has-property-descriptors@1.0.2:
     dependencies:
       es-define-property: 1.0.1
+
+  hasown@2.0.4:
+    dependencies:
+      function-bind: 1.1.2
 
   hast-util-from-parse5@8.0.3:
     dependencies:
@@ -5976,12 +6124,18 @@ snapshots:
 
   inline-style-parser@0.2.7: {}
 
+  interpret@2.2.0: {}
+
   is-alphabetical@2.0.1: {}
 
   is-alphanumerical@2.0.1:
     dependencies:
       is-alphabetical: 2.0.1
       is-decimal: 2.0.1
+
+  is-core-module@2.18.0:
+    dependencies:
+      hasown: 2.0.4
 
   is-decimal@2.0.1: {}
 
@@ -6007,6 +6161,33 @@ snapshots:
   jsesc@3.1.0: {}
 
   json5@2.2.3: {}
+
+  knex@3.3.0(better-sqlite3@12.11.1)(mariadb@3.5.4)(mysql2@3.24.5(@types/node@26.3.0))(pg@8.23.0)(pg-query-stream@4.17.0(pg@8.23.0))(sqlite3@6.0.1(node-gyp@12.4.0)):
+    dependencies:
+      colorette: 2.0.19
+      commander: 10.0.1
+      debug: 4.3.4
+      escalade: 3.2.0
+      esm: 3.2.25
+      get-package-type: 0.1.0
+      getopts: 2.3.0
+      interpret: 2.2.0
+      lodash: 4.18.1
+      pg-connection-string: 2.6.2(pg@8.23.0)
+      rechoir: 0.8.0
+      resolve-from: 5.0.0
+      tarn: 3.1.2
+      tildify: 2.0.0
+    optionalDependencies:
+      better-sqlite3: 12.11.1
+      mariadb: 3.5.4
+      mysql2: 3.24.5(@types/node@26.3.0)
+      pg: 8.23.0
+      pg-query-stream: 4.17.0(pg@8.23.0)
+      sqlite3: 6.0.1(node-gyp@12.4.0)
+    transitivePeerDependencies:
+      - internal
+      - supports-color
 
   libsql@0.5.29:
     dependencies:
@@ -6616,6 +6797,8 @@ snapshots:
       react-dom: 19.2.8(react@19.2.8)
       tslib: 2.8.1
 
+  ms@2.1.2: {}
+
   ms@2.1.3: {}
 
   mysql2@3.24.5(@types/node@26.3.0):
@@ -6745,6 +6928,8 @@ snapshots:
     dependencies:
       entities: 6.0.1
 
+  path-parse@1.0.7: {}
+
   pathe@2.0.3: {}
 
   pg-cloudflare@1.4.1:
@@ -6752,6 +6937,10 @@ snapshots:
 
   pg-connection-string@2.14.1(pg@8.23.0):
     dependencies:
+      pg: 8.23.0
+
+  pg-connection-string@2.6.2(pg@8.23.0):
+    optionalDependencies:
       pg: 8.23.0
 
   pg-cursor@2.22.1(pg@8.23.0):
@@ -6953,6 +7142,10 @@ snapshots:
 
   readdirp@5.1.1: {}
 
+  rechoir@0.8.0:
+    dependencies:
+      resolve: 1.22.14
+
   recma-build-jsx@1.0.0:
     dependencies:
       '@types/estree': 1.0.9
@@ -7057,6 +7250,15 @@ snapshots:
       - supports-color
 
   reselect@5.3.0: {}
+
+  resolve-from@5.0.0: {}
+
+  resolve@1.22.14:
+    dependencies:
+      es-errors: 1.3.0
+      is-core-module: 2.18.0
+      path-parse: 1.0.7
+      supports-preserve-symlinks-flag: 1.0.0
 
   roarr@7.21.7:
     dependencies:
@@ -7283,6 +7485,8 @@ snapshots:
       client-only: 0.0.1
       react: 19.2.8
 
+  supports-preserve-symlinks-flag@1.0.0: {}
+
   tailwindcss@4.3.3: {}
 
   tapable@2.3.3: {}
@@ -7309,6 +7513,10 @@ snapshots:
       minipass: 7.1.3
       minizlib: 3.1.0
       yallist: 5.0.0
+
+  tarn@3.1.2: {}
+
+  tildify@2.0.0: {}
 
   tiny-inflate@1.0.3: {}
 

@@ -44,7 +44,7 @@ impl Session {
         Ok(match dialect {
             "postgres" => Session::Postgres(reylo_engine_native::postgres::Session::open(url).await?),
             "mysql" => Session::Mysql(reylo_engine_native::mysql::Session::open(url).await?),
-            _ => Session::Sqlite(reylo_engine_native::sqlite::Session::open(&project::sqlite_path(url, base).map_err(Failure::Error)?)?),
+            _ => Session::Sqlite(reylo_engine_native::sqlite::Session::open(&project::sqlite_path(url, base).map_err(|why| Failure::Error(format!("Cannot read the SQLite URL {url}: {why}.")))?)?),
         })
     }
 
@@ -91,7 +91,8 @@ pub fn run(args: &[String]) -> i32 {
         return usage("name a .sql file, a directory, - for standard input, or --sql");
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let env: HashMap<String, String> = std::env::vars().collect();
+    // Read as Node reads it, a variable that is not UTF-8 lossily, rather than refused.
+    let env: HashMap<String, String> = std::env::vars_os().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned())).collect();
     let project = match Project::resolve(&cwd, env) {
         Ok(project) => project,
         Err(message) => return fail(&message),
@@ -110,21 +111,27 @@ pub fn run(args: &[String]) -> i32 {
         return fail(&format!("no .sql file under {}", paths.join(", ")));
     }
     let given = url.is_some();
-    let url = match url.map(Ok).unwrap_or_else(|| project.type_check_url().map(|u| u.unwrap_or_default())) {
-        Ok(url) if !url.is_empty() => url,
+    // The URL, and where it came from, which a message about it names as the type check does.
+    let (url, source) = match url.map(|url| Ok(Some((url, "--url".to_string())))).unwrap_or_else(|| project.type_check_url()) {
+        Ok(Some((url, source))) if !url.is_empty() => (url, source),
         Ok(_) => return fail(&project.missing_url()),
         Err(message) => return fail(&message),
     };
     let Some(dialect) = project::dialect_of(&url) else {
-        return fail(&format!("Cannot tell the database from the URL ({}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.", if given { "--url" } else { "the project's" }));
+        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs."));
     };
     if dialect == "duckdb" {
         return fail("A DuckDB database runs inside the app, and the type check reads it through the project's @duckdb/node-api: reylo analyze cannot open one yet.");
     }
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
     // A relative SQLite path in a URL typed on the command line is the shell's, from the working
     // directory; one in the project's URL is from the project's root, as the type check reads it.
     let base = if given { cwd.clone() } else { project.root.clone() };
+    if dialect == "sqlite" {
+        if let Err(why) = project::sqlite_path(&url, &base) {
+            return fail(&format!("Cannot read the SQLite URL {url} ({source}): {why}."));
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
     runtime.block_on(analyze_all(dialect, url, given, &base, &project, inputs))
 }
 
@@ -134,7 +141,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
         // A command in `direct_url` that makes a short-lived token is run again once the token is
         // refused, as the type check runs it again.
         Err(Failure::Refused(_)) if !given && project.url_runs_command() => match project.type_check_url() {
-            Ok(Some(fresh)) => match Session::open(dialect, &fresh, base).await {
+            Ok(Some((fresh, _))) => match Session::open(dialect, &fresh, base).await {
                 Ok(session) => session,
                 Err(failure) => return fail(&failure.to_string()),
             },

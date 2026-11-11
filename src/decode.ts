@@ -25,9 +25,11 @@
 // those oids are arrays, cached in a WeakMap keyed by the app's object. A row value the module knows
 // the fields of has the kind of its column whatever its oid: `record` is one oid for every shape of
 // row, and a built-in catalog table's row type is below 10000 too.
-import { coerce, DecodeError, elementKind, isRowKind, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind } from "./values.ts";
+import { coerce, DecodeError, elementKind, isRowKind, numbersInJson, scalarKind, textDecoder, utf8, withinDimensions, type Columns, type Decoder, type JsonNumbers, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { lastOfEach, rowOf, type RowBuilder } from "./row.ts";
+import { arrayLiteral, asByteaHex, isJsonValue, isTime, jsonText, jsonValue, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { readPostgresError } from "./query-error.ts";
 
 type AnyClient = Record<string, any>;
 type Field = { name: string; oid: number };
@@ -212,6 +214,18 @@ function pgTypes(key: object) {
 const refuseBinary = () =>
   new TypeError(`Reylo cannot read this pg client's results: it was set up with binary: true (or pg.defaults.binary), which pg 8 reads wrong (an int8 comes back as another number). Reylo decodes every value from the server's text; leave binary off.`);
 
+// pg's native client (pg.native, over pg-native) ignores the `types` a query passes, so Reylo's
+// decoders would be skipped and every value come back as pg's defaults. Its Client keeps the
+// native binding on `native`, an object pg's JavaScript Client never has; a pool of them makes
+// clients whose prototype has `_hasActiveQuery`, which only the native Client defines (pg 8.0 to 8.23).
+function isPgNative(c: AnyClient): boolean {
+  if (typeof c.getTypeParser === "function" && c.native != null && typeof c.native === "object") return true;
+  return typeof c.connect === "function" && typeof c.Client?.prototype?._hasActiveQuery === "function";
+}
+
+const refusePgNative = () =>
+  new TypeError(`Reylo cannot read this pg client's results: it is pg's native client (pg.native, over pg-native), which ignores the type parsers a query passes, so Reylo cannot decode its values. Use pg's JavaScript Client or Pool instead.`);
+
 type PgResult = { rows: Record<string, unknown>[]; fields?: { name: string; dataTypeID: number }[] };
 
 /**
@@ -263,6 +277,7 @@ export async function queryPostgres(c: AnyClient, text: string, values: unknown[
   // pg-promise formats the values into the text itself (reading $1 inside a string literal
   // too) unless it is handed a { text, values } object, which it binds.
   if (typeof c.manyOrNone === "function") return pgPromise(c, text, values, columns);
+  if (isPgNative(c)) throw refusePgNative();
   // pg's Client and PoolClient, Neon's, and @vercel/postgres's VercelClient.
   if (typeof c.getTypeParser === "function") {
     if (c.binary === true) throw refuseBinary();
@@ -294,6 +309,7 @@ export async function queryPostgres(c: AnyClient, text: string, values: unknown[
 // receive that renamed the columns is caught by the rows' keys.
 async function pgPromise(db: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
   if (typeof db.$config?.options?.receive === "function") throw refuseReceive();
+  if (db.$config?.options?.pgNative === true) throw refusePgNative();
   const run = (query: object) => (typeof db.result === "function" ? db.result(query) : db.query(query));
   const load: Load = async (sql) => {
     const r = await run({ text: sql, rowMode: "array", types: asText });
@@ -323,13 +339,15 @@ const isPglite = (c: AnyClient) => typeof c.query === "function" && typeof c.exe
 /** The oids each statement's result had on its earlier runs, by the statement's text: PGlite's per-query table names only those. */
 const pgliteOids = new Map<string, Set<number>>();
 const PGLITE_STATEMENTS = 2000;
-const builtinOids = [...Object.keys(SCALAR_OIDS).map(Number), ...ARRAY_OIDS.keys()];
+// Listed on PGlite's first statement, so that a bundle of another database's queries holds neither table.
+let builtinOids: number[] | undefined;
 const keepText = (x: string) => x;
 
 async function pglite(db: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
   // A statement met for the first time names every built-in type Reylo decodes, and every oid the
   // instance has a parser for (its arrays, and the app's); a transaction has no table to read.
   let named = pgliteOids.get(text);
+  builtinOids ??= [...Object.keys(SCALAR_OIDS).map(Number), ...ARRAY_OIDS.keys()];
   const oids = named ?? new Set([...builtinOids, ...Object.keys(db.parsers ?? {}).map(Number)]);
   const parsers: Record<number, Decoder> = {};
   for (const oid of oids) parsers[oid] = builtinDecoder(oid) ?? keepText;
@@ -581,5 +599,77 @@ function slonikValue(kind: Kind, v: unknown, name: string, delim?: string): unkn
 
 const refuseSlonikRows = () =>
   new TypeError(`Reylo cannot run on this Slonik client: one of its interceptors rewrites every row (transformRow or transformRowAsync, such as slonik-interceptor-field-name-transformation), Reylo's too, so they would not have the columns the query declares. Run Reylo's queries on a pool made without that interceptor.`);
+
+// Slonik's pool, connections, transactions and savepoints, which have query() as pg's do but take
+// only the queries its sql tag builds (`slonik`).
+function isSlonik(c: AnyClient): boolean {
+  return typeof c.maybeOneFirst === "function" && typeof c.anyFirst === "function";
+}
+
+// A value as Slonik's sql tag takes it, which is a string, a number, a boolean, a BigInt or null:
+// the rest as pg would write them, binary data as `\x` and its hex, an array as its literal, a
+// Date as its instant, and an object as its JSON. An omitted parameter binds NULL, as on pg.
+function slonikParam(v: unknown): unknown {
+  if (v === undefined || v === null) return null;
+  if (v instanceof Uint8Array) return asByteaHex(v);
+  if (Array.isArray(v)) return arrayLiteral(v);
+  if (v instanceof Date) return v.toISOString();
+  return typeof v === "object" ? JSON.stringify(v) : v;
+}
+
+/** A Postgres statement's rows on each Postgres driver's client, or undefined on any other client. */
+async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
+  const type = (i: number) => query.inputs?.[names[i]!]?.type;
+  const isJsonParam = (v: unknown, i: number) => isJsonValue(query, names[i]!, v);
+  // An array for a SQL array parameter goes as its literal text, which the server reads as
+  // the parameter's type, written as pg writes it: Bun.sql binds no JavaScript array
+  // (`any($1)` failed with "insufficient data left in message"), postgres.js types an
+  // array by its first element ("cannot cast type boolean to boolean[]" for `$1::bool[]`),
+  // and the copy of pg inside Neon's Pool and Client threw on a Uint8Array element and
+  // left the connection out of step. Each element of a `jsonb[]` is a JSON value.
+  const bound = values.map((v, i) => {
+    const t = type(i);
+    return Array.isArray(v) && t?.kind === "array" && !isJsonParam(v, i) ? arrayLiteral(t.element.type.kind === "json" ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v, query.inputs?.[names[i]!]?.delimiter) : v;
+  });
+  // A JSON parameter goes to pg's family, PGlite and Neon as its JSON text, and to postgres.js
+  // as its JSON text declared `unknown` (below). Bun.sql serializes a value for a JSON
+  // parameter itself, so JSON text would be stored as a JSON string, and it types a boolean,
+  // a number or an array of either by its JavaScript type ("cannot cast type boolean to
+  // jsonb"): it gets an object whose toJSON() returns the value, which it binds as JSON and
+  // serializes to exactly its JSON text. So does an unsafe() client without typed().
+  const json = () => bound.map((v, i) => (isJsonParam(v, i) ? jsonText(v) : v));
+  // Slonik before every other query(): its query() takes only its sql tag's queries.
+  if (isSlonik(c)) return await slonik(c, text, json().map(slonikParam), query.columns);
+  // query() before unsafe(): Neon's neon() has both, and its unsafe() builds a fragment
+  // for a template instead of running anything. Reylo decodes every value itself.
+  if (typeof c.query === "function") return await queryPostgres(c, text, json(), query.columns);
+  if (typeof c.unsafe === "function") {
+    // postgres.js reads a string for a date or time parameter through `new Date(x)` and binds
+    // its toISOString(), so a timestamp's wall-clock time moved by the app's offset, and
+    // `infinity` or a zone name failed with "Invalid time value". Declared `unknown` (705), it
+    // is sent as the text, which the server reads as the parameter's type, as it would an
+    // undeclared one. Bun.sql (commitDistributed()) sends the text and has no typed().
+    // A JSON parameter goes to postgres.js as its JSON text declared `unknown` too: its own
+    // serializer would write a value as JSON, but a client Drizzle wraps has that serializer
+    // replaced by one that passes the value through (drizzle-orm/postgres-js), and a
+    // transaction shows neither. Bun.sql serializes the value itself.
+    const bun = typeof c.commitDistributed === "function";
+    const asText = typeof c.typed === "function" && !bun;
+    const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i), query.dialect) ? c.typed(v, 705) : v));
+    return bun ? bunRows(await c.unsafe(text, mapped), query.columns, true) : await postgresJs(c, text, mapped, query.columns, query.row);
+  }
+  if (typeof c === "function") return await neonCallable(c, text, json().map(asByteaHex), query.columns);
+  return undefined;
+}
+
+/** A Postgres column's text as its kind, with the non-finite numbers inside its JSON as numbers and an array held to its dimensions, as `.run()` gives them (src/execute.ts). */
+function postgresDecoder(name: string, kind: Kind, delim: string | undefined, nonFinite: JsonNumbers | undefined, nestedArrays: boolean | undefined): (v: string) => unknown {
+  const decode = textDecoder(kind, delim);
+  const numbers = nonFinite === undefined ? decode : (v: string) => numbersInJson(decode(v), nonFinite);
+  return kind.endsWith("[]") && !nestedArrays ? (v) => withinDimensions(numbers(v), kind, name) : numbers;
+}
+
+/** Postgres's half of the run time (src/execute.ts, `Runtime`), which `definePostgresQuery` passes. */
+export const postgres: Runtime<"postgres"> = { dialect: "postgres", run: runPostgres, readError: readPostgresError, decoder: postgresDecoder };
 
 export { DecodeError, parseArray } from "./values.ts";

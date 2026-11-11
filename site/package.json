@@ -54,6 +54,7 @@
     "@vercel/postgres": "0.10.0",
     "better-sqlite3": "12.11.1",
     "drizzle-orm": "0.45.4",
+    "knex": "3.3.0",
     "mariadb": "3.5.4",
     "mysql2": "3.24.5",
     "pg": "8.23.0",

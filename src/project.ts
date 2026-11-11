@@ -134,21 +134,76 @@ export function dialectOf(url: string): Dialect | undefined {
   return undefined;
 }
 
+/**
+ * An env file's variables, none when it is missing or cannot be read, read as dotenv reads them, so
+ * that Reylo reads the value the app does. A line ends at `\n`, `\r\n` or `\r`, and is `NAME=value`,
+ * `export ` before it or not; a line whose first character is `#`, or that has no `=`, sets nothing.
+ * A value in double, single or back quotes is what lies between them, lines included, when nothing
+ * but blanks and a comment follows the closing quote on its line; any other value is its line up to
+ * the first `#`, spaces and tabs trimmed, less a quote at each end. In a value that starts with a
+ * double quote, `\n` and `\r` are a newline and a carriage return. Node's own `parseEnv` is not used:
+ * a line whose empty value ends in a space takes the next line as its value there. The binary reads
+ * env files the same way (`parse_env` in engine/cli/src/project.rs), and both are held to
+ * engine/cli/src/env-file-cases.json.
+ */
 export function readEnvFile(path: string): Record<string, string> {
-  if (!existsSync(path)) return {};
-  const out: Record<string, string> = {};
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (m) out[m[1]!] = m[2]!.replace(/^(["'])(.*)\1$/, "$2");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  } catch {
+    return {};
   }
-  return out;
+  const lineEnd = (from: number) => {
+    const n = text.indexOf("\n", from);
+    return n < 0 ? text.length : n;
+  };
+  const vars: Record<string, string> = Object.create(null);
+  for (let at = 0; at < text.length; ) {
+    let end = lineEnd(at);
+    const line = text.slice(at, end);
+    const eq = /^[ \t]*#/.test(line) ? -1 : line.indexOf("=");
+    if (eq < 0) {
+      at = end + 1;
+      continue;
+    }
+    const name = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*$/.exec(line.slice(0, eq))?.[1];
+    const start = at + eq + 1 + /^[ \t]*/.exec(line.slice(eq + 1))![0].length;
+    let raw = text.slice(start, end).split("#")[0]!.replace(/[ \t]+$/, "");
+    const quote = text[start];
+    if (quote === '"' || quote === "'" || quote === "`") {
+      // The quote closes, as in dotenv, at the first quote of its kind that no backslash escapes, or
+      // else at an escaped one before it, the last first: at the first of these that nothing but
+      // blanks and a comment follows on its line.
+      const escaped: number[] = [];
+      let close = text.indexOf(quote, start + 1);
+      for (; close >= 0 && text[close - 1] === "\\"; close = text.indexOf(quote, close + 1)) escaped.push(close);
+      const closes = [...(close >= 0 ? [close] : []), ...escaped.reverse()].find((p) => /^[ \t]*(?:#.*)?$/.test(text.slice(p + 1, lineEnd(p))));
+      if (closes !== undefined) {
+        raw = text.slice(start, closes + 1);
+        end = lineEnd(closes);
+      }
+    }
+    let value = raw.length > 1 && /^["'`]/.test(raw) && raw.endsWith(raw[0]!) ? raw.slice(1, -1) : raw;
+    if (raw.startsWith('"')) value = value.replaceAll("\\n", "\n").replaceAll("\\r", "\r");
+    if (name) vars[name] = value;
+    at = end + 1;
+  }
+  return vars;
 }
 
-/** 1-based line and column of a byte offset, for a message that names the place in the file. */
+/** 1-based line and column of a byte offset, for a message that names the place in the file: the column in characters, as `reylo analyze` counts it. */
 function place(text: string, offset: number): string {
   const before = Buffer.from(text, "utf8").subarray(0, offset).toString("utf8");
   const lines = before.split("\n");
-  return `${lines.length}:${lines.at(-1)!.length + 1}`;
+  return `${lines.length}:${[...lines.at(-1)!].length + 1}`;
+}
+
+/** Why a file could not be read, as `reylo analyze` says it (`unreadable` in engine/cli/src/project.rs). */
+function unreadable(e: NodeJS.ErrnoException): string {
+  if (e.code === "ENOENT") return "it does not exist";
+  if (e.code === "EISDIR") return "it is a directory";
+  if (e.code === "EACCES" || e.code === "EPERM") return "permission to read it is denied";
+  return e.message;
 }
 
 /**
@@ -286,7 +341,7 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
   } else if (run.status !== 0) {
     outcome = { error: `which ${run.status === null ? `ended on ${run.signal}` : `exited with code ${run.status}`}${said ? `: ${said}` : ""}` };
   } else {
-    const value = run.stdout.replace(/(\r?\n)+$/, "");
+    const value = run.stdout.replace(/[\r\n]+$/, "");
     outcome = value ? { value } : { error: "which printed nothing" };
   }
   commandOutputs.set(key, "value" in outcome ? outcome : { ...outcome, at: Date.now() });
@@ -310,7 +365,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     try {
       text = readFileSync(file, "utf8");
     } catch (e) {
-      error = `Cannot read ${shown(file)}: ${(e as Error).message}`;
+      error = `Cannot read ${shown(file)}: ${unreadable(e as NodeJS.ErrnoException)}.`;
     }
     const types = text === undefined ? null : TYPES_KEY.exec(text);
     if (types) {
@@ -354,7 +409,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     const parts = urlParts(written);
     urlSource = `"direct_url" in ${shown(file!)}`;
     if ("open" in parts) {
-      error ??= `${shown(file!)}: "direct_url" opens $( at column ${parts.open + 1} and never closes it.`;
+      error ??= `${shown(file!)}: "direct_url" opens $( at column ${[...written.slice(0, parts.open)].length + 1} and never closes it.`;
     } else {
       // The text's ${VAR}s are Reylo's; a command's are its shell's, so that no value is read as
       // shell syntax, and its shell sees the variables the text would: the environment's, then
@@ -413,6 +468,8 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   }
   let dialect = url ? dialectOf(url) : "postgres";
   if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.`;
+  const unusable = url && dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
+  if (unusable) error ??= `Cannot read the SQLite URL ${url} (${urlSource}): ${unusable}.`;
   // Either name, created or removed, changes the project.
   const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
   // No URL names the database: the entries of `.reylo/`, which a build with no URL reads
@@ -431,9 +488,28 @@ export function duckdbPath(url: string, baseDir: string): string {
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
 
+/**
+ * Why a `file://` URL names no file Node reads, as `reylo analyze` says it (`file_url_path` in
+ * engine/cli/src/project.rs), or undefined where it names one or is no `file://` URL.
+ */
+export function sqliteUrlProblem(url: string): string | undefined {
+  if (!url.startsWith("file://")) return undefined;
+  try {
+    fileURLToPath(url);
+    return undefined;
+  } catch (e) {
+    const { code, message } = e as NodeJS.ErrnoException;
+    if (code === "ERR_INVALID_FILE_URL_HOST") return `its host must be localhost or empty, not ${/^file:\/\/([^/?#]*)/.exec(url)![1]}`;
+    if (code === "ERR_INVALID_FILE_URL_PATH") return /absolute/.test(message) ? "its path must be absolute, with a drive letter" : "its path encodes a separator";
+    return message;
+  }
+}
+
 /** `file:./dev.db`, `file:///abs/dev.db`, `sqlite:./dev.db`, `:memory:` → a path, relative ones resolved against baseDir. */
 export function sqlitePath(url: string, baseDir: string): string {
   if (url === ":memory:" || url === "file::memory:") return ":memory:";
+  const unusable = sqliteUrlProblem(url);
+  if (unusable) throw new Error(`Cannot read the SQLite URL ${url}: ${unusable}.`);
   const raw = url.startsWith("file://") ? fileURLToPath(url) : url.replace(/^(file|sqlite):(\/\/)?/, "");
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
