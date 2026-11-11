@@ -220,6 +220,22 @@ await db.transaction(async (tx) => {
 });
 ```
 
+```ts twoslash tab="Knex" dialect="postgres"
+import knex from "knex";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "pg", connection: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (trx) => {
+  await createUser.run(trx, { name: "Ada" });
+  await createUser.run(trx, { name: "Grace" });
+});
+```
+
 ### MySQL [#mysql-drivers]
 
 ```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
@@ -317,6 +333,22 @@ const user = await getUser.run(db, { id: 1 });
 await db.transaction(async (tx) => {
   await createUser.run(tx, { name: "Ada" });
   await createUser.run(tx, { name: "Grace" });
+});
+```
+
+```ts twoslash tab="Knex" dialect="mysql"
+import knex from "knex";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "mysql2", connection: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (trx) => {
+  await createUser.run(trx, { name: "Ada" });
+  await createUser.run(trx, { name: "Grace" });
 });
 ```
 
@@ -524,6 +556,22 @@ const user = await getUser.run(db, { id: 1 });
 db.transaction((tx) => {
   createUser.runSync(tx, { name: "Ada" });
   createUser.runSync(tx, { name: "Grace" });
+});
+```
+
+```ts twoslash tab="Knex" dialect="sqlite"
+import knex from "knex";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "better-sqlite3", connection: { filename: "app.db" } });
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (trx) => {
+  await createUser.run(trx, { name: "Ada" });
+  await createUser.run(trx, { name: "Grace" });
 });
 ```
 
