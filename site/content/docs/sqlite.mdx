@@ -455,7 +455,7 @@ where o.ships_on is not null
 
 **Expressions**
 
-Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
+Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Nor is a remainder by a fraction under 1, such as `x % 0.5`: SQLite casts both operands of `%` to `INTEGER`, which makes the divisor `0`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
 
 <Inferred>
 
