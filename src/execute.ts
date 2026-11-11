@@ -137,12 +137,24 @@ export type DrizzleMysqlTransaction = { rollback(): never; execute(query: any): 
 export type DrizzleSqliteTransaction = { rollback(): never; get(query: any): unknown; all(query: any): unknown };
 /** A transaction of a synchronous SQLite driver's Drizzle database, whose `all()` returns the rows themselves. */
 export type DrizzleSyncSqliteTransaction = { rollback(): never; get(query: any): unknown; all(query: any): unknown[] };
+/**
+ * A Knex instance, or a transaction or savepoint it hands out (`knex.transaction(async (trx) => …)`):
+ * `run` runs on a connection its `client` acquires from the pool and releases after, which inside
+ * a transaction is the transaction's own, so the values are what Reylo decodes on that driver
+ * (`pg`, `mysql2`, `better-sqlite3` or `sqlite3`). Knex types `client` as any, so the type cannot
+ * say which database an instance is for: a statement for another one is refused when it runs.
+ */
+export type KnexClient = {
+  readonly client: { acquireConnection(): Promise<unknown>; releaseConnection(connection: any): unknown };
+  raw(...args: any[]): unknown;
+  transaction(...args: any[]): unknown;
+};
 /** Every Postgres client `run` takes, or a transaction, savepoint or connection taken from one. */
-export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient | SlonikClient | DrizzleDatabase<PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient> | DrizzlePgTransaction;
+export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient | SlonikClient | DrizzleDatabase<PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient> | DrizzlePgTransaction | KnexClient;
 /** Every MySQL client `run` takes, or a transaction or connection taken from one. */
-export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction;
+export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction | KnexClient;
 /** Every SQLite client `run` takes, or a transaction taken from one. */
-export type SqliteClient = SyncSqliteClient | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction;
+export type SqliteClient = SyncSqliteClient | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction | KnexClient;
 
 export type { DuckdbClient } from "./decode-duckdb.ts";
 
@@ -254,6 +266,7 @@ export function execute<D extends Dialect>(
   params: ParamsInput = {},
 ): unknown[] | Promise<unknown[]> {
   const c = underneath(client as AnyClient);
+  if (isKnex(c)) return onKnexConnection(c, query.dialect, (connection) => execute(connection as ClientFor<D>, query, params));
   const runSync = query.runtime.runSync;
   if (runSync && (isSyncSqlite(c) || isDurableObjectSql(c))) return withCodecs(query, executeSyncSqlite(c, query, params, runSync));
   const nonFinite = query.dialect === "postgres" && query.nonFinite !== undefined && query.columns !== undefined ? rowMasks(query.columns, query.nonFinite) : [];
@@ -291,6 +304,39 @@ function underneath(c: AnyClient): AnyClient {
   // drizzle-orm/durable-sqlite keeps the Durable Object's storage, whose SQL storage is its sql.
   const sql = (client as { sql?: AnyClient }).sql;
   return isDurableObjectSql(sql) ? sql! : client;
+}
+
+// A Knex instance, transaction or savepoint: a function with raw() and transaction(), whose client
+// hands out the driver's connections. Checked before every other client, since the instance is a
+// function, as Neon's neon() is, and calling it starts a query builder on a table of that name.
+function isKnex(c: AnyClient | null | undefined): boolean {
+  if (typeof c !== "function" || typeof c.raw !== "function" || typeof c.transaction !== "function") return false;
+  const client = (c as { client?: { acquireConnection?: unknown; releaseConnection?: unknown } }).client;
+  return typeof client?.acquireConnection === "function" && typeof client.releaseConnection === "function";
+}
+
+// The drivers Knex names on its client, `client.driverName`, whose connections Reylo reads, each with
+// its database. Any other (pgnative, mysql, cockroachdb, pg-redshift, mssql, oracledb) is refused.
+const knexDrivers: Readonly<Record<string, Dialect>> = { pg: "postgres", mysql2: "mysql", mariadb: "mysql", "better-sqlite3": "sqlite", sqlite3: "sqlite" };
+
+/**
+ * Runs on a connection a Knex instance or transaction hands out: one its pool lends, given back
+ * after, or the transaction's own, whose release does nothing. A transaction that has committed or
+ * rolled back has given its connection back to the pool, so it is refused, as Knex refuses it. Its
+ * type cannot say which database an instance is for, so one for another database is refused here.
+ */
+async function onKnexConnection(knex: AnyClient, dialect: Dialect, run: (connection: AnyClient) => unknown[] | Promise<unknown[]>): Promise<unknown[]> {
+  const driver: unknown = knex.client.driverName;
+  const database = typeof driver === "string" && Object.hasOwn(knexDrivers, driver) ? knexDrivers[driver] : undefined;
+  if (typeof driver === "string" && database === undefined) throw new TypeError(`reylo cannot run on a Knex instance over ${driver}: it reads the connections of ${Object.keys(knexDrivers).join(", ")}.`);
+  if (database !== undefined && database !== dialect) throw new TypeError(`reylo cannot run a ${dialect} statement on a Knex instance for ${driver}, a ${database} driver: pass a Knex instance for ${dialect}.`);
+  if (typeof knex.isCompleted === "function" && knex.isCompleted()) throw new Error("reylo cannot run a statement on a Knex transaction that has already committed or rolled back: its connection is back in the pool.");
+  const connection = await knex.client.acquireConnection();
+  try {
+    return await run(connection);
+  } finally {
+    await knex.client.releaseConnection(connection);
+  }
 }
 
 /** The synchronous path alone, for `runSync`: any other client is refused before anything runs. */
@@ -741,9 +787,9 @@ function indexOf(query: QueryModule, p: { name: string; start: number; end: numb
 }
 
 const accepted: Record<Dialect, string> = {
-  postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database over one of them",
-  mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database over one of them",
-  sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database over one of them",
+  postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database or Knex instance over one of them",
+  mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database or Knex instance over one of them",
+  sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database or Knex instance over one of them",
   duckdb: "runAndReadAll(sql, values) as on @duckdb/node-api's DuckDBConnection",
 };
 
