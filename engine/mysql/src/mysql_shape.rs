@@ -57,7 +57,10 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
     let hint = if crate::mysql_derived::is_materialized(q) { crate::mysql_derived::hint() } else { String::new() };
     let grouped = crate::mysql_nulls::grouped(&select.group_by);
     let top = Level { ctx: 0, from: select.from.clone(), with: q.with.clone() };
-    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped, windows: select.named_window.clone() };
+    // A statement that groups or aggregates keeps every expression of its select list outside an
+    // aggregate's arguments valid under its GROUP BY, which a probe of them carries ([`group_of`]).
+    let groups = group_of(select).into_iter().map(|g| (0, g)).collect();
+    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped, groups, in_aggregate: 0, windows: select.named_window.clone() };
     let mut columns = Vec::new();
     for item in &select.projection {
         // The server names an unaliased expression by its text, which no build reproduces
@@ -76,14 +79,40 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
             columns.push((alias.value.clone(), shape));
         }
     }
+    let group = |d: &Draft| b.groups.get(&d.ctx).filter(|_| d.grouped).map_or(&[][..], Vec::as_slice);
     let wider = |d: &Draft, from: &[TableWithJoins]| match &d.wrap {
-        Some(w) => wrapped_text(w, &hint, &d.items, from),
-        None => text(&d.with, &hint, &d.items, from),
+        Some(w) => wrapped_text(w, &hint, &d.items, from, group(d)),
+        None => text(&d.with, &hint, &d.items, from, group(d)),
     };
-    let probes = b.drafts.iter().map(|d| Probe { sql: text(&d.with, &hint, &d.items, &d.from), wider: d.wider.as_ref().map(|f| wider(d, f)) }).collect();
+    let probes = b.drafts.iter().map(|d| Probe { sql: text(&d.with, &hint, &d.items, &d.from, group(d)), wider: d.wider.as_ref().map(|f| wider(d, f)) }).collect();
     b.wanted.sort_unstable();
     b.wanted.dedup();
     Plan { columns, probes, booleans: b.booleans, either: b.either, wanted: b.wanted }
+}
+
+/// The GROUP BY the probe of a query's own expressions outside an aggregate's arguments carries:
+/// a plain one's, or none for a query that aggregates without one. A GROUP BY that may name a
+/// column of the select list ([`names_output`]) would name one of the probe's own, so it is none a
+/// probe can carry, and neither is one WITH ROLLUP, which nulls what it groups by.
+fn group_of(select: &ast::Select) -> Option<Vec<Expr>> {
+    let ast::GroupByExpr::Expressions(exprs, _) = &select.group_by else { return None };
+    if !exprs.is_empty() {
+        return (crate::mysql_nulls::grouped(&select.group_by) && !exprs.iter().any(|g| names_output(g, &select.projection))).then(|| exprs.clone());
+    }
+    select.projection.iter().any(|i| matches!(i, SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } if crate::mysql::has_aggregate(e))).then(Vec::new)
+}
+
+/// Whether a GROUP BY item may name a column of the select list rather than an expression over
+/// the FROM: a position (`GROUP BY 1`), or a bare name that is an alias of the select list. MySQL
+/// takes a bare name for a column of the FROM first, which the planning cannot see, so a name that
+/// is both counts too: it only leaves the probe without the GROUP BY.
+fn names_output(item: &Expr, projection: &[SelectItem]) -> bool {
+    match item {
+        Expr::Value(_) => true,
+        Expr::Nested(inner) => names_output(inner, projection),
+        Expr::Identifier(name) => projection.iter().any(|i| matches!(i, SelectItem::ExprWithAlias { alias, .. } if alias.value.eq_ignore_ascii_case(&name.value))),
+        _ => false,
+    }
 }
 
 /// A WITH query in scope: its name as written, and the names of its columns.
@@ -246,12 +275,12 @@ const WRAPPED: &str = "reylo_probe";
 /// `SELECT reylo_probe.* FROM <around>, LATERAL (SELECT <items> FROM <from>) AS reylo_probe`: a
 /// probe whose FROM reads the tables of `around` as a subquery reads a query around it. Each item
 /// is named by its position, since a derived table's columns need names of their own.
-fn wrapped_text(wrap: &Wrap, hint: &str, items: &[Expr], wider: &[TableWithJoins]) -> String {
+fn wrapped_text(wrap: &Wrap, hint: &str, items: &[Expr], wider: &[TableWithJoins], group: &[Expr]) -> String {
     let (around, from) = wider.split_at(wrap.at);
     let items: Vec<String> = items.iter().enumerate().map(|(i, e)| format!("{e} AS a{i}")).collect();
     let from: Vec<String> = from.iter().map(|f| f.to_string()).collect();
     let mut tables: Vec<String> = around.iter().map(|f| f.to_string()).collect();
-    tables.push(format!("LATERAL ({}SELECT {} FROM {}) AS {WRAPPED}", wrap.inner_with, items.join(", "), from.join(", ")));
+    tables.push(format!("LATERAL ({}SELECT {} FROM {}{}) AS {WRAPPED}", wrap.inner_with, items.join(", "), from.join(", "), group_text(group)));
     format!("{}SELECT {hint}{WRAPPED}.* FROM {}", wrap.with, tables.join(", "))
 }
 
@@ -323,14 +352,22 @@ fn correlated_on(t: &TableWithJoins) -> bool {
     read.iter().any(|q| !names.iter().any(|n| n.eq_ignore_ascii_case(q)))
 }
 
-fn text(with: &str, hint: &str, items: &[Expr], from: &[TableWithJoins]) -> String {
+fn text(with: &str, hint: &str, items: &[Expr], from: &[TableWithJoins], group: &[Expr]) -> String {
     let items: Vec<String> = items.iter().map(|e| e.to_string()).collect();
     if from.is_empty() {
-        format!("{with}SELECT {hint}{}", items.join(", "))
+        format!("{with}SELECT {hint}{}{}", items.join(", "), group_text(group))
     } else {
         let from: Vec<String> = from.iter().map(|f| f.to_string()).collect();
-        format!("{with}SELECT {hint}{} FROM {}", items.join(", "), from.join(", "))
+        format!("{with}SELECT {hint}{} FROM {}{}", items.join(", "), from.join(", "), group_text(group))
     }
+}
+
+/// ` GROUP BY <group>`, or nothing for no GROUP BY.
+fn group_text(group: &[Expr]) -> String {
+    if group.is_empty() {
+        return String::new();
+    }
+    format!(" GROUP BY {}", group.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", "))
 }
 
 /// One query the builder stands in: the statement, or a scalar subquery inside it.
@@ -360,6 +397,12 @@ struct Builder<'a> {
     reads: Reads,
     /// Whether the statement's SELECT has a plain GROUP BY, where no group is empty.
     grouped: bool,
+    /// For each query that groups or aggregates, by its context id, its GROUP BY (empty for one
+    /// that only aggregates): what the probe of its own expressions outside an aggregate carries.
+    /// The statement's is context 0's, and a scalar subquery's its own ([`Builder::subquery_group`]).
+    groups: HashMap<usize, Vec<Expr>>,
+    /// How many aggregates of the query the walk stands in it is inside the arguments of.
+    in_aggregate: usize,
     /// The statement's WINDOW clause, which an OVER clause of its own SELECT names windows of.
     windows: Vec<ast::NamedWindowDefinition>,
 }
@@ -403,6 +446,8 @@ struct Draft {
     /// Where the wider form reads this `FROM` in a LATERAL derived table of its own
     /// ([`wrapped_text`]), so that what is around it is a query around it again.
     wrap: Option<Wrap>,
+    /// Whether the probe carries its query's GROUP BY ([`Builder::groups`]).
+    grouped: bool,
     items: Vec<Expr>,
 }
 
@@ -534,18 +579,21 @@ impl Builder<'_> {
                     // An aggregate over no rows is NULL, so the array is non-null only under a
                     // guard, under a plain GROUP BY, where every group has a row, or over a window
                     // frame that always holds the current row, for an aggregate of the statement's
-                    // own SELECT. One inside a subquery may be the outer query's, which says
-                    // nothing of its rows.
+                    // own SELECT, or of a scalar subquery that groups ([`Builder::plain_group`]).
+                    // One inside any other subquery may be the outer query's, which says nothing of
+                    // its rows, and the windows are the statement's.
                     "json_arrayagg" => {
                         if args.len() != 1 {
                             return Shape::Unknown;
                         }
                         let has_a_row = match &f.over {
-                            None => self.grouped,
-                            Some(_) => crate::mysql_nulls::windowed(e, &self.windows) == Some(crate::mysql_nulls::Windowed::Always),
+                            None => self.plain_group(),
+                            Some(_) => self.stack.len() == 1 && crate::mysql_nulls::windowed(e, &self.windows) == Some(crate::mysql_nulls::Windowed::Always),
                         };
-                        let non_null = has_a_row && self.stack.len() == 1;
-                        Shape::Array { items: Box::new(self.walk_as(args[0], Reads::Copy)), non_null }
+                        self.in_aggregate += 1;
+                        let items = self.walk_as(args[0], Reads::Copy);
+                        self.in_aggregate -= 1;
+                        Shape::Array { items: Box::new(items), non_null: has_a_row }
                     }
                     // The value is the first argument that is not NULL. A constructor that is
                     // never NULL is the value whatever follows it; one that may be NULL keeps its
@@ -572,11 +620,18 @@ impl Builder<'_> {
             Expr::Subquery(q) => {
                 let SetExpr::Select(select) = q.body.as_ref() else { return Shape::Unknown };
                 let Some(inner) = single_projection(q) else { return Shape::Unknown };
+                let group = self.subquery_group(q, select);
                 let outer_ctes = self.ctes.len();
                 self.ctes.extend(with_names(q));
                 self.next_ctx += 1;
+                if let Some(group) = group {
+                    self.groups.insert(self.next_ctx, group);
+                }
                 self.stack.push(Level { ctx: self.next_ctx, from: select.from.clone(), with: q.with.clone() });
+                // The subquery's select list is outside its own aggregates, wherever it stands.
+                let in_aggregate = std::mem::take(&mut self.in_aggregate);
                 let shape = self.walk_as(inner, Reads::Result);
+                self.in_aggregate = in_aggregate;
                 self.stack.pop();
                 // A scalar subquery is one row only when it is an ungrouped aggregate of its own
                 // (`owns`); anything else can match nothing and hand back NULL, and for a plain
@@ -619,7 +674,13 @@ impl Builder<'_> {
     /// Whether every aggregate a scalar subquery's text names is its own for certain
     /// ([`Builder::owns`]) or, likewise, a subquery's inside its one select item.
     fn keeps_its_aggregates(&mut self, q: &Query) -> bool {
-        let (mut calls, window) = aggregates_in(&q.to_string());
+        self.keeps_aggregates_in(q, &q.to_string())
+    }
+
+    /// Whether every aggregate `text`, a scalar subquery's or a part of it, names is the
+    /// subquery's own for certain ([`Builder::keeps_its_aggregates`]).
+    fn keeps_aggregates_in(&mut self, q: &Query, text: &str) -> bool {
+        let (mut calls, window) = aggregates_in(text);
         let SetExpr::Select(select) = q.body.as_ref() else { return calls == 0 && !window };
         let Some(item) = single_projection(q) else { return calls == 0 && !window };
         let outer_ctes = self.ctes.len();
@@ -640,6 +701,35 @@ impl Builder<'_> {
         !window && calls == own
     }
 
+    /// The GROUP BY the probe of a scalar subquery's own expressions carries, as the statement's
+    /// does ([`group_of`]), where every aggregate its select item names is its own
+    /// ([`Builder::keeps_aggregates_in`]): an aggregate of a query around it is one value for all
+    /// of the subquery's rows, which the probe would read over the subquery's groups instead. Its
+    /// WHERE, HAVING and ORDER BY are no part of a probe.
+    fn subquery_group(&mut self, q: &Query, select: &ast::Select) -> Option<Vec<Expr>> {
+        let item = single_projection(q)?;
+        if !self.keeps_aggregates_in(q, &item.to_string()) {
+            return None;
+        }
+        group_of(select)
+    }
+
+    /// Whether the walk stands in the select list of a query that groups or aggregates, outside the
+    /// arguments of its aggregates.
+    fn outside_aggregates(&self) -> bool {
+        self.in_aggregate == 0 && self.groups.contains_key(&self.stack[self.stack.len() - 1].ctx)
+    }
+
+    /// Whether an aggregate where the walk stands is one of a query with a plain GROUP BY, where
+    /// every group has a row: the statement's, or a scalar subquery's whose every aggregate is its
+    /// own ([`Builder::subquery_group`]).
+    fn plain_group(&self) -> bool {
+        match self.stack.len() {
+            1 => self.grouped,
+            depth => self.groups.get(&self.stack[depth - 1].ctx).is_some_and(|g| !g.is_empty()),
+        }
+    }
+
     /// Walk a value that the function writing it reads as `reads`.
     fn walk_as(&mut self, e: &Expr, reads: Reads) -> Shape {
         let outer = std::mem::replace(&mut self.reads, reads);
@@ -650,11 +740,21 @@ impl Builder<'_> {
 
     /// One value expression, as a column of the probe for the constructor's own `FROM` context.
     fn leaf(&mut self, e: &Expr) -> Shape {
+        // An expression of the query's own outside an aggregate's arguments may aggregate, so it
+        // goes in the probe that carries the GROUP BY. Under a GROUP BY, where every group has a
+        // row, a bare column is valid without it, and stays beside the arguments; beside an
+        // aggregate with no GROUP BY it is NULL over no rows, which only a probe with the
+        // aggregate shows.
         let ctx = self.stack[self.stack.len() - 1].ctx;
-        let probe = match self.drafts.iter().position(|d| d.ctx == ctx) {
+        let bare = matches!(e, Expr::Identifier(_) | Expr::CompoundIdentifier(_));
+        let grouped = self.outside_aggregates() && !(bare && self.groups.get(&ctx).is_some_and(|g| !g.is_empty()));
+        let probe = match self.drafts.iter().position(|d| d.ctx == ctx && d.grouped == grouped) {
             Some(i) => i,
             None => match self.draft() {
-                Some(i) => i,
+                Some(i) => {
+                    self.drafts[i].grouped = grouped;
+                    i
+                }
                 None => return Shape::Unknown,
             },
         };
@@ -724,7 +824,7 @@ impl Builder<'_> {
         };
         let wider = wider.filter(|w| w.len() != from.len());
         let wrap = wrap.filter(|_| wider.is_some());
-        self.drafts.push(Draft { ctx, with, from, wider, wrap, items: Vec::new() });
+        self.drafts.push(Draft { ctx, with, from, wider, wrap, grouped: false, items: Vec::new() });
         Some(self.drafts.len() - 1)
     }
 }
@@ -1002,6 +1102,30 @@ mod tests {
         let posts = Shape::Array { items: Box::new(Shape::Object { fields: vec![("id".into(), Shape::Column { probe: 0, index: 0 }), ("title".into(), Shape::Column { probe: 0, index: 1 })], non_null: true }), non_null: true };
         let meta = Shape::Object { fields: vec![("email".into(), Shape::Column { probe: 1, index: 0 }), ("n".into(), Shape::Column { probe: 1, index: 1 })], non_null: true };
         assert_eq!(plan.columns, vec![("posts".to_string(), posts), ("meta".to_string(), meta)]);
+    }
+
+    #[test]
+    fn an_aggregate_beside_a_column_is_probed_under_the_group_by() {
+        let probes = |sql: &str| plan(&query(sql), &Columns::new()).probes.into_iter().map(|p| p.sql).collect::<Vec<_>>();
+        // The statement's own expressions under its GROUP BY, its bare columns and the arguments
+        // of its aggregates without it.
+        assert_eq!(
+            probes("select json_object('id', u.id, 'n', count(p.id), 'titles', json_arrayagg(p.title)) as o from users u left join posts p on p.user_id = u.id group by u.id"),
+            vec!["SELECT u.id, p.title FROM users u LEFT JOIN posts p ON p.user_id = u.id", "SELECT count(p.id) FROM users u LEFT JOIN posts p ON p.user_id = u.id GROUP BY u.id"]
+        );
+        // With no GROUP BY, a column beside an aggregate is NULL over no rows: it stays beside it.
+        assert_eq!(probes("select json_object('name', name, 'n', count(*)) as o from users where false"), vec!["SELECT name, count(*) FROM users"]);
+        // A GROUP BY by position or by an alias names the probe's own columns, so it is not carried.
+        assert_eq!(probes("select json_object('n', count(*)) as o, user_id as uid from posts group by uid"), vec!["SELECT count(*) FROM posts"]);
+        assert_eq!(probes("select json_object('n', count(*)) as o, user_id from posts group by 2"), vec!["SELECT count(*) FROM posts"]);
+        // A scalar subquery's own, under its GROUP BY, whatever its ORDER BY aggregates.
+        assert_eq!(
+            probes("select (select json_object('name', u.name, 'posts', count(*)) from users u join posts p on p.user_id = u.id group by u.id order by count(*) desc limit 1) as j"),
+            vec!["SELECT u.name FROM users u JOIN posts p ON p.user_id = u.id", "SELECT count(*) FROM users u JOIN posts p ON p.user_id = u.id GROUP BY u.id"]
+        );
+        // An aggregate of the query around the subquery is one value for all of its rows, never
+        // grouped by its GROUP BY.
+        assert_eq!(probes("select (select json_object('title', p.title, 'n', max(u.id)) from posts p group by p.title limit 1) as j from users u").len(), 1);
     }
 
     #[test]
