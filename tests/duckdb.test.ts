@@ -558,7 +558,7 @@ test("DuckDB: a UNION of one member is a union, declared, returned and bound as 
   }
 });
 
-test("DuckDB: a GEOMETRY is its WKB bytes, as a MySQL GEOMETRY is, declared unknown, and binds from its bytes or its WKT", { skip }, async () => {
+test("DuckDB: a GEOMETRY is its WKB bytes, declared unknown as a MySQL GEOMETRY is, and binds from its bytes or its WKT", { skip }, async () => {
   const root = await project("create table shapes (id integer primary key, g geometry not null, gs geometry[]);");
   const sql = "select g, gs from shapes where id = :id\n";
   const declared = (await declarations(root, { "one.sql": sql }))["one.sql"]!;

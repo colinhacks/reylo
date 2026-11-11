@@ -392,7 +392,7 @@ export function decodeDuckdbValue(v: unknown, kind: string, column: string, scal
   if (typeof o.value === "bigint" && typeof o.scale === "number") return decimal(o.value, o.scale);
   if (typeof o.months === "number" && typeof o.days === "number") return interval(o.months, o.days, o.micros);
   if (typeof o.days === "number") return o.days === DATE_INFINITY ? "infinity" : o.days === -DATE_INFINITY ? "-infinity" : civil(o.days);
-  // A BLOB is its bytes, and a GEOMETRY its WKB bytes, as a MySQL GEOMETRY is.
+  // A BLOB is its bytes, and a GEOMETRY its WKB bytes, a Uint8Array as a MySQL GEOMETRY's are.
   if (o.bytes instanceof Uint8Array) return cls !== "DuckDBBlobValue" && cls !== "DuckDBGeometryValue" && kind !== "bytes" && kind !== "unknown" ? String(v) : o.bytes;
   const time = cls.startsWith("DuckDBTime") && !cls.startsWith("DuckDBTimestamp");
   if (!time && (cls.startsWith("DuckDBTimestamp") || kind === "timestamp" || kind === "timestamptz")) {
@@ -426,7 +426,7 @@ function decode(v: unknown, t: DuckType, column: string): unknown {
       return v;
     case T.ENUM: case T.UUID: case T.BIT: case T.TIME: case T.TIME_NS: case T.TIME_TZ:
       return String(v);
-    // A GEOMETRY is its WKB bytes, as a MySQL GEOMETRY is: node-api's text of one escapes them.
+    // A GEOMETRY is its WKB bytes, a Uint8Array as a MySQL GEOMETRY's are: node-api's text of one escapes them.
     case T.BLOB: case T.GEOMETRY:
       return o.bytes instanceof Uint8Array ? o.bytes : v;
     case T.DECIMAL:
