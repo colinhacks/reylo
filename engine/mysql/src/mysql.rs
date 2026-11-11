@@ -1007,10 +1007,13 @@ fn uncorrelated(q: &Query, columns: &crate::mysql_shape::Columns) -> bool {
             Expr::Value(_) | Expr::TypedString { .. } => true,
             Expr::Identifier(i) => own.iter().all(|(_, columns)| columns.is_some()) && own.iter().any(|(_, columns)| columns.is_some_and(|c| c.contains(&i.value.to_ascii_lowercase()))),
             Expr::CompoundIdentifier(parts) => matches!(parts.as_slice(), [qualifier, _] if own.iter().any(|(name, _)| *name == qualifier.value)),
+            // A window, a FILTER, an ordered set and a call's clauses (`group_concat`'s ORDER BY and
+            // SEPARATOR) are parts the walk does not read, which may name a column of a query around.
+            Expr::Function(f) if f.over.is_some() || f.filter.is_some() || !f.within_group.is_empty() => false,
             Expr::Function(f) => match &f.args {
                 ast::FunctionArguments::None => true,
                 ast::FunctionArguments::Subquery(_) => false,
-                ast::FunctionArguments::List(list) => list.args.iter().all(|a| match a {
+                ast::FunctionArguments::List(list) => list.clauses.is_empty() && list.args.iter().all(|a| match a {
                     FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) | FunctionArg::Named { arg: FunctionArgExpr::Expr(x), .. } | FunctionArg::ExprNamed { arg: FunctionArgExpr::Expr(x), .. } => all(x),
                     // `count(*)` reads no column.
                     FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => true,

@@ -1,0 +1,1 @@
+select u.id, (select json_object('t', p.title, 'c', count(*)) from posts p group by p.title with rollup order by p.title limit 1) as a, (select json_object('k', u.name, 'c', count(*)) from posts p group by p.user_id order by p.user_id limit 1) as b from users u group by u.id

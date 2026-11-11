@@ -29,11 +29,13 @@ derived_sub.sql: one () -> { o: json { m: int?, a: int?[], k: varchar? }? }
 distinct_sub.sql: one () -> { o: json { c: bigint, g: text?, m: int? }? }
 e_having_outer_agg.sql: many () -> { o: json { k: varchar, t: varchar(≤20) }? }
 e_where_outer_agg.sql: many () -> { o: json? }
+gc_order_corr_top.sql: one () -> { o: json? }
 group_by_null.sql: one () -> { o: json { c: unknown?, a: unknown?[]? }? }
 group_by_subquery_key.sql: one () -> { o: json { c: bigint, a: int[] }? }
 group_concat_sub.sql: one () -> { o: json { g: text?, m: varchar?, gt: text?, n: bigint }? }
 having_sub.sql: one () -> { o: json { t: varchar(≤20), c: bigint, a: int[] }? }
 in_top_arrayagg.sql: many () -> { id: int, o: json ({ c: bigint, m: int?, a: varchar(≤20)[] }?)[] }
+multi_rollup.sql: many () -> { id: int | bigint?, o: json { t: varchar(≤20)?, k: int?, a: ({ p: int?, u: int? })[]? }? }
 nested_inner_own.sql: one () -> { o: json { t: varchar(≤20), c: bigint, o: { x: int?, a: int[] }? }? }
 nested_mid_level.sql: one () -> { o: json { t: varchar(≤20), m: unknown?, a: int[]? }? }
 null_funcs_grouped_sub.sql: one () -> { o: json { d: decimal?, dv: decimal?, md: bigint?, ni: int?, cd: date?, sd: date?, ia: bigint?, x: decimal?, y: int?, c: bigint }? }
@@ -42,6 +44,8 @@ objectagg_sub.sql: one () -> { o: json { o: json?, n: bigint }? }
 outer_agg_in_sub.sql: many () -> { o: json { t: unknown?, m: unknown?, a: unknown?[]? }? }
 outer_agg_qualified_table.sql: many () -> { o: json { m: unknown?, c: unknown?, a: unknown?[]? }? }
 outer_agg_shared_name.sql: many () -> { o: json { m: varchar?, c: bigint }? }
+over_corr_mid.sql: one () -> { o: json { n: bigint, s: { c: bigint, w: bigint }? } }
+over_corr_top.sql: one () -> { o: json? }
 own_with_grouped_sub.sql: many () -> { id: int, o: json { m: int?, a: int[], c: bigint, k: varchar? }? }
 own_with_grouped_sub_on.sql: many () -> { id: int, o: json { m: bigint?, a: int[], c: bigint }? }
 r_arrayagg_outer_col.sql: many () -> { id: int | bigint?, o: json { a: ({ k: int?, p: int? })[] }? }
@@ -76,6 +80,7 @@ rollup_outer_row_expr.sql: many () -> { id: int | bigint?, o: json { k: unknown?
 rollup_outer_row_ungrouped.sql: many () -> { id: int | bigint?, o: json { k: unknown?, c: unknown? } }
 rollup_sub.sql: one () -> { o: json { t: unknown?, c: unknown?, a: unknown?[]? }? }
 rollup_sub_no_agg.sql: one () -> { o: json { t: varchar(≤20)? }? }
+rollup_three_levels.sql: many () -> { id: int | bigint?, o: json { k: int?, x: int?, c: bigint?, a: int?[] }? }
 rollup_top.sql: many () -> { o: json { t: unknown?, c: unknown?, a: unknown?[]?, m: unknown? } }
 rollup_top_arrayagg.sql: many () -> { o: json { t: varchar(≤20)?, a: int[]? } }
 rollup_ungrouped_arrayagg.sql: many () -> { id: int | bigint?, o: json { k: int?, a: int?[]? } }
@@ -85,6 +90,7 @@ rowless_mid_one_row_sub.sql: one () -> { o: json { n: bigint, s: { c: bigint, k:
 rowless_strings.sql: one () -> { o: json { k: varchar?, c: varchar, a: int[]? } }
 rowless_uncorrelated_sub.sql: one () -> { o: json? }
 rowless_window.sql: one () -> { o: json { r: bigint, l: boolean | bigint?, n: bigint, f: varchar? } }
+sibling_rollup_then_plain.sql: many () -> { id: int, a: json { t: unknown?, c: unknown? }?, b: json { t: varchar(≤20), a: int[] }? }
 single_row_stats.sql: one () -> { o: json { vs: double?, ss: double?, sd: double?, v: double?, ba: bigint }? }
 single_row_stats_top.sql: many () -> { o: json { vs: double?, ss: double?, sd: double? } }
 st_collect_sub.sql: one () -> { o: json { k: varchar?, g: geometry? }? }
