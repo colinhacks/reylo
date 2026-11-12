@@ -947,7 +947,7 @@
   },
   "uuid_versions": {
     "database": "postgres",
-    "setup": "create table events (id uuid primary key default uuidv7() check (uuid_extract_version(id) = 7 and uuid_extract_version(id) is not null), source uuid default uuidv7())",
+    "setup": "create table events (id uuid primary key check (uuid_extract_version(id) = 7 and uuid_extract_version(id) is not null), source uuid default gen_random_uuid())",
     "statement": "select id, source, gen_random_uuid() as request from events",
     "descriptor": {
       "result": {

@@ -161,10 +161,10 @@ export const json_column: Example = {
   },
 };
 
-/** Postgres: a UUID's version, where the database guarantees it. `id`'s CHECKs hold it to version 7 and its version non-null, and `gen_random_uuid()` makes version 4. `source` may hold any UUID: its `default uuidv7()` does not stop an insert writing another. */
+/** Postgres: a UUID's version, where the database guarantees it. `id`'s CHECKs hold it to version 7 and its version non-null, and `gen_random_uuid()` makes version 4. `source` may hold any UUID: its `default gen_random_uuid()` does not stop an insert writing another. Every function it calls is in PostgreSQL 17, where `uuidv7()` is not. */
 export const uuid_versions: Example = {
   database: "postgres",
-  setup: "create table events (id uuid primary key default uuidv7() check (uuid_extract_version(id) = 7 and uuid_extract_version(id) is not null), source uuid default uuidv7())",
+  setup: "create table events (id uuid primary key check (uuid_extract_version(id) = 7 and uuid_extract_version(id) is not null), source uuid default gen_random_uuid())",
   statement: "select id, source, gen_random_uuid() as request from events",
   descriptor: {
     result: {
