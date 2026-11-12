@@ -1,10 +1,10 @@
 columns.sql: many () -> { done: boolean(int64 | float(11,52) | text(utf8) | bytes), starred: bool(int64 | float(11,52) | text(utf8) | bytes)?, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)?, flag: tinyint(1)(int64 | float(11,52) | text(utf8) | bytes)? }
 comparisons.sql: many () -> { eq: boolean?, ne: boolean?, missing: boolean, other: boolean, inl: boolean?, btw: boolean?, lk: boolean, gl: boolean, notn: boolean?, andn: boolean?, orn: boolean?, ex: boolean, t: boolean, f: boolean }
-not_truth_values.sql: one () -> { plus: float(11,52)?, zero: float(11,52), most: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)?, cs: int64 }
+not_truth_values.sql: one () -> { plus: float(11,52)?, zero: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), most: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)?, cs: int64 }
 passed_through.sql: many () -> { co: BOOLEAN(int64 | float(11,52) | text(utf8) | bytes), iff: boolean?, cs: BOOLEAN(int64 | float(11,52) | text(utf8) | bytes)?, sub: boolean? }
 returning.sql: one (title: text(utf8), done: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)) -> { id: INTEGER, done: boolean(int64 | float(11,52) | text(utf8) | bytes), finished: boolean }
 through_subquery.sql: many () -> { done: boolean(int64 | float(11,52) | text(utf8) | bytes), y: boolean? }
 through_view.sql: many () -> { done: boolean(int64 | float(11,52) | text(utf8) | bytes), big: boolean? }
 union_arms.sql: many () -> { done: boolean(int64 | float(11,52) | text(utf8) | bytes)? }
 union_with_null.sql: many () -> { done: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)? }
-union_with_number.sql: many () -> { done: float(11,52) }
+union_with_number.sql: many () -> { done: NUMERIC(int64 | float(11,52) | text(utf8) | bytes) }

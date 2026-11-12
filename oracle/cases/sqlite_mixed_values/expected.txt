@@ -20,6 +20,9 @@ lag_parameter_default.sql: many (p: int64) -> { v: int64? }
 lag_parameter_value.sql: many (p: int64) -> { v: int64? }
 lead_text_default.sql: many () -> { v: unknown? }
 min_untyped.sql: many () -> { v: unknown? }
+numeric_beside_number.sql: many () -> { v: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), w: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), x: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), z: NUMERIC(int64 | float(11,52) | text(utf8) | bytes) }
+numeric_in_json.sql: many () -> { v: json { due: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), on: NUMERIC(int64 | float(11,52) | text(utf8) | bytes) } }
+numeric_union.sql: many () -> { d: date(int64 | float(11,52) | text(utf8) | bytes) }
 subquery_compound.sql: many () -> { v: unknown }
 view_compound.sql: many () -> { v: unknown }
 with_compound.sql: many () -> { v: unknown }
