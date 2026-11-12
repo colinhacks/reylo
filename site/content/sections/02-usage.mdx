@@ -220,6 +220,22 @@ await db.transaction(async (tx) => {
 });
 ```
 
+```ts twoslash tab="Knex" dialect="postgres"
+import knex from "knex";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "pg", connection: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (trx) => {
+  await createUser.run(trx, { name: "Ada" });
+  await createUser.run(trx, { name: "Grace" });
+});
+```
+
 ### MySQL [#mysql-drivers]
 
 ```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
@@ -317,6 +333,22 @@ const user = await getUser.run(db, { id: 1 });
 await db.transaction(async (tx) => {
   await createUser.run(tx, { name: "Ada" });
   await createUser.run(tx, { name: "Grace" });
+});
+```
+
+```ts twoslash tab="Knex" dialect="mysql"
+import knex from "knex";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "mysql2", connection: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (trx) => {
+  await createUser.run(trx, { name: "Ada" });
+  await createUser.run(trx, { name: "Grace" });
 });
 ```
 
@@ -429,6 +461,24 @@ await db.transactionAsync(async (tx) => {
 })();
 ```
 
+```ts twoslash tab="SQLite Wasm" dialect="sqlite"
+import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const sqlite3 = await sqlite3InitModule();
+const db = new sqlite3.oo1.OpfsDb("/app.db");
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+// the function must not await, so it runs .runSync()
+db.transaction(() => {
+  createUser.runSync(db, { name: "Ada" });
+  createUser.runSync(db, { name: "Grace" });
+});
+```
+
 ```ts twoslash tab="Cloudflare D1" dialect="sqlite"
 import type { D1Database } from "@cloudflare/workers-types";
 import getUser from "./get_user.sql";
@@ -527,6 +577,22 @@ db.transaction((tx) => {
 });
 ```
 
+```ts twoslash tab="Knex" dialect="sqlite"
+import knex from "knex";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "better-sqlite3", connection: { filename: "app.db" } });
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (trx) => {
+  await createUser.run(trx, { name: "Ada" });
+  await createUser.run(trx, { name: "Grace" });
+});
+```
+
 ### DuckDB [#duckdb-drivers]
 
 ```ts tab="@duckdb/node-api"
@@ -561,6 +627,7 @@ For databases that support synchronous operations, you can use `.runSync()`.
 - `node:sqlite`
 - `bun:sqlite`
 - the `Database` of `@tursodatabase/database/compat`
+- an `oo1` database of `@sqlite.org/sqlite-wasm`
 - a Durable Object's `ctx.storage.sql`
 
 </Callout>

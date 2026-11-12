@@ -1,0 +1,1 @@
+select (select jsonb_build_object('m', max(p.n + q.n), 'c', count(*)) from posts p where p.user_id = u.id group by p.tag order by p.tag limit 1) as j from users u left join posts q on q.user_id = u.id and q.score > 5

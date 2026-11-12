@@ -1,0 +1,1 @@
+select json_object('d', max(p.n / 0), 'dv', sum(p.n div 0), 'md', max(p.n % 0), 'ni', min(nullif(p.n, p.n)), 'cd', max(cast(p.title as date)), 'sd', max(str_to_date(p.title, '%Y-%m-%d')), 'je', max(json_extract(u.doc, '$.a')), 'ia', max(inet_aton(p.title)), 'x', p.n / 0, 'y', nullif(p.n, p.n), 'k', p.user_id) as o from posts p join users u on u.id = p.user_id group by p.id

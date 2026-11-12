@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { compared, FRESH_FOR, passed, sqliteDefault, type Fresh } from "../src/fresh.ts";
 import { sqlModule } from "../src/loader.ts";
-import { DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase } from "./helpers.ts";
+import { DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase, sqliteWasmCopy } from "./helpers.ts";
 
 // The schema freshness check (src/fresh.ts, engine/core/src/fresh.rs). Postgres and MySQL run on throwaway servers named by
 // REYLO_TEST_PG and REYLO_TEST_MYSQL, each test in a database of its own.
@@ -185,6 +185,26 @@ test("SQLite: a query whose columns changed warns, naming them, and a statement 
     const insert = await built(root, url, "insert", "insert into users (mail) values (:mail)");
     db.exec("alter table users add column tenant integer not null default 0");
     await insert.run(db, { mail: "b@x" });
+  } finally {
+    db.close();
+    await closeSessions();
+  }
+});
+
+test("SQLite on SQLite Wasm: the catalog facts are read through its own database, so a column renamed after the build warns, and the statement fails on its own", async () => {
+  const root = project();
+  const file = join(root, "app.db");
+  const setup = new DatabaseSync(file);
+  setup.exec("create table users (id integer primary key, email text not null); insert into users (email) values ('a@x')");
+  setup.close();
+  const url = "file:./app.db";
+  const read = await built(root, url, "wasm_read", "select id, email from users order by id");
+  const read2 = await built(root, url, "wasm_read2", "select id, email from users order by id");
+  const db = await sqliteWasmCopy(file);
+  try {
+    assert.deepEqual(await warnings(() => assert.deepEqual(read.runSync(db).map((r: object) => ({ ...r })), [{ id: 1, email: "a@x" }])), []);
+    db.exec("alter table users rename column email to mail");
+    assert.deepEqual(await warnings(() => assert.throws(() => read2.runSync(db), /no such column: email/)), ["reylo: users.email has changed since wasm_read2.sql was built (it was TEXT not null, and no longer exists), so its types may be out of date until the next build."]);
   } finally {
     db.close();
     await closeSessions();

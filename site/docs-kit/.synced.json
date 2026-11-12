@@ -1,6 +1,6 @@
 {
   "from": "/Users/colin/Documents/docs-kit",
-  "commit": "f267e4c",
+  "commit": "f46806b",
   "files": {
     "package.json": "e906ab744cb9136ad818ce4000c6e883721b888a494da990b7125ecdbe8fbc56",
     "README.md": "a48ddecb24be6db25255e21a6c529d340219bee08e79388f8fe8926e9ae00a09",
@@ -29,7 +29,7 @@
     "src/mdx/recma-shared-popups.ts": "b12d67312b9875a469adba9ed4ca77b788f8f7958c0119451a9b4e16638ae427",
     "src/mdx/remark-sections.ts": "a81d91c95da4212fd24b15acc245206dcebf7fc0a2dfa04852d14eb4bddec0e1",
     "src/mdx/twoslash.ts": "845c73de8f06b79245ca7558b704f756919b19376bb4faaf63b1a78bbde21faa",
-    "src/style.css": "6ec27a9dff99385b39ea01e9f0d170096690a18d66f719473f6ca82ed67d44e8",
+    "src/style.css": "648e4921a0b4611000c04b16d10f263f740f6293deb1658cd389bdb359fdcb86",
     "src/sync.mjs": "2a1cf5fe7ac181004dcb2859b46003dc55808054cc2711567ee3928304812626",
     "src/vite.ts": "e8f8a6a49951ec991b24872d664efdd46cbb2121802d14279e0ea917f3f6763e"
   }

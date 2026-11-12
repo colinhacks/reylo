@@ -6,6 +6,8 @@ profile.sql: at_most_one (id: int64) -> { profile: json { user: { id: int64, nam
 repeated_key.sql: one () -> { v: json { a: unknown } }
 returning.sql: one (user_id: int64, title: text(utf8), body: text(utf8)?) -> { post: json { id: int64, title: text(utf8), body: text(utf8)?, tags: json {"type":"array","items":false,"minItems":2,"prefixItems":[{"type":"string"},{"type":["string","null"]}]} } }
 scalars.sql: many () -> { o: json { i: int64, id: int64, big: BIGINT?, r: float(11,52)?, inf: float(11,52)?, t: text(utf8), e: text(utf8)?, n: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)?, nul: unknown, cmp: int64, tru: int64, flag: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), any: unknown, doc: text(utf8)? } }
+subquery_grouped.sql: one () -> { j: json { name: text(utf8), posts: int64 }? }
+subquery_grouped_nolimit.sql: one () -> { j: json { name: text(utf8), posts: int64 }? }
 subquery_json.sql: many () -> { o: json { sub: { n: text(utf8) }?, agg: int64[], reach: text(utf8)[], none: { n: text(utf8) }? } }
 subquery_null.sql: many () -> { a: json {"type":"array","items":false,"minItems":1,"prefixItems":[{"type":["string","null"]}]}, o: json { a: json {"type":"array","items":false,"minItems":1,"prefixItems":[{"type":["string","null"]}]} }, g: json text(utf8)?[] }
 top_level.sql: many (doc: text(utf8)?) -> { a: json {"type":"array","items":false,"minItems":1,"prefixItems":[{"type":"integer","format":"int64"}]}, b: text(utf8), c: text(utf8), d: json {"type":"array","items":false,"minItems":1,"prefixItems":[{"type":"integer","format":"int64"}]}?, e: text(utf8), x: json { id: int64, name: text(utf8) } }

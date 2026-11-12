@@ -1,0 +1,1 @@
+select (select jsonb_build_object('m', max(p.id) filter (where p.score > 1000), 'c', count(*) filter (where false), 's', string_agg(p.title, ',') filter (where false), 'a', jsonb_agg(p.id) filter (where false), 'aa', array_to_json(array_agg(p.id) filter (where false))) from posts p group by p.user_id order by p.user_id limit 1) as j

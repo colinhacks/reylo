@@ -69,6 +69,7 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 | `VARCHAR`, `UUID`, `TIME`, `TIMETZ`, `BIT` | `string` | `"Ada"` |
 | `ENUM` | its labels | `"happy"` |
 | `BLOB` | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
+| `GEOMETRY` | `unknown` | its WKB bytes, a `Uint8Array` |
 | `DATE` | `string` | `"2026-10-20"` |
 | `TIMESTAMP`, `TIMESTAMP_S`, `TIMESTAMP_MS`, `TIMESTAMP_NS` | `string` | `"2026-10-20T10:00:00.5"` |
 | `TIMESTAMPTZ` | `string` | `"2026-10-20T08:00:00Z"` |

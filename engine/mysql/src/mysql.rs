@@ -854,7 +854,7 @@ fn item_expr(item: &SelectItem) -> Option<&Expr> {
 /// Whether a SELECT is an aggregate with no GROUP BY: its select list or its HAVING calls one, or
 /// a subquery's WHERE there does, where an aggregate is an outer query's ([`calls_aggregate`]).
 /// An aggregate in an ORDER BY alone is an error.
-fn lone_aggregate(s: &Select) -> bool {
+pub(crate) fn lone_aggregate(s: &Select) -> bool {
     matches!(&s.group_by, GroupByExpr::Expressions(keys, modifiers) if keys.is_empty() && modifiers.is_empty())
         && (s.having.as_ref().is_some_and(calls_aggregate) || s.projection.iter().filter_map(item_expr).any(calls_aggregate))
 }
@@ -972,7 +972,7 @@ fn holds_subquery(e: &Expr) -> bool {
 /// Whether an expression reads a row of its query outside every aggregate's call: a column, or a
 /// subquery that may read the row it stands in ([`uncorrelated`]). A part the walk does not read
 /// counts as reading one.
-fn reads_row(e: &Expr, columns: &crate::mysql_shape::Columns) -> bool {
+pub(crate) fn reads_row(e: &Expr, columns: &crate::mysql_shape::Columns) -> bool {
     let reads = |e: &Expr| reads_row(e, columns);
     match e {
         Expr::Value(_) | Expr::TypedString { .. } => false,
@@ -1007,10 +1007,13 @@ fn uncorrelated(q: &Query, columns: &crate::mysql_shape::Columns) -> bool {
             Expr::Value(_) | Expr::TypedString { .. } => true,
             Expr::Identifier(i) => own.iter().all(|(_, columns)| columns.is_some()) && own.iter().any(|(_, columns)| columns.is_some_and(|c| c.contains(&i.value.to_ascii_lowercase()))),
             Expr::CompoundIdentifier(parts) => matches!(parts.as_slice(), [qualifier, _] if own.iter().any(|(name, _)| *name == qualifier.value)),
+            // A window, a FILTER, an ordered set and a call's clauses (`group_concat`'s ORDER BY and
+            // SEPARATOR) are parts the walk does not read, which may name a column of a query around.
+            Expr::Function(f) if f.over.is_some() || f.filter.is_some() || !f.within_group.is_empty() => false,
             Expr::Function(f) => match &f.args {
                 ast::FunctionArguments::None => true,
                 ast::FunctionArguments::Subquery(_) => false,
-                ast::FunctionArguments::List(list) => list.args.iter().all(|a| match a {
+                ast::FunctionArguments::List(list) => list.clauses.is_empty() && list.args.iter().all(|a| match a {
                     FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) | FunctionArg::Named { arg: FunctionArgExpr::Expr(x), .. } | FunctionArg::ExprNamed { arg: FunctionArgExpr::Expr(x), .. } => all(x),
                     // `count(*)` reads no column.
                     FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => true,
@@ -1724,6 +1727,14 @@ impl Flow<'_> {
 /// as INT and answer BIGINT. Only a table's own column keeps its type: the prepare names the
 /// table, and `views` says which names are no table's (none known: every one may be). A column
 /// under WITH ROLLUP names no table.
+///
+/// Except beside a GROUP BY that rolls up inside parentheses ([`rolls_up_within`]), where a table's
+/// own integer column may also be of the other width, though still of its type whatever is bound. Measured on 8.4.13, through SQL_BUFFER_RESULT, `u.id`
+/// (an INT) answers as a BIGINT in `select u.id, (select json_object('t', p.title, 'k', u.id, 'c',
+/// count(*)) from posts p where p.user_id = u.id group by p.title with rollup limit 1) from users u
+/// group by u.id`, and so does the subquery `(select u.id from posts p where p.user_id = u.id group
+/// by p.title with rollup limit 1)`, though the prepare names `users` for both; 8.4.11 answers the
+/// first as an INT.
 fn settle(sql: &str, lexed: &Lexed, rewritten: &lex::Rewritten, parsed: Option<&Statement>, raw: &MysqlDescribe, views: Option<&HashSet<String>>) -> Vec<Option<Type>> {
     let kind = placeholder_kind;
     // The text outside strings, names and comments.
@@ -1768,16 +1779,18 @@ fn settle(sql: &str, lexed: &Lexed, rewritten: &lex::Rewritten, parsed: Option<&
         // A statement the engine does not read: any placeholder may reach any column.
         _ => vec![all; width],
     };
+    let rolled = rolls_up_within(&code);
     let own = |c: &crate::api::MysqlColumn| c.org_table.as_ref().is_some_and(|table| !table.is_empty() && views.is_some_and(|views| !views.contains(&table.to_ascii_lowercase())));
     raw.columns
         .iter()
         .zip(&reached)
         .map(|(c, reached)| {
-            // A table's own column is of its type whatever is bound and whatever the plan.
-            if own(c) {
-                return None;
-            }
+            // A table's own column is of its type whatever is bound and whatever the plan, but
+            // for the other integer width beside a nested rollup.
             let ty = column_type(c);
+            if own(c) {
+                return other_width(c).filter(|other| rolled && *other != ty).map(|other| Type::union(vec![ty, other]));
+            }
             match (widened(&ty, *reached), other_width(c)) {
                 (Some(either), Some(other)) if !either.members().contains(&other) && !either.is_unknown() => Some(Type::union(vec![either, other])),
                 (None, Some(other)) if ty != other => Some(Type::union(vec![ty, other])),
@@ -1785,6 +1798,24 @@ fn settle(sql: &str, lexed: &Lexed, rewritten: &lex::Rewritten, parsed: Option<&
             }
         })
         .collect()
+}
+
+/// Whether a GROUP BY inside parentheses rolls up: a subquery's, a derived table's or a WITH
+/// query's, as `code`, the text outside strings, names and comments, says. The word ROLLUP is
+/// read wherever it stands, so a bare name `rollup` counts too.
+fn rolls_up_within(code: &str) -> bool {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+    let bytes = code.as_bytes();
+    let mut depth = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b'r' | b'R' if depth > 0 && bytes.get(i..i + 6).is_some_and(|w| w.eq_ignore_ascii_case(b"rollup")) && (i == 0 || !word(bytes[i - 1])) && !bytes.get(i + 6).is_some_and(|&b| word(b)) => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The type a value of type `ty` may have where `reached` may reach it ([`Flow`]), if another.
@@ -2159,6 +2190,8 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
             }
             None => (Type::unknown(), false),
         },
+        // A value the query may hand back NULL whatever its probe says ([`crate::mysql_shape`]).
+        Shape::Nullable(inner) => (resolve(inner, outcomes, plan, flows, documents, views).0, false),
         _ => (Type::unknown(), false),
     }
 }
@@ -3436,6 +3469,30 @@ mod tests {
         let raw: MysqlDescribe = serde_json::from_value(json!({ "columns": [column(3, 11, "users")], "params": [] })).unwrap();
         let lexed = lex::lex("select 1", Dialect::Mysql).unwrap();
         assert_eq!(settle("select 1", &lexed, &lex::rewrite("select 1", &lexed, Target::Question), None, &raw, None).iter().map(|t| t.as_ref().map(Type::short)).collect::<Vec<_>>(), vec![Some("int | bigint".to_string())]);
+    }
+
+    #[test]
+    fn a_rollup_in_parentheses_widens_a_tables_own_integer() {
+        let types = |sql: &str| {
+            let lexed = lex::lex(sql, Dialect::Mysql).unwrap();
+            let column = |ty: u32, length: u32| json!({ "name": "c", "type": ty, "flags": 0, "length": length, "org_table": "users" });
+            let raw: MysqlDescribe = serde_json::from_value(json!({ "columns": [column(3, 11), column(8, 20), column(253, 80)], "params": [] })).unwrap();
+            let settled = settle(sql, &lexed, &lex::rewrite(sql, &lexed, Target::Question), None, &raw, Some(&HashSet::new()));
+            settled.iter().map(|ty| ty.as_ref().map_or("None".to_string(), Type::short)).collect::<Vec<_>>().join(" ")
+        };
+        assert_eq!(types("select u.id, (select json_object('k', u.id, 'c', count(*)) from posts p where p.user_id = u.id group by p.title with rollup limit 1) from users u group by u.id"), "int | bigint None None");
+        assert_eq!(types("select u.id from users u join (select user_id from posts group by user_id WITH\nROLLUP) s on s.user_id = u.id"), "int | bigint None None");
+        // The query's own ROLLUP, and the word in a string, a quoted name or a comment.
+        assert_eq!(types("select id, count(*) from users group by id with rollup"), "None None None");
+        assert_eq!(types("select id, (select 'with rollup'), (select `rollup` from t), (select 1 /* rollup */) from users"), "None None None");
+        assert_eq!(types("select id, (select rollups from t) from users"), "None None None");
+        // A placeholder that may reach every column widens no table's column beyond the width.
+        let sql = "select u.id, u.big, u.name from users u join (select user_id, count(*) + ? as n from posts group by user_id with rollup) s on s.user_id = u.id";
+        let lexed = lex::lex(sql, Dialect::Mysql).unwrap();
+        let column = |ty: u32, length: u32| json!({ "name": "c", "type": ty, "flags": 0, "length": length, "org_table": "users" });
+        let raw: MysqlDescribe = serde_json::from_value(json!({ "columns": [column(3, 11), column(8, 20), column(253, 80)], "params": [{ "type": 5 }] })).unwrap();
+        let settled = settle(sql, &lexed, &lex::rewrite(sql, &lexed, Target::Question), None, &raw, Some(&HashSet::new()));
+        assert_eq!(settled.iter().map(|ty| ty.as_ref().map_or("None".to_string(), Type::short)).collect::<Vec<_>>().join(" "), "int | bigint None None");
     }
 
     /// Analyzes with a host that describes each statement as `describe` says, answers the mode

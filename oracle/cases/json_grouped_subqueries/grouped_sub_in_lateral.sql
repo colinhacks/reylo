@@ -1,0 +1,1 @@
+select l.j from users u, lateral (select (select jsonb_build_object('a', jsonb_agg(p.id), 'm', max(p.n)) from posts p where p.user_id = u.id group by p.tag order by 1 limit 1) as j) l

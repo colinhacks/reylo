@@ -214,6 +214,18 @@ function pgTypes(key: object) {
 const refuseBinary = () =>
   new TypeError(`Reylo cannot read this pg client's results: it was set up with binary: true (or pg.defaults.binary), which pg 8 reads wrong (an int8 comes back as another number). Reylo decodes every value from the server's text; leave binary off.`);
 
+// pg's native client (pg.native, over pg-native) ignores the `types` a query passes, so Reylo's
+// decoders would be skipped and every value come back as pg's defaults. Its Client keeps the
+// native binding on `native`, an object pg's JavaScript Client never has; a pool of them makes
+// clients whose prototype has `_hasActiveQuery`, which only the native Client defines (pg 8.0 to 8.23).
+function isPgNative(c: AnyClient): boolean {
+  if (typeof c.getTypeParser === "function" && c.native != null && typeof c.native === "object") return true;
+  return typeof c.connect === "function" && typeof c.Client?.prototype?._hasActiveQuery === "function";
+}
+
+const refusePgNative = () =>
+  new TypeError(`Reylo cannot read this pg client's results: it is pg's native client (pg.native, over pg-native), which ignores the type parsers a query passes, so Reylo cannot decode its values. Use pg's JavaScript Client or Pool instead.`);
+
 type PgResult = { rows: Record<string, unknown>[]; fields?: { name: string; dataTypeID: number }[] };
 
 /**
@@ -265,6 +277,7 @@ export async function queryPostgres(c: AnyClient, text: string, values: unknown[
   // pg-promise formats the values into the text itself (reading $1 inside a string literal
   // too) unless it is handed a { text, values } object, which it binds.
   if (typeof c.manyOrNone === "function") return pgPromise(c, text, values, columns);
+  if (isPgNative(c)) throw refusePgNative();
   // pg's Client and PoolClient, Neon's, and @vercel/postgres's VercelClient.
   if (typeof c.getTypeParser === "function") {
     if (c.binary === true) throw refuseBinary();
@@ -296,6 +309,7 @@ export async function queryPostgres(c: AnyClient, text: string, values: unknown[
 // receive that renamed the columns is caught by the rows' keys.
 async function pgPromise(db: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
   if (typeof db.$config?.options?.receive === "function") throw refuseReceive();
+  if (db.$config?.options?.pgNative === true) throw refusePgNative();
   const run = (query: object) => (typeof db.result === "function" ? db.result(query) : db.query(query));
   const load: Load = async (sql) => {
     const r = await run({ text: sql, rowMode: "array", types: asText });

@@ -46,10 +46,14 @@ export interface Base {
   comment?: string;
 }
 
-/** Bounds on an ordered kind's values, in its canonical text (`"-1.50"`, `"2026-10-23"`, and for a decimal an exponent where it is shorter, `"1e126"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: "0"`. A side takes one of its two fields. A whole-number kind takes only `min` and `max` (`x > 0` is `min: "1"`); any other kind writes a bound as the constraint states it, so `x > 0` on a `numeric(10,2)` is `exclusive_min: "0"`, never `min: "0.01"`. Bounds constrain the finite values only: whether infinity, -infinity and NaN also occur is said by the `infinity` and `nan` flags alone, whatever the bounds. */
-export interface Bounds {
+/** Inclusive bounds on an integer's values, in its canonical text, as JSON Schema's `minimum` and `maximum` are. Every bound on a whole number has an inclusive spelling, `x > 0` being `min: "1"`, so an integer takes no exclusive bound. Its bounds constrain its values only beyond what its width implies. */
+export interface InclusiveBounds {
   min?: string;
   max?: string;
+}
+
+/** Bounds on an ordered kind's values, in its canonical text (`"-1.50"`, `"2026-10-23"`, and for a decimal an exponent where it is shorter, `"1e126"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: "0"`. A side takes one of its two fields. A bound is written as the constraint states it, so `x > 0` on a `numeric(10,2)` is `exclusive_min: "0"`, never `min: "0.01"`; an integer takes only `min` and `max` (`InclusiveBounds`). Bounds constrain the finite values only: whether infinity, -infinity and NaN also occur is said by the `infinity` and `nan` flags alone, whatever the bounds. */
+export interface Bounds extends InclusiveBounds {
   exclusive_min?: string;
   exclusive_max?: string;
 }
@@ -71,7 +75,7 @@ export interface BooleanType extends Base {
 }
 
 /** A whole number of a fixed width, two's complement unless `unsigned`: `int4` is 32 bits, MySQL `BIGINT UNSIGNED` 64 bits unsigned, SQL Server `tinyint` 8 bits unsigned, MySQL `MEDIUMINT` 24 bits, DuckDB `HUGEINT` 128 bits, SQLite `INTEGER` 64 bits, and Vertica's `TINYINT`, despite its name, 64 bits. Its range follows from the width; bounds narrow it further, from a CHECK or for a type narrower than any width, as MySQL `YEAR` (0 and 1901 to 2155, 16 bits bounded at 0 and 2155). A whole-number bound is always written inclusive, since `x > 0` is `x >= 1`. An integer of no fixed width is a `decimal` whose scale is at most 0. */
-export interface IntegerType extends Base, Bounds {
+export interface IntegerType extends Base, InclusiveBounds {
   kind: "integer";
   bits: number;
   /** From 0 to 2^bits − 1: MySQL `UNSIGNED`, SQL Server `tinyint`, Postgres `oid`. */
@@ -162,9 +166,11 @@ export interface BytesType extends Base, Lengths {
   kind: "bytes";
 }
 
-/** A 128-bit identifier (RFC 9562): Postgres `uuid`, SQL Server `uniqueidentifier`, MariaDB `UUID`. */
+/** A 128-bit identifier, in RFC 9562's text form: Postgres `uuid`, SQL Server `uniqueidentifier`, MariaDB and DuckDB `UUID`. It holds any 128 bits unless `version` says otherwise: none of these types keeps to a version or a variant, so a column holds the nil UUID and bits no RFC version describes, and a `default uuidv7()` does not stop an insert writing any other. */
 export interface UuidType extends Base {
   kind: "uuid";
+  /** Every value is of RFC 9562's variant, with this version. Written only where the database guarantees it: a value the function that made it names (`gen_random_uuid()` and `uuidv4()` make version 4, `uuidv7()` version 7), a column whose CHECKs hold `uuid_extract_version` to it and non-null (the function is NULL for a UUID of another variant, which a CHECK lets through), or a type that keeps to one, as Cassandra's `timeuuid` does to version 1. */
+  version?: number;
 }
 
 /**

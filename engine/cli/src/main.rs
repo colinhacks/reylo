@@ -6,6 +6,7 @@
 
 mod analyze;
 mod project;
+mod yaml;
 
 use project::Project;
 use reylo_migrate::Options;
@@ -15,8 +16,8 @@ use std::path::Path;
 
 const USAGE: &str = "Usage: reylo <command>
 
-  analyze <paths> [--url]   Print each statement's type descriptor, one line of JSON per
-                            statement, read from the project's database
+  analyze <paths> [--url]   Print each statement's type descriptor, read from the project's
+          [--format]        database, as YAML or, with --format json, one line of JSON each
   migrate <command>         Write, check and run migrations, and repair their history
   db <command>              Push schema.sql to a development database, reset, wipe or read it
                             (reylo migrate --help lists both groups' commands)

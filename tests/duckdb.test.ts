@@ -102,6 +102,18 @@ test("DuckDB: each column is typed by the prepared statement, and may be NULL un
   assert.match((await analyze(root, "pivot logs on level using count(*)")).diagnostics[0]!.message, /^DuckDB does not describe the columns of this statement before it runs/);
 });
 
+test("DuckDB: a UUID a call makes has its version, and a user's macro of a built-in's name is the macro", { skip }, async () => {
+  const root = await project(`create table events (id uuid primary key default uuidv7());
+create macro now() as null;`);
+  const made = await analyze(root, "select uuid() as a, gen_random_uuid() as b, uuidv4() as c, uuidv7() as d, id, now() as at from events");
+  assert.deepEqual(made.columns.slice(0, 5).map((c) => (c.type.kind === "uuid" ? (c.type.version ?? null) : c.type.kind)), [4, 4, 4, 7, null]);
+  // `now()` is the macro, NULL, where the built-in never is.
+  assert.equal(made.columns[5]!.nullable, true);
+  const shadowed = await project("create macro uuidv7() as '00000000-0000-0000-0000-000000000000'::uuid;");
+  const nil = await analyze(shadowed, "select uuidv7() as id");
+  assert.deepEqual([nil.columns[0]!.type.kind, (nil.columns[0]!.type as { version?: number }).version], ["uuid", undefined]);
+});
+
 test("DuckDB: an array of a subquery's whole rows is never NULL, nor is its element, and each field is as its column is", { skip }, async () => {
   const root = await project("create table posts (id integer primary key); create table comments (id integer primary key, post_id integer not null, body varchar); create table replies (id integer primary key, comment_id integer not null, note varchar not null)");
   const fields = (t: EngineType): unknown => (t.kind === "array" && t.element.type.kind === "record" ? { element_nullable: t.element.nullable ?? false, fields: t.element.type.fields.map((f) => [f.name, f.nullable ?? false, fields(f.type)]) } : undefined);
@@ -371,7 +383,7 @@ test("DuckDB: every type's least, greatest and NULL value round-trips through .r
   // writes back, each column into a table of its own; DuckDB then compares each with the original.
   // An array that holds NULL is not written: an array parameter takes no NULL element.
   // A struct whose fields have no names, the `tuple` column, is refused (tested above).
-  const root = await project("create table t as select row_number() over () as k, * exclude (geometry, \"tuple\") from test_all_types()");
+  const root = await project("create table t as select row_number() over () as k, * exclude (\"tuple\") from test_all_types()");
   const db0 = await api().DuckDBInstance.create(join(root, "app.duckdb"));
   const c0 = await db0.connect();
   const names = ((await c0.runAndReadAll("select column_name from duckdb_columns() where table_name = 't' and column_name <> 'k' order by column_index")) as { getRowsJson(): string[][] }).getRowsJson().map((r) => r[0]!);
@@ -552,6 +564,35 @@ test("DuckDB: a UNION of one member is a union, declared, returned and bound as 
   try {
     assert.deepEqual({ ...(await insert.run(c, { id: 1, u: { tag: "k", value: 5 } })) }, { u: { tag: "k", value: 5 } });
     assert.deepEqual({ ...(await get.run(c, { id: 1 })) }, { u: { tag: "k", value: 5 } });
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
+test("DuckDB: a GEOMETRY is its WKB bytes, declared unknown as a MySQL GEOMETRY is, and binds from its bytes or its WKT", { skip }, async () => {
+  const root = await project("create table shapes (id integer primary key, g geometry not null, gs geometry[]);");
+  const sql = "select g, gs from shapes where id = :id\n";
+  const declared = (await declarations(root, { "one.sql": sql }))["one.sql"]!;
+  const line = declared.split("\n").find((l) => l.startsWith("declare const query:"))!;
+  assert.match(line, /^declare const query: Query<\{ id: number \}, \{ g: unknown; gs: \(unknown \| null\)\[\] \| null \}, "maybeOne", "duckdb", QueryError> & /, line);
+  const insert = await built(root, "insert", "insert into shapes values (:id, :g, :gs) returning g, gs, g::varchar as wkt");
+  const get = await built(root, "get", sql);
+  await closeSessions();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    // POINT(1 2) as WKB: little-endian, type 1, then x and y as doubles.
+    const point = Uint8Array.from(Buffer.from("0101000000000000000000f03f0000000000000040", "hex"));
+    const hex = (v: unknown) => (assert.ok(v instanceof Uint8Array, `${v} is not bytes`), Buffer.from(v).toString("hex"));
+    const inserted = await insert.run(c, { id: 1, g: point, gs: [point, point] });
+    assert.deepEqual([hex(inserted.g), inserted.gs.map(hex), inserted.wkt], [hex(point), [hex(point), hex(point)], "POINT (1 2)"]);
+    // Its WKT binds too, and what `.run()` returns binds again as it is.
+    assert.equal(hex((await insert.run(c, { id: 2, g: "POINT(1 2)", gs: null })).g), hex(point));
+    const row = await get.run(c, { id: 1 });
+    assert.equal(hex((await insert.run(c, { ...row, id: 3 })).g), hex(point));
+    const plain = await defineQuery({ dialect: "duckdb", sql: "select 'LINESTRING(0 0, 1 1)'::geometry as g", params: [], cardinality: "one" }).run(c as never);
+    assert.equal(hex((plain as { g: unknown }).g), "01020000000200000000000000000000000000000000000000000000000000f03f000000000000f03f");
   } finally {
     c.closeSync();
     db.closeSync();

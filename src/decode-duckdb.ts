@@ -3,10 +3,10 @@
 // the result's own column types, which hold every field of a STRUCT and every element of a LIST:
 // a BIGINT or HUGEINT is a BigInt, a DECIMAL its exact text, a DATE `YYYY-MM-DD`, a TIMESTAMP its
 // wall-clock text with `T`, a TIMESTAMPTZ its ISO 8601 instant in UTC, an INTERVAL an ISO 8601
-// duration, a BLOB a Uint8Array, a JSON its value, a LIST an array, a STRUCT an object of its
-// fields, a MAP its entries as `{ key, value }`, and a UNION `{ tag, value }`. A year outside 0000
-// to 9999 is written as ISO 8601 extends it (`+010000`, `-000044`), and an infinite date or
-// timestamp as `infinity` or `-infinity`.
+// duration, a BLOB a Uint8Array, a GEOMETRY its WKB bytes as a Uint8Array, a JSON its value, a
+// LIST an array, a STRUCT an object of its fields, a MAP its entries as `{ key, value }`, and a
+// UNION `{ tag, value }`. A year outside 0000 to 9999 is written as ISO 8601 extends it
+// (`+010000`, `-000044`), and an infinite date or timestamp as `infinity` or `-infinity`.
 //
 // node-api binds a string, a number, a BigInt and a boolean as it is, and DuckDB casts each to its
 // parameter's type, checking its range. A list, a struct, a map or binary data it binds only as
@@ -141,7 +141,7 @@ async function loadNodeApi(c: DuckdbClient): Promise<Api> {
 const T = {
   BOOLEAN: 1, TINYINT: 2, SMALLINT: 3, INTEGER: 4, BIGINT: 5, UTINYINT: 6, USMALLINT: 7, UINTEGER: 8, UBIGINT: 9, FLOAT: 10, DOUBLE: 11, TIMESTAMP: 12, DATE: 13, TIME: 14, INTERVAL: 15,
   HUGEINT: 16, VARCHAR: 17, BLOB: 18, DECIMAL: 19, TIMESTAMP_S: 20, TIMESTAMP_MS: 21, TIMESTAMP_NS: 22, ENUM: 23, LIST: 24, STRUCT: 25, MAP: 26, UUID: 27, UNION: 28, BIT: 29, TIME_TZ: 30,
-  TIMESTAMP_TZ: 31, UHUGEINT: 32, ARRAY: 33, BIGNUM: 35, TIME_NS: 39, VARIANT: 41, TIMESTAMP_TZ_NS: 42,
+  TIMESTAMP_TZ: 31, UHUGEINT: 32, ARRAY: 33, BIGNUM: 35, TIME_NS: 39, GEOMETRY: 40, VARIANT: 41, TIMESTAMP_TZ_NS: 42,
 } as const;
 
 /**
@@ -392,8 +392,8 @@ export function decodeDuckdbValue(v: unknown, kind: string, column: string, scal
   if (typeof o.value === "bigint" && typeof o.scale === "number") return decimal(o.value, o.scale);
   if (typeof o.months === "number" && typeof o.days === "number") return interval(o.months, o.days, o.micros);
   if (typeof o.days === "number") return o.days === DATE_INFINITY ? "infinity" : o.days === -DATE_INFINITY ? "-infinity" : civil(o.days);
-  // A BLOB is its bytes, and a GEOMETRY its text, as `.run()` gives a type an extension adds.
-  if (o.bytes instanceof Uint8Array) return cls === "DuckDBGeometryValue" || (cls !== "DuckDBBlobValue" && kind !== "bytes" && kind !== "unknown") ? String(v) : o.bytes;
+  // A BLOB is its bytes, and a GEOMETRY its WKB bytes, a Uint8Array as a MySQL GEOMETRY's are.
+  if (o.bytes instanceof Uint8Array) return cls !== "DuckDBBlobValue" && cls !== "DuckDBGeometryValue" && kind !== "bytes" && kind !== "unknown" ? String(v) : o.bytes;
   const time = cls.startsWith("DuckDBTime") && !cls.startsWith("DuckDBTimestamp");
   if (!time && (cls.startsWith("DuckDBTimestamp") || kind === "timestamp" || kind === "timestamptz")) {
     const zone = cls.startsWith("DuckDBTimestampTZ") || (!cls.startsWith("DuckDBTimestamp") && kind === "timestamptz") ? "Z" : "";
@@ -426,7 +426,8 @@ function decode(v: unknown, t: DuckType, column: string): unknown {
       return v;
     case T.ENUM: case T.UUID: case T.BIT: case T.TIME: case T.TIME_NS: case T.TIME_TZ:
       return String(v);
-    case T.BLOB:
+    // A GEOMETRY is its WKB bytes, a Uint8Array as a MySQL GEOMETRY's are: node-api's text of one escapes them.
+    case T.BLOB: case T.GEOMETRY:
       return o.bytes instanceof Uint8Array ? o.bytes : v;
     case T.DECIMAL:
       return typeof o.value === "bigint" && typeof o.scale === "number" ? decimal(o.value, o.scale) : String(v);
@@ -460,7 +461,7 @@ function decode(v: unknown, t: DuckType, column: string): unknown {
       // A VARIANT holds a value of any type, which it carries beside it.
       return decode(o.value, (o.type ?? { typeId: 0 }) as DuckType, column);
     default:
-      // A type an extension adds (GEOMETRY): its text, where node-api gives a value of its own.
+      // A type an extension adds: its text, where node-api gives a value of its own.
       if (v instanceof Uint8Array) return v;
       return typeof v === "object" ? String(v) : v;
   }

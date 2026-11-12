@@ -106,7 +106,7 @@ function check(name: string, url: string, { env = {}, tsc = true, analyze = !url
   }
   if (loader.status !== 0) failures.push(`${name}: the loader's analysis exited ${loader.status}`);
   if (analyze) {
-    const analyzed = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "analyze", "queries/get_user.sql"], project, false, env);
+    const analyzed = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "analyze", "queries/get_user.sql", "--format", "json"], project, false, env);
     console.log(`reylo analyze: ${analyzed.status}\n${analyzed.out.trim()}`);
     if (analyzed.status !== 0 || !analyzed.out.includes(`"file":"queries/get_user.sql"`)) failures.push(`${name}: reylo analyze exited ${analyzed.status}`);
   }

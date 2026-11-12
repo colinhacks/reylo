@@ -5,7 +5,8 @@
 //! and the analysis refuses it, [`unnamed`]), a
 //! `MAP` as a map, a `UNION` as a tagged union of its alternatives, an `ENUM` as
 //! its labels, and a `VARCHAR` with the alias `JSON` as JSON. A type DuckDB has and the format does
-//! not structure (`GEOMETRY`, a type an extension adds) is opaque.
+//! not structure is opaque, `GEOMETRY` among them: DuckDB writes one inside JSON as its WKT, where
+//! PostGIS and MySQL, whose geometries the format's geometry describes, write GeoJSON.
 
 use crate::api::LogicalType;
 use reylo_engine_core::types::{

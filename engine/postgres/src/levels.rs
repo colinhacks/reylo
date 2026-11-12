@@ -417,6 +417,40 @@ impl Level {
                 Err(_) => return false,
             }
         }
+        self.owns_reads(&reads, subquery)
+    }
+
+    /// Whether every call in `expr` outside its subqueries is this query's own, as [`Level::owns`]
+    /// says of an aggregate: what keeps an aggregate of a query around this one out of a probe
+    /// that carries this query's GROUP BY, where it would be read over this query's groups. A
+    /// window call is the query's it stands in, and only the calls in it are read.
+    pub fn owns_every_call(&self, expr: &Node) -> bool {
+        serde_json::to_value(expr).is_ok_and(|tree| self.owns_calls(&tree))
+    }
+
+    fn owns_calls(&self, v: &Value) -> bool {
+        match v {
+            Value::Object(map) => map.iter().all(|(key, child)| match key.as_str() {
+                "SubLink" => child.get("testexpr").is_none_or(|test| self.owns_calls(test)),
+                "FuncCall" => {
+                    let window = child.get("over").is_some_and(|over| !over.is_null());
+                    let mut reads = Vec::new();
+                    let mut subquery = false;
+                    for part in ["args", "agg_order", "agg_filter"].iter().filter_map(|k| child.get(*k)) {
+                        subquery |= references(part, &mut reads);
+                    }
+                    (window || self.owns_reads(&reads, subquery)) && self.owns_calls(child)
+                }
+                _ => self.owns_calls(child),
+            }),
+            Value::Array(items) => items.iter().all(|i| self.owns_calls(i)),
+            _ => true,
+        }
+    }
+
+    /// Whether a call that reads these columns outside its subqueries, and holds a subquery or
+    /// not, is this query's ([`Level::owns`]).
+    fn owns_reads(&self, reads: &[Vec<Option<String>>], subquery: bool) -> bool {
         (reads.is_empty() && !subquery) || reads.iter().any(|fields| match fields.as_slice() {
             [Some(column)] => self.items.iter().any(|i| i.shown.has(column)) || self.whole_row(column),
             // `p.title` and `p.*`. A longer form (`app.posts.title`) names a relation by its

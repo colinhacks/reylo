@@ -15,7 +15,8 @@
 //   state into the message.
 // - SQLite: better-sqlite3 names the extended code; bun:sqlite and Bun.sql name it and give its
 //   number; node:sqlite gives the number; libsql the number and, from 0.17, the primary code's name
-//   with the extended one beside it; sqlite3 and the sqlite package only the primary code. D1 and a
+//   with the extended one beside it; SQLite Wasm the extended code's name and number before the
+//   message, and the number; sqlite3 and the sqlite package only the primary code. D1 and a
 //   Durable Object write both codes at the end of the message, and Turso's engine none, or the
 //   primary one's number before 0.8.
 // - DuckDB: @duckdb/node-api throws a plain Error whose message names the kind of error first
@@ -391,6 +392,13 @@ function sqliteError(error: unknown) {
   if (typeof e.rawCode === "number") codes.push(e.rawCode);
   if (typeof e.errno === "number" && named) codes.push(e.errno);
   if (named && typeof e.code === "string" && message.startsWith(`${e.code}: `)) message = message.slice(e.code.length + 2);
+  // SQLite Wasm's SQLite3Error: one SQLite raised writes the code's name and number before SQLite's
+  // message. Its own errors, as a value it cannot bind, carry the number 1 (SQLITE_ERROR) and no such head.
+  const wasm = typeof e.resultCode === "number" ? /^SQLITE_[A-Z_]+: sqlite3 result code \d+: ([\s\S]*)$/.exec(message) : null;
+  if (wasm) {
+    message = wasm[1]!;
+    codes.push(e.resultCode as number);
+  }
   if (!named && !codes.length) {
     const tail = /^(?:D1_ERROR: )?([\s\S]*): (SQLITE_[A-Z_]+)(?: \(extended: (SQLITE_[A-Z_]+)\))?$/.exec(message);
     const turso = e.code === "GenericFailure" ? /^(?:prepare|step) failed: (?:Runtime error: )?([\s\S]*?)(?: \((\d+)\))?$/.exec(message) : null;

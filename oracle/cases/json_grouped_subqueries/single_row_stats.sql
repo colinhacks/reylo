@@ -1,0 +1,1 @@
+select (select jsonb_build_object('sd', stddev(p.n), 'vs', var_samp(p.n), 'c', corr(p.n, p.n), 'sl', regr_slope(p.n, p.n), 'cs', covar_samp(p.n, p.n)) from posts p group by p.id order by p.id limit 1) as j

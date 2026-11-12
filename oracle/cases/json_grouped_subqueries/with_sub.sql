@@ -1,0 +1,1 @@
+with s as (select p.tag, p.score from posts p) select (select jsonb_build_object('m', max(s.score), 'a', jsonb_agg(s.score), 'k', s.tag || '') from s group by s.tag order by s.tag nulls first limit 1) as j

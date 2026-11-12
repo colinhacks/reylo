@@ -1605,6 +1605,7 @@ dependencies = [
  "reylo-engine-native",
  "reylo-migrate",
  "serde_json",
+ "serde_yaml",
  "tokio",
 ]
 
