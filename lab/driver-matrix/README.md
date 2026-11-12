@@ -31,6 +31,8 @@ Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the s
 | @tursodatabase/database | 0.8.3, 0.7.2, 0.6.1, 0.4.4 | SQLite file, opened by Turso's engine | Database from `connect()`, Database inside BEGIN/COMMIT (exec), the Transaction `db.transactionAsync(fn)` hands its callback (0.7 and later); the synchronous Database of `@tursodatabase/database/compat` and its `db.transaction(fn)` |
 | sqlite3 | 5.1.7, 6.0.1 | SQLite file | Database, BEGIN/COMMIT inside `db.serialize()` |
 | sqlite | 5.1.1 over sqlite3 5.1.7 and 6.0.1 | SQLite file | Database from `open()`, Database inside BEGIN/COMMIT |
+| @sqlite.org/sqlite-wasm | 3.54.1-build1 | SQLite file, copied into memory (in Node it opens no file) | `oo1.DB`, `oo1.DB` inside BEGIN/COMMIT (its own `db.transaction(fn)` calls the function at once, so the `db.transaction(fn)` scenarios do not apply) |
+| sql.js | 1.15.2 | SQLite file, copied into memory | Database, which Reylo refuses (S9) |
 | Cloudflare D1 | miniflare 4.20260730.0 | local workerd | D1Database, `db.withSession()` |
 | drizzle-orm | 0.45.4, over pg, postgres.js, mysql2, better-sqlite3 and @libsql/client | Postgres 14 (local), MySQL 8.4, SQLite file | `drizzle(client)`, `db.transaction(tx)`, the savepoint `tx.transaction(sp)` inside it (not on better-sqlite3, whose transaction is synchronous) |
 
@@ -38,7 +40,7 @@ The packages are installed side by side under npm aliases (`"pg-7": "npm:pg@7.18
 
 ## Scenarios
 
-Every scenario asserts its result. Each call also checks Reylo's return contract: `run` returns a promise on every client and never throws synchronously. S0 checks `runSync` as well: it returns the value itself and throws on a synchronous SQLite client (better-sqlite3, node:sqlite, bun:sqlite, Turso's compat Database), and on any other client it throws Reylo's TypeError before it calls the client.
+Every scenario asserts its result. Each call also checks Reylo's return contract: `run` returns a promise on every client and never throws synchronously. S0 checks `runSync` as well: it returns the value itself and throws on a synchronous SQLite client (better-sqlite3, node:sqlite, bun:sqlite, Turso's compat Database, SQLite Wasm's oo1 Database), and on any other client it throws Reylo's TypeError before it calls the client.
 
 | Id | Checks |
 | --- | --- |

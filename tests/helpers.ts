@@ -1,8 +1,9 @@
 // What the loader's tests share: the test databases `REYLO_TEST_PG` and `REYLO_TEST_MYSQL` name and a database of a test's own on each, the drivers `lab/drivers` installs, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 
 export const ROOT = join(import.meta.dirname, "..");
@@ -20,6 +21,36 @@ export const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSy
 export function driver(name: string): any {
   const pkg = name.startsWith("@") ? name.split("/").slice(0, 2).join("/") : name.split("/")[0]!;
   return createRequire(join(DRIVERS, pkg, "package.json"))(name);
+}
+
+let sqlite3: Promise<any> | undefined;
+
+/** SQLite Wasm's `sqlite3` namespace, as `lab/drivers` installs `@sqlite.org/sqlite-wasm`, set up once. */
+export function sqliteWasm(): Promise<any> {
+  // Its package is ESM alone, so it is imported from the file its "node" export names.
+  const require = createRequire(join(DRIVERS, "@sqlite.org", "sqlite-wasm", "package.json"));
+  return (sqlite3 ??= import(pathToFileURL(require.resolve("@sqlite.org/sqlite-wasm")).href).then((m) => m.default()));
+}
+
+/**
+ * An oo1 Database of SQLite Wasm holding a copy of the SQLite file at `file`. In Node it opens no
+ * file, so the file's bytes are read into a database in memory, as a browser opens one it was sent.
+ * A database in memory cannot be in WAL mode, which Turso's engine leaves a file in: what the WAL
+ * holds is moved into the file first, and the copy's header (bytes 18 and 19) marks it a
+ * rollback-journal database.
+ */
+export async function sqliteWasmCopy(file: string): Promise<any> {
+  const sqlite3 = await sqliteWasm();
+  const own = new DatabaseSync(file);
+  own.exec("pragma wal_checkpoint(truncate)");
+  own.close();
+  const bytes = new Uint8Array(readFileSync(file));
+  bytes[18] = bytes[19] = 1;
+  const db = new sqlite3.oo1.DB();
+  const at = sqlite3.wasm.allocFromTypedArray(bytes);
+  const { capi } = sqlite3;
+  db.checkRc(capi.sqlite3_deserialize(db.pointer, "main", at, bytes.length, bytes.length, capi.SQLITE_DESERIALIZE_FREEONCLOSE | capi.SQLITE_DESERIALIZE_RESIZEABLE));
+  return db;
 }
 
 /** Closes every session the tests opened, so that the next analysis connects afresh. */

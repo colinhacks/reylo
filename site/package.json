@@ -41,6 +41,7 @@
     "@planetscale/database": "1.20.2",
     "@react-router/dev": "8.5.0",
     "@shikijs/twoslash": "4.4.3",
+    "@sqlite.org/sqlite-wasm": "3.54.1-build1",
     "@tailwindcss/vite": "^4.1.0",
     "@tursodatabase/database": "0.8.3",
     "@types/better-sqlite3": "9.6.0",
