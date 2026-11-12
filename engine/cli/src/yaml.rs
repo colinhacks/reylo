@@ -175,9 +175,10 @@ fn plain(s: &str, in_flow: bool) -> bool {
 }
 
 /// Whether YAML prints a character as itself in a plain or literal scalar: no control character
-/// (a tab, DEL and the C1 range among them), and none YAML 1.1 reads as a line break, nor a BOM.
+/// (a tab, DEL and the C1 range among them), none YAML 1.1 reads as a line break, nor a BOM or
+/// either noncharacter YAML refuses anywhere in a stream, U+FFFE and U+FFFF.
 fn printable(c: char) -> bool {
-    !c.is_control() && !matches!(c, '\u{2028}' | '\u{2029}' | '\u{feff}')
+    !c.is_control() && !matches!(c, '\u{2028}' | '\u{2029}' | '\u{feff}' | '\u{fffe}' | '\u{ffff}')
 }
 
 /// Whether a string is written as a literal block: it has several lines, its first opens with no
@@ -269,7 +270,7 @@ diagnostics: []
     fn a_string_reads_back_as_itself_whatever_it_holds() {
         let strings = [
             "", "yes", "No", "NULL", "y", "true", "1", "18.1", "1e3", ".inf", "-1", "- a", "? a", "a: b", "a:b", "a #b", "a#b", "#a", "a,b", "[a]", "{a}", "a ", " a",
-            "?column?", "'a'", "\"a\"", "a\\b", "~", "&a", "*a", "!a", "|a", ">a", "%a", "@a", "`a`", "a\tb", "a\u{7f}", "a\u{85}b", "a\u{2028}b", "\u{feff}a", "é", "日本",
+            "?column?", "'a'", "\"a\"", "a\\b", "~", "&a", "*a", "!a", "|a", ">a", "%a", "@a", "`a`", "a\tb", "a\u{7f}", "a\u{85}b", "a\u{2028}b", "\u{feff}a", "a\u{fffe}b", "a\u{ffff}", "a\nb\u{fffe}", "é", "日本",
             "a\nb", "a\nb\n", "a\nb\n\n", "a\n\nb", " a\nb", "\na", "a\n  b", "a\n \nb", "a\r\nb", "a\n\tb", "\n", "a\n---\nb", "a\n#b",
         ];
         for s in strings {

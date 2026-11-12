@@ -17,8 +17,9 @@ pub const USAGE: &str = "Usage: reylo analyze <file.sql | directory | -> ... [--
 Prints each statement's type descriptor, with the file it was read from: as YAML, a document per
 statement (--format yaml, the default), or as one line of JSON per statement (--format json).
 Each diagnostic is also written to standard error, as file:line:column and the message, with a
-caret under its place. A directory is searched for .sql files, leaving out node_modules, dist, build, out, target,
-coverage, hidden directories and what git ignores; - reads one statement from standard input.
+caret under its place. A directory is searched for .sql files, leaving out node_modules, dist,
+build, out, target, coverage, hidden directories and what git ignores; - reads one statement
+from standard input.
 The database is --url, else the project file's direct_url, else DATABASE_URL, from the
 environment or the .env files; a relative SQLite path in --url is read from the working
 directory, one in the project's URL from the project's root. A statement the engine cannot
