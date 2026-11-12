@@ -6,11 +6,12 @@
 
 mod analyze;
 mod project;
+mod yaml;
 
 const USAGE: &str = "Usage: reylo <command>
 
-  analyze <paths> [--url]   Print each statement's type descriptor, one line of JSON per
-                            statement, read from the project's database
+  analyze <paths> [--url]   Print each statement's type descriptor, read from the project's
+          [--format]        database, as YAML or, with --format json, one line of JSON each
   play [--port] [--no-open] Serve the playground on 127.0.0.1, against the project's database
                             (from reylo's npm package: npx reylo play)
   engine <database> [call]  Serve the analysis engine of postgres, mysql, sqlite or duckdb over

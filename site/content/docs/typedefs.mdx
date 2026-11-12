@@ -36,10 +36,11 @@ const defs = await analyze({
 });
 ```
 
-Or analyze a file from the command line, which prints one descriptor per statement:
+Or analyze a file from the command line, which prints each statement's descriptor as YAML, or as one line of JSON with `--format json`:
 
 ```sh
 npx reylo analyze queries/get_user.sql
+npx reylo analyze queries/get_user.sql --format json
 ```
 
 ### `$schema`

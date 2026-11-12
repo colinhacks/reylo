@@ -1603,6 +1603,7 @@ dependencies = [
  "reylo-engine-core",
  "reylo-engine-native",
  "serde_json",
+ "serde_yaml",
  "tokio",
 ]
 

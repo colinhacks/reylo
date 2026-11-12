@@ -1,5 +1,6 @@
-//! `reylo analyze`: each statement's type descriptor (spec/index.ts), one JSON line per
-//! statement, read from the database the project names, as the type check reads it.
+//! `reylo analyze`: each statement's type descriptor (spec/index.ts), read from the database the
+//! project names, as the type check reads it: a YAML document per statement, or with
+//! `--format json` one line of JSON per statement.
 
 use crate::project::{self, Project};
 use reylo_engine_core::api::{utf16_offset, Analysis};
@@ -10,12 +11,15 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub const USAGE: &str = "Usage: reylo analyze <file.sql | directory | -> ... [--url <url>]
-       reylo analyze --sql <statement> [--url <url>]
+pub const USAGE: &str = "Usage: reylo analyze <file.sql | directory | -> ... [--url <url>] [--format yaml | json]
+       reylo analyze --sql <statement> [--url <url>] [--format yaml | json]
 
-Prints each statement's type descriptor as one line of JSON, with the file it was read from.
-A directory is searched for .sql files, leaving out node_modules, dist, build, out, target,
-coverage, hidden directories and what git ignores; - reads one statement from standard input.
+Prints each statement's type descriptor, with the file it was read from: as YAML, a document per
+statement (--format yaml, the default), or as one line of JSON per statement (--format json).
+Each diagnostic is also written to standard error, as file:line:column and the message, with a
+caret under its place. A directory is searched for .sql files, leaving out node_modules, dist,
+build, out, target, coverage, hidden directories and what git ignores; - reads one statement
+from standard input.
 The database is --url, else the project file's direct_url, else DATABASE_URL, from the
 environment or the .env files; a relative SQLite path in --url is read from the working
 directory, one in the project's URL from the project's root. A statement the engine cannot
@@ -24,6 +28,15 @@ diagnostic, and with 2 when the database cannot be reached or the statements can
 
 /// The directories a directory's search leaves out: dependencies and build output.
 const SKIPPED: &[&str] = &["node_modules", "dist", "build", "out", "target", "coverage"];
+
+/// How standard output writes each descriptor.
+#[derive(Clone, Copy, PartialEq)]
+enum Format {
+    /// A YAML document per statement, `---` between two ([`crate::yaml`]).
+    Yaml,
+    /// One line of JSON per statement.
+    Json,
+}
 
 /// One statement to analyze, and the file it was read from.
 struct Input {
@@ -68,6 +81,7 @@ impl Session {
 pub fn run(args: &[String]) -> i32 {
     let mut url: Option<String> = None;
     let mut sql: Option<String> = None;
+    let mut format = Format::Yaml;
     let mut paths: Vec<String> = Vec::new();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -76,13 +90,21 @@ pub fn run(args: &[String]) -> i32 {
                 println!("{USAGE}");
                 return 0;
             }
-            "--url" | "--sql" => match rest.next() {
+            "--url" | "--sql" | "--format" => match rest.next() {
                 Some(value) if arg == "--url" => url = Some(value.clone()),
-                Some(value) => sql = Some(value.clone()),
+                Some(value) if arg == "--sql" => sql = Some(value.clone()),
+                Some(value) => match format_of(value) {
+                    Some(given) => format = given,
+                    None => return usage(&format!("--format takes yaml or json, not {value}")),
+                },
                 None => return usage(&format!("{arg} takes a value")),
             },
             _ if arg.starts_with("--url=") => url = Some(arg["--url=".len()..].to_string()),
             _ if arg.starts_with("--sql=") => sql = Some(arg["--sql=".len()..].to_string()),
+            _ if arg.starts_with("--format=") => match format_of(&arg["--format=".len()..]) {
+                Some(given) => format = given,
+                None => return usage(&format!("--format takes yaml or json, not {}", &arg["--format=".len()..])),
+            },
             _ if arg.starts_with('-') && arg != "-" => return usage(&format!("unknown option {arg}")),
             _ => paths.push(arg.clone()),
         }
@@ -132,10 +154,18 @@ pub fn run(args: &[String]) -> i32 {
         }
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
-    runtime.block_on(analyze_all(dialect, url, given, &base, &project, inputs))
+    runtime.block_on(analyze_all(dialect, url, given, &base, &project, inputs, format))
 }
 
-async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, project: &Project, inputs: Vec<Input>) -> i32 {
+fn format_of(name: &str) -> Option<Format> {
+    match name {
+        "yaml" => Some(Format::Yaml),
+        "json" => Some(Format::Json),
+        _ => None,
+    }
+}
+
+async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, project: &Project, inputs: Vec<Input>, format: Format) -> i32 {
     let mut session = match Session::open(dialect, &url, base).await {
         Ok(session) => session,
         // A command in `direct_url` that makes a short-lived token is run again once the token is
@@ -157,7 +187,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
         _ => Dialect::Sqlite,
     };
     let mut flagged = false;
-    for input in inputs {
+    for (at, input) in inputs.into_iter().enumerate() {
         let descriptor = match session.analyze(&input.sql).await {
             Ok(analysis) => {
                 let mut descriptor = analysis.descriptor(&input.sql, version.clone());
@@ -187,6 +217,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
             },
         };
         flagged |= !descriptor.diagnostics.is_empty();
+        report(input.file.as_deref(), &input.sql, &descriptor.diagnostics);
         let mut line = Map::new();
         if let Some(file) = input.file {
             line.insert("file".into(), Value::String(file));
@@ -194,9 +225,50 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
         if let Ok(Value::Object(fields)) = serde_json::to_value(&descriptor) {
             line.extend(fields);
         }
-        println!("{}", Value::Object(line));
+        match format {
+            Format::Json => println!("{}", Value::Object(line)),
+            Format::Yaml => {
+                if at > 0 {
+                    println!("---");
+                }
+                print!("{}", crate::yaml::document(&Value::Object(line)));
+            }
+        }
     }
     i32::from(flagged)
+}
+
+/// Each diagnostic on standard error as a compiler writes one, `file:line:column: message`, with its
+/// line below it and a caret under its place, whichever format standard output holds. The column
+/// counts characters, and a place that runs past its line is marked to the line's end.
+fn report(file: Option<&str>, sql: &str, diagnostics: &[Diagnostic]) {
+    for diagnostic in diagnostics {
+        let start = byte_offset(sql, diagnostic.start);
+        let end = byte_offset(sql, diagnostic.end).max(start);
+        let line_start = sql[..start].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = sql[start..].find('\n').map_or(sql.len(), |i| start + i);
+        let number = sql[..start].matches('\n').count() + 1;
+        let column = sql[line_start..start].chars().count() + 1;
+        // A tab before the place stays a tab, so the caret lines up where the terminal puts it.
+        let lead: String = sql[line_start..start].chars().map(|c| if c == '\t' { '\t' } else { ' ' }).collect();
+        let marks = sql[start..end.min(line_end)].chars().count().max(1);
+        eprintln!("{}:{number}:{column}: {}", file.unwrap_or("<statement>"), diagnostic.message);
+        eprintln!("  {}", sql[line_start..line_end].trim_end_matches('\r'));
+        eprintln!("  {lead}{}", "^".repeat(marks));
+    }
+}
+
+/// The UTF-8 byte offset of a UTF-16 offset into `text`, as a diagnostic counts its place: the
+/// inverse of [`utf16_offset`], clamped to the text's end.
+fn byte_offset(text: &str, utf16: usize) -> usize {
+    let mut units = 0;
+    for (byte, c) in text.char_indices() {
+        if units >= utf16 {
+            return byte;
+        }
+        units += c.len_utf16();
+    }
+    text.len()
 }
 
 /// A parameter nothing in the statement types is an error at its first use, unless the project
