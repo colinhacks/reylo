@@ -283,7 +283,7 @@ select avatar from users where id = :id::int8
 
 A 128-bit identifier.
 
-Its values are those of [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562).
+It holds any 128 bits, written in [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)'s text form. A `version` says every value has that RFC 9562 version: a UUID that `uuidv7()` or `gen_random_uuid()` makes, or a column whose `CHECK`s hold `uuid_extract_version` to one and keep it non-null. A column with a `default uuidv7()` has none, since an insert may write any UUID.
 
 <TypeDef show="result.columns.0" types={{"Postgres": ["uuid"], "DuckDB": ["UUID"]}} holds={["'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'"]}>
 

@@ -161,6 +161,25 @@ export const json_column: Example = {
   },
 };
 
+/** Postgres: a UUID's version, where the database guarantees it. `id`'s CHECKs hold it to version 7 and its version non-null, and `gen_random_uuid()` makes version 4. `source` may hold any UUID: its `default uuidv7()` does not stop an insert writing another. */
+export const uuid_versions: Example = {
+  database: "postgres",
+  setup: "create table events (id uuid primary key default uuidv7() check (uuid_extract_version(id) = 7 and uuid_extract_version(id) is not null), source uuid default uuidv7())",
+  statement: "select id, source, gen_random_uuid() as request from events",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "id", type: { kind: "uuid", version: 7, label: "uuid" } },
+        { name: "source", nullable: true, type: { kind: "uuid", label: "uuid" } },
+        { name: "request", type: { kind: "uuid", version: 4, label: "uuid" } },
+      ],
+      unique: [["id"]],
+    },
+  },
+};
+
 /** MySQL. `:n + 1` is a `BIGINT`, a `DOUBLE` or a `DECIMAL` by what is bound to `:n` and how the driver sends it, so its type is a union of the three. */
 export const mysql_columns: Example = {
   database: "mysql",

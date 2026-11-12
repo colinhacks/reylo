@@ -102,6 +102,18 @@ test("DuckDB: each column is typed by the prepared statement, and may be NULL un
   assert.match((await analyze(root, "pivot logs on level using count(*)")).diagnostics[0]!.message, /^DuckDB does not describe the columns of this statement before it runs/);
 });
 
+test("DuckDB: a UUID a call makes has its version, and a user's macro of a built-in's name is the macro", { skip }, async () => {
+  const root = await project(`create table events (id uuid primary key default uuidv7());
+create macro now() as null;`);
+  const made = await analyze(root, "select uuid() as a, gen_random_uuid() as b, uuidv4() as c, uuidv7() as d, id, now() as at from events");
+  assert.deepEqual(made.columns.slice(0, 5).map((c) => (c.type.kind === "uuid" ? (c.type.version ?? null) : c.type.kind)), [4, 4, 4, 7, null]);
+  // `now()` is the macro, NULL, where the built-in never is.
+  assert.equal(made.columns[5]!.nullable, true);
+  const shadowed = await project("create macro uuidv7() as '00000000-0000-0000-0000-000000000000'::uuid;");
+  const nil = await analyze(shadowed, "select uuidv7() as id");
+  assert.deepEqual([nil.columns[0]!.type.kind, (nil.columns[0]!.type as { version?: number }).version], ["uuid", undefined]);
+});
+
 test("DuckDB: an array of a subquery's whole rows is never NULL, nor is its element, and each field is as its column is", { skip }, async () => {
   const root = await project("create table posts (id integer primary key); create table comments (id integer primary key, post_id integer not null, body varchar); create table replies (id integer primary key, comment_id integer not null, note varchar not null)");
   const fields = (t: EngineType): unknown => (t.kind === "array" && t.element.type.kind === "record" ? { element_nullable: t.element.nullable ?? false, fields: t.element.type.fields.map((f) => [f.name, f.nullable ?? false, fields(f.type)]) } : undefined);

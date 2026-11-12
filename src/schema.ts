@@ -121,7 +121,8 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
   if (kind !== "text") return schema;
   switch (t.kind) {
     case "text": case "set": return { type: "string" };
-    case "uuid": return { type: "string", format: "uuid" };
+    // RFC 9562's text form, its version digit and its variant fixed where every value has a version.
+    case "uuid": return t.version === undefined ? { type: "string", format: "uuid" } : { type: "string", format: "uuid", pattern: `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${t.version.toString(16)}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$` };
     // RFC 3339's time, which JSON Schema's `time` format names, needs an offset and stops at 23:59:60.
     case "time": return t.zone === undefined ? { type: "string", description: "a time of day without a time zone (10:00:00.5)" } : { type: "string", description: `pg type ${name}` };
     case "duration": return { type: "string", description: "a length of time as MySQL writes it, up to 838:59:59 either way (-12:00:00.5)" };

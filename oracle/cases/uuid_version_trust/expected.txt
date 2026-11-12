@@ -1,0 +1,3 @@
+empty_expansion.sql: many () -> { made: uuid?, a: uuid?, b: uuid? }
+row_of_a_call.sql: one () -> { nil: uuid? }
+shadowed_check.sql: many () -> { id: uuid? }

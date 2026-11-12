@@ -9,7 +9,7 @@
 //! field of an `Object` or item of a `List`) takes the database's: `int8` and `numeric` as JSON
 //! numbers, `bytea` as its own `\x…` hex.
 
-use crate::types::{Field, JsonType, Kind, RecordType, Type};
+use crate::types::{Field, JsonType, Kind, RecordType, Type, UuidType};
 use serde_json::{json, Map, Value};
 
 /// Where a value stands and how the caller encodes what it decodes itself.
@@ -118,7 +118,9 @@ impl Type {
                 Some(values) => json!({"type": "string", "enum": values}),
                 None => json!({"type": "string"}),
             },
-            Kind::Uuid => json!({"type": "string", "format": "uuid"}),
+            Kind::Uuid(UuidType { version: None }) => json!({"type": "string", "format": "uuid"}),
+            // RFC 9562's text form, its version digit and its variant fixed.
+            Kind::Uuid(UuidType { version: Some(v) }) => json!({"type": "string", "format": "uuid", "pattern": format!("^[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-{v:x}[0-9a-fA-F]{{3}}-[89abAB][0-9a-fA-F]{{3}}-[0-9a-fA-F]{{12}}$")}),
             Kind::DateTime(_) | Kind::Instant(_) => json!({"type": "string", "format": "date-time"}),
             Kind::Date(_) => json!({"type": "string", "format": "date"}),
             Kind::Time(_) => json!({"type": "string", "format": "time"}),
@@ -265,6 +267,7 @@ mod tests {
             (numeric(), json!({"type": "string", "format": "decimal"})),
             (Type::text().named("varchar"), json!({"type": "string"})),
             (Type::uuid(), json!({"type": "string", "format": "uuid"})),
+            (Kind::Uuid(UuidType { version: Some(7) }).into(), json!({"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"})),
             (Type::bytes().named("bytea"), json!({"type": "string", "format": "byte", "contentEncoding": "base64"})),
             (Type::unknown(), json!({})),
             (Type::opaque("ltree"), json!({"type": "string", "description": "pg type ltree"})),

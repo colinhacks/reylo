@@ -70,6 +70,12 @@ impl<'a> Ctx<'a> {
         Ctx { catalog: self.catalog, nullable_params: self.nullable_params, param_types: self.param_types, macro_names: &found.params, macro_params: arguments, outer_with, macro_level: self.macro_level + 1 }
     }
 
+    /// The built-in function a call names ([`builtin`]), but for one a user's macro of the name
+    /// takes the place of.
+    pub fn builtin(&self, f: &Function) -> Option<String> {
+        builtin(f).filter(|name| !self.catalog.user_macros.contains(name))
+    }
+
     /// The context of a statement read alone.
     pub fn top(catalog: &'a Catalog, nullable_params: &'a HashSet<String>, param_types: &'a HashMap<String, String>) -> Ctx<'a> {
         Ctx { catalog, nullable_params, param_types, macro_names: &[], macro_params: &[], outer_with: Vec::new(), macro_level: 0 }
@@ -175,6 +181,9 @@ pub struct Out {
     /// Whether its type is certainly no JSON and no VARIANT ([`plain`]): a JSON `null` is a value
     /// until a cast to another type makes NULL of it.
     pub plain: bool,
+    /// The RFC 9562 version of every UUID it holds, where the call that made each says so
+    /// ([`made_version`]).
+    pub version: Option<u8>,
 }
 
 /// The WITH queries in scope, innermost last: each one's name, lowercased, and its columns.
@@ -268,7 +277,7 @@ impl Scope {
 
     fn column(&self, (i, j): (usize, usize)) -> Out {
         let rel = &self.rels[i];
-        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None, rows: None, plain: false });
+        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None, rows: None, plain: false, version: None });
         let not_null = !self.grouping_sets && (self.rejected.contains(&(i, j)) || (!rel.padded && c.not_null));
         Out { not_null, ..c }
     }
@@ -287,7 +296,7 @@ pub fn query(q: &Query, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                     SetExpr::SetOperation { left, .. } => set_expr(left, ctx, &ctes),
                     _ => query(&cte.query, ctx, &ctes),
                 };
-                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, rows: None, ..c }).collect())
+                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, rows: None, version: None, ..c }).collect())
             } else {
                 query(&cte.query, ctx, &ctes)
             };
@@ -333,6 +342,11 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                         name: a.name,
                         rows: None,
                         plain: a.plain && b.plain,
+                        version: match op {
+                            SetOperator::Union => a.version.filter(|v| b.version == Some(*v)),
+                            SetOperator::Intersect => a.version.or(b.version),
+                            SetOperator::Except | SetOperator::Minus => a.version,
+                        },
                     })
                     .collect(),
             )
@@ -344,7 +358,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                 return None;
             }
             // DuckDB names a VALUES list's columns col0, col1, …
-            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None, rows: None, plain: values.rows.iter().all(|row| plain(&row[k], &scope, ctx)) }).collect())
+            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None, rows: None, plain: values.rows.iter().all(|row| plain(&row[k], &scope, ctx)), version: None }).collect())
         }
         _ => None,
     }
@@ -356,11 +370,15 @@ fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
     if let Some(selection) = &s.selection {
         reject(selection, &mut scope);
     }
-    let g = grouping(s, &|e| match e {
-        Expr::Identifier(id) => scope.resolve(std::slice::from_ref(id)).is_some(),
-        Expr::CompoundIdentifier(ids) => scope.resolve(ids).is_some(),
-        _ => false,
-    });
+    let g = grouping(
+        s,
+        &|e| match e {
+            Expr::Identifier(id) => scope.resolve(std::slice::from_ref(id)).is_some(),
+            Expr::CompoundIdentifier(ids) => scope.resolve(ids).is_some(),
+            _ => false,
+        },
+        ctx,
+    );
     scope.grouped = g.keyed;
     scope.grouping_sets = g.sets;
     scope.expression_keys = g.expressions;
@@ -374,7 +392,7 @@ fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
 /// called `alias` in the statement: its NOT NULL columns are not NULL.
 pub fn returning(items: &[SelectItem], name: &[String], alias: Option<String>, ctx: &Ctx) -> Option<Vec<Out>> {
     let table = ctx.catalog.table(name)?;
-    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty) }).collect();
+    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty), version: None }).collect();
     let scope = Scope { rels: vec![Rel { name: alias.or_else(|| name.last().cloned()), columns: Some(columns), padded: false }], ..Scope::default() };
     projection(items, &scope, ctx)
 }
@@ -385,8 +403,11 @@ fn projection(items: &[SelectItem], scope: &Scope, ctx: &Ctx) -> Option<Vec<Out>
     for item in items {
         match item {
             // An `unnest` or `unpack` of a struct makes a column of each field, named by the field,
-            // which the tree does not say.
-            SelectItem::UnnamedExpr(Expr::Function(f)) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n)) => return None,
+            // which the tree does not say, parenthesized or not; and an item that calls `columns`
+            // makes a column of each column it matches, none at all included, which leaves the
+            // items and the columns out of line.
+            SelectItem::UnnamedExpr(e) if matches!(bare(e), Expr::Function(f) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n))) => return None,
+            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } if calls(e, &|f| f.name.to_string().eq_ignore_ascii_case("columns")) => return None,
             SelectItem::UnnamedExpr(e) => out.push(column_of(e, None, scope, ctx)),
             SelectItem::ExprWithAlias { expr, alias } => out.push(column_of(expr, Some(&alias.value), scope, ctx)),
             SelectItem::Wildcard(options) => {
@@ -429,7 +450,7 @@ fn expand(scope: &Scope, i: usize, options: &sqlparser::ast::WildcardAdditionalO
         }
         let replaced = options.opt_replace.as_ref().and_then(|r| r.items.iter().find(|item| item.column_name.value.eq_ignore_ascii_case(&name)));
         match replaced {
-            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None, rows: None, plain: plain(&item.expr, scope, ctx) }),
+            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None, rows: None, plain: plain(&item.expr, scope, ctx), version: made_version(&item.expr, ctx) }),
             None => out.push(Out { name: Some(name), ..scope.column((i, j)) }),
         }
     }
@@ -455,16 +476,39 @@ fn column_of(e: &Expr, alias: Option<&str>, scope: &Scope, ctx: &Ctx) -> Out {
         // Under grouping sets with a key that is no column, the item may be that key, NULL in
         // the rows that total it: `case … end as bucket … group by rollup (bucket)`. A count
         // is no key, and neither is `grouping`.
-        None if scope.expression_keys => Out { name, not_null: counts(e), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx) },
-        None => Out { name, not_null: not_null(e, scope, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx) },
+        None if scope.expression_keys => Out { name, not_null: counts(e, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx), version: made_version(e, ctx) },
+        None => Out { name, not_null: not_null(e, scope, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx), version: made_version(e, ctx) },
+    }
+}
+
+/// An expression without the parentheses around it.
+fn bare(e: &Expr) -> &Expr {
+    match e {
+        Expr::Nested(inner) => bare(inner),
+        e => e,
+    }
+}
+
+/// The RFC 9562 version of each UUID an expression makes whole: 4 for `uuid()`, `gen_random_uuid()`
+/// and `uuidv4()`, and 7 for `uuidv7()`. A UUID read from a table, or written by a default, may be
+/// any.
+fn made_version(e: &Expr, ctx: &Ctx) -> Option<u8> {
+    match e {
+        Expr::Nested(inner) => made_version(inner, ctx),
+        Expr::Function(f) if f.over.is_none() && f.filter.is_none() && args(f).is_some_and(|a| a.is_empty()) => match ctx.builtin(f)?.as_str() {
+            "uuid" | "gen_random_uuid" | "uuidv4" => Some(4),
+            "uuidv7" => Some(7),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
 /// Whether the expression is, whole, a count or a `grouping` call: never NULL, and no key of a GROUP BY.
-fn counts(e: &Expr) -> bool {
+fn counts(e: &Expr, ctx: &Ctx) -> bool {
     match e {
-        Expr::Nested(inner) => counts(inner),
-        Expr::Function(f) => builtin(f).is_some_and(|name| COUNTS.contains(&name.as_str()) || matches!(name.as_str(), "grouping" | "grouping_id")),
+        Expr::Nested(inner) => counts(inner, ctx),
+        Expr::Function(f) => ctx.builtin(f).is_some_and(|name| COUNTS.contains(&name.as_str()) || matches!(name.as_str(), "grouping" | "grouping_id")),
         _ => false,
     }
 }
@@ -472,7 +516,7 @@ fn counts(e: &Expr) -> bool {
 /// The columns of the rows `array(select c from … c)` collects: an item of the subquery's own FROM that no outer join pads, under a name that is no column in scope. A whole row of such an item is a struct, whatever its fields hold.
 fn array_of_rows(e: &Expr, scope: &Scope, ctx: &Ctx) -> Option<Vec<Out>> {
     let Expr::Function(f) = e else { return None };
-    let (true, FunctionArguments::Subquery(q)) = (builtin(f).as_deref() == Some("array"), &f.args) else { return None };
+    let (true, FunctionArguments::Subquery(q)) = (ctx.builtin(f).as_deref() == Some("array"), &f.args) else { return None };
     let SetExpr::Select(s) = &*q.body else { return None };
     let [SelectItem::UnnamedExpr(Expr::Identifier(id))] = s.projection.as_slice() else { return None };
     let plain = q.with.is_none() && matches!(&s.group_by, sqlparser::ast::GroupByExpr::Expressions(keys, _) if keys.is_empty()) && s.having.is_none() && s.qualify.is_none();
@@ -502,14 +546,14 @@ struct Grouping {
 /// reads a column, so it is keyed where such an item reads one `column` says is (outside a
 /// subquery, with no lambda whose parameter it may be), and not grouped where no item without
 /// an aggregate reads anything: a literal, a parameter or `random()` is no key.
-fn grouping(s: &Select, column: &dyn Fn(&Expr) -> bool) -> Grouping {
+fn grouping(s: &Select, column: &dyn Fn(&Expr) -> bool, ctx: &Ctx) -> Grouping {
     match &s.group_by {
         GroupByExpr::All(modifiers) => {
             let (mut keyed, mut ungrouped) = (false, true);
             for item in &s.projection {
                 match item {
                     SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
-                        if has_aggregate(e) {
+                        if has_aggregate(e, ctx) {
                             continue;
                         }
                         let r = reads(e, column);
@@ -685,7 +729,7 @@ fn factor(f: &TableFactor, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Rel>> {
             };
             let columns = match cte {
                 Some(columns) => Some(columns),
-                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty) }).collect()),
+                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty), version: None }).collect()),
             };
             let columns = match (columns, alias) {
                 (Some(cs), Some(alias)) => Some(renamed(cs, alias)),
@@ -955,7 +999,7 @@ fn plain(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
         // A count and a rank are numbers. Any other function may hand on its argument's type, as
         // `coalesce`, `min` and `greatest` do, and one that makes JSON (`to_json`) makes JSON's
         // `null` only of one.
-        Expr::Function(f) => builtin(f).is_some_and(|name| COUNTS.contains(&name.as_str()) || RANKS.contains(&name.as_str()) || name == "ntile" || args(f).is_some_and(|args| args.iter().all(|a| p(a)))),
+        Expr::Function(f) => ctx.builtin(f).is_some_and(|name| COUNTS.contains(&name.as_str()) || RANKS.contains(&name.as_str()) || name == "ntile" || args(f).is_some_and(|args| args.iter().all(|a| p(a)))),
         _ => false,
     }
 }
@@ -986,7 +1030,7 @@ pub fn builtin(f: &Function) -> Option<String> {
 }
 
 fn function(f: &Function, scope: &Scope, ctx: &Ctx) -> bool {
-    let Some(name) = builtin(f) else { return false };
+    let Some(name) = ctx.builtin(f) else { return false };
     let name = name.as_str();
     // `array(select …)` is an empty list over no rows.
     if name == "array" && matches!(f.args, FunctionArguments::Subquery(_)) {
@@ -1041,8 +1085,8 @@ fn calls(e: &Expr, is: &dyn Fn(&Function) -> bool) -> bool {
 }
 
 /// Whether an expression calls an aggregate (not as a window function), outside any subquery.
-pub fn has_aggregate(e: &Expr) -> bool {
-    calls(e, &|f| f.over.is_none() && builtin(f).is_some_and(|n| AGGREGATES.contains(&n.as_str())))
+pub fn has_aggregate(e: &Expr, ctx: &Ctx) -> bool {
+    calls(e, &|f| f.over.is_none() && ctx.builtin(f).is_some_and(|n| AGGREGATES.contains(&n.as_str())))
 }
 
 /// Whether an expression calls `unnest`, or a macro that does, which makes a row of each element,
@@ -1116,7 +1160,7 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
     let filtered = s.selection.is_some() || s.having.is_some() || s.qualify.is_some();
     // Any name may be a column here, so a GROUP BY ALL is taken as no grouping only where no item
     // without an aggregate reads a name at all.
-    let grouped = grouping(s, &|_| true);
+    let grouped = grouping(s, &|_| true, ctx);
     let ungrouped = grouped.ungrouped;
     // Grouping sets make a row of each set, even over one row: `grouping sets ((), ())` is two.
     if grouped.sets {
@@ -1125,7 +1169,7 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
     if s.from.is_empty() {
         return if filtered { ("maybeOne", Some("its WHERE, HAVING or QUALIFY may leave out the one row".into())) } else { ("one", None) };
     }
-    let aggregate = items.iter().any(|e| has_aggregate(e)) || s.having.as_ref().is_some_and(has_aggregate);
+    let aggregate = items.iter().any(|e| has_aggregate(e, ctx)) || s.having.as_ref().is_some_and(|h| has_aggregate(h, ctx));
     if aggregate && ungrouped {
         return if s.having.is_some() || s.qualify.is_some() { ("maybeOne", Some("its HAVING or QUALIFY may leave out the one row".into())) } else { ("one", None) };
     }
@@ -1412,5 +1456,47 @@ mod tests {
         assert_eq!(rows("select * from users limit 1"), "maybeOne");
         assert_eq!(rows("select count(*) from users offset 1"), "maybeOne");
         assert_eq!(rows("select * from users fetch first 1 rows only"), "maybeOne");
+    }
+
+    /// Each column's RFC 9562 version, `-` for none, under a user's macros of these names.
+    fn versions(sql: &str, macros: &[&str]) -> String {
+        let mut catalog = catalog();
+        catalog.user_macros.extend(macros.iter().map(|m| m.to_string()));
+        let (nullable, types) = (HashSet::new(), HashMap::new());
+        let ctx = Ctx::top(&catalog, &nullable, &types);
+        let out = super::query(&query(sql), &ctx, &Vec::new()).unwrap();
+        out.iter().map(|o| o.version.map_or("-".to_string(), |v| v.to_string())).collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn a_uuid_a_call_makes_has_its_version() {
+        assert_eq!(versions("select uuid() as a, gen_random_uuid() as b, uuidv4() as c, uuidv7() as d, (uuidv7()) as e", &[]), "4 4 4 7 7");
+        // Through a WITH query and a derived table, and a UNION whose arms agree.
+        assert_eq!(versions("with x as (select uuidv7() as id) select id from x", &[]), "7");
+        assert_eq!(versions("select id from (select uuid() as id from users) t", &[]), "4");
+        assert_eq!(versions("select uuidv7() as id union all select uuidv7()", &[]), "7");
+        // Arms that disagree, a UUID a table holds, and any other expression have none.
+        assert_eq!(versions("select uuidv7() as id union all select uuid()", &[]), "-");
+        assert_eq!(versions("select coalesce(uuidv7(), uuid()) as a, uuidv7()::varchar as b, id from users", &[]), "- - -");
+        // A recursive query's later rows are its own.
+        assert_eq!(versions("with recursive r(id, n) as (select uuidv7(), 1 union all select uuid(), n + 1 from r where n < 3) select id from r", &[]), "-");
+        // `columns` may match no column, and a parenthesized `unnest` of a struct makes several.
+        assert_eq!(proven("select columns(* exclude (id, name, email, team_id)), uuidv7(), columns('email|team_id') from users"), "-");
+        assert_eq!(proven("select uuidv7() as id, (unnest({'a': 1, 'b': 2}))"), "-");
+        assert_eq!(proven("select columns('e.*') + 1 as x, uuidv7() as id from users"), "-");
+    }
+
+    /// A user's macro takes the place of a built-in of its name: `create macro uuid() as 1`.
+    #[test]
+    fn a_users_macro_is_no_built_in() {
+        assert_eq!(versions("select uuid() as a, uuidv7() as b", &["uuid"]), "- 7");
+        let mut catalog = catalog();
+        catalog.user_macros.insert("now".into());
+        catalog.user_macros.insert("count".into());
+        let (nullable, types) = (HashSet::new(), HashMap::new());
+        let ctx = Ctx::top(&catalog, &nullable, &types);
+        let out = super::query(&query("select now() as a, current_date as b"), &ctx, &Vec::new()).unwrap();
+        assert_eq!(out.iter().map(|o| o.not_null).collect::<Vec<_>>(), [false, true]);
+        assert_eq!(super::cardinality(&query("select count(*) from users"), &ctx).0, "many");
     }
 }

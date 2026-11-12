@@ -36,6 +36,14 @@ fn with_rows(mut ty: Type, out: &Out) -> Type {
     ty
 }
 
+/// A UUID type under the version of every UUID the column holds ([`Out::version`]).
+fn with_version(mut ty: Type, out: &Out) -> Type {
+    if let Kind::Uuid(uuid) = &mut ty.kind {
+        uuid.version = out.version.or(uuid.version);
+    }
+    ty
+}
+
 /// The statements the DuckDB analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "from", "values", "table", "insert", "update", "delete", "pivot", "unpivot", "summarize"];
 
@@ -134,7 +142,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             .enumerate()
             .map(|(i, c)| {
                 let out = proven.as_ref().map(|p| &p[i]);
-                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), out.map_or_else(|| crate::types::of(&c.ty), |o| with_rows(crate::types::of(&c.ty), o)), !out.is_some_and(|o| o.not_null)) }
+                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), out.map_or_else(|| crate::types::of(&c.ty), |o| with_version(with_rows(crate::types::of(&c.ty), o), o)), !out.is_some_and(|o| o.not_null)) }
             })
             .collect()
     } else {
