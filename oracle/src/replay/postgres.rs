@@ -1,4 +1,4 @@
-//! Postgres's regression suite: the psql scripts of `src/test/regress/sql`, in the order of `parallel_schedule`, run one after another on one session in a database of their own (`reylo_replay`, made again on the server `--url` names), since each file builds on the ones before it. The suite is read from a checkout of the server's own major version:
+//! Postgres's regression suite: the psql scripts of `src/test/regress/sql`, in the order of `parallel_schedule`, run one after another, each on a session of its own as pg_regress runs them, in a database of their own (`reylo_replay`, made again on the server `--url` names), since each file builds on the ones before it. The suite is read from a checkout of the server's own major version:
 //!
 //!   git clone --depth 1 --branch REL_18_6 https://github.com/postgres/postgres
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:56432/postgres --replay postgres postgres/src/test/regress
@@ -36,8 +36,10 @@ pub async fn run(url: &str, regress: &Path, timeout_ms: u64) -> Result<bool, Str
     for name in names {
         let Ok(text) = std::fs::read_to_string(regress.join("sql").join(format!("{name}.sql"))) else { continue };
         t.files += 1;
-        // pg_regress gives each file a session of its own, so a file's `SET search_path` ends with it; on this one session, it would place the objects of the files after it where a new connection cannot see them.
-        let _ = client.batch_execute("RESET search_path").await;
+        // pg_regress gives each file a session of its own, so nothing a file leaves on its session reaches the next: a `SET search_path`, which would place the next files' objects where a new connection cannot see them, or a `DEALLOCATE ALL`, which drops the statements the client keeps prepared for its own type lookups.
+        if t.files > 1 {
+            client = open(&db_url, timeout_ms).await?;
+        }
         for item in split(&text) {
             if client.is_closed() {
                 client = open(&db_url, timeout_ms).await?;
