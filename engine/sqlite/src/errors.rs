@@ -50,13 +50,22 @@ fn literal(s: &str) -> String {
 /// trigger, or the parse named no table, or no table it writes.
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     let Some(tables) = &analysis.tables else { return Some(None) };
-    let written: Vec<String> = tables.write.iter().map(|t| literal(t.rsplit('.').next().unwrap_or(t))).collect();
+    // SQLite's tree names a table as its DDL does, with no schema: `my.table` is one name.
+    let written: Vec<String> = tables.write.iter().map(|t| literal(t)).collect();
     if analysis.kind != Some(StatementKind::Select) && written.is_empty() {
         return Some(None);
     }
     // An INSERT changes no key but as a REPLACE, which deletes, or through an upsert that updates.
-    let cascades = !written.is_empty() && (analysis.kind != Some(StatementKind::Insert) || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]));
-    let query = ERRORS_QUERY.replace("{written}", &if written.is_empty() { "null".to_string() } else { written.join(", ") }).replace("{cascades}", if cascades { "1" } else { "0" });
+    // A REPLACE is the statement's own, or a constraint's a written table declares ON CONFLICT
+    // REPLACE, which the catalog query looks for in the table's DDL (any `replace` there counts).
+    let cascades = if written.is_empty() {
+        "0"
+    } else if analysis.kind != Some(StatementKind::Insert) || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]) {
+        "1"
+    } else {
+        "exists (select 1 from sqlite_schema where type = 'table' and name collate nocase in ({written}) and sql like '%replace%')"
+    };
+    let query = ERRORS_QUERY.replace("{cascades}", cascades).replace("{written}", &if written.is_empty() { "null".to_string() } else { written.join(", ") });
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;
     let Ok(rows) = rows else { return Some(None) };
     Some(narrowed(&rows))
