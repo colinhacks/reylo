@@ -172,7 +172,7 @@ export type { DuckdbClient } from "./decode-duckdb.ts";
 export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : D extends "duckdb" ? DuckdbClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
-export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | SqliteWasmDatabase | DurableObjectSql |DrizzleDatabase<SyncSqliteClient | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
+export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | SqliteWasmDatabase | DurableObjectSql | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
 
 export type QueryModule<D extends Dialect = Dialect> = {
   readonly dialect: D;

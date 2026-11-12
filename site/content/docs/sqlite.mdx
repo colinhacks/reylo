@@ -766,7 +766,7 @@ const sameUser = db.transaction(() =>
 );
 ```
 
-An integer past 2^53 comes back exact.
+An integer past 2^53 comes back exact. SQLite Wasm binds a whole number as a 64-bit integer, which wraps past 2^63, so Reylo rejects a parameter such as `1e20` rather than store another number.
 
 ### Cloudflare D1
 
