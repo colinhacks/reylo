@@ -1,7 +1,10 @@
 insert_copy.sql: none () -> {  }
+insert_declared_ignore.sql: at_most_one (k: text(utf8)?) -> { id: INTEGER }
+insert_second_conflict.sql: at_most_one (id: int64, name: text(utf8)) -> { id: INTEGER }
 insert_select.sql: none (1: text(utf8)?, 2: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)) -> {  }
 insert_select_compound.sql: many (a: int64, b: text(utf8)) -> { name: TEXT(text(utf8) | bytes), k: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
 insert_select_returning.sql: many (meta: text(utf8)?, d: int64, n: int64) -> { name: TEXT(text(utf8) | bytes), meta: TEXT(text(utf8) | bytes)?, k: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+insert_view.sql: at_most_one (name: unknown) -> { name: TEXT(text(utf8) | bytes)? }
 numeric_column.sql: many (ready: NUMERIC(int64 | float(11,52) | text(utf8) | bytes)) -> { name: TEXT(text(utf8) | bytes) }
 values_alone.sql: many (p: float(11,52), q: int64) -> { column1: int64, column2: text(utf8)?, column3: float(11,52) }
 values_one_row.sql: one () -> { column1: int64, column2: text(utf8) }

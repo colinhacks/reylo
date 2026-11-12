@@ -968,8 +968,6 @@ struct Level {
     /// `json_object('a', json_group_array(x))` beside `count(*) over ()` is `{"a":"[1]"}` on
     /// 3.45.1 to 3.54.1.
     windowed: bool,
-    /// An arm around this one has a window call.
-    windowed_around: bool,
 }
 
 /// The parameter a value is under the conversion a `::type` cast compiles to: `CAST(?n AS type)`,
@@ -997,7 +995,7 @@ fn level_of(sel: &Sel, extras: &Extras) -> Level {
     }
     let reduced = narrowed.iter().map(|(cursor, _)| *cursor).filter(|c| outer.contains(c)).collect();
     let lone = if sel.aggregate && sel.group_by.is_empty() { own.clone() } else { HashSet::new() };
-    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, own, around: HashSet::new(), foreign: 0, windowed: sel.window, windowed_around: false }
+    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, own, around: HashSet::new(), foreign: 0, windowed: sel.window }
 }
 
 /// Whether an expression reads a column of one of `cursors`, or may: a subquery in it may read
@@ -1500,17 +1498,20 @@ impl Analyzer<'_> {
     fn call(&self, n: &Node, scope: &ScopeStack) -> Fact {
         // The JSON a `json_*` constructor builds, which SQLite returns as its text.
         if let Some(ty) = self.built_text(n, scope) {
-            // `json()` is NULL where its argument is: a scalar subquery that finds no row, or
-            // another `json()` or `jsonb()` of one. Every other constructor reads that NULL as a
-            // null (`[null]`, `{}`) and is never NULL.
-            let non_null = match n.args.first() {
-                Some(a) if self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
-                _ => true,
-            };
-            return Fact { ty, non_null };
+            return Fact { ty, non_null: self.built_non_null(n, scope) };
         }
         let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
         self.function(n, &args)
+    }
+
+    /// Whether JSON a constructor builds ([`Analyzer::shape`]) is never NULL. Every constructor
+    /// reads a NULL as a null (`[null]`, `{}`) but `json()` and `jsonb()`, which are NULL where
+    /// their argument is: a scalar subquery that finds no row, at any depth of them.
+    fn built_non_null(&self, n: &Node, scope: &ScopeStack) -> bool {
+        match (self.builtin_name(n), n.args.as_slice()) {
+            (Some("json" | "jsonb"), [a]) if !n.agg && !n.window => if a.op == "select" { self.type_of(a, scope).non_null } else { self.built_non_null(a, scope) },
+            _ => true,
+        }
     }
 
     fn type_of(&self, n: &Node, scope: &ScopeStack) -> Fact {
@@ -1895,9 +1896,7 @@ impl Analyzer<'_> {
                     return any;
                 }
                 if let Some(ty) = self.shape(n, scope) {
-                    // `json()` and `jsonb()` are NULL where their argument is ([`Analyzer::call`]);
-                    // every other constructor is never NULL.
-                    let non_null = !matches!(name, "json" | "jsonb") || self.type_of(n, scope).non_null;
+                    let non_null = self.built_non_null(n, scope);
                     return JsonFact { ty, non_null, carry: Carry::Yes };
                 }
                 let first = n.args.first().into_iter();
@@ -2070,15 +2069,11 @@ impl Analyzer<'_> {
         out
     }
 
-    /// Whether `n` is an aggregate call whose query has a window call ([`Level::windowed`]), so its
-    /// value reaches the expression around it through a subquery's column. A call that reads none
-    /// of this arm's items, or may not (its FILTER is not in the tree), may be an arm's around it.
+    /// Whether `n` is an aggregate call, a FILTER's included, in a query with a window call
+    /// ([`Level::windowed`]): its value reaches the expression around it through a subquery's
+    /// column. (SQLite refuses an aggregate of a query with a window call inside a subquery.)
     fn windowed_aggregate(&self, n: &Node) -> bool {
-        if !(n.op == "function" && n.agg && !n.over) {
-            return false;
-        }
-        let level = self.level.borrow();
-        level.windowed || (level.windowed_around && (n.window || !reads_cursor(n, &level.own)))
+        n.op == "function" && n.agg && !n.over && self.level.borrow().windowed
     }
 
     /// A select arm's level, read from where the analysis stands: what the arm proves of its own
@@ -2087,7 +2082,6 @@ impl Analyzer<'_> {
         let mut level = level_of(sel, self.extras);
         let outer = self.level.borrow();
         level.around = outer.around.clone();
-        level.windowed_around = outer.windowed || outer.windowed_around;
         if outer.aggregating == 0 {
             level.around.extend(outer.lone.iter().copied());
         }
@@ -3492,8 +3486,12 @@ mod tests {
             assert_eq!(typed(f), ("real".into(), true), "{f}");
         }
         // Defined on every number; NULL for an argument that is no number (`sign('')`).
-        for f in ["atan(x)", "atan2(x, n)", "asinh(x)", "sinh(x)", "cosh(n)", "tanh(x)", "exp(x)", "degrees(x)", "radians(n)", "ceil(x)", "ceiling(x)", "floor(n)", "trunc(x)", "pi()"] {
+        for f in ["atan(x)", "atan2(x, n)", "asinh(x)", "sinh(x)", "cosh(n)", "tanh(x)", "exp(x)", "degrees(x)", "radians(n)", "ceil(x)", "ceiling(x)", "floor(x)", "trunc(x)", "pi()"] {
             assert_eq!(typed(f), ("real".into(), false), "{f}");
+        }
+        // An INTEGER rounded is the INTEGER itself.
+        for f in ["ceil(n)", "ceiling(n)", "floor(n)", "trunc(n)"] {
+            assert_eq!(typed(f), ("integer".into(), false), "{f}");
         }
         assert_eq!(typed("sign(x)"), ("integer".into(), false));
         for f in ["sign(placed_at)", "sign(v)", "sign(num)", "ceil(placed_at)", "floor(b)", "exp(v)", "atan2(x, placed_at)", "sinh(num)"] {
@@ -4522,7 +4520,8 @@ mod tests {
         let r = analyze_ddl("select f.done, b, n, t, f.done + 0 as plus, coalesce(b, f.done) as either, coalesce(b, 0) as zero, case when n > 0 then f.done end as c, (select done from flags limit 1) as sub, x.done as derived from flags f, (select done from flags) x", &ddl, &Extras::default());
         assert!(r.analysis.diagnostics.is_empty(), "{:?}", r.analysis.diagnostics);
         let types: Vec<String> = r.analysis.columns.iter().map(|c| affinity_of(&c.ty).unwrap_or("?").to_string()).collect();
-        assert_eq!(types, ["bool", "bool", "integer", "integer", "real", "bool", "real", "bool", "bool", "bool"]);
+        // `coalesce(b, 0)` is NUMERIC's number or text: a BOOLEAN column may hold 'yes'.
+        assert_eq!(types, ["bool", "bool", "integer", "integer", "real", "bool", "numeric", "bool", "bool", "bool"]);
         // The truth values are the ones SQLite computes alone.
         assert_eq!(r.booleans, [false; 10]);
         // Through a view, and across a compound only where every arm is one.
@@ -4636,8 +4635,6 @@ mod tests {
             "doc: { ids: unknown }; top: [unknown]; counted: { n: number }; total: number"
         );
         assert_eq!(json_typed("select json_object('ids', json_group_array(id)) as doc from posts group by user_id"), "doc: { ids: number[] }");
-        // An aggregate of the query around a subquery, and that query has the window.
-        assert_eq!(json_typed("select (select json_object('ids', json_group_array(p.id))) as doc, rank() over () as r from posts p"), "doc: { ids: unknown } | null; r: number");
         // A subquery's own aggregate is read where it is computed.
         assert_eq!(json_typed("select json_object('ids', json((select json_group_array(id) from posts where user_id = u.id))) as doc, rank() over () as r from users u"), "doc: { ids: number[] }; r: number");
         // `json()` is NULL where its argument is, however deep the scalar subquery.
@@ -4719,8 +4716,9 @@ mod tests {
         // column is NULL over no rows: `[null]`.
         assert_eq!(json_typed("select json_group_array(id) filter (where id > 1) as f, json_group_array(id) over (order by id) as w from users"), "f: number[]; w: (number | null)[]");
         assert_eq!(
+            // The window call makes SQLite read the FILTER aggregate back as text: `{"f":"[2,3]"}`.
             json_typed("select json_object('f', json_group_array(id) filter (where id > 1)) as f, json_object('w', json_group_array(id) over ()) as w from users"),
-            "f: { f: number[] }; w: { w: unknown }"
+            "f: { f: unknown }; w: { w: unknown }"
         );
         assert_eq!(
             json_typed("select u.id, (select json_group_array(p.title) from posts p where p.user_id = u.id) as titles, (select json_group_array(p.title) from posts p where p.user_id = u.id group by p.user_id) as grouped from users u"),
