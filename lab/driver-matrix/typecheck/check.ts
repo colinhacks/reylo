@@ -86,7 +86,9 @@ import type { PlanetScaleDatabase } from "drizzle-orm/planetscale-serverless";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
-import type { DurableObjectStorage } from "@cloudflare/workers-types";`;
+import type { DurableObjectStorage } from "@cloudflare/workers-types";
+import type { Database as SqliteWasmDb, OpfsDatabase, OpfsSAHPoolDatabase } from "@sqlite.org/sqlite-wasm";
+import type * as SqlJs from "sql.js";`;
 
 const entries: Entry[] = [];
 const pg = (pkg: string, shape: string, type: string, note?: string) => entries.push({ pkg, shape, type, accepts: ["postgres"], ...(note ? { note } : {}) });
@@ -180,6 +182,10 @@ sq("sqlite3@6.0.1", "Database", "s3v6.Database");
 sq("sqlite@5.1.1", "Database (open())", "SqliteDatabase");
 sq("D1 (@cloudflare/workers-types 5.20260929.1)", "D1Database", "D1Database");
 sq("D1 (@cloudflare/workers-types 5.20260929.1)", "D1DatabaseSession (withSession())", "D1DatabaseSession");
+sq("@sqlite.org/sqlite-wasm@3.54.1-build1", "oo1.DB", "SqliteWasmDb", true);
+sq("@sqlite.org/sqlite-wasm@3.54.1-build1", "oo1.OpfsDb", "OpfsDatabase", true);
+sq("@sqlite.org/sqlite-wasm@3.54.1-build1", "OpfsSAHPoolDb (installOpfsSAHPoolVfs())", "OpfsSAHPoolDatabase", true);
+entries.push({ pkg: "sql.js (@types/sql.js 1.4.11)", shape: "Database", type: "SqlJs.Database", accepts: [], note: "run() refuses it (its errors carry no code, and it binds a BigInt as text), so every dialect should reject it" });
 
 // ---------------------------------------------------------------------------------------------
 // Generate cases.ts

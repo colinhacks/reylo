@@ -25,6 +25,9 @@
 //   on better-sqlite3; at its defaults an INTEGER past 2^53 comes back rounded, with no error.
 // - A Durable Object's `ctx.storage.sql`: exec()'s cursor, read whole. An INTEGER past 2^53 comes
 //   back rounded, with no error, and a BLOB as an ArrayBuffer.
+// - SQLite Wasm's oo1 Database: Reylo prepares its statement, reads it row by row by position, and
+//   finalizes it after its one run. An INTEGER past 2^53 comes back a BigInt and any other a number,
+//   so none is rounded; its BLOB is a Uint8Array.
 // - sqlite3 and the sqlite wrapper, libSQL, D1 and Bun.SQL's SQLite: the rows the driver gives,
 //   normalized. sqlite3 and sqlite are not cached: a statement left open makes the app's close()
 //   fail with SQLITE_BUSY. An INTEGER the driver already rounded (sqlite3, sqlite, D1, Bun.SQL
@@ -32,7 +35,7 @@
 //   only be one; a BIGINT's number within 2^53, or libSQL's BigInt or digits, is its BigInt.
 import { lastOfEach, namesInResult, rowOf } from "./row.ts";
 import { bigInteger, coerce, columnKind, DecodeError, exactInteger, ParameterError, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
-import { isDurableObjectSql, isTurso, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { isDurableObjectSql, isSqliteWasm, isTurso, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
 import { readSqliteError } from "./query-error.ts";
 import type { EngineType } from "./engine-type.ts";
 
@@ -174,6 +177,26 @@ export async function runTurso(db: AnyClient, text: string, values: unknown[], c
  */
 export function runDurableObject(sql: AnyClient, text: string, values: unknown[], columns: Columns | undefined): unknown[] {
   return normalize(sql.exec(text, ...values).toArray(), columns);
+}
+
+/**
+ * Runs `text` on SQLite Wasm's oo1 Database (`@sqlite.org/sqlite-wasm`, and its `OpfsDb` and
+ * `OpfsSAHPoolDb`), whose statement answers at once, row by row, and returns its normalized rows.
+ * The rows are read by position, since oo1 builds an object row by assigning each name. The
+ * statement is finalized after its one run, as oo1's own exec() does, so none holds the
+ * WebAssembly heap until the database closes.
+ */
+export function runSqliteWasm(db: AnyClient, text: string, values: unknown[], columns: Columns | undefined): unknown[] {
+  const st = db.prepare(text) as Statement;
+  try {
+    // bind() refuses an array, even an empty one, on a statement that has no parameters.
+    if (values.length) st.bind(values);
+    const rows: unknown[][] = [];
+    while (st.step()) rows.push(st.get([]));
+    return rows.length ? normalize(byPosition(rows, columns, () => st.getColumnNames()), columns) : rows;
+  } finally {
+    st.finalize();
+  }
 }
 
 type Plan = {
@@ -360,9 +383,19 @@ async function runSqlite(c: Client, query: QueryModule<"sqlite">, { text, values
   return undefined;
 }
 
-/** The rows of a synchronous client: a Durable Object's SQL storage, whose exec() refuses a BigInt ("Cannot convert a BigInt value to a number"), or a database with prepare() (`runSyncSqlite`). */
+// SQLite Wasm binds a whole number as a 64-bit integer, which wraps around past 2^63: 1e20 would be
+// stored as 7766279631452241920.
+function sqliteWasmValues(names: readonly string[], values: unknown[]): unknown[] {
+  values.forEach((v, i) => {
+    if (typeof v === "number" && Number.isInteger(v) && (v >= 2 ** 63 || v < -(2 ** 63))) throw new ParameterError(`Parameter "${names[i]}" is ${v}, a whole number past 2^63, which SQLite Wasm binds as a 64-bit integer that wraps around, so it would store another number.`);
+  });
+  return values;
+}
+
+/** The rows of a synchronous client: a Durable Object's SQL storage, whose exec() refuses a BigInt ("Cannot convert a BigInt value to a number"), SQLite Wasm's oo1 Database (`runSqliteWasm`), or a database with prepare() (`runSyncSqlite`). */
 function runSqliteSync(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): unknown[] | Promise<unknown[]> {
   if (isDurableObjectSql(c)) return runDurableObject(c, text, values.map((v, i) => numberOrDigits(v, query.inputs?.[names[i]!]?.type, "durable-object")), query.columns);
+  if (isSqliteWasm(c)) return runSqliteWasm(c, text, sqliteWasmValues(names, values), query.columns);
   return runSyncSqlite(c, text, values, query.columns);
 }
 

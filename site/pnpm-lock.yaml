@@ -31,7 +31,7 @@ importers:
         version: 8.5.0(react-router@8.5.0(@types/react@19.2.18)(@types/react-dom@19.2.5(@types/react@19.2.18))(react@19.2.8)(react-dom@19.2.8(react@19.2.8)))(typescript@5.9.3)
       docs-kit:
         specifier: link:./docs-kit
-        version: link:./docs-kit
+        version: link:docs-kit
       fumadocs-core:
         specifier: ^16.15.1
         version: 16.15.1(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/node@26.3.0)(@types/react@19.2.18)(lucide-react@1.33.0(react@19.2.8))(next@16.3.2(react@19.2.8)(react-dom@19.2.8(react@19.2.8)))(react@19.2.8)(react-dom@19.2.8(react@19.2.8))(react-router@8.5.0(@types/react@19.2.18)(@types/react-dom@19.2.5(@types/react@19.2.18))(react@19.2.8)(react-dom@19.2.8(react@19.2.8)))(zod@4.4.3)
@@ -90,6 +90,9 @@ importers:
       '@shikijs/twoslash':
         specifier: 4.4.3
         version: 4.4.3(typescript@5.9.3)
+      '@sqlite.org/sqlite-wasm':
+        specifier: 3.54.1-build1
+        version: 3.54.1-build1
       '@tailwindcss/vite':
         specifier: ^4.1.0
         version: 4.3.3(vite@8.3.4(@types/node@26.3.0))
@@ -1659,6 +1662,10 @@ packages:
     engines: {node: '>=24'}
     peerDependencies:
       zod: ^3.25 || ^4
+
+  '@sqlite.org/sqlite-wasm@3.54.1-build1':
+    resolution: {integrity: sha512-foW427VBLJ3G87bsnvQTZCc9zYe0Fq1wH0pz1I6BlKLKXcArIAyTkHtq0iT2llmhcMQt9T/p6l5PpQQh+6O8uQ==}
+    engines: {node: '>=22'}
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -5248,6 +5255,8 @@ snapshots:
       '@slonik/types': 49.12.0(zod@4.4.3)
       zod: 4.4.3
 
+  '@sqlite.org/sqlite-wasm@3.54.1-build1': {}
+
   '@standard-schema/spec@1.1.0': {}
 
   '@swc/helpers@0.5.23':
@@ -7671,15 +7680,15 @@ snapshots:
   vite@8.3.4(@types/node@26.3.0)(esbuild@0.28.2)(yaml@2.9.0):
     dependencies:
       '@types/node': 26.3.0
-      esbuild: 0.28.2
       lightningcss: 1.33.0
       picomatch: 4.0.7
       postcss: 8.5.31
       rolldown: 1.2.14
       tinyglobby: 0.2.17
-      yaml: 2.9.0
     optionalDependencies:
+      esbuild: 0.28.2
       fsevents: 2.3.3
+      yaml: 2.9.0
 
   w3c-keyname@2.2.8: {}
 
@@ -7695,7 +7704,7 @@ snapshots:
   ws@8.22.0: {}
 
   ws@8.22.0(bufferutil@4.1.0):
-    dependencies:
+    optionalDependencies:
       bufferutil: 4.1.0
 
   xtend@4.0.2: {}

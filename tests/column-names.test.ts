@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sqlModule } from "../src/loader.ts";
 import { defineQuery } from "../src/index.ts";
-import { closeSessions, driver, DRIVERS, INDEX, mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
+import { closeSessions, driver, DRIVERS, INDEX, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, sqliteWasm } from "./helpers.ts";
 
 // A row's keys are the columns its type declares, whatever a driver or the database makes of a column with no alias. Such a column takes its name from the text it runs as on SQLite and MySQL, so the name depends on what Reylo sends and on who writes it.
 
@@ -79,6 +79,8 @@ test("SQLite: a row holds the columns its type declares, on every client, with t
   await new Promise<void>((resolve, reject) => callbacks.exec(seed, (e: Error | null) => (e ? reject(e) : resolve())));
   const wrapped = await driver("sqlite").open({ filename: ":memory:", driver: sqlite3.Database });
   await wrapped.exec(seed);
+  const wasm = new (await sqliteWasm()).oo1.DB(":memory:");
+  wasm.exec(seed);
   const clients: [string, unknown, boolean][] = [
     ["node:sqlite", own, true],
     ["better-sqlite3", better, true],
@@ -87,6 +89,7 @@ test("SQLite: a row holds the columns its type declares, on every client, with t
     ["Turso's compat Database", tursoCompat, true],
     ["sqlite3", callbacks, false],
     ["sqlite", wrapped, false],
+    ["SQLite Wasm", wasm, true],
   ];
   try {
     for (const [raw, params, names, expected] of SQLITE) {
@@ -124,6 +127,7 @@ test("SQLite: a row holds the columns its type declares, on every client, with t
     tursoCompat.close();
     callbacks.close();
     await wrapped.close();
+    wasm.close();
     await closeSessions();
   }
 });

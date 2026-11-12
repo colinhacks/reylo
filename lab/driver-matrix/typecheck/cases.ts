@@ -61,6 +61,8 @@ import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import type { DurableObjectStorage } from "@cloudflare/workers-types";
+import type { Database as SqliteWasmDb, OpfsDatabase, OpfsSAHPoolDatabase } from "@sqlite.org/sqlite-wasm";
+import type * as SqlJs from "sql.js";
 import { defineQuery } from "../../../src/index.ts";
 
 type Params = { id: number };
@@ -927,3 +929,28 @@ declare const c123: D1DatabaseSession; // D1 (@cloudflare/workers-types 5.202609
 /*@729*/ { const k: "promise" = kind(sqQ.run(c123, { id: 1 })); void k; }
 /*@730*/ { const k: "promise" = kind(sqQ.with(c123)({ id: 1 })); void k; }
 /*@731*/ sqQ.runSync(c123, { id: 1 });
+declare const c124: SqliteWasmDb; // @sqlite.org/sqlite-wasm@3.54.1-build1 oo1.DB
+/*@732*/ pgQ.run(c124, { id: 1 });
+/*@733*/ myQ.run(c124, { id: 1 });
+/*@734*/ sqQ.run(c124, { id: 1 });
+/*@735*/ { const k: "promise" = kind(sqQ.run(c124, { id: 1 })); void k; }
+/*@736*/ { const k: "promise" = kind(sqQ.with(c124)({ id: 1 })); void k; }
+/*@737*/ { const k: "value" = kind(sqQ.runSync(c124, { id: 1 })); void k; }
+declare const c125: OpfsDatabase; // @sqlite.org/sqlite-wasm@3.54.1-build1 oo1.OpfsDb
+/*@738*/ pgQ.run(c125, { id: 1 });
+/*@739*/ myQ.run(c125, { id: 1 });
+/*@740*/ sqQ.run(c125, { id: 1 });
+/*@741*/ { const k: "promise" = kind(sqQ.run(c125, { id: 1 })); void k; }
+/*@742*/ { const k: "promise" = kind(sqQ.with(c125)({ id: 1 })); void k; }
+/*@743*/ { const k: "value" = kind(sqQ.runSync(c125, { id: 1 })); void k; }
+declare const c126: OpfsSAHPoolDatabase; // @sqlite.org/sqlite-wasm@3.54.1-build1 OpfsSAHPoolDb (installOpfsSAHPoolVfs())
+/*@744*/ pgQ.run(c126, { id: 1 });
+/*@745*/ myQ.run(c126, { id: 1 });
+/*@746*/ sqQ.run(c126, { id: 1 });
+/*@747*/ { const k: "promise" = kind(sqQ.run(c126, { id: 1 })); void k; }
+/*@748*/ { const k: "promise" = kind(sqQ.with(c126)({ id: 1 })); void k; }
+/*@749*/ { const k: "value" = kind(sqQ.runSync(c126, { id: 1 })); void k; }
+declare const c127: SqlJs.Database; // sql.js (@types/sql.js 1.4.11) Database
+/*@750*/ pgQ.run(c127, { id: 1 });
+/*@751*/ myQ.run(c127, { id: 1 });
+/*@752*/ sqQ.run(c127, { id: 1 });

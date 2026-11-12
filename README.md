@@ -167,7 +167,7 @@ Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a D
 
 - **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`
 - **MySQL** — `mysql2`, `mariadb`, PlanetScale, `Bun.sql`
-- **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
+- **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, SQLite Wasm, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
 - **DuckDB** — `@duckdb/node-api`, which also types DuckDB's statements
 
 ## Documentation

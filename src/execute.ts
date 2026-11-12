@@ -81,6 +81,15 @@ export type SyncSqliteClient = {
   prepare(sql: string): { all(...params: any[]): unknown[] };
 };
 /**
+ * The `oo1` Database of SQLite Wasm, `@sqlite.org/sqlite-wasm`, and the `OpfsDb` and
+ * `OpfsSAHPoolDb` that keep one in the browser's origin-private file system, which answer at once:
+ * `runSync` takes them. Their statements have no all(), and are read row by row with step().
+ */
+export type SqliteWasmDatabase = {
+  prepare(sql: string): { bind(values: any[]): unknown; step(): boolean; get(row: any[]): unknown[]; getColumnNames(): string[]; finalize(): unknown };
+  selectObjects(sql: string, bind?: any): unknown[];
+};
+/**
  * A SQLite-backed Durable Object's SQL storage, `ctx.storage.sql`: exec(sql, ...values) answers at
  * once with a cursor, so `runSync` takes it, inside `ctx.storage.transactionSync(fn)` too.
  */
@@ -154,7 +163,7 @@ export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | Cal
 /** Every MySQL client `run` takes, or a transaction or connection taken from one. */
 export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction | KnexClient;
 /** Every SQLite client `run` takes, or a transaction taken from one. */
-export type SqliteClient = SyncSqliteClient | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction | KnexClient;
+export type SqliteClient = SyncSqliteClient | SqliteWasmDatabase | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction | KnexClient;
 
 export type { DuckdbClient } from "./decode-duckdb.ts";
 
@@ -163,7 +172,7 @@ export type { DuckdbClient } from "./decode-duckdb.ts";
 export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : D extends "duckdb" ? DuckdbClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
-export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | DurableObjectSql | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
+export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | SqliteWasmDatabase | DurableObjectSql | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
 
 export type QueryModule<D extends Dialect = Dialect> = {
   readonly dialect: D;
@@ -342,7 +351,7 @@ async function onKnexConnection(knex: AnyClient, dialect: Dialect, run: (connect
 /** The synchronous path alone, for `runSync`: any other client is refused before anything runs. */
 export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: QueryModule<D>, params: ParamsInput = {}): unknown[] {
   const c = underneath(client as unknown as AnyClient);
-  const refuse = (why: string) => new TypeError(`runSync takes a synchronous SQLite client (better-sqlite3, node:sqlite, bun:sqlite, the Database of @tursodatabase/database/compat or a Durable Object's ctx.storage.sql); ${why}. run takes every client.`);
+  const refuse = (why: string) => new TypeError(`runSync takes a synchronous SQLite client (better-sqlite3, node:sqlite, bun:sqlite, the Database of @tursodatabase/database/compat, an oo1 Database of @sqlite.org/sqlite-wasm or a Durable Object's ctx.storage.sql); ${why}. run takes every client.`);
   const runSync = query.runtime.runSync;
   if (!runSync) throw refuse(`a ${query.dialect} statement has none`);
   if (!isSyncSqlite(c) && !isDurableObjectSql(c)) throw refuse("this client answers through a promise");
@@ -353,11 +362,12 @@ export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: 
 }
 
 function executeSyncSqlite<D extends Dialect>(c: AnyClient, query: QueryModule<D>, params: ParamsInput, runSync: NonNullable<Runtime<D>["runSync"]>): unknown[] | Promise<unknown[]> {
+  if (isSqlJs(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
   if (query.fresh && due(query)) {
     let rows: unknown[] | undefined;
     try {
-      rows = isDurableObjectSql(c) ? c.exec(query.fresh.query).toArray() : c.prepare(query.fresh.query).all();
+      rows = isDurableObjectSql(c) ? c.exec(query.fresh.query).toArray() : isSqliteWasm(c) ? c.selectObjects(query.fresh.query) : c.prepare(query.fresh.query).all();
     } catch {}
     const found = rows && compared(query.fresh, rows, query.dialect);
     if (found?.stale.length) throw staleError(query.source, found.stale);
@@ -365,6 +375,19 @@ function executeSyncSqlite<D extends Dialect>(c: AnyClient, query: QueryModule<D
     passed(query);
   }
   return runSync(c, query, statement(query, params));
+}
+
+// SQLite Wasm's oo1 Database: prepare() and selectObjects(), which no other driver has. Its
+// statement has no all(), so it would otherwise be taken for better-sqlite3's.
+export function isSqliteWasm(c: AnyClient | null | undefined): boolean {
+  return c != null && typeof c.prepare === "function" && typeof c.selectObjects === "function";
+}
+
+// sql.js's Database, which getRowsModified() tells apart, answers at once as better-sqlite3's
+// does, but throws SQLite's errors as plain Errors with no code, which `.try()` cannot tell from
+// any other, and binds a BigInt as text. It is refused, for SQLite Wasm.
+function isSqlJs(c: AnyClient | null | undefined): boolean {
+  return c != null && typeof c.prepare === "function" && typeof c.getRowsModified === "function";
 }
 
 // A SQLite-backed Durable Object's `ctx.storage.sql`: exec() and databaseSize, and no prepare().
@@ -789,7 +812,7 @@ function indexOf(query: QueryModule, p: { name: string; start: number; end: numb
 const accepted: Record<Dialect, string> = {
   postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database or Knex instance over one of them",
   mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database or Knex instance over one of them",
-  sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database or Knex instance over one of them",
+  sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database, Cloudflare D1 and the oo1 Database of @sqlite.org/sqlite-wasm; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database or Knex instance over one of them",
   duckdb: "runAndReadAll(sql, values) as on @duckdb/node-api's DuckDBConnection",
 };
 
@@ -820,6 +843,8 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
         ? ` Kysely decodes the values of its queries itself${o.isTransaction === true ? inTx : ": pass the pool or database its dialect was made with."}`
         : typeof o?.$queryRawUnsafe === "function"
           ? ` Prisma decodes the values of its queries itself${typeof o.$transaction !== "function" ? inTx : ": pass a client of your database's driver, such as the pool its driver adapter was made with."}`
-          : "";
+          : dialect === "sqlite" && isSqlJs(c as AnyClient)
+            ? " It is sql.js, which reylo does not take: it throws SQLite's errors with no code and binds a BigInt as text. Run the statement on SQLite Wasm (@sqlite.org/sqlite-wasm), whose oo1 Database reylo takes."
+            : "";
   return new TypeError(`reylo cannot run a ${dialect} statement on ${seen}. It takes a client with ${accepted[dialect]}.${hint}`);
 }

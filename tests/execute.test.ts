@@ -9,7 +9,7 @@ import { checks, defineQuery } from "../src/index.ts";
 import type { EngineType, JsonSchema } from "../src/engine-type.ts";
 import { array, checked, lite as liteType, my as myType, oneOf, pg as pgType, record } from "./descriptors.ts";
 import { existsSync } from "node:fs";
-import { DRIVERS, driver, MYSQL, mysqlDatabase, mysqlLive, pgLive, plain, postgresDatabase } from "./helpers.ts";
+import { DRIVERS, driver, MYSQL, mysqlDatabase, mysqlLive, pgLive, plain, postgresDatabase, sqliteWasm } from "./helpers.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
 // driver behaviour each one copies was checked against the real package (lab/driver-matrix).
@@ -590,6 +590,47 @@ test("sqlite: node:sqlite answers at once, with one ? per placeholder; a write g
   assert.deepEqual(db.prepare("select a from t").all().map((r) => ({ ...r })), [{ a: 2 }]);
 });
 
+test("sqlite: SQLite Wasm's oo1 Database answers at once, its statements read row by row and finalized; runSync and its transaction(fn) take it, and trySync reads its error", async () => {
+  const sqlite3 = await sqliteWasm();
+  const db = new sqlite3.oo1.DB(":memory:");
+  try {
+    db.exec("create table users (id integer primary key, email text unique not null, big bigint)");
+    const rows = execute(db, lite, { id: 1, name: "ada" });
+    assert.ok(Array.isArray(rows), "a synchronous client's rows are not a promise");
+    assert.deepEqual(rows, [row]);
+    // oo1's bind() refuses an array, even an empty one, on a statement with no parameters.
+    assert.deepEqual(execute(db, { dialect: "sqlite", sql: "select 1 as one", params: [] }), [{ one: 1 }]);
+    const insert = defineQuery<{ email: string; big: bigint | null }, never, "none", "sqlite">({ dialect: "sqlite", sql: "insert into users (email, big) values (:email, :big)", params: ["email", "big"], cardinality: "none" });
+    const count = defineQuery<{}, { n: number }, "one", "sqlite">({ dialect: "sqlite", sql: "select count(*) as n from users", params: [], cardinality: "one" });
+    assert.equal(insert.runSync(db, { email: "ada@example.com", big: 2n ** 60n }), undefined);
+    assert.equal(await insert.run(db, { email: "bo@example.com", big: null }), undefined);
+    // Its transaction(fn) runs the function between BEGIN and COMMIT, and rolls back if it throws.
+    assert.throws(
+      () =>
+        db.transaction(() => {
+          insert.runSync(db, { email: "cy@example.com", big: null });
+          insert.runSync(db, { email: "ada@example.com", big: null });
+        }),
+      /UNIQUE constraint failed: users\.email/,
+    );
+    assert.equal(count.runSync(db).n, 2, "the transaction's first insert was rolled back");
+    // A BIGINT past 2^53 comes back exact, as it went in.
+    const big = defineQuery<{}, { big: bigint }, "one", "sqlite">({ dialect: "sqlite", sql: "select big from users where id = 1", params: [], columns: [["big", "int8"]], cardinality: "one" });
+    assert.equal(big.runSync(db).big, 2n ** 60n);
+    const unique = insert.trySync(db, { email: "ada@example.com", big: null }).error;
+    assert.deepEqual({ ...unique, message: unique?.message }, { message: "UNIQUE constraint failed: users.email", code: "SQLITE_CONSTRAINT_UNIQUE", errcode: 2067, table: "users", columns: ["email"], constraint: undefined });
+    // It binds a whole number as a 64-bit integer, which wraps around past 2^63, so one is refused before anything runs.
+    const real = defineQuery<{ r: number }, { r: number }, "one", "sqlite">({ dialect: "sqlite", sql: "select :r as r", params: ["r"], cardinality: "one" });
+    assert.deepEqual(real.runSync(db, { r: 2 ** 40 }), { r: 2 ** 40 });
+    assert.throws(() => real.runSync(db, { r: 1e20 }), /Parameter "r" is 100000000000000000000, a whole number past 2\^63, which SQLite Wasm binds as a 64-bit integer that wraps around/);
+    assert.throws(() => real.runSync(db, { r: -(2 ** 63) - 2 ** 11 }), /a whole number past 2\^63/);
+    assert.deepEqual(real.runSync(db, { r: 1.5 }), { r: 1.5 });
+    assert.equal(db.openStatementCount(), 0, "every statement Reylo prepared was finalized");
+  } finally {
+    db.close();
+  }
+});
+
 test("sqlite: better-sqlite3's statement that returns no rows is run(), since its all() throws", () => {
   const calls: Call[] = [];
   const db = {
@@ -796,6 +837,17 @@ test("an unsupported client rejects, naming what it has and what reylo takes", a
   await assert.rejects(() => execute({} as never, my) as Promise<unknown>, /query\(text, values\) as on mariadb's pool or connection, from its promise or callback API/);
   // A pg pool handed to a SQLite statement matches no SQLite shape.
   await assert.rejects(() => execute({ query: async () => ({ rows: [] }) } as never, lite) as Promise<unknown>, /sqlite statement on an object with query/);
+  // sql.js answers at once, as better-sqlite3 does, but throws SQLite's errors with no code and binds a BigInt as text: it is refused before anything runs.
+  let prepared = false;
+  const sqljs = { prepare: () => void (prepared = true), exec() {}, run() {}, getRowsModified() {} };
+  const one = defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select 1", params: [] });
+  const named = /sqlite statement on an object with prepare, exec, run, getRowsModified\. .* It is sql\.js, which reylo does not take: .*SQLite Wasm \(@sqlite\.org\/sqlite-wasm\)/;
+  await assert.rejects(one.run(sqljs as never), named);
+  assert.throws(() => one.runSync(sqljs as never), named);
+  assert.equal(prepared, false);
+  // No client at all is named as such.
+  await assert.rejects(one.run(undefined as never), /reylo cannot run a sqlite statement on undefined\./);
+  await assert.rejects(one.run(null as never), /reylo cannot run a sqlite statement on null\./);
 });
 
 test("a Drizzle database or transaction runs on the driver client its session keeps", async () => {
