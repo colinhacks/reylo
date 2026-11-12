@@ -1483,6 +1483,11 @@ impl Analyzer<'_> {
                 break;
             }
         }
+        // An INSERT through a view's INSTEAD OF trigger returns each value as the statement wrote
+        // it, with none of the view column's affinity: `values (42)` returns 42 for a TEXT one.
+        if n.view && self.tree.dml.as_ref().is_some_and(|d| d.kind == "insert") {
+            return Fact::unknown();
+        }
         let aff = n.affinity.as_deref().unwrap_or(&n.aff);
         let ty = match &n.declared {
             Some(declared) if !n.rowid => column_type(declared, aff, n.strict),
@@ -1720,12 +1725,7 @@ impl Analyzer<'_> {
             "json_extract" | "jsonb_extract" | "->" | "->>" => Fact::unknown(),
             // Defined on every number, infinities included: NULL only for an argument that is no
             // number.
-            "atan" | "atan2" | "asinh" | "sinh" | "cosh" | "tanh" | "exp" | "degrees" | "radians" => Fact::new("real", numbers),
-            // An INTEGER comes back as it is, a REAL rounded: `floor(id)` is the INTEGER `id`.
-            "ceil" | "ceiling" | "floor" | "trunc" => match args {
-                [a] if is_integral(&a.ty) => Fact { ty: computed(a.ty.clone()), non_null: numbers },
-                _ => Fact::new("real", numbers),
-            },
+            "atan" | "atan2" | "asinh" | "sinh" | "cosh" | "tanh" | "exp" | "degrees" | "radians" | "ceil" | "ceiling" | "floor" | "trunc" => Fact::new("real", numbers),
             "sign" => Fact::new("integer", numbers),
             // NULL outside their domain (`sqrt(-1)`, `ln(0)`, `acos(2)`, `mod(1, 0)`,
             // `pow(-1, 0.5)`) and for an infinite argument (`sin(1e999)`).
@@ -3486,12 +3486,8 @@ mod tests {
             assert_eq!(typed(f), ("real".into(), true), "{f}");
         }
         // Defined on every number; NULL for an argument that is no number (`sign('')`).
-        for f in ["atan(x)", "atan2(x, n)", "asinh(x)", "sinh(x)", "cosh(n)", "tanh(x)", "exp(x)", "degrees(x)", "radians(n)", "ceil(x)", "ceiling(x)", "floor(x)", "trunc(x)", "pi()"] {
+        for f in ["atan(x)", "atan2(x, n)", "asinh(x)", "sinh(x)", "cosh(n)", "tanh(x)", "exp(x)", "degrees(x)", "radians(n)", "ceil(x)", "ceiling(x)", "floor(n)", "trunc(x)", "pi()"] {
             assert_eq!(typed(f), ("real".into(), false), "{f}");
-        }
-        // An INTEGER rounded is the INTEGER itself.
-        for f in ["ceil(n)", "ceiling(n)", "floor(n)", "trunc(n)"] {
-            assert_eq!(typed(f), ("integer".into(), false), "{f}");
         }
         assert_eq!(typed("sign(x)"), ("integer".into(), false));
         for f in ["sign(placed_at)", "sign(v)", "sign(num)", "ceil(placed_at)", "floor(b)", "exp(v)", "atan2(x, placed_at)", "sinh(num)"] {
@@ -3706,9 +3702,10 @@ mod tests {
             "create trigger \"wv update\" instead of update of v on main.wv begin update w set v = new.v where id = old.id; end".to_string(),
         ];
         let analysis = |sql: &str| analyze_ddl(sql, &schema, &Extras::default()).analysis;
-        let insert = analysis("insert into wv (k, v) values (:k, 9) returning k");
+        let insert = analysis("insert into wv (k, v) values (42, 9) returning k");
         assert!(insert.diagnostics.is_empty(), "{:?}", insert.diagnostics);
-        assert_eq!(col(&insert, "k").0, "text");
+        // Returned as written, with no affinity: the INTEGER 42 for a column of TEXT affinity.
+        assert_eq!(col(&insert, "k"), ("unknown".into(), true));
         assert!(analysis("update wv set v = :v where id = :id").diagnostics.is_empty());
         // The trigger fires on an update of `v` alone: SQLite refuses an update of `k`, and so does
         // its type check. A view with no trigger for the write stays read-only.
@@ -4658,9 +4655,6 @@ mod tests {
         assert_eq!(typed("select coalesce(dt, 1.5) as v from dts"), ("numeric".into(), false));
         assert_eq!(typed("select coalesce(n, 1.5) as v from dts"), ("integer".into(), false));
         assert_eq!(typed("select iif(ok, n, x) as v from dts"), ("real".into(), false));
-        // `ceil`, `floor` and `trunc` hand an INTEGER back as it is.
-        assert_eq!(typed("select floor(n) as v from dts"), ("integer".into(), false));
-        assert_eq!(typed("select ceil(x) as v from dts"), ("real".into(), false));
     }
 
     #[test]

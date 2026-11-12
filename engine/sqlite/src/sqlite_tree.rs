@@ -221,6 +221,8 @@ pub struct Node {
     /// The column is VIRTUAL and computed by a function or from another generated column: its
     /// value, computed where it is read, may carry the JSON subtype.
     pub subtype: bool,
+    /// The column is a view's, as a write through the view's INSTEAD OF trigger reads it.
+    pub view: bool,
     /// The column's collation, which a comparison with it uses where the column decides.
     pub coll: Option<String>,
     pub resolved: Option<bool>,
