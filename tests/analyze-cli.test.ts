@@ -1,6 +1,6 @@
 // `reylo analyze`, the native binary's own command line: each statement's type descriptor
-// (spec/index.ts) as one line of JSON, from the database the project names as the type
-// check finds it.
+// (spec/index.ts), from the database the project names as the type check finds it, as YAML or,
+// with `--format json`, one line of JSON per statement.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -25,9 +25,9 @@ const valid = ajv.compile(schema);
 /** The environment a run inherits: the developer's own, but for a connection or project file of theirs. */
 const inherited = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "DATABASE_URL" && name !== "REYLO_CONFIG"));
 
-/** `reylo analyze` run in `cwd`, with no connection of the developer's own in its environment; each line it prints names the format's version and validates against its schema. */
+/** `reylo analyze --format json` run in `cwd`, with no connection of the developer's own in its environment; each line it prints names the format's version and validates against its schema. */
 function analyzeIn(cwd: string, args: string[], env: Record<string, string> = {}, input?: string) {
-  const run = spawnSync(nativeBinary(), ["analyze", ...args], { cwd, env: { ...inherited(), ...env }, input, encoding: "utf8" });
+  const run = spawnSync(nativeBinary(), ["analyze", "--format", "json", ...args], { cwd, env: { ...inherited(), ...env }, input, encoding: "utf8" });
   const lines = run.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
   for (const line of lines) {
     assert.equal(line.$schema, SCHEMA);
@@ -68,6 +68,26 @@ test("analyze prints each .sql file's descriptor under a directory, and exits 1 
   assert.deepEqual(user.result.columns.map((c) => c.name), ["id", "name"]);
   // A diagnostic's place is in UTF-16 units of the statement as written.
   assert.deepEqual(broken.diagnostics.map((d) => [d.message, "select nope from users\n".slice(d.start, d.end)]), [["no such column: nope", "nope"]]);
+});
+
+test("analyze prints YAML by default, a document per statement, and each diagnostic on standard error under a caret", () => {
+  const root = project({ "q/a.sql": "-- Names, by id.\nselect name from users where id = :id\n", "q/b.sql": "select id,\n  nope from users\n" });
+  const run = spawnSync(nativeBinary(), ["analyze", "q"], { cwd: root, env: inherited(), encoding: "utf8" });
+  assert.equal(run.status, 1, run.stderr);
+  const [a, b] = run.stdout.split("\n---\n") as [string, string];
+  assert.ok(a.startsWith(`file: q/a.sql\n$schema: ${SCHEMA}\ndialect:\n  name: sqlite\n  version: "3.`), a);
+  // A statement of several lines is a literal block, a comment of one line plain, and a type on its own line.
+  assert.match(a, /\nsql: \|\n  -- Names, by id\.\n  select name from users where id = \S+\nkind: select\ncomment: Names, by id\.\nparams:\n  - name: id\n    type: \{ kind: integer, bits: 64 \}\n/);
+  assert.match(a, /\ndiagnostics: \[\]$/);
+  assert.ok(b.startsWith("file: q/b.sql\n") && b.includes("\ndiagnostics:\n  - message: \"no such column: nope\"\n"), b);
+  // The same descriptors as --format json prints, which the JSON lines hold to the schema.
+  assert.deepEqual(analyzeIn(root, ["q"]).lines.map((l) => [l.file, l.diagnostics.length]), [["q/a.sql", 0], ["q/b.sql", 1]]);
+  assert.equal(run.stderr, "q/b.sql:2:3: no such column: nope\n    nope from users\n    ^^^^\n");
+  const json = spawnSync(nativeBinary(), ["analyze", "--format=json", "--sql", "select name from users"], { cwd: root, env: inherited(), encoding: "utf8" });
+  assert.equal((JSON.parse(json.stdout) as Line).result.columns[0]!.name, "name");
+  const toml = spawnSync(nativeBinary(), ["analyze", "--format", "toml", "--sql", "select 1"], { cwd: root, env: inherited(), encoding: "utf8" });
+  assert.equal(toml.status, 2);
+  assert.match(toml.stderr, /^reylo analyze: --format takes yaml or json, not toml\n/);
 });
 
 test("analyze reads a statement from --sql or standard input, and a file from a subdirectory finds the package's project", () => {
@@ -183,7 +203,7 @@ test("analyze names a file: URL Node reads as no file, and where it came from", 
 
 test("analyze reads an environment variable that is not UTF-8 as Node does, rather than stopping", { skip: process.platform === "win32" && "its variable is set by a POSIX shell" }, () => {
   const root = project({});
-  const run = spawnSync("/bin/sh", ["-c", `export NOT_UTF8="$(printf '\\377')"; exec "$0" analyze --sql "select id from users"`, nativeBinary()], { cwd: root, env: inherited(), encoding: "utf8" });
+  const run = spawnSync("/bin/sh", ["-c", `export NOT_UTF8="$(printf '\\377')"; exec "$0" analyze --format json --sql "select id from users"`, nativeBinary()], { cwd: root, env: inherited(), encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
   assert.equal((JSON.parse(run.stdout) as Line).result.columns[0]!.name, "id");
 });

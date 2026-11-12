@@ -19,7 +19,7 @@ function cli(url: string, sql: string): StatementDescriptor {
   const cwd = mkdtempSync(join(tmpdir(), "reylo-analyze-cli-"));
   writeFileSync(join(cwd, "package.json"), "{}");
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "DATABASE_URL" && name !== "REYLO_CONFIG"));
-  const run = spawnSync(nativeBinary(), ["analyze", "--url", url, "--sql", sql], { cwd, env, encoding: "utf8" });
+  const run = spawnSync(nativeBinary(), ["analyze", "--url", url, "--sql", sql, "--format", "json"], { cwd, env, encoding: "utf8" });
   assert.ok(run.status === 0 || run.status === 1, run.stderr);
   const { file: _, ...descriptor } = JSON.parse(run.stdout.trim().split("\n")[0]!);
   return descriptor;
@@ -170,7 +170,7 @@ async function inProject<T>(dir: string, work: () => Promise<T>): Promise<T> {
 /** What `reylo analyze --sql <sql>` prints from `cwd`, with no connection of the developer's own in its environment. */
 function cliIn(cwd: string, sql: string, ...args: string[]): StatementDescriptor {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "DATABASE_URL" && name !== "REYLO_CONFIG"));
-  const run = spawnSync(nativeBinary(), ["analyze", "--sql", sql, ...args], { cwd, env, encoding: "utf8" });
+  const run = spawnSync(nativeBinary(), ["analyze", "--sql", sql, "--format", "json", ...args], { cwd, env, encoding: "utf8" });
   assert.ok(run.status === 0 || run.status === 1, run.stderr);
   return JSON.parse(run.stdout.trim().split("\n")[0]!);
 }

@@ -118,7 +118,7 @@ test("reylo analyze opens a Postgres Unix socket itself, without TLS, and reads 
     writeFileSync(join(project, "q.sql"), "select 1 as x");
     // Run asynchronously: the socket's server is this process's, which a synchronous run would stall.
     const run = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done) => {
-      const child = spawn(nativeBinary(), ["analyze", "q.sql"], { cwd: project, timeout: 30_000 });
+      const child = spawn(nativeBinary(), ["analyze", "q.sql", "--format", "json"], { cwd: project, timeout: 30_000 });
       let stdout = "", stderr = "";
       child.stdout.on("data", (chunk) => (stdout += chunk));
       child.stderr.on("data", (chunk) => (stderr += chunk));
