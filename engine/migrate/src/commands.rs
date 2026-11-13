@@ -3098,7 +3098,8 @@ async fn schema_as_sql(opts: &Options, schemas: &[String]) -> Result<String, Err
 
 async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
     let dumped = dump_from(db, opts, schemas).await?;
-    let mut server = shadow_server(db, opts).await?;
+    // Where no shadow database can be made (a role without CREATEDB, and no shadow_url), the dump.
+    let Ok(mut server) = shadow_server(db, opts).await else { return Ok(dumped) };
     // The extensions the dump creates are the text's to make, as a fresh database needs them: a
     // shadow that already had them would hide a plan that leaves them out.
     server.leave_extensions(extensions_in(&dumped));
@@ -3106,7 +3107,7 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
     let styled = async {
         // The plan from an empty database to this one, as `new` writes a migration.
         let empty = shadows.lane();
-        if shadows.open(empty).await?.is_err() {
+        if !matches!(shadows.open(empty).await, Ok(Ok(()))) {
             return Ok(None);
         }
         shadows.taint(empty);
@@ -3129,9 +3130,10 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
     .await;
     shadows.finish().await;
     server.close().await;
-    Ok(match styled? {
-        Some(sql) => format!("{}\n", sql.trim_end()),
-        None => dumped,
+    // Whatever keeps the plan from being shown to make the dump's schema leaves the dump.
+    Ok(match styled {
+        Ok(Some(sql)) => format!("{}\n", sql.trim_end()),
+        _ => dumped,
     })
 }
 
@@ -3456,7 +3458,7 @@ async fn plan_between(from: &mut Db, to: &mut Db, declared: Option<&str>) -> Res
 /// The refusal of a development command where CI is set: nothing it does is wanted there, and what
 /// it would write (the lock) would go uncommitted.
 pub fn refused_in_ci(command: &str, log: Log<'_>) -> i32 {
-    let problem = Problem::new("refused-in-ci", format!("CI is set, and {command} is for development databases")).fix("In CI, check a database, try the migrations, or run them", &["reylo migrate status", "reylo migrate deploy --dry-run", "reylo migrate deploy"]);
+    let problem = Problem::new("refused-in-ci", format!("CI is set, and {command} is for development databases")).fix("In CI, try the migrations, or run them", &["reylo migrate deploy --dry-run", "reylo migrate deploy"]);
     refuse(&[problem], log)
 }
 

@@ -140,14 +140,13 @@ It makes a throwaway database beside yours, runs your migrations on it, reads th
 | --- | --- |
 | `reylo migrate init` | `reylo migrate deploy` |
 | `reylo migrate new` | `reylo migrate status` |
-| `reylo migrate dev` | `reylo db wipe` |
-| `reylo migrate deploy --dry-run` | |
+| `reylo migrate dev` | `reylo db introspect` |
+| `reylo migrate deploy --dry-run` | `reylo db wipe` |
 | `reylo migrate lock` | |
 | `reylo migrate history push` | |
 | `reylo migrate history pull` | |
 | `reylo db push` | |
 | `reylo db reset` | |
-| `reylo db introspect` | |
 
 Each database makes them its own way:
 
@@ -548,6 +547,8 @@ Migrations on postgres://localhost:5432/app
 
 A lock that holds no checksum of `schema.sql` at all, as one written while your migrations fell short of it, is refused too, until `reylo migrate dev` writes one.
 
+A pending migration counts, so in CI, run it after a deploy, to confirm the database is at its migrations. The check before a deploy is `reylo migrate deploy --dry-run`.
+
 ### `lock`
 
 Writes the lock from your database's history.
@@ -678,7 +679,7 @@ create table users (
 );
 ```
 
-Where your database has what Reylo reads by name only, such as a text search configuration, it prints the database's own dump instead.
+Where your database has what Reylo reads by name only, such as a text search configuration, or no shadow database can be made, it prints the database's own dump instead.
 
 To save it over `schema.sql`, write it to another file first. A redirect empties its file before the command runs, so a failed run would leave `schema.sql` empty:
 
@@ -770,7 +771,7 @@ $ reylo db wipe && reylo run --file seed.sql
 In CI, and when you deploy:
 
 ```terminal
-# Check production against the migrations: what it ran, and what's pending
+# See what production ran and what's pending; exits 1 until it has run them all
 $ reylo migrate status --url $PROD_URL
 
 # Try the deploy, running nothing
