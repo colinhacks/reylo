@@ -364,15 +364,17 @@ export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: 
 function executeSyncSqlite<D extends Dialect>(c: AnyClient, query: QueryModule<D>, params: ParamsInput, runSync: NonNullable<Runtime<D>["runSync"]>): unknown[] | Promise<unknown[]> {
   if (isSqlJs(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
-  if (query.fresh && due(query)) {
+  // A Durable Object's storage is a database of its own, so its checks are its own.
+  const own = isDurableObjectSql(c) ? (c as object) : undefined;
+  if (query.fresh && due(query, undefined, own)) {
     let rows: unknown[] | undefined;
     try {
-      rows = isDurableObjectSql(c) ? c.exec(query.fresh.query).toArray() : isSqliteWasm(c) ? c.selectObjects(query.fresh.query) : c.prepare(query.fresh.query).all();
+      rows = own ? c.exec(query.fresh.query).toArray() : isSqliteWasm(c) ? c.selectObjects(query.fresh.query) : c.prepare(query.fresh.query).all();
     } catch {}
     const found = rows && compared(query.fresh, rows, query.dialect);
     if (found?.stale.length) throw staleError(query.source, found.stale);
     if (found) warnDrifted(query.source, found.drifted);
-    passed(query);
+    passed(query, undefined, own);
   }
   return runSync(c, query, statement(query, params));
 }
@@ -434,7 +436,8 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
   if (query.dialect !== "duckdb" && isDuckdb(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
   // The catalog facts the statement relied on, read again through the same client.
-  if (query.fresh && due(query)) {
+  const own = isDurableObjectSql(c) ? (c as object) : undefined;
+  if (query.fresh && due(query, undefined, own)) {
     const fresh = query.fresh;
     let rows: unknown[] | undefined;
     try {
@@ -443,7 +446,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
     const found = rows && compared(fresh, rows, query.dialect);
     if (found?.stale.length) throw staleError(query.source, found.stale);
     if (found) warnDrifted(query.source, found.drifted);
-    passed(query);
+    passed(query, undefined, own);
   }
   const rows = await query.runtime.run(c, query, statement(query, params));
   if (rows === undefined) throw unsupported(c, query.dialect);

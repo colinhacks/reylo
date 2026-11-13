@@ -407,7 +407,7 @@ select unhex('ff') as raw,
 
 </Rules>
 
-Your driver's SQLite may be older than Reylo's: libSQL ships SQLite 3.45.1, which has no `json_pretty`. So the type check also runs each query on every one of `better-sqlite3`, `@libsql/client`, `sqlite3` and `@tursodatabase/database` in your `package.json`, and reports any error with that driver's message. With `wrangler` in your `package.json` and a D1 database in its config, it also runs each query on Cloudflare D1 as wrangler runs it locally, since D1 blocks some of SQLite's functions, such as `json_pretty` and `power`. Durable Objects block the same ones. It can't check `bun:sqlite` or SQLite Wasm.
+Your driver's SQLite may be older than Reylo's: libSQL ships SQLite 3.45.1, which has no `json_pretty`. So the type check also runs each query on every one of `better-sqlite3`, `@libsql/client`, `sqlite3` and `@tursodatabase/database` in your `package.json`, and reports any error with that driver's message. With `wrangler` in your `package.json` and a D1 database or a SQLite-backed Durable Object in its config, it also runs each query on Cloudflare's SQLite as wrangler runs it locally, since D1 and Durable Objects block some of SQLite's functions, such as `json_pretty` and `power`. It can't check `bun:sqlite` or SQLite Wasm.
 
 ## Nullability
 

@@ -109,10 +109,19 @@ test("a refusal is placed at the call or the text it names, in UTF-8 bytes", () 
 // only when a statement compiles.
 const d1 = skip || (!existsSync(join(DRIVERS, "wrangler")) && "lab/drivers has no wrangler installed");
 
-function worker(root: string, d1Binding: boolean) {
-  const config = { name: "reylo-test", main: "worker.js", compatibility_date: "2026-10-01", ...(d1Binding && { d1_databases: [{ binding: "DB", database_name: "reylo-test", database_id: "00000000-0000-0000-0000-000000000000" }] }) };
+function worker(root: string, d1Binding: boolean, durableObject: false | "sqlite" | "kv" | "exports" = false) {
+  const config = {
+    name: "reylo-test",
+    main: "worker.js",
+    compatibility_date: "2026-10-01",
+    ...(d1Binding && { d1_databases: [{ binding: "DB", database_name: "reylo-test", database_id: "00000000-0000-0000-0000-000000000000" }] }),
+    ...(durableObject && { durable_objects: { bindings: [{ name: "BOARD", class_name: "Board" }] } }),
+    // The class declared by migrations, or by the declarative `exports` that replaces them.
+    ...(durableObject === "exports" ? { exports: { Board: { type: "durable-object", storage: "sqlite" } } } : durableObject && { migrations: [{ tag: "v1", [durableObject === "sqlite" ? "new_sqlite_classes" : "new_classes"]: ["Board"] }] }),
+  };
   writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(config));
-  writeFileSync(join(root, "worker.js"), "export default { fetch() { return new Response(''); } };\n");
+  const board = durableObject ? `import { DurableObject } from "cloudflare:workers";\nexport class Board extends DurableObject {}\n` : "";
+  writeFileSync(join(root, "worker.js"), `${board}export default { fetch() { return new Response(''); } };\n`);
 }
 
 test("a statement Cloudflare D1 refuses fails the type check at the call, with D1's message", { skip: d1, timeout: 120_000 }, async () => {
@@ -148,6 +157,27 @@ test("a project whose wrangler config binds no D1 database is not asked, until i
   // The failed start is remembered only as long as the config it read.
   worker(root, true);
   assert.match((await analyze(root, env, PRETTY)).analysis.diagnostics[0]?.message ?? "", /refuses this statement: not authorized to use function: json_pretty$/);
+});
+
+test("a project with a SQLite-backed Durable Object and no D1 database is asked as the object's SQL storage, which refuses what D1 refuses", { skip: d1, timeout: 120_000 }, async () => {
+  const { root, env } = project(["wrangler"]);
+  worker(root, false, "sqlite");
+  const [diagnostic, ...rest] = (await analyze(root, env, PRETTY)).analysis.diagnostics;
+  assert.deepEqual(rest, []);
+  assert.match(diagnostic?.message ?? "", /^A Durable Object's SQL storage, as wrangler \d+\.\d+\.\d+ runs it locally, refuses this statement: not authorized to use function: json_pretty$/);
+  assert.deepEqual((await analyze(root, env, "select id, ceil(id / 2.0) as half from notes where id = :id")).analysis.diagnostics, []);
+});
+
+test("a SQLite-backed Durable Object that exports declares is asked as well", { skip: d1, timeout: 120_000 }, async () => {
+  const { root, env } = project(["wrangler"]);
+  worker(root, false, "exports");
+  assert.match((await analyze(root, env, PRETTY)).analysis.diagnostics[0]?.message ?? "", /^A Durable Object's SQL storage, as wrangler \d+\.\d+\.\d+ runs it locally, refuses this statement: not authorized to use function: json_pretty$/);
+});
+
+test("a project whose only Durable Object is key-value backed has no SQL storage to ask", { skip: d1, timeout: 120_000 }, async () => {
+  const { root, env } = project(["wrangler"]);
+  worker(root, false, "kv");
+  assert.deepEqual((await analyze(root, env, PRETTY)).analysis.diagnostics, []);
 });
 
 test("D1 compiles each statement against the schema as it is now, after a migration and in a later session", { skip: d1, timeout: 120_000 }, async () => {

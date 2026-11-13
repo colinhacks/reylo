@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { compared, FRESH_FOR, passed, sqliteDefault, type Fresh } from "../src/fresh.ts";
+import { compared, due, FRESH_FOR, passed, sqliteDefault, type Fresh } from "../src/fresh.ts";
 import { sqlModule } from "../src/loader.ts";
 import { DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase, sqliteWasmCopy } from "./helpers.ts";
 
@@ -69,9 +69,27 @@ test("a change is said where the types may not hold: a column gone, retyped or m
   assert.deepEqual(drift(fresh, [["users", "id", "integer", "true", "false"], ["users", "email", "text", "true", "true"]]), []);
   assert.deepEqual(drift(fresh, [...fresh.rows, ["users", "tenant", "integer", "true", "false"]]), []);
   assert.deepEqual(drift({ ...fresh, rows: [["users", "bio", "text", "false", "false"]] }, [["users", "bio", "text", "true", "false"]]), []);
+  // A table the database lacks as a whole is a migration not run there, which the statement's own error says.
+  assert.deepEqual(drift(fresh, []), []);
+  assert.deepEqual(drift({ ...fresh, rows: [...fresh.rows, ["posts", "title", "text", "true", "false"]] }, [["posts", "title", "text", "true", "false"]]), []);
   // A client that answers every query with a row of its own, as lab/nextjs's edge stub does, is no catalog.
   assert.equal(drift(fresh, [{ id: 1, name: "stub", email: null, role: "member", big: "7" }]), undefined);
   assert.equal(drift(fresh, [["users", "id", "integer"]]), undefined);
+});
+
+test("a check holds a minute for the query, and on a Durable Object's storage for that object alone", () => {
+  const query = {};
+  const [one, two] = [{}, {}];
+  assert.equal(due(query, 0), true);
+  passed(query, 0);
+  assert.equal(due(query, FRESH_FOR - 1), false);
+  assert.equal(due(query, FRESH_FOR), true);
+  // Each object's storage is a database of its own: a check on one says nothing of another.
+  assert.equal(due(query, 0, one), true);
+  passed(query, 0, one);
+  assert.equal(due(query, FRESH_FOR - 1, one), false);
+  assert.equal(due(query, FRESH_FOR - 1, two), true);
+  assert.equal(due(query, FRESH_FOR, one), true);
 });
 
 test("a default a structured insert copied is a fact by its text: changed, given or dropped, it fails the call; another column's default text is no fact", () => {
@@ -181,6 +199,14 @@ test("SQLite: a query whose columns changed warns, naming them, and a statement 
     const read4 = await built(root, url, "read4", "select id, name from users order by id");
     db.exec("alter table users rename column name to full_name");
     assert.deepEqual(await warnings(() => assert.throws(() => read4.runSync(db), /no such column: name/)), ["reylo: users.name has changed since read4.sql was built (it was TEXT, and no longer exists), so its types may be out of date until the next build."]);
+    // A database without the table at all, as a Durable Object before its migrations run: no warning, and the statement's own error.
+    const read5 = await built(root, url, "read5", "select id, mail from users order by id");
+    const empty = new DatabaseSync(":memory:");
+    try {
+      assert.deepEqual(await warnings(() => assert.rejects(read5.run(empty), /no such table: users/)), []);
+    } finally {
+      empty.close();
+    }
     // An insert's table that gains a column it must fill.
     const insert = await built(root, url, "insert", "insert into users (mail) values (:mail)");
     db.exec("alter table users add column tenant integer not null default 0");

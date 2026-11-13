@@ -13,7 +13,11 @@
 // a row the column now refuses itself.
 //
 // A query is checked on its first run in a process, and again when its last check is a minute old,
-// so a long-running server notices a migration that lands while it runs. A catalog query that
+// so a long-running server notices a migration that lands while it runs. A Durable Object's SQL
+// storage is a database of its own, one per object, so there the check is kept per object as well.
+// A table the database does not have at all says nothing: the statement fails on its own, with the
+// database's own error, and the cause is a migration that has not run there (a Durable Object made
+// since the deploy, before its constructor ran them), not a build out of date. A catalog query that
 // fails (a role that may not read the catalog) checks nothing, and the query runs; so does one
 // whose answer is not shaped as its rows are, which no database gives: a client that answers every
 // query with rows of its own, as a stub or a mock does, is no catalog to check against.
@@ -34,6 +38,8 @@ export type Fresh = {
 export const FRESH_FOR = 60_000;
 
 const checked = new WeakMap<object, number>();
+/** The checks of each Durable Object's storage, by query. */
+const checkedOn = new WeakMap<object, WeakMap<object, number>>();
 
 // The clock is `performance.now()`, not `Date.now()`: an interval needs only a monotonic clock, and
 // Next.js's Cache Components refuse `Date.now()` while a page prerenders, which failed `next build`
@@ -42,15 +48,18 @@ const checked = new WeakMap<object, number>();
 // DOM's types or Node's, which declare it (the labs' type checks failed with "Cannot find name").
 const clock = (globalThis as unknown as { performance: { now(): number } }).performance;
 
-/** Whether `query` is due for a check now. */
-export function due(query: object, now = clock.now()): boolean {
-  const at = checked.get(query);
+/** Whether `query` is due for a check now, on `database` where it is one of several in a process (a Durable Object's storage). */
+export function due(query: object, now = clock.now(), database?: object): boolean {
+  const at = database ? checkedOn.get(database)?.get(query) : checked.get(query);
   return at === undefined || now - at >= FRESH_FOR;
 }
 
-/** Records a check of `query` that passed, or that could not run. */
-export function passed(query: object, now = clock.now()): void {
-  checked.set(query, now);
+/** Records a check of `query` that passed, or that could not run, on `database` where `due` was given one. */
+export function passed(query: object, now = clock.now(), database?: object): void {
+  if (!database) return void checked.set(query, now);
+  let on = checkedOn.get(database);
+  if (!on) checkedOn.set(database, (on = new WeakMap()));
+  on.set(query, now);
 }
 
 const yes = (v: string) => v === "true" || v === "1";
@@ -92,6 +101,7 @@ export function compared(fresh: Fresh, rows: readonly unknown[], dialect?: "post
   const stale: string[] = [];
   const drifted: Drift[] = [];
   const copied = new Set((fresh.defaults ?? []).map((d) => `${d[0]}\u0000${d[1]}`));
+  const tables = new Set([...now.values()].map((v) => v[0]));
   for (const was of fresh.rows) {
     const key = `${was[0]}\u0000${was[1]}`;
     const is = now.get(key);
@@ -102,6 +112,8 @@ export function compared(fresh: Fresh, rows: readonly unknown[], dialect?: "post
     }
     const name = `${table(was[0]!)}.${was[1]}`;
     if (!is) {
+      // A table missing as a whole is a migration not run here, and the statement fails on its own.
+      if (!tables.has(was[0]!)) continue;
       drifted.push({ name, how: `it was ${describe(was)}, and no longer exists` });
       continue;
     }
