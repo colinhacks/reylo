@@ -11,8 +11,8 @@
 // allowlist of functions is an authorizer SQLite calls while it compiles) without running the
 // statement.
 //
-// A project with Durable Objects and no D1 database is asked too: each object's storage is
-// Cloudflare's SQLite, and wrangler runs a local D1 database as a Durable Object's storage (its
+// A project with SQLite-backed Durable Objects and no D1 database is asked too: each such object's
+// storage is Cloudflare's SQLite, and wrangler runs a local D1 database as a Durable Object's storage (its
 // files are under `miniflare-D1DatabaseObject`), so both refuse the same functions. Such a project
 // gets a D1 database of a config of Reylo's own, in a directory of its own, in memory as well.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -35,7 +35,10 @@ let proxy = await getPlatformProxy({ persist: false, remoteBindings: false });
 let db = Object.values(proxy.env).find(isD1);
 let scratch: string | undefined;
 const config = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].filter((name) => existsSync(name)).map((name) => readFileSync(name, "utf8")).join("\n");
-if (!db && /\bdurable_objects\b/.test(config)) {
+// Only a class its migrations declare under `new_sqlite_classes` has SQL storage: a key-value
+// backed class (`new_classes`) has none, and a binding to another Worker's class (`script_name`)
+// leaves that Worker's storage to that Worker.
+if (!db && /\bnew_sqlite_classes\b/.test(config)) {
   await proxy.dispose().catch(() => {});
   scratch = mkdtempSync(join(tmpdir(), "reylo-d1-"));
   const date = /compatibility_date"?\s*[:=]\s*"(\d{4}-\d{2}-\d{2})"/.exec(config)?.[1];

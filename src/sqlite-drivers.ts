@@ -13,7 +13,7 @@
 // functions its SQLite has (an allowlist it applies as SQLite compiles a statement, which nothing
 // lists: it refuses `pragma_function_list` too) and lacks others (FTS4, Geopoly), so the only way
 // to know is to compile the statement there (src/d1-proxy.ts). A Durable Object's SQL storage
-// refuses the same, so a project with Durable Objects and no D1 database is asked as well.
+// refuses the same, so a project with SQLite-backed Durable Objects and no D1 database is asked as well.
 import { fork } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -161,7 +161,7 @@ function wranglerConfig(dir: string): string {
 /**
  * D1 as the project's wrangler runs it locally, in a child process (src/d1-proxy.ts), given the
  * schema of the database the type check reads. A project whose wrangler config has neither a D1
- * database nor a Durable Object is not asked.
+ * database nor a SQLite-backed Durable Object is not asked.
  */
 async function openD1(require: Require, path: string): Promise<SqliteDriver> {
   const entry = require.resolve("wrangler");
@@ -252,7 +252,7 @@ async function startD1(entry: string, dir: string, ended: () => void): Promise<D
   try {
     const timeout = new Promise<never>((_, fail) => setTimeout(() => fail(new Error("workerd did not start")), D1_START).unref());
     const ready = await Promise.race([gone, timeout, new Promise<Extract<Reply, { kind: "ready" }>>((done) => child.once("message", done))]);
-    if (!ready.d1) throw new Error("the wrangler config has neither a D1 database nor a Durable Object");
+    if (!ready.d1) throw new Error("the wrangler config has neither a D1 database nor a SQLite-backed Durable Object");
     storage = ready.storage ?? "d1";
   } catch (e) {
     stop();

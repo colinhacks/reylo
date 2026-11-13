@@ -109,13 +109,13 @@ test("a refusal is placed at the call or the text it names, in UTF-8 bytes", () 
 // only when a statement compiles.
 const d1 = skip || (!existsSync(join(DRIVERS, "wrangler")) && "lab/drivers has no wrangler installed");
 
-function worker(root: string, d1Binding: boolean, durableObject = false) {
+function worker(root: string, d1Binding: boolean, durableObject: false | "sqlite" | "kv" = false) {
   const config = {
     name: "reylo-test",
     main: "worker.js",
     compatibility_date: "2026-10-01",
     ...(d1Binding && { d1_databases: [{ binding: "DB", database_name: "reylo-test", database_id: "00000000-0000-0000-0000-000000000000" }] }),
-    ...(durableObject && { durable_objects: { bindings: [{ name: "BOARD", class_name: "Board" }] }, migrations: [{ tag: "v1", new_sqlite_classes: ["Board"] }] }),
+    ...(durableObject && { durable_objects: { bindings: [{ name: "BOARD", class_name: "Board" }] }, migrations: [{ tag: "v1", [durableObject === "sqlite" ? "new_sqlite_classes" : "new_classes"]: ["Board"] }] }),
   };
   writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(config));
   const board = durableObject ? `import { DurableObject } from "cloudflare:workers";\nexport class Board extends DurableObject {}\n` : "";
@@ -157,13 +157,19 @@ test("a project whose wrangler config binds no D1 database is not asked, until i
   assert.match((await analyze(root, env, PRETTY)).analysis.diagnostics[0]?.message ?? "", /refuses this statement: not authorized to use function: json_pretty$/);
 });
 
-test("a project with a Durable Object and no D1 database is asked as the object's SQL storage, which refuses what D1 refuses", { skip: d1, timeout: 120_000 }, async () => {
+test("a project with a SQLite-backed Durable Object and no D1 database is asked as the object's SQL storage, which refuses what D1 refuses", { skip: d1, timeout: 120_000 }, async () => {
   const { root, env } = project(["wrangler"]);
-  worker(root, false, true);
+  worker(root, false, "sqlite");
   const [diagnostic, ...rest] = (await analyze(root, env, PRETTY)).analysis.diagnostics;
   assert.deepEqual(rest, []);
   assert.match(diagnostic?.message ?? "", /^A Durable Object's SQL storage, as wrangler \d+\.\d+\.\d+ runs it locally, refuses this statement: not authorized to use function: json_pretty$/);
   assert.deepEqual((await analyze(root, env, "select id, ceil(id / 2.0) as half from notes where id = :id")).analysis.diagnostics, []);
+});
+
+test("a project whose only Durable Object is key-value backed has no SQL storage to ask", { skip: d1, timeout: 120_000 }, async () => {
+  const { root, env } = project(["wrangler"]);
+  worker(root, false, "kv");
+  assert.deepEqual((await analyze(root, env, PRETTY)).analysis.diagnostics, []);
 });
 
 test("D1 compiles each statement against the schema as it is now, after a migration and in a later session", { skip: d1, timeout: 120_000 }, async () => {
