@@ -29,13 +29,18 @@
       "headers": { "Content-Type": "text/markdown; charset=utf-8", "Vary": "Accept" }
     },
     {
-      "src": "^/(usage|inference|configuration|observability|schema-changes|migrations|typedefs|compare|faq|postgres|mysql|sqlite|duckdb|prisma)$",
+      "src": "^/(usage|inference|configuration|observability|migrations|typedefs|compare|faq|postgres|mysql|sqlite|duckdb|prisma)$",
       "has": [{ "type": "header", "key": "accept", "value": "^(?!.*text/html.*text/(?:x-)?markdown).*text/(?:x-)?markdown.*$" }],
       "dest": "/$1.md",
       "headers": { "Content-Type": "text/markdown; charset=utf-8", "Vary": "Accept" }
     }
   ],
   "redirects": [
+    {
+      "source": "/schema-changes",
+      "destination": "/observability#when-the-schema-changes",
+      "permanent": true
+    },
     {
       "source": "/opengraph-image",
       "destination": "/opengraph-image.png",

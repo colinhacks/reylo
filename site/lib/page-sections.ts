@@ -9,6 +9,6 @@ export const PAGE_SECTIONS: Record<string, readonly string[]> = {
   'usage.mdx': ['02-usage.mdx'],
   'inference.mdx': ['03-inference.mdx'],
   'configuration.mdx': ['04-configuration.mdx'],
-  'observability.mdx': ['08b-tracing.mdx'],
+  'observability.mdx': ['08b-tracing.mdx', '08c-schema-checks.mdx'],
   'faq.mdx': ['09-faq.mdx'],
 };

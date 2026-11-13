@@ -62,7 +62,7 @@ direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
 
 A type check or a build reads this database, so in CI and on your host it needs your migrations applied. The database a query runs on is the client you pass to `.run()`, so the two can differ.
 
-A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([Schema changes](/schema-changes)). To type it on the database it runs on:
+A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([When the schema changes](/observability#when-the-schema-changes)). To type it on the database it runs on:
 
 ```sh
 DATABASE_URL_UNPOOLED="$PRODUCTION_URL" node --import reylo/register report.ts

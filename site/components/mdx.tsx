@@ -7,6 +7,7 @@ import { Choice, Feature, Features, Way } from './feature-cards';
 import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
+import { MigrationsDiagram } from './migrations-diagram';
 import { Inferred, InferredRow, InferredTypes } from './inferred';
 import { PlaygroundLink } from './playground-link';
 import { Pairs, Rules } from './value-pairs';
@@ -21,6 +22,8 @@ export function getMDXComponents(components?: MDXComponents) {
     AgentPrompt: ({ children }: { children: ReactNode }) => <AgentPrompt title="Set up Reylo with an agent">{children}</AgentPrompt>,
     // The figure under How it works (components/how-it-works-diagram.tsx).
     HowItWorksDiagram,
+    // The records and commands of Reylo Migrate, at the top of the Migrations page (components/migrations-diagram.tsx).
+    MigrationsDiagram,
     // The badges and "Copy agent prompt" under the main page's subheader (components/hero.tsx).
     HeroActions,
     // The looping editor recording under them (components/hero.tsx).

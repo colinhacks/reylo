@@ -39,7 +39,6 @@ export const pageGroups = [
       { title: 'Inference', href: '/inference' },
       { title: 'Configuration', href: '/configuration' },
       { title: 'Observability', href: '/observability' },
-      { title: 'Schema changes', href: '/schema-changes' },
       { title: 'Migrations', href: '/migrations' },
       { title: 'Type Defs', href: '/typedefs' },
       { title: 'Comparison', href: '/compare' },
