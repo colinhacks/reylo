@@ -18,6 +18,9 @@ type VitestContext = {
   experimental_defineCacheKeyGenerator?(generate: (module: { id: string }) => false | undefined): void;
 };
 
+/** The project file, `.reylo.yaml` or `.reylo.yml`, or a `<name>.reylo.yaml`. */
+const PROJECT_FILE = /(?:^|[\\/])(?:[\w-]*\.)?reylo\.ya?ml$/;
+
 export default function reylo() {
   return {
     name: "reylo",
@@ -36,8 +39,14 @@ export default function reylo() {
       },
     },
     load: {
-      filter: { id: /\.sql$/ },
+      filter: { id: /\.sql$|(?:^|[\\/])(?:[\w-]*\.)?reylo\.ya?ml$/ },
       async handler(this: { addWatchFile(id: string): void }, id: string) {
+        // An import of the project file gives `migrate` the project's migrations (src/project-module.ts).
+        if (PROJECT_FILE.test(id)) {
+          const { code, watched } = await (await tooling(dirname(id))).projectModule(id);
+          for (const file of watched) this.addWatchFile(file);
+          return { code, map: null };
+        }
         if (!id.endsWith(".sql")) return null;
         const { code, entry, watched } = await (await tooling(dirname(id))).sqlModule(id, readFileSync(id, "utf8"));
         // A new analysis of the statement (the type check's, after a migration) rebuilds the module,

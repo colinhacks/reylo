@@ -8,6 +8,7 @@ import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes, queryErrorType, reyloImport, withinFile } from "./module-types.ts";
 import { PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
+import { PROJECT_MODULE_TYPES } from "./project-module-types.ts";
 import type { Codecs } from "./codecs.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, statementAfter } from "./doc-comment.ts";
@@ -81,8 +82,9 @@ export function mapperHandlers(): MapperHandlers {
       const size = Buffer.byteLength(sql);
       const diagnostics: ReturnType<typeof diag>[] = [];
       // A project file (`.reylo.yaml` or `.reylo.yml`, or a `<name>.reylo.yaml` that `include` takes
-      // in) is no query, and its module declares nothing.
-      if (PROJECT_FILES.some((name) => p.fileName.endsWith(name))) return { extension: ".ts" as const, diagnostics, text: "export {};\n", mappings: [] };
+      // in) is no query: its module gives `migrate`, which the bundler plugin fills with the
+      // project's migrations (src/project-module.ts).
+      if (PROJECT_FILES.some((name) => p.fileName.endsWith(name))) return { extension: ".ts" as const, diagnostics, text: PROJECT_MODULE_TYPES, mappings: [] };
       const project = projects.get(p.projectHandle);
       if (!project) {
         // A transform for a project this process never opened: answer, never throw, so the file

@@ -22,6 +22,11 @@ export default function reylo() {
         // rebuilds the module, and so does a change to the project file or a `.env` file.
         return { contents: code, loader: "js", watchFiles: [entry, ...watched] };
       });
+      // An import of the project file gives `migrate` the project's migrations (src/project-module.ts).
+      build.onLoad({ filter: /(?:^|[\\/])(?:[\w-]*\.)?reylo\.ya?ml$/ }, async (args) => {
+        const { code, watched } = await (await tooling(dirname(args.path))).projectModule(args.path);
+        return { contents: code, loader: "js", watchFiles: watched };
+      });
       build.onEnd?.(releaseConnections);
     },
   };

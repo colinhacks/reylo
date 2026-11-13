@@ -4,6 +4,7 @@
 // again, and the projects opened meanwhile are opened again on it once it loads.
 import { tooling } from "./tooling-loader.ts";
 import { serve } from "./rpc.ts";
+import { PROJECT_MODULE_TYPES } from "./project-module-types.ts";
 
 type Handler = (params: unknown) => unknown | Promise<unknown>;
 type Handlers = Record<string, Handler>;
@@ -41,8 +42,8 @@ serve({
   }),
   transform: handle("transform", (params) => {
     const p = params as { fileName: string; content: string };
-    // A project file is no query, and its module declares nothing.
-    if (p.fileName.endsWith(".reylo.yaml") || p.fileName.endsWith(".reylo.yml")) return { extension: ".ts", diagnostics: [], text: "export {};\n", mappings: [] };
+    // A project file is no query: its module gives `migrate` (src/project-module-types.ts).
+    if (p.fileName.endsWith(".reylo.yaml") || p.fileName.endsWith(".reylo.yml")) return { extension: ".ts", diagnostics: [], text: PROJECT_MODULE_TYPES, mappings: [] };
     return { extension: ".ts", diagnostics: [{ messageText: message, start: 0, length: Math.min(1, Buffer.byteLength(p.content)), code: 11 }], text: NO_ENGINE_TEXT, mappings: [] };
   }),
   closeProject: handle("closeProject", (params) => {

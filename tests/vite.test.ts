@@ -39,3 +39,20 @@ test("reylo/vite resolves a relative .sql import to its file before any other pl
 test("reylo/vite's resolveId runs before the other plugins' hooks", () => {
   assert.equal(reylo().resolveId.order, "pre");
 });
+
+// An import of the project file builds to its migrations, for a Durable Object's `migrate`
+// (src/project-module.ts); its load is the same hook's, so the filter admits it.
+test("reylo/vite builds an import of the project file into its migrations", async () => {
+  const root = mkdtempSync(join(tmpdir(), "reylo-vite-project-file-"));
+  writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: file:./dev.sqlite\n");
+  mkdirSync(join(root, "reylo", "migrations"), { recursive: true });
+  writeFileSync(join(root, "reylo", "migrations", "init.sql"), "create table users (id integer primary key);\n");
+  const plugin = reylo();
+  for (const id of [join(root, ".reylo.yaml"), join(root, "config", "staging.reylo.yml")]) assert.ok(plugin.load.filter.id.test(id), id);
+  assert.ok(!plugin.load.filter.id.test(join(root, "reylo.yaml.bak")));
+  const watched: string[] = [];
+  const out = (await plugin.load.handler.call({ addWatchFile: (f: string) => watched.push(f) }, join(root, ".reylo.yaml"))) as { code: string };
+  assert.match(out.code, /export const \{ migrate \} = migrations\(\[\{"name":"init\.sql","sql":"create table users \(id integer primary key\);\\n"\}\]\);/);
+  assert.ok(watched.includes(join(root, "reylo", "migrations", "init.sql")));
+});

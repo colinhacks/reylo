@@ -21,6 +21,7 @@ export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteCli
 export type { QueryTrace } from "./trace.ts";
 export type { StandardQueryV1 } from "./standard-query.ts";
 export { checks } from "./checks.ts";
+export { migrations } from "./migrate.ts";
 export type { AnalyzeInput } from "./build-time.ts";
 export type * as TypeDefs from "../spec/index.ts";
 export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresErrorFields, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteErrorFields, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";

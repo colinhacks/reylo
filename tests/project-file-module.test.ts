@@ -9,12 +9,12 @@ import { ROOT } from "./helpers.ts";
 
 // The setup lists `.reylo.yaml` and `.reylo.yml` among the content mapper's extensions beside `.sql`,
 // so the project file is the mapper's to type rather than a YAML loader's. Its module declares
-// nothing, and neither an import of it nor a `<name>.reylo.yaml` that `include` takes in is read as a
-// query. The type check runs as a project runs it, over SQLite, so no server is needed.
+// `migrate`, for a Durable Object (src/project-module-types.ts), and neither an import of it nor a
+// `<name>.reylo.yaml` that `include` takes in is read as a query. The type check runs as a project runs it, over SQLite, so no server is needed.
 // TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
 const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 
-test("a project file in the mapper's extensions is a module that declares nothing, never a query", () => {
+test("a project file in the mapper's extensions is a module that declares migrate, never a query", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-project-file-")));
   writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
   writeFileSync(join(root, ".env"), "DATABASE_URL=file:./app.db\n");
@@ -38,6 +38,12 @@ test("a project file in the mapper's extensions is a module that declares nothin
       `import type * as local from "./config/local.reylo.yml";`,
       `// @ts-expect-error the project file's module has no default export`,
       `import config from "./.reylo.yaml";`,
+      `import { migrate } from "./.reylo.yaml";`,
+      `// A Durable Object's storage, as Cloudflare's types give it: exec is generic over its row.`,
+      `declare const storage: { sql: { exec<T extends Record<string, unknown>>(query: string, ...bindings: any[]): { toArray(): T[]; one(): T } }; transactionSync<T>(closure: () => T): T; getAlarm(): Promise<number | null> };`,
+      `export const ran: string[] = migrate(storage);`,
+      `// @ts-expect-error migrate takes a Durable Object's storage, not its SQL alone`,
+      `migrate(storage.sql);`,
       `export const query = posts;`,
       `export type Project = typeof project | typeof local;`,
       `export const unused = config;`,
