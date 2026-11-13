@@ -170,9 +170,9 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
     ...(a.comment !== undefined && { comment: a.comment }),
     params: a.params.map((p) => ({ name: p.name, type: p.type, ...(p.nullable && { nullable: true }), ...(p.optional && { optional: true }), ...(p.comment !== undefined && { comment: p.comment }) })),
     result: {
-      kind: "rows",
-      cardinality: a.cardinality,
-      columns: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })),
+      kind: "array",
+      ...(SIZES[a.cardinality] !== undefined && { size: SIZES[a.cardinality]! }),
+      element: { type: { kind: "record", fields: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })) } },
       ...(a.unique?.length && { unique: a.unique }),
       ...(a.order?.length && { order: a.order }),
     },
@@ -183,9 +183,12 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
   };
 }
 
+/** How many rows each cardinality is, as the result array's size; any number is no size. */
+const SIZES: Record<Analysis["cardinality"], { exact: number } | { max: number } | undefined> = { one: { exact: 1 }, at_most_one: { max: 1 }, many: undefined, none: { exact: 0 } };
+
 /** A statement the engine could not analyze: no parameters or columns, and one diagnostic over the whole of it. */
 function refused(sql: string, dialect: Database, version: string, message: string): StatementDescriptor {
-  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], result: { kind: "rows", cardinality: "many", columns: [] }, diagnostics: [{ message, start: 0, end: sql.length }] };
+  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], result: { kind: "array", element: { type: { kind: "record", fields: [] } } }, diagnostics: [{ message, start: 0, end: sql.length }] };
 }
 
 /** The UTF-16 offset of the UTF-8 byte offset `byte` of `text`: a byte inside a character counts from the character's start, and one past the end at the end (`utf16_offset` in engine/core/src/api.rs). */

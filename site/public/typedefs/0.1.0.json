@@ -57,9 +57,6 @@
           "$ref": "#/$defs/UnionType"
         },
         {
-          "$ref": "#/$defs/SetType"
-        },
-        {
           "$ref": "#/$defs/MapType"
         },
         {
@@ -84,7 +81,7 @@
           "$ref": "#/$defs/TaggedUnionType"
         },
         {
-          "$ref": "#/$defs/RowsType"
+          "$ref": "#/$defs/TupleType"
         }
       ]
     },
@@ -167,6 +164,17 @@
       "properties": {
         "kind": {
           "const": "boolean"
+        },
+        "enum": {
+          "description": "The only values, as JSON Schema's `enum`: `[\"true\"]` is the literal `true`.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          "minItems": 1
         }
       },
       "required": [
@@ -242,6 +250,14 @@
         "nan": {
           "description": "Also holds NaN: Postgres's floats. SQLite stores a NaN as NULL, and MySQL refuses it.",
           "const": true
+        },
+        "enum": {
+          "description": "The only values, as JSON Schema's `enum`, in canonical text: `[\"0.5\"]` is the literal 0.5.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
         }
       },
       "required": [
@@ -523,7 +539,7 @@
       "unevaluatedProperties": false
     },
     "ArrayType": {
-      "description": "A sequence of `element`s, in order. Where its index starts is not part of the type.\n  - **Nesting:** a two-dimensional array is an array of arrays. A Postgres array column takes `any_depth`, since Postgres ignores declared dimensions: one `int[]` column holds `{1,2}` and `{{1,2},{3,4}}`. Every array a statement builds (`array_agg`, `ARRAY[…]`, a JSON array) has the depth its nesting shows.\n  - **Its size** counts the outermost array's elements. A fixed shape, such as DuckDB's `INTEGER[3]` or a 3×3 matrix, is arrays of exact sizes, nested.\n  - **A vector** is an array of floats: pgvector's `vector(3)` is exactly 3 elements, and MySQL's `VECTOR(n)` at most n.\n  - **A bit string** is an array of booleans: Postgres `bit(7)` and MySQL `BIT(7)` are exactly 7, and Postgres `varbit(n)` at most n. That is its value, not its representation: a client may hold one as a string of 0s and 1s, a number or a buffer.",
+      "description": "A sequence of `element`s, in order. Where its index starts is not part of the type.\n  - **Nesting:** a two-dimensional array is an array of arrays. A Postgres array column takes `any_depth`, since Postgres ignores declared dimensions: one `int[]` column holds `{1,2}` and `{{1,2},{3,4}}`. Every array a statement builds (`array_agg`, `ARRAY[…]`, a JSON array) has the depth its nesting shows.\n  - **Its size** counts the outermost array's elements. A fixed shape, such as DuckDB's `INTEGER[3]` or a 3×3 matrix, is arrays of exact sizes, nested.\n  - **A vector** is an array of floats: pgvector's `vector(3)` is exactly 3 elements, and MySQL's `VECTOR(n)` at most n.\n  - **A bit string** is an array of booleans: Postgres `bit(7)` and MySQL `BIT(7)` are exactly 7, and Postgres `varbit(n)` at most n. That is its value, not its representation: a client may hold one as a string of 0s and 1s, a number or a buffer.\n  - **Rows** are an array of records: a statement's result, one record per row, and SQL's `MULTISET` or an Oracle nested table. Its size is how many rows, `unique` the keys no two rows share, and `order` the fields the rows are sorted on.\n  - **A set** is an array whose elements never repeat, `distinct`: MySQL's `SET`, whose members MySQL keeps once each, in the order the column declares them.",
       "type": "object",
       "allOf": [
         {
@@ -545,6 +561,28 @@
         "any_depth": {
           "description": "An element may itself be an array of `element`, to any depth, each value rectangular.",
           "const": true
+        },
+        "distinct": {
+          "description": "No two elements are equal, by the element type's equality, as JSON Schema's `uniqueItems`. An array of records says it with `unique` instead.",
+          "const": true
+        },
+        "unique": {
+          "description": "For an array of records: each set of fields, by name, no two elements agree on all of, a null equal to another null, none inside another: `[[\"id\"], [\"email\"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only where the array can hold more than one element, and absent where none is known.",
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "order": {
+          "description": "For an array of records: the fields the elements are sorted on, in order, as far as a statement's `ORDER BY` names columns of its result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the field's own, unless the key names another, which ends the list. Elements that tie on all of them come in any order. Only where the array can hold more than one element.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OrderField"
+          }
         }
       },
       "required": [
@@ -553,8 +591,34 @@
       ],
       "unevaluatedProperties": false
     },
+    "OrderField": {
+      "description": "A field an array of records is sorted on.",
+      "type": "object",
+      "properties": {
+        "field": {
+          "description": "The field's name.",
+          "type": "string"
+        },
+        "desc": {
+          "description": "Sorted from the highest value down.",
+          "const": true
+        },
+        "nulls": {
+          "description": "Where NULLs sort, which a database's default decides unless the statement says.",
+          "enum": [
+            "first",
+            "last"
+          ]
+        }
+      },
+      "required": [
+        "field",
+        "nulls"
+      ],
+      "additionalProperties": false
+    },
     "RecordType": {
-      "description": "Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `label`:\n  - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;\n  - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;\n  - an Oracle `BFILE` is `{ directory, file }`.\n\nA record holds exactly its fields. A column whose object type has subtypes is a union of their records.",
+      "description": "Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `label`:\n  - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;\n  - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;\n  - an Oracle `BFILE` is `{ directory, file }`.\n\nA record holds exactly its fields, unless `extra` lets it hold other keys too. A column whose object type has subtypes is a union of their records.",
       "type": "object",
       "allOf": [
         {
@@ -570,6 +634,12 @@
           "items": {
             "$ref": "#/$defs/Field"
           }
+        },
+        "extra": {
+          "description": "Keys beyond its fields, any number, each holding a value of this position: an open object, as JSON Schema's `additionalProperties`. A key is text, and none is one of the fields' names.",
+          "$ref": "#/$defs/Position",
+          "type": "object",
+          "unevaluatedProperties": false
         }
       },
       "required": [
@@ -790,37 +860,6 @@
       "required": [
         "kind",
         "members"
-      ],
-      "unevaluatedProperties": false
-    },
-    "SetType": {
-      "description": "Elements in no order, each at most once by the element type's equality: MySQL `SET`, a set of the values it declares, at most 64. A client may receive the elements in any order. Not an array, since it has no rank and no index.",
-      "type": "object",
-      "allOf": [
-        {
-          "$ref": "#/$defs/Base"
-        },
-        {
-          "$ref": "#/$defs/Lengths"
-        }
-      ],
-      "properties": {
-        "kind": {
-          "const": "set"
-        },
-        "element": {
-          "$ref": "#/$defs/Position",
-          "type": "object",
-          "unevaluatedProperties": false
-        },
-        "duplicates": {
-          "description": "An element may appear more than once, making a multiset: the SQL standard's `MULTISET`, Oracle's nested tables.",
-          "const": true
-        }
-      },
-      "required": [
-        "kind",
-        "element"
       ],
       "unevaluatedProperties": false
     },
@@ -1078,28 +1117,8 @@
       ],
       "unevaluatedProperties": false
     },
-    "OrderColumn": {
-      "description": "A column rows are sorted on.",
-      "type": "object",
-      "properties": {
-        "column": {
-          "description": "The column's name.",
-          "type": "string"
-        },
-        "desc": {
-          "description": "Sorted from the highest value down.",
-          "const": true
-        },
-        "nulls": {
-          "description": "Where NULLs sort, which a database's default decides unless the statement says.",
-          "enum": ["first", "last"]
-        }
-      },
-      "required": ["column", "nulls"],
-      "additionalProperties": false
-    },
-    "RowsType": {
-      "description": "Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name.",
+    "TupleType": {
+      "description": "A fixed number of values in order, each of its own type, with no names: a pair as a list, `[1, \"a\"]`. Unlike an array, each position has its own type; unlike a record, its values have no names.",
       "type": "object",
       "allOf": [
         {
@@ -1108,47 +1127,19 @@
       ],
       "properties": {
         "kind": {
-          "const": "rows"
+          "const": "tuple"
         },
-        "cardinality": {
-          "description": "How many rows: exactly one, at most one, any number, or none (a write without `RETURNING`).",
-          "enum": [
-            "one",
-            "at_most_one",
-            "many",
-            "none"
-          ]
-        },
-        "columns": {
-          "description": "In order; empty where there are no rows.",
+        "elements": {
           "type": "array",
+          "minItems": 1,
           "items": {
-            "$ref": "#/$defs/Column"
-          }
-        },
-        "unique": {
-          "description": "Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, none inside another: `[[\"id\"], [\"email\"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only for rows that can be more than one, and absent where none is known.",
-          "type": "array",
-          "items": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "order": {
-          "description": "The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the column's own, unless the key names another, which ends the list. Rows that tie on all of them come back in any order. Only for rows that can be more than one, and absent where the rows aren't sorted on a column of the result.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/OrderColumn"
+            "$ref": "#/$defs/Position"
           }
         }
       },
       "required": [
         "kind",
-        "cardinality",
-        "columns"
+        "elements"
       ],
       "unevaluatedProperties": false
     },
@@ -1189,8 +1180,8 @@
           }
         },
         "result": {
-          "description": "What the statement returns.",
-          "$ref": "#/$defs/RowsType"
+          "description": "What the statement returns: an array of records, a record per row, each field a column. Its size is how many rows: `{ exact: 1 }` for one, `{ max: 1 }` for at most one, none for any number, and `{ exact: 0 }` for a write without `RETURNING`, whose record has no fields. A statement that returns one value is still a row of one field, which keeps the column's name. A row is an object keyed by its columns' names, which keeps only the last of two with one name, so a statement whose result repeats a name (`select a.id, b.id`) has a diagnostic at each later column of it, asking for another name with `as`. The name the database gives a column stands: Postgres calls `select 1`'s `?column?`, and SQL Server leaves it empty.",
+          "$ref": "#/$defs/ArrayType"
         },
         "diagnostics": {
           "description": "What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns.",
@@ -1249,31 +1240,8 @@
         "type"
       ]
     },
-    "Column": {
-      "description": "A result's column. A row always has every column, so none is optional. A row is an object keyed by its columns' names, which keeps only the last of two with one name, so a statement whose result repeats a name (`select a.id, b.id`) has a diagnostic at each later column of it, asking for another name with `as`.",
-      "type": "object",
-      "allOf": [
-        {
-          "$ref": "#/$defs/Position"
-        }
-      ],
-      "properties": {
-        "name": {
-          "description": "The name the database gives the column: Postgres calls `select 1`'s `?column?`, and SQL Server leaves it empty.",
-          "type": "string"
-        },
-        "comment": {
-          "description": "The comment the database keeps on the column (`COMMENT ON COLUMN`).",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name"
-      ],
-      "unevaluatedProperties": false
-    },
     "Field": {
-      "description": "A record's field.",
+      "description": "A record's field: a column of a row, a key of an object.",
       "type": "object",
       "allOf": [
         {
@@ -1287,6 +1255,14 @@
         "optional": {
           "description": "The key may be absent: a structured parameter's `?` member, a JSON object's key (as `jsonb_strip_nulls` drops). Apart from `nullable`, and never a default value.",
           "const": true
+        },
+        "default": {
+          "description": "The value an optional field takes where its key is absent, in its type's canonical text: only beside `optional`, and only for a kind whose values the format writes as text.",
+          "type": "string"
+        },
+        "comment": {
+          "description": "What the field is, as its source documents it: the comment the database keeps on a column (`COMMENT ON COLUMN`).",
+          "type": "string"
         }
       },
       "required": [

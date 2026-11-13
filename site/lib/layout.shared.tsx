@@ -40,6 +40,7 @@ export const pageGroups = [
       { title: 'Configuration', href: '/configuration' },
       { title: 'Observability', href: '/observability' },
       { title: 'Schema changes', href: '/schema-changes' },
+      { title: 'Analyze', href: '/analyze' },
       { title: 'Type Defs', href: '/typedefs' },
       { title: 'Comparison', href: '/compare' },
       { title: 'FAQ', href: '/faq' },

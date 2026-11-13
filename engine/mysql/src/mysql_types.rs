@@ -3,7 +3,7 @@
 //! the type (`bigint`, `tinyint(1)`, `datetime`).
 
 use crate::api::MysqlColumn;
-use crate::types::{ArrayType, BytesType, Bounds, DateTimeType, DateType, DecimalType, DurationType, InstantType, IntegerType, Kind, Position, SetType, Size, TextType, Type, MICROSECOND};
+use crate::types::{ArrayType, BytesType, Bounds, DateTimeType, DateType, DecimalType, DurationType, InstantType, IntegerType, Kind, Position, Size, TextType, Type, MICROSECOND};
 
 /// The protocol's flag for an UNSIGNED integer column.
 const UNSIGNED: u32 = 32;
@@ -31,7 +31,7 @@ pub(crate) fn enumeration(labels: Option<Vec<String>>) -> Type {
 /// MySQL's `SET`: each of its members once, one of its labels where they are known.
 pub(crate) fn set_of(labels: Option<Vec<String>>) -> Type {
     let member = labels.map_or_else(Type::text, Type::text_of);
-    Type::new(Kind::Set(SetType { element: Box::new(Position::non_null(member)), size: None, duplicates: false })).named("set")
+    Type::new(Kind::Array(ArrayType { distinct: true, ..ArrayType::of(Position::non_null(member)) })).named("set")
 }
 
 /// The labels of an `ENUM` or a `SET` column as `information_schema.columns` writes its
@@ -67,7 +67,7 @@ pub(crate) fn labels(column_type: &str) -> Option<Vec<String>> {
 
 /// MySQL's `BIT(n)`, a string of `n` bits: exactly `n` where the length is known.
 pub(crate) fn bits(length: Option<u32>) -> Type {
-    Type::new(Kind::Array(ArrayType { element: Box::new(Position::non_null(Type::boolean())), size: length.map(|n| Size::exact(n.into())), any_depth: false })).named("bit")
+    Type::new(Kind::Array(ArrayType { size: length.map(|n| Size::exact(n.into())), ..ArrayType::of(Position::non_null(Type::boolean())) })).named("bit")
 }
 
 /// A `DATETIME`: wall-clock time with no zone.

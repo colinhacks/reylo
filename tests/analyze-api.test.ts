@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { build } from "esbuild";
 import { analyze, type TypeDefs } from "../src/index.ts";
 import { nativeBinary } from "../src/native.ts";
-import { DRIVERS, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT } from "./helpers.ts";
+import { DRIVERS, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT, rowsOf } from "./helpers.ts";
 
 type StatementDescriptor = TypeDefs.StatementDescriptor;
 
@@ -53,15 +53,15 @@ test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as rey
     params: [{ name: "id", type: { kind: "integer", bits: 64 } }],
     diagnostics: [],
   });
-  assert.equal(result.kind, "rows");
-  assert.equal(result.cardinality, "at_most_one");
-  assert.deepEqual(result.columns.map((c) => [c.name, c.nullable ?? false]), [["id", false], ["name", false], ["email", true]]);
+  assert.equal(result.kind, "array");
+  assert.equal(rowsOf(result).cardinality, "at_most_one");
+  assert.deepEqual(rowsOf(result).columns.map((c) => [c.name, c.nullable ?? false]), [["id", false], ["name", false], ["email", true]]);
   assert.match(user!.dialect.version, /^3\.\d+\.\d+$/);
-  assert.equal(count!.result.cardinality, "one");
+  assert.equal(rowsOf(count!.result).cardinality, "one");
   // A diagnostic's place counts UTF-16 units of the statement as written, past characters of two
   // to four bytes.
   assert.deepEqual(broken!.diagnostics.map((d) => [d.message, "select 'é🙂' as x, nope from users".slice(d.start, d.end)]), [["no such column: nope", "nope"]]);
-  assert.deepEqual(broken!.result.columns, []);
+  assert.deepEqual(rowsOf(broken!.result).columns, []);
   // A parameter nothing types is an error at its first use, as under the project file's default,
   // `allow_untyped_params: false`.
   assert.deepEqual(untyped!.diagnostics.map((d) => [d.message, "select 'é🙂' as x, :v as v, :w as w".slice(d.start, d.end)]), ["v", "w"].map((n) => [`Nothing in the statement gives the parameter :${n} a type; cast it, as in :${n}::text, or set allow_untyped_params: true in .reylo.yaml.`, `:${n}`]));
@@ -84,8 +84,8 @@ test("analyze reads Postgres, its server's version, comments and the server's ow
     assert.equal(user!.sql, "select id, email, bio from users where id = $1");
     // Rows that can be many say which columns identify them.
     const [listed] = await same(db.url, ["select id, email from users order by id"]);
-    assert.deepEqual([listed!.result.cardinality, listed!.result.unique], ["many", [["id"]]]);
-    assert.deepEqual(user!.result.columns.map((c) => [c.name, c.type.kind, c.nullable ?? false, c.comment]), [["id", "integer", false, undefined], ["email", "text", false, undefined], ["bio", "text", true, "Shown on the profile page"]]);
+    assert.deepEqual([rowsOf(listed!.result).cardinality, listed!.result.unique], ["many", [["id"]]]);
+    assert.deepEqual(rowsOf(user!.result).columns.map((c) => [c.name, c.type.kind, c.nullable ?? false, c.comment]), [["id", "integer", false, undefined], ["email", "text", false, undefined], ["bio", "text", true, "Shown on the profile page"]]);
     assert.deepEqual(missing!.diagnostics.map((d) => [d.code, "select emial from users".slice(d.start, d.end)]), [["42703", "emial"]]);
   } finally {
     await db.drop();
@@ -96,10 +96,10 @@ test("analyze reads the catalog as it stands at each call, though calls share a 
   const db = await postgresDatabase("reylo_analyze_api_fresh", "create table notes (id int primary key, body text)");
   try {
     const before = await analyze({ url: db.url, sql: "select body from notes" });
-    assert.equal(before.result.columns[0]!.nullable, true);
+    assert.equal(rowsOf(before.result).columns[0]!.nullable, true);
     await db.sql`alter table notes alter column body set not null`;
     const after = await analyze({ url: db.url, sql: "select body from notes" });
-    assert.equal(after.result.columns[0]!.nullable, undefined);
+    assert.equal(rowsOf(after.result).columns[0]!.nullable, undefined);
   } finally {
     await db.drop();
   }
@@ -112,8 +112,8 @@ test("analyze reads MySQL, its server's version and the server's own error codes
     const [{ v }] = (await db.rows("select version() as v")) as [{ v: string }];
     assert.deepEqual(user!.dialect, { name: "mysql", version: v });
     assert.equal(user!.sql, "select id, email, bio from users where id = ?");
-    assert.equal(user!.result.cardinality, "at_most_one");
-    assert.deepEqual(user!.result.columns.map((c) => [c.name, c.nullable ?? false, c.comment]), [["id", false, undefined], ["email", false, undefined], ["bio", true, "Shown on the profile page"]]);
+    assert.equal(rowsOf(user!.result).cardinality, "at_most_one");
+    assert.deepEqual(rowsOf(user!.result).columns.map((c) => [c.name, c.nullable ?? false, c.comment]), [["id", false, undefined], ["email", false, undefined], ["bio", true, "Shown on the profile page"]]);
     assert.deepEqual(missing!.diagnostics.map((d) => d.code), ["1054"]);
   } finally {
     await db.drop();
@@ -132,7 +132,7 @@ test("analyze reads DuckDB through the project's own @duckdb/node-api", { skip: 
     assert.equal(td.$schema, "https://reylo.dev/typedefs/0.1.0.json");
     assert.equal(td.dialect.name, "duckdb");
     assert.match(td.dialect.version, /^\d+\.\d+\.\d+/);
-    assert.deepEqual(td.result.columns.map((c) => [c.name, c.type.kind]), [["answer", "integer"], ["name", "text"]]);
+    assert.deepEqual(rowsOf(td.result).columns.map((c) => [c.name, c.type.kind]), [["answer", "integer"], ["name", "text"]]);
     assert.deepEqual(td.params.map((p) => p.name), ["name"]);
   } finally {
     process.chdir(cwd);

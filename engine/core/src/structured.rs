@@ -1777,6 +1777,8 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
                 },
                 nullable: !m.not_null,
                 optional: m.omittable(),
+                default: None,
+                comment: None,
             })
             .collect();
         // The column list against the table: only once the database took every type.
@@ -2839,7 +2841,7 @@ mod tests {
             .iter()
             .map(|r| TableColumn { name: r[0].as_str().unwrap().into(), base: "text".into(), written: "text".into(), not_null: r[3] == true, has_default: false, generated: false, always: false, default: None, inherited: r[9] == true })
             .collect();
-        let fields: Vec<Field> = found[0].members.iter().map(|m| Field { name: m.name.clone(), ty: Type::text().named("text"), nullable: !m.not_null, optional: m.omittable() }).collect();
+        let fields: Vec<Field> = found[0].members.iter().map(|m| Field { optional: m.omittable(), ..Field::new(m.name.clone(), Type::text().named("text"), !m.not_null) }).collect();
         let d = check_table(&found[0], sql, &fields, &columns, &Default::default(), Dialect::Postgres);
         assert_eq!(d.len(), 1, "{d:?}");
         assert!(d[0].message.starts_with("v.note is a column of a view with no default of its own"), "{}", d[0].message);
@@ -2853,8 +2855,8 @@ mod tests {
         let columns = vec![column("d", "text", "text"), column("s", "Status", "\"Status\"")];
         let named = |name: &str| Type::text().named(name);
         let fields: Vec<Field> = vec![
-            Field { name: "d".into(), ty: named("public.dom_t"), nullable: false, optional: false },
-            Field { name: "s".into(), ty: named("public.\"Status\""), nullable: false, optional: false },
+            Field::new("d", named("public.dom_t"), false),
+            Field::new("s", named("public.\"Status\""), false),
         ];
         let domains = std::collections::BTreeMap::from([("public.dom_t".to_string(), "text".to_string())]);
         let d = check_table(&found[0], sql, &fields, &columns, &domains, Dialect::Postgres);

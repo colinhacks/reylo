@@ -2620,8 +2620,8 @@ fn ordered_select(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(
 /// A LIMIT or an OFFSET keeps the order. A locking clause doesn't: at READ COMMITTED a row it waited
 /// for is returned with its new values, in the place its old ones sorted to, so such a statement
 /// has no order to state.
-pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> Vec<crate::types::OrderColumn> {
-    use crate::types::{NullsOrder, OrderColumn};
+pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> Vec<crate::types::OrderField> {
+    use crate::types::{NullsOrder, OrderField};
     use protobuf::{SortByDir, SortByNulls};
     crate::stack::run(|| {
         let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
@@ -2632,7 +2632,7 @@ pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(Str
         let set_operation = s.larg.is_some() || s.rarg.is_some();
         let from = (!set_operation).then(|| From::read(&s, &catalog)).filter(|f| f.refused.is_none());
         let positions = target_positions(&s);
-        let mut order: Vec<OrderColumn> = Vec::new();
+        let mut order: Vec<OrderField> = Vec::new();
         for item in &s.sort_clause {
             let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { break };
             let Some(e) = by.node.as_deref() else { break };
@@ -2654,7 +2654,7 @@ pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(Str
             if columns.iter().filter(|(other, _)| other == name).count() != 1 {
                 break;
             }
-            if order.iter().any(|o| o.column == *name) {
+            if order.iter().any(|o| o.field == *name) {
                 continue;
             }
             let desc = by.sortby_dir == SortByDir::SortbyDesc as i32;
@@ -2665,7 +2665,7 @@ pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(Str
             } else {
                 desc
             };
-            order.push(OrderColumn { column: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
+            order.push(OrderField { field: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
         }
         order
     })

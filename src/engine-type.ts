@@ -2,9 +2,9 @@
 // every parameter and column with. Apart from the engine's host so that the run time and the
 // modules a build writes can name it without Node's types: `src/execute.ts` reads a parameter's
 // type from a module's `inputs`.
-import type { Type } from "../spec/index.ts";
+import type { ArrayType, Type } from "../spec/index.ts";
 
-export type { Alternative, ArrayType, Field, JsonType, Position, RecordType, TaggedUnionType, Type, UnionType } from "../spec/index.ts";
+export type { Alternative, ArrayType, Field, JsonType, Position, RecordType, TaggedUnionType, TupleType, Type, UnionType } from "../spec/index.ts";
 
 /** A parameter's or a column's type as the engine writes it. */
 export type EngineType = Type;
@@ -39,6 +39,11 @@ export function bareName(t: Type): string {
   return last.startsWith('"') ? last.slice(1, -1).replaceAll('""', '"') : last;
 }
 
+/** Whether a type is a MySQL `SET`: an array of its members, each at most once, which `.run()` returns as a `Set`. */
+export function isMysqlSet(t: Type): boolean {
+  return t.kind === "array" && t.distinct === true && t.label === "set";
+}
+
 /** The members of a union, or the type alone. */
 export function membersOf(t: Type): readonly Type[] {
   return t.kind === "union" ? t.members : [t];
@@ -54,12 +59,11 @@ export function withBases(t: Type, domains: Readonly<Record<string, string>> | u
   const named = "label" in t && t.label !== undefined && domains[t.label] !== undefined ? ({ ...t, label: domains[t.label] } as Type) : t;
   switch (named.kind) {
     case "array": return { ...named, element: { ...named.element, type: withBases(named.element.type, domains) } };
-    case "set": return { ...named, element: { ...named.element, type: withBases(named.element.type, domains) } };
-    case "record": return { ...named, fields: named.fields.map((f) => ({ ...f, type: withBases(f.type, domains) })) };
+    case "record": return { ...named, fields: named.fields.map((f) => ({ ...f, type: withBases(f.type, domains) })), ...(named.extra && { extra: { ...named.extra, type: withBases(named.extra.type, domains) } }) };
+    case "tuple": return { ...named, elements: named.elements.map((e) => ({ ...e, type: withBases(e.type, domains) })) };
     case "json": return named.content === undefined ? named : { ...named, content: { ...named.content, type: withBases(named.content.type, domains) } };
     case "union": return { ...named, members: named.members.map((m) => withBases(m, domains)) };
     case "tagged_union": return { ...named, alternatives: named.alternatives.map((a) => ({ ...a, type: withBases(a.type, domains) })) };
-    case "rows": return { ...named, columns: named.columns.map((c) => ({ ...c, type: withBases(c.type, domains) })) };
     case "map": return { ...named, key: withBases(named.key, domains), value: { ...named.value, type: withBases(named.value.type, domains) } };
     case "range": case "multirange": return { ...named, subtype: withBases(named.subtype, domains) as typeof named.subtype };
     default: return named;

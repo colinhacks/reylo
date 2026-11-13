@@ -579,7 +579,7 @@ impl TypeRegistry {
             // stored rows are stored rows.
             // An array's type modifier is its element's (`varchar(20)[]`).
             TypeKind::Array => match t.elem {
-                Some(e) => Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(self.render_at(e, typmod, depth + 1, stored))), size: None, any_depth: true })).named(t.qualified()),
+                Some(e) => Type::new(Kind::Array(ArrayType { any_depth: true, ..ArrayType::of(Position::nullable(self.render_at(e, typmod, depth + 1, stored))) })).named(t.qualified()),
                 None => Type::unknown(),
             },
             // A domain is its base type's values under its own name, its own type modifier on
@@ -789,7 +789,7 @@ const DATE_MAX: &str = "+5874897-12-31";
 fn base_type(t: &PgType) -> Type {
     let name = t.qualified();
     let point = || Type::record(vec![Field::new("x", pg_float(11, 52, "float8"), false), Field::new("y", pg_float(11, 52, "float8"), false)]).named("point");
-    let points = |min: u64| Type::new(Kind::Array(ArrayType { element: Box::new(Position::non_null(point())), size: Some(Size { min: Some(min), ..Size::default() }), any_depth: false }));
+    let points = |min: u64| Type::new(Kind::Array(ArrayType { size: Some(Size { min: Some(min), ..Size::default() }), ..ArrayType::of(Position::non_null(point())) }));
     let float8 = || pg_float(11, 52, "float8");
     let bits = || Type::array(Position::non_null(Type::boolean()));
     let vector = |exponent_bits, mantissa_bits| Type::array(Position::non_null(Type::float(exponent_bits, mantissa_bits)));
@@ -840,7 +840,7 @@ fn base_type(t: &PgType) -> Type {
         (true, "macaddr8") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(8)) })),
         (true, "point") => return point(),
         (true, "line") => Type::record(vec![Field::new("a", float8(), false), Field::new("b", float8(), false), Field::new("c", float8(), false)]),
-        (true, "lseg") => Type::new(Kind::Array(ArrayType { element: Box::new(Position::non_null(point())), size: Some(Size::exact(2)), any_depth: false })),
+        (true, "lseg") => Type::new(Kind::Array(ArrayType { size: Some(Size::exact(2)), ..ArrayType::of(Position::non_null(point())) })),
         (true, "box") => Type::record(vec![Field::new("high", point(), false), Field::new("low", point(), false)]),
         (true, "path") => Type::record(vec![Field::new("closed", Type::boolean(), false), Field::new("points", points(1), false)]),
         (true, "polygon") => points(1),

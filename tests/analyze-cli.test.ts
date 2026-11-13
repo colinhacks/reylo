@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { StatementDescriptor } from "../spec/index.ts";
 import { nativeBinary } from "../src/native.ts";
-import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
+import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase, rowsOf } from "./helpers.ts";
 
 type Line = StatementDescriptor & { file?: string };
 
@@ -64,8 +64,8 @@ test("analyze prints each .sql file's descriptor under a directory, and exits 1 
   const [broken, user] = lines as [Line, Line];
   assert.equal(user.dialect.name, "sqlite");
   assert.match(user.dialect.version, /^3\.\d+\.\d+$/);
-  assert.deepEqual({ kind: user.kind, comment: user.comment, params: user.params, cardinality: user.result.cardinality, diagnostics: user.diagnostics }, { kind: "select", comment: "One user, by id", params: [{ name: "id", type: { kind: "integer", bits: 64 } }], cardinality: "at_most_one", diagnostics: [] });
-  assert.deepEqual(user.result.columns.map((c) => c.name), ["id", "name"]);
+  assert.deepEqual({ kind: user.kind, comment: user.comment, params: user.params, cardinality: rowsOf(user.result).cardinality, diagnostics: user.diagnostics }, { kind: "select", comment: "One user, by id", params: [{ name: "id", type: { kind: "integer", bits: 64 } }], cardinality: "at_most_one", diagnostics: [] });
+  assert.deepEqual(rowsOf(user.result).columns.map((c) => c.name), ["id", "name"]);
   // A diagnostic's place is in UTF-16 units of the statement as written.
   assert.deepEqual(broken.diagnostics.map((d) => [d.message, "select nope from users\n".slice(d.start, d.end)]), [["no such column: nope", "nope"]]);
 });
@@ -75,16 +75,16 @@ test("analyze prints YAML by default, a document per statement, and each diagnos
   const run = spawnSync(nativeBinary(), ["analyze", "q"], { cwd: root, env: inherited(), encoding: "utf8" });
   assert.equal(run.status, 1, run.stderr);
   const [a, b] = run.stdout.split("\n---\n") as [string, string];
-  assert.ok(a.startsWith(`file: q/a.sql\n$schema: ${SCHEMA}\ndialect:\n  name: sqlite\n  version: "3.`), a);
+  assert.ok(a.startsWith(`file: q/a.sql\n$schema: ${SCHEMA}\ndialect: { name: sqlite, version: "3.`), a);
   // A statement of several lines is a literal block, a comment of one line plain, and a type on its own line.
   assert.match(a, /\nsql: \|\n  -- Names, by id\.\n  select name from users where id = \S+\nkind: select\ncomment: Names, by id\.\nparams:\n  - name: id\n    type: \{ kind: integer, bits: 64 \}\n/);
   assert.match(a, /\ndiagnostics: \[\]$/);
-  assert.ok(b.startsWith("file: q/b.sql\n") && b.includes("\ndiagnostics:\n  - message: \"no such column: nope\"\n"), b);
+  assert.ok(b.startsWith("file: q/b.sql\n") && b.includes('\ndiagnostics:\n  - { message: "no such column: nope", '), b);
   // The same descriptors as --format json prints, which the JSON lines hold to the schema.
   assert.deepEqual(analyzeIn(root, ["q"]).lines.map((l) => [l.file, l.diagnostics.length]), [["q/a.sql", 0], ["q/b.sql", 1]]);
   assert.equal(run.stderr, "q/b.sql:2:3: no such column: nope\n    nope from users\n    ^^^^\n");
   const json = spawnSync(nativeBinary(), ["analyze", "--format=json", "--sql", "select name from users"], { cwd: root, env: inherited(), encoding: "utf8" });
-  assert.equal((JSON.parse(json.stdout) as Line).result.columns[0]!.name, "name");
+  assert.equal(rowsOf((JSON.parse(json.stdout) as Line).result).columns[0]!.name, "name");
   const toml = spawnSync(nativeBinary(), ["analyze", "--format", "toml", "--sql", "select 1"], { cwd: root, env: inherited(), encoding: "utf8" });
   assert.equal(toml.status, 2);
   assert.match(toml.stderr, /^reylo analyze: --format takes yaml or json, not toml\n/);
@@ -95,12 +95,12 @@ test("analyze reads a statement from --sql or standard input, and a file from a 
   const sql = analyzeIn(root, ["--sql", "select count(*) as n from users"]);
   assert.equal(sql.status, 0, sql.stderr);
   assert.equal(sql.lines[0]!.file, undefined);
-  assert.equal(sql.lines[0]!.result.cardinality, "one");
+  assert.equal(rowsOf(sql.lines[0]!.result).cardinality, "one");
   const stdin = analyzeIn(root, ["-"], {}, "select email from users");
-  assert.deepEqual(stdin.lines.map((l) => [l.result.columns[0]!.name, l.result.columns[0]!.nullable]), [["email", true]]);
+  assert.deepEqual(stdin.lines.map((l) => [rowsOf(l.result).columns[0]!.name, rowsOf(l.result).columns[0]!.nullable]), [["email", true]]);
   const nested = analyzeIn(join(root, "q"), ["get_user.sql"]);
   assert.equal(nested.status, 0, nested.stderr);
-  assert.deepEqual(nested.lines.map((l) => [l.file, l.result.cardinality]), [["get_user.sql", "at_most_one"]]);
+  assert.deepEqual(nested.lines.map((l) => [l.file, rowsOf(l.result).cardinality]), [["get_user.sql", "at_most_one"]]);
 });
 
 test("analyze holds a parameter nothing types to the project's allow_untyped_params, as the type check does", () => {
@@ -120,7 +120,7 @@ test("analyze takes the project's direct_url and --url, and says what it cannot 
   writeFileSync(join(root, ".reylo.yaml"), 'direct_url: "$(echo file:./other.db)"\n');
   const own = analyzeIn(root, ["--sql", "select label from things"]);
   assert.equal(own.status, 0, own.stderr);
-  assert.deepEqual(own.lines[0]!.result.columns.map((c) => c.name), ["label"]);
+  assert.deepEqual(rowsOf(own.lines[0]!.result).columns.map((c) => c.name), ["label"]);
   const given = analyzeIn(root, ["--sql", "select name from users", "--url", "file:./app.db"]);
   assert.equal(given.status, 0, given.stderr);
   const duckdb = analyzeIn(root, ["--sql", "select 1", "--url", "duckdb:./dev.duckdb"]);
@@ -146,7 +146,7 @@ test("analyze prints a statement the engine cannot analyze as its line with one 
   assert.equal(status, 1, stderr);
   assert.deepEqual(lines.map((l) => [l.file, l.diagnostics.length]), [["q/a.sql", 0], ["q/b.sql", 1], ["q/c.sql", 0]]);
   const line = lines[1]!;
-  assert.deepEqual({ sql: line.sql, kind: line.kind, params: line.params, columns: line.result.columns, cardinality: line.result.cardinality }, { sql: broken, kind: undefined, params: [], columns: [], cardinality: "many" });
+  assert.deepEqual({ sql: line.sql, kind: line.kind, params: line.params, columns: rowsOf(line.result).columns, cardinality: rowsOf(line.result).cardinality }, { sql: broken, kind: undefined, params: [], columns: [], cardinality: "many" });
   const [diagnostic] = line.diagnostics as [Line["diagnostics"][number]];
   assert.match(diagnostic.message, /carray/);
   assert.deepEqual([diagnostic.start, diagnostic.end, diagnostic.code], [0, broken.length, undefined]);
@@ -158,11 +158,11 @@ test("analyze reads a relative SQLite path in --url from the working directory, 
   new DatabaseSync(join(root, "sub", "x.db")).exec("create table things (label text not null)");
   const given = analyzeIn(join(root, "sub"), ["--sql", "select label from things", "--url", "file:./x.db"]);
   assert.equal(given.status, 0, given.stderr);
-  assert.deepEqual(given.lines[0]!.result.columns.map((c) => c.name), ["label"]);
+  assert.deepEqual(rowsOf(given.lines[0]!.result).columns.map((c) => c.name), ["label"]);
   // The project's DATABASE_URL, file:./app.db, is the root's app.db from the subdirectory too.
   const own = analyzeIn(join(root, "sub"), ["--sql", "select name from users"]);
   assert.equal(own.status, 0, own.stderr);
-  assert.deepEqual(own.lines[0]!.result.columns.map((c) => c.name), ["name"]);
+  assert.deepEqual(rowsOf(own.lines[0]!.result).columns.map((c) => c.name), ["name"]);
 });
 
 test("analyze names each file and where the URL came from as the type check does, from any directory", () => {
@@ -205,7 +205,7 @@ test("analyze reads an environment variable that is not UTF-8 as Node does, rath
   const root = project({});
   const run = spawnSync("/bin/sh", ["-c", `export NOT_UTF8="$(printf '\\377')"; exec "$0" analyze --format json --sql "select id from users"`, nativeBinary()], { cwd: root, env: inherited(), encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
-  assert.equal((JSON.parse(run.stdout) as Line).result.columns[0]!.name, "id");
+  assert.equal(rowsOf((JSON.parse(run.stdout) as Line).result).columns[0]!.name, "id");
 });
 
 test("analyze reads a Postgres statement over its own connection, the server's version beside it", { skip: pgLive }, async () => {
@@ -219,8 +219,8 @@ test("analyze reads a Postgres statement over its own connection, the server's v
     assert.match(line.dialect.version, /^\d+(\.\d+)?$/);
     assert.equal(line.sql, "select id, name from users where id = $1");
     assert.deepEqual(line.params, [{ name: "id", type: { kind: "integer", bits: 32, label: "int4" } }]);
-    assert.deepEqual(line.result.columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
-    assert.equal(line.result.cardinality, "at_most_one");
+    assert.deepEqual(rowsOf(line.result).columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
+    assert.equal(rowsOf(line.result).cardinality, "at_most_one");
   } finally {
     await own.drop();
   }
@@ -236,8 +236,8 @@ test("analyze reads a MySQL statement over its own connection, the server's vers
     assert.equal(line.dialect.name, "mysql");
     assert.match(line.dialect.version, /^\d+\.\d+\.\d+/);
     assert.equal(line.sql, "select id, name from users where id = ?");
-    assert.deepEqual(line.result.columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
-    assert.equal(line.result.cardinality, "at_most_one");
+    assert.deepEqual(rowsOf(line.result).columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
+    assert.equal(rowsOf(line.result).cardinality, "at_most_one");
   } finally {
     await own.drop();
   }

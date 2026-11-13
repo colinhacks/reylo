@@ -20,7 +20,7 @@ One kind per class every language has: a date, a time of day, a wall-clock date 
      - `infinity` and `nan`;
      - `zone` on a time or an instant;
      - `ill_formed` on text;
-     - `any_depth` on an array, `duplicates` on a set, and `fragment` on XML;
+     - `any_depth` on an array, `extra` on a record, and `fragment` on XML;
      - the parts a duration's `max` writes, each a part its values may carry;
      - a date-bearing kind's bounds beyond 0001-01-01 to 9999-12-31, and a time's reaching 24:00:00.
 
@@ -36,7 +36,7 @@ One kind per class every language has: a date, a time of day, a wall-clock date 
 
 6. **A consumer that meets an unknown kind** reads it as `opaque` at a SQL position and as any JSON inside JSON content, and reads an unknown value of a known field the same way. It ignores a field it does not know, which can only narrow, since a widening field comes with a new major version.
 
-7. **Validity rules**, for what no shape can rule out, each a check a validator runs: a side of a range takes one of `min` and `exclusive_min` (or `max` and `exclusive_max`); a minimum is at most its maximum (bounds, sizes, scales); a size's `exact` never sits beside its `min` or `max`, its `min` never equals its `max`, and `encoding` appears only with `unit: "byte"`; a tick is positive; a float's widths are positive; a duration's `max` writes each part above zero, with no leading zero, and its minutes and seconds below 60, and the duration has a `tick` exactly when that `max` has a time part.
+7. **Validity rules**, for what no shape can rule out, each a check a validator runs: a side of a range takes one of `min` and `exclusive_min` (or `max` and `exclusive_max`); a minimum is at most its maximum (bounds, sizes, scales); a size's `exact` never sits beside its `min` or `max`, its `min` never equals its `max`, and `encoding` appears only with `unit: "byte"`; a tick is positive; a float's widths are positive; `unique` and `order` appear only on an array of records, each naming its fields, and `distinct` never beside `unique`, which implies it; a field's `default` appears only beside `optional`; a duration's `max` writes each part above zero, with no leading zero, and its minutes and seconds below 60, and the duration has a `tick` exactly when that `max` has a time part.
 
 8. **Versions are semantic**, and a descriptor names its own in `$schema`. A patch version changes no descriptor; a minor version may add a kind or a narrowing field, which a consumer of the version before stays sound ignoring (rules 1 and 6); a major version may change anything. Before 1.0.0 the minor number stands for the major one and the patch number for the minor one: 0.2.0 may change anything 0.1.0 says, and 0.1.1 only what a minor version may.
 ## Facts about each database

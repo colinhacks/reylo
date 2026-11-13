@@ -5,12 +5,12 @@
 // value nothing types there, or a `json` or `jsonb` value nothing constrains, is any JSON value:
 // `Json`, which the generated module imports from `reylo`.
 import { CODEC_TYPE, leafCodec, type Codec, type Codecs } from "./codecs.ts";
-import { bareName, nestsAnyDeep, schemaOf, type EngineType, type Field } from "./engine-type.ts";
+import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type Field, type Position } from "./engine-type.ts";
 import { columnKind, isRowKind, kindType as typeOfKind, RANGE_BOUNDS, type Dialect, type JsonNumbers } from "./values.ts";
 
 /** The type a codec gives a value of `t`: its own, or for a SET's array an array of its members' type, by `member`. */
 function codecType(codec: Codec, t: EngineType, member: (t: EngineType) => string): string {
-  if (codec === "set:array" && t.kind === "set") {
+  if (codec === "set:array" && t.kind === "array" && isMysqlSet(t)) {
     const element = member(t.element.type);
     return /[|&]/.test(element) ? `(${element})[]` : `${element}[]`;
   }
@@ -72,8 +72,11 @@ export const ident = (name: string) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name :
  */
 function jsonImage(t: EngineType, dialect: Dialect, inUnion = false): string {
   const name = bareName(t);
+  // MySQL writes a SET inside a document as its members joined by commas.
+  if (isMysqlSet(t)) return dialect === "sqlite" ? JSON_TYPE : "string";
   switch (t.kind) {
-    case "boolean": return "boolean";
+    case "boolean": return t.enum?.length ? t.enum.join(" | ") : "boolean";
+    case "tuple": return `[${t.elements.map((e) => (e.nullable ? orNull(jsonImage(e.type, dialect)) : jsonImage(e.type, dialect))).join(", ")}]`;
     case "integer":
       if (dialect === "postgres" && name === "oid") return "string";
       return "number";
@@ -98,7 +101,7 @@ function jsonImage(t: EngineType, dialect: Dialect, inUnion = false): string {
     }
     case "bytes":
       return dialect === "sqlite" ? JSON_TYPE : "string";
-    case "uuid": case "date": case "time": case "datetime": case "instant": case "duration": case "set": case "range": case "multirange": case "xml":
+    case "uuid": case "date": case "time": case "datetime": case "instant": case "duration": case "range": case "multirange": case "xml":
       return dialect === "sqlite" ? JSON_TYPE : "string";
     default:
       return (dialect === "postgres" ? json[name] : undefined) ?? JSON_TYPE;
@@ -114,7 +117,18 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
   const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
   if (codec !== undefined) return codecType(codec, t, (e) => renderType(e, false, dialect));
   switch (t.kind) {
+    // A literal: a truth value or a float of one value, or any of a few.
+    case "boolean":
+      if (t.enum?.length) return t.enum.join(" | ");
+      break;
+    case "float":
+      if (t.enum?.length && !inJson) return t.enum.join(" | ");
+      break;
+    case "tuple":
+      return `[${t.elements.map((e) => (e.nullable ? orNull(renderType(e.type, inJson, dialect, codecs)) : renderType(e.type, inJson, dialect, codecs))).join(", ")}]`;
     case "array": {
+      // A MySQL SET is a Set of its members, and its text inside a document or on another database.
+      if (isMysqlSet(t)) return !inJson && dialect === "mysql" ? `Set<${renderType(t.element.type, false, dialect, codecs)}>` : "string";
       // A type Postgres structures as an array and writes as its text (a bit string, a vector), or
       // an array of row values, which no driver parses.
       if (inJson && dialect === "postgres" && json[name] !== undefined) return json[name]!;
@@ -136,7 +150,7 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     }
     case "record":
       // A row inside a document is an object of its fields; a built-in geometric type, its text.
-      if (inJson) return dialect === "postgres" && name !== "record" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect);
+      if (inJson) return dialect === "postgres" && name !== "record" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect, t.extra);
       // A DuckDB struct's fields stand as a row's values do.
       if (dialect === "duckdb") {
         return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${orNull(renderType(f.type, false, dialect, codecs))}`).join("; ")} }` : "Record<never, never>";
@@ -164,10 +178,6 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     case "text":
       // An enum's labels, or the strings a CHECK keeps a column to.
       if (t.enum !== undefined) return t.enum.length ? t.enum.map((l) => JSON.stringify(l)).join(" | ") : "string";
-      break;
-    // A MySQL SET is a Set of its members.
-    case "set":
-      if (!inJson && dialect === "mysql") return `Set<${renderType(t.element.type, false, dialect, codecs)}>`;
       break;
     // A Postgres range is an object of its bounds, a multirange an array of ranges.
     case "range":
@@ -335,9 +345,16 @@ export function lastOfEachName<T extends { name: string }>(items: readonly T[]):
 }
 
 /** An object type of JSON-encoded fields, each nullable as the engine says. */
-function renderFields(fields: readonly Field[], dialect: Dialect): string {
+function renderFields(fields: readonly Field[], dialect: Dialect, extra?: Position): string {
   fields = lastOfEachName(fields);
-  return fields.length ? `{ ${fields.map((f) => `${ident(f.name)}: ${f.nullable ? orNull(renderType(f.type, true, dialect)) : renderType(f.type, true, dialect)}`).join("; ")} }` : "Record<never, never>";
+  const each = fields.map((f) => [f, f.nullable ? orNull(renderType(f.type, true, dialect)) : renderType(f.type, true, dialect)] as const);
+  // An open object's other keys: an index signature, which each named field's type must also fit.
+  if (extra !== undefined) {
+    const other = extra.nullable ? orNull(renderType(extra.type, true, dialect)) : renderType(extra.type, true, dialect);
+    const all = [...new Set([other, ...each.map(([f, t]) => (f.optional ? `${t} | undefined` : t))])].join(" | ");
+    return `{ ${[...each.map(([f, t]) => `${ident(f.name)}${f.optional ? "?" : ""}: ${t}`), `[key: string]: ${all}`].join("; ")} }`;
+  }
+  return fields.length ? `{ ${each.map(([f, t]) => `${ident(f.name)}: ${t}`).join("; ")} }` : "Record<never, never>";
 }
 
 /**

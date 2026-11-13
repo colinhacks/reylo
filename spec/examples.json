@@ -4,37 +4,44 @@
     "statement": "select union_value(num := 1)::union(num integer, str varchar) as u",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "one",
-        "columns": [
-          {
-            "name": "u",
-            "nullable": true,
-            "type": {
-              "kind": "tagged_union",
-              "label": "union",
-              "alternatives": [
-                {
-                  "tag": "num",
-                  "nullable": true,
-                  "type": {
-                    "kind": "integer",
-                    "bits": 32,
-                    "label": "integer"
-                  }
-                },
-                {
-                  "tag": "str",
-                  "nullable": true,
-                  "type": {
-                    "kind": "text",
-                    "label": "varchar"
-                  }
+        "kind": "array",
+        "size": {
+          "exact": 1
+        },
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "u",
+                "nullable": true,
+                "type": {
+                  "kind": "tagged_union",
+                  "label": "union",
+                  "alternatives": [
+                    {
+                      "tag": "num",
+                      "nullable": true,
+                      "type": {
+                        "kind": "integer",
+                        "bits": 32,
+                        "label": "integer"
+                      }
+                    },
+                    {
+                      "tag": "str",
+                      "nullable": true,
+                      "type": {
+                        "kind": "text",
+                        "label": "varchar"
+                      }
+                    }
+                  ]
                 }
-              ]
-            }
+              }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -62,37 +69,44 @@
         }
       ],
       "result": {
-        "kind": "rows",
-        "cardinality": "at_most_one",
-        "columns": [
-          {
-            "name": "id",
-            "type": {
-              "kind": "integer",
-              "bits": 64,
-              "label": "int8"
-            }
-          },
-          {
-            "name": "email",
-            "type": {
-              "kind": "text",
-              "size": {
-                "max": 255
+        "kind": "array",
+        "size": {
+          "max": 1
+        },
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "int8"
+                }
               },
-              "label": "varchar"
-            }
-          },
-          {
-            "name": "bio",
-            "nullable": true,
-            "type": {
-              "kind": "text",
-              "label": "text"
-            },
-            "comment": "Shown on the profile page"
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 255
+                  },
+                  "label": "varchar"
+                }
+              },
+              {
+                "name": "bio",
+                "nullable": true,
+                "type": {
+                  "kind": "text",
+                  "label": "text"
+                },
+                "comment": "Shown on the profile page"
+              }
+            ]
           }
-        ]
+        }
       },
       "diagnostics": []
     }
@@ -103,29 +117,33 @@
     "statement": "select json_agg(p.title) filter (where p.id is not null) as titles from users u left join posts p on p.author_id = u.id group by u.id",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "titles",
-            "nullable": true,
-            "type": {
-              "kind": "json",
-              "label": "json",
-              "content": {
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "titles",
+                "nullable": true,
                 "type": {
-                  "kind": "array",
-                  "element": {
+                  "kind": "json",
+                  "label": "json",
+                  "content": {
                     "type": {
-                      "kind": "text",
-                      "label": "text"
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "text",
+                          "label": "text"
+                        }
+                      }
                     }
                   }
                 }
               }
-            }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -135,122 +153,127 @@
     "statement": "select id, flag, at, status, born, name, body, tags, :n + 1 next from m",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "id",
-            "type": {
-              "kind": "integer",
-              "bits": 64,
-              "unsigned": true,
-              "label": "bigint"
-            }
-          },
-          {
-            "name": "flag",
-            "type": {
-              "kind": "integer",
-              "bits": 8,
-              "label": "tinyint(1)"
-            }
-          },
-          {
-            "name": "at",
-            "nullable": true,
-            "type": {
-              "kind": "instant",
-              "tick": "1/1000",
-              "min": "1970-01-01T00:00:01Z",
-              "max": "2038-01-19T03:14:07.999Z",
-              "label": "timestamp"
-            }
-          },
-          {
-            "name": "status",
-            "type": {
-              "kind": "text",
-              "enum": [
-                "b",
-                "a"
-              ],
-              "label": "enum"
-            }
-          },
-          {
-            "name": "born",
-            "nullable": true,
-            "type": {
-              "kind": "date",
-              "label": "date"
-            }
-          },
-          {
-            "name": "name",
-            "nullable": true,
-            "type": {
-              "kind": "text",
-              "size": {
-                "max": 100
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "unsigned": true,
+                  "label": "bigint"
+                }
               },
-              "label": "varchar"
-            }
-          },
-          {
-            "name": "body",
-            "nullable": true,
-            "type": {
-              "kind": "text",
-              "size": {
-                "unit": "byte",
-                "encoding": "UTF-8",
-                "max": 65535
+              {
+                "name": "flag",
+                "type": {
+                  "kind": "integer",
+                  "bits": 8,
+                  "label": "tinyint(1)"
+                }
               },
-              "label": "text"
-            }
-          },
-          {
-            "name": "tags",
-            "nullable": true,
-            "type": {
-              "kind": "set",
-              "label": "set",
-              "element": {
+              {
+                "name": "at",
+                "nullable": true,
+                "type": {
+                  "kind": "instant",
+                  "tick": "1/1000",
+                  "min": "1970-01-01T00:00:01Z",
+                  "max": "2038-01-19T03:14:07.999Z",
+                  "label": "timestamp"
+                }
+              },
+              {
+                "name": "status",
                 "type": {
                   "kind": "text",
                   "enum": [
-                    "a",
-                    "b"
+                    "b",
+                    "a"
+                  ],
+                  "label": "enum"
+                }
+              },
+              {
+                "name": "born",
+                "nullable": true,
+                "type": {
+                  "kind": "date",
+                  "label": "date"
+                }
+              },
+              {
+                "name": "name",
+                "nullable": true,
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 100
+                  },
+                  "label": "varchar"
+                }
+              },
+              {
+                "name": "body",
+                "nullable": true,
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "unit": "byte",
+                    "encoding": "UTF-8",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "tags",
+                "nullable": true,
+                "type": {
+                  "kind": "array",
+                  "label": "set",
+                  "distinct": true,
+                  "element": {
+                    "type": {
+                      "kind": "text",
+                      "enum": [
+                        "a",
+                        "b"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "name": "next",
+                "nullable": true,
+                "type": {
+                  "kind": "union",
+                  "members": [
+                    {
+                      "kind": "integer",
+                      "bits": 64,
+                      "label": "bigint"
+                    },
+                    {
+                      "kind": "float",
+                      "exponent_bits": 11,
+                      "mantissa_bits": 52,
+                      "label": "double"
+                    },
+                    {
+                      "kind": "decimal",
+                      "label": "decimal"
+                    }
                   ]
                 }
               }
-            }
-          },
-          {
-            "name": "next",
-            "nullable": true,
-            "type": {
-              "kind": "union",
-              "members": [
-                {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                },
-                {
-                  "kind": "float",
-                  "exponent_bits": 11,
-                  "mantissa_bits": 52,
-                  "label": "double"
-                },
-                {
-                  "kind": "decimal",
-                  "label": "decimal"
-                }
-              ]
-            }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -260,67 +283,71 @@
     "statement": "select s from shapes",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "S",
-            "nullable": true,
-            "type": {
-              "kind": "union",
-              "label": "R.SHAPE_T",
-              "members": [
-                {
-                  "kind": "record",
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "S",
+                "nullable": true,
+                "type": {
+                  "kind": "union",
                   "label": "R.SHAPE_T",
-                  "fields": [
+                  "members": [
                     {
-                      "name": "NAME",
-                      "nullable": true,
-                      "type": {
-                        "kind": "text",
-                        "size": {
-                          "min": 1,
-                          "max": 20
-                        },
-                        "label": "VARCHAR2"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "kind": "record",
-                  "label": "R.CIRCLE_T",
-                  "fields": [
-                    {
-                      "name": "NAME",
-                      "nullable": true,
-                      "type": {
-                        "kind": "text",
-                        "size": {
-                          "min": 1,
-                          "max": 20
-                        },
-                        "label": "VARCHAR2"
-                      }
+                      "kind": "record",
+                      "label": "R.SHAPE_T",
+                      "fields": [
+                        {
+                          "name": "NAME",
+                          "nullable": true,
+                          "type": {
+                            "kind": "text",
+                            "size": {
+                              "min": 1,
+                              "max": 20
+                            },
+                            "label": "VARCHAR2"
+                          }
+                        }
+                      ]
                     },
                     {
-                      "name": "RADIUS",
-                      "nullable": true,
-                      "type": {
-                        "kind": "decimal",
-                        "precision": 40,
-                        "exclusive_min": "-1e126",
-                        "exclusive_max": "1e126",
-                        "label": "NUMBER"
-                      }
+                      "kind": "record",
+                      "label": "R.CIRCLE_T",
+                      "fields": [
+                        {
+                          "name": "NAME",
+                          "nullable": true,
+                          "type": {
+                            "kind": "text",
+                            "size": {
+                              "min": 1,
+                              "max": 20
+                            },
+                            "label": "VARCHAR2"
+                          }
+                        },
+                        {
+                          "name": "RADIUS",
+                          "nullable": true,
+                          "type": {
+                            "kind": "decimal",
+                            "precision": 40,
+                            "exclusive_min": "-1e126",
+                            "exclusive_max": "1e126",
+                            "label": "NUMBER"
+                          }
+                        }
+                      ]
                     }
                   ]
                 }
-              ]
-            }
+              }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -330,28 +357,32 @@
     "statement": "select emb from items",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "emb",
-            "nullable": true,
-            "type": {
-              "kind": "array",
-              "size": {
-                "exact": 3
-              },
-              "label": "public.vector",
-              "element": {
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "emb",
+                "nullable": true,
                 "type": {
-                  "kind": "float",
-                  "exponent_bits": 8,
-                  "mantissa_bits": 23
+                  "kind": "array",
+                  "size": {
+                    "exact": 3
+                  },
+                  "label": "public.vector",
+                  "element": {
+                    "type": {
+                      "kind": "float",
+                      "exponent_bits": 8,
+                      "mantissa_bits": 23
+                    }
+                  }
                 }
               }
-            }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -361,307 +392,311 @@
     "statement": "select * from t",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "price",
-            "nullable": true,
-            "type": {
-              "kind": "decimal",
-              "precision": 10,
-              "min_scale": 2,
-              "max_scale": 2,
-              "nan": true,
-              "label": "numeric"
-            }
-          },
-          {
-            "name": "total",
-            "nullable": true,
-            "type": {
-              "kind": "decimal",
-              "min_scale": 0,
-              "max_scale": 16383,
-              "exclusive_min": "-1e131072",
-              "exclusive_max": "1e131072",
-              "infinity": true,
-              "nan": true,
-              "label": "numeric"
-            }
-          },
-          {
-            "name": "at",
-            "nullable": true,
-            "type": {
-              "kind": "instant",
-              "tick": "1/1000000",
-              "min": "-4713-11-24T00:00:00Z",
-              "max": "+294276-12-31T23:59:59.999999Z",
-              "infinity": true,
-              "label": "timestamptz"
-            }
-          },
-          {
-            "name": "day",
-            "nullable": true,
-            "type": {
-              "kind": "date",
-              "min": "-4713-11-24",
-              "max": "+5874897-12-31",
-              "infinity": true,
-              "label": "date"
-            }
-          },
-          {
-            "name": "span",
-            "nullable": true,
-            "type": {
-              "kind": "duration",
-              "max": "P2147483648M2147483648DT2562047788H54.775808S",
-              "tick": "1/1000000",
-              "infinity": true,
-              "label": "interval"
-            }
-          },
-          {
-            "name": "m",
-            "nullable": true,
-            "type": {
-              "kind": "text",
-              "enum": [
-                "sad",
-                "ok",
-                "happy"
-              ],
-              "label": "public.mood"
-            }
-          },
-          {
-            "name": "e",
-            "nullable": true,
-            "type": {
-              "kind": "text",
-              "size": {
-                "max": 255
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "price",
+                "nullable": true,
+                "type": {
+                  "kind": "decimal",
+                  "precision": 10,
+                  "min_scale": 2,
+                  "max_scale": 2,
+                  "nan": true,
+                  "label": "numeric"
+                }
               },
-              "pattern": {
-                "dialect": "like",
-                "source": "%@%"
+              {
+                "name": "total",
+                "nullable": true,
+                "type": {
+                  "kind": "decimal",
+                  "min_scale": 0,
+                  "max_scale": 16383,
+                  "exclusive_min": "-1e131072",
+                  "exclusive_max": "1e131072",
+                  "infinity": true,
+                  "nan": true,
+                  "label": "numeric"
+                }
               },
-              "label": "varchar"
-            }
-          },
-          {
-            "name": "tags",
-            "nullable": true,
-            "type": {
-              "kind": "array",
-              "any_depth": true,
-              "label": "_varchar",
-              "element": {
+              {
+                "name": "at",
+                "nullable": true,
+                "type": {
+                  "kind": "instant",
+                  "tick": "1/1000000",
+                  "min": "-4713-11-24T00:00:00Z",
+                  "max": "+294276-12-31T23:59:59.999999Z",
+                  "infinity": true,
+                  "label": "timestamptz"
+                }
+              },
+              {
+                "name": "day",
+                "nullable": true,
+                "type": {
+                  "kind": "date",
+                  "min": "-4713-11-24",
+                  "max": "+5874897-12-31",
+                  "infinity": true,
+                  "label": "date"
+                }
+              },
+              {
+                "name": "span",
+                "nullable": true,
+                "type": {
+                  "kind": "duration",
+                  "max": "P2147483648M2147483648DT2562047788H54.775808S",
+                  "tick": "1/1000000",
+                  "infinity": true,
+                  "label": "interval"
+                }
+              },
+              {
+                "name": "m",
+                "nullable": true,
+                "type": {
+                  "kind": "text",
+                  "enum": [
+                    "sad",
+                    "ok",
+                    "happy"
+                  ],
+                  "label": "public.mood"
+                }
+              },
+              {
+                "name": "e",
                 "nullable": true,
                 "type": {
                   "kind": "text",
                   "size": {
-                    "max": 20
+                    "max": 255
+                  },
+                  "pattern": {
+                    "dialect": "like",
+                    "source": "%@%"
                   },
                   "label": "varchar"
                 }
-              }
-            }
-          },
-          {
-            "name": "flags",
-            "nullable": true,
-            "type": {
-              "kind": "array",
-              "size": {
-                "exact": 7
               },
-              "label": "bit",
-              "element": {
+              {
+                "name": "tags",
+                "nullable": true,
                 "type": {
-                  "kind": "boolean"
+                  "kind": "array",
+                  "any_depth": true,
+                  "label": "_varchar",
+                  "element": {
+                    "nullable": true,
+                    "type": {
+                      "kind": "text",
+                      "size": {
+                        "max": 20
+                      },
+                      "label": "varchar"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "flags",
+                "nullable": true,
+                "type": {
+                  "kind": "array",
+                  "size": {
+                    "exact": 7
+                  },
+                  "label": "bit",
+                  "element": {
+                    "type": {
+                      "kind": "boolean"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "body",
+                "nullable": true,
+                "type": {
+                  "kind": "json",
+                  "label": "jsonb"
+                }
+              },
+              {
+                "name": "during",
+                "nullable": true,
+                "type": {
+                  "kind": "range",
+                  "subtype": {
+                    "kind": "instant",
+                    "tick": "1/1000000",
+                    "min": "-4713-11-24T00:00:00Z",
+                    "max": "+294276-12-31T23:59:59.999999Z",
+                    "infinity": true,
+                    "label": "timestamptz"
+                  },
+                  "label": "tstzrange"
+                }
+              },
+              {
+                "name": "pos",
+                "nullable": true,
+                "type": {
+                  "kind": "record",
+                  "label": "point",
+                  "fields": [
+                    {
+                      "name": "x",
+                      "type": {
+                        "kind": "float",
+                        "exponent_bits": 11,
+                        "mantissa_bits": 52,
+                        "infinity": true,
+                        "nan": true,
+                        "label": "float8"
+                      }
+                    },
+                    {
+                      "name": "y",
+                      "type": {
+                        "kind": "float",
+                        "exponent_bits": 11,
+                        "mantissa_bits": 52,
+                        "infinity": true,
+                        "nan": true,
+                        "label": "float8"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "ring",
+                "nullable": true,
+                "type": {
+                  "kind": "record",
+                  "label": "circle",
+                  "fields": [
+                    {
+                      "name": "center",
+                      "type": {
+                        "kind": "record",
+                        "label": "point",
+                        "fields": [
+                          {
+                            "name": "x",
+                            "type": {
+                              "kind": "float",
+                              "exponent_bits": 11,
+                              "mantissa_bits": 52,
+                              "infinity": true,
+                              "nan": true,
+                              "label": "float8"
+                            }
+                          },
+                          {
+                            "name": "y",
+                            "type": {
+                              "kind": "float",
+                              "exponent_bits": 11,
+                              "mantissa_bits": 52,
+                              "infinity": true,
+                              "nan": true,
+                              "label": "float8"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "radius",
+                      "type": {
+                        "kind": "float",
+                        "exponent_bits": 11,
+                        "mantissa_bits": 52,
+                        "infinity": true,
+                        "nan": true,
+                        "label": "float8"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "addr",
+                "nullable": true,
+                "type": {
+                  "kind": "union",
+                  "label": "inet",
+                  "members": [
+                    {
+                      "kind": "record",
+                      "fields": [
+                        {
+                          "name": "address",
+                          "type": {
+                            "kind": "bytes",
+                            "size": {
+                              "exact": 4
+                            }
+                          }
+                        },
+                        {
+                          "name": "prefix",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 8,
+                            "unsigned": true,
+                            "max": "32"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "record",
+                      "fields": [
+                        {
+                          "name": "address",
+                          "type": {
+                            "kind": "bytes",
+                            "size": {
+                              "exact": 16
+                            }
+                          }
+                        },
+                        {
+                          "name": "prefix",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 8,
+                            "unsigned": true,
+                            "max": "128"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "tod",
+                "nullable": true,
+                "type": {
+                  "kind": "time",
+                  "tick": "1/1000000",
+                  "max": "24:00:00",
+                  "label": "time"
                 }
               }
-            }
-          },
-          {
-            "name": "body",
-            "nullable": true,
-            "type": {
-              "kind": "json",
-              "label": "jsonb"
-            }
-          },
-          {
-            "name": "during",
-            "nullable": true,
-            "type": {
-              "kind": "range",
-              "subtype": {
-                "kind": "instant",
-                "tick": "1/1000000",
-                "min": "-4713-11-24T00:00:00Z",
-                "max": "+294276-12-31T23:59:59.999999Z",
-                "infinity": true,
-                "label": "timestamptz"
-              },
-              "label": "tstzrange"
-            }
-          },
-          {
-            "name": "pos",
-            "nullable": true,
-            "type": {
-              "kind": "record",
-              "label": "point",
-              "fields": [
-                {
-                  "name": "x",
-                  "type": {
-                    "kind": "float",
-                    "exponent_bits": 11,
-                    "mantissa_bits": 52,
-                    "infinity": true,
-                    "nan": true,
-                    "label": "float8"
-                  }
-                },
-                {
-                  "name": "y",
-                  "type": {
-                    "kind": "float",
-                    "exponent_bits": 11,
-                    "mantissa_bits": 52,
-                    "infinity": true,
-                    "nan": true,
-                    "label": "float8"
-                  }
-                }
-              ]
-            }
-          },
-          {
-            "name": "ring",
-            "nullable": true,
-            "type": {
-              "kind": "record",
-              "label": "circle",
-              "fields": [
-                {
-                  "name": "center",
-                  "type": {
-                    "kind": "record",
-                    "label": "point",
-                    "fields": [
-                      {
-                        "name": "x",
-                        "type": {
-                          "kind": "float",
-                          "exponent_bits": 11,
-                          "mantissa_bits": 52,
-                          "infinity": true,
-                          "nan": true,
-                          "label": "float8"
-                        }
-                      },
-                      {
-                        "name": "y",
-                        "type": {
-                          "kind": "float",
-                          "exponent_bits": 11,
-                          "mantissa_bits": 52,
-                          "infinity": true,
-                          "nan": true,
-                          "label": "float8"
-                        }
-                      }
-                    ]
-                  }
-                },
-                {
-                  "name": "radius",
-                  "type": {
-                    "kind": "float",
-                    "exponent_bits": 11,
-                    "mantissa_bits": 52,
-                    "infinity": true,
-                    "nan": true,
-                    "label": "float8"
-                  }
-                }
-              ]
-            }
-          },
-          {
-            "name": "addr",
-            "nullable": true,
-            "type": {
-              "kind": "union",
-              "label": "inet",
-              "members": [
-                {
-                  "kind": "record",
-                  "fields": [
-                    {
-                      "name": "address",
-                      "type": {
-                        "kind": "bytes",
-                        "size": {
-                          "exact": 4
-                        }
-                      }
-                    },
-                    {
-                      "name": "prefix",
-                      "type": {
-                        "kind": "integer",
-                        "bits": 8,
-                        "unsigned": true,
-                        "max": "32"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "kind": "record",
-                  "fields": [
-                    {
-                      "name": "address",
-                      "type": {
-                        "kind": "bytes",
-                        "size": {
-                          "exact": 16
-                        }
-                      }
-                    },
-                    {
-                      "name": "prefix",
-                      "type": {
-                        "kind": "integer",
-                        "bits": 8,
-                        "unsigned": true,
-                        "max": "128"
-                      }
-                    }
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "name": "tod",
-            "nullable": true,
-            "type": {
-              "kind": "time",
-              "tick": "1/1000000",
-              "max": "24:00:00",
-              "label": "time"
-            }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -671,31 +706,35 @@
     "statement": "select r from t",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "r",
-            "nullable": true,
-            "type": {
-              "kind": "range",
-              "label": "public.arrayrange",
-              "subtype": {
-                "kind": "array",
-                "any_depth": true,
-                "label": "_int4",
-                "element": {
-                  "nullable": true,
-                  "type": {
-                    "kind": "integer",
-                    "bits": 32,
-                    "label": "int4"
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "r",
+                "nullable": true,
+                "type": {
+                  "kind": "range",
+                  "label": "public.arrayrange",
+                  "subtype": {
+                    "kind": "array",
+                    "any_depth": true,
+                    "label": "_int4",
+                    "element": {
+                      "nullable": true,
+                      "type": {
+                        "kind": "integer",
+                        "bits": 32,
+                        "label": "int4"
+                      }
+                    }
                   }
                 }
               }
-            }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -705,30 +744,34 @@
     "statement": "select id, at from events order by at desc, id",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "id",
-            "type": {
-              "kind": "integer",
-              "bits": 64,
-              "label": "int8"
-            }
-          },
-          {
-            "name": "at",
-            "nullable": true,
-            "type": {
-              "kind": "instant",
-              "tick": "1/1000000",
-              "min": "-4713-11-24T00:00:00Z",
-              "max": "+294276-12-31T23:59:59.999999Z",
-              "infinity": true,
-              "label": "timestamptz"
-            }
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "int8"
+                }
+              },
+              {
+                "name": "at",
+                "nullable": true,
+                "type": {
+                  "kind": "instant",
+                  "tick": "1/1000000",
+                  "min": "-4713-11-24T00:00:00Z",
+                  "max": "+294276-12-31T23:59:59.999999Z",
+                  "infinity": true,
+                  "label": "timestamptz"
+                }
+              }
+            ]
           }
-        ],
+        },
         "unique": [
           [
             "id"
@@ -736,12 +779,12 @@
         ],
         "order": [
           {
-            "column": "at",
+            "field": "at",
             "desc": true,
             "nulls": "first"
           },
           {
-            "column": "id",
+            "field": "id",
             "nulls": "last"
           }
         ]
@@ -754,70 +797,74 @@
     "statement": "select price, name, x, n from s, t",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "price",
-            "nullable": true,
-            "type": {
-              "kind": "union",
-              "label": "numeric",
-              "members": [
-                {
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "price",
+                "nullable": true,
+                "type": {
+                  "kind": "union",
+                  "label": "numeric",
+                  "members": [
+                    {
+                      "kind": "integer",
+                      "bits": 64
+                    },
+                    {
+                      "kind": "float",
+                      "exponent_bits": 11,
+                      "mantissa_bits": 52,
+                      "infinity": true
+                    },
+                    {
+                      "kind": "text",
+                      "ill_formed": "utf8"
+                    },
+                    {
+                      "kind": "bytes"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "name",
+                "nullable": true,
+                "type": {
+                  "kind": "union",
+                  "label": "TEXT",
+                  "members": [
+                    {
+                      "kind": "text",
+                      "ill_formed": "utf8"
+                    },
+                    {
+                      "kind": "bytes"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "x",
+                "nullable": true,
+                "type": {
+                  "kind": "unknown"
+                }
+              },
+              {
+                "name": "n",
+                "nullable": true,
+                "type": {
                   "kind": "integer",
-                  "bits": 64
-                },
-                {
-                  "kind": "float",
-                  "exponent_bits": 11,
-                  "mantissa_bits": 52,
-                  "infinity": true
-                },
-                {
-                  "kind": "text",
-                  "ill_formed": "utf8"
-                },
-                {
-                  "kind": "bytes"
+                  "bits": 64,
+                  "label": "INTEGER"
                 }
-              ]
-            }
-          },
-          {
-            "name": "name",
-            "nullable": true,
-            "type": {
-              "kind": "union",
-              "label": "TEXT",
-              "members": [
-                {
-                  "kind": "text",
-                  "ill_formed": "utf8"
-                },
-                {
-                  "kind": "bytes"
-                }
-              ]
-            }
-          },
-          {
-            "name": "x",
-            "nullable": true,
-            "type": {
-              "kind": "unknown"
-            }
-          },
-          {
-            "name": "n",
-            "nullable": true,
-            "type": {
-              "kind": "integer",
-              "bits": 64,
-              "label": "INTEGER"
-            }
+              }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -827,32 +874,36 @@
     "statement": "select at, label from s",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "at",
-            "nullable": true,
-            "type": {
-              "kind": "instant",
-              "tick": "1/1000",
-              "zone": "offset",
-              "label": "datetimeoffset"
-            }
-          },
-          {
-            "name": "label",
-            "nullable": true,
-            "type": {
-              "kind": "text",
-              "ill_formed": "utf16",
-              "size": {
-                "max": 10
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "at",
+                "nullable": true,
+                "type": {
+                  "kind": "instant",
+                  "tick": "1/1000",
+                  "zone": "offset",
+                  "label": "datetimeoffset"
+                }
               },
-              "label": "nvarchar"
-            }
+              {
+                "name": "label",
+                "nullable": true,
+                "type": {
+                  "kind": "text",
+                  "ill_formed": "utf16",
+                  "size": {
+                    "max": 10
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
           }
-        ]
+        }
       }
     }
   },
@@ -907,33 +958,37 @@
     "statement": "select id, email, handle from accounts",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "id",
-            "type": {
-              "kind": "integer",
-              "bits": 64,
-              "label": "int8"
-            }
-          },
-          {
-            "name": "email",
-            "type": {
-              "kind": "text",
-              "label": "text"
-            }
-          },
-          {
-            "name": "handle",
-            "nullable": true,
-            "type": {
-              "kind": "text",
-              "label": "text"
-            }
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "int8"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "label": "text"
+                }
+              },
+              {
+                "name": "handle",
+                "nullable": true,
+                "type": {
+                  "kind": "text",
+                  "label": "text"
+                }
+              }
+            ]
           }
-        ],
+        },
         "unique": [
           [
             "id"
@@ -951,34 +1006,38 @@
     "statement": "select id, source, gen_random_uuid() as request from events",
     "descriptor": {
       "result": {
-        "kind": "rows",
-        "cardinality": "many",
-        "columns": [
-          {
-            "name": "id",
-            "type": {
-              "kind": "uuid",
-              "version": 7,
-              "label": "uuid"
-            }
-          },
-          {
-            "name": "source",
-            "nullable": true,
-            "type": {
-              "kind": "uuid",
-              "label": "uuid"
-            }
-          },
-          {
-            "name": "request",
-            "type": {
-              "kind": "uuid",
-              "version": 4,
-              "label": "uuid"
-            }
+        "kind": "array",
+        "element": {
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "uuid",
+                  "version": 7,
+                  "label": "uuid"
+                }
+              },
+              {
+                "name": "source",
+                "nullable": true,
+                "type": {
+                  "kind": "uuid",
+                  "label": "uuid"
+                }
+              },
+              {
+                "name": "request",
+                "type": {
+                  "kind": "uuid",
+                  "version": 4,
+                  "label": "uuid"
+                }
+              }
+            ]
           }
-        ],
+        },
         "unique": [
           [
             "id"

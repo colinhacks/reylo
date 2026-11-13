@@ -1180,7 +1180,7 @@ fn json_admits(ty: &Type, json: &Value) -> bool {
     let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
     match &ty.kind {
         _ if written_as_text(ty) => json.is_string(),
-        Kind::Boolean => json.is_boolean(),
+        Kind::Boolean(_) => json.is_boolean(),
         Kind::Integer(_) if name == "oid" => json.is_string(),
         Kind::Integer(_) => json.is_number(),
         Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => {
@@ -1519,7 +1519,7 @@ fn sqlite_declared(ty: &Value) -> String {
         (Kind::Float(_), _) => "real",
         (Kind::Text(_), _) => "text",
         (Kind::Bytes(_), _) => "blob",
-        (Kind::Boolean, _) => "bool",
+        (Kind::Boolean(_), _) => "bool",
         (Kind::Union(_), Some(name)) => return name.to_string(),
         _ => "",
     }

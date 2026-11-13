@@ -19,7 +19,6 @@ export type Type =
   | InstantType
   | DurationType
   | UnionType
-  | SetType
   | MapType
   | RangeType
   | MultirangeType
@@ -28,7 +27,7 @@ export type Type =
   | OpaqueType
   | UnknownType
   | TaggedUnionType
-  | RowsType;
+  | TupleType;
 
 /** What every type may carry. */
 export interface Base {
@@ -72,6 +71,8 @@ export interface Lengths {
 /** A truth value: Postgres `boolean`, SQL Server `bit`, Oracle `BOOLEAN`, and a comparison's result on any database, which MySQL and SQLite deliver as 1 or 0. A MySQL `BOOLEAN` column is an `integer`, since it can hold 5. */
 export interface BooleanType extends Base {
   kind: "boolean";
+  /** The only values, as JSON Schema's `enum`: `["true"]` is the literal `true`. */
+  enum?: ("true" | "false")[];
 }
 
 /** A whole number of a fixed width, two's complement unless `unsigned`: `int4` is 32 bits, MySQL `BIGINT UNSIGNED` 64 bits unsigned, SQL Server `tinyint` 8 bits unsigned, MySQL `MEDIUMINT` 24 bits, DuckDB `HUGEINT` 128 bits, SQLite `INTEGER` 64 bits, and Vertica's `TINYINT`, despite its name, 64 bits. Its range follows from the width; bounds narrow it further, from a CHECK or for a type narrower than any width, as MySQL `YEAR` (0 and 1901 to 2155, 16 bits bounded at 0 and 2155). A whole-number bound is always written inclusive, since `x > 0` is `x >= 1`. An integer of no fixed width is a `decimal` whose scale is at most 0. */
@@ -95,6 +96,8 @@ export interface FloatType extends Base, Bounds {
   infinity?: true;
   /** Also holds NaN: Postgres's floats. SQLite stores a NaN as NULL, and MySQL refuses it. */
   nan?: true;
+  /** The only values, as JSON Schema's `enum`, in canonical text: `["0.5"]` is the literal 0.5. */
+  enum?: string[];
 }
 
 /**
@@ -179,12 +182,30 @@ export interface UuidType extends Base {
  *   - **Its size** counts the outermost array's elements. A fixed shape, such as DuckDB's `INTEGER[3]` or a 3×3 matrix, is arrays of exact sizes, nested.
  *   - **A vector** is an array of floats: pgvector's `vector(3)` is exactly 3 elements, and MySQL's `VECTOR(n)` at most n.
  *   - **A bit string** is an array of booleans: Postgres `bit(7)` and MySQL `BIT(7)` are exactly 7, and Postgres `varbit(n)` at most n. That is its value, not its representation: a client may hold one as a string of 0s and 1s, a number or a buffer.
+ *   - **Rows** are an array of records: a statement's result, one record per row, and SQL's `MULTISET` or an Oracle nested table. Its size is how many rows, `unique` the keys no two rows share, and `order` the fields the rows are sorted on.
+ *   - **A set** is an array whose elements never repeat, `distinct`: MySQL's `SET`, whose members MySQL keeps once each, in the order the column declares them.
  */
 export interface ArrayType extends Base, Lengths {
   kind: "array";
   element: Position;
   /** An element may itself be an array of `element`, to any depth, each value rectangular. */
   any_depth?: true;
+  /** No two elements are equal, by the element type's equality, as JSON Schema's `uniqueItems`. An array of records says it with `unique` instead. */
+  distinct?: true;
+  /** For an array of records: each set of fields, by name, no two elements agree on all of, a null equal to another null, none inside another: `[["id"], ["email"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only where the array can hold more than one element, and absent where none is known. */
+  unique?: string[][];
+  /** For an array of records: the fields the elements are sorted on, in order, as far as a statement's `ORDER BY` names columns of its result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the field's own, unless the key names another, which ends the list. Elements that tie on all of them come in any order. Only where the array can hold more than one element. */
+  order?: OrderField[];
+}
+
+/** A field an array of records is sorted on. */
+export interface OrderField {
+  /** The field's name. */
+  field: string;
+  /** Sorted from the highest value down. */
+  desc?: true;
+  /** Where NULLs sort, which a database's default decides unless the statement says. */
+  nulls: "first" | "last";
 }
 
 /**
@@ -193,11 +214,13 @@ export interface ArrayType extends Base, Lengths {
  *   - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;
  *   - an Oracle `BFILE` is `{ directory, file }`.
  *
- * A record holds exactly its fields. A column whose object type has subtypes is a union of their records.
+ * A record holds exactly its fields, unless `extra` lets it hold other keys too. A column whose object type has subtypes is a union of their records.
  */
 export interface RecordType extends Base {
   kind: "record";
   fields: Field[];
+  /** Keys beyond its fields, any number, each holding a value of this position: an open object, as JSON Schema's `additionalProperties`. A key is text, and none is one of the fields' names. */
+  extra?: Position;
 }
 
 /**
@@ -277,14 +300,6 @@ export interface UnionType extends Base {
   members: Type[];
 }
 
-/** Elements in no order, each at most once by the element type's equality: MySQL `SET`, a set of the values it declares, at most 64. A client may receive the elements in any order. Not an array, since it has no rank and no index. */
-export interface SetType extends Base, Lengths {
-  kind: "set";
-  element: Position;
-  /** An element may appear more than once, making a multiset: the SQL standard's `MULTISET`, Oracle's nested tables. */
-  duplicates?: true;
-}
-
 /** Keys to values, each key once by the key type's equality, in no order: `hstore` (text to nullable text). A key is never null. A map whose keys may repeat, such as ClickHouse's `Map`, is an array of `{ key, value }` records. */
 export interface MapType extends Base {
   kind: "map";
@@ -349,27 +364,10 @@ export interface Alternative extends Position {
   tag: string;
 }
 
-/** A column rows are sorted on. */
-export interface OrderColumn {
-  /** The column's name. */
-  column: string;
-  /** Sorted from the highest value down. */
-  desc?: true;
-  /** Where NULLs sort, which a database's default decides unless the statement says. */
-  nulls: "first" | "last";
-}
-
-/** Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name. */
-export interface RowsType extends Base {
-  kind: "rows";
-  /** How many rows: exactly one, at most one, any number, or none (a write without `RETURNING`). */
-  cardinality: "one" | "at_most_one" | "many" | "none";
-  /** In order; empty where there are no rows. */
-  columns: Column[];
-  /** Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, none inside another: `[["id"], ["email"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only for rows that can be more than one, and absent where none is known. */
-  unique?: string[][];
-  /** The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the column's own, unless the key names another, which ends the list. Rows that tie on all of them come back in any order. Only for rows that can be more than one, and absent where the rows aren't sorted on a column of the result. */
-  order?: OrderColumn[];
+/** A fixed number of values in order, each of its own type, with no names: a pair as a list, `[1, "a"]`. Unlike an array, each position has its own type; unlike a record, its values have no names. */
+export interface TupleType extends Base {
+  kind: "tuple";
+  elements: Position[];
 }
 
 /** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
@@ -384,8 +382,8 @@ export interface StatementDescriptor {
   /** The prose written in comments before the statement: its summary, as an editor's hover shows it. */
   comment?: string;
   params: Param[];
-  /** What the statement returns. */
-  result: RowsType;
+  /** What the statement returns: an array of records, a record per row, each field a column. Its size is how many rows: `{ exact: 1 }` for one, `{ max: 1 }` for at most one, none for any number, and `{ exact: 0 }` for a write without `RETURNING`, whose record has no fields. A statement that returns one value is still a row of one field, which keeps the column's name. A row is an object keyed by its columns' names, which keeps only the last of two with one name, so a statement whose result repeats a name (`select a.id, b.id`) has a diagnostic at each later column of it, asking for another name with `as`. The name the database gives a column stands: Postgres calls `select 1`'s `?column?`, and SQL Server leaves it empty. */
+  result: ArrayType;
   /** What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns. */
   diagnostics: Diagnostic[];
 }
@@ -405,19 +403,15 @@ export interface Position {
   nullable?: true;
 }
 
-/** A result's column. A row always has every column, so none is optional. A row is an object keyed by its columns' names, which keeps only the last of two with one name, so a statement whose result repeats a name (`select a.id, b.id`) has a diagnostic at each later column of it, asking for another name with `as`. */
-export interface Column extends Position {
-  /** The name the database gives the column: Postgres calls `select 1`'s `?column?`, and SQL Server leaves it empty. */
-  name: string;
-  /** The comment the database keeps on the column (`COMMENT ON COLUMN`). */
-  comment?: string;
-}
-
-/** A record's field. */
+/** A record's field: a column of a row, a key of an object. */
 export interface Field extends Position {
   name: string;
   /** The key may be absent: a structured parameter's `?` member, a JSON object's key (as `jsonb_strip_nulls` drops). Apart from `nullable`, and never a default value. */
   optional?: true;
+  /** The value an optional field takes where its key is absent, in its type's canonical text: only beside `optional`, and only for a kind whose values the format writes as text. */
+  default?: string;
+  /** What the field is, as its source documents it: the comment the database keeps on a column (`COMMENT ON COLUMN`). */
+  comment?: string;
 }
 
 /** A statement's parameter. Where the statement writes it whole into a column, its type is that column's: `insert into t (price) values (:price)`, into a `numeric(10,2)` column, gives `price` precision 10 and scale 2, though Postgres describes the parameter as plain `numeric` and would round 1.234. That is stricter than the server, never looser. */

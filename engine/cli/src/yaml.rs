@@ -1,6 +1,6 @@
 //! The YAML `reylo analyze` prints by default: each descriptor as one document, in block style but
-//! for a type and a list of plain values, which are written on one line in flow style where they
-//! fit (`type: { kind: integer, bits: 64, label: int8 }`). A string is plain where a YAML parser
+//! for a type, a mapping of plain values and a list of them, which are written on one line in flow
+//! style where they fit (`type: { kind: integer, bits: 64, label: int8 }`, `size: { max: 1 }`). A string is plain where a YAML parser
 //! reads it back as that string under YAML 1.1's rules as under 1.2's, a string of several lines a
 //! literal block, and any other string double-quoted, its escapes ones JSON and YAML share. So the
 //! document reads back as the descriptor's JSON, value for value.
@@ -106,7 +106,7 @@ fn after(value: &Value, indent: usize, used: usize, out: &mut String) {
 }
 
 /// Whether a mapping or a sequence after `used` columns is written on one line: an empty one, and a
-/// type or a list holding no mapping, where it fits.
+/// type, a mapping of plain values or a list holding no mapping, where it fits.
 fn one_line(value: &Value, used: usize) -> bool {
     let empty = match value {
         Value::Object(map) => map.is_empty(),
@@ -114,7 +114,7 @@ fn one_line(value: &Value, used: usize) -> bool {
         _ => true,
     };
     let flowing = match value {
-        Value::Object(map) => map.get("kind").and_then(Value::as_str).is_some_and(|kind| kind != "rows"),
+        Value::Object(map) => map.get("kind").and_then(Value::as_str).is_some() || map.values().all(|v| !v.is_object() && !v.is_array()),
         Value::Array(items) => !items.iter().any(holds_mapping),
         _ => true,
     };
@@ -238,9 +238,7 @@ mod tests {
             document(&Value::Object(line)),
             r#"file: queries/get_user.sql
 $schema: https://reylo.dev/typedefs/0.1.0.json
-dialect:
-  name: postgres
-  version: "18.1"
+dialect: { name: postgres, version: "18.1" }
 sql: |-
   -- One user, by id.
   select id, email, bio from users where id = $1
@@ -250,17 +248,20 @@ params:
   - name: id
     type: { kind: integer, bits: 64, label: int8 }
 result:
-  kind: rows
-  cardinality: at_most_one
-  columns:
-    - name: id
-      type: { kind: integer, bits: 64, label: int8 }
-    - name: email
-      type: { kind: text, size: { max: 255 }, label: varchar }
-    - name: bio
-      nullable: true
-      type: { kind: text, label: text }
-      comment: Shown on the profile page
+  kind: array
+  size: { max: 1 }
+  element:
+    type:
+      kind: record
+      fields:
+        - name: id
+          type: { kind: integer, bits: 64, label: int8 }
+        - name: email
+          type: { kind: text, size: { max: 255 }, label: varchar }
+        - name: bio
+          nullable: true
+          type: { kind: text, label: text }
+          comment: Shown on the profile page
 diagnostics: []
 "#
         );
@@ -285,7 +286,7 @@ diagnostics: []
         let value = json!({ "type": { "kind": "text", "enum": values, "label": "public.mood" }, "unique": [["id"], ["email"]], "order": [{ "column": "at", "nulls": "last" }] });
         let text = document(&value);
         assert!(text.starts_with("type:\n  kind: text\n  enum:\n    - value0\n"), "{text}");
-        assert!(text.contains("unique: [[id], [email]]\n") && text.contains("order:\n  - column: at\n    nulls: last\n"), "{text}");
+        assert!(text.contains("unique: [[id], [email]]\n") && text.contains("order:\n  - { column: at, nulls: last }\n"), "{text}");
         assert_eq!(read_back(&value), value);
     }
 }
