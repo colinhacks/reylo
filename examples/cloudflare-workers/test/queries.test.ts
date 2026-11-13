@@ -4,6 +4,7 @@ import { expect, test } from "vitest";
 import createPost from "../queries/create_post.sql";
 import getUser from "../queries/get_user.sql";
 import listPosts from "../queries/list_posts.sql";
+import { migrate } from "../.reylo.yaml";
 
 test("get_user resolves to a row, or null", async () => {
   const ada = await getUser.run(env.DB, { id: 1 });
@@ -49,5 +50,14 @@ test("inside a board, runSync works in transactionSync, and a throw rolls its wr
     ctx.storage.transactionSync(() => createPost.runSync(sql, { user_id: 1, title: "Kept", body: "yes" }));
     expect(getUser.runSync(sql, { id: 1 })).toMatchObject({ name: "ada" });
     expect(listPosts.runSync(sql, { role: "admin" }).map((p) => p.title)).toEqual(["Hello", "Again", "Kept"]);
+  });
+});
+
+test("a board runs the migrations once, in its constructor, and records them as reylo migrate does", async () => {
+  const board = env.BOARD.get(env.BOARD.idFromName("migrated"));
+  await runInDurableObject(board, (_board, ctx) => {
+    const ran = ctx.storage.sql.exec<{ name: string }>("select name from __reylo_migrations").toArray().map((r) => r.name);
+    expect(ran).toEqual(["20261021000000_users_and_posts.sql"]);
+    expect(migrate(ctx.storage)).toEqual([]);
   });
 });

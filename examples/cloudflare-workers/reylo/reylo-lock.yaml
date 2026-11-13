@@ -1,0 +1,6 @@
+# The order this project's migrations run in, written by reylo migrate dev and reylo migrate lock.
+# A merge conflict here means another branch added migrations too: keep main's lines, then
+# run reylo migrate dev, which runs this branch's after them and adds them back.
+schema: 1838d124
+migrations:
+  - 20261021000000_users_and_posts.sql 258a4848

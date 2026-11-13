@@ -1,3 +1,3 @@
-# The local D1 database wrangler keeps for the binding DB: the file is named after its database_id,
-# and `nub run setup` creates it. The type check, the editor and reylo/vite read the schema there.
-direct_url: file:./.wrangler/state/v3/d1/miniflare-D1DatabaseObject/9ba2b04bf514d9facfd57ed57d849e77241a7adc99d1c1545d06688b43d84248.sqlite
+# The development database, which `nub run setup` makes from reylo/migrations: the type check, the
+# editor and reylo/vite read the schema there.
+direct_url: file:./dev.sqlite

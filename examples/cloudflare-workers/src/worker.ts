@@ -1,19 +1,18 @@
 // Each .sql import is a typed query: the type check types it from the database, and reylo/vite
 // builds it into a module that runs it on the D1 binding, or on a Durable Object's own database.
 import { DurableObject } from "cloudflare:workers";
-import migration from "../migrations/0001_users_and_posts.sql?raw";
+import { migrate } from "../.reylo.yaml";
 import createPost from "../queries/create_post.sql";
 import getUser from "../queries/get_user.sql";
 import listPosts from "../queries/list_posts.sql";
 
-// A board keeps users and posts of its own, in its Durable Object's SQLite database, made by the
-// same migration as D1's, so the same queries run on it. `.runSync()` takes `ctx.storage.sql`,
-// which answers at once.
+// A board keeps users and posts of its own, in its Durable Object's SQLite database. Its constructor
+// runs the migrations it hasn't run yet, the same as D1's, so the same queries run on it.
+// `.runSync()` takes `ctx.storage.sql`, which answers at once.
 export class Board extends DurableObject<Cloudflare.Env> {
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
-    const made = ctx.storage.sql.exec("select count(*) as n from sqlite_master where name = 'users'").one().n;
-    if (!made) ctx.storage.sql.exec(migration);
+    migrate(ctx.storage);
   }
 
   user(id: number) {
