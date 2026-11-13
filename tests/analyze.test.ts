@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { connect, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,6 +141,8 @@ test("without the database, .reylo/ answers as it is, and a statement it lacks i
   const cached = await analyze(root, env, SELECT);
   assert.ok(cached.ok);
   assert.equal(cached.source, "cache");
+  // Nothing held the entry to the database, which the outcome says, with why and the entry's day.
+  assert.match(cached.unverified ?? "", /^cannot open the database .*app\.db \(DATABASE_URL in the environment\).*; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
   const missing = await analyze(root, env, "select name from users");
   assert.ok(!missing.ok);
   assert.equal(missing.code, 5);
@@ -184,6 +187,8 @@ test("a build that cannot reach the database reads .reylo/ with another URL, wit
   const bare = await analyze(root, {}, SELECT);
   assert.ok(bare.ok);
   assert.deepEqual([bare.source, bare.entry], ["cache", typed.entry]);
+  assert.match(bare.unverified ?? "", /^no database URL is set; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+  assert.equal(typed.unverified, undefined);
   const lacking = await analyze(root, {}, "select name from users");
   assert.ok(!lacking.ok);
   assert.deepEqual([lacking.code, lacking.message], [4, 'No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in .reylo.yaml.']);
@@ -200,6 +205,72 @@ test("a build that cannot reach the database reads .reylo/ with another URL, wit
   assert.ok(moved.ok);
   assert.equal(moved.source, "cache");
   assert.ok(moved.entry.startsWith(join(copy, ".reylo")));
+});
+
+test("on a server, a URL that fails reads that server's own entry and no other's, and a build says once that it reads .reylo/ unchecked", { skip: live }, async (t) => {
+  const { url, sql, drop } = await postgresDatabase("reylo_offline", "create table users (id int primary key, email text not null)");
+  const root = mkdtempSync(join(tmpdir(), "reylo-offline-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const statement = "select id, email from users where id = :id";
+  // The server at an address of its own, which can stop answering while the test's server goes on.
+  const target = new URL(url);
+  const proxy = createServer((socket) => {
+    const up = connect(Number(target.port), target.hostname);
+    socket.pipe(up).pipe(socket);
+    socket.on("error", () => up.destroy());
+    up.on("error", () => socket.destroy());
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const through = new URL(url);
+  through.hostname = "127.0.0.1";
+  through.port = String((proxy.address() as AddressInfo).port);
+  const env = { DATABASE_URL: through.href };
+  try {
+    const typed = await analyze(root, env, statement);
+    assert.ok(typed.ok);
+    assert.deepEqual([typed.source, typed.unverified], ["database", undefined]);
+    await sql.unsafe("alter table users alter email drop not null");
+    await new Promise((resolve) => proxy.close(resolve));
+    // The server no longer answers: its own entry, as old as it is, and the outcome says so.
+    const stale = await analyze(root, env, statement);
+    assert.ok(stale.ok);
+    assert.deepEqual([stale.source, stale.entry], ["cache", typed.entry]);
+    assert.match(stale.unverified ?? "", /^cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in the environment\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+    // A server nothing was analyzed on reads no other's entry: a mistyped host is not the database last analyzed.
+    const elsewhere = new URL(url);
+    elsewhere.port = "1";
+    const other = await analyze(root, { DATABASE_URL: elsewhere.href }, statement);
+    assert.ok(!other.ok);
+    assert.match(other.message, /^Cannot connect to the database at .*:1\/reylo_offline_\d+ .*; \.reylo has this statement's analysis from another database only, which a build reads where no database URL is set: run the type check or a build where this database can be reached, or build with no URL\.$/);
+    // With no URL, the newest entry of any server answers, and says that nothing checked it.
+    const bare = await analyze(root, {}, statement);
+    assert.ok(bare.ok);
+    assert.deepEqual([bare.source, bare.entry], ["cache", typed.entry]);
+    assert.match(bare.unverified ?? "", /^no database URL is set; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+    // A build step prints the line once a run, however many modules it builds, and the type check's hover carries it.
+    const warned: string[] = [];
+    t.mock.method(console, "warn", (line: string) => void warned.push(line));
+    writeFileSync(join(root, ".env"), `DATABASE_URL=${through.href}\n`);
+    for (const name of ["a.sql", "b.sql"]) writeFileSync(join(root, name), statement);
+    const mapper = mapperHandlers();
+    const projectHandle = `offline-${root}`;
+    await mapper.openProject!({ projectHandle, configFileName: join(root, "tsconfig.json") });
+    try {
+      await sqlModule(join(root, "a.sql"), statement);
+      await sqlModule(join(root, "b.sql"), statement);
+      const declared = (await mapper.transform!({ fileName: join(root, "a.sql"), content: statement, projectHandle })) as { text: string; diagnostics: unknown[] };
+      assert.deepEqual(declared.diagnostics, []);
+      assert.match(declared.text, /\n \* reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d\n \*\/\ndeclare const query: /);
+    } finally {
+      await mapper.closeProject!({ projectHandle });
+      for (const session of Session.opened()) await session.close();
+    }
+    assert.equal(warned.length, 1);
+    assert.match(warned[0]!, /^reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+  } finally {
+    proxy.close();
+    await drop();
+  }
 });
 
 test("the module a build step emits carries the analysis and reads nothing at run time", async () => {
