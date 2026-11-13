@@ -93,7 +93,9 @@ pub const DATE_STYLE: u32 = 24;
 /// the type check's own session has such a style, from its role, its database or the server, the
 /// application's is likely to as well, so a statement that returns one of those types is an error
 /// here, before it runs. JSON is written in ISO's style whatever the setting. Nothing is added to
-/// a statement that has an error already.
+/// a statement that has an error already. The loader keeps an analysis by its schema's
+/// fingerprint, which the session's DateStyle is part of (src/analyze.ts), so the error goes when
+/// the style does.
 fn held_to_iso(analysis: &mut Analysis, sql: &str, date_style: &str) {
     let style = date_style.split(',').next().unwrap_or_default().trim();
     if style.is_empty() || style.eq_ignore_ascii_case("iso") || !analysis.diagnostics.is_empty() {
@@ -101,7 +103,7 @@ fn held_to_iso(analysis: &mut Analysis, sql: &str, date_style: &str) {
     }
     let Some(column) = analysis.columns.iter().find(|c| writes_dates(&c.ty)) else { return };
     let message = format!(
-        "Column \"{}\" holds a date or a time, which this database writes in the {style} style (its DateStyle is {date_style}, set on the role, the database or the server) and .run() reads in the ISO style alone: set it to ISO, as in alter database … set datestyle = 'ISO', or on every connection, the application's too, as options=-c%20datestyle%3DISO in a URL.",
+        "Column \"{}\" holds a date or a time, which this database writes in the {style} style (its DateStyle is {date_style}, set on the role, the database or the server) and .run() reads in the ISO style alone: set it to ISO, as in alter database … set datestyle = 'ISO', or on every connection, the application's too, as options=-c%20datestyle%3DISO in a URL. A connection keeps the style it started with, so an editor's type check sees the change once its TypeScript server restarts.",
         column.name
     );
     analysis.diagnostics.push(reylo_engine_core::api::Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: DATE_STYLE, server_code: None });

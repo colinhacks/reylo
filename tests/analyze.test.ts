@@ -273,6 +273,33 @@ test("on a server, a URL that fails reads that server's own entry and no other's
   }
 });
 
+test("Postgres: the DateStyle error is no part of another style's entry, so it goes when the database's style is ISO again", { skip: live }, async () => {
+  const { url, sql, drop } = await postgresDatabase("reylo_datestyle_cache", "create table orders (id int primary key, ships_on date not null)");
+  const root = mkdtempSync(join(tmpdir(), "reylo-datestyle-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const database = new URL(url).pathname.slice(1);
+  const statement = "select id, ships_on from orders";
+  // Each call is a session of its own, whose connection starts with the database's style of the moment.
+  const checked = async (at = url) => {
+    const outcome = await analyze(root, { DATABASE_URL: at }, statement);
+    assert.ok(outcome.ok);
+    return [outcome.source, outcome.analysis.diagnostics.map((d) => d.code)];
+  };
+  try {
+    assert.deepEqual(await checked(), ["database", []]);
+    await sql.unsafe(`alter database ${database} set datestyle = 'SQL, DMY'`);
+    assert.deepEqual(await checked(), ["database", [24]]);
+    assert.deepEqual(await checked(), ["cache", [24]]);
+    // The URL's own setting is the session's: the entry made under the other style is not its answer.
+    assert.deepEqual(await checked(`${url}?options=-c%20datestyle%3DISO`), ["database", []]);
+    // The order of a date's fields (ISO, DMY and ISO, MDY) is no part of how one is written.
+    await sql.unsafe(`alter database ${database} reset datestyle`);
+    assert.deepEqual(await checked(), ["cache", []]);
+  } finally {
+    await drop();
+  }
+});
+
 test("the module a build step emits carries the analysis and reads nothing at run time", async () => {
   const { root, env } = project();
   const file = join(root, "user.sql");

@@ -637,8 +637,11 @@ const eq = (a: string, b: string) => `${a} operator(pg_catalog.=) ${b}`;
 const rel = (alias: string, column: string) => `join pg_catalog.pg_class c on ${eq("c.oid", `${alias}.${column}`)} join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")}`;
 const PG_CLASS = "'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid";
 const USER = "'16384'::pg_catalog.oid";
+// Its first line holds what the session itself adds to an analysis: the server's version, the
+// search path that resolves each name, and the style the session writes dates in (the first part
+// of DateStyle, `ISO` or another), which the engine's host reports an error for (engine/native).
 const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_agg(t.x, E'\\n'::pg_catalog.text order by t.x), ''::pg_catalog.text)) from (
-    select ${line("v", "pg_catalog.current_setting('server_version_num'::pg_catalog.text)", "pg_catalog.current_setting('search_path'::pg_catalog.text)")} as x
+    select ${line("v", "pg_catalog.current_setting('server_version_num'::pg_catalog.text)", "pg_catalog.current_setting('search_path'::pg_catalog.text)", "pg_catalog.split_part(pg_catalog.current_setting('DateStyle'::pg_catalog.text), ','::pg_catalog.text, 1)")} as x
     union all select ${line("r", cat(txt("n.nspname"), lit("."), txt("c.relname")), txt("c.relkind"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where ${NS}
     union all select ${line("a", relation("a.attrelid"), out("int2", "a.attnum"), txt("a.attname"), type("a.atttypid"), out("int4", "a.atttypmod"), txt("a.attnotnull"), named("regcollation", "a.attcollation"), txt("a.attidentity"), txt("a.attgenerated"))} from pg_catalog.pg_attribute a ${rel("a", "attrelid")} where a.attnum operator(pg_catalog.>) 0 and not a.attisdropped and ${NS}
     union all select ${line("h", relation("h.inhrelid"), relation("h.inhparent"), out("int4", "h.inhseqno"))} from pg_catalog.pg_inherits h ${rel("h", "inhrelid")} where ${NS}

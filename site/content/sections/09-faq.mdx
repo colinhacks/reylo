@@ -46,7 +46,7 @@ Yes, where `.reylo/` already holds each query's analysis. A type check or a buil
 reylo: cannot connect to the database at localhost:5432/app (DATABASE_URL in .env): connection refused; building from .reylo/, analyzed 2026-11-07
 ```
 
-The types are then as old as that analysis, so a migration since doesn't show. With a database URL set, a build reads only what was analyzed on that database, and with none it reads the newest analysis of any. A query that `.reylo/` doesn't hold is an error.
+The types are then as old as that analysis, so a migration since doesn't show. With a server's URL set, a build reads only what was analyzed on that database. With none, or where the database is a file, as on SQLite and DuckDB, it reads the newest analysis of any. A query that `.reylo/` doesn't hold is an error.
 
 A host that builds before it migrates, such as Vercel, starts with no `.reylo/`, so build against a database of its own there:
 
