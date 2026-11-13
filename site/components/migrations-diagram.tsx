@@ -16,7 +16,7 @@ type Without = 'schema' | 'lock';
 
 const labels: Record<'full' | Without, string> = {
   full: 'How the migration commands move between schema.sql, the migrations and the database. reylo migrate new writes a migration from schema.sql into the migrations folder, whose reylo-lock.yaml records their order. reylo migrate dev and reylo migrate deploy run the migrations on the database. Off to the sides, skipping the migrations: reylo migrate init writes schema.sql from an existing database, and reylo db push changes the database straight from schema.sql.',
-  schema: 'The same diagram without schema.sql: the file is deleted, so reylo migrate new, reylo migrate init and reylo db push, which all touch it, are grayed out, and only reylo migrate dev and reylo migrate deploy remain, from the migrations to the database.',
+  schema: 'The same diagram without schema.sql: the file is deleted, so reylo migrate init and reylo db push, which touch it, are grayed out. reylo migrate new still writes the next migration, now from the database, up into the migrations folder, beside reylo migrate dev and reylo migrate deploy, which run the migrations on the database.',
   lock: 'The same diagram without the lock: reylo-lock.yaml is deleted and grayed out, and the migrations run in name order. Every command remains.',
 };
 
@@ -149,9 +149,19 @@ function Figure({ without, narrow }: { without?: Without; narrow: boolean }) {
   const noSchema = without === 'schema', noLock = without === 'lock';
   const initChip = chipWidth(commands.init), pushChip = chipWidth(commands.push), runChip = chipWidth(commands.run), newChip = chipWidth(commands.new);
 
-  // across: where the side lines run, and the cards' centre
+  // across: where the side lines run, and the cards' centre. Without schema.sql, reylo migrate new
+  // runs up from the database beside {dev|deploy}, its arrow DX_NEW right of the centre and
+  // {dev|deploy}'s DX_RUN left of it, each chip clear of the other's line; on a phone the side lines
+  // move out to clear the pair, and their grayed chips sit inside them, between the first two cards.
+  const DX_RUN = -40, DX_NEW = 70;
   let left: number, cx: number, right: number, W: number;
-  if (narrow) {
+  if (narrow && noSchema) {
+    const reach = Math.ceil(Math.max(-DX_RUN + runChip / 2, DX_NEW + newChip / 2) + 6);
+    cx = 12 + reach;
+    left = cx - reach;
+    right = cx + reach;
+    W = right + 12;
+  } else if (narrow) {
     // the side lines clear the {dev|deploy} chip, and init's chip clears the new arrow
     const reach = Math.max(runChip / 2, CARD_W / 2) + 12;
     cx = Math.ceil(12 + initChip / 2 + reach);
@@ -166,15 +176,20 @@ function Figure({ without, narrow }: { without?: Without; narrow: boolean }) {
   }
   const x0 = cx - CARD_W / 2, x1 = cx + CARD_W / 2;
 
-  // down: the cards, and between them one row of chips (wide) or two (narrow), 28px in from each card
-  const gap = narrow ? 92 : 72;
-  const ty = 12, th = 46, my = ty + th + gap, mh = 86, by = my + mh + gap, bh = 46;
+  // down: the cards, and between them one row of chips or two, a row 28px in from each card
+  const gap1 = narrow ? 92 : 72, gap2 = narrow || noSchema ? 92 : 72;
+  const ty = 12, th = 46, my = ty + th + gap1, mh = 86, by = my + mh + gap2, bh = 46;
   const H = by + bh + 12;
   const g1 = ty + th, g2 = my + mh;
-  const newY = narrow ? g1 + gap - 28 : g1 + gap / 2;
-  const runY = narrow ? g2 + 28 : g2 + gap / 2;
+  const newY = narrow ? g1 + gap1 - 28 : g1 + gap1 / 2;
+  const runY = narrow || noSchema ? g2 + 28 : g2 + gap2 / 2;
+  const newUpY = g2 + gap2 - 28;
   const initY = narrow ? g1 + 28 : my + mh / 2;
-  const pushY = narrow ? g2 + gap - 28 : my + mh / 2;
+  const pushY = narrow ? (noSchema ? g1 + gap1 - 28 : g2 + gap2 - 28) : my + mh / 2;
+  // the side chips: across their lines, or on a phone without schema.sql, inside them
+  const inside = narrow && noSchema;
+  const initX = inside ? left + 8 + initChip / 2 : left;
+  const pushX = inside ? right - 8 - pushChip / 2 : right;
   const ys = ty + th / 2, yb = by + bh / 2;
 
   return (
@@ -197,20 +212,40 @@ function Figure({ without, narrow }: { without?: Without; narrow: boolean }) {
       <Card x={x0} y={by} h={bh} />
       <Title x={x0} y={by + 28} icon={icons.db} name="Database" code={false} />
 
-      <Gone off={noSchema}>
-        <Through x={cx} y0={g1} y1={my} cy={newY} command={commands.new} accent dashed={noSchema} />
-      </Gone>
-      <Through x={cx} y0={g2} y1={by} cy={runY} command={commands.run} accent />
+      {noSchema ? (
+        <>
+          <Through x={cx + DX_RUN} y0={g2} y1={by} cy={runY} command={commands.run} accent />
+          {/* new, from the database: what it has that the migrations don't */}
+          <Through x={cx + DX_NEW} y0={by} y1={g2} cy={newUpY} command={commands.new} accent />
+        </>
+      ) : (
+        <>
+          <Through x={cx} y0={g1} y1={my} cy={newY} command={commands.new} accent />
+          <Through x={cx} y0={g2} y1={by} cy={runY} command={commands.run} accent />
+        </>
+      )}
 
       <Gone off={noSchema}>
         {/* init, up the left: from a database to schema.sql */}
-        <Line points={[[x0, yb], [left, yb], [left, initY + CHIP_H / 2]]} dashed={noSchema} head={false} />
-        <Line points={[[left, initY - CHIP_H / 2], [left, ys], [x0, ys]]} dashed={noSchema} />
-        <Chip cx={left} cy={initY} command={commands.init} dashed={noSchema} />
+        {inside ? (
+          <Line points={[[x0, yb], [left, yb], [left, ys], [x0, ys]]} dashed />
+        ) : (
+          <>
+            <Line points={[[x0, yb], [left, yb], [left, initY + CHIP_H / 2]]} dashed={noSchema} head={false} />
+            <Line points={[[left, initY - CHIP_H / 2], [left, ys], [x0, ys]]} dashed={noSchema} />
+          </>
+        )}
+        <Chip cx={initX} cy={initY} command={commands.init} dashed={noSchema} />
         {/* db push, down the right: from schema.sql to the database */}
-        <Line points={[[x1, ys], [right, ys], [right, pushY - CHIP_H / 2]]} dashed={noSchema} head={false} />
-        <Line points={[[right, pushY + CHIP_H / 2], [right, yb], [x1, yb]]} dashed={noSchema} />
-        <Chip cx={right} cy={pushY} command={commands.push} dashed={noSchema} />
+        {inside ? (
+          <Line points={[[x1, ys], [right, ys], [right, yb], [x1, yb]]} dashed />
+        ) : (
+          <>
+            <Line points={[[x1, ys], [right, ys], [right, pushY - CHIP_H / 2]]} dashed={noSchema} head={false} />
+            <Line points={[[right, pushY + CHIP_H / 2], [right, yb], [x1, yb]]} dashed={noSchema} />
+          </>
+        )}
+        <Chip cx={pushX} cy={pushY} command={commands.push} dashed={noSchema} />
       </Gone>
     </svg>
   );
