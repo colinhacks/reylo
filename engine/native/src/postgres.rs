@@ -42,6 +42,9 @@ struct Connection {
     bridge: Option<String>,
     /// The engine's answers, kept between statements as the loader's session keeps them.
     answers: AnswerCache<Describe>,
+    /// The session's `DateStyle` as the server reported it when the connection started, from its
+    /// role, its database or the server's own setting.
+    date_style: String,
 }
 
 impl Connection {
@@ -49,7 +52,8 @@ impl Connection {
     /// connection only from the request that finds it so, since its connection's task runs only
     /// while a request does: that request is answered over the new one.
     async fn reopen(&mut self) -> Result<(), Value> {
-        self.client = connect(&self.url, self.bridge.as_deref()).await?.0;
+        let Started { client, date_style, .. } = connect(&self.url, self.bridge.as_deref()).await?;
+        (self.client, self.date_style) = (client, date_style);
         Ok(())
     }
 
@@ -62,7 +66,10 @@ impl Connection {
             result = answers::analyze(&self.client, sql, &mut self.answers).await;
         }
         match result {
-            Ok(analysis) => Ok(analysis),
+            Ok(mut analysis) => {
+                held_to_iso(&mut analysis, sql, &self.date_style);
+                Ok(analysis)
+            }
             // The connection went while the engine asked: the database cannot be reached.
             Err(ReplayError::Host(e)) if self.client.is_closed() || e.0.starts_with("the describe did not reach the server") || e.0.starts_with(answers::ENDED) => Err(lost(&e.0)),
             Err(e) => Err(json!({ "status": "error", "message": e.to_string() })),
@@ -74,8 +81,47 @@ impl Connection {
 /// version as it reports it when the connection starts (`server_version`), which costs no round
 /// trip: its number alone, `18.1` of `18.1 (Homebrew)`.
 pub async fn open(url: &str) -> Result<(Client, String), Failure> {
-    let (client, version) = connect(url, None).await.map_err(|answer| Failure::of(&answer))?;
+    let Started { client, version, .. } = connect(url, None).await.map_err(|answer| Failure::of(&answer))?;
     Ok((client, server_version(&version)))
+}
+
+/// The diagnostic code of a statement whose dates the session writes in another style than ISO's.
+pub const DATE_STYLE: u32 = 24;
+
+/// A session whose `DateStyle` is not ISO's writes a `date`, a `timestamp` and a `timestamptz` in
+/// a form no reader can take back (`04/03/2026` is two days), which the run time refuses: where
+/// the type check's own session has such a style, from its role, its database or the server, the
+/// application's is likely to as well, so a statement that returns one of those types is an error
+/// here, before it runs. JSON is written in ISO's style whatever the setting. Nothing is added to
+/// a statement that has an error already.
+fn held_to_iso(analysis: &mut Analysis, sql: &str, date_style: &str) {
+    let style = date_style.split(',').next().unwrap_or_default().trim();
+    if style.is_empty() || style.eq_ignore_ascii_case("iso") || !analysis.diagnostics.is_empty() {
+        return;
+    }
+    let Some(column) = analysis.columns.iter().find(|c| writes_dates(&c.ty)) else { return };
+    let message = format!(
+        "Column \"{}\" holds a date or a time, which this database writes in the {style} style (its DateStyle is {date_style}, set on the role, the database or the server) and .run() reads in the ISO style alone: set it to ISO, as in alter database … set datestyle = 'ISO', or on every connection, the application's too, as options=-c%20datestyle%3DISO in a URL.",
+        column.name
+    );
+    analysis.diagnostics.push(reylo_engine_core::api::Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: DATE_STYLE, server_code: None });
+}
+
+/// Whether a value of the type holds a date, a timestamp or a timestamptz as the server's text: in
+/// itself, or in an array, a range or a row value. Not inside JSON, whose text is ISO's always.
+fn writes_dates(ty: &reylo_engine_core::types::Type) -> bool {
+    use reylo_engine_core::types::Kind;
+    match &ty.kind {
+        Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) => true,
+        Kind::Array(a) => writes_dates(&a.element.ty),
+        Kind::Set(s) => writes_dates(&s.element.ty),
+        Kind::Range(r) | Kind::Multirange(r) => writes_dates(&r.subtype),
+        Kind::Record(r) => r.fields.iter().any(|f| writes_dates(&f.ty)),
+        Kind::Union(u) => u.members.iter().any(writes_dates),
+        Kind::Map(m) => writes_dates(&m.key) || writes_dates(&m.value.ty),
+        Kind::Rows(r) => r.columns.iter().any(|c| writes_dates(&c.ty)),
+        _ => false,
+    }
 }
 
 /// The number of a `server_version`: `18.1` of `18.1 (Homebrew)`.
@@ -93,8 +139,8 @@ pub struct Session {
 
 impl Session {
     pub async fn open(url: &str) -> Result<Session, Failure> {
-        let (client, version) = open(url).await?;
-        Ok(Session { connection: Connection { client, url: url.to_string(), bridge: None, answers: AnswerCache::until_cleared() }, version })
+        let Started { client, version, date_style } = connect(url, None).await.map_err(|answer| Failure::of(&answer))?;
+        Ok(Session { connection: Connection { client, url: url.to_string(), bridge: None, answers: AnswerCache::until_cleared(), date_style }, version: server_version(&version) })
     }
 
     pub async fn analyze(&mut self, sql: &str) -> Result<Analysis, Failure> {
@@ -116,9 +162,9 @@ impl Program for Postgres {
                 let url = request["url"].as_str().unwrap_or_default();
                 let bridge = request["bridge"].as_str().map(String::from);
                 match connect(url, bridge.as_deref()).await {
-                    Ok((client, version)) => {
+                    Ok(Started { client, version, date_style }) => {
                         self.next += 1;
-                        self.connections.insert(self.next, Connection { client, url: url.to_string(), bridge, answers: AnswerCache::until_cleared() });
+                        self.connections.insert(self.next, Connection { client, url: url.to_string(), bridge, answers: AnswerCache::until_cleared(), date_style });
                         json!({ "status": "opened", "conn": self.next, "version": server_version(&version) })
                     }
                     Err(failure) => failure,
@@ -205,7 +251,7 @@ fn lost(message: &str) -> Value {
 /// socket (src/host-url.ts), the connection opens with the bridge's `token`, which is how the bridge
 /// knows it from any other local process's, and carries no TLS, which libpq does not use over a
 /// Unix socket either.
-async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Value> {
+async fn connect(url: &str, bridge: Option<&str>) -> Result<Started, Value> {
     let Parsed { mut config, check, root, identity } = parse(url, &|key| std::env::var(key).ok()).map_err(|message| json!({ "status": "error", "message": message }))?;
     let identity = identity.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password });
     let timeout = config.get_connect_timeout().copied().unwrap_or(CONNECT_TIMEOUT) + Duration::from_secs(1);
@@ -236,13 +282,13 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Va
         Ok(started(client, connection))
     };
     let connecting = async {
-        let (client, version) = opening.await?;
+        let started: Started = opening.await?;
         // The planner estimates three of the engine's catalog queries above `jit_above_cost`, one in
         // the millions against a default of 100,000, so a server built with JIT compiles them for
         // each statement: about 2.6 seconds, where running them takes 50 milliseconds. A server
         // without the setting refuses it, and then there is nothing to turn off.
-        let _ = client.batch_execute("set jit = off").await;
-        Ok((client, version))
+        let _ = started.client.batch_execute("set jit = off").await;
+        Ok(started)
     };
     match tokio::time::timeout(timeout, connecting).await {
         Err(_) => Err(json!({ "status": "unreachable", "message": "no answer within the connect timeout" })),
@@ -250,18 +296,28 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Va
     }
 }
 
-/// The client of a connection just opened, and the server's version from what its startup reported,
-/// the connection driven on a task of its own.
-fn started<S, T>(client: Client, connection: tokio_postgres::Connection<S, T>) -> (Client, String)
+/// A connection just opened, and what the server reported as it started, which costs no round trip.
+struct Started {
+    client: Client,
+    /// `server_version`, as the server writes it.
+    version: String,
+    /// The session's `DateStyle`: `ISO, MDY`.
+    date_style: String,
+}
+
+/// The client of a connection just opened, with the server's version and the session's DateStyle
+/// from what its startup reported, the connection driven on a task of its own.
+fn started<S, T>(client: Client, connection: tokio_postgres::Connection<S, T>) -> Started
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let version = connection.parameter("server_version").unwrap_or_default().to_string();
+    let date_style = connection.parameter("DateStyle").unwrap_or_default().to_string();
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    (client, version)
+    Started { client, version, date_style }
 }
 
 /// A libpq URL read: tokio-postgres's configuration, how much of the server's certificate to check,
@@ -474,6 +530,41 @@ mod tests {
         assert_eq!(check("postgres://h/d?sslrootcert=system"), (SslMode::Require, Check::Full));
         assert_eq!(check("postgres://h/d?channel_binding=require"), (SslMode::Require, Check::Nothing));
         assert!(parse("postgres://h/d?sslmode=sometimes", &no_env).is_err());
+    }
+
+    #[test]
+    fn a_statement_whose_dates_the_session_writes_in_another_style_is_an_error() {
+        use reylo_engine_core::api::Column;
+        use reylo_engine_core::types::{DateTimeType, DateType, Field, InstantType, Kind, Position, RangeType, Type};
+        let date = || Type::new(Kind::Date(DateType::default()));
+        let analysis = |columns: Vec<Type>, style: &str| {
+            let sql = "select placed_at, n from orders";
+            let mut a = reylo_engine_core::analysis::bare_of(sql, reylo_engine_core::dialect::Dialect::Postgres, Vec::new());
+            a.columns = columns.into_iter().enumerate().map(|(i, ty)| Column::new(format!("c{i}"), ty, false)).collect();
+            held_to_iso(&mut a, sql, style);
+            a.diagnostics.iter().map(|d| (d.code, d.start, d.length, d.message.clone())).collect::<Vec<_>>()
+        };
+        // The ISO style, whatever the order of its fields, and a session that reported none.
+        for style in ["ISO, MDY", "ISO, DMY", "iso, ymd", ""] {
+            assert!(analysis(vec![date()], style).is_empty(), "{style}");
+        }
+        // Another style: an error over the statement, naming the first such column and the style.
+        let found = analysis(vec![Type::integer(32), date()], "SQL, DMY");
+        assert_eq!(found.iter().map(|(code, start, length, _)| (*code, *start, *length)).collect::<Vec<_>>(), [(DATE_STYLE, 0, 31)]);
+        assert!(found[0].3.starts_with("Column \"c1\" holds a date or a time, which this database writes in the SQL style (its DateStyle is SQL, DMY,"), "{}", found[0].3);
+        // A timestamp, a timestamptz, and each inside an array, a range or a row value.
+        let inside: Vec<Type> = vec![
+            Type::new(Kind::DateTime(DateTimeType::default())),
+            Type::new(Kind::Instant(InstantType::default())),
+            Type::array(Position::non_null(date())),
+            Type::new(Kind::Range(RangeType { subtype: Box::new(date()) })),
+            Type::record(vec![Field::new("d", date(), true)]),
+        ];
+        for ty in inside {
+            assert_eq!(analysis(vec![ty.clone()], "German, DMY").len(), 1, "{ty:?}");
+        }
+        // JSON is ISO's text under every style, and a statement with no date has nothing to say.
+        assert!(analysis(vec![Type::json(), Type::json_of(Position::non_null(date())), Type::text(), Type::integer(64)], "Postgres, MDY").is_empty());
     }
 
     #[test]
