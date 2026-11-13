@@ -390,6 +390,29 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         diagnostics.push(Diagnostic { message, start: at.start, length: at.end - at.start, code: crate::structured::CODE, server_code: None });
     }
     let nullable = nullable.params;
+    // A placeholder the server types as JSON is bound as its JSON text, which the server reads as
+    // a document where it is written whole to a column, cast to JSON, or the document a JSON
+    // function reads ([`document_argument`]). Anywhere else (`json_set(doc, '$.name', ?)`,
+    // `? member of (…)`, `doc = ?`) the server takes the text for a string, and stores or compares
+    // it with its quotes: an error at the parameter, which asks for the cast.
+    if let Some(statement) = &parsed {
+        const JSON: u32 = 245;
+        let whole = crate::mysql_params::written_whole(statement, &names);
+        for (i, name) in rewritten.order.iter().enumerate() {
+            let Some(&(_, _, start, end)) = rewritten.spans.get(i) else { continue };
+            if raw.params.get(i).is_none_or(|p| p.r#type != JSON) || whole.contains(name) || cast_to_json(&rewritten.sql, start, end) {
+                continue;
+            }
+            let Some(at) = lexed.placeholders.iter().find(|p| &p.name == name) else { continue };
+            if document_argument(sql, &lexed.opaque, at.start, at.end) {
+                continue;
+            }
+            let written = &sql[at.start..at.end];
+            let cast = if written.starts_with(':') { format!("{written}::json") } else { format!("cast({written} as json)") };
+            let message = format!("MySQL takes the parameter {written} as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in {cast}.");
+            diagnostics.push(Diagnostic { message, start: at.start, length: at.end - at.start, code: crate::structured::CODE, server_code: None });
+        }
+    }
     // A parameter's type from the column it is written to or compared with, where the prepare's
     // says less, and the comments of those columns and of the ones the result columns read
     // (`mysql_params::typed`).
@@ -577,6 +600,79 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     };
     crate::analysis::names(sql, Dialect::Mysql, &mut analysis, targets.as_deref(), &|_| None);
     Some(analysis)
+}
+
+/// The JSON functions whose first argument is the document they read, and those whose every
+/// argument is one: a string given there is parsed as JSON, so a parameter's JSON text is the
+/// document it writes. Measured on MySQL 8.4, each against the same call with the parameter cast
+/// to JSON; the value arguments of `json_set`, `json_insert`, `json_replace`, `json_array_append`
+/// and `json_array_insert` are none, and neither is either side of a comparison.
+const DOCUMENT_FIRST: &[&str] = &[
+    "json_set", "json_insert", "json_replace", "json_array_append", "json_array_insert", "json_remove", "json_search", "json_extract", "json_contains", "json_contains_path", "json_keys", "json_length", "json_depth",
+    "json_type", "json_valid", "json_pretty", "json_storage_size", "json_schema_valid",
+];
+const DOCUMENT_EVERY: &[&str] = &["json_merge_patch", "json_merge_preserve", "json_overlaps"];
+
+/// Whether the placeholder at `start..end` of the statement as written is, whole, an argument a
+/// JSON function reads as a document ([`DOCUMENT_FIRST`], [`DOCUMENT_EVERY`]), or the array of a
+/// `MEMBER OF`. By the text, outside what the lexer skipped as strings, names and comments
+/// (`opaque`): the call is the one whose `(` encloses the placeholder, named with no blank before
+/// it and no schema, as a built-in is. Anything this does not read is no document.
+fn document_argument(sql: &str, opaque: &[(usize, usize)], start: usize, end: usize) -> bool {
+    let (before, after) = (sql[..start].trim_end(), sql[end..].trim_start());
+    if !(before.ends_with('(') || before.ends_with(',')) || !(after.starts_with(',') || after.starts_with(')')) {
+        return false;
+    }
+    // Back to the `(` that opens the call, over the arguments before this one.
+    let bytes = sql.as_bytes();
+    let (mut i, mut depth, mut index) = (before.len(), 0usize, 0usize);
+    let open = loop {
+        if i == 0 {
+            return false;
+        }
+        i -= 1;
+        if let Some(&(from, _)) = opaque.iter().find(|&&(from, to)| from <= i && i < to) {
+            i = from;
+            continue;
+        }
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' if depth == 0 => break i,
+            b'(' => depth -= 1,
+            b',' if depth == 0 => index += 1,
+            _ => {}
+        }
+    };
+    let head = &sql[..open];
+    // `value member of (array)`: the array is a document.
+    let mut words = head.split_whitespace().rev();
+    if words.next().is_some_and(|w| w.eq_ignore_ascii_case("of")) && words.next().is_some_and(|w| w.eq_ignore_ascii_case("member")) {
+        return index == 0;
+    }
+    let named = head.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+    if named.ends_with('.') {
+        return false;
+    }
+    let name = head[named.len()..].to_ascii_lowercase();
+    (index == 0 && DOCUMENT_FIRST.contains(&name.as_str())) || DOCUMENT_EVERY.contains(&name.as_str())
+}
+
+/// Whether the placeholder at `start..end` of the statement is, whole, the operand of a cast to
+/// JSON, under any parentheses: `CAST(? AS JSON)` or `CONVERT(?, JSON)` around it, or the span
+/// itself where it is the whole of what a `::json` cast compiled to, which a cast parameter's is:
+/// `CAST(? AS JSON)`, and `JSON_COMPACT(?)` on MariaDB.
+fn cast_to_json(sql: &str, start: usize, end: usize) -> bool {
+    let name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let own = sql[start..end].to_ascii_uppercase();
+    if (own.starts_with("CAST(") && own.ends_with(" AS JSON)")) || own.starts_with("JSON_COMPACT(") {
+        return true;
+    }
+    let before = sql[..start].trim_end_matches(|c: char| c == '(' || c.is_whitespace());
+    let after = sql[end..].trim_start_matches(|c: char| c == ')' || c.is_whitespace());
+    // `text` ends with the word, and `text` starts with it.
+    let ends = |text: &str, word: &str| text.len() >= word.len() && text.is_char_boundary(text.len() - word.len()) && text[text.len() - word.len()..].eq_ignore_ascii_case(word) && !text[..text.len() - word.len()].ends_with(name);
+    let starts = |text: &str, word: &str| text.len() >= word.len() && text.is_char_boundary(word.len()) && text[..word.len()].eq_ignore_ascii_case(word) && !text[word.len()..].starts_with(name);
+    (ends(before, "cast") && starts(after, "as") && starts(after[2..].trim_start(), "json")) || (ends(before, "convert") && after.starts_with(',') && starts(after[1..].trim_start(), "json"))
 }
 
 /// How a query writes its result columns: its select list, the first arm's of a set operation, whose
@@ -3348,6 +3444,70 @@ mod tests {
         assert_eq!(types("select d.c, 'a@b' as e from (select @n as c) d", &[8, 253], &[]), "unknown varchar");
         // A string bound beside a JSON value makes the result a string of bytes.
         assert_eq!(types("select coalesce(doc, :fallback) as c, json_extract(doc, :path) as d from users", &[245, 245], &[245, 253]), "unknown json");
+    }
+
+    #[test]
+    fn a_json_parameter_the_server_takes_as_a_value_is_an_error_that_asks_for_the_cast() {
+        let at = |sql: &str, written: &str| (sql.find(written).unwrap(), written.len());
+        let refused = |sql: &str, params: &[u32]| {
+            // A query's one column, an INT, and a write's none.
+            let columns = if sql.starts_with("select") { json!([{ "name": "c", "type": 3, "flags": 0 }]) } else { json!([]) };
+            let described = json!({ "columns": columns, "params": params.iter().map(|ty| json!({ "type": ty })).collect::<Vec<_>>() });
+            analyzed(sql, described, "").0.diagnostics.iter().filter(|d| d.code == crate::structured::CODE).map(|d| (d.start, d.length, d.message.clone())).collect::<Vec<_>>()
+        };
+        // A value argument, the left of MEMBER OF and a comparison with a document: the text bound would be a string there.
+        for (sql, written, params) in [
+            ("update users set doc = json_set(doc, '$.name', :name) where id = :id", ":name", &[245, 8][..]),
+            ("select id from users where :tag member of (doc->'$.tags')", ":tag", &[245]),
+            ("select id from users where doc->'$.n' = :v", ":v", &[245]),
+            ("select coalesce(doc, :fallback) as c from users", ":fallback", &[245]),
+        ] {
+            let found = refused(sql, params);
+            assert_eq!(found.iter().map(|(start, length, _)| (*start, *length)).collect::<Vec<_>>(), [at(sql, written)], "{sql}");
+            assert_eq!(found[0].2, format!("MySQL takes the parameter {written} as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in {written}::json."));
+        }
+        assert!(refused("select id from users where doc->'$.n' = ?", &[245])[0].2.ends_with("cast it, as in cast(? as json)."));
+        // Written whole to a column, cast, or given as the document a JSON function reads, the server reads the text as the document it is. A parameter of another type is none of this.
+        for (sql, params) in [
+            ("select json_extract(:doc, '$.a') as a from users", &[245][..]),
+            ("select json_length( :doc ) as n from users where json_overlaps(doc, :other)", &[245, 245]),
+            ("update users set doc = json_merge_patch(doc, :patch) where id = :id", &[245, 8]),
+            ("update users set doc = json_set(:base, '$.name', 'Ada') where id = :id", &[245, 8]),
+            ("select id from users where name member of (:names)", &[245]),
+            ("select id from users where name MEMBER OF(:names) and json_contains(:target, '1')", &[245, 245]),
+            ("select JSON_KEYS(:doc, '$.a') as k from users where name <> 'json_set(doc, x, '", &[245]),
+            ("update users set doc = :doc where id = :id", &[245, 8][..]),
+            ("insert into users (id, doc) values (:id, :doc)", &[8, 245]),
+            ("insert into users (id, doc) values (:id, :doc) on duplicate key update doc = :again", &[8, 245, 245]),
+            ("update users set doc = json_set(doc, '$.name', cast(:name as json)) where id = :id", &[245, 8]),
+            ("update users set doc = json_set(doc, '$.name', CAST( (:name) AS JSON )) where id = :id", &[245, 8]),
+            ("select id from users where convert(:tag, json) member of (doc->'$.tags')", &[245]),
+            ("select json_extract(doc, :path) as d from users", &[253]),
+        ] {
+            assert!(refused(sql, params).is_empty(), "{sql}");
+        }
+        // A value argument beside a document one, a call the placeholder is only part of, a function of a schema's and one written apart from its parenthesis are no document.
+        for (sql, written) in [
+            ("update users set doc = json_array_append(:base, '$.tags', :tag) where id = 1", ":tag"),
+            ("select json_extract(coalesce(:doc, doc), '$.a') as a from users", ":doc"),
+            ("select json_extract((:doc), '$.a') as a from users", ":doc"),
+            ("select app.json_extract(:doc, '$.a') as a from users", ":doc"),
+            ("select json_extract (:doc, '$.a') as a from users", ":doc"),
+            ("select json_set(doc, '$.a', 1, '$.b', :v) as a from users", ":v"),
+            ("select id from users where :names member of (doc)", ":names"),
+        ] {
+            let params: Vec<u32> = sql.matches(':').map(|_| 245).collect();
+            let found = refused(sql, &params);
+            assert_eq!(found.iter().map(|(start, length, _)| (*start, *length)).collect::<Vec<_>>(), [at(sql, written)], "{sql}");
+        }
+        // The cast is the placeholder's own, whole.
+        let cast = |sql: &str| cast_to_json(sql, sql.find('?').unwrap(), sql.find('?').unwrap() + 1);
+        assert!(cast("select CAST(? AS JSON)") && cast("select cast( ( ? ) as json )") && cast("select convert(?, JSON)"));
+        // A cast parameter's span is the whole of what its `::json` compiled to.
+        let whole = |sql: &str, written: &str| cast_to_json(sql, sql.find(written).unwrap(), sql.find(written).unwrap() + written.len());
+        assert!(whole("select json_set(doc, '$.a', CAST(? AS JSON))", "CAST(? AS JSON)") && whole("select json_set(doc, '$.a', JSON_COMPACT(?))", "JSON_COMPACT(?)"));
+        assert!(!whole("select json_set(doc, '$.a', CAST(? AS CHAR))", "CAST(? AS CHAR)"));
+        assert!(!cast("select cast(? as char)") && !cast("select cast(x as json), ?") && !cast("select json_set(doc, '$.a', ?) as json") && !cast("select broadcast(? as json)") && !cast("select convert(? using utf8mb4)") && !cast("select cast(? as jsonb)"));
     }
 
     #[test]

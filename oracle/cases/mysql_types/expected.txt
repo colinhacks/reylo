@@ -50,8 +50,9 @@ param_in_json_array.sql: one (a: varchar, b: int32) -> { a: json? }
 param_in_where_arithmetic.sql: many (n: int32, m: int32) -> { id: int, whole: int }
 param_integer.sql: many (n: int32) -> { id: int }
 param_integer_types.sql: many (a: int32, b: int32, c: int32, d: bigint, e: int32, f: bigint, g: tinyint(1), h: int32) -> { id: int }
-param_json.sql: many (doc: json) -> { id: int }
+param_json.sql: many (doc: json) -> { id: int } !! reylo20: MySQL takes the parameter :doc as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :doc::json.
 param_json_candidate.sql: many (candidate: varchar) -> { id: int }
+param_json_cast.sql: many (doc: json) -> { id: int }
 param_json_extract.sql: one (doc: json, doc2: json, doc3: json) -> { a: json?, b: text?, n: bigint? }
 param_json_path.sql: many (path: varchar) -> { id: int, found: json }
 param_json_text.sql: many (a: text) -> { id: int }
