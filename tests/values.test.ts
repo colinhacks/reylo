@@ -8,6 +8,7 @@ import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant,
 import type { EngineType } from "../src/engine-type.ts";
 import { array, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
+import { pgPool } from "./stand-ins.ts";
 
 // The one table (src/values.ts): the kind of each SQL type, the TypeScript type the module declares
 // for it, the JSON Schema of its JSON form, and the value the run time gives it, which must agree.
@@ -412,7 +413,7 @@ test("Postgres: an array of polygons, segments, vectors or multiranges has one d
   }
   // As a parameter, each element is one value of its type: the text Postgres reads for it.
   const calls: unknown[][] = [];
-  const client = { query: async (_text: string, bound: unknown[]) => (calls.push(bound), { rows: [], rowCount: 0 }) };
+  const client = pgPool(async (_text: string, bound: unknown[]) => (calls.push(bound), { rows: [], rowCount: 0 }));
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :slots, :outlines", params: ["slots", "outlines"], inputs: { slots: { type: array(pg("int4multirange")), nullable: false }, outlines: { type: array(pg("polygon")), nullable: false } } };
   await execute(client, q, { slots: [[range, { lower: 5, upper: 7, bounds: "[)" }]], outlines: [[point, { x: 1, y: 1 }, { x: 2, y: 0 }]] });
   assert.deepEqual(calls, [[`{"{[\\"1\\",\\"3\\"),[\\"5\\",\\"7\\")}"}`, `{"((0,0),(1,1),(2,0))"}`]]);
