@@ -30,7 +30,7 @@ Where Reylo can't tell a rename from a drop, `--rename` and `--drop` settle it. 
 </Feature>
 <Feature icon="hash" title="Integrity checks">
 
-Chained hashes in the lock catch a migration edited, deleted or reordered, with no database. A fingerprint on each database catches a change made by hand, and shows it.
+Chained hashes in the lock catch a migration edited, deleted or reordered, before anything runs. A fingerprint on each database catches a change made by hand, and shows it.
 
 </Feature>
 <Feature icon="layers" title="Dry runs in shadow databases">
@@ -125,10 +125,10 @@ It makes a throwaway database beside yours, runs your migrations on it, reads th
 | Needs a shadow database | Needs none |
 | --- | --- |
 | `reylo migrate init` | `reylo migrate deploy` |
-| `reylo migrate new` | `reylo migrate lint` |
-| `reylo migrate dev` | `reylo migrate status` |
-| `reylo migrate deploy --dry-run` | `reylo db introspect` |
-| `reylo migrate lock` | `reylo db wipe` |
+| `reylo migrate new` | `reylo migrate status` |
+| `reylo migrate dev` | `reylo db introspect` |
+| `reylo migrate deploy --dry-run` | `reylo db wipe` |
+| `reylo migrate lock` | |
 | `reylo migrate history push` | |
 | `reylo migrate history pull` | |
 | `reylo db push` | |
@@ -195,13 +195,16 @@ You give up the one file that shows your whole schema, and the check that your m
 
 Delete `reylo-lock.yaml`, and your migrations run in name order.
 
-Lint and status say so:
+Status says so:
 
 ```terminal
-$ reylo migrate lint
-✓ 3 migrations, each named and runnable
+$ reylo migrate status
+Migrations on postgres://localhost:5432/app
+  ✓ init.sql                 applied 2026-11-04 12:00 UTC
+  ✓ 20261105090000_tags.sql  applied 2026-11-05 09:00 UTC
+✓ Unchanged since its last migration
 · No lock: migrations run in name order (reylo migrate lock writes one)
-· reylo/schema.sql is checked against the migrations only with a database
+· With no lock to hold its checksum, reylo/schema.sql is checked against the migrations by reylo migrate deploy --dry-run
 ```
 
 Two branches that each add a migration then merge with no conflict, and a database may have run a migration that now sorts after the merged one. On a shadow database, `reylo migrate dev` and `reylo migrate deploy` replay such a migration in both orders, and refuse it where the two end differently:
@@ -218,7 +221,7 @@ Nothing was changed.
 You give up:
 
 - **The same data everywhere.** Columns are compared as a set, as everywhere in Reylo, and no check can show that data written in two orders matches.
-- **Checks with no database.** With no checksums, `reylo migrate lint` can't see a migration edited or deleted, or hold `schema.sql` against your migrations.
+- **Checksums.** With none, a migration edited before any database ran it goes unseen, and only a dry run holds `schema.sql` against your migrations.
 
 To turn the lock back on, `reylo migrate lock` writes it from a database's history.
 
@@ -238,8 +241,7 @@ Commands:
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
-  migrate status           Show what this database ran, what's pending and what changed
-  migrate lint             Check the migrations, the lock and schema.sql, with no database
+  migrate status           Check that this database and the files are in step
   migrate lock             Write the lock from this database's history
   migrate history push     Record the migrations this database's schema has
   migrate history pull     Write the migrations this database ran into files
@@ -451,7 +453,7 @@ Applying to postgres://db.example.com/app
 
 It needs no shadow database, so it needs no permission to create one. It refuses to run:
 
-- **On an edited schema file.** A `schema.sql` that isn't the one the lock's checksum is of is refused, as `reylo migrate lint` refuses it.
+- **On an edited schema file.** A `schema.sql` that isn't the one the lock's checksum is of is refused, as `reylo migrate status` refuses it.
 - **On a database changed by hand.** Each migration it runs stores a fingerprint of the schema, and a database that no longer has it is refused, whatever the change, a hand-added index included.
 
 The refusal shows the change, with the ways to keep it:
@@ -493,9 +495,9 @@ Two things the fingerprint leaves out:
 
 ### `status`
 
-Shows what your database ran, what's pending and what changed.
+Checks your database against your migrations, and exits 1 where they aren't in step.
 
-It reads, changes nothing and needs no shadow database. A `!` marks a migration that was cut off, edited since it ran, or deleted:
+It lists what your database ran and what's pending, and checks the files: their names, git's conflict markers, whether each runs atomically, the lock's chain, and `schema.sql` against the checksum the lock holds. It reads, changes nothing and needs no shadow database:
 
 ```terminal
 $ reylo migrate status --url $PROD_URL
@@ -503,28 +505,22 @@ Migrations on postgres://db.example.com/app
   ✓ init.sql                    applied 2026-11-04 12:00 UTC
   ✓ 20261104140347_add_bio.sql  applied 2026-11-04 15:12 UTC
   · 20261105090000_tags.sql     pending
-! This database was changed outside its migrations
-  + column users.hotfix bigint
+✓ Unchanged since its last migration
 ✓ reylo/reylo-lock.yaml matches the migration files
 ✓ The migrations match reylo/schema.sql
+! 1 migration hasn't run here: reylo migrate deploy runs it, or reylo migrate dev in development
 ```
 
-### `lint`
-
-Checks your migrations, the lock and `schema.sql`, with no database.
-
-It reads the files alone: their names, whether each runs atomically, git's conflict markers, the lock's chain, and `schema.sql` against the checksum the lock holds. Run it in a pre-commit hook:
+It exits 1 for a migration that's pending, was cut off, or was edited or deleted since it ran; for a change made by hand; and for a file that fails a check, such as a `schema.sql` changed with no migration:
 
 ```terminal
-$ reylo migrate lint
+$ reylo migrate status
+Migrations on postgres://localhost:5432/app
+  ✓ init.sql                    applied 2026-11-04 12:00 UTC
+  ✓ 20261104140347_add_bio.sql  applied 2026-11-04 15:12 UTC
+✓ Unchanged since its last migration
 ✓ reylo/reylo-lock.yaml matches the migration files
-✓ The migrations match reylo/schema.sql
-```
 
-It refuses a `schema.sql` that no migration has been shown to reach yet:
-
-```terminal
-$ reylo migrate lint
 ✗ reylo/schema.sql changed since the lock was written
   The lock holds a checksum of reylo/schema.sql from when the migrations last matched it.
 
@@ -685,8 +681,15 @@ Every command takes it but `reylo db push --watch`:
 $ reylo migrate status --url $PROD_URL --json
 {
   "command": "reylo migrate status",
-  "ok": true,
-  "exit": 0,
+  "ok": false,
+  "exit": 1,
+  "problems": [
+    {
+      "code": "database-changed",
+      "title": "This database was changed outside its migrations",
+      …
+    }
+  ],
   "result": {
     "migrations": [
       {
@@ -752,10 +755,7 @@ $ reylo db wipe && reylo run --file seed.sql
 In CI, and when you deploy:
 
 ```terminal
-# Check the files, with no database, in a pre-commit hook
-$ reylo migrate lint
-
-# See what production ran, and what's pending
+# Check production against the migrations: what it ran, and what's pending
 $ reylo migrate status --url $PROD_URL
 
 # Try the deploy, running nothing

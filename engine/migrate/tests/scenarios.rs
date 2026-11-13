@@ -211,8 +211,8 @@ impl P {
         self.run(async |o, log| reylo_migrate::dev(o, false, log).await).await
     }
 
-    async fn lint(&mut self) -> i32 {
-        self.run(async |o, log| reylo_migrate::lint(o, log)).await
+    async fn status(&mut self) -> i32 {
+        self.run(async |o, log| reylo_migrate::status(o, log).await).await
     }
 
     fn file(&self, name: &str, sql: &str) {
@@ -323,7 +323,7 @@ for_each_dialect!(
     dev_that_fails_on_a_draft_locks_the_drafts_that_ran,
     the_undo_of_a_change_by_hand_leaves_what_db_push_made,
     migrate_lock_refuses_a_lock_that_exists,
-    lint_refuses_a_lock_with_no_checksum_of_schema_sql,
+    status_refuses_a_lock_with_no_checksum_of_schema_sql,
     dev_relocks_an_edited_locked_migration_where_every_pair_agreed,
     without_a_lock_a_late_migration_runs_where_both_orders_agree,
     without_a_lock_init_sql_still_runs_first,
@@ -442,7 +442,7 @@ async fn migrate_lock_refuses_a_lock_that_exists(mut p: P) {
     assert_eq!(p.locked(), ["20261027100000_a.sql"]);
 }
 
-async fn lint_refuses_a_lock_with_no_checksum_of_schema_sql(mut p: P) {
+async fn status_refuses_a_lock_with_no_checksum_of_schema_sql(mut p: P) {
     let int = p.t.int;
     p.linear();
     p.schema(&format!("create table a (id {int});"));
@@ -453,7 +453,7 @@ async fn lint_refuses_a_lock_with_no_checksum_of_schema_sql(mut p: P) {
     std::fs::remove_file(p.dir.join(reylo_migrate::lock::LOCK)).unwrap();
     assert_eq!(p.run(async |o, log| reylo_migrate::lock_from_history(o, log).await).await, 0, "{}", p.peek());
     p.output();
-    assert_eq!(p.lint().await, 1);
+    assert_eq!(p.status().await, 1);
     assert_has!(p.output(), r"✗ \S*reylo-lock\.yaml holds no checksum of \S*schema\.sql");
 }
 
@@ -508,7 +508,7 @@ async fn dev_relocks_an_edited_locked_migration_where_every_pair_agreed(mut p: P
     p.output();
     assert_eq!(p.dev().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"Wrote \S*reylo-lock\.yaml");
-    assert_eq!(p.lint().await, 0, "{}", p.peek());
+    assert_eq!(p.status().await, 0, "{}", p.peek());
 }
 
 async fn without_a_lock_a_late_migration_runs_where_both_orders_agree(mut p: P) {
@@ -518,7 +518,7 @@ async fn without_a_lock_a_late_migration_runs_where_both_orders_agree(mut p: P) 
     p.file("20261027120000_c.sql", &format!("create table c (id {int});"));
     assert_eq!(p.dev().await, 0, "{}", p.peek());
     assert!(!p.dir.join(reylo_migrate::lock::LOCK).exists(), "dev writes no lock where there is none");
-    assert_eq!(p.lint().await, 0, "{}", p.peek());
+    assert_eq!(p.status().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"No lock: migrations run in name order");
     let other = P::new(p.d).await.unwrap();
     // Another database deploys them; then one that sorts between them arrives, as from a merge.
@@ -580,18 +580,28 @@ async fn status_shows_what_ran_what_is_pending_and_what_changed(mut p: P) {
     assert_eq!(p.dev().await, 0, "{}", p.peek());
     p.file("20261027110000_b.sql", &format!("create table b (id {int});"));
     p.output();
-    assert_eq!(p.run(async |o, log| reylo_migrate::status(o, log).await).await, 0);
+    // A migration this database hasn't run is out of step: status exits 1.
+    assert_eq!(p.status().await, 1);
     let out = p.output();
     assert_has!(&out, r"✓ 20261027100000_a\.sql +applied \d{4}-\d\d-\d\d \d\d:\d\d");
     assert_has!(&out, r"· 20261027110000_b\.sql +pending");
     assert_has!(&out, r"✓ Unchanged since its last migration");
-    assert_has!(&out, r"20261027110000_b\.sql isn't locked yet");
     assert_has!(&out, r"✓ The migrations match \S*schema\.sql");
-    // A change by hand shows; status still changes nothing and exits 0.
+    assert_has!(&out, r"! 1 migration hasn't run here: reylo migrate deploy runs it");
+    assert_has!(&out, r"✗ 20261027110000_b\.sql isn't locked yet");
+    // Run, it is in step: status exits 0.
+    p.schema(&format!("create table a (id {int}); create table b (id {int});"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.status().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"✓ 20261027110000_b\.sql +applied");
+    assert_has!(&out, r"✓ \S*reylo-lock\.yaml matches the migration files\n✓ The migrations match \S*schema\.sql$");
+    // A change by hand shows; status changes nothing, and exits 1.
     p.exec(&format!("alter table a add column note {text}")).await;
-    assert_eq!(p.run(async |o, log| reylo_migrate::status(o, log).await).await, 0);
-    assert_has!(p.output(), r"! This database was changed outside its migrations\n  \+ column a\.note");
-    assert_eq!(p.history().await, ["20261027100000_a.sql"]);
+    assert_eq!(p.status().await, 1);
+    assert_has!(p.output(), r"✗ This database was changed outside its migrations\n\n  \+ column a\.note");
+    assert_eq!(p.history().await, ["20261027100000_a.sql", "20261027110000_b.sql"]);
 }
 
 async fn lock_writes_the_lock_from_what_a_database_ran(mut p: P) {
@@ -655,10 +665,10 @@ async fn a_merge_conflict_left_in_a_file_is_refused(mut p: P) {
     let int = p.t.int;
     p.schema(&format!("create table a (id {int});\n<<<<<<< HEAD\ncreate table b (id {int});\n=======\ncreate table c (id {int});\n>>>>>>> main\n"));
     p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
-    assert_eq!(p.lint().await, 1);
-    assert_has!(p.output(), r"✗ \S*schema\.sql has a merge conflict in it");
     assert_eq!(p.dev().await, 1);
     assert_has!(p.output(), r"schema\.sql has a merge conflict in it");
+    assert_eq!(p.status().await, 1);
+    assert_has!(p.output(), r"✗ \S*schema\.sql has a merge conflict in it");
 }
 
 async fn new_without_schema_sql_writes_what_the_database_has(mut p: P) {
@@ -1489,7 +1499,7 @@ async fn a_locked_project_runs_its_lock(mut p: P) {
     assert_eq!(p.dev().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"(?m)^✓ Wrote \S*reylo-lock\.yaml$");
     // The lock certifies schema.sql too, since the migrations reach it.
-    assert_eq!(p.lint().await, 0, "{}", p.peek());
+    assert_eq!(p.status().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"matches the migration files\n✓ The migrations match \S*schema\.sql");
     // Another database runs what the lock lists.
     let q = P::new(p.d).await.unwrap();
@@ -1498,10 +1508,10 @@ async fn a_locked_project_runs_its_lock(mut p: P) {
     assert_eq!(q.history().await, ["20261027100000_users.sql"]);
     p.url = dev_url;
     p.output();
-    // An edit to a locked migration is seen without a database, and refused by apply.
+    // An edit to a locked migration is seen by status, and refused by deploy.
     let locked_text = std::fs::read_to_string(p.dir.join("migrations/20261027100000_users.sql")).unwrap();
     p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text}, nick {text});"));
-    assert_eq!(p.lint().await, 1);
+    assert_eq!(p.status().await, 1);
     assert_has!(p.output(), r"20261027100000_users\.sql changed after it was locked");
     // Deploy refuses it once, as the migration this database ran, not again as the lock's.
     assert_eq!(p.migrate().await, 1);
@@ -1514,9 +1524,9 @@ async fn a_locked_project_runs_its_lock(mut p: P) {
     assert_eq!(p.migrate().await, 1);
     assert_has!(p.output(), r"20261027110000_nick\.sql isn't locked yet");
     std::fs::remove_file(p.dir.join("migrations/20261027110000_nick.sql")).unwrap();
-    // schema.sql that moves with no migration is seen without a database too.
+    // schema.sql that moves with no migration is seen by status too.
     p.schema(&format!("create table users (id {id}, email {text}, bio {int});"));
-    assert_eq!(p.lint().await, 1);
+    assert_eq!(p.status().await, 1);
     assert_has!(p.output(), r"schema\.sql changed since the lock was written\n  The lock holds a checksum");
     p.schema(&format!("create table users (id {id}, email {text});"));
     // Deleting the lock turns linear history off, and reylo migrate lock turns it back on.
@@ -1734,10 +1744,10 @@ async fn deploy_compares_with_what_dev_replayed(mut p: P) {
     assert_has!(&out, "was changed outside its migrations");
     assert_has!(&out, r"schema\.sql changed since the lock was written");
     // dev keeps what sync made, says the migrations don't make it, and keeps the lock's last checksum
-    // of schema.sql, so lint still refuses; deploy still sees it isn't the migrations'.
+    // of schema.sql, so status still refuses; deploy still sees it isn't the migrations'.
     assert_eq!(p.dev().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"! \S*schema\.sql has what no migration makes yet: reylo migrate new <name> writes it");
-    assert_eq!(p.lint().await, 1);
+    assert_eq!(p.status().await, 1);
     assert_has!(p.output(), r"schema\.sql changed since the lock was written");
     assert_eq!(p.migrate().await, 1);
     assert_has!(p.output(), "was changed outside its migrations");
@@ -1806,10 +1816,10 @@ async fn init_on_an_empty_database_writes_an_empty_schema_and_lock(mut p: P) {
     assert_has!(p.output(), r"✓ Started \S+ for an empty database\n  \S+\n  ├── schema\.sql +empty: declare your tables here");
     assert!(p.files().is_empty(), "{:?}", p.files());
     assert_eq!(p.history().await, Vec::<String>::new());
-    // Linear from the first migration: the lock is there, empty, and lint passes.
+    // Linear from the first migration: the lock is there, empty, and status passes.
     p.strict = true;
     assert!(p.locked().is_empty());
-    assert_eq!(p.lint().await, 0, "{}", p.peek());
+    assert_eq!(p.status().await, 0, "{}", p.peek());
     // The first migration is create's.
     p.schema(&format!("create table t (id {});", p.t.int));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "t", &Default::default(), log).await).await, 0, "{}", p.peek());
@@ -2187,7 +2197,7 @@ async fn a_fixed_migration_no_database_ran_is_locked_again(mut p: P) {
     p.schema(&format!("create table base (id {int}); create table theirs (id {int}, note {text});"));
     assert_eq!(p.dev().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"✓ Wrote \S*reylo-lock\.yaml\n  ! 20261027120000_theirs\.sql is locked again as it now reads");
-    assert_eq!(p.run(async |o, log| reylo_migrate::lint(o, log)).await, 0, "{}", p.peek());
+    assert_eq!(p.status().await, 0, "{}", p.peek());
     let production = P::new(p.d).await.unwrap();
     p.url = production.url.clone();
     p.output();
@@ -2206,7 +2216,7 @@ async fn init_locks_the_baseline_in_a_locked_project(mut p: P) {
     p.output();
     assert_eq!(p.locked(), ["init.sql"]);
     assert_eq!(p.history().await, ["init.sql"]);
-    assert_eq!(p.lint().await, 0, "{}", p.peek());
+    assert_eq!(p.status().await, 0, "{}", p.peek());
     assert_has!(p.output(), "The migrations match");
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
 }

@@ -47,8 +47,7 @@ Commands:
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
-  migrate status           Show what this database ran, what's pending and what changed
-  migrate lint             Check the migrations, the lock and schema.sql, with no database
+  migrate status           Check that this database and the files are in step
   migrate lock             Write the lock from this database's history
   migrate history push     Record the migrations this database's schema has
   migrate history pull     Write the migrations this database ran into files
@@ -65,10 +64,10 @@ Flags:
   -h, --help               Print this help";
 
 /// Every command of those groups, as it's typed.
-const COMMANDS: [&str; 13] = ["migrate init", "migrate new", "migrate dev", "migrate deploy", "migrate status", "migrate lint", "migrate lock", "migrate history push", "migrate history pull", "db push", "db reset", "db wipe", "db introspect"];
+const COMMANDS: [&str; 12] = ["migrate init", "migrate new", "migrate dev", "migrate deploy", "migrate status", "migrate lock", "migrate history push", "migrate history pull", "db push", "db reset", "db wipe", "db introspect"];
 
 /// Names another tool gives these commands, and the one each is here.
-const ALSO_KNOWN_AS: [(&str, &str); 3] = [("create", "migrate new"), ("generate", "migrate new"), ("pull", "db introspect")];
+const ALSO_KNOWN_AS: [(&str, &str); 5] = [("create", "migrate new"), ("generate", "migrate new"), ("pull", "db introspect"), ("lint", "migrate status"), ("check", "migrate status")];
 
 /// The help as a terminal shows it: its headings bold, each command cyan, each flag yellow and what
 /// it takes dim. Piped, it is the text alone.
@@ -140,21 +139,18 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(out)
 }
 
-/// The project's settings for these commands, `--url` over the file. `need_url` says whether the
-/// command can't run without a database.
-fn settings(args: &Args, need_url: bool) -> Result<Options, String> {
+/// The project's settings for these commands, `--url` over the file; each needs a database.
+fn settings(args: &Args) -> Result<Options, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let project = Project::resolve(&cwd, environment())?;
     let url = match args.values.get("url") {
         Some(url) => url.clone(),
         None => project.type_check_url().unwrap_or_default().map(|(url, _)| url).unwrap_or_default(),
     };
-    if url.is_empty() && need_url {
+    if url.is_empty() {
         return Err("no database: set direct_url in .reylo.yaml, or DATABASE_URL".into());
     }
-    if !url.is_empty() {
-        reylo_migrate::Dialect::of_url(&url).map_err(|e| e.0)?;
-    }
+    reylo_migrate::Dialect::of_url(&url).map_err(|e| e.0)?;
     let shadow_url = project.config.shadow_url.as_deref().map(|u| project.expand("shadow_url", u)).transpose()?;
     // The project's own files, in the directory `dir` names (`reylo`).
     let home = project.root.join(project.config.dir.as_deref().unwrap_or("reylo"));
@@ -318,7 +314,7 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
 /// `sql`, for the caller to print.
 fn run_group(command: &str, parsed: &Args, log: &mut dyn FnMut(&str), sql: &mut Option<String>) -> Result<i32, String> {
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
-    let opts = settings(parsed, command != "migrate lint")?;
+    let opts = settings(parsed)?;
     // The home directory is no project's (project.rs), so nothing makes one there.
     if matches!(command, "migrate init" | "migrate history pull") && project::is_home(&opts.root, &environment()) {
         return Err(format!("{} won't write into your home directory: run it in your project's directory", command.trim_start_matches("migrate ")));
@@ -327,9 +323,6 @@ fn run_group(command: &str, parsed: &Args, log: &mut dyn FnMut(&str), sql: &mut 
     if !matches!(command, "migrate init" | "migrate history pull" | "db introspect" | "db wipe") && !opts.schema.exists() && !opts.dir.exists() {
         let home = opts.schema.parent().unwrap_or(&opts.root);
         return Err(format!("no {}/ directory here: start one with reylo migrate init, or set dir in .reylo.yaml", home.strip_prefix(&opts.root).unwrap_or(home).display()));
-    }
-    if command == "migrate lint" {
-        return reylo_migrate::lint(&opts, log).map_err(|e| e.0);
     }
     // The development commands change a database in ways no deploy wants.
     let in_ci = std::env::var_os("CI").is_some();
@@ -376,7 +369,7 @@ fn run_command(args: &[String]) -> Result<i32, String> {
     if !parsed.drops.is_empty() || !parsed.renames.is_empty() || !parsed.schemas.is_empty() {
         return Err("run takes SQL, --file and --url".into());
     }
-    let opts = settings(&parsed, true)?;
+    let opts = settings(&parsed)?;
     let mut items: Vec<(String, String)> = parsed.rest.iter().map(|sql| (if sql.chars().count() > 60 { format!("{}…", sql.chars().take(57).collect::<String>()) } else { sql.clone() }, sql.clone())).collect();
     for f in &parsed.files {
         let sql = std::fs::read_to_string(Path::new(f)).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { format!("no file {f}") } else { format!("can't read {f}: {}", e.kind()) })?;
