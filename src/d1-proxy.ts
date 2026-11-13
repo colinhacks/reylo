@@ -35,10 +35,11 @@ let proxy = await getPlatformProxy({ persist: false, remoteBindings: false });
 let db = Object.values(proxy.env).find(isD1);
 let scratch: string | undefined;
 const config = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].filter((name) => existsSync(name)).map((name) => readFileSync(name, "utf8")).join("\n");
-// Only a class its migrations declare under `new_sqlite_classes` has SQL storage: a key-value
-// backed class (`new_classes`) has none, and a binding to another Worker's class (`script_name`)
-// leaves that Worker's storage to that Worker.
-if (!db && /\bnew_sqlite_classes\b/.test(config)) {
+// Only a SQLite-backed class has SQL storage: one its migrations declare under `new_sqlite_classes`,
+// or one `exports` declares with `storage` "sqlite". A key-value backed class (`new_classes`,
+// `storage` "legacy-kv") has none, and a binding to another Worker's class (`script_name`) leaves
+// that Worker's storage to that Worker.
+if (!db && /\bnew_sqlite_classes\b|\bstorage"?\s*[:=]\s*"sqlite"/.test(config)) {
   await proxy.dispose().catch(() => {});
   scratch = mkdtempSync(join(tmpdir(), "reylo-d1-"));
   const date = /compatibility_date"?\s*[:=]\s*"(\d{4}-\d{2}-\d{2})"/.exec(config)?.[1];
