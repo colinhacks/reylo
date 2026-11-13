@@ -1,15 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nativeBinary } from "../src/native.ts";
 import { projectModule } from "../src/project-module.ts";
 
 // The module an import of the project file builds to: the migrations `reylo migrate deploy` runs, in
-// its order, checked by `reylo migrate lint` first. The project is made with reylo migrate itself,
-// on SQLite, so no server is needed.
+// its order, which each object holds its history against when it starts (tests/migrate.test.ts).
+// The project is made with reylo migrate itself, on SQLite, so no server is needed.
 
 /** `reylo migrate <args>` in `root`, outside CI, where `new` and `dev` refuse to run. */
 function migrate(root: string, ...args: string[]) {
@@ -60,16 +60,18 @@ test("an import of the project file carries the locked migrations in the lock's 
   assert.deepEqual(await names(root), [users, bio]);
 });
 
-test("a locked migration edited, or one the lock lists that the folder lacks, fails the build with lint's words", async () => {
+test("a lock with git's conflict markers, or one that lists a file the folder lacks, fails the build with what to do", async () => {
   const root = project();
   await change(root, "users", "create table users (id integer primary key, name text not null);\n");
   migrate(root, "lock");
   const [users] = readdirSync(join(root, "reylo", "migrations"));
-  const file = join(root, "reylo", "migrations", users!);
-  appendFileSync(file, "create table extra (id int);\n");
-  await assert.rejects(projectModule(join(root, ".reylo.yaml")), new RegExp(`don't pass reylo migrate lint:\\n${users!.replace(".", "\\.")} changed after it was locked`));
-  renameSync(file, join(root, "aside.sql"));
-  await assert.rejects(projectModule(join(root, ".reylo.yaml")), /reylo-lock\.yaml lists .* which isn't in reylo\/migrations/);
+  const lock = join(root, "reylo", "reylo-lock.yaml");
+  const text = readFileSync(lock, "utf8");
+  writeFileSync(lock, text.replace(/^migrations:\n/m, "migrations:\n<<<<<<< HEAD\n  - 20261110000000_a.sql 0123abcd\n=======\n  - 20261110000000_b.sql 4567cdef\n>>>>>>> branch\n"));
+  await assert.rejects(projectModule(join(root, ".reylo.yaml")), /reylo\/reylo-lock\.yaml has git's conflict markers: keep main's lines, then run reylo migrate dev/);
+  writeFileSync(lock, text);
+  renameSync(join(root, "reylo", "migrations", users!), join(root, "aside.sql"));
+  await assert.rejects(projectModule(join(root, ".reylo.yaml")), new RegExp(`reylo/reylo-lock\\.yaml lists ${users!.replace(".", "\\.")}, which reylo/migrations doesn't have: write it back from a database that ran it, with reylo migrate history pull`));
 });
 
 test("with no lock, the migrations run in name order, init.sql first", async () => {

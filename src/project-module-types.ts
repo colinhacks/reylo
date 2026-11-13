@@ -5,7 +5,8 @@
 export const PROJECT_MODULE_TYPES = `/**
  * Runs this project's migrations on a SQLite-backed Durable Object's storage: each it hasn't run yet,
  * in the order \`reylo migrate deploy\` runs them, each in a transaction with its row in
- * \`__reylo_migrations\`. Returns the names it ran. Call it in the object's constructor:
+ * \`__reylo_migrations\`. Returns the names it ran. First throws, running nothing, where the object ran a
+ * migration this build lacks, has edited or orders differently. Call it in the object's constructor:
  * \`migrate(ctx.storage)\`. Reylo's bundler plugin puts the migrations in the bundle.
  */
 export declare function migrate(storage: { readonly sql: { exec(query: string, ...bindings: any[]): { toArray(): unknown[] } }; transactionSync<T>(closure: () => T): T }): string[];

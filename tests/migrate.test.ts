@@ -61,9 +61,21 @@ test("a migration that fails rolls back with its row, names itself, and leaves t
   assert.deepEqual((s.db.prepare("select name from __reylo_migrations").all() as { name: string }[]).map((r) => r.name), [USERS.name]);
 });
 
-test("a migration the history holds that the bundle lacks, as after a rollback, is left as it is", () => {
+test("a history the bundle doesn't continue is refused before anything runs, naming the migration", () => {
+  const AGE = { name: "20261108120000_age.sql", sql: "alter table users add column age int;" };
+  const history = (s: { db: DatabaseSync }) => (s.db.prepare("select name from __reylo_migrations order by rowid").all() as { name: string }[]).map((r) => r.name);
+  // A migration the object ran that the bundle lacks, as after a deploy rolled back past it.
   const s = storage();
   runMigrations(s, [USERS, BIO]);
-  assert.deepEqual(runMigrations(s, [USERS]), []);
+  assert.throws(() => runMigrations(s, [USERS, AGE]), /^Error: reylo: this Durable Object ran the migration 20261106120000_bio\.sql, which this build doesn't have/);
+  assert.deepEqual(history(s), [USERS.name, BIO.name]);
   assert.deepEqual(columns(s), ["id", "name", "bio"]);
+  // One edited since the object ran it; trailing whitespace alone is no edit.
+  assert.throws(() => runMigrations(s, [USERS, { ...BIO, sql: "alter table users add column bio text not null default '';" }, AGE]), /^Error: reylo: the migration 20261106120000_bio\.sql isn't the text this Durable Object ran/);
+  assert.deepEqual(runMigrations(s, [USERS, { ...BIO, sql: BIO.sql + "\n\n" }]), []);
+  // One the bundle's order puts before a migration the object already ran, as a branch merged late.
+  const t = storage();
+  runMigrations(t, [USERS, AGE]);
+  assert.throws(() => runMigrations(t, [USERS, BIO, AGE]), /^Error: reylo: this Durable Object ran 20261108120000_age\.sql where this build's order has 20261106120000_bio\.sql first/);
+  assert.deepEqual(columns(t), ["id", "name", "age"]);
 });

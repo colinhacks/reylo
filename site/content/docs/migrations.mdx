@@ -245,7 +245,7 @@ export class Board extends DurableObject {
 }
 ```
 
-Reylo's Vite or esbuild plugin puts your locked migrations in the bundle, in the lock's order, and fails the build on one edited after it was locked. Each object runs the ones it hasn't run yet when it starts, each in a transaction, and records them in `__reylo_migrations` as `reylo migrate deploy` does.
+Reylo's Vite or esbuild plugin puts your locked migrations in the bundle, in the lock's order. Each object runs the ones it hasn't run yet when it starts, each in a transaction, and records them in `__reylo_migrations`. Like `reylo migrate deploy`, it first refuses a migration it ran that the bundle lacks or that was edited since, and runs nothing.
 
 ## CLI
 
