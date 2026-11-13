@@ -10,6 +10,14 @@
 // the analysis read; then each statement is compiled with EXPLAIN, which runs D1's checks (its
 // allowlist of functions is an authorizer SQLite calls while it compiles) without running the
 // statement.
+//
+// A project with Durable Objects and no D1 database is asked too: each object's storage is
+// Cloudflare's SQLite, and wrangler runs a local D1 database as a Durable Object's storage (its
+// files are under `miniflare-D1DatabaseObject`), so both refuse the same functions. Such a project
+// gets a D1 database of a config of Reylo's own, in a directory of its own, in memory as well.
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 type D1Statement = { bind(...values: unknown[]): D1Statement; all(): Promise<{ results: unknown[] }>; run(): Promise<unknown> };
@@ -20,12 +28,29 @@ const send = (message: object) => process.send?.(message);
 const [wrangler, dir] = process.argv.slice(2);
 process.chdir(dir!);
 const { getPlatformProxy } = (await import(pathToFileURL(wrangler!).href)) as {
-  getPlatformProxy(options: { persist: boolean; remoteBindings: boolean }): Promise<{ env: Record<string, unknown>; dispose(): Promise<void> }>;
+  getPlatformProxy(options: { configPath?: string; persist: boolean; remoteBindings: boolean }): Promise<{ env: Record<string, unknown>; dispose(): Promise<void> }>;
 };
-const proxy = await getPlatformProxy({ persist: false, remoteBindings: false });
 const isD1 = (v: unknown): v is D1 => typeof (v as D1 | undefined)?.prepare === "function" && typeof (v as D1).batch === "function";
-const db = Object.values(proxy.env).find(isD1);
-send({ kind: "ready", d1: db !== undefined });
+let proxy = await getPlatformProxy({ persist: false, remoteBindings: false });
+let db = Object.values(proxy.env).find(isD1);
+let scratch: string | undefined;
+const config = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].filter((name) => existsSync(name)).map((name) => readFileSync(name, "utf8")).join("\n");
+if (!db && /\bdurable_objects\b/.test(config)) {
+  await proxy.dispose().catch(() => {});
+  scratch = mkdtempSync(join(tmpdir(), "reylo-d1-"));
+  const date = /compatibility_date"?\s*[:=]\s*"(\d{4}-\d{2}-\d{2})"/.exec(config)?.[1];
+  const own = { name: "reylo-sqlite-check", ...(date && { compatibility_date: date }), d1_databases: [{ binding: "DB", database_name: "reylo-sqlite-check", database_id: "00000000-0000-0000-0000-000000000000" }] };
+  writeFileSync(join(scratch, "wrangler.json"), JSON.stringify(own));
+  proxy = await getPlatformProxy({ configPath: join(scratch, "wrangler.json"), persist: false, remoteBindings: false });
+  db = Object.values(proxy.env).find(isD1);
+}
+send({ kind: "ready", d1: db !== undefined, storage: scratch ? "durable-object" : "d1" });
+
+/** Ends the proxy, and the directory of Reylo's own config where there is one. */
+async function end() {
+  await proxy.dispose().catch(() => {});
+  if (scratch) rmSync(scratch, { recursive: true, force: true });
+}
 
 /**
  * Makes D1's schema the one given: what an earlier schema made is dropped (views first, then
@@ -43,7 +68,7 @@ async function replay(d1: D1, ddl: string[]) {
 
 async function handle(message: Message) {
   if (message.kind === "close" || !db) {
-    await proxy.dispose().catch(() => {});
+    await end();
     process.exit(0);
   }
   if (message.kind === "schema") {
@@ -65,5 +90,5 @@ process.on("message", (message: Message) => {
   queue = queue.then(() => handle(message));
 });
 process.on("disconnect", () => {
-  void proxy.dispose().finally(() => process.exit(0));
+  void end().finally(() => process.exit(0));
 });
