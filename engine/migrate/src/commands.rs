@@ -1280,12 +1280,17 @@ fn sets_default_privileges(opts: &Options) -> bool {
 
 /// The extensions the project's own files create, which its shadows leave to them.
 fn created_extensions(opts: &Options) -> Vec<String> {
-    static EXTENSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+extension\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_-]+)"?"#).expect("a valid pattern"));
     let mut texts = vec![std::fs::read_to_string(&opts.schema).unwrap_or_default()];
     texts.extend(read_migrations(&opts.dir).map(|(files, _)| files.into_iter().map(|f| f.sql).collect::<Vec<_>>()).unwrap_or_default());
+    texts.iter().flat_map(|t| extensions_in(t)).collect()
+}
+
+/// The extensions a text creates.
+fn extensions_in(text: &str) -> Vec<String> {
+    static EXTENSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+extension\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_-]+)"?"#).expect("a valid pattern"));
     // What a comment says creates nothing: matched in the text with comments taken out.
-    let uncommented = |t: &str| crate::sql::tokenize(t, Dialect::Postgres).iter().map(|token| token.text.clone()).collect::<Vec<_>>().join(" ");
-    texts.iter().flat_map(|t| EXTENSION.captures_iter(&uncommented(t)).map(|c| c[1].to_lowercase()).collect::<Vec<_>>()).collect()
+    let uncommented = crate::sql::tokenize(text, Dialect::Postgres).iter().map(|token| token.text.clone()).collect::<Vec<_>>().join(" ");
+    EXTENSION.captures_iter(&uncommented).map(|c| c[1].to_lowercase()).collect()
 }
 
 async fn open(opts: &Options) -> Result<(Db, Server, usize), Error> {
@@ -3080,11 +3085,54 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
     result
 }
 
-async fn dump(opts: &Options, schemas: &[String]) -> Result<String, Error> {
+/// The database's schema as SQL that makes it, for init's schema.sql and `db introspect`: written as
+/// `migrate new` writes a migration (lowercase, unqualified, from Reylo's own reading of the database)
+/// where shadow databases show that text makes exactly what the database's own dump makes; else the
+/// dump, which also holds what Reylo reads by name only.
+async fn schema_as_sql(opts: &Options, schemas: &[String]) -> Result<String, Error> {
     let mut db = Db::connect(&opts.url, &opts.root).await?;
-    let result = dump_from(&mut db, opts, schemas).await;
+    let result = schema_as_sql_on(&mut db, opts, schemas).await;
     db.close().await;
     result
+}
+
+async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
+    let dumped = dump_from(db, opts, schemas).await?;
+    let mut server = shadow_server(db, opts).await?;
+    // The extensions the dump creates are the text's to make, as a fresh database needs them: a
+    // shadow that already had them would hide a plan that leaves them out.
+    server.leave_extensions(extensions_in(&dumped));
+    let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &[dumped.as_str()]).await;
+    let styled = async {
+        // The plan from an empty database to this one, as `new` writes a migration.
+        let empty = shadows.lane();
+        if shadows.open(empty).await?.is_err() {
+            return Ok(None);
+        }
+        shadows.taint(empty);
+        let Some(planned) = plan_text(shadows.db(empty), db, None).await else { return Ok(None) };
+        // A blank line between statements, for a file a person reads whole; one with comments of
+        // the plan's own stays as written.
+        let sql = if planned.lines().any(|l| l.trim_start().starts_with("--")) {
+            planned
+        } else {
+            crate::sql::split_statements(&planned, db.dialect()).iter().map(|st| format!("{};", st.text.trim())).collect::<Vec<_>>().join("\n\n")
+        };
+        let (from_dump, from_plan) = (shadows.lane(), shadows.lane());
+        shadows.push(from_dump, [Step::script("the dump", &dumped)]);
+        shadows.push(from_plan, [Step::script("schema.sql", &sql)]);
+        Ok::<_, Error>(match (shadows.lines(from_dump).await?, shadows.lines(from_plan).await?) {
+            (Ok(a), Ok(b)) if a == b => Some(sql),
+            _ => None,
+        })
+    }
+    .await;
+    shadows.finish().await;
+    server.close().await;
+    Ok(match styled? {
+        Some(sql) => format!("{}\n", sql.trim_end()),
+        None => dumped,
+    })
 }
 
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
@@ -3263,7 +3311,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         log(&format!("Then write the first migration: {}", paint("cyan", "reylo migrate new <name>")));
         return Ok(0);
     }
-    let sql = dump(opts, schemas).await?;
+    let sql = schema_as_sql(opts, schemas).await?;
     std::fs::create_dir_all(&opts.dir)?;
     std::fs::write(&opts.schema, &sql)?;
     let init = opts.dir.join(INIT);
@@ -3297,7 +3345,7 @@ pub async fn db_introspect(opts: &Options, schemas: &[String]) -> Result<String,
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let lines = catalog(&mut db).await;
     db.close().await;
-    Ok(if holds_a_schema(&lines?) { dump(opts, schemas).await? } else { String::new() })
+    Ok(if holds_a_schema(&lines?) { schema_as_sql(opts, schemas).await? } else { String::new() })
 }
 
 // ---------------------------------------------------------------------------------------------

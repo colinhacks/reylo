@@ -140,13 +140,14 @@ It makes a throwaway database beside yours, runs your migrations on it, reads th
 | --- | --- |
 | `reylo migrate init` | `reylo migrate deploy` |
 | `reylo migrate new` | `reylo migrate status` |
-| `reylo migrate dev` | `reylo db introspect` |
-| `reylo migrate deploy --dry-run` | `reylo db wipe` |
+| `reylo migrate dev` | `reylo db wipe` |
+| `reylo migrate deploy --dry-run` | |
 | `reylo migrate lock` | |
 | `reylo migrate history push` | |
 | `reylo migrate history pull` | |
 | `reylo db push` | |
 | `reylo db reset` | |
+| `reylo db introspect` | |
 
 Each database makes them its own way:
 
@@ -666,18 +667,18 @@ $ reylo db wipe
 
 Prints your database's schema as SQL, as `reylo migrate init` writes it.
 
-It writes no file. It's the database's own dump, in its own layout:
+It writes no file. The SQL reads as `reylo migrate new` writes a migration, checked on a shadow database to make exactly what your database has:
 
 ```terminal
 $ reylo db introspect
-CREATE TABLE public.users (
-    id integer NOT NULL,
-    email text NOT NULL
+create table users (
+  id integer not null,
+  email text not null,
+  constraint users_pkey primary key (id)
 );
-
-ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
 ```
+
+Where your database has what Reylo reads by name only, such as a text search configuration, it prints the database's own dump instead.
 
 To save it over `schema.sql`, write it to another file first. A redirect empties its file before the command runs, so a failed run would leave `schema.sql` empty:
 
