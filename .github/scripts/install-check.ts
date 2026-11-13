@@ -107,7 +107,7 @@ try {
   const env = { ...process.env, DATABASE_URL: "file:./app.db" };
   // npm's own shim for reylo's bin, which starts the launcher (src/cli.ts), which runs the binary.
   const command = join(project, "node_modules", ".bin", windows ? "reylo.cmd" : "reylo");
-  const analyzed = run(command, ["analyze", "user.sql"], { cwd: project, env }).trim();
+  const analyzed = run(command, ["analyze", "user.sql", "--format", "json"], { cwd: project, env }).trim();
   console.log(analyzed);
   const descriptor = JSON.parse(analyzed) as { file?: string; result?: { columns: { name: string }[]; cardinality: string } };
   if (descriptor.file !== "user.sql" || descriptor.result?.columns.map((c) => c.name).join() !== "id,name" || descriptor.result?.cardinality !== "at_most_one") throw new Error("reylo analyze did not type user.sql");

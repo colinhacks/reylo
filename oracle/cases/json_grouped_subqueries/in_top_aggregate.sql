@@ -1,0 +1,1 @@
+select u.id, jsonb_agg((select jsonb_build_object('c', count(*), 'm', max(p.n), 'a', jsonb_agg(p.title)) from posts p where p.user_id = u.id group by p.tag order by p.tag limit 1)) as j from users u group by u.id

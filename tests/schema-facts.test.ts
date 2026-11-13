@@ -25,6 +25,17 @@ test("a text's size in code points and a LIKE pattern are written, and nothing e
   assert.deepEqual(output(varchar({ pattern: { dialect: "ilike", source: "a%" } })), { type: "string" });
 });
 
+test("a UUID's version fixes its version digit and its variant, and one with none is any UUID", () => {
+  const uuid = (facts: object): EngineType => ({ kind: "uuid", label: "uuid", ...facts }) as EngineType;
+  assert.deepEqual(output(uuid({})), { type: "string", format: "uuid" });
+  const regex = new RegExp((output(uuid({ version: 7 })) as { pattern: string }).pattern);
+  assert.ok(regex.test("019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"));
+  assert.ok(regex.test("019A6B2C-3D4E-7F80-BA1B-2C3D4E5F6071"));
+  // Version 4, and a 7 where the version stands in a UUID of no RFC 9562 variant.
+  assert.ok(!regex.test("3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d"));
+  assert.ok(!regex.test("00000000-0000-7000-0000-000000000003"));
+});
+
 test("a LIKE pattern reads as the regular expression matching the same whole values", () => {
   const regex = (source: string) => new RegExp((output(varchar({ pattern: { dialect: "like", source } })) as { pattern: string }).pattern, "u");
   assert.equal(regex("a%").source, "^a[\\s\\S]*$");

@@ -503,6 +503,16 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 i += 1;
                 last = Last::Operand;
             }
+            // SQLite's `[name]` is a quoted identifier, which ends at the first `]`: a quote or a
+            // `?` inside it is part of the name.
+            b'[' if dialect == Dialect::Sqlite => {
+                let Some(close) = b[i..].iter().position(|&c| c == b']') else {
+                    return Err(LexError { message: "unterminated quoted identifier".into(), offset: i });
+                };
+                opaque.push((i, i + close + 1));
+                i += close + 1;
+                last = Last::Operand;
+            }
             b'[' => {
                 i += 1;
                 last = if last == Last::Operand { Last::Subscript } else { Last::Other };
@@ -772,6 +782,9 @@ mod tests {
         let sql = "select ':x' as a, \":y\" as b, e'\\':z' as c, $$:w$$ as d, x::int, arr[1:2], tags ? 'k' -- :c\n /* :d /* :e */ */ from t where id = :id";
         assert_eq!(names(sql, Dialect::Postgres), ["id"]);
         assert_eq!(names("select json_extract(j, '$.a') = ? and x = :n", Dialect::Sqlite), ["1", "n"]);
+        // SQLite's bracketed name is text, whatever it holds; elsewhere a `[` opens a subscript.
+        assert_eq!(names("select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t", Dialect::Sqlite), ["p"]);
+        assert_eq!(lex("select [a from t", Dialect::Sqlite).unwrap_err().offset, 7);
         assert_eq!(names("select `a:b`, 'x' from t where a = :a", Dialect::Mysql), ["a"]);
         let duck = "select ':x' as a, \":y\" as b, e'\\':z' as c, $$:w ?$$ as d, $t$ $1 $t$ as e, x::int, l[1:2], {'k': 1} -- :c\n /* :d /* :e */ */ from t where id = :id";
         assert_eq!(names(duck, Dialect::Duckdb), ["id"]);
@@ -946,10 +959,12 @@ mod tests {
         let l = lex("select tags[:n], tags[ :m], (f(x))[:pg_t.tgnargs], \"q\"[:k], array[:a, :b], tags[(:c)], tags[1::int:d] from t where y = :y", Dialect::Postgres).unwrap();
         assert_eq!(l.params, ["a", "b", "c", "y"]);
         assert_eq!(l.placeholders.iter().map(|p| (p.start, p.end)).collect::<Vec<_>>(), [(66, 68), (70, 72), (81, 83), (119, 121)]);
-        // MySQL, SQLite and DuckDB keep reading a colon after no name character as a parameter.
-        for d in [Dialect::Sqlite, Dialect::Mysql, Dialect::Duckdb] {
+        // MySQL and DuckDB keep reading a colon after no name character as a parameter. SQLite
+        // reads `[:lo]` as a quoted name, the alias of `arr`.
+        for d in [Dialect::Mysql, Dialect::Duckdb] {
             assert_eq!(names("select arr[:lo] from t", d), ["lo"]);
         }
+        assert!(names("select arr[:lo] from t", Dialect::Sqlite).is_empty());
     }
 
     #[test]

@@ -28,7 +28,7 @@ use crate::returning::Rows;
 use crate::types::{DescribedColumn, Field, JsonType, Kind, Position, Type};
 use pg_query::protobuf::{self, node::Node as NodeEnum, AStar, ColumnRef, Node, ParseResult, RawStmt, ResTarget, SelectStmt};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// `json_build_object(k, v, …)` and its jsonb twin: the main case. `json_object` is SQLite's
 /// spelling of it; Postgres's own `json_object` takes arrays, whose string literals are no keys, so
@@ -180,7 +180,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     // arguments themselves go in a probe without one. A GROUP BY that may name a column of the
     // select list ([`names_output`]) would name one of the probe's own, so it is none a probe can
     // carry.
-    let group = match top {
+    let group: Option<Vec<Node>> = match top {
         NodeEnum::SelectStmt(s) if grouped && !s.group_clause.iter().any(|g| names_output(g, &targets)) => Some(s.group_clause.clone()),
         NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust, &fields, &Level::of(&from, &withs[0], columns), columns) => Some(Vec::new()),
         _ => None,
@@ -189,7 +189,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         NodeEnum::SelectStmt(s) => s.window_clause.clone(),
         _ => Vec::new(),
     };
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields, lockstep: crate::infer::targets_lockstep(top, &targets, dialect, trust) };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, groups: group.into_iter().map(|g| (0, g)).collect(), in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields, lockstep: crate::infer::targets_lockstep(top, &targets, dialect, trust) };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -213,7 +213,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     let text = |from: &[Node], inner: Option<usize>, d: &Draft| match inner {
         Some(at) => wrapped_text(version, &d.items, &from[..at], &from[at..], d.filter.as_ref(), with.as_ref()),
         None => {
-            let group = builder.group.as_deref().filter(|_| d.grouped).unwrap_or(&[]);
+            let group = builder.groups.get(&d.ctx).filter(|_| d.grouped).map_or(&[][..], Vec::as_slice);
             grouped_select_text(version, &d.items, from, d.filter.as_ref(), group, with.as_ref())
         }
     };
@@ -394,10 +394,11 @@ struct Builder<'a> {
     overflowed: bool,
     /// Whether the top statement is a SELECT with a plain `GROUP BY`, where no group is empty.
     grouped: bool,
-    /// For a top statement that groups or aggregates, its GROUP BY (empty for one that only
-    /// aggregates): what the probe of its own expressions outside an aggregate carries.
-    group: Option<Vec<Node>>,
-    /// How many aggregates of the top statement the walk is inside the arguments of.
+    /// For each query that groups or aggregates, by its context id, its GROUP BY (empty for one
+    /// that only aggregates): what the probe of its own expressions outside an aggregate carries.
+    /// The top statement's is context 0's, and a scalar subquery's its own ([`Builder::subquery_group`]).
+    groups: HashMap<usize, Vec<Node>>,
+    /// How many aggregates of the query the walk stands in it is inside the arguments of.
     in_aggregate: usize,
     /// Whether the top statement groups by grouping sets, which null a grouping column in the
     /// super-aggregate rows: what it reads is NULL there, but for an aggregate's argument, which
@@ -497,14 +498,15 @@ impl Builder<'_> {
                     }
                     // Under a plain GROUP BY every group has a row, and a window frame that always
                     // holds the current row has that row, so an aggregate of the top statement's
-                    // own is an array there, NULL inputs and all, unless a FILTER leaves it none.
-                    // One inside a subquery may be the outer query's ([`crate::levels`]), which
-                    // says nothing of its rows.
+                    // own is an array there, NULL inputs and all, unless a FILTER leaves it none,
+                    // and so is one of a scalar subquery that groups ([`Builder::plain_group`]).
+                    // One inside any other subquery may be the outer query's ([`crate::levels`]),
+                    // which says nothing of its rows, and the windows are the top statement's.
                     let has_a_row = match f.over.as_deref() {
-                        Some(over) => crate::infer::frame_holds_current_row(over, &self.windows),
-                        None => self.grouped,
+                        Some(over) => self.stack.len() == 1 && crate::infer::frame_holds_current_row(over, &self.windows),
+                        None => self.plain_group(),
                     };
-                    let grouped = self.dialect == Dialect::Postgres && has_a_row && self.stack.len() == 1 && f.agg_filter.is_none();
+                    let grouped = self.dialect == Dialect::Postgres && has_a_row && f.agg_filter.is_none();
                     let non_null = TOTAL_AGG_FNS.contains(&name.as_str()) || grouped;
                     // A plain aggregate of the top statement reads its argument from the rows
                     // before a grouping set nulls them; a window call reads the grouped rows.
@@ -627,8 +629,22 @@ impl Builder<'_> {
                 Some(built) => force_nullable(self.walk(built)),
                 None => self.leaf(expr),
             },
+            // A cast to JSON of what the statement builds is that value, in its shape. Of anything
+            // else (a text column, a literal, a parameter) it is JSON the build knows nothing of:
+            // the cast is then the value to read, of type `json` or `jsonb`, never its operand's,
+            // and it may be JSON's null (`'null'::jsonb`), which a document holds as a null.
             Some(NodeEnum::TypeCast(t)) => match (t.arg.as_deref(), casts_to_json(t)) {
-                (Some(arg), true) => self.walk(arg),
+                (Some(arg), true) => {
+                    // What the walk drafts for the operand goes unread where the cast is the value.
+                    let drafted = self.drafts.clone();
+                    match self.walk(arg) {
+                        shape if builds(&shape) => shape,
+                        _ => {
+                            self.drafts = drafted;
+                            Shape::Nullable(Box::new(self.leaf(expr)))
+                        }
+                    }
+                }
                 _ => self.leaf(expr),
             },
             // `array(select c from (…) c)`: `{}` over no rows, never NULL, as `array_to_json` of it reads it.
@@ -664,11 +680,17 @@ impl Builder<'_> {
                 let outside = self.stack.iter().zip(&self.withs).map(|((_, from, _), withs)| Level::of(from, withs, self.columns)).collect();
                 let level = Level::of(&select.from_clause, &withs, self.columns).within(outside);
                 self.next_ctx += 1;
+                if let Some(group) = self.subquery_group(select, &inner, &level) {
+                    self.groups.insert(self.next_ctx, group);
+                }
                 self.stack.push((self.next_ctx, select.from_clause.clone(), None));
                 self.withs.push(withs);
                 let rows = self.rows.take();
                 self.rows = rows.as_ref().map(|r| r.under(&select.from_clause));
+                // The subquery's select list is outside its own aggregates, wherever it stands.
+                let in_aggregate = std::mem::take(&mut self.in_aggregate);
                 let shape = self.walk(&inner);
+                self.in_aggregate = in_aggregate;
                 self.rows = rows;
                 self.withs.pop();
                 self.stack.pop();
@@ -722,12 +744,13 @@ impl Builder<'_> {
             }
             Some(NodeEnum::FuncCall(inner)) if crate::infer::builtin_name(&inner.funcname).is_some_and(|n| n == "array_agg" && self.trust.builtin(&n)) && inner.args.len() == 1 && !inner.func_variadic && !inner.agg_star => {
                 // An aggregate of the top statement's own under a plain GROUP BY, or over a frame
-                // that holds the current row, has a row; anywhere else it may be NULL.
+                // that holds the current row, has a row, as does one of a scalar subquery that
+                // groups ([`Builder::plain_group`]); anywhere else it may be NULL.
                 let has_a_row = match inner.over.as_deref() {
-                    Some(over) => crate::infer::frame_holds_current_row(over, &self.windows),
-                    None => self.grouped,
+                    Some(over) => self.stack.len() == 1 && crate::infer::frame_holds_current_row(over, &self.windows),
+                    None => self.plain_group(),
                 };
-                let non_null = has_a_row && self.stack.len() == 1 && inner.agg_filter.is_none();
+                let non_null = has_a_row && inner.agg_filter.is_none();
                 let outer = self.under_aggregate;
                 self.under_aggregate |= inner.over.is_none() && self.stack.len() == 1;
                 let shape = self.aggregate(inner, non_null);
@@ -971,10 +994,35 @@ impl Builder<'_> {
         }
     }
 
-    /// Whether the walk stands in the select list of a top statement that groups or aggregates,
-    /// outside the arguments of its aggregates.
+    /// Whether the walk stands in the select list of a query that groups or aggregates, outside the
+    /// arguments of its aggregates.
     fn outside_aggregates(&self) -> bool {
-        self.group.is_some() && self.stack.len() == 1 && self.in_aggregate == 0
+        self.in_aggregate == 0 && self.groups.contains_key(&self.stack[self.stack.len() - 1].0)
+    }
+
+    /// Whether an aggregate where the walk stands is one of a query with a plain GROUP BY, where
+    /// every group has a row: the top statement's, or a scalar subquery's whose every call is its
+    /// own ([`Builder::subquery_group`]).
+    fn plain_group(&self) -> bool {
+        match self.stack.len() {
+            1 => self.grouped,
+            depth => self.groups.get(&self.stack[depth - 1].0).is_some_and(|g| !g.is_empty()),
+        }
+    }
+
+    /// The GROUP BY the probe of a scalar subquery's own expressions carries, as the top
+    /// statement's does ([`plan_with`]): where it groups, by no column of its select list, or
+    /// aggregates without grouping. Only where every call in its select list is its own: an
+    /// aggregate of a query around it ([`crate::levels`]) is one value for all of the subquery's
+    /// rows, which the probe would read over the subquery's groups instead.
+    fn subquery_group(&self, select: &SelectStmt, inner: &Node, level: &Level) -> Option<Vec<Node>> {
+        if !level.owns_every_call(inner) {
+            return None;
+        }
+        if !select.group_clause.is_empty() {
+            return (!select.group_clause.iter().any(|g| names_output(g, &select.target_list))).then(|| select.group_clause.clone());
+        }
+        aggregating(&select.target_list, self.dialect, self.trust, &self.fields, level, self.columns).then(Vec::new)
     }
 
     /// Whether a bare name in `expr` may read something else in the probe than in the statement.
@@ -1969,9 +2017,22 @@ fn returns_json(output: Option<&protobuf::JsonOutput>) -> bool {
     output.and_then(|o| o.type_name.as_ref()).is_none_or(|t| t.array_bounds.is_empty() && crate::infer::builtin_name(&t.names).is_some_and(|n| n == "json" || n == "jsonb"))
 }
 
+/// Whether a shape is JSON the statement builds, alone or where it may be NULL (a scalar
+/// subquery's). A value read as it is (a column, a placeholder), nullable or not, is none: a leaf
+/// is nullable under grouping sets, in a RETURNING's old or new row and beside a set-returning call.
+fn builds(shape: &Shape) -> bool {
+    match shape {
+        Shape::Object { .. } | Shape::Array { .. } | Shape::Tuple { .. } => true,
+        Shape::Nullable(inner) => builds(inner),
+        _ => false,
+    }
+}
+
+/// Whether a cast is to `json` or `jsonb` itself: `x::jsonb[]` is an array of them.
 fn casts_to_json(t: &protobuf::TypeCast) -> bool {
     t.type_name
         .as_ref()
+        .filter(|tn| tn.array_bounds.is_empty())
         .and_then(|tn| last_string(&tn.names))
         .is_some_and(|n| n == "json" || n == "jsonb")
 }
@@ -2022,11 +2083,16 @@ fn bare_alias(node: &Node) -> Option<String> {
     }
 }
 
-/// The placeholder this expression is, through any casts.
+/// The placeholder this expression is, alone or under the one cast that types it: its type is then
+/// the value's. Under a second cast the value is of that cast's type (`$1::int::text` is a text),
+/// which no describe of the statement reports for the placeholder.
 fn param_number(node: &Node) -> Option<i32> {
     match node.node.as_ref()? {
         NodeEnum::ParamRef(p) => Some(p.number),
-        NodeEnum::TypeCast(t) => param_number(t.arg.as_deref()?),
+        NodeEnum::TypeCast(t) => match t.arg.as_deref()?.node.as_ref()? {
+            NodeEnum::ParamRef(p) => Some(p.number),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -2171,6 +2237,29 @@ mod tests {
         // Inside a subquery the aggregate may be the outer query's, and a grouped subquery may
         // find no group.
         assert!(!non_null("SELECT (SELECT jsonb_agg(c.body) FROM comments c WHERE c.post_id = p.id GROUP BY c.post_id) AS bodies FROM posts p GROUP BY p.id"));
+    }
+
+    #[test]
+    fn a_scalar_subquery_probes_its_aggregates_under_its_own_group_by() {
+        let probes = |sql: &str| shapes(sql).probes.into_iter().map(|p| p.sql).collect::<Vec<_>>();
+        // The subquery's own expressions under its GROUP BY, its bare columns without it.
+        assert_eq!(
+            probes("SELECT (SELECT jsonb_build_object('name', u.name, 'posts', count(*)) FROM users u JOIN posts p ON p.author_id = u.id GROUP BY u.id ORDER BY count(*) DESC LIMIT 1) AS j"),
+            vec!["SELECT u.name AS a0 FROM users u JOIN posts p ON p.author_id = u.id", "SELECT count(*) AS a0 FROM users u JOIN posts p ON p.author_id = u.id GROUP BY u.id"]
+        );
+        // One that aggregates without a GROUP BY probes its aggregates' arguments apart, inside
+        // an aggregate of the statement's too.
+        assert_eq!(
+            probes("SELECT count(*) AS n, (SELECT jsonb_build_object('titles', jsonb_agg(p.title), 'n', count(*)) FROM posts p) AS j FROM users"),
+            vec!["SELECT p.title AS a0 FROM posts p", "SELECT count(*) AS a0 FROM posts p"]
+        );
+        // An aggregate of the query around the subquery is one value for all of its rows, never
+        // grouped by its GROUP BY.
+        assert_eq!(probes("SELECT (SELECT jsonb_build_object('title', p.title, 'name', max(u.name)) FROM posts p GROUP BY p.title LIMIT 1) AS j FROM users u").len(), 1);
+        // Inside a subquery that groups, every group has a row.
+        let p = shapes("SELECT (SELECT jsonb_build_object('titles', jsonb_agg(p.title)) FROM users u JOIN posts p ON p.author_id = u.id GROUP BY u.id LIMIT 1) AS j");
+        let Shape::Object { fields, non_null: false } = &p.columns[0].1 else { panic!("{:?}", p.columns) };
+        assert!(matches!(fields[0].1, Shape::Array { non_null: true, .. }), "{fields:?}");
     }
 
     #[test]

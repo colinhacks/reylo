@@ -1,0 +1,1 @@
+with d as (select p.user_id, json_object('n', count(*), 'm', max(p.n), 'a', json_arrayagg(p.id), 't', p.user_id = 1) as o from posts p group by p.user_id) select u.id, d.o from users u left join d on d.user_id = u.id

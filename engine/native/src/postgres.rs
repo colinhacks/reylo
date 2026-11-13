@@ -21,8 +21,9 @@ use tokio_postgres::{Client, Config};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The URL parameters tokio-postgres reads itself. libpq's TLS settings are read here (`sslmode`,
-/// `sslrootcert`, `sslcert`, `sslkey`, `sslpassword`); any other parameter is left out, since
-/// tokio-postgres refuses a parameter it does not know.
+/// `sslrootcert`, `sslcert`, `sslkey`, `sslpassword`), and `ssl`, which node-postgres and
+/// postgres.js read; any other parameter is left out, since tokio-postgres refuses a parameter it
+/// does not know.
 const KNOWN: &[&str] = &[
     "user", "password", "dbname", "options", "application_name", "sslnegotiation", "host", "hostaddr", "port", "connect_timeout", "tcp_user_timeout", "keepalives",
     "keepalives_idle", "keepalives_interval", "keepalives_retries", "target_session_attrs", "channel_binding", "load_balance_hosts",
@@ -279,12 +280,13 @@ struct Parsed {
 fn parse(url: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Parsed, String> {
     let env = |key: &str| env(key).filter(|v| !v.is_empty());
     let (base, query) = url.split_once('?').unwrap_or((url, ""));
-    let (mut mode, mut root, mut binding, mut cert, mut key_file, mut password) = (None, None, None, None, None, false);
+    let (mut mode, mut flag, mut root, mut binding, mut cert, mut key_file, mut password) = (None, None, None, None, None, None, false);
     let mut kept = Vec::new();
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         match key {
             "sslmode" => mode = Some(crate::decode(value)),
+            "ssl" => flag = Some(crate::decode(value)),
             "sslrootcert" => root = Some(crate::decode(value)),
             "sslcert" => cert = Some(crate::decode(value)),
             "sslkey" => key_file = Some(crate::decode(value)),
@@ -297,7 +299,18 @@ fn parse(url: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Parsed, Stri
             _ => {}
         }
     }
-    let mode = mode.or_else(|| env("PGSSLMODE"));
+    // `ssl` is the spelling of node-postgres and postgres.js, which both let `sslmode` override:
+    // `true` or `1` is TLS with the certificate and its name checked, as each driver connects, and
+    // dropping it would send the password in plain text to a server the application refuses.
+    // node-postgres's `no-verify` checks nothing, and postgres.js reads a mode's name here too.
+    let flag = match flag.as_deref() {
+        None | Some("" | "false" | "0") => None,
+        Some("true" | "1") => Some("verify-full".to_string()),
+        Some("no-verify") => Some("require".to_string()),
+        Some(mode @ ("disable" | "allow" | "prefer" | "require" | "verify-ca" | "verify-full")) => Some(mode.to_string()),
+        Some(other) => return Err(format!("ssl={other} is none of true, false, no-verify and a mode sslmode takes: write sslmode=require, sslmode=verify-ca or sslmode=verify-full")),
+    };
+    let mode = mode.or(flag).or_else(|| env("PGSSLMODE"));
     let root = root.or_else(|| env("PGSSLROOTCERT"));
     let identity = match (cert.or_else(|| env("PGSSLCERT")), key_file.or_else(|| env("PGSSLKEY"))) {
         (Some(cert), Some(key)) => Some((cert, key, password)),
@@ -461,6 +474,24 @@ mod tests {
         assert_eq!(check("postgres://h/d?sslrootcert=system"), (SslMode::Require, Check::Full));
         assert_eq!(check("postgres://h/d?channel_binding=require"), (SslMode::Require, Check::Nothing));
         assert!(parse("postgres://h/d?sslmode=sometimes", &no_env).is_err());
+    }
+
+    #[test]
+    fn ssl_is_read_as_node_postgres_and_postgres_js_read_it() {
+        let check = |url: &str| parse(url, &no_env).map(|p| (p.config.get_ssl_mode(), p.check)).unwrap();
+        // TLS with the certificate and its name checked, as both drivers connect.
+        assert_eq!(check("postgres://h/d?ssl=true"), (SslMode::Require, Check::Full));
+        assert_eq!(check("postgres://h/d?ssl=1"), (SslMode::Require, Check::Full));
+        assert_eq!(check("postgres://h/d?ssl=no-verify"), (SslMode::Require, Check::Nothing));
+        assert_eq!(check("postgres://h/d?ssl=require"), (SslMode::Require, Check::Nothing));
+        assert_eq!(check("postgres://h/d?ssl=verify-ca&sslrootcert=r.pem"), (SslMode::Require, Check::Chain));
+        // `false` asks for nothing, and `sslmode` overrides it, in the URL and not from the environment.
+        assert_eq!(check("postgres://h/d?ssl=false"), (SslMode::Prefer, Check::Nothing));
+        assert_eq!(check("postgres://h/d?ssl=true&sslmode=disable"), (SslMode::Disable, Check::Nothing));
+        assert_eq!(check("postgres://h/d?sslmode=require&ssl=true"), (SslMode::Require, Check::Nothing));
+        let env = |key: &str| (key == "PGSSLMODE").then(|| "disable".to_string());
+        assert_eq!(parse("postgres://h/d?ssl=true", &env).unwrap().config.get_ssl_mode(), SslMode::Require);
+        assert!(parse("postgres://h/d?ssl=sometimes", &no_env).is_err_and(|e| e.contains("sslmode=verify-full")));
     }
 
     #[cfg(unix)]

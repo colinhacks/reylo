@@ -1,0 +1,1 @@
+select (select json_object('id', u.id, 'f', u.flag, 's', u.score, 'r', u.ratio, 'b', u.born, 'se', u.seen, 'at', u.at, 'd', u.doc, 'raw', u.raw, 'k', u.kind, 'bits', u.bits, 'y', u.y, 'big', u.big, 'tags', u.tags, 'e', u.email, 'n', count(p.id)) from users u left join posts p on p.user_id = u.id group by u.id order by u.id limit 1) as o

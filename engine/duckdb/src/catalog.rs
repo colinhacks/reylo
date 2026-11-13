@@ -27,9 +27,10 @@ const KEYS_QUERY: &str = "select database_name, schema_name, table_name, to_json
     from duckdb_constraints() where constraint_type in ('PRIMARY KEY', 'UNIQUE') and lower(table_name) in ({names}) \
     order by database_name, schema_name, table_name, constraint_index";
 
-/// Every macro and its definition: a macro may call `unnest`, itself or through another macro,
-/// and so make a row of each element (`generate_subscripts`, `regexp_split_to_table`).
-const MACROS_QUERY: &str = "select lower(function_name), macro_definition from duckdb_functions() where function_type = 'macro' and macro_definition is not null";
+/// Every macro, its definition, and whether a user defined it: a macro may call `unnest`, itself or
+/// through another macro, and so make a row of each element (`generate_subscripts`,
+/// `regexp_split_to_table`), and a user's takes the place of a built-in function of its name.
+const MACROS_QUERY: &str = "select lower(function_name), macro_definition, not internal from duckdb_functions() where function_type = 'macro' and macro_definition is not null";
 
 /// Every macro and view a user defined, by lowercased name: its definition, and whether it is a view.
 const DEFINITIONS_QUERY: &str = "select lower(function_name), macro_definition, false from duckdb_functions() where function_type in ('macro', 'table_macro') and macro_definition is not null and not internal \
@@ -47,12 +48,18 @@ pub const MAX_MACRO_LEVELS: usize = 6;
 /// The functions that move a sequence, or run SQL they are given as text, which may.
 const MOVES_A_SEQUENCE: [&str; 4] = ["nextval", "setval", "query", "query_table"];
 
-/// Whether the statement is certain to write nothing: a SELECT that moves no sequence, itself or
-/// through a view or a macro, however deep. A view counts wherever its name stands as a word, a
+/// Whether the statement is certain to write nothing: a SELECT with no WITH query that writes,
+/// that moves no sequence, itself or through a view or a macro, however deep. A view counts wherever its name stands as a word, a
 /// column or an alias of that name too, which can only say a read may write.
 pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
     let sql = &analysis.rewritten.sql;
     if analysis.kind != Some(reylo_engine_core::types::StatementKind::Select) {
+        return Some(false);
+    }
+    // A SELECT whose WITH query inserts, updates, deletes or merges writes as that query does. By
+    // the keyword wherever it stands as a word, a column of that name too, which can only say a
+    // read may write, and holds for a statement the engine's parser does not read.
+    if reylo_engine_core::errors::has_word(sql, Dialect::Duckdb, &["insert", "update", "delete", "merge"]) {
         return Some(false);
     }
     let Ok(rows) = host.query(DEFINITIONS_QUERY, Vec::new(), Scope::Session)? else { return Some(false) };
@@ -111,6 +118,9 @@ pub struct Catalog {
     pub row_makers: HashSet<String>,
     /// Each table macro whose body is read, by lowercased name.
     pub table_macros: std::collections::HashMap<String, TableMacro>,
+    /// The names of the scalar macros a user defined, lowercased: a call of one is the macro, even
+    /// where a built-in function has the name (`create macro uuid() as 1`).
+    pub user_macros: HashSet<String>,
 }
 
 /// A table macro: its parameters' names, lowercased, and its body, which the bind reads in its place.
@@ -180,7 +190,7 @@ pub fn through_macros(names: &[Vec<String>], macros: &std::collections::HashMap<
 
 impl Default for Catalog {
     fn default() -> Self {
-        Catalog { tables: Vec::new(), row_makers: HashSet::from(["unnest".to_string()]), table_macros: Default::default() }
+        Catalog { tables: Vec::new(), row_makers: HashSet::from(["unnest".to_string()]), table_macros: Default::default(), user_macros: HashSet::new() }
     }
 }
 
@@ -240,14 +250,17 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
     wanted.dedup();
     if wanted.is_empty() {
         let (macros, _) = (macros?, table_functions?);
-        return Some(Catalog { row_makers: row_makers(macros.unwrap_or_default()), table_macros: read_macros, ..Catalog::default() });
+        let macros = macros.unwrap_or_default();
+        return Some(Catalog { user_macros: user_macros(&macros), row_makers: row_makers(macros), table_macros: read_macros, ..Catalog::default() });
     }
     let list = wanted.iter().map(|n| format!("'{}'", n.replace('\'', "''"))).collect::<Vec<_>>().join(", ");
     let columns = host.query(&COLUMNS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement);
     let keys = host.query(&KEYS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement);
     // Every need is recorded before any is awaited, so these are asked in the same round.
     let (macros, _, columns, keys) = (macros?, table_functions?, columns?, keys?);
-    let row_makers = row_makers(macros.unwrap_or_default());
+    let macros = macros.unwrap_or_default();
+    let user_macros = user_macros(&macros);
+    let row_makers = row_makers(macros);
     let text = |row: &[Value], k: usize| row.get(k).and_then(as_str).unwrap_or_default().to_string();
     let mut tables: Vec<Table> = Vec::new();
     for row in columns.unwrap_or_default() {
@@ -280,7 +293,12 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
             table.keys.push(key);
         }
     }
-    Some(Catalog { tables, row_makers, table_macros: read_macros })
+    Some(Catalog { tables, row_makers, table_macros: read_macros, user_macros })
+}
+
+/// The macros in `macros` a user defined, by name ([`MACROS_QUERY`]).
+fn user_macros(macros: &[Vec<Value>]) -> HashSet<String> {
+    macros.iter().filter(|r| r.get(2).and_then(as_bool) == Some(true)).filter_map(|r| Some(as_str(r.first()?)?.to_string())).collect()
 }
 
 /// `unnest` and every macro whose definition calls it or another such macro, by name.

@@ -91,7 +91,7 @@ try {
     if (!card.statement) continue;
     const { dialect, schema, query } = card.statement;
     const url = await build(dialect, schema ?? '', dir);
-    const run = spawnSync(nativeBinary(), ['analyze', '--url', url, '--sql', query], { cwd: dir, encoding: 'utf8', env: { ...process.env, DATABASE_URL: '' } });
+    const run = spawnSync(nativeBinary(), ['analyze', '--url', url, '--sql', query, '--format', 'json'], { cwd: dir, encoding: 'utf8', env: { ...process.env, DATABASE_URL: '' } });
     const line = run.stdout.split('\n').find(Boolean);
     if (!line) fail(`${file}:${card.line}: reylo analyze printed nothing (${run.status}): ${run.stderr.trim()}`);
     const { file: _, ...descriptor } = JSON.parse(line) as { file?: string; diagnostics: { message: string }[] };

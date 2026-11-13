@@ -36,10 +36,11 @@ const defs = await analyze({
 });
 ```
 
-Or analyze a file from the command line, which prints one descriptor per statement:
+Or analyze a file from the command line, which prints each statement's descriptor as YAML, or as one line of JSON with `--format json`:
 
 ```sh
 npx reylo analyze queries/get_user.sql
+npx reylo analyze queries/get_user.sql --format json
 ```
 
 ### `$schema`
@@ -52,7 +53,7 @@ An editor or a validator reads the schema at that URL. Versions are [semantic](h
 
 ### `dialect`
 
-The database, and its server's version.
+The database, and its server's version. SQLite has no server, so its version is that of Reylo's own SQLite, which checks the statement.
 
 Every `label` in the descriptor is this database's name for a type.
 
@@ -100,7 +101,7 @@ Each column has a `name` and a `type`, with `nullable` where it may be null. Nul
 
 What the database reports against the statement, each at its place.
 
-Offsets count UTF-16 units of the statement as written, so an editor can underline it. A statement with a diagnostic has no columns.
+Offsets count UTF-16 units of the statement as written, so an editor can underline it. A statement the database refuses has no columns.
 
 <TypeDef show="diagnostics" errors>
 
@@ -283,7 +284,7 @@ select avatar from users where id = :id::int8
 
 A 128-bit identifier.
 
-Its values are those of [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562).
+It holds any 128 bits, written in [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)'s text form. A `version` says every value has that RFC 9562 version: a UUID that `uuidv7()` or `gen_random_uuid()` makes, or a column whose `CHECK`s hold `uuid_extract_version` to one and keep it non-null. A column with a `default uuidv7()` has none, since an insert may write any UUID.
 
 <TypeDef show="result.columns.0" types={{"Postgres": ["uuid"], "DuckDB": ["UUID"]}} holds={["'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'"]}>
 

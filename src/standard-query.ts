@@ -14,12 +14,10 @@
 // protocol, while mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back
 // from the column's metadata.
 import { decodePlan } from "./codecs.ts";
-import { decodeDuckdbValue } from "./decode-duckdb.ts";
-import { sqliteDecoder } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
-import { coerce, DecodeError, describe, numbersInJson, textDecoder, withinDimensions, type JsonNumbers } from "./values.ts";
+import { DecodeError } from "./values.ts";
 
 /** The Standard Query interface: a statement a driver can execute, as a typed function from an input to an output. */
 export interface StandardQueryV1<Input = unknown, Output = Input, D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect>
@@ -129,33 +127,6 @@ export declare namespace StandardQueryV1 {
     : [input: StandardTypedV1.InferInput<Q>];
 }
 
-/** A column's raw value as its kind, on MySQL from whatever form the driver read. Postgres's are its text's decoders, SQLite's `.run()`'s own (`sqliteDecoder`). */
-function decoder(name: string, kind: string, delim: string | undefined): (v: unknown) => unknown {
-  // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it, a
-  // column that may be one included (src/decode-mysql.ts, `mariadb`).
-  if (kind.split("|").includes("timestamp")) return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
-  // A MySQL GEOMETRY's raw value is its bytes, as `.run()` gives it. An object is a driver's own
-  // reading of one (mysql2's `{ x, y }`, mariadb's GeoJSON), which the bytes cannot be had back from.
-  if (kind.split("|").includes("geometry"))
-    return (v) => {
-      if (typeof v === "object" && v !== null && !(v instanceof Uint8Array)) throw new DecodeError(`Column "${name}" holds ${describe(v)}, which is no raw MySQL value: a GEOMETRY's raw value is its bytes, which a driver parses into an object unless its conversions are off (mysql2's typeCast returning \`field.buffer()\`).`);
-      return coerce(kind, v, name, delim);
-    };
-  return (v) => coerce(kind, v, name, delim);
-}
-
-/** A DuckDB column's value as node-api's `getRows()` reads it, in the form `.run()` gives it (src/decode-duckdb.ts), each plain value as its kind. */
-function duckdbDecoder(name: string, kind: string): (v: unknown) => unknown {
-  return (v) => decodeDuckdbValue(v, kind, name, (k, x) => coerce(k, x, name));
-}
-
-/** A Postgres column's text as its kind, with the non-finite numbers inside its JSON as numbers and an array held to its dimensions, as `.run()` gives them (src/execute.ts). */
-function postgresDecoder(name: string, kind: string, delim: string | undefined, nonFinite: JsonNumbers | undefined, nestedArrays: boolean | undefined): (v: string) => unknown {
-  const decode = textDecoder(kind, delim);
-  const numbers = nonFinite === undefined ? decode : (v: string) => numbersInJson(decode(v), nonFinite);
-  return kind.endsWith("[]") && !nestedArrays ? (v) => withinDimensions(numbers(v), kind, name) : numbers;
-}
-
 const notText = (name: string): never => {
   throw new DecodeError(`Column "${name}" is not in Postgres's text form: a driver hands a Standard Query each value's text.`);
 };
@@ -170,12 +141,14 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   let text: string | undefined;
   let build: RowBuilder | undefined;
   const dialect: Dialect = module.dialect;
-  // Each column's decoder, which `decode` runs on every value and `columns` hands a driver. SQLite's
-  // is `.run()`'s own reading, its refusals of a storage class the column's type does not allow
-  // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
-  // a number past 2^53 in an INTEGER column is refused as a rounded one.
+  // Each column's decoder, which `decode` runs on every value and `columns` hands a driver, from
+  // the dialect's half of the run time: Postgres's reads the value's text, MySQL's whatever form
+  // the driver read. SQLite's is `.run()`'s own reading, its refusals of a storage class the
+  // column's type does not allow included. Its default suits a driver whose integer mode is
+  // unknown: a BigInt is read exact, and a number past 2^53 in an INTEGER column is refused as a
+  // rounded one.
   const decoders = module.columns?.map(([name, kind, delim], i): ((v: never) => unknown) => {
-    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays) : dialect === "sqlite" ? sqliteDecoder(name, kind) : dialect === "duckdb" ? duckdbDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
+    const decode = module.runtime.decoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays);
     // A family the project file's `js.codecs` gives another type takes it here too, as in `.run()` (src/codecs.ts).
     const plan = module.codecs?.[name];
     return plan === undefined ? decode : (v) => decodePlan(plan, decode(v), name);

@@ -11,7 +11,7 @@ description: How Reylo types SQL queries on Postgres. The TypeScript type of eac
 | --- | --- |
 | Postgres versions | 14 to 18 |
 | Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url). Connect directly, not through a pooler such as PgBouncer. |
-| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres`, and Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql` ([Drivers](#drivers)) |
+| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, and Knex over `pg` ([Drivers](#drivers)) |
 | Type checking | Reylo's engine connects to Postgres itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -312,7 +312,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 **Aggregates beside columns**
 
-Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `Json` values.
+Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows, and so can one inside a scalar subquery, beside the subquery's own columns. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `Json` values, as does one in a subquery whose aggregate reads only the columns of a query around it, which makes it that query's aggregate.
 
 <Inferred>
 
@@ -1214,7 +1214,7 @@ await client.query("commit");
 client.release();
 ```
 
-A client created with `binary: true` isn't supported. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy, since Reylo tells one by its shape.
+A client created with `binary: true` isn't supported, and neither is pg's native client, `pg.native`, which ignores the type parsers a query passes. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy, since Reylo tells one by its shape.
 
 ### postgres.js
 
@@ -1258,7 +1258,7 @@ await db.tx(async (t) => {
 });
 ```
 
-A `receive` event that rewrites results isn't supported.
+A `receive` event that rewrites results isn't supported, and neither is a database initialized with `pgNative: true`, which runs on pg's native client.
 
 ### `slonik`
 
@@ -1366,6 +1366,23 @@ await db.transaction(async (tx) => {
 });
 ```
 
+### Knex
+
+Pass a Knex instance over `pg`, or a transaction or savepoint taken from it. Each query runs on a connection from the instance's pool, or on the transaction's own:
+
+```ts twoslash tab="main.ts"
+import knex from "knex";
+import getUser from "./pg_get_user.sql";
+
+const db = knex({ client: "pg", connection: process.env.DATABASE_URL });
+const user = await getUser.run(db, { id: 1 });
+
+await db.transaction(async (trx) => {
+  await getUser.run(trx, { id: 1 });
+  await trx.transaction((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
 ## Limits
 
 What Reylo can't type on Postgres, and what to do instead:
@@ -1376,6 +1393,8 @@ What Reylo can't type on Postgres, and what to do instead:
 | An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more, or returns it as it is inside JSON your query builds | Select `to_jsonb(column)` to read such a column as JSON, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) |
 | Whether an array's elements are `null` | Give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
 | A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select it from a subquery that names its columns |
+| A materialized view, which holds the rows of its last `refresh`: every column is nullable, and only its own unique indexes are keys | Create a unique index on it, and wrap a column that is never null in `coalesce` |
+| The row an `insert`, `update` or `merge` writes through a view, or to a table with an `instead` rule, which need not pass the view's `where`: its `returning` columns are nullable | Write to the table itself |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
 | `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |

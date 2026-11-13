@@ -10,7 +10,7 @@ on:
   #
   # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after a maintainer approved the run.
   #
-  # This runs in the public repository, colinhacks/reylo, whose history `scripts/public/sync.ts` keeps in step with the private working one, commit by commit. npm's trusted publishers name that repository, this file and the `npm` environment, and provenance needs a public source repository.
+  # This runs in the public repository, colinhacks/reylo. npm's trusted publishers name that repository, this file and the `npm` environment, and provenance needs a public source repository.
   workflow_dispatch:
     inputs:
       notes:
@@ -111,13 +111,16 @@ jobs:
           nub-version: "0.9.6"
           node-version: "24"
           registry-url: https://registry.npmjs.org/
+          # The cache holds Node and npm themselves, and any run on main can write it: the one job
+          # that can stage takes them from the network, as the jobs that build what it stages do.
+          cache: false
 
       # `npm stage publish` landed in npm 11.15, later than the npm bundled with any Node the
       # action provisions. setup-nub fronts that Node's bin dir on PATH, so the global install
       # lands in the same prefix the `npm` below resolves from — the echo proves which one.
       - name: Install an npm CLI that can stage
-        run: | # zizmor: ignore[adhoc-packages] the npm CLI itself, pinned to the major that carries `npm stage`
-          npm install -g npm@11
+        run: | # zizmor: ignore[adhoc-packages] the npm CLI itself, at the exact version the last release staged with
+          npm install -g npm@11.21.1
           v="$(npm --version)"
           # `sort -V | head -1` yields the smaller of the two; it has to be the floor.
           [ "$(printf '%s\n11.15.0\n' "$v" | sort -V | head -1)" = "11.15.0" ] \

@@ -1,0 +1,15 @@
+aggregates_alone.sql: one () -> { c: bigint, m: bigint, top: bigint, k: bigint | int, more: bigint }
+column_beside.sql: one () -> { s: varchar(≤20)?, j: json?, c: bigint }
+count_subquery.sql: one () -> { c: bigint, n: bigint? }
+derived.sql: at_most_one () -> { b: int? }
+having_only.sql: many () -> { b: int? }
+hidden_after_columns.sql: at_most_one () -> { s: varchar(≤20)?, next: bigint?, guarded: varchar?, n: bigint? }
+hidden_in_having.sql: many () -> { s: varchar(≤20)?, a: int? }
+hidden_in_subquery.sql: at_most_one () -> { v: int | bigint?, n: bigint? }
+json_subqueries.sql: one () -> { c: int | bigint?, j: json?, ja: json? }
+no_aggregate.sql: at_most_one (id: int32) -> { id: int, s: varchar(≤20), n: bigint }
+own_aggregate.sql: one () -> { x: varchar?, o: json { s: unknown?, n: unknown? }, guarded: varchar, missing: boolean }
+subquery_on_aggregate.sql: one (x: int32) -> { m: int | bigint?, n: bigint? }
+tested_column.sql: one () -> { b: int?, n: bigint }
+uncorrelated.sql: one () -> { c: bigint, n: bigint, bare: bigint, named: bigint, e: boolean, outer_bare: bigint? }
+window.sql: many (x: int32) -> { id: int, s: varchar(≤20), n: bigint }

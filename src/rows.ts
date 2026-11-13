@@ -8,7 +8,7 @@
 // nobody chose is refused.
 import type { EngineType, JsonSchema } from "./engine-type.ts";
 import { validate, withDefaults } from "./json-schema.ts";
-import { columnKind, describe, hstoreText, ParameterError, postgresInterval, postgresLiteral, postgresYear, zoned } from "./values.ts";
+import { columnKind, describe, given, hstoreText, ParameterError, postgresInterval, postgresLiteral, postgresYear, zoned } from "./values.ts";
 
 export { describe, zoned } from "./values.ts";
 
@@ -77,8 +77,10 @@ export function prepareRows(name: string, type: RowsType, value: unknown, dialec
     }
     const keys = new Set<string>();
     const written: Record<string, unknown> = {};
+    // Defined, not assigned: an assignment to `__proto__` would set the row's prototype and write no key.
+    const put = (name: string, value: unknown) => void Object.defineProperty(written, name, { value, writable: true, enumerable: true, configurable: true });
     for (const f of type.fields) {
-      const v = r[f.name];
+      const v = given(r, f.name);
       if (v === undefined) {
         if (!f.optional) fail(`${where}"${f.name}" is ${f.written} not null, and the row leaves it out.`);
         continue;
@@ -86,7 +88,7 @@ export function prepareRows(name: string, type: RowsType, value: unknown, dialec
       keys.add(f.name);
       if (v === null) {
         if (!f.nullable) fail(`${where}"${f.name}" is ${f.written} not null, and the row gives null${f.optional ? `; leave the key out for the column's default` : ""}.`);
-        written[f.name] = null;
+        put(f.name, null);
         continue;
       }
       const checked = check(f.type, f.written, v, dialect, (message) => fail(`${where}"${f.name}" ${message}`));
@@ -95,8 +97,8 @@ export function prepareRows(name: string, type: RowsType, value: unknown, dialec
         const filled = withDefaults(f.schema, checked);
         const failure = validate(f.schema, filled);
         if (failure) fail(`${where}"${f.name}"${failure.path ? ` at ${failure.path}` : ""} ${failure.message}.`);
-        written[f.name] = filled;
-      } else written[f.name] = checked;
+        put(f.name, jsonMember(f, filled, dialect));
+      } else put(f.name, jsonMember(f, checked, dialect));
     }
     // One statement inserts every row of a call, so on MySQL, which copies no default, its column
     // list is the same for each: a key one row leaves out and another gives cannot have its
@@ -116,6 +118,15 @@ export function prepareRows(name: string, type: RowsType, value: unknown, dialec
   if (inserted && !type.fields.some((f) => keys.has(f.name))) fail("every key is left out, so the insert would name no column; give one at least.");
   const shaped = type.one ? out[0] : out;
   return { value: dialect === "postgres" ? shaped : write(shaped), present: keys };
+}
+
+/**
+ * A JSON member's value as JSON.stringify writes it, where the rows go to the database as JSON
+ * text: it reads a value's `toJSON()` (a Date's) and leaves out a key whose value is undefined, as
+ * a JSON parameter of its own is written. Postgres takes the rows as they are.
+ */
+function jsonMember(f: RowField, v: unknown, dialect: Dialect): unknown {
+  return dialect !== "postgres" && f.type.kind === "json" ? new Raw(JSON.stringify(v)) : v;
 }
 
 /** One value checked against its type, as the JSON the database reads; `fail` says why not. */

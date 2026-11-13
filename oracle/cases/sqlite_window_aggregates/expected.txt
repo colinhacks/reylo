@@ -3,6 +3,7 @@ around_current.sql: many () -> { rows_around: int64, groups_back: int64, rest: i
 chained_windows.sql: many () -> { top: int64 }
 copied_window.sql: many () -> { around: int64, before_row: int64? }
 count_window.sql: many () -> { n: int64, t: float(11,52) }
+distinct_frame.sql: many () -> { m: int64? }
 exclusions.sql: many () -> { without_row: int64?, without_group: int64?, without_ties: int64, with_all: int64 }
 filtered.sql: many () -> { top: int64?, plain_top: int64? }
 following_frame.sql: many () -> { ahead: int64? }

@@ -15,7 +15,8 @@
 //   state into the message.
 // - SQLite: better-sqlite3 names the extended code; bun:sqlite and Bun.sql name it and give its
 //   number; node:sqlite gives the number; libsql the number and, from 0.17, the primary code's name
-//   with the extended one beside it; sqlite3 and the sqlite package only the primary code. D1 and a
+//   with the extended one beside it; SQLite Wasm the extended code's name and number before the
+//   message, and the number; sqlite3 and the sqlite package only the primary code. D1 and a
 //   Durable Object write both codes at the end of the message, and Turso's engine none, or the
 //   primary one's number before 0.8.
 // - DuckDB: @duckdb/node-api throws a plain Error whose message names the kind of error first
@@ -250,25 +251,23 @@ const SQLSTATE = /^[0-9A-Z]{5}$/;
 const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
 const record = (e: unknown): Record<string, unknown> | undefined => (typeof e === "object" && e !== null ? (e as Record<string, unknown>) : undefined);
 
-/** The database's error `error` is, or undefined where it is another. */
-export async function readQueryError(dialect: Dialect, error: unknown): Promise<QueryError | undefined> {
-  if (dialect === "sqlite") return readQueryErrorSync(dialect, error);
-  if (dialect === "duckdb") {
-    // A plain Error, its message opening with the kind of error: Reylo's own errors are of classes of their own.
-    const e = record(error);
-    const kind = error instanceof Error && Object.getPrototypeOf(error) === Error.prototype && typeof e?.message === "string" ? /^([A-Za-z ]+?) Error: /.exec(e.message)?.[1] : undefined;
-    if (kind === undefined) return undefined;
-    return new DatabaseError(e!.message as string, error, { code: (DUCKDB_CODES as Record<string, DuckdbCode>)[kind] }) as DuckdbQueryError;
-  }
-  if (dialect === "postgres") {
-    // Slonik wraps pg's error in its own (InputSyntaxError, UniqueIntegrityConstraintViolationError),
-    // keeping pg's as its cause.
-    const read = postgresError(error) ?? postgresError(record(error)?.cause);
-    if (!read) return undefined;
-    // The lists are loaded where an error needs one, so a bundle carries them apart from the run time.
-    const { POSTGRES_CODES } = await import("./error-codes-postgres.ts");
-    return new DatabaseError(read.message, error, { code: read.code, condition: (POSTGRES_CODES as Record<string, string>)[read.code], ...read.fields }) as PostgresQueryError;
-  }
+// One reader per database, each named by its database's half of the run time alone (src/execute.ts,
+// `Runtime`), so a bundle holds the readers and the lists of the databases its queries are written
+// for. Postgres's and MySQL's lists are loaded where an error needs one, so a process that runs
+// without bundling reads them only then.
+
+/** The error Postgres raised that `error` is, or undefined where it is another. */
+export async function readPostgresError(error: unknown): Promise<PostgresQueryError | undefined> {
+  // Slonik wraps pg's error in its own (InputSyntaxError, UniqueIntegrityConstraintViolationError),
+  // keeping pg's as its cause.
+  const read = postgresError(error) ?? postgresError(record(error)?.cause);
+  if (!read) return undefined;
+  const { POSTGRES_CODES } = await import("./error-codes-postgres.ts");
+  return new DatabaseError(read.message, error, { code: read.code, condition: (POSTGRES_CODES as Record<string, string>)[read.code], ...read.fields }) as PostgresQueryError;
+}
+
+/** The error MySQL raised that `error` is, or undefined where it is another. */
+export async function readMysqlError(error: unknown): Promise<MysqlQueryError | undefined> {
   const read = mysqlError(error);
   if (!read) return undefined;
   const { MYSQL_CODES } = await import("./error-codes-mysql.ts");
@@ -277,12 +276,19 @@ export async function readQueryError(dialect: Dialect, error: unknown): Promise<
   return new DatabaseError(read.message, error, { code, errno: read.errno, sqlState: read.sqlState, ...mysqlNames(read.errno, read.message) }) as MysqlQueryError;
 }
 
-/** `readQueryError` for the synchronous SQLite clients, whose list is no import away. */
-export function readQueryErrorSync(dialect: Dialect, error: unknown): QueryError | undefined {
-  if (dialect !== "sqlite") return undefined;
+/** The error SQLite raised that `error` is, or undefined where it is another: at once, for the synchronous clients' `.trySync()`. */
+export function readSqliteError(error: unknown): SqliteQueryError | undefined {
   const read = sqliteError(error);
   if (!read) return undefined;
   return new DatabaseError(read.message, error, { code: read.code, errcode: read.errcode, ...sqliteNames(read.errcode, read.message) }) as SqliteQueryError;
+}
+
+/** The error DuckDB raised that `error` is, or undefined where it is another: a plain Error, its message opening with the kind of error, where Reylo's own errors are of classes of their own. */
+export function readDuckdbError(error: unknown): DuckdbQueryError | undefined {
+  const e = record(error);
+  const kind = error instanceof Error && Object.getPrototypeOf(error) === Error.prototype && typeof e?.message === "string" ? /^([A-Za-z ]+?) Error: /.exec(e.message)?.[1] : undefined;
+  if (kind === undefined) return undefined;
+  return new DatabaseError(e!.message as string, error, { code: (DUCKDB_CODES as Record<string, DuckdbCode>)[kind] }) as DuckdbQueryError;
 }
 
 function postgresError(error: unknown) {
@@ -364,7 +370,8 @@ function mysqlNames(errno: number, message: string) {
   return { key: names.key, constraint: names.constraint, table: names.table, column: names.column };
 }
 
-const SQLITE_NAMES = new Map<number, SqliteCode>(Object.entries(SQLITE_CODES).map(([name, code]) => [code, name as SqliteCode]));
+// Built on the first SQLite error, so that a bundle without `readSqliteError` holds neither it nor the list.
+let byNumber: Map<number, SqliteCode> | undefined;
 const SQLITE_NAME = /^SQLITE_[A-Z_]+$/;
 
 function sqliteError(error: unknown) {
@@ -385,6 +392,13 @@ function sqliteError(error: unknown) {
   if (typeof e.rawCode === "number") codes.push(e.rawCode);
   if (typeof e.errno === "number" && named) codes.push(e.errno);
   if (named && typeof e.code === "string" && message.startsWith(`${e.code}: `)) message = message.slice(e.code.length + 2);
+  // SQLite Wasm's SQLite3Error: one SQLite raised writes the code's name and number before SQLite's
+  // message. Its own errors, as a value it cannot bind, carry the number 1 (SQLITE_ERROR) and no such head.
+  const wasm = typeof e.resultCode === "number" ? /^SQLITE_[A-Z_]+: sqlite3 result code \d+: ([\s\S]*)$/.exec(message) : null;
+  if (wasm) {
+    message = wasm[1]!;
+    codes.push(e.resultCode as number);
+  }
   if (!named && !codes.length) {
     const tail = /^(?:D1_ERROR: )?([\s\S]*): (SQLITE_[A-Z_]+)(?: \(extended: (SQLITE_[A-Z_]+)\))?$/.exec(message);
     const turso = e.code === "GenericFailure" ? /^(?:prepare|step) failed: (?:Runtime error: )?([\s\S]*?)(?: \((\d+)\))?$/.exec(message) : null;
@@ -399,7 +413,8 @@ function sqliteError(error: unknown) {
   }
   // The most specific code given: an extended one where any is.
   const errcode = codes.find((c) => c > 0xff) ?? codes[0];
-  return { code: errcode === undefined ? undefined : SQLITE_NAMES.get(errcode), errcode, message };
+  byNumber ??= new Map(Object.entries(SQLITE_CODES).map(([name, code]) => [code, name as SqliteCode]));
+  return { code: errcode === undefined ? undefined : byNumber.get(errcode), errcode, message };
 }
 
 /** What SQLite's message names, for a constraint it failed. */

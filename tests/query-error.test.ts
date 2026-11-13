@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { defineQuery, type MysqlClient, type MysqlCode, type MysqlNarrowing, type MysqlQueryError, type PostgresClient, type PostgresCondition, type PostgresNarrowing, type PostgresQueryError, type Query, type SqliteCode, type SqliteNarrowing, type SqliteQueryError } from "../src/index.ts";
-import { readQueryError, readQueryErrorSync } from "../src/query-error.ts";
+import { readMysqlError, readPostgresError, readSqliteError } from "../src/query-error.ts";
 import { queryErrorType } from "../src/module-types.ts";
 import type { Analysis, Dialect } from "../src/engine.ts";
 import { DRIVERS, MYSQL, ROOT, pgLive, mysqlLive, postgresDatabase, driver, languageServer } from "./helpers.ts";
@@ -72,7 +72,7 @@ test("Postgres: the error each driver throws reads as one, with the server's fie
     ["postgres.js's closed connection", thrown("write CONNECTION_CLOSED 127.0.0.1:5432", { code: "CONNECTION_CLOSED", errno: "CONNECTION_CLOSED" }), undefined],
   ];
   for (const [label, error, expected] of cases) {
-    const read = await readQueryError("postgres", error);
+    const read = await readPostgresError(error);
     if (expected === undefined) {
       assert.equal(read, undefined, label);
       continue;
@@ -139,7 +139,7 @@ test("MySQL: the error each driver throws reads as one, named from MySQL's own l
     ["mysql2's lost connection", thrown("Connection lost: The server closed the connection.", { code: "PROTOCOL_CONNECTION_LOST", fatal: true }), undefined],
   ];
   for (const [label, error, expected] of cases) {
-    const read = await readQueryError("mysql", error);
+    const read = await readMysqlError(error);
     if (expected === undefined) {
       assert.equal(read, undefined, label);
       continue;
@@ -175,13 +175,16 @@ test("SQLite: the error each driver throws reads as one, its most specific code 
     ["a Durable Object, which writes them there too", thrown(`near "selec": syntax error at offset 0: SQLITE_ERROR`), { ...SQ_NONE, message: `near "selec": syntax error at offset 0`, code: "SQLITE_ERROR", errcode: 1 }],
     ["Turso's engine from 0.8, which gives no code", thrown("step failed: NOT NULL constraint failed: t.email", { code: "GenericFailure" }), { ...SQ_NONE, message: "NOT NULL constraint failed: t.email", code: undefined, errcode: undefined }],
     ["Turso's engine before 0.8, which gives the primary code's number", thrown("step failed: Runtime error: UNIQUE constraint failed: uniq.k (19)", { code: "GenericFailure" }), { ...SQ_NONE, message: "UNIQUE constraint failed: uniq.k", code: "SQLITE_CONSTRAINT", errcode: 19, table: "uniq", columns: ["k"] }],
+    ["SQLite Wasm, which writes the code's name and number before the message and keeps the number", thrown("SQLITE_CONSTRAINT_UNIQUE: sqlite3 result code 2067: UNIQUE constraint failed: t.email", { name: "SQLite3Error", resultCode: 2067 }), { ...SQ_NONE, message: "UNIQUE constraint failed: t.email", code: "SQLITE_CONSTRAINT_UNIQUE", errcode: 2067, table: "t", columns: ["email"] }],
+    ["SQLite Wasm's syntax error", thrown(`SQLITE_ERROR: sqlite3 result code 1: near "selec": syntax error`, { name: "SQLite3Error", resultCode: 1 }), { ...SQ_NONE, message: `near "selec": syntax error`, code: "SQLITE_ERROR", errcode: 1 }],
     ["better-sqlite3's closed database", thrown("The database connection is not open", {}, TypeError), undefined],
+    ["SQLite Wasm's own error, which numbers itself SQLITE_ERROR", thrown("DB has been closed.", { name: "SQLite3Error", resultCode: 1 }), undefined],
     ["node:sqlite's closed database", thrown("database is not open", { code: "ERR_INVALID_STATE" }), undefined],
     ["D1's lost connection", thrown("D1_ERROR: Network connection lost."), undefined],
     ["Turso's own error", thrown("database is closed", { code: "GenericFailure" }), undefined],
   ];
   for (const [label, error, expected] of cases) {
-    const read = readQueryErrorSync("sqlite", error);
+    const read = readSqliteError(error);
     if (expected === undefined) {
       assert.equal(read, undefined, label);
       continue;

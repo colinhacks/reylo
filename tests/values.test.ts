@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { execute, type QueryModule } from "../src/execute.ts";
+import { execute, type QueryModule } from "./run.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder, withinDimensions } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import { array, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
@@ -395,6 +395,29 @@ test("timestamptz: the text read by position is the pattern's, for every server 
   for (const text of texts) if (instant(text) !== byPattern(text)) assert.equal(instant(text), byPattern(text), JSON.stringify(text));
 });
 
+test("Postgres: an array of polygons, segments, vectors or multiranges has one dimension, each element an array of its own", async () => {
+  const point = { x: 0, y: 0 };
+  const range = { lower: 1, upper: 3, bounds: "[)" };
+  const values: [EngineType, unknown[]][] = [
+    [array(pg("polygon")), [[point, point, point]]],
+    [array(pg("lseg")), [[point, point]]],
+    [array(pg("vector")), [[1, 2]]],
+    [array(pg("int4multirange")), [[range, range]]],
+  ];
+  for (const [type, value] of values) {
+    const kind = columnKind(type, "postgres");
+    assert.equal(withinDimensions(value, kind, "c"), value, kind);
+    // One level more is a second dimension, which the column's type does not have.
+    assert.throws(() => withinDimensions([value], kind, "c"), /holds an array of 2 dimensions/, kind);
+  }
+  // As a parameter, each element is one value of its type: the text Postgres reads for it.
+  const calls: unknown[][] = [];
+  const client = { query: async (_text: string, bound: unknown[]) => (calls.push(bound), { rows: [], rowCount: 0 }) };
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :slots, :outlines", params: ["slots", "outlines"], inputs: { slots: { type: array(pg("int4multirange")), nullable: false }, outlines: { type: array(pg("polygon")), nullable: false } } };
+  await execute(client, q, { slots: [[range, { lower: 5, upper: 7, bounds: "[)" }]], outlines: [[point, { x: 1, y: 1 }, { x: 2, y: 0 }]] });
+  assert.deepEqual(calls, [[`{"{[\\"1\\",\\"3\\"),[\\"5\\",\\"7\\")}"}`, `{"((0,0),(1,1),(2,0))"}`]]);
+});
+
 test("SQLite: the kinds, and a NUMERIC column of either", () => {
   assert.deepEqual(["integer", "real", "text", "blob", "numeric", "bool"].map((n) => columnKind(lite(n), "sqlite")), ["int", "float", "text", "bytes", "int|float|text", "bool"]);
   assert.equal(columnKind({ kind: "unknown" }, "sqlite"), "unknown");
@@ -640,7 +663,7 @@ test("runSync refuses a client whose prepared statement answers through a promis
   const db = { prepare: () => ({ all: async () => [{ n: 1 }] }) };
   const q: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select 1 as n", params: [], columns: [["n", "int"]] };
   assert.deepEqual(await execute(db as never, q), [{ n: 1 }]);
-  const { executeSync } = await import("../src/execute.ts");
+  const { executeSync } = await import("./run.ts");
   assert.throws(() => executeSync(db as never, { ...q, sql: "select 2 as n" }), /answered with a promise/);
 });
 
@@ -688,6 +711,57 @@ test("MySQL: a truth value is a boolean on every driver, whatever form it gives 
   const bun = (done: unknown) => ({ unsafe: async () => [{ done, same: "0", one_bit: true, n: "9007199254740993", widened: 7, either: 2.5 }], commitDistributed: async () => {} });
   assert.deepEqual(await execute(bun(1) as never, q), expected);
   await assert.rejects(execute(bun(5) as never, q) as Promise<unknown>, /Column "done" is a boolean, stored as 0 or 1, and holds 5/);
+});
+
+// mysql2 and mariadb read rows by position, as the real drivers answer `rowsAsArray`.
+const mysql2Arrays = (names: [string, number, number?][], row: unknown[]) => ({ query: async () => [[], []], execute: async () => [[row], names.map(([name, columnType, decimals = 0]) => ({ name, columnType, decimals }))] });
+const mariadbArrays = (names: string[], row: unknown[]) => ({ batch: async () => ({}), query: async () => Object.assign([row], { meta: names.map((name) => ({ name: () => name })) }) });
+
+test("MySQL and SQLite: of two columns with one name a row keeps the last one's value, converted as that column's kind says and no other's", async () => {
+  // select u.*, o.* over a join: users' id is a BIGINT, its active a TINYINT(1) and its created_at a DATETIME(3); orders' are an INT, an INT and a VARCHAR.
+  const columns: Columns = [["id", "int8"], ["active", "bool"], ["created_at", "timestamp"], ["tags", "set"], ["id", "int"], ["active", "int"], ["created_at", "text"], ["tags", "text"]];
+  const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select 1", params: [], columns };
+  const names: [string, number, number?][] = [["id", 8], ["active", 1], ["created_at", 12, 3], ["tags", 254], ["id", 3], ["active", 3], ["created_at", 253], ["tags", 253]];
+  const expected = [{ id: 3, active: 5, created_at: "hello world", tags: "x,y" }];
+  assert.deepEqual(await execute(mysql2Arrays(names, ["7", 1, "2026-01-01 10:00:00.000", "x", 3, 5, "hello world", "x,y"]) as never, q), expected);
+  assert.deepEqual([...((await execute(mariadbArrays(names.map(([name]) => name), [7n, 1, "2026-01-01 10:00:00.000", ["x"], 3, 5, "hello world", "x,y"]) as never, q)) as unknown[])], expected);
+  // The other way round, the last column's kind still converts its value.
+  const reversed: QueryModule<"mysql"> = { ...q, columns: [...columns.slice(4), ...columns.slice(0, 4)] };
+  assert.deepEqual(await execute(mysql2Arrays([...names.slice(4), ...names.slice(0, 4)], [3, 5, "hello world", "x,y", "7", 1, "2026-01-01 10:00:00.000", "x"]) as never, reversed), [{ id: 7n, active: true, created_at: "2026-01-01T10:00:00.000", tags: new Set(["x"]) }]);
+
+  const db = new DatabaseSync(":memory:");
+  db.exec("create table u (id integer primary key, active boolean not null, code integer not null); create table o (id integer primary key, active integer not null, code text not null); insert into u values (7, 1, 5); insert into o values (3, 5, '007')");
+  const sqlite: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select u.*, o.* from u join o", params: [], columns: [["id", "int"], ["active", "bool"], ["code", "int"], ["id", "int"], ["active", "int"], ["code", "text"]] };
+  assert.deepEqual(await execute(db, sqlite), [{ id: 3, active: 5, code: "007" }]);
+  db.close();
+});
+
+test("MySQL: a select * built before a migration moved, added or dropped a column reads each value under its own column's name, with that column's kind", async () => {
+  // Built on (id, active, name, legacy).
+  const columns: Columns = [["id", "int"], ["active", "bool"], ["name", "text"], ["legacy", "text"]];
+  const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select 1", params: [], columns };
+  const run = async (names: string[], row: unknown[]) => {
+    const types: Record<string, number> = { id: 3, active: 1, extra: 3 };
+    const mysql2 = await execute(mysql2Arrays(names.map((name) => [name, types[name] ?? 253]), row) as never, q);
+    assert.deepEqual([...((await execute(mariadbArrays(names, row) as never, q)) as unknown[])], mysql2);
+    return mysql2;
+  };
+  assert.deepEqual(await run(["id", "active", "name", "legacy"], [1, 1, "Ada", "old"]), [{ id: 1, active: true, name: "Ada", legacy: "old" }]);
+  // `modify name … after id`.
+  assert.deepEqual(await run(["id", "name", "active", "legacy"], [1, "Ada", 1, "old"]), [{ id: 1, name: "Ada", active: true, legacy: "old" }]);
+  // `add column extra … after id`.
+  assert.deepEqual(await run(["id", "extra", "active", "name", "legacy"], [1, 42, 1, "Ada", "old"]), [{ id: 1, extra: 42, active: true, name: "Ada", legacy: "old" }]);
+  // `drop column legacy, add column phone … after id`.
+  assert.deepEqual(await run(["id", "phone", "active", "name"], [1, "555", 1, "Ada"]), [{ id: 1, phone: "555", active: true, name: "Ada" }]);
+  // A column a driver names otherwise than the module, as one with no alias may be, is the module's by its position.
+  const unnamed: QueryModule<"mysql"> = { ...q, columns: [["id", "int"], ["done", "bool"]] };
+  assert.deepEqual(await execute(mysql2Arrays([["id", 3], ["done ", 8]], [1, "1"]) as never, unnamed), [{ id: 1, done: true }]);
+  // A driver that writes a value into the statement names its column after the value, here the first column's name: still the module's, by position.
+  const written: QueryModule<"mysql"> = { ...q, columns: [["hey", "text"], ["?", "text"]] };
+  assert.deepEqual([...((await execute(mariadbArrays(["hey", "hey"], ["a", "b"]) as never, written)) as unknown[])], [{ hey: "a", "?": "b" }]);
+  // mariadb's callback API hands rows over with no metadata: the module's names, by position.
+  const bare = { batch: async () => ({}), query: async () => [[1, 1, "Ada", "old"]] };
+  assert.deepEqual([...((await execute(bare as never, q)) as unknown[])], [{ id: 1, active: true, name: "Ada", legacy: "old" }]);
 });
 
 test("MySQL: a VECTOR is an array of its floats on every driver that reads one, and its parameter binds their text", async () => {

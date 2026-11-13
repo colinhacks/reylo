@@ -1,7 +1,7 @@
 after_trigger.sql: one (id: int4, v: text?) -> { id: int4 }
 before_trigger.sql: at_most_one (id: int4, v: text?) -> { id: int4 }
 do_nothing.sql: at_most_one (k: int4, v: int4?) -> { k: int4 }
-instead_of_view.sql: at_most_one (k: int4, v: int4) -> { k: int4 }
+instead_of_view.sql: at_most_one (k: int4, v: int4) -> { k: int4? }
 plain.sql: one (id: int4, v: text?) -> { id: int4 }
 upsert.sql: one (k: int4, v: int4?) -> { k: int4 }
 upsert_where.sql: at_most_one (k: int4, v: int4?) -> { k: int4 }

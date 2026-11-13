@@ -91,6 +91,9 @@ test("a URL that names a Unix socket is opened through a bridge, on Postgres and
     for (const [dialect, url] of [
       ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}`],
       ["postgres", `postgres://${username}@${encodeURIComponent(pg.dir)}/${database.slice(1)}`],
+      // A socket carries no TLS, whichever way the URL asks for it.
+      ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}&ssl=true`],
+      ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}&sslmode=verify-full`],
       ["mysql", `mysql://root@localhost/?socketPath=${encodeURIComponent(my.path)}`],
     ] as const) {
       const c = await (await engine(dialect)).open(url);
@@ -115,7 +118,7 @@ test("reylo analyze opens a Postgres Unix socket itself, without TLS, and reads 
     writeFileSync(join(project, "q.sql"), "select 1 as x");
     // Run asynchronously: the socket's server is this process's, which a synchronous run would stall.
     const run = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done) => {
-      const child = spawn(nativeBinary(), ["analyze", "q.sql"], { cwd: project, timeout: 30_000 });
+      const child = spawn(nativeBinary(), ["analyze", "q.sql", "--format", "json"], { cwd: project, timeout: 30_000 });
       let stdout = "", stderr = "";
       child.stdout.on("data", (chunk) => (stdout += chunk));
       child.stderr.on("data", (chunk) => (stderr += chunk));

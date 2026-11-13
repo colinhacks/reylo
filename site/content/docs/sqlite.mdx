@@ -11,7 +11,7 @@ description: How Reylo types SQL queries on SQLite. The TypeScript type of each 
 | --- | --- |
 | SQLite versions | Reylo checks each query with its own SQLite 3.53, and again with the SQLite of each driver your `package.json` lists ([Functions](#functions)) |
 | Connection | A `file:` or `sqlite:` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url); a relative path starts at your `package.json` |
-| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite` and `Bun.sql`, and Drizzle over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects ([Drivers](#drivers)) |
+| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso, SQLite Wasm, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite` and `Bun.sql`, Drizzle over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects, and Knex over `better-sqlite3` or `sqlite3` ([Drivers](#drivers)) |
 | Type checking | Reylo's engine reads the database file itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -236,7 +236,7 @@ Store an instant as ISO 8601 text in UTC with a `Z`, as `strftime('%Y-%m-%dT%H:%
 
 **Columns declared `DATE`**
 
-A column declared `DATE` or `DATETIME` has `NUMERIC` affinity, so it can hold a number or text, typed `number | string`. Declare it `TEXT` instead, or `INTEGER` for Unix time.
+A column declared `DATE` or `DATETIME` has `NUMERIC` affinity, so it can hold a number or text, typed `number | string`, and so is a value it shares with a number, as in `coalesce(due_on, 0)`. Declare it `TEXT` instead, or `INTEGER` for Unix time.
 
 </Rules>
 
@@ -327,6 +327,10 @@ JSON you build can nest inside other JSON you build, directly or through `coales
 
 Read through a subquery's column, a view or `lag`, built JSON loses SQLite's JSON marker, so Reylo types it `unknown` (a cast keeps the marker on SQLite 3.53, but not on Turso). Build the JSON in the query that returns it.
 
+An aggregate's JSON loses the marker too in a query with a window function, since SQLite computes the aggregates in a subquery of their own. Wrap the aggregate in `json(…)` to nest it as JSON.
+
+A `VIRTUAL` generated column that calls a function is computed where it's read, so it may keep the marker. Inside built JSON, Reylo types it `unknown`.
+
 <Pairs>
 
 - `json_object('n', (select j from (select json_object('a', 1) as j)))` → `{ n: "{\"a\":1}" }`
@@ -364,7 +368,7 @@ SQLite doesn't report what a function returns, so Reylo has its own table of SQL
 
 **Functions that answer `NULL`**
 
-A function that can return `NULL` for non-null arguments is typed `| null`. That includes the date functions, given text they can't read, and math functions such as `sqrt` and `ln` outside their domain. So `date(placed_at)` is `string | null`, while `date('now')` is a `string`.
+A function that can return `NULL` for non-null arguments is typed `| null`. That includes the date functions, given text they can't read, and math functions such as `sqrt` and `ln` outside their domain. So `date(placed_at)` is `string | null`, while `date('now')` is a `string`. A date function is `| null` with `strftime`'s `%G`, `%g`, `%U` or `%V`, or the `floor` or `ceiling` modifier, which SQLite before 3.46, such as libSQL's, doesn't know.
 
 <Pairs>
 
@@ -403,7 +407,7 @@ select unhex('ff') as raw,
 
 </Rules>
 
-Your driver's SQLite may be older than Reylo's: libSQL ships SQLite 3.45.1, which has no `json_pretty`. So the type check also runs each query on every one of `better-sqlite3`, `@libsql/client`, `sqlite3` and `@tursodatabase/database` in your `package.json`, and reports any error with that driver's message. With `wrangler` in your `package.json` and a D1 database or a Durable Object in its config, it also runs each query on Cloudflare's SQLite as wrangler runs it locally, since D1 and Durable Objects block some of SQLite's functions, such as `json_pretty` and `power`. It can't check `bun:sqlite`.
+Your driver's SQLite may be older than Reylo's: libSQL ships SQLite 3.45.1, which has no `json_pretty`. So the type check also runs each query on every one of `better-sqlite3`, `@libsql/client`, `sqlite3` and `@tursodatabase/database` in your `package.json`, and reports any error with that driver's message. With `wrangler` in your `package.json` and a D1 database or a Durable Object in its config, it also runs each query on Cloudflare's SQLite as wrangler runs it locally, since D1 and Durable Objects block some of SQLite's functions, such as `json_pretty` and `power`. It can't check `bun:sqlite` or SQLite Wasm.
 
 ## Nullability
 
@@ -455,7 +459,7 @@ where o.ships_on is not null
 
 **Expressions**
 
-Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
+Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Nor is a remainder by a fraction under 1, such as `x % 0.5`: SQLite casts both operands of `%` to `INTEGER`, which makes the divisor `0`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
 
 <Inferred>
 
@@ -471,7 +475,7 @@ from users
 
 **Aggregates**
 
-An aggregate other than `count` returns `NULL` over no rows.
+An aggregate other than `count` returns `NULL` over no rows. So does a column selected beside it with no `group by`.
 
 <Inferred>
 
@@ -509,7 +513,7 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
 | `Row` | `one` | is an aggregate without a `group by`, `values` of one row, or inserts one row and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key, an `integer primary key` or a unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1`; is a `distinct` or `group by` over values the `where` pins; or is an `update` or `delete` by key with `returning` |
+| `Row \| null` | `maybeOne` | matches every column of a primary key, an `integer primary key` or a unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`; or inserts one row with `returning` that `or ignore`, `on conflict do nothing`, a `before` trigger or a constraint declared `on conflict ignore` can skip |
 | `void` | `none` | is an `insert`, `update`, `delete` or `replace` without `returning` |
 | `Row[]` | `many` | is anything else |
 
@@ -529,7 +533,7 @@ These don't count as a key match, so the query returns `Row[]`:
 
 ### Placeholders
 
-Write parameters as `:name`, `@name` or `$name`, one style per query, and pass `.run()` an object with those names, without the prefix. You can use SQLite's `?` or `?1` instead, but not beside names; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
+Write parameters as `:name`, `@name` or `$name`, one style per query, and pass `.run()` an object with those names, without the prefix. A name is letters from a to z, digits and underscores, and starts with no digit. You can use SQLite's `?` or `?1` instead, but not beside names; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
 
 ### What a parameter takes
 
@@ -640,7 +644,7 @@ With [`.try()`](/usage#try), an error SQLite raised comes back as `{ error }`, w
 
 Most drivers give the extended code, such as `SQLITE_CONSTRAINT_UNIQUE`. The `sqlite3` driver and the `sqlite` package give only the primary one, `SQLITE_CONSTRAINT`, and Turso's engine gives none from 0.8 on, so its `code` is `undefined` and only `message` names the failure. SQLite doesn't name the foreign key a row fails.
 
-When the query fires no trigger, its error type is narrowed: a unique, not-null or `STRICT` type violation names only the tables and columns it writes, and the indexes of their expressions. A `CHECK` isn't narrowed, since SQLite's catalog doesn't name it, so the index names apply to the extended code alone: under the primary `SQLITE_CONSTRAINT`, the constraint may be a `CHECK`'s.
+When the query fires no trigger, its error type is narrowed: a unique, not-null or `STRICT` type violation names only the tables and columns it writes, and the indexes of their expressions. A table whose name holds a dot isn't narrowed, since SQLite's message can't tell that dot from the one before the column. A `CHECK` isn't narrowed, since SQLite's catalog doesn't name it, so the index names apply to the extended code alone: under the primary `SQLITE_CONSTRAINT`, the constraint may be a `CHECK`'s.
 
 ## Drivers
 
@@ -748,6 +752,25 @@ const sameUser = userById(1);
 ```
 
 An integer past 2^53 comes back exact.
+
+### SQLite Wasm
+
+Pass an `oo1` database of `@sqlite.org/sqlite-wasm`, such as an `OpfsDb` in a worker. It's synchronous, so `.runSync()` works too, inside its `db.transaction(fn)` as well:
+
+```ts twoslash tab="main.ts"
+import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
+import getUser from "./lite_get_user.sql";
+
+const sqlite3 = await sqlite3InitModule();
+const db = new sqlite3.oo1.OpfsDb("/app.db");
+const user = await getUser.run(db, { id: 1 });
+
+const sameUser = db.transaction(() =>
+  getUser.runSync(db, { id: 1 }),
+);
+```
+
+An integer past 2^53 comes back exact. SQLite Wasm binds a whole number as a 64-bit integer, which wraps past 2^63, so Reylo rejects a parameter such as `1e20` rather than store another number.
 
 ### Cloudflare D1
 
@@ -864,6 +887,23 @@ const user = await getUser.run(db, { id: 1 });
 db.transaction((tx) => getUser.runSync(tx, { id: 1 }));
 ```
 
+### Knex
+
+Pass a Knex instance over `better-sqlite3` or `sqlite3`, or a transaction or savepoint taken from it. Knex hands out its connection through a promise, so use `.run()`, not `.runSync()`:
+
+```ts twoslash tab="main.ts"
+import knex from "knex";
+import getUser from "./lite_get_user.sql";
+
+const db = knex({ client: "better-sqlite3", connection: { filename: "app.db" } });
+const user = await getUser.run(db, { id: 1 });
+
+await db.transaction(async (trx) => {
+  await getUser.run(trx, { id: 1 });
+  await trx.transaction((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
 ## Limits
 
 What Reylo can't type on SQLite, and what to do instead:
@@ -873,10 +913,10 @@ What Reylo can't type on SQLite, and what to do instead:
 | Declared types outside a `STRICT` table, which SQLite doesn't enforce, so a value of another kind makes `.run()` throw | Make tables `strict` where you can |
 | Functions your app registers, or an extension's, which Reylo's SQLite doesn't have: the type check fails with "no such function" | Call the function in TypeScript on what `.run()` returns |
 | Attached databases and `TEMP` tables, since the type check reads one database file | None: a query on one is an error in the type check |
-| Virtual table modules on a driver the type check doesn't run the query on, such as `bun:sqlite` or a Durable Object: Reylo's SQLite has FTS3, FTS4, FTS5, R-tree, Geopoly and `dbstat` | Check that driver's SQLite yourself |
+| Virtual table modules on a driver the type check doesn't run the query on, such as `bun:sqlite`, SQLite Wasm or a Durable Object: Reylo's SQLite has FTS3, FTS4, FTS5, R-tree, Geopoly and `dbstat` | Check that driver's SQLite yourself |
 | `REAL` arithmetic with no answer, such as `1e999 * 0`, which SQLite returns as `NULL` where Reylo types a number | Write `coalesce(price * qty, 0)` where a `REAL` may hold an infinity |
 | Integer arithmetic past 64 bits, such as `9223372036854775807 + 1`, which SQLite returns as a `REAL` where Reylo types an integer: `node:sqlite` returns that number, and `better-sqlite3` and libSQL throw an error | Cast an operand to `real` where a result may pass 2^63, as `cast(n as real) * 2` |
 | A query past 350 nested expressions, which SQLite rejects with "Expression tree is too large" | Split the query up |
 | A statement other than a query, such as `create index` or `pragma table_info(users)` | None: it returns nothing, or rows whose columns are all `unknown` and nullable |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
-| A string in double quotes, such as `select "hello"`, which SQLite reads as text when no column has that name: `better-sqlite3`, `node:sqlite`, libSQL and Turso refuse it, so the type check does too, with SQLite's message, though `sqlite3`, `sqlite` and `bun:sqlite` run it | Write the string in single quotes, `select 'hello'` |
+| A string in double quotes, such as `select "hello"`, which SQLite reads as text when no column has that name: `better-sqlite3`, `node:sqlite`, libSQL, Turso and SQLite Wasm refuse it, so the type check does too, with SQLite's message, though `sqlite3`, `sqlite` and `bun:sqlite` run it | Write the string in single quotes, `select 'hello'` |

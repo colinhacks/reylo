@@ -3,20 +3,22 @@
 // the result's own column types, which hold every field of a STRUCT and every element of a LIST:
 // a BIGINT or HUGEINT is a BigInt, a DECIMAL its exact text, a DATE `YYYY-MM-DD`, a TIMESTAMP its
 // wall-clock text with `T`, a TIMESTAMPTZ its ISO 8601 instant in UTC, an INTERVAL an ISO 8601
-// duration, a BLOB a Uint8Array, a JSON its value, a LIST an array, a STRUCT an object of its
-// fields, a MAP its entries as `{ key, value }`, and a UNION `{ tag, value }`. A year outside 0000
-// to 9999 is written as ISO 8601 extends it (`+010000`, `-000044`), and an infinite date or
-// timestamp as `infinity` or `-infinity`.
+// duration, a BLOB a Uint8Array, a GEOMETRY its WKB bytes as a Uint8Array, a JSON its value, a
+// LIST an array, a STRUCT an object of its fields, a MAP its entries as `{ key, value }`, and a
+// UNION `{ tag, value }`. A year outside 0000 to 9999 is written as ISO 8601 extends it
+// (`+010000`, `-000044`), and an infinite date or timestamp as `infinity` or `-infinity`.
 //
 // node-api binds a string, a number, a BigInt and a boolean as it is, and DuckDB casts each to its
 // parameter's type, checking its range. A list, a struct, a map or binary data it binds only as
 // a value of its own classes with its type said, so the run time builds those with node-api's own
 // constructors, loaded from the app beside the connection: each element a type node-api takes
 // from JavaScript (an integer a HUGEINT, a decimal or a date its text), which DuckDB casts in turn.
-import { DecodeError, duration, ParameterError } from "./values.ts";
+import { coerce, DecodeError, duration, ParameterError } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
-import type { Columns } from "./values.ts";
+import type { Columns, Kind } from "./values.ts";
 import { rowOf } from "./row.ts";
+import { isDuckdb, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { readDuckdbError } from "./query-error.ts";
 
 /** @duckdb/node-api's DuckDBConnection, a connection of a DuckDBInstance: `run` takes it. */
 export type DuckdbClient = {
@@ -135,16 +137,11 @@ async function loadNodeApi(c: DuckdbClient): Promise<Api> {
   return imported;
 }
 
-/** Whether a client is @duckdb/node-api's DuckDBConnection. */
-export function isDuckdb(c: { [key: string]: unknown } | null | undefined): boolean {
-  return c != null && typeof c.runAndReadAll === "function" && typeof c.prepare === "function" && typeof c.run === "function";
-}
-
 // DuckDB's type ids (duckdb_type), which node-api's types carry.
 const T = {
   BOOLEAN: 1, TINYINT: 2, SMALLINT: 3, INTEGER: 4, BIGINT: 5, UTINYINT: 6, USMALLINT: 7, UINTEGER: 8, UBIGINT: 9, FLOAT: 10, DOUBLE: 11, TIMESTAMP: 12, DATE: 13, TIME: 14, INTERVAL: 15,
   HUGEINT: 16, VARCHAR: 17, BLOB: 18, DECIMAL: 19, TIMESTAMP_S: 20, TIMESTAMP_MS: 21, TIMESTAMP_NS: 22, ENUM: 23, LIST: 24, STRUCT: 25, MAP: 26, UUID: 27, UNION: 28, BIT: 29, TIME_TZ: 30,
-  TIMESTAMP_TZ: 31, UHUGEINT: 32, ARRAY: 33, BIGNUM: 35, TIME_NS: 39, VARIANT: 41, TIMESTAMP_TZ_NS: 42,
+  TIMESTAMP_TZ: 31, UHUGEINT: 32, ARRAY: 33, BIGNUM: 35, TIME_NS: 39, GEOMETRY: 40, VARIANT: 41, TIMESTAMP_TZ_NS: 42,
 } as const;
 
 /**
@@ -182,6 +179,8 @@ export async function runDuckdb(c: DuckdbClient, text: string, values: unknown[]
  * exactly and checking its range, so no integer is narrowed to a type node-api picks.
  */
 function bindType(a: Api, t: EngineType | undefined, v: unknown): unknown {
+  // A JSON value inside a list, a struct or a map is its JSON text, whatever JavaScript value it is.
+  if (t?.kind === "json") return a.VARCHAR;
   if (v instanceof Uint8Array) return a.BLOB;
   if (Array.isArray(v)) {
     if (t?.kind === "map") return a.MAP(bindType(a, t.key, firstOf(v, "key")), bindType(a, t.value.type, firstOf(v, "value")));
@@ -211,6 +210,7 @@ function firstOf(entries: unknown[], key: "key" | "value"): unknown {
 /** `v` as node-api builds it for `bindType`'s type: a scalar its text, a JSON value its JSON. */
 function bindValue(a: Api, t: EngineType | undefined, v: unknown): unknown {
   if (v === null || v === undefined) return null;
+  if (t?.kind === "json") return JSON.stringify(v);
   if (v instanceof Uint8Array) return a.blobValue(v);
   if (Array.isArray(v)) {
     if (t?.kind === "map") return a.mapValue(v.map((e) => ({ key: bindValue(a, t.key, (e as { key?: unknown } | null)?.key), value: bindValue(a, t.value.type, (e as { value?: unknown } | null)?.value) })));
@@ -236,6 +236,8 @@ function bindValue(a: Api, t: EngineType | undefined, v: unknown): unknown {
  */
 export function encodeDuckdb(type: EngineType | undefined, v: unknown, name: string): unknown {
   if (type === undefined || v == null) return v;
+  // A JSON value is written as JSON where it is bound: a number here stays a number, not its text.
+  if (type.kind === "json") return v;
   if (type.kind === "array" && Array.isArray(v)) return v.map((e) => encodeDuckdb(type.element.type, e, name));
   if (type.kind === "map" && Array.isArray(v)) return v.map((e) => (e !== null && typeof e === "object" ? { ...e, key: encodeDuckdb(type.key, (e as { key?: unknown }).key, name), value: encodeDuckdb(type.value.type, (e as { value?: unknown }).value, name) } : e));
   if (type.kind === "record" && typeof v === "object" && !Array.isArray(v)) {
@@ -390,8 +392,8 @@ export function decodeDuckdbValue(v: unknown, kind: string, column: string, scal
   if (typeof o.value === "bigint" && typeof o.scale === "number") return decimal(o.value, o.scale);
   if (typeof o.months === "number" && typeof o.days === "number") return interval(o.months, o.days, o.micros);
   if (typeof o.days === "number") return o.days === DATE_INFINITY ? "infinity" : o.days === -DATE_INFINITY ? "-infinity" : civil(o.days);
-  // A BLOB is its bytes, and a GEOMETRY its text, as `.run()` gives a type an extension adds.
-  if (o.bytes instanceof Uint8Array) return cls === "DuckDBGeometryValue" || (cls !== "DuckDBBlobValue" && kind !== "bytes" && kind !== "unknown") ? String(v) : o.bytes;
+  // A BLOB is its bytes, and a GEOMETRY its WKB bytes, a Uint8Array as a MySQL GEOMETRY's are.
+  if (o.bytes instanceof Uint8Array) return cls !== "DuckDBBlobValue" && cls !== "DuckDBGeometryValue" && kind !== "bytes" && kind !== "unknown" ? String(v) : o.bytes;
   const time = cls.startsWith("DuckDBTime") && !cls.startsWith("DuckDBTimestamp");
   if (!time && (cls.startsWith("DuckDBTimestamp") || kind === "timestamp" || kind === "timestamptz")) {
     const zone = cls.startsWith("DuckDBTimestampTZ") || (!cls.startsWith("DuckDBTimestamp") && kind === "timestamptz") ? "Z" : "";
@@ -424,7 +426,8 @@ function decode(v: unknown, t: DuckType, column: string): unknown {
       return v;
     case T.ENUM: case T.UUID: case T.BIT: case T.TIME: case T.TIME_NS: case T.TIME_TZ:
       return String(v);
-    case T.BLOB:
+    // A GEOMETRY is its WKB bytes, a Uint8Array as a MySQL GEOMETRY's are: node-api's text of one escapes them.
+    case T.BLOB: case T.GEOMETRY:
       return o.bytes instanceof Uint8Array ? o.bytes : v;
     case T.DECIMAL:
       return typeof o.value === "bigint" && typeof o.scale === "number" ? decimal(o.value, o.scale) : String(v);
@@ -458,8 +461,22 @@ function decode(v: unknown, t: DuckType, column: string): unknown {
       // A VARIANT holds a value of any type, which it carries beside it.
       return decode(o.value, (o.type ?? { typeId: 0 }) as DuckType, column);
     default:
-      // A type an extension adds (GEOMETRY): its text, where node-api gives a value of its own.
+      // A type an extension adds: its text, where node-api gives a value of its own.
       if (v instanceof Uint8Array) return v;
       return typeof v === "object" ? String(v) : v;
   }
 }
+
+/** A DuckDB statement's rows on @duckdb/node-api's DuckDBConnection, each value given its kind by the result's own types, or undefined on any other client. */
+async function runDuckdbStatement(c: Client, query: QueryModule<"duckdb">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
+  if (!isDuckdb(c)) return undefined;
+  return await runDuckdb(c as unknown as DuckdbClient, text, values, names.map((name) => query.inputs?.[name]?.type), query.columns);
+}
+
+/** A DuckDB column's value as node-api's `getRows()` reads it, in the form `.run()` gives it, each plain value as its kind. */
+function duckdbDecoder(name: string, kind: Kind): (v: unknown) => unknown {
+  return (v) => decodeDuckdbValue(v, kind, name, (k, x) => coerce(k, x, name));
+}
+
+/** DuckDB's half of the run time (src/execute.ts, `Runtime`), which `defineDuckdbQuery` passes. */
+export const duckdb: Runtime<"duckdb"> = { dialect: "duckdb", run: runDuckdbStatement, encode: encodeDuckdb, readError: readDuckdbError, decoder: duckdbDecoder };

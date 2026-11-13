@@ -36,6 +36,17 @@ export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
 /** Postgres's built-in geometric types, each an object of its fields (`point` is `{ x, y }`). */
 export type Geometric = "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle";
+/**
+ * What an object holds under a name, for a parameter or a row's member read by its name: its own
+ * value, or one it inherits as data, as an instance of a class with getters gives. An inherited
+ * function is no value (`constructor` and `toString`, which every object answers), and neither is
+ * the prototype that `__proto__` reads: such a name the object does not hold is left out.
+ */
+export function given(from: Record<string, unknown>, name: string): unknown {
+  const v = from[name];
+  return v !== undefined && (typeof v === "function" || name === "__proto__") && !Object.hasOwn(from, name) ? undefined : v;
+}
+
 /** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either, `(…)` for a Postgres row value of the fields it lists, `range:k` and `multirange:k` for a range of `k` and a multirange. */
 export type Kind = string;
 /** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
@@ -716,6 +727,8 @@ export const RANGE_BOUNDS = ["[)", "[]", "(]", "()"] as const;
 /** A range's kind, `range:<subtype's kind>`, and a multirange's, `multirange:<subtype's kind>`. */
 export const isRangeKind = (kind: Kind): boolean => kind.startsWith("range:");
 export const isMultirangeKind = (kind: Kind): boolean => kind.startsWith("multirange:");
+/** Whether one value of `kind` is itself a JavaScript array (a vector, a segment, a polygon, a multirange), so that an array of them is no deeper dimension. */
+export const isArrayValued = (kind: Kind): boolean => kind === "vector" || kind === "lseg" || kind === "polygon" || isMultirangeKind(kind);
 const subtypeKind = (kind: Kind): Kind => kind.slice(kind.indexOf(":") + 1);
 
 /** A range from its text, each bound by `bound`. */
@@ -881,8 +894,11 @@ function rangeText(t: Extract<EngineType, { kind: "range" | "multirange" }>, v: 
 /** A value inside an array's or a row value's text: quoted, with each quote and backslash escaped. */
 const quoted = (text: string) => `"${text.replace(/["\\]/g, "\\$&")}"`;
 
-/** Whether a value of `t` is itself a JavaScript array: a vector, a segment, a polygon. */
-const arrayValued = (t: EngineType) => ["vector", "lseg", "polygon"].includes(columnKind(t, "postgres"));
+/** Whether a value of `t` may itself be a JavaScript array, which is then one element, never a dimension: a vector, a segment, a polygon, a multirange (`isArrayValued`), and a JSON value. */
+const arrayValued = (t: EngineType) => {
+  const kind = columnKind(t, "postgres");
+  return isArrayValued(kind) || kind === "json";
+};
 
 /**
  * A value of the Postgres type `t` as the text its input function reads: a row value from an
@@ -1011,14 +1027,14 @@ export function parseArray(text: string, element: (text: string) => unknown, del
  * column holds, so a value of more is refused, naming the column. An array the statement builds
  * of arrays (`array_agg` over an array column) is declared with a `[]` per level, and holds them.
  * Postgres's arrays are rectangular, so the depth of the first element at each level is every one's.
- * A vector element is an array itself, one level more; a JSON element may be one at any depth,
- * which its type holds whatever the dimensions around it.
+ * An element that is an array itself (a vector, a segment, a polygon, a multirange) is one level
+ * more; a JSON element may be one at any depth, which its type holds whatever the dimensions around it.
  */
 export function withinDimensions(v: unknown, kind: Kind, column: string): unknown {
   const element = elementKind(kind);
   if (!Array.isArray(v) || element === "json") return v;
   const declared = (kind.length - element.length) / 2;
-  let depth = element === "vector" ? -1 : 0;
+  let depth = isArrayValued(element) ? -1 : 0;
   for (let level: unknown = v; Array.isArray(level); level = level.find((e) => e !== null)) depth++;
   if (depth <= declared) return v;
   // An array built of arrays is too deep only where an array column it collects is.

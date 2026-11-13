@@ -944,5 +944,47 @@
         ]
       }
     }
+  },
+  "uuid_versions": {
+    "database": "postgres",
+    "setup": "create table events (id uuid primary key check (uuid_extract_version(id) = 7 and uuid_extract_version(id) is not null), source uuid default gen_random_uuid())",
+    "statement": "select id, source, gen_random_uuid() as request from events",
+    "descriptor": {
+      "result": {
+        "kind": "rows",
+        "cardinality": "many",
+        "columns": [
+          {
+            "name": "id",
+            "type": {
+              "kind": "uuid",
+              "version": 7,
+              "label": "uuid"
+            }
+          },
+          {
+            "name": "source",
+            "nullable": true,
+            "type": {
+              "kind": "uuid",
+              "label": "uuid"
+            }
+          },
+          {
+            "name": "request",
+            "type": {
+              "kind": "uuid",
+              "version": 4,
+              "label": "uuid"
+            }
+          }
+        ],
+        "unique": [
+          [
+            "id"
+          ]
+        ]
+      }
+    }
   }
 }

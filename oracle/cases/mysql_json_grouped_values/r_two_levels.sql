@@ -1,0 +1,1 @@
+select u.id, (select json_object('o', (select json_object('k', u.id, 't', u.id = 1) from posts q order by q.id limit 1)) from posts p order by p.id limit 1) as o from users u group by u.id with rollup

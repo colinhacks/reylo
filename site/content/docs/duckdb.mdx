@@ -69,6 +69,7 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 | `VARCHAR`, `UUID`, `TIME`, `TIMETZ`, `BIT` | `string` | `"Ada"` |
 | `ENUM` | its labels | `"happy"` |
 | `BLOB` | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
+| `GEOMETRY` | `unknown` | its WKB bytes, a `Uint8Array` |
 | `DATE` | `string` | `"2026-10-20"` |
 | `TIMESTAMP`, `TIMESTAMP_S`, `TIMESTAMP_MS`, `TIMESTAMP_NS` | `string` | `"2026-10-20T10:00:00.5"` |
 | `TIMESTAMPTZ` | `string` | `"2026-10-20T08:00:00Z"` |
@@ -180,7 +181,7 @@ where t.id is not null
 
 **Expressions**
 
-Arithmetic, comparisons, `||`, `coalesce` and `case` are non-null over non-null values, and so are DuckDB's functions of one value such as `lower` and `length`. A division is nullable, since `SET error_on_division_by_zero = false` makes dividing by zero return `NULL`, and so is a part of a date, such as `year(…)`, which is `NULL` for an infinite date.
+Arithmetic, comparisons, `||`, `coalesce` and `case` are non-null over non-null values, and so are DuckDB's functions of one value such as `lower` and `length`. A division is nullable, since `SET error_on_division_by_zero = false` makes dividing by zero return `NULL`, and so is a part of a date, such as `year(…)`, which is `NULL` for an infinite date. A cast of a `JSON` value to anything but text or `JSON` is nullable too, since JSON's `null` casts to `NULL`.
 
 <Inferred>
 
@@ -196,7 +197,7 @@ from users
 
 **Aggregates**
 
-A `count` is never null, but `count_if` is null over no rows. Any other aggregate is null over no rows, and over a group's rows only where its argument is.
+A `count` is never null, but `count_if` is null over no rows. Any other aggregate is null over no rows, and over a group's rows only where its argument is. Under `rollup`, `cube` or `grouping sets`, a key is null in the rows that total it, whether it is a column or an expression.
 
 <Inferred>
 
@@ -344,7 +345,7 @@ What Reylo can't type on DuckDB, and what to do instead:
 | Limit | Instead |
 | --- | --- |
 | A `PIVOT` without its values, whose columns are the values it reads | Name the values: `pivot logs on level in ('info', 'warn') using count(*)` |
-| A table function with side effects: `.readOnly` looks only for sequences and `query()` | Don't retry a query that calls one |
+| A table function with side effects: `.readOnly` looks only for a `with` query that writes, sequences and `query()` | Don't retry a query that calls one |
 | A query in syntax Reylo's parser doesn't read, such as `PIVOT` or `SUMMARIZE`: its columns are typed, but each may be `NULL` and the query returns `Row[]` | None needed: the types hold, if loosely |
 | An app that opens the database file for writing at the moment the type check reads it, which DuckDB refuses | Start the app again |
 | A session that sets `default_collation`, which the type check doesn't see: `where code = 'a'` can match more than the one row it's typed as | Declare the collation on the column |

@@ -1502,6 +1502,23 @@ html #nd-page .prose table {
   }
 }
 
+/* The table of contents may run on into the empty margin at the window's right, up to 22rem, so a
+   long heading (a CLI command written out in full) stays on one line where the window has room.
+   Its column keeps its place in the grid, so nothing else moves from page to page, and `contain`
+   keeps a long entry from widening the margin it runs into. Where the window has no margin to
+   spare, an entry wraps, and a wrapped code chip is drawn whole on each line. */
+@media (min-width: 73.5rem) {
+  #nd-docs-layout[data-dk-pages] #nd-toc {
+    width: min(22rem, 100%);
+    contain: inline-size;
+  }
+}
+
+#nd-toc code {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
 /* A wide page has no table of contents. At 56rem its 1rem here makes the three columns the width
    of a page with one, so the list stays put from page to page. */
 @media (min-width: 80rem) {

@@ -1,0 +1,1 @@
+select (select json_object('m', max(p.n), 'c', count(*), 'x', concat(min(q.title), '')) from posts p join posts q on q.user_id = u.id and q.id = p.id group by p.tag order by p.tag limit 1) as o from users u

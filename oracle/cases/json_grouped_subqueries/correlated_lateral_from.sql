@@ -1,0 +1,1 @@
+select (select jsonb_build_object('m', max(e.v), 'a', jsonb_agg(e.v), 'k', e.k || '') from (select p.tag as k, p.score as v from posts p where p.user_id = u.id) e group by e.k order by e.k limit 1) as j from users u

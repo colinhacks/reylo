@@ -1,0 +1,1 @@
+select json_object('f', not u.flag, 's', u.score + 0, 'r', u.ratio * 1, 'b', u.born + interval 0 day, 'at', addtime(u.at, '0:0:0'), 'd', json_extract(u.doc, '$'), 'k', concat(u.kind), 'bits', u.bits | 0, 'y', u.y + 0, 'tags', concat(u.tags), 'n', count(p.id)) as o from users u left join posts p on p.user_id = u.id group by u.id

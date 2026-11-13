@@ -1,0 +1,1 @@
+subquery_grouped.sql: more than one row returned by a subquery used as an expression (21000)

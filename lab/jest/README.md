@@ -28,7 +28,7 @@ A `SyntaxError: Unexpected identifier 'id'` ends `query.test.cjs` and `query.tes
 
 The transformer (`src/jest.ts`) answers Jest's synchronous `process` through the worker bridge that `reylo/register` uses (`src/bridge.ts`). It returns ESM when Jest loads the file as an ES module and CommonJS otherwise. Its cache key is the module itself, so Jest's transform cache follows a migration.
 
-Reylo's runtime (`import { defineQuery } from "reylo"`) is an ES module. A run without `--experimental-vm-modules` cannot `require` an ES module, so that run also needs Reylo compiled to CommonJS.
+Reylo's runtime (`import { definePostgresQuery } from "reylo"`) is an ES module. A run without `--experimental-vm-modules` cannot `require` an ES module, so that run also needs Reylo compiled to CommonJS.
 
 | Config | Run | Result |
 | --- | --- | --- |
