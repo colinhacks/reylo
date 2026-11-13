@@ -222,6 +222,31 @@ You give up:
 
 To turn the lock back on, `reylo migrate lock` writes it from a database's history.
 
+## Durable Objects
+
+A Cloudflare Durable Object runs its migrations on itself.
+
+Each Durable Object has a SQLite database of its own, which only the object's code can reach, so `reylo migrate deploy` can't run there. Import `migrate` from your project file, and call it in the object's constructor:
+
+```ts title="board.ts"
+import { DurableObject } from "cloudflare:workers";
+import { migrate } from "../.reylo.yaml";
+import getUser from "./get_user.sql";
+
+export class Board extends DurableObject {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    migrate(ctx.storage);
+  }
+
+  user(id: number) {
+    return getUser.runSync(this.ctx.storage.sql, { id });
+  }
+}
+```
+
+Reylo's Vite or esbuild plugin puts your locked migrations in the bundle, in the lock's order, and fails the build on one edited after it was locked. Each object runs the ones it hasn't run yet when it starts, each in a transaction, and records them in `__reylo_migrations` as `reylo migrate deploy` does.
+
 ## CLI
 
 Every command and flag:
