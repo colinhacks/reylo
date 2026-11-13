@@ -1326,8 +1326,9 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
             }
             None
         }
-        // A BIT is written inside a document as its bytes, `"base64:type16:…"` (the spec's facts).
-        Kind::Array(array) if ty.label.as_deref() != Some("bit") => {
+        // A BIT is written inside a document as its bytes, `"base64:type16:…"`, and a SET as its
+        // members joined by commas (the spec's facts).
+        Kind::Array(array) if ty.label.as_deref() != Some("bit") && !array.distinct => {
             let Some(items) = json.as_array() else { return Some(format!("holds {kind} at {at}, typed a list")) };
             items.iter().enumerate().find_map(|(i, item)| document_contradiction(&array.element.ty, item, array.element.nullable, &format!("{path}[{i}]")))
         }
