@@ -275,15 +275,17 @@ export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: 
 
 function executeSyncSqlite(c: AnyClient, query: QueryModule, params: ParamsInput): unknown[] | Promise<unknown[]> {
   checkParams(query, params);
-  if (query.fresh && due(query)) {
+  // A Durable Object's storage is a database of its own, so its checks are its own.
+  const own = isDurableObjectSql(c) ? (c as object) : undefined;
+  if (query.fresh && due(query, undefined, own)) {
     let rows: unknown[] | undefined;
     try {
-      rows = isDurableObjectSql(c) ? c.exec(query.fresh.query).toArray() : c.prepare(query.fresh.query).all();
+      rows = own ? c.exec(query.fresh.query).toArray() : c.prepare(query.fresh.query).all();
     } catch {}
     const found = rows && compared(query.fresh, rows, query.dialect);
     if (found?.stale.length) throw staleError(query.source, found.stale);
     if (found) warnDrifted(query.source, found.drifted);
-    passed(query);
+    passed(query, undefined, own);
   }
   const { text, values, names } = statement(query, params);
   if (isDurableObjectSql(c)) return runDurableObject(c, text, durableObjectValues(query, names, values), query.columns);
@@ -351,7 +353,8 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
   if (query.dialect !== "duckdb" && isDuckdb(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
   // The catalog facts the statement relied on, read again through the same client.
-  if (query.fresh && due(query)) {
+  const own = isDurableObjectSql(c) ? (c as object) : undefined;
+  if (query.fresh && due(query, undefined, own)) {
     const fresh = query.fresh;
     let rows: unknown[] | undefined;
     try {
@@ -360,7 +363,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
     const found = rows && compared(fresh, rows, query.dialect);
     if (found?.stale.length) throw staleError(query.source, found.stale);
     if (found) warnDrifted(query.source, found.drifted);
-    passed(query);
+    passed(query, undefined, own);
   }
   const { text, values, names } = statement(query, params);
   const type = (i: number) => query.inputs?.[names[i]!]?.type;
