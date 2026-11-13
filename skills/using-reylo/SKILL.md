@@ -59,7 +59,7 @@ The docs are https://reylo.dev, with a page per database, https://reylo.dev/post
 - Run the type check. An error in a `.sql` file shows at its line and column, and `tsc` holds back the TypeScript errors while one remains, so fix the SQL first (https://reylo.dev/#errors).
 - After a migration, the type check reads the new schema: a dropped column is an error in each `.sql` file that names it and in the code that reads it.
 - `reylo/.cache/` is Reylo's cache of each query's analysis. Never edit it or commit it.
-- A query checks the schema it was typed against on its first run in a process, then once a minute, and logs a warning ("reylo: users.email has changed since …") when a column it names is gone, retyped or nullable where it was not, and still runs. A query the database can no longer run fails with the database's error. Only a default that an insert of `rows(…)` copied, changed, throws "The database changed after …". Build again against the migrated database, and add before you remove (https://reylo.dev/#deploying).
+- A query checks the schema it was typed against on its first run in a process (on a Durable Object, in each object), then once a minute, and logs a warning ("reylo: users.email has changed since …") when a column it names is gone, retyped or nullable where it was not, and still runs. A query the database can no longer run fails with the database's error, and a table the database lacks entirely, as in a Durable Object whose migrations have not run, gives no warning, only that error. Only a default that an insert of `rows(…)` copied, changed, throws "The database changed after …". Build again against the migrated database, and add before you remove (https://reylo.dev/#deploying).
 
 ## Migrations
 

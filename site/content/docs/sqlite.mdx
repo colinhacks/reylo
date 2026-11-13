@@ -236,7 +236,7 @@ Store an instant as ISO 8601 text in UTC with a `Z`, as `strftime('%Y-%m-%dT%H:%
 
 **Columns declared `DATE`**
 
-A column declared `DATE` or `DATETIME` has `NUMERIC` affinity, so it can hold a number or text, typed `number | string`. Declare it `TEXT` instead, or `INTEGER` for Unix time.
+A column declared `DATE` or `DATETIME` has `NUMERIC` affinity, so it can hold a number or text, typed `number | string`, and so is a value it shares with a number, as in `coalesce(due_on, 0)`. Declare it `TEXT` instead, or `INTEGER` for Unix time.
 
 </Rules>
 
@@ -327,6 +327,10 @@ JSON you build can nest inside other JSON you build, directly or through `coales
 
 Read through a subquery's column, a view or `lag`, built JSON loses SQLite's JSON marker, so Reylo types it `unknown` (a cast keeps the marker on SQLite 3.53, but not on Turso). Build the JSON in the query that returns it.
 
+An aggregate's JSON loses the marker too in a query with a window function, since SQLite computes the aggregates in a subquery of their own. Wrap the aggregate in `json(…)` to nest it as JSON.
+
+A `VIRTUAL` generated column that calls a function is computed where it's read, so it may keep the marker. Inside built JSON, Reylo types it `unknown`.
+
 <Pairs>
 
 - `json_object('n', (select j from (select json_object('a', 1) as j)))` → `{ n: "{\"a\":1}" }`
@@ -364,7 +368,7 @@ SQLite doesn't report what a function returns, so Reylo has its own table of SQL
 
 **Functions that answer `NULL`**
 
-A function that can return `NULL` for non-null arguments is typed `| null`. That includes the date functions, given text they can't read, and math functions such as `sqrt` and `ln` outside their domain. So `date(placed_at)` is `string | null`, while `date('now')` is a `string`.
+A function that can return `NULL` for non-null arguments is typed `| null`. That includes the date functions, given text they can't read, and math functions such as `sqrt` and `ln` outside their domain. So `date(placed_at)` is `string | null`, while `date('now')` is a `string`. A date function is `| null` with `strftime`'s `%G`, `%g`, `%U` or `%V`, or the `floor` or `ceiling` modifier, which SQLite before 3.46, such as libSQL's, doesn't know.
 
 <Pairs>
 
@@ -403,7 +407,7 @@ select unhex('ff') as raw,
 
 </Rules>
 
-Your driver's SQLite may be older than Reylo's: libSQL ships SQLite 3.45.1, which has no `json_pretty`. So the type check also runs each query on every one of `better-sqlite3`, `@libsql/client`, `sqlite3` and `@tursodatabase/database` in your `package.json`, and reports any error with that driver's message. With `wrangler` in your `package.json` and a D1 database in its config, it also runs each query on Cloudflare D1 as wrangler runs it locally, since D1 blocks some of SQLite's functions, such as `json_pretty` and `power`. Durable Objects block the same ones. It can't check `bun:sqlite` or SQLite Wasm.
+Your driver's SQLite may be older than Reylo's: libSQL ships SQLite 3.45.1, which has no `json_pretty`. So the type check also runs each query on every one of `better-sqlite3`, `@libsql/client`, `sqlite3` and `@tursodatabase/database` in your `package.json`, and reports any error with that driver's message. With `wrangler` in your `package.json` and a D1 database or a SQLite-backed Durable Object in its config, it also runs each query on Cloudflare's SQLite as wrangler runs it locally, since D1 and Durable Objects block some of SQLite's functions, such as `json_pretty` and `power`. It can't check `bun:sqlite` or SQLite Wasm.
 
 ## Nullability
 
@@ -509,7 +513,7 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
 | `Row` | `one` | is an aggregate without a `group by`, `values` of one row, or inserts one row and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key, an `integer primary key` or a unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1`; is a `distinct` or `group by` over values the `where` pins; or is an `update` or `delete` by key with `returning` |
+| `Row \| null` | `maybeOne` | matches every column of a primary key, an `integer primary key` or a unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`; or inserts one row with `returning` that `or ignore`, `on conflict do nothing`, a `before` trigger or a constraint declared `on conflict ignore` can skip |
 | `void` | `none` | is an `insert`, `update`, `delete` or `replace` without `returning` |
 | `Row[]` | `many` | is anything else |
 
@@ -640,7 +644,7 @@ With [`.try()`](/usage#try), an error SQLite raised comes back as `{ error }`, w
 
 Most drivers give the extended code, such as `SQLITE_CONSTRAINT_UNIQUE`. The `sqlite3` driver and the `sqlite` package give only the primary one, `SQLITE_CONSTRAINT`, and Turso's engine gives none from 0.8 on, so its `code` is `undefined` and only `message` names the failure. SQLite doesn't name the foreign key a row fails.
 
-When the query fires no trigger, its error type is narrowed: a unique, not-null or `STRICT` type violation names only the tables and columns it writes, and the indexes of their expressions. A `CHECK` isn't narrowed, since SQLite's catalog doesn't name it, so the index names apply to the extended code alone: under the primary `SQLITE_CONSTRAINT`, the constraint may be a `CHECK`'s.
+When the query fires no trigger, its error type is narrowed: a unique, not-null or `STRICT` type violation names only the tables and columns it writes, and the indexes of their expressions. A table whose name holds a dot isn't narrowed, since SQLite's message can't tell that dot from the one before the column. A `CHECK` isn't narrowed, since SQLite's catalog doesn't name it, so the index names apply to the extended code alone: under the primary `SQLITE_CONSTRAINT`, the constraint may be a `CHECK`'s.
 
 ## Drivers
 

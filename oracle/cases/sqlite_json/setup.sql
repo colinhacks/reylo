@@ -4,8 +4,11 @@
 -- SQLite's largest integer) a JSON integer, a REAL a number (`1e308` from the seeds, and an
 -- infinity as `9.0e+999`), a TEXT a string, a NUMERIC either, NULL a null only where the type
 -- says it may be, a truth value 1 or 0. A value nests as JSON only where it keeps SQLite's JSON
--- subtype; where it may not, its type is any JSON. No statement reads the BLOB column into a
+-- subtype; where it may not, its type is any JSON: an aggregate beside a window call, which SQLite
+-- reads back from a subquery of its own, and a VIRTUAL generated column, which it computes where the
+-- column is read. No statement reads the BLOB column into a
 -- document: SQLite reads a BLOB as JSONB there, and the seeded empty blob is an error.
 create table users (id integer primary key, name text not null, email text unique, github_id bigint, score real, active boolean not null default 1, extra, n numeric, doc text);
 create table posts (id integer primary key, user_id integer not null references users (id), title text not null, body text, cover blob) strict;
 create view titled as select id, user_id, json_object('id', id, 'title', title) as post from posts;
+create table docs (id integer primary key, a integer not null, j text as (json_object('a', a)) virtual, js text as (json_object('a', a)) stored, jj text as (j) virtual, label text as ('#' || a) virtual) strict;

@@ -73,6 +73,9 @@ pub struct TableInfo {
     pub strict: bool,
     pub without_rowid: bool,
     pub rowid_alias: Option<String>,
+    /// A NOT NULL, UNIQUE or PRIMARY KEY of the table is declared ON CONFLICT IGNORE: a write
+    /// that breaks it, with no OR clause of its own, skips the row.
+    pub ignores: bool,
     pub columns: Vec<ColumnInfo>,
     pub unique_keys: Vec<Vec<String>>,
 }
@@ -157,7 +160,8 @@ pub struct Dml {
     pub kind: String,
     pub table: String,
     pub on_error: String,
-    pub upsert: Option<Upsert>,
+    /// Each ON CONFLICT clause, in the order SQLite tries them.
+    pub upserts: Vec<Upsert>,
     /// The target column per value position; `None` where SQLite could not name one.
     pub columns: Vec<Option<String>>,
     pub values: Option<Vec<Node>>,
@@ -214,6 +218,11 @@ pub struct Node {
     pub strict: bool,
     /// The column is generated.
     pub generated: bool,
+    /// The column is VIRTUAL and computed by a function or from another generated column: its
+    /// value, computed where it is read, may carry the JSON subtype.
+    pub subtype: bool,
+    /// The column is a view's, as a write through the view's INSTEAD OF trigger reads it.
+    pub view: bool,
     /// The column's collation, which a comparison with it uses where the column decides.
     pub coll: Option<String>,
     pub resolved: Option<bool>,

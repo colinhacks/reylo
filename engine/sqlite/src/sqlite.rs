@@ -228,8 +228,10 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     let rewritten = lex::rewrite(sql, lexed, Target::Question);
     let functions: Vec<(&str, i32)> = extras.total.iter().map(|f| (f.name.as_str(), f.arity)).collect();
     // Triggers are not replayed (a body may call a function only the application registers);
-    // their headers say which statements a trigger can skip a row of.
-    let (triggers, replay): (Vec<String>, Vec<String>) = ddl.iter().cloned().partition(|s| trigger_header(s).is_some());
+    // their headers say which statements a trigger can skip a row of. An INSTEAD OF trigger is
+    // replayed with an empty body, which is what lets a write to its view through.
+    let (triggers, mut replay): (Vec<String>, Vec<String>) = ddl.iter().cloned().partition(|s| trigger_header(s).is_some());
+    replay.extend(triggers.iter().filter_map(|s| instead_of_stub(s)));
     let skipping = skipping_triggers(&triggers);
     let listed: Option<Vec<tree::Listed>> = extras.host.as_ref().map(|host| host.iter().map(|f| (f.name.as_str(), f.arity, f.kind)).collect());
     let t = match tree::analyze(&replay, &numbered.sql, &rewritten.sql, &functions, listed.as_deref()) {
@@ -451,7 +453,7 @@ fn tables(t: &Tree) -> Tables {
     let mut write = Vec::new();
     if let Some(dml) = &t.dml {
         write.push(dml.table.clone());
-        let upsert = dml.upsert.iter().flat_map(|u| u.set.iter().map(|s| &s.expr).chain(&u.where_));
+        let upsert = dml.upserts.iter().flat_map(|u| u.set.iter().map(|s| &s.expr).chain(&u.where_));
         for n in dml.values.iter().flatten().chain(dml.set.iter().map(|s| &s.expr)).chain(&dml.where_).chain(upsert) {
             walk.node(n);
         }
@@ -550,7 +552,7 @@ fn constant_keys(sql: &str, lexed: &Lexed, t: &Tree) -> Vec<crate::api::Diagnost
         walk.node(&c.expr);
     }
     if let Some(dml) = &t.dml {
-        let upsert = dml.upsert.iter().flat_map(|u| u.set.iter().map(|s| &s.expr).chain(&u.where_));
+        let upsert = dml.upserts.iter().flat_map(|u| u.set.iter().map(|s| &s.expr).chain(&u.where_));
         for n in dml.values.iter().flatten().chain(dml.set.iter().map(|s| &s.expr)).chain(&dml.where_).chain(upsert) {
             walk.node(n);
         }
@@ -725,8 +727,8 @@ fn computed(t: Ty) -> Ty {
 }
 
 /// The type several arms share: one type when they agree, `int8` for a mix of integers of which
-/// one is a 64-bit column's (`coalesce(user_id, 0)`: any integer is exact as a BigInt), `real` for
-/// another mix of numbers, unknown otherwise.
+/// one is a 64-bit column's (`coalesce(user_id, 0)`: any integer is exact as a BigInt), `numeric`
+/// for a mix with a NUMERIC value, `real` for another mix of numbers, unknown otherwise.
 fn shared(facts: &[&Fact]) -> Ty {
     let known: Vec<&Ty> = facts.iter().map(|f| &f.ty).filter(|t| !matches!(t, Ty::Unknown)).collect();
     let Some(first) = known.first() else { return Ty::Unknown };
@@ -751,7 +753,10 @@ fn shared(facts: &[&Fact]) -> Ty {
         return Ty::Scalar { name: "int8".into() };
     }
     if known.iter().all(|t| is_numeric(t)) {
-        return Ty::Scalar { name: "real".into() };
+        // A NUMERIC value is a number or the text it could not convert (a DATE's '2024-01-01'),
+        // beside a number too.
+        let numeric = known.iter().any(|t| scalar_name(t) == Some("numeric"));
+        return Ty::Scalar { name: if numeric { "numeric" } else { "real" }.into() };
     }
     Ty::Unknown
 }
@@ -958,6 +963,11 @@ struct Level {
     /// so such a call is an arm's around this one (`(select json_group_array(name) from posts)`
     /// over `users` aggregates the users), and reads that arm's rows, each one there.
     foreign: u32,
+    /// The arm has a window call. SQLite then computes the arm's aggregates in a subquery and
+    /// reads each back as that subquery's column, which drops the JSON subtype:
+    /// `json_object('a', json_group_array(x))` beside `count(*) over ()` is `{"a":"[1]"}` on
+    /// 3.45.1 to 3.54.1.
+    windowed: bool,
 }
 
 /// The parameter a value is under the conversion a `::type` cast compiles to: `CAST(?n AS type)`,
@@ -985,7 +995,7 @@ fn level_of(sel: &Sel, extras: &Extras) -> Level {
     }
     let reduced = narrowed.iter().map(|(cursor, _)| *cursor).filter(|c| outer.contains(c)).collect();
     let lone = if sel.aggregate && sel.group_by.is_empty() { own.clone() } else { HashSet::new() };
-    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, own, around: HashSet::new(), foreign: 0 }
+    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, own, around: HashSet::new(), foreign: 0, windowed: sel.window }
 }
 
 /// Whether an expression reads a column of one of `cursors`, or may: a subquery in it may read
@@ -1045,8 +1055,9 @@ fn nulls_with(n: &Node, extras: &Extras) -> HashSet<(i64, String)> {
 
 /// The words of a statement as SQLite's tokenizer splits them: a name or a keyword, and each
 /// other character alone; comments are none. A quoted name (`"a b"`, `` `a` ``, `[a]`, `'a'`) is
-/// one word without its quotes, and is marked, since it is never a keyword.
-fn words(sql: &str) -> Vec<(String, bool)> {
+/// one word without its quotes, and is marked, since it is never a keyword. Each word comes with
+/// the index of the character it starts at.
+fn words(sql: &str) -> Vec<(String, bool, usize)> {
     let chars: Vec<char> = sql.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -1066,6 +1077,7 @@ fn words(sql: &str) -> Vec<(String, bool)> {
             // A doubled quote inside the name is the quote itself; `[` ends at the first `]`.
             let close = if c == '[' { ']' } else { c };
             let mut name = String::new();
+            let at = i;
             i += 1;
             while i < chars.len() {
                 if chars[i] == close {
@@ -1079,13 +1091,13 @@ fn words(sql: &str) -> Vec<(String, bool)> {
                 i += 1;
             }
             i += 1;
-            out.push((name, true));
+            out.push((name, true, at));
         } else if c.is_alphanumeric() || c == '_' || c == '$' || !c.is_ascii() {
             let end = chars[i..].iter().position(|c| !(c.is_alphanumeric() || *c == '_' || *c == '$' || !c.is_ascii())).map_or(chars.len(), |n| i + n);
-            out.push((chars[i..end].iter().collect(), false));
+            out.push((chars[i..end].iter().collect(), false, i));
             i = end;
         } else {
-            out.push((c.to_string(), false));
+            out.push((c.to_string(), false, i));
             i += 1;
         }
     }
@@ -1101,7 +1113,7 @@ fn trigger_header(sql: &str) -> Option<(String, String, String)> {
         return None;
     }
     let words = words(sql);
-    let keyword = |i: usize| words.get(i).filter(|(_, quoted)| !quoted).map(|(w, _)| w.to_ascii_lowercase());
+    let keyword = |i: usize| words.get(i).filter(|(_, quoted, _)| !quoted).map(|(w, _, _)| w.to_ascii_lowercase());
     // Steps over the next word when it is one of the keywords `want`.
     let take = |i: &mut usize, want: &[&str]| {
         let hit = keyword(*i).is_some_and(|w| want.contains(&w.as_str()));
@@ -1146,6 +1158,27 @@ fn trigger_header(sql: &str) -> Option<(String, String, String)> {
         table = &words.get(on + 3)?.0;
     }
     Some((timing.to_string(), event, table.to_ascii_lowercase()))
+}
+
+/// An INSTEAD OF trigger with an empty body: its header up to its WHEN or its BEGIN, either of
+/// which may call a function only the application registers. Replayed, it lets a write to its
+/// view through as SQLite does, which refuses a write to a view with no INSTEAD OF trigger for it
+/// (`UPDATE OF a` only for the columns it names); a WHEN only decides at run time whether the body
+/// runs. `None` for any other statement.
+fn instead_of_stub(sql: &str) -> Option<String> {
+    let (timing, _, _) = trigger_header(sql)?;
+    if timing != "instead" {
+        return None;
+    }
+    let words = words(sql);
+    let keyword = |w: &(String, bool, usize)| !w.1 && (w.0.eq_ignore_ascii_case("when") || w.0.eq_ignore_ascii_case("begin"));
+    let on = words.iter().position(|w| !w.1 && w.0.eq_ignore_ascii_case("on"))?;
+    // Past the view's name, with its schema when it has one.
+    let after = if words.get(on + 2).is_some_and(|w| !w.1 && w.0 == ".") { on + 4 } else { on + 2 };
+    let body = words.iter().skip(after).find(|w| keyword(w))?.2;
+    let header: String = sql.chars().take(body).collect();
+    // On a line of its own: the header may end in a `--` comment.
+    Some(format!("{}\nBEGIN SELECT 1; END", header.trim_end()))
 }
 
 /// The events of a row trigger, as bits: Postgres's `pg_trigger.tgtype` values, which the two
@@ -1450,6 +1483,11 @@ impl Analyzer<'_> {
                 break;
             }
         }
+        // An INSERT through a view's INSTEAD OF trigger returns each value as the statement wrote
+        // it, with none of the view column's affinity: `values (42)` returns 42 for a TEXT one.
+        if n.view && self.tree.dml.as_ref().is_some_and(|d| d.kind == "insert") {
+            return Fact::unknown();
+        }
         let aff = n.affinity.as_deref().unwrap_or(&n.aff);
         let ty = match &n.declared {
             Some(declared) if !n.rowid => column_type(declared, aff, n.strict),
@@ -1465,16 +1503,20 @@ impl Analyzer<'_> {
     fn call(&self, n: &Node, scope: &ScopeStack) -> Fact {
         // The JSON a `json_*` constructor builds, which SQLite returns as its text.
         if let Some(ty) = self.built_text(n, scope) {
-            // `json()` of a scalar subquery is NULL where the subquery finds no row; every
-            // other constructor reads that NULL as a null (`[null]`, `{}`) and is never NULL.
-            let non_null = match n.args.first() {
-                Some(a) if a.op == "select" && self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
-                _ => true,
-            };
-            return Fact { ty, non_null };
+            return Fact { ty, non_null: self.built_non_null(n, scope) };
         }
         let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
         self.function(n, &args)
+    }
+
+    /// Whether JSON a constructor builds ([`Analyzer::shape`]) is never NULL. Every constructor
+    /// reads a NULL as a null (`[null]`, `{}`) but `json()` and `jsonb()`, which are NULL where
+    /// their argument is: a scalar subquery that finds no row, at any depth of them.
+    fn built_non_null(&self, n: &Node, scope: &ScopeStack) -> bool {
+        match (self.builtin_name(n), n.args.as_slice()) {
+            (Some("json" | "jsonb"), [a]) if !n.agg && !n.window => if a.op == "select" { self.type_of(a, scope).non_null } else { self.built_non_null(a, scope) },
+            _ => true,
+        }
     }
 
     fn type_of(&self, n: &Node, scope: &ScopeStack) -> Fact {
@@ -1849,10 +1891,12 @@ impl Analyzer<'_> {
                 if n.over && is_json_result(name) {
                     return any;
                 }
+                // So did an aggregate's value beside a window call ([`Level::windowed`]).
+                if self.windowed_aggregate(n) && self.carry(n, scope) != Carry::No {
+                    return any;
+                }
                 if let Some(ty) = self.shape(n, scope) {
-                    // `json()` of a scalar subquery is NULL where the subquery finds no row, and
-                    // `jsonb()` too; every other constructor is never NULL.
-                    let non_null = !(matches!(name, "json" | "jsonb") && n.args.first().is_some_and(|a| a.op == "select")) || self.type_of(n, scope).non_null;
+                    let non_null = self.built_non_null(n, scope);
                     return JsonFact { ty, non_null, carry: Carry::Yes };
                 }
                 let first = n.args.first().into_iter();
@@ -1925,7 +1969,7 @@ impl Analyzer<'_> {
         match n.op.as_str() {
             "function" => {
                 let Some(name) = self.builtin_name(n) else { return Carry::Maybe };
-                match name {
+                let carry = match name {
                     "coalesce" | "ifnull" => self.carries(n.args.iter(), scope),
                     "nullif" | "likely" | "unlikely" | "likelihood" => self.carries(n.args.first().into_iter(), scope),
                     "iif" | "if" => self.carries(iif_values(n.args.len()).into_iter().filter_map(|i| n.args.get(i)), scope),
@@ -1936,7 +1980,8 @@ impl Analyzer<'_> {
                     }
                     _ if PLAIN.contains(&name) => Carry::No,
                     _ => Carry::Maybe,
-                }
+                };
+                if carry != Carry::No && self.windowed_aggregate(n) { Carry::Maybe } else { carry }
             }
             // A scalar subquery kept the subtype on 3.53.4 and drops it on 3.54.1 (the SQLite of
             // Node 26.11's `node:sqlite`): `json_object('n', (select json_object('a', 1)))` is
@@ -1971,7 +2016,9 @@ impl Analyzer<'_> {
                         break;
                     }
                 }
-                Carry::No
+                // A VIRTUAL generated column is computed where it is read, its expression's
+                // subtype and all; a STORED one is read back from the row, as any column is.
+                if n.subtype { Carry::Maybe } else { Carry::No }
             }
             _ => Carry::No,
         }
@@ -2020,6 +2067,13 @@ impl Analyzer<'_> {
         level.aggregating -= 1;
         level.foreign -= u32::from(foreign);
         out
+    }
+
+    /// Whether `n` is an aggregate call, a FILTER's included, in a query with a window call
+    /// ([`Level::windowed`]): its value reaches the expression around it through a subquery's
+    /// column. (SQLite refuses an aggregate of a query with a window call inside a subquery.)
+    fn windowed_aggregate(&self, n: &Node) -> bool {
+        n.op == "function" && n.agg && !n.over && self.level.borrow().windowed
     }
 
     /// A select arm's level, read from where the analysis stands: what the arm proves of its own
@@ -2098,7 +2152,7 @@ impl Analyzer<'_> {
                     self.walk(v, Ctx::Typed(target), &scope, &mut found);
                 }
             }
-            for item in dml.set.iter().chain(dml.upsert.iter().flat_map(|u| u.set.iter())) {
+            for item in dml.set.iter().chain(dml.upserts.iter().flat_map(|u| u.set.iter())) {
                 let target = item.column.as_deref().and_then(|c| self.table_column(&dml.table, c));
                 fill(&item.expr, &target, item.column.as_deref());
                 self.walk(&item.expr, Ctx::Typed(target), &scope, &mut found);
@@ -2106,7 +2160,7 @@ impl Analyzer<'_> {
             if let Some(w) = &dml.where_ {
                 self.walk(w, Ctx::Bool, &scope, &mut found);
             }
-            if let Some(w) = dml.upsert.as_ref().and_then(|u| u.where_.as_ref()) {
+            for w in dml.upserts.iter().filter_map(|u| u.where_.as_ref()) {
                 self.walk(w, Ctx::Bool, &scope, &mut found);
             }
         }
@@ -2215,6 +2269,7 @@ impl Analyzer<'_> {
             return;
         }
         let sibling = |other: &Option<Box<Node>>| other.as_deref().map(|o| self.type_of(o, scope));
+        let case_results: std::cell::OnceCell<Ty> = std::cell::OnceCell::new();
         let child_ctx = |slot: Slot| -> Ctx {
             match n.op.as_str() {
                 "=" | "!=" | "<" | "<=" | ">" | ">=" | "is" | "is not" => {
@@ -2288,15 +2343,14 @@ impl Analyzer<'_> {
                         Some(base) => Ctx::Typed(Some(self.type_of(base, scope))),
                         None => Ctx::Bool,
                     },
-                    Slot::List(_) => {
+                    // Typed once for the CASE, not once per arm: a CASE of thousands of arms.
+                    Slot::List(_) => match case_results.get_or_init(|| {
                         let others: Vec<Fact> = n.list.iter().enumerate().filter(|(j, _)| j % 2 == 1 || (*j == n.list.len() - 1 && n.list.len() % 2 == 1)).map(|(_, x)| self.type_of(x, scope)).collect();
-                        let refs: Vec<&Fact> = others.iter().collect();
-                        let ty = shared(&refs);
-                        match ty {
-                            Ty::Unknown => outer_type(&ctx),
-                            ty => Ctx::Typed(Some(Fact { ty, non_null: true })),
-                        }
-                    }
+                        shared(&others.iter().collect::<Vec<_>>())
+                    }) {
+                        Ty::Unknown => outer_type(&ctx),
+                        ty => Ctx::Typed(Some(Fact { ty: ty.clone(), non_null: true })),
+                    },
                     // A base compares with each WHEN value (`CASE :kind WHEN 'a' THEN …`), a row
                     // value element by element.
                     Slot::Left if is_vector(&n.left) => {
@@ -2450,10 +2504,13 @@ impl Analyzer<'_> {
                 "insert" => {
                     if dml.rows == 1 {
                         let triggered = |events: i32| self.skipping.get(&dml.table.to_ascii_lowercase()).is_some_and(|mask| mask & events != 0);
+                        // With no OR clause of its own, a constraint's own conflict clause applies.
+                        let declared_ignore = dml.on_error == "default" && self.tree.tables.get(&dml.table).is_some_and(|t| t.ignores);
                         let can_skip = dml.on_error == "ignore"
-                            || dml.upsert.as_ref().is_some_and(|u| !u.do_update || u.where_.is_some() || triggered(TRIGGER_ROW_UPDATE))
+                            || declared_ignore
+                            || dml.upserts.iter().any(|u| !u.do_update || u.where_.is_some() || triggered(TRIGGER_ROW_UPDATE))
                             || triggered(TRIGGER_ROW_INSERT);
-                        if can_skip { (Cardinality::AtMostOne, Some("ON CONFLICT DO NOTHING, OR IGNORE, a DO UPDATE with a WHERE, or a BEFORE trigger's RAISE(IGNORE) can insert no row".into())) } else { (Cardinality::One, None) }
+                        if can_skip { (Cardinality::AtMostOne, Some("ON CONFLICT DO NOTHING, OR IGNORE, a constraint declared ON CONFLICT IGNORE, a DO UPDATE with a WHERE, or a BEFORE trigger's RAISE(IGNORE) can insert no row".into())) } else { (Cardinality::One, None) }
                     } else if dml.rows > 1 {
                         (Cardinality::Many, Some(format!("a VALUES list of {} rows returns {} rows", dml.rows, dml.rows)))
                     } else {
@@ -2875,11 +2932,16 @@ impl Analyzer<'_> {
     }
 
     /// Whether `n` calls a function that may give each row another value: `random()`,
-    /// `changes()`, a date or time function (`'now'` moves), or one the host registers or the
-    /// engine does not know, whose determinism it cannot tell.
+    /// `changes()`, a date or time function (`'now'` moves), one the host registers or the
+    /// engine does not know, whose determinism it cannot tell, or a window call or aggregate,
+    /// whose value is its frame's or its group's (`min(1) over (… rows 1 preceding …)` is NULL on
+    /// the first row and 1 on the next).
     fn calls_volatile(&self, n: &Node) -> bool {
         const VOLATILE: &[&str] = &["random", "randomblob", "changes", "total_changes", "last_insert_rowid", "date", "time", "datetime", "julianday", "unixepoch", "strftime", "timediff"];
         if n.op == "function" {
+            if n.agg || n.window || n.over {
+                return true;
+            }
             let name = n.name.as_deref().unwrap_or("").to_ascii_lowercase();
             if VOLATILE.contains(&name.as_str()) || self.extras.function(&name, n.args.len()).is_some() || !KNOWN_FUNCTIONS.contains(&name.as_str()) {
                 return true;
@@ -2976,7 +3038,8 @@ fn current_time(args: &[Node]) -> bool {
         let m = m.to_ascii_lowercase();
         days += match m.as_str() {
             "subsec" | "subsecond" => 0.0,
-            "localtime" | "utc" | "ceiling" | "floor" => 1.0,
+            // `ceiling` and `floor` are new in 3.46.0, and NULL before it (libSQL's 3.45.1).
+            "localtime" | "utc" => 1.0,
             "start of day" | "start of month" | "start of year" => 366.0,
             _ if m.len() == 9 && m.starts_with("weekday ") && matches!(m.as_bytes()[8], b'0'..=b'6') => 7.0,
             _ => match shift_days(&m) {
@@ -3100,11 +3163,12 @@ fn printf_writes(format: &str) -> bool {
 }
 
 /// Whether every conversion of a `strftime` format is one SQLite knows; any other makes it NULL,
-/// as does a `%` that ends the format.
+/// as does a `%` that ends the format. `%G`, `%g`, `%U` and `%V` are left out: they are new in
+/// 3.46.0, and before it (libSQL and Turso run 3.45.1) they make the call NULL.
 fn strftime_format(format: &str) -> bool {
     let mut bytes = format.bytes();
     while let Some(b) = bytes.next() {
-        if b == b'%' && !bytes.next().is_some_and(|c| b"deFfGgHkIljJmMpPRsSTuwUVWY%".contains(&c)) {
+        if b == b'%' && !bytes.next().is_some_and(|c| b"deFfHkIljJmMpPRsSTuwWY%".contains(&c)) {
             return false;
         }
     }
@@ -3613,6 +3677,43 @@ mod tests {
         // `DO UPDATE … WHERE` leaves a conflicting row alone and returns nothing for it.
         assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name where users.score > 1 returning id", &[]), "at_most_one");
         assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name returning id", &[]), "one");
+        // A later ON CONFLICT clause is tried as the first is.
+        assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name on conflict do nothing returning id", &[]), "at_most_one");
+        // A constraint declared ON CONFLICT IGNORE skips the row, unless the statement's own OR
+        // clause says otherwise.
+        let declared = |sql: &str, table: &str| {
+            let schema = vec![table.to_string()];
+            analyze_ddl(sql, &schema, &Extras::default()).analysis.cardinality
+        };
+        assert_eq!(declared("insert into t (k) values (:k) returning id", "create table t (id integer primary key, k text unique on conflict ignore)"), "at_most_one");
+        assert_eq!(declared("insert into t (k) values (:k) returning id", "create table t (id integer primary key, k text not null on conflict ignore)"), "at_most_one");
+        assert_eq!(declared("insert into t (id) values (:id) returning id", "create table t (id integer primary key on conflict ignore, k text)"), "at_most_one");
+        assert_eq!(declared("insert into t (a, b) values (:a, :b) returning a", "create table t (a integer, b integer, unique (a, b) on conflict ignore)"), "at_most_one");
+        assert_eq!(declared("insert or abort into t (k) values (:k) returning id", "create table t (id integer primary key, k text unique on conflict ignore)"), "one");
+        assert_eq!(declared("insert into t (k) values (:k) returning id", "create table t (id integer primary key, k text unique on conflict replace)"), "one");
+    }
+
+    #[test]
+    fn a_write_to_a_view_goes_through_its_instead_of_trigger() {
+        let schema = vec![
+            "create table w (id integer primary key, k text not null, v integer)".to_string(),
+            "create view wv as select id, k, v from w".to_string(),
+            "create trigger wv_insert instead of insert on wv when lookup(new.k) begin insert into w (k, v) values (new.k, new.v); end".to_string(),
+            "create trigger \"wv update\" instead of update of v on main.wv begin update w set v = new.v where id = old.id; end".to_string(),
+        ];
+        let analysis = |sql: &str| analyze_ddl(sql, &schema, &Extras::default()).analysis;
+        let insert = analysis("insert into wv (k, v) values (42, 9) returning k");
+        assert!(insert.diagnostics.is_empty(), "{:?}", insert.diagnostics);
+        // Returned as written, with no affinity: the INTEGER 42 for a column of TEXT affinity.
+        assert_eq!(col(&insert, "k"), ("unknown".into(), true));
+        assert!(analysis("update wv set v = :v where id = :id").diagnostics.is_empty());
+        // The trigger fires on an update of `v` alone: SQLite refuses an update of `k`, and so does
+        // its type check. A view with no trigger for the write stays read-only.
+        assert_eq!(analysis("update wv set k = :k").diagnostics.first().map(|d| d.message.as_str()), Some("cannot modify wv because it is a view"));
+        assert_eq!(analysis("delete from wv").diagnostics.first().map(|d| d.message.as_str()), Some("cannot modify wv because it is a view"));
+        assert_eq!(instead_of_stub("create trigger t before insert on w begin select 1; end"), None);
+        assert_eq!(instead_of_stub(&schema[3]).as_deref(), Some("create trigger \"wv update\" instead of update of v on main.wv\nBEGIN SELECT 1; END"));
+        assert_eq!(instead_of_stub("CREATE TRIGGER x INSTEAD OF DELETE ON v -- on y\n BEGIN SELECT 1; END").as_deref(), Some("CREATE TRIGGER x INSTEAD OF DELETE ON v -- on y\nBEGIN SELECT 1; END"));
     }
 
     #[test]
@@ -4416,7 +4517,8 @@ mod tests {
         let r = analyze_ddl("select f.done, b, n, t, f.done + 0 as plus, coalesce(b, f.done) as either, coalesce(b, 0) as zero, case when n > 0 then f.done end as c, (select done from flags limit 1) as sub, x.done as derived from flags f, (select done from flags) x", &ddl, &Extras::default());
         assert!(r.analysis.diagnostics.is_empty(), "{:?}", r.analysis.diagnostics);
         let types: Vec<String> = r.analysis.columns.iter().map(|c| affinity_of(&c.ty).unwrap_or("?").to_string()).collect();
-        assert_eq!(types, ["bool", "bool", "integer", "integer", "real", "bool", "real", "bool", "bool", "bool"]);
+        // `coalesce(b, 0)` is NUMERIC's number or text: a BOOLEAN column may hold 'yes'.
+        assert_eq!(types, ["bool", "bool", "integer", "integer", "real", "bool", "numeric", "bool", "bool", "bool"]);
         // The truth values are the ones SQLite computes alone.
         assert_eq!(r.booleans, [false; 10]);
         // Through a view, and across a compound only where every arm is one.
@@ -4522,6 +4624,58 @@ mod tests {
     }
 
     #[test]
+    fn json_whose_subtype_is_out_of_sight_is_any_json() {
+        // Beside a window call, SQLite reads each aggregate back from a subquery of its own, which
+        // drops the subtype: `{"ids":"[1]"}`. An aggregate that builds no JSON keeps its type.
+        assert_eq!(
+            json_typed("select json_object('ids', json_group_array(id)) as doc, json_array(max(json_object('t', title))) as top, json_object('n', count(*)) as counted, count(*) over () as total from posts group by user_id"),
+            "doc: { ids: unknown }; top: [unknown]; counted: { n: number }; total: number"
+        );
+        assert_eq!(json_typed("select json_object('ids', json_group_array(id)) as doc from posts group by user_id"), "doc: { ids: number[] }");
+        // A subquery's own aggregate is read where it is computed.
+        assert_eq!(json_typed("select json_object('ids', json((select json_group_array(id) from posts where user_id = u.id))) as doc, rank() over () as r from users u"), "doc: { ids: number[] }; r: number");
+        // `json()` is NULL where its argument is, however deep the scalar subquery.
+        assert_eq!(json_typed("select json(json((select json_object('a', 1) where 0))) as v"), "v: { a: number } | null");
+        assert_eq!(json_typed("select json_object('k', json(jsonb((select json_object('a', 1) where 0)))) as w"), "w: { k: { a: number } | null }");
+        // A VIRTUAL generated column is computed where it is read: a JSON function's subtype is
+        // still on it, and so it may be on one read from another generated column. A STORED one
+        // is read back as the text it is, and so is a VIRTUAL one no function computes.
+        let schema = vec!["create table d (id integer primary key, a integer not null, j text as (json_object('a', a)) virtual, js text as (json_object('a', a)) stored, jj text as (j) virtual, label text as ('#' || a) virtual)".to_string()];
+        assert_eq!(shown(&analyze_ddl("select json_array(j, js, jj, label) as v from d", &schema, &Extras::default()).analysis), "v: [unknown, string | null, unknown, string | null]");
+        assert_eq!(shown(&analyze_ddl("select json_object('j', j) as v from (select j from d)", &schema, &Extras::default()).analysis), "v: { j: unknown }");
+    }
+
+    #[test]
+    fn a_number_beside_a_numeric_value_is_a_number_or_text() {
+        let schema = vec!["create table dts (id integer primary key, d date not null, dt datetime, n integer not null, x real not null, ok boolean not null)".to_string()];
+        let typed = |sql: &str| col(&analyze_ddl(sql, &schema, &Extras::default()).analysis, "v");
+        // A DATE column holds the text '2024-01-01', which no number beside it converts.
+        assert_eq!(typed("select ifnull(dt, 0) as v from dts"), ("numeric".into(), false));
+        assert_eq!(typed("select case when ok then d else 0 end as v from dts"), ("numeric".into(), false));
+        assert_eq!(typed("select coalesce(dt, 1.5) as v from dts"), ("numeric".into(), false));
+        assert_eq!(typed("select coalesce(n, 1.5) as v from dts"), ("integer".into(), false));
+        assert_eq!(typed("select iif(ok, n, x) as v from dts"), ("real".into(), false));
+    }
+
+    #[test]
+    fn a_window_call_is_no_value_every_row_shares() {
+        let count = |sql: &str| analyze_ddl(sql, &ddl(), &Extras::default()).analysis.cardinality;
+        assert_eq!(count("select distinct min(1) over (order by id rows between 1 preceding and 1 preceding) as m from users"), "many");
+        assert_eq!(count("select distinct max(1) filter (where id > 2) over (order by id) as m from users"), "many");
+        assert_eq!(count("select distinct 1 as m from users"), "at_most_one");
+    }
+
+    #[test]
+    fn a_date_conversion_newer_than_libsql_s_sqlite_is_nullable() {
+        let typed = |sql: &str| col(&analyze_ddl(sql, &ddl(), &Extras::default()).analysis, "v");
+        // `%G`, `%g`, `%U`, `%V` and the `floor` and `ceiling` modifiers are new in 3.46.0, and NULL
+        // on libSQL's 3.45.1.
+        assert_eq!(typed("select strftime('%Y-%m-%d', 'now') as v"), ("text".into(), false));
+        assert_eq!(typed("select strftime('%G-W%V', 'now') as v"), ("text".into(), true));
+        assert_eq!(typed("select date('now', 'start of month', '+1 month', 'floor') as v"), ("text".into(), true));
+    }
+
+    #[test]
     fn a_json_constructor_is_typed_as_the_json_it_builds() {
         // The docs' profile: SQLite answers with the text, which the run time parses. A scalar
         // subquery's JSON nests as JSON in `json()`, on every SQLite.
@@ -4556,8 +4710,9 @@ mod tests {
         // column is NULL over no rows: `[null]`.
         assert_eq!(json_typed("select json_group_array(id) filter (where id > 1) as f, json_group_array(id) over (order by id) as w from users"), "f: number[]; w: (number | null)[]");
         assert_eq!(
+            // The window call makes SQLite read the FILTER aggregate back as text: `{"f":"[2,3]"}`.
             json_typed("select json_object('f', json_group_array(id) filter (where id > 1)) as f, json_object('w', json_group_array(id) over ()) as w from users"),
-            "f: { f: number[] }; w: { w: unknown }"
+            "f: { f: unknown }; w: { w: unknown }"
         );
         assert_eq!(
             json_typed("select u.id, (select json_group_array(p.title) from posts p where p.user_id = u.id) as titles, (select json_group_array(p.title) from posts p where p.user_id = u.id group by p.user_id) as grouped from users u"),

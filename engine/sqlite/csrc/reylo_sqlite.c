@@ -166,6 +166,21 @@ static const char *rowidName(Table *pTab){
   return 0;
 }
 
+/* Whether a generated column's expression calls a function or reads another generated column.
+** SQLite computes a VIRTUAL column's expression where the column is read, so the JSON subtype a
+** function there sets (`as (json_object('a', a)) virtual`) is still on the value read. */
+static int callsOrReadsGenerated(Table *pTab, Expr *p){
+  int i;
+  if( p==0 ) return 0;
+  if( p->op==TK_FUNCTION || p->op==TK_AGG_FUNCTION || ExprUseXSelect(p) ) return 1;
+  if( p->op==TK_COLUMN && p->iColumn>=0 && p->iColumn<pTab->nCol && (pTab->aCol[p->iColumn].colFlags & COLFLAG_GENERATED) ) return 1;
+  if( callsOrReadsGenerated(pTab, p->pLeft) || callsOrReadsGenerated(pTab, p->pRight) ) return 1;
+  for(i=0; ExprUseXList(p) && p->x.pList && i<p->x.pList->nExpr; i++){
+    if( callsOrReadsGenerated(pTab, p->x.pList->a[i].pExpr) ) return 1;
+  }
+  return 0;
+}
+
 /* The provenance members of a column reference (the object is already open). */
 static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
   Table *pTab = ExprUseYTab(p) ? p->y.pTab : 0;
@@ -191,6 +206,7 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
     kv_bool(s, "notNull", pCol->notNull!=0);
     kv_bool(s, "rowid", p->iColumn<0 || iCol==pTab->iPKey);
     if( pCol->colFlags & COLFLAG_GENERATED ) kv_bool(s, "generated", 1);
+    if( (pCol->colFlags & COLFLAG_VIRTUAL) && callsOrReadsGenerated(pTab, sqlite3ColumnExpr(pTab, pCol)) ) kv_bool(s, "subtype", 1);
   }
   kv_bool(s, "outer", ExprHasProperty(p, EP_CanBeNull) || (p->op==TK_COLUMN && outerCursor(pSel, p->iTable)));
   if( pTab->tabFlags & TF_Strict ) kv_bool(s, "strict", 1);
@@ -425,21 +441,25 @@ static const char *onErrorName(int onError){
     case OE_Rollback: return "rollback"; case OE_Fail: return "fail"; default: return "default";
   }
 }
+/* Every ON CONFLICT clause of an upsert, in order: SQLite tries each against the conflict. */
 static void upsert(sqlite3_str *s, Upsert *pUpsert){
   int i;
-  if( pUpsert==0 ){ sqlite3_str_appendall(s, "null"); return; }
-  sqlite3_str_appendchar(s, 1, '{');
-  kv_bool(s, "doUpdate", pUpsert->isDoUpdate);
-  key(s, "set"); sqlite3_str_appendchar(s, 1, '[');
-  for(i=0; pUpsert->pUpsertSet && i<pUpsert->pUpsertSet->nExpr; i++){
+  sqlite3_str_appendchar(s, 1, '[');
+  for(; pUpsert; pUpsert=pUpsert->pNextUpsert){
     sqlite3_str_appendchar(s, 1, '{');
-    kv_str(s, "column", pUpsert->pUpsertSet->a[i].zEName);
-    key(s, "expr"); expr(s, pUpsert->pUpsertSet->a[i].pExpr, 0); sqlite3_str_appendchar(s, 1, ',');
+    kv_bool(s, "doUpdate", pUpsert->isDoUpdate);
+    key(s, "set"); sqlite3_str_appendchar(s, 1, '[');
+    for(i=0; pUpsert->pUpsertSet && i<pUpsert->pUpsertSet->nExpr; i++){
+      sqlite3_str_appendchar(s, 1, '{');
+      kv_str(s, "column", pUpsert->pUpsertSet->a[i].zEName);
+      key(s, "expr"); expr(s, pUpsert->pUpsertSet->a[i].pExpr, 0); sqlite3_str_appendchar(s, 1, ',');
+      closeObj(s); sqlite3_str_appendchar(s, 1, ',');
+    }
+    closeArr(s); sqlite3_str_appendchar(s, 1, ',');
+    key(s, "where"); expr(s, pUpsert->pUpsertWhere, 0); sqlite3_str_appendchar(s, 1, ',');
     closeObj(s); sqlite3_str_appendchar(s, 1, ',');
   }
-  closeArr(s); sqlite3_str_appendchar(s, 1, ',');
-  key(s, "where"); expr(s, pUpsert->pUpsertWhere, 0); sqlite3_str_appendchar(s, 1, ',');
-  closeObj(s);
+  closeArr(s);
 }
 static void insertHook(Parse *pParse, Table *pTab, IdList *pColumn, ExprList *pList, Select *pSelect, int onError, Upsert *pUpsert){
   int i, n;
@@ -450,7 +470,7 @@ static void insertHook(Parse *pParse, Table *pTab, IdList *pColumn, ExprList *pL
   kv_str(gDml, "kind", "insert");
   kv_str(gDml, "table", pTab->zName);
   kv_str(gDml, "onError", onErrorName(onError));
-  key(gDml, "upsert"); upsert(gDml, pUpsert); sqlite3_str_appendchar(gDml, 1, ',');
+  key(gDml, "upserts"); upsert(gDml, pUpsert); sqlite3_str_appendchar(gDml, 1, ',');
   n = pList ? pList->nExpr : pSelect && pSelect->pEList ? pSelect->pEList->nExpr : 0;
   key(gDml, "columns"); sqlite3_str_appendchar(gDml, 1, '[');
   for(i=0; i<n; i++){
@@ -544,6 +564,17 @@ static int checkedNotNull(Table *pTab, int iCol){
   return 0;
 }
 
+/* Whether the table declares a constraint ON CONFLICT IGNORE (a NOT NULL, a UNIQUE or the PRIMARY
+** KEY): a write that breaks it skips the row, unless the statement's own OR clause says otherwise. */
+static int ignoresConflict(Table *pTab){
+  Index *pIdx;
+  int i;
+  if( pTab->keyConf==OE_Ignore ) return 1;
+  for(i=0; i<pTab->nCol; i++) if( pTab->aCol[i].notNull==OE_Ignore ) return 1;
+  for(pIdx=pTab->pIndex; pIdx; pIdx=pIdx->pNext) if( pIdx->onError==OE_Ignore ) return 1;
+  return 0;
+}
+
 static void tables(sqlite3_str *s){
   int t, i, k;
   sqlite3_str_appendchar(s, 1, '{');
@@ -554,6 +585,7 @@ static void tables(sqlite3_str *s){
     kv_bool(s, "strict", (pTab->tabFlags & TF_Strict)!=0);
     kv_bool(s, "withoutRowid", (pTab->tabFlags & TF_WithoutRowid)!=0);
     kv_str(s, "rowidAlias", pTab->iPKey>=0 ? pTab->aCol[pTab->iPKey].zCnName : 0);
+    kv_bool(s, "ignores", ignoresConflict(pTab));
     key(s, "columns"); sqlite3_str_appendchar(s, 1, '[');
     for(i=0; i<pTab->nCol; i++){
       Column *pCol = &pTab->aCol[i];

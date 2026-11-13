@@ -13,8 +13,8 @@ reylo: users.email has changed since get_user.sql was built (it was text not nul
 
 - **What warns:** a column the query names, or every column after a `*`, that is gone, retyped, or nullable where it was not, and a function or table macro the query reads through whose body has changed. The query still runs, each warning once in a process, and a query the database can no longer run fails with the database's own error.
 - **What fails the call:** a default that an insert of a `rows(…)` parameter copied, which it would write as it was.
-- **What says nothing:** a new column, table or index; a new default; and a new `NOT NULL`, since the database refuses a row the column refuses itself.
-- **When it runs:** on a query's first run in a process, and again once its last check is a minute old. Each check is one catalog query on your client.
+- **What says nothing:** a new column, table or index; a new default; a new `NOT NULL`, since the database refuses a row the column refuses itself; and a table the database doesn't have at all, such as a Durable Object's before its migrations run, where the query fails with the database's own error.
+- **When it runs:** on a query's first run in a process, and again once its last check is a minute old, for each Durable Object on its own. Each check is one catalog query on your client.
 - **Where it can't run:** a role that can't read the catalog checks nothing, and the query runs.
 
 ## Changing a column [#deploy-migrations]

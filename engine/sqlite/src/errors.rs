@@ -50,13 +50,22 @@ fn literal(s: &str) -> String {
 /// trigger, or the parse named no table, or no table it writes.
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     let Some(tables) = &analysis.tables else { return Some(None) };
-    let written: Vec<String> = tables.write.iter().map(|t| literal(t.rsplit('.').next().unwrap_or(t))).collect();
+    // SQLite's tree names a table as its DDL does, with no schema: `my.table` is one name.
+    let written: Vec<String> = tables.write.iter().map(|t| literal(t)).collect();
     if analysis.kind != Some(StatementKind::Select) && written.is_empty() {
         return Some(None);
     }
     // An INSERT changes no key but as a REPLACE, which deletes, or through an upsert that updates.
-    let cascades = !written.is_empty() && (analysis.kind != Some(StatementKind::Insert) || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]));
-    let query = ERRORS_QUERY.replace("{written}", &if written.is_empty() { "null".to_string() } else { written.join(", ") }).replace("{cascades}", if cascades { "1" } else { "0" });
+    // A REPLACE is the statement's own, or a constraint's a written table declares ON CONFLICT
+    // REPLACE, which the catalog query looks for in the table's DDL (any `replace` there counts).
+    let cascades = if written.is_empty() {
+        "0"
+    } else if analysis.kind != Some(StatementKind::Insert) || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]) {
+        "1"
+    } else {
+        "exists (select 1 from sqlite_schema where type = 'table' and name collate nocase in ({written}) and sql like '%replace%')"
+    };
+    let query = ERRORS_QUERY.replace("{cascades}", cascades).replace("{written}", &if written.is_empty() { "null".to_string() } else { written.join(", ") });
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;
     let Ok(rows) = rows else { return Some(None) };
     Some(narrowed(&rows))
@@ -65,7 +74,9 @@ pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
 /// What [`ERRORS_QUERY`]'s rows say: nothing where one opens the statement. A name an extended
 /// code's error may carry is one the primary code's may too, which is the code sqlite3 and the
 /// sqlite package give, but for the constraint: given the primary code alone, the run time reads a
-/// failed CHECK's name or expression into it too, which the catalog does not hold.
+/// failed CHECK's name or expression into it too, which the catalog does not hold. SQLite's message
+/// names a column `table.column`, which the run time splits at the first dot, so a table whose name
+/// holds one (`my.table`) is named otherwise there: nothing is narrowed then.
 fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
     let text = |row: &[Value], k: usize| row.get(k).and_then(Value::as_str).map(str::to_string);
     let mut errors = Errors::default();
@@ -73,6 +84,9 @@ fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
         match text(row, 0).as_deref() {
             Some("name") => {
                 if let (Some(code), Some(field), Some(name)) = (text(row, 1), text(row, 2), text(row, 3)) {
+                    if field == "table" && name.contains('.') {
+                        return None;
+                    }
                     errors.add(&code, &field, &name);
                     if field != "constraint" {
                         errors.add("SQLITE_CONSTRAINT", &field, &name);
@@ -103,5 +117,8 @@ mod tests {
         // An index's name is the extended code's alone: the primary code's may be a CHECK's.
         let index = vec![vec![json!("name"), json!("SQLITE_CONSTRAINT_UNIQUE"), json!("constraint"), json!("users_lower_email")]];
         assert_eq!(serde_json::to_value(narrowed(&index)).unwrap(), json!({ "SQLITE_CONSTRAINT_UNIQUE": { "constraint": ["users_lower_email"] } }));
+        // `UNIQUE constraint failed: my.table.k` reads as table `my`.
+        let dotted = vec![vec![json!("name"), json!("SQLITE_CONSTRAINT_UNIQUE"), json!("columns"), json!("k")], vec![json!("name"), json!("SQLITE_CONSTRAINT_UNIQUE"), json!("table"), json!("my.table")]];
+        assert_eq!(narrowed(&dotted), None);
     }
 }

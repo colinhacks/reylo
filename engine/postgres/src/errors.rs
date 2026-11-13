@@ -80,7 +80,7 @@ macro_rules! relname {
 /// a column's type, a row type, a type the statement names or a function it calls returns, a
 /// preferred type or one a built-in type casts to implicitly, and what those are built of (a
 /// domain's base, an array's element and its array, a composite's fields, a range's subtype).
-/// A server newer than 19 may raise a code the run time's list lacks (19's list is 18's). An `open` row's last column is
+/// A server newer than 19 may raise a code the run time's list lacks (its list is 19's). An `open` row's last column is
 /// `reads` where what it finds cannot write ([`read_only`]): a type's input and output, or a function
 /// that is not volatile. One row `('present', oid)` for
 /// each type of a user's present, which [`OPERATORS_QUERY`] takes. One row `('runs', name, 'built in' or
