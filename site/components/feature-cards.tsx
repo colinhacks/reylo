@@ -47,6 +47,44 @@ export function Features({ children }: { children: ReactNode }) {
   return <div className="reylo-features">{children}</div>;
 }
 
+/** A name with `code` in backticks, as the card shows it. */
+function named(text: string): ReactNode {
+  return text.split('`').map((part, k) => (k % 2 ? <code key={k}>{part}</code> : part));
+}
+
+/** A feature that is a choice between two ways: a card two columns wide, its name over the two ways, an "or" on the seam between them. lib/markdown.ts writes it as a list item. */
+export function Choice({ icon, title, children }: { icon: keyof typeof icons; title: string; children: ReactNode }) {
+  return (
+    <div className="reylo-choice">
+      <div className="reylo-feature-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          {icons[icon]}
+        </svg>
+        {title}
+      </div>
+      <div className="reylo-choice-ways">{children}</div>
+    </div>
+  );
+}
+
+/** One way of a choice: its name (`code` in backticks), whether it is the default, and a sentence or two. The second way carries the "or". */
+export function Way({ title, default: isDefault, children }: { title: string; default?: boolean; children: ReactNode }) {
+  return (
+    <div className="reylo-choice-way">
+      {isDefault ? null : (
+        <span className="reylo-choice-or" aria-hidden="true">
+          or
+        </span>
+      )}
+      <div className="reylo-choice-way-title">
+        {named(title)}
+        {isDefault ? <span className="reylo-choice-default">default</span> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /** One feature: an icon and a name on one line, then a sentence or two. lib/markdown.ts writes it as a list item. */
 export function Feature({ icon, title, children }: { icon: keyof typeof icons; title: string; children: ReactNode }) {
   return (

@@ -833,7 +833,8 @@ a.reylo-compare-name:hover {
   padding: 1rem 1.1rem 1.1rem;
 }
 
-.reylo-feature svg {
+.reylo-feature svg,
+.reylo-choice svg {
   flex: none;
   width: 1.125rem;
   height: 1.125rem;
@@ -853,20 +854,105 @@ a.reylo-compare-name:hover {
   color: var(--color-fd-foreground);
 }
 
-#nd-page .prose .reylo-feature p {
+#nd-page .prose .reylo-feature p,
+#nd-page .prose .reylo-choice p {
   margin: 0;
   font-size: 0.875rem;
   line-height: 1.5;
   color: var(--color-fd-muted-foreground);
 }
 
-#nd-page .prose .reylo-feature code {
+#nd-page .prose .reylo-feature code,
+#nd-page .prose .reylo-choice code {
   white-space: nowrap;
+}
+
+/* A choice between two ways (components/feature-cards.tsx): a card two columns wide, its name
+   over the two ways, and an "or" on the seam between them, which lies across it on a phone. */
+.reylo-choice {
+  grid-column: 1 / -1;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.75rem;
+  background: var(--color-fd-card);
+}
+
+.reylo-choice > .reylo-feature-title {
+  margin: 0;
+  padding: 1rem 1.1rem 0.75rem;
+}
+
+.reylo-choice-ways {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.reylo-choice-way {
+  position: relative;
+  padding: 0.85rem 1.1rem 1.1rem;
+}
+
+.reylo-choice-way + .reylo-choice-way {
+  border-left: 1px solid var(--color-fd-border);
+}
+
+.reylo-choice-way-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-fd-foreground);
+}
+
+.reylo-choice-default {
+  padding: 0.1rem 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--color-fd-primary) 55%, transparent);
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--color-fd-primary);
+}
+
+.reylo-choice-or {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 999px;
+  background: var(--color-fd-card);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--color-fd-muted-foreground);
 }
 
 @media (max-width: 639px) {
   .reylo-features {
     grid-template-columns: 1fr;
+  }
+
+  .reylo-choice-ways {
+    grid-template-columns: 1fr;
+  }
+
+  .reylo-choice-way + .reylo-choice-way {
+    border-left: 0;
+    border-top: 1px solid var(--color-fd-border);
+    padding-top: 1.1rem;
+  }
+
+  .reylo-choice-or {
+    top: 0;
+    left: 50%;
   }
 }
 

@@ -3,7 +3,7 @@ import type { MDXComponents } from 'mdx/types';
 import type { ReactNode } from 'react';
 import { CompareTable } from './compare-table';
 import { Dialect, DialectSwitch, DialectTabs } from './dialect-tabs';
-import { Feature, Features } from './feature-cards';
+import { Choice, Feature, Features, Way } from './feature-cards';
 import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
@@ -40,6 +40,8 @@ export function getMDXComponents(components?: MDXComponents) {
     // The cards under /migrations' title (components/feature-cards.tsx).
     Features,
     Feature,
+    Choice,
+    Way,
     // The vertical stepper on /migrations (components/steps.tsx).
     Steps,
     Step,

@@ -8,16 +8,30 @@ description: Put your schema in schema.sql, and Reylo writes, checks and runs ea
 Reylo's migrations are separate from its `.sql` imports: each works without the other, and your own migration tool works just as well.
 
 <Features>
-<Feature icon="file" title="SQL first">
+<Choice icon="file" title="SQL-first data modeling">
+<Way title="via `schema.sql`" default>
 
-Keep the schema you want in `schema.sql`, as plain SQL, and Reylo writes each migration from your changes to it.
+Keep the schema you want in one file, as plain SQL, and Reylo writes each migration from your changes to it.
 
-</Feature>
-<Feature icon="branch" title="Linear or loose history">
+</Way>
+<Way title="pure DDL">
 
-A lockfile keeps your migrations in one linear order. Teams that merge fast can delete it, and Reylo then refuses a migration merged out of order where the order changes the schema.
+Write each migration by hand, or change your development database and let `reylo migrate new` capture it.
 
-</Feature>
+</Way>
+</Choice>
+<Choice icon="branch" title="Linear or loose history">
+<Way title="linear, via `reylo-lock.yaml`" default>
+
+A lockfile keeps one order, so two branches that each add a migration conflict in git, before anything deploys.
+
+</Way>
+<Way title="loose, in name order">
+
+For teams that merge fast. Reylo refuses a migration merged out of order where the order changes the schema.
+
+</Way>
+</Choice>
 <Feature icon="database" title="Postgres, MySQL and SQLite">
 
 One set of commands for all three.
