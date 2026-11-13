@@ -81,20 +81,14 @@ test("the migration commands and reylo run are the binary's, with their output a
   assert.match(slip.err, /^reylo migrate has no create: it's reylo migrate new\n/);
   assert.match(reylo(root, ["migrate", "push"]).err, /^reylo migrate has no push: it's reylo migrate history push, or reylo db push\n/);
   assert.match(reylo(root, ["db", "dev"]).err, /^reylo db has no dev: it's reylo migrate dev\n/);
-  // The check is status, which reads the database.
-  assert.match(reylo(root, ["migrate", "lint"]).err, /^reylo migrate has no lint: it's reylo migrate status\n/);
-  // The group these commands had before is named for what it is now.
-  const old = reylo(root, ["migration", "create", "add_bio"]);
-  assert.equal(old.status, 2);
-  assert.match(old.err, /^reylo migration is reylo migrate: reylo migrate new\n/);
   // With --json, a command that isn't one is the one JSON object too.
-  for (const args of [["migrate", "create", "add_bio", "--json"], ["migration", "create", "--json"], ["db", "deploy", "--json"]]) {
+  for (const args of [["migrate", "create", "add_bio", "--json"], ["db", "deploy", "--json"]]) {
     const r = reylo(root, args);
     assert.equal(r.status, 2, args.join(" "));
     const out = JSON.parse(r.out);
     assert.equal(out.ok, false);
     assert.equal(out.exit, 2);
-    assert.match(out.error, /^reylo (migrate|migration|db)/);
+    assert.match(out.error, /^reylo (migrate|db)/);
   }
   for (const [args, said] of [[["db", "push", "--rename", "users.a=b"], /push doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "deploy", "--schema", "x"], /deploy doesn't take --schema/], [["migrate", "deploy", "-f", "x.sql"], /deploy doesn't take --file/], [["migrate", "deploy", "dev"], /deploy doesn't take dev/], [["migrate", "new", "a", "b"], /new doesn't take b/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/], [["migrate", "dev", "--dir", "db"], /dev doesn't take --dir/], [["migrate", "status", "--offline"], /status doesn't take --offline/], [["migrate", "dev", "--dry-run"], /dev doesn't take --dry-run/], [["migrate", "history", "push", "--watch"], /history push doesn't take --watch/]] as const) {
     const r = reylo(root, [...args]);

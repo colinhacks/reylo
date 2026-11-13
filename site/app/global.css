@@ -833,6 +833,10 @@ a.reylo-compare-name:hover {
   padding: 1rem 1.1rem 1.1rem;
 }
 
+.reylo-feature-wide {
+  grid-column: 1 / -1;
+}
+
 .reylo-feature svg,
 .reylo-choice svg {
   flex: none;
@@ -905,16 +909,6 @@ a.reylo-compare-name:hover {
   font-weight: 600;
   line-height: 1.35;
   color: var(--color-fd-foreground);
-}
-
-.reylo-choice-default {
-  padding: 0.1rem 0.45rem;
-  border: 1px solid color-mix(in srgb, var(--color-fd-primary) 55%, transparent);
-  border-radius: 999px;
-  font-size: 0.6875rem;
-  font-weight: 500;
-  line-height: 1.3;
-  color: var(--color-fd-primary);
 }
 
 .reylo-choice-or {

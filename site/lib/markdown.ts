@@ -18,11 +18,11 @@ function expandSteps(text: string): string {
 /** Each `<Feature>` card as a list item, its name in bold, and each `<Choice>` card as one naming its two ways: what a card says, as an agent reads a list. */
 function expandFeatures(text: string): string {
   const choice = (_: string, title: string, ways: string) => {
-    const each = [...ways.matchAll(/<Way title="([^"]+)"( default)?>\n+([\s\S]*?)\n+<\/Way>\n/g)].map(([, name, isDefault, said], k) => `${k === 0 ? name[0]!.toUpperCase() + name.slice(1) : `Or ${name}`}${isDefault ? ' (the default)' : ''}: ${said}`);
+    const each = [...ways.matchAll(/<Way title="([^"]+)"(?: or)?>\n+([\s\S]*?)\n+<\/Way>\n/g)].map(([, name, said], k) => `${k === 0 ? name[0]!.toUpperCase() + name.slice(1) : `Or ${name}`}: ${said}`);
     return `- **${title}.** ${each.join(' ')}\n`;
   };
   return text.replace(/<Features>\n([\s\S]*?)<\/Features>\n/g, (_, cards: string) =>
-    cards.replace(/<Choice icon="\w+" title="([^"]+)">\n([\s\S]*?)<\/Choice>\n/g, choice).replace(/<Feature icon="\w+" title="([^"]+)">\n+([\s\S]*?)\n+<\/Feature>\n/g, '- **$1.** $2\n'),
+    cards.replace(/<Choice icon="\w+" title="([^"]+)">\n([\s\S]*?)<\/Choice>\n/g, choice).replace(/<Feature icon="\w+" title="([^"]+)"(?: wide)?>\n+([\s\S]*?)\n+<\/Feature>\n/g, '- **$1.** $2\n'),
   );
 }
 

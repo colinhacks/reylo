@@ -9,32 +9,32 @@ Reylo's migrations are separate from its `.sql` imports: each works without the 
 
 <Features>
 <Choice icon="file" title="SQL-first data modeling">
-<Way title="via `schema.sql`" default>
+<Way title="via `schema.sql`">
 
 Keep the schema you want in one file, as plain SQL, and Reylo writes each migration from your changes to it.
 
 </Way>
-<Way title="pure DDL">
+<Way title="schemaless mode" or>
 
-Write each migration by hand, or change your development database and let `reylo migrate new` capture it.
+You or your agents write each migration by hand, and Reylo checks and runs them all the same. There's no `schema.sql` to keep.
 
 </Way>
 </Choice>
 <Choice icon="branch" title="Linear or loose history">
-<Way title="linear, via `reylo-lock.yaml`" default>
+<Way title="linear, via `reylo-lock.yaml`">
 
 A lockfile keeps one order, so two branches that each add a migration conflict in git, before anything deploys.
 
 </Way>
-<Way title="loose, in name order">
+<Way title="loose, in name order" or>
 
-For teams that merge fast. Reylo refuses a migration merged out of order where the order changes the schema.
+Delete the lockfile, and migrations run in lexicographic order, refusing one merged out of order where the order changes the schema. Nothing writes the lock again until `reylo migrate lock`.
 
 </Way>
 </Choice>
-<Feature icon="database" title="Postgres, MySQL and SQLite">
+<Feature icon="zap" title="Fast iteration">
 
-One set of commands for all three.
+Try a change before you write its migration: `reylo db push --watch` takes your development database to `schema.sql` on every save.
 
 </Feature>
 <Feature icon="split" title="Elegant disambiguation">
@@ -42,14 +42,19 @@ One set of commands for all three.
 Where Reylo can't tell a rename from a drop, `--rename` and `--drop` settle it. A migration drops nothing until `--drop` names it.
 
 </Feature>
+<Feature icon="layers" title="Dry runs in shadow databases">
+
+Reylo replays your migrations on a throwaway database, so `--dry-run` shows what a deploy would do, running nothing on yours.
+
+</Feature>
 <Feature icon="hash" title="Integrity checks">
 
 Chained hashes in the lock catch a migration edited, deleted or reordered, before anything runs. A fingerprint on each database catches a change made by hand, and shows it.
 
 </Feature>
-<Feature icon="layers" title="Dry runs in shadow databases">
+<Feature icon="database" title="Postgres, MySQL and SQLite" wide>
 
-Reylo replays your migrations on a throwaway database, so `--dry-run` shows what a deploy would do, running nothing on yours.
+One set of commands for all three.
 
 </Feature>
 </Features>

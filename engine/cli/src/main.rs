@@ -67,7 +67,7 @@ Flags:
 const COMMANDS: [&str; 12] = ["migrate init", "migrate new", "migrate dev", "migrate deploy", "migrate status", "migrate lock", "migrate history push", "migrate history pull", "db push", "db reset", "db wipe", "db introspect"];
 
 /// Names another tool gives these commands, and the one each is here.
-const ALSO_KNOWN_AS: [(&str, &str); 5] = [("create", "migrate new"), ("generate", "migrate new"), ("pull", "db introspect"), ("lint", "migrate status"), ("check", "migrate status")];
+const ALSO_KNOWN_AS: [(&str, &str); 3] = [("create", "migrate new"), ("generate", "migrate new"), ("pull", "db introspect")];
 
 /// The help as a terminal shows it: its headings bold, each command cyan, each flag yellow and what
 /// it takes dim. Piped, it is the text alone.
@@ -419,20 +419,6 @@ fn main() {
         Some("generate") => {
             eprintln!("reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.");
             2
-        }
-        Some("migration") => {
-            // The group these commands had before they were `reylo migrate`'s: the command named, where
-            // it is one, else every command ending in its last word.
-            let take = if args.get(1).map(String::as_str) == Some("history") { 2 } else { 1 };
-            let words: Vec<&str> = args[1..].iter().take_while(|w| !w.starts_with('-')).take(take).map(|w| if w == "create" { "new" } else { w.as_str() }).collect();
-            let named = format!("migrate {}", words.join(" "));
-            let found: Vec<String> = if COMMANDS.contains(&named.as_str()) {
-                vec![format!("reylo {named}")]
-            } else {
-                COMMANDS.iter().filter(|c| words.last().is_some_and(|w| c.ends_with(&format!(" {w}")))).map(|c| format!("reylo {c}")).collect()
-            };
-            let message = if found.is_empty() { "reylo migration is reylo migrate (reylo migrate --help)".to_string() } else { format!("reylo migration is reylo migrate: {}", found.join(", or ")) };
-            usage_error("migration", &args[1..], &message, "")
         }
         Some(group @ ("migrate" | "db")) => group_command(group, &args[1..]).unwrap_or_else(|e| {
             eprintln!("reylo {group}: {e}");

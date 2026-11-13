@@ -25,6 +25,7 @@ const icons: Record<string, ReactNode> = {
     </>
   ),
   hash: <path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18" />,
+  zap: <path d="M13 2 4 14h7l-1 8 9-12h-7z" />,
   split: (
     <>
       <path d="M16 3h5v5" />
@@ -67,28 +68,25 @@ export function Choice({ icon, title, children }: { icon: keyof typeof icons; ti
   );
 }
 
-/** One way of a choice: its name (`code` in backticks), whether it is the default, and a sentence or two. The second way carries the "or". */
-export function Way({ title, default: isDefault, children }: { title: string; default?: boolean; children: ReactNode }) {
+/** One way of a choice: its name (`code` in backticks), and a sentence or two. The second way, `or`, carries the "or" on the seam. */
+export function Way({ title, or, children }: { title: string; or?: boolean; children: ReactNode }) {
   return (
     <div className="reylo-choice-way">
-      {isDefault ? null : (
+      {or ? (
         <span className="reylo-choice-or" aria-hidden="true">
           or
         </span>
-      )}
-      <div className="reylo-choice-way-title">
-        {named(title)}
-        {isDefault ? <span className="reylo-choice-default">default</span> : null}
-      </div>
+      ) : null}
+      <div className="reylo-choice-way-title">{named(title)}</div>
       {children}
     </div>
   );
 }
 
-/** One feature: an icon and a name on one line, then a sentence or two. lib/markdown.ts writes it as a list item. */
-export function Feature({ icon, title, children }: { icon: keyof typeof icons; title: string; children: ReactNode }) {
+/** One feature: an icon and a name on one line, then a sentence or two; `wide` spans both columns. lib/markdown.ts writes it as a list item. */
+export function Feature({ icon, title, wide, children }: { icon: keyof typeof icons; title: string; wide?: boolean; children: ReactNode }) {
   return (
-    <div className="reylo-feature">
+    <div className={wide ? 'reylo-feature reylo-feature-wide' : 'reylo-feature'}>
       <div className="reylo-feature-title">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           {icons[icon]}
