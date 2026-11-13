@@ -1253,7 +1253,7 @@
           "type": "string"
         },
         "optional": {
-          "description": "The key may be absent: a structured parameter's `?` member, a JSON object's key (as `jsonb_strip_nulls` drops). Apart from `nullable`, and never a default value.",
+          "description": "The key may be absent: a structured parameter's `?` member, a JSON object's key (as `jsonb_strip_nulls` drops). Apart from `nullable`; `default` names the value it takes where it is absent.",
           "const": true
         },
         "default": {

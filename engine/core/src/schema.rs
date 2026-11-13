@@ -179,7 +179,13 @@ impl Type {
                 json!({"type": "array", "items": entry})
             }
             // A tuple as a list of its values, each of its own type.
-            Kind::Tuple(t) => json!({"type": "array", "prefixItems": t.elements.iter().map(|e| e.ty.json_schema(opts)).collect::<Vec<_>>(), "items": false, "minItems": t.elements.len()}),
+            Kind::Tuple(t) => {
+                let items: Vec<Value> = t.elements.iter().map(|e| {
+                    let schema = e.ty.json_schema(opts);
+                    if e.nullable { nullable(schema) } else { schema }
+                }).collect();
+                json!({"type": "array", "prefixItems": items, "items": false, "minItems": t.elements.len()})
+            }
             // A tagged union as a client returns one: its tag and its value, `{ tag, value }`.
             Kind::TaggedUnion(t) => json!({"anyOf": t.alternatives.iter().map(|a| {
                 let value = a.ty.json_schema(opts);

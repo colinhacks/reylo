@@ -406,7 +406,7 @@ export interface Position {
 /** A record's field: a column of a row, a key of an object. */
 export interface Field extends Position {
   name: string;
-  /** The key may be absent: a structured parameter's `?` member, a JSON object's key (as `jsonb_strip_nulls` drops). Apart from `nullable`, and never a default value. */
+  /** The key may be absent: a structured parameter's `?` member, a JSON object's key (as `jsonb_strip_nulls` drops). Apart from `nullable`; `default` names the value it takes where it is absent. */
   optional?: true;
   /** The value an optional field takes where its key is absent, in its type's canonical text: only beside `optional`, and only for a kind whose values the format writes as text. */
   default?: string;
