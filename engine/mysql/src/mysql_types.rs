@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(of(254, ENUM, 255, None).short(), "enum");
         assert_eq!(of(254, SET, 255, None).short(), "set{text}");
         assert_eq!(serde_json::to_value(enumeration(labels("enum('x','y')"))).unwrap(), serde_json::json!({"kind": "text", "enum": ["x", "y"], "label": "enum"}));
-        assert_eq!(serde_json::to_value(set_of(labels("set('a','b')"))).unwrap(), serde_json::json!({"kind": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}, "label": "set"}));
+        assert_eq!(serde_json::to_value(set_of(labels("set('a','b')"))).unwrap(), serde_json::json!({"kind": "array", "distinct": true, "element": {"type": {"kind": "text", "enum": ["a", "b"]}}, "label": "set"}));
         assert_eq!(of(253, 0, BINARY, None).short(), "varbinary");
         assert_eq!(of(16, 0, 0, Some(7)).short(), "bit(boolean[7])");
         assert_eq!(unflagged(of(1, UNSIGNED, 0, Some(1))).short(), "tinyint");

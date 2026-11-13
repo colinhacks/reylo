@@ -122,6 +122,7 @@
 
 /* A card and the whole format read in one scroll of the page: Fumadocs caps a code block at 600px. */
 #nd-page .typedef-card figure .max-h-\[600px\],
+#nd-page .typedef-analyzed figure .max-h-\[600px\],
 #nd-page .typedef-spec figure .max-h-\[600px\] {
   max-height: none;
 }

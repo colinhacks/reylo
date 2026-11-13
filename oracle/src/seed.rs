@@ -734,7 +734,7 @@ fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Ite
     let keys: Vec<(usize, &str, bool, bool, bool)> = order
         .iter()
         .filter_map(|o| {
-            let name = o["column"].as_str()?;
+            let name = o["field"].as_str()?;
             let at = columns.iter().position(|c| c["name"].as_str() == Some(name))?;
             let number = matches!(columns[at]["type"]["kind"].as_str(), Some("integer" | "decimal" | "float"));
             Some((at, name, o["desc"].as_bool() == Some(true), o["nulls"].as_str() == Some("first"), number))
@@ -1580,6 +1580,8 @@ fn built_value(ty: &Type, json: &Value, path: &str) -> Option<String> {
             }
             None
         }
+        // MySQL writes a SET inside a document as its members joined by commas.
+        Kind::Array(array) if array.distinct => (!json.is_string()).then(|| format!("holds {json} at {at}, typed a SET, which MySQL writes as its text")),
         Kind::Array(array) => {
             let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed a list")) };
             for (i, item) in items.iter().enumerate() {

@@ -2,7 +2,7 @@
 // every parameter and column with. Apart from the engine's host so that the run time and the
 // modules a build writes can name it without Node's types: `src/execute.ts` reads a parameter's
 // type from a module's `inputs`.
-import type { ArrayType, Type } from "../spec/index.ts";
+import type { Type } from "../spec/index.ts";
 
 export type { Alternative, ArrayType, Field, JsonType, Position, RecordType, TaggedUnionType, TupleType, Type, UnionType } from "../spec/index.ts";
 

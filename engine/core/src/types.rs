@@ -274,7 +274,6 @@ pub struct UuidType {
 /// fields they are sorted on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArrayType {
-    pub element: Box<Position>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<Size>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -289,6 +288,8 @@ pub struct ArrayType {
     /// For an array of records: the fields the elements are sorted on, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<OrderField>,
+    /// Last, so that what an array says of itself reads before its elements.
+    pub element: Box<Position>,
 }
 
 impl ArrayType {
