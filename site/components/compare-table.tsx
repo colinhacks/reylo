@@ -20,7 +20,7 @@ const WORDS = { y: 'Yes', p: 'Partly', n: 'No' };
 
 const html = (text: string) => ({ __html: text });
 
-/** A query a tool got wrong, in the labelled rows of the docs' Inference cards, with what it infers and what the type should be. Its code is highlighted at build time (lib/compare-cards.ts). */
+/** A query a tool got wrong, in the labelled rows of the docs' inference cards, with what it infers and what the type should be. Its code is highlighted at build time (lib/compare-cards.ts). */
 function Card({ card }: { card: CompareCard }) {
   return (
     <div className="reylo-compare-card">

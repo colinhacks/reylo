@@ -1,9 +1,9 @@
 ---
-title: CI
-description: How to run Reylo's type check and build in CI. A GitHub Actions workflow for Postgres, and what changes for MySQL, SQLite, DuckDB and Cloudflare D1.
+title: Deployment / CI
+description: How to run Reylo's type check and build in CI and on your host. A GitHub Actions workflow for Postgres, what changes for MySQL, SQLite, DuckDB and Cloudflare D1, and a host that builds before it migrates.
 ---
 
-<p className="dk-subheader">Type-check and build your queries in CI</p>
+<p className="dk-subheader">Type-check and build your queries in CI and on your host</p>
 
 Reylo's type check runs in CI as it does on your machine.
 
@@ -15,7 +15,7 @@ It reads your schema from a live database, as your build does. A CI job starts a
 | Schema | Your migrations or a schema file, applied before the type check |
 | Connection | `DATABASE_URL` in the job's environment, or [`direct_url`](/configuration#direct_url) |
 | Commands | The type check, then your build and your tests |
-| Builds on a host | A database of its own, as [Can I build without a database?](/faq#faq-no-database) describes |
+| Builds on a host | A database of its own, where the host builds before it migrates ([below](#build-before-migrate)) |
 
 ## GitHub Actions
 
@@ -191,6 +191,16 @@ steps:
 ```
 
 The type check reads the local file that [`direct_url`](/cloudflare#local-database) names, so the job needs no Cloudflare account. [Cloudflare Workers](/cloudflare) covers the rest.
+
+## A host that builds before it migrates [#build-before-migrate]
+
+A host that builds before it migrates, such as Vercel, starts with no database that has your schema. Build against a database of its own:
+
+1. Create an empty database.
+2. Run your migrations into it, which also tries each one before it reaches production.
+3. Run the build with [`direct_url`](/configuration#direct_url) pointed at that database.
+4. Drop it.
+5. Migrate your deployment's own database.
 
 ## Errors
 

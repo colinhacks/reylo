@@ -10,7 +10,7 @@ description: How Reylo types SQL queries on Postgres. The TypeScript type of eac
 | | |
 | --- | --- |
 | Postgres versions | 14 to 18 |
-| Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url). Connect directly, not through a pooler such as PgBouncer. |
+| Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url). Connect directly or through a pooler in session mode, not one in transaction mode such as PgBouncer's. |
 | Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, and Knex over `pg` ([Drivers](#drivers)) |
 | Type checking | Reylo's engine connects to Postgres itself, so your project needs no driver for it |
 
@@ -329,7 +329,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows, and so can one inside a scalar subquery, beside the subquery's own columns. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `Json` values, as does one in a subquery whose aggregate reads only the columns of a query around it, which makes it that query's aggregate.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_json_grouped.sql"
 select jsonb_build_object('name', u.name, 'orders', count(o.id)) as summary
@@ -338,7 +338,7 @@ left join orders o on o.user_id = u.id
 group by u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Aggregates over no rows**
 
@@ -355,7 +355,7 @@ Over no rows, `jsonb_agg` returns `null`, and its type includes `null`. Write `c
 
 A JSON Schema `CHECK`'s type reaches the column wherever you use it as it is: selected directly or through a view or subquery, inside JSON you build, in a whole row, and as a parameter written to the column.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_json_schema_param.sql"
 insert into events (kind, payload)
@@ -363,13 +363,13 @@ values (:kind, :payload)
 returning id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Keys read from the column**
 
 A key read with `->`, `->>`, `#>` or `#>>` and a literal key is typed by the schema, and is non-null where the schema requires the key:
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema
 create extension if not exists pg_jsonschema;
@@ -392,26 +392,26 @@ select payload ->> 'kind' as kind, payload -> 'x' as x
 from events
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Where it doesn't**
 
 Any other expression on the column, a key read from a JSON parameter, a column under a `union`, a `CHECK` added `NOT VALID`, and `to_jsonb` of a single value are typed `Json`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_json_any.sql"
 select payload || '{"seen": true}' as merged, to_jsonb(kind) as k
 from events
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Through a `with` query or a subquery**
 
 JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is, put it inside JSON you build, or default it with `coalesce(…, '[]')`. Through a `union` or a `*`, it's `Json`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_json_with.sql"
 with totals as (
@@ -424,13 +424,13 @@ from users u
 join totals t on t.user_id = u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Through a `case`**
 
 A `case` whose one branch builds JSON and whose other branches are `null` keeps that branch's type, and is nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_json_case.sql"
 select case when total > 100
@@ -439,7 +439,7 @@ end as big_order
 from orders
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -626,20 +626,20 @@ Every column is typed `| null` unless Reylo can tell it never is null. On Postgr
 
 A table's column is non-null if it has a valid `NOT NULL` constraint, including in every table that inherits from it.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_columns.sql"
 select name, email
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Outer joins**
 
 An outer join makes the joined table's columns nullable: the right side of a `left join`, the left side of a `right join`, and both sides of a `full join`. A table joined to itself is told apart by its alias.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_left_join.sql"
 select u.name, o.total
@@ -647,13 +647,13 @@ from users u
 left join orders o on o.user_id = u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Tests that rule out `NULL`**
 
 A test that fails on `NULL`, in the `where` or in an inner join's `on`, makes its column non-null, whether the query selects it by name or with `*`. On a joined table, it also shows the row exists, so the table's `NOT NULL` columns are non-null again. The `where` of an `update` or a `delete` does the same for its `returning`, except for a column the `update` sets, a generated column, and a table whose trigger or rule may change the row.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_where.sql"
 select u.name, o.total, o.ships_on
@@ -662,13 +662,13 @@ left join orders o on o.user_id = u.id
 where o.paid
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Expressions**
 
 Literals, `count`, `exists` and `is null` are never null. Operators, casts, built-in functions, `in`, `between` and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is. A function that returns `NULL` for some valid input stays nullable: `nullif`, `substring` with a pattern, and `to_char`, or `extract` of a field such as `month`, over an infinite timestamp (fields that grow with time, such as `year` and `epoch`, are infinite there instead). Two set-returning functions in one select list run in step and pad the shorter with `NULL`, so both are nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_expressions.sql"
 select name || '!' as shout,
@@ -678,13 +678,13 @@ select name || '!' as shout,
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Aggregates**
 
 Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `array_agg` and `jsonb_agg` are non-null, `max`, `sum`, `any_value`, `percentile_cont` and `mode` are non-null when their arguments are, and a `filter` keeps an aggregate nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_aggregates.sql"
 select user_id,
@@ -695,26 +695,26 @@ from orders
 group by user_id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Subqueries**
 
 A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`. A column of a `with` query or a subquery in `from` is as nullable as it is in that query, and one of a `lateral` subquery too. A set-returning function in `from` returns no row for a `NULL` argument, so the values of `generate_series`, the keys of `jsonb_each` and a `with ordinality` number are never null.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_subqueries.sql"
 select (select count(*) from orders) as orders,
   (select name from users order by id limit 1) as first_name
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Window functions**
 
 A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. An aggregate over a window, and `first_value` or `last_value`, follows its argument, unless a `filter` or a frame that can leave out the current row keeps it nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_window.sql"
 select id,
@@ -724,13 +724,13 @@ select id,
 from orders
 ```
 
-</Inferred>
+</InferenceCard>
 
 **`union`**
 
 A `union` column is non-null when it's non-null in every branch.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_union.sql"
 select name as label, email as contact from users
@@ -738,31 +738,31 @@ union all
 select 'guest', null
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Whole rows**
 
 A whole row is non-null unless an outer join can null it, and keeps each column's type. Turned into JSON, an outer-joined row's fields keep their own nullability.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_null_rows.sql"
 select to_jsonb(o) as "order"
 from orders o
 ```
 
-</Inferred>
+</InferenceCard>
 
 So does the whole row of a subquery or a `with` query, which Postgres itself types only as `record`, and a recursive `with` query's `cycle` path and `search` column, which hold rows of the columns they name.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_subquery_rows.sql"
 select jsonb_agg(u) as people
 from (select id, name, email from users) u
 ```
 
-</Inferred>
+</InferenceCard>
 
 A function that returns one value of no row type gives that value for its whole row, so `to_jsonb(f.*)` over it is a string or a number where the value is one, not an object. With several columns, a row type, `with ordinality` or `rows from` of several functions, the whole row is a row.
 
@@ -770,7 +770,7 @@ A function that returns one value of no row type gives that value for its whole 
 
 A function in `language sql` is read as the query it is, so its body decides which columns are null and how many rows it returns. Mark it `stable` if it only reads: Postgres then plans its body into your query, so a filter on its rows can use an index.
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema
 create table comments (
@@ -794,7 +794,7 @@ select id, body
 from comments_for(:post_id::bigint)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -819,7 +819,7 @@ Each `Row` is an object of the query's columns, or the value itself where the qu
 
 A query that compares every column of a primary key or unique index with `=` returns one row or `null`. A unique index on an expression counts when the query compares the same expression, written as Postgres stores it in the index, cast included.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_card_unique.sql"
 select id, name
@@ -827,13 +827,13 @@ from users
 where lower(email) = lower(:email)
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Writes that read a `with` query**
 
 An `update` or `delete` that joins with `from` or `using` is still a row or `null` when its key is matched, since a row it writes is written once, whatever it joins. The match can be to a `with` query of one row, the usual way to use a parameter twice:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_card_with_input.sql"
 with input as (
@@ -846,13 +846,13 @@ where u.id = input.id and u.name <> input.name
 returning u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Triggers**
 
 A `BEFORE` row trigger can skip a row by returning `NULL`, so a write it fires on returns a row or `null`. Reylo reads a trigger written in PL/pgSQL: where every `return` returns `new`, or `old` on an update or a delete, it skips nothing, and the write keeps its cardinality. A trigger in another language, or one that assigns `new` as a whole, may skip a row.
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema
 create table notes (
@@ -876,13 +876,13 @@ on conflict (id) do update set body = excluded.body
 returning id, edited_at
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Partial unique indexes**
 
 A partial unique index counts only when the `where` includes its condition.
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema
 create table slugs (
@@ -899,13 +899,13 @@ from slugs
 where slug = :slug and not deleted
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Subqueries, `with` queries and views**
 
 A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, or when its `group by` or `distinct` lists the columns. A `union`, `intersect` or `except` without `all` is keyed on its whole row when each column is one table column on both sides, of one type, and `intersect` and `except` keep their left side's keys, with `all` or without. A key column its `where` pins to one value may be left out, a column list renames the key's columns, and a unique index on an expression counts when the select list keeps the expression under an alias.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_card_subquery.sql"
 select id, total
@@ -918,7 +918,7 @@ from (
 where id = :id::bigint
 ```
 
-</Inferred>
+</InferenceCard>
 
 A `union all`, a set-returning function such as `unnest` in the select list, or a key column passed through an expression or a cast that no unique index covers leaves no key.
 
@@ -926,7 +926,7 @@ A `union all`, a set-returning function such as `unnest` in the select list, or 
 
 Part of a composite key doesn't count, and neither does a `having` or an `insert … select … returning`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_card_insert_select.sql"
 insert into orders (user_id, total)
@@ -934,7 +934,7 @@ select id, 0 from users
 returning id
 ```
 
-</Inferred>
+</InferenceCard>
 
 A comparison under another collation doesn't count either. A column under the default collation compared with a value that carries a nondeterministic one compares under that one, where `'a'` can equal both `'a'` and `'A'`, so a unique key on the column bounds nothing. In a database that holds such a collation, a key is matched by a parameter, a literal, a built-in call or cast of those, or a column Reylo reads as carrying none; a subquery or your own function counts only in a database that holds none.
 
@@ -1096,7 +1096,7 @@ A parameter accepts `null` in two places. Such a parameter is optional in `.run(
 
 A cast to `nullable(type)` makes the parameter that type or `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_param_nullable.sql"
 select id, name
@@ -1104,20 +1104,20 @@ from users
 where role = coalesce(:role::nullable(user_role), role)
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Written to a nullable column**
 
 Written directly into a column that accepts `NULL`, with no cast. A column accepts it unless it's `NOT NULL`, its domain is `not null`, or a `check (… is not null)` covers it.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_param_insert.sql"
 insert into orders (user_id, total, ships_on)
 values (:user_id, :total, :ships_on)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -1131,7 +1131,7 @@ Each of these is one statement in place of code around one.
 
 To write each column only where it is still null, use `coalesce` in one statement, rather than reading the row and then updating it. Two callers can't overwrite each other, and `returning` says what the row holds now:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_fill_order.sql"
 update orders
@@ -1141,13 +1141,13 @@ where id = :id and (ships_on is null or receipt is null)
 returning id, ships_on, receipt
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Buckets with no gaps**
 
 To count by day with a row for each empty day, join a `generate_series` to the counts, rather than filling the gaps with `Date` arithmetic:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="pg_orders_per_day.sql"
 select
@@ -1164,7 +1164,7 @@ group by day
 order by day
 ```
 
-</Inferred>
+</InferenceCard>
 
 **An enum's labels as a type**
 

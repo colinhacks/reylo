@@ -43,7 +43,7 @@ const MOVED: Record<string, string> = {
   "dates-and-64-bit-integers": "/faq#faq-value-types",
   "delete": "/usage#run",
   "delete-rows": "/usage#run",
-  "deploy-build": "/faq#faq-no-database",
+  "deploy-build": "/deployment#build-before-migrate",
   "deploy-migrations": "/migrations#deploy",
   "deploy-other-database": "/configuration#direct_url",
   "deploying": "/configuration#direct_url",
