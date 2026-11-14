@@ -6,6 +6,7 @@
 // (`reylo6`) or Reylo's (`reylo20`), never typed by hand.
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
+import { reportedDiagnostics, type Reported } from '../../src/mapper-diagnostics.ts';
 
 /** One diagnostic as the mapper returns it: its place in the file in UTF-8 bytes, its code (`reylo<code>`) and its message. */
 export type MapperDiagnostic = { start: number; length: number; code: number; messageText: string };
@@ -58,8 +59,7 @@ export async function openMapper(dir: string, env: Record<string, string>): Prom
   await call('openProject', { projectHandle, configFileName: path.join(dir, 'tsconfig.json'), options: {} });
   return {
     async diagnostics(fileName, content) {
-      const result = (await call('transform', { fileName: path.join(dir, fileName), content, projectHandle })) as { diagnostics?: MapperDiagnostic[] };
-      return result.diagnostics ?? [];
+      return reportedDiagnostics((await call('transform', { fileName: path.join(dir, fileName), content, projectHandle })) as Reported);
     },
     async close() {
       await call('closeProject', { projectHandle }).catch(() => {});

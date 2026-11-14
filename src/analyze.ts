@@ -7,11 +7,11 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { anyEngine, AnswerCache, engine, reason, MissingEngine, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
+import { anyEngine, AnswerCache, engine, reason, MissingEngine, REYLO_VERSION, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
 import { duckdbPath, packageDir, resolveProject, sqlitePath, type ResolvedProject } from "./project.ts";
 import { duckdbDatabase } from "./duckdb.ts";
 import { NotMysql, refusedLogin } from "./connection.ts";
-import { openProjectDrivers, placeRefusal, type SqliteDriver } from "./sqlite-drivers.ts";
+import { openProjectDrivers, placeRefusal, projectDriverVersions, type SqliteDriver } from "./sqlite-drivers.ts";
 
 /** What `.reylo/` holds for one statement. */
 export type Entry = {
@@ -371,6 +371,19 @@ export class Session {
       }
     }
     return this.#schema;
+  }
+
+  /**
+   * What this session's analyses are a function of besides the statement: reylo's version, the
+   * engine, the schema's fingerprint, and on SQLite the app's drivers each statement is prepared on
+   * too. Where there is no fingerprint (no URL is set, the database cannot be reached, or it refuses
+   * the query), the analyses come from `.reylo/` or are not given, and the value is this process's
+   * own, matching no other.
+   */
+  async identity(): Promise<string> {
+    const value = this.project.url ? (await this.schema()).value : null;
+    const drivers = this.project.dialect === "sqlite" ? projectDriverVersions(this.root) : [];
+    return JSON.stringify([REYLO_VERSION, this.#engineFingerprint, value ?? `offline ${process.pid} ${Date.now()}`, drivers]);
   }
 
   /** Reads the schema's fingerprint again now, however recent the last read; whether it changed. */
