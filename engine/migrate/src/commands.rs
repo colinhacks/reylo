@@ -785,8 +785,11 @@ fn copies_a_rebuild(statements: &[crate::sql::Statement], k: usize) -> bool {
     if t.get(at).map(Token::upper).as_deref() != Some("SELECT") {
         return false;
     }
-    let Some(from) = t[at..].iter().position(|x| x.upper() == "FROM").map(|p| at + p + 1) else { return false };
-    matches!(name_at(t, from), Some((source, end)) if end == t.len() && dropped_after(&source))
+    let Some(from) = t[at..].iter().position(|x| x.upper() == "FROM").map(|p| at + p) else { return false };
+    // Columns as they are, by name: a copy that computes a value (`lower(body)`) writes rows.
+    let picked = &t[at + 1..from];
+    let bare = !picked.is_empty() && picked.iter().enumerate().all(|(k, x)| if k % 2 == 0 { matches!(x.kind, TokenKind::Word | TokenKind::Quoted) } else { x.text == "," }) && picked.len() % 2 == 1;
+    bare && matches!(name_at(t, from + 1), Some((source, end)) if end == t.len() && dropped_after(&source))
 }
 
 /// The lines of `old` and `new` as a unified diff without its hunk headers: unchanged lines more
@@ -4695,6 +4698,7 @@ mod tests {
         assert!(data_statements(sqlite, Dialect::Sqlite).is_empty());
         // Rows the file writes itself: a copy that keeps some rows, one into a table it doesn't make, or from one it keeps.
         assert_eq!(data_statements(&duckdb.replace("from temp.main.reylo_copy_posts;", "from temp.main.reylo_copy_posts where id > 1;"), Dialect::Duckdb).len(), 1);
+        assert_eq!(data_statements(&duckdb.replace("select id, body from", "select id, upper(body) from"), Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("create table archive (id integer); insert into archive (id) select id from posts;", Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("insert into posts (id) select id from old; drop table old;", Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("update posts set body = '';", Dialect::Sqlite).len(), 1);
