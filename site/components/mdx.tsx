@@ -8,8 +8,7 @@ import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
 import { MigrationsDiagram } from './migrations-diagram';
-import { InferenceCard, InferenceCardRow, InferenceCardTypes } from './inference-card';
-import { PlaygroundLink } from './playground-link';
+import { InferenceCard, InferenceCardPlay, InferenceCardRow, InferenceCardTypes } from './inference-card';
 import { Pairs, Rules } from './value-pairs';
 
 /**
@@ -40,6 +39,7 @@ export function getMDXComponents(components?: MDXComponents) {
     InferenceCard,
     InferenceCardRow,
     InferenceCardTypes,
+    InferenceCardPlay,
     // The cards under /migrations' title (components/feature-cards.tsx).
     Features,
     Feature,
@@ -59,8 +59,6 @@ export function getMDXComponents(components?: MDXComponents) {
         </InferenceCard>
       </div>
     ),
-    // The card that links the playground, /play (components/playground-link.tsx).
-    PlaygroundLink,
     // A rule list whose rules show SQL values and what `.run()` returns for each, the dialect
     // pages' (components/value-pairs.tsx).
     Rules,
