@@ -358,7 +358,7 @@ const user = await getUser.run(db, { id: 1 });
 
 DuckDB's `alter table` adds no check or foreign key, changes no column an index covers, and changes little of a table another table's key references. So `reylo migrate new` writes such a change as a rebuild: the table's rows go to a temporary table, the table is made again, and the rows come back, with those of every table whose keys reference it. A check added to `authors`:
 
-```sql title="reylo/migrations/20261114120000_named.sql"
+```sql title="20261114120000_check_author_names.sql"
 create temporary table reylo_copy_authors as select * from authors;
 create temporary table reylo_copy_books as select * from books;
 drop table books;
