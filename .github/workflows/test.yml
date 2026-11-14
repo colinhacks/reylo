@@ -238,7 +238,8 @@ jobs:
     name: Build and test the engine
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # The migrations' tests (engine/migrate/tests) build schemas on these and skip each database whose URL is unset.
+    # The migrations' tests (engine/migrate/tests) build schemas on these and skip each database whose URL is
+    # unset, and DuckDB's where no library is fetched (below).
     services:
       postgres:
         image: postgres:18
@@ -290,6 +291,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-client-18
           /usr/lib/postgresql/18/bin/pg_dump --version
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+      # The migrations run on DuckDB through the library a project's @duckdb/node-api installs: its
+      # Linux package, at the version lab/drivers locks and checked against the lock's hash.
+      - name: Fetch DuckDB's library
+        run: |
+          read -r url integrity < <(node -p "const p = require('./lab/drivers/package-lock.json').packages['node_modules/@duckdb/node-bindings-linux-x64']; p.resolved + ' ' + p.integrity")
+          curl -fsSL "$url" -o "$RUNNER_TEMP/duckdb.tgz"
+          [ "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/duckdb.tgz" | base64 -w0)" = "$integrity" ] || { echo "::error::$url isn't the package lab/drivers locks"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/duckdb" && tar -xzf "$RUNNER_TEMP/duckdb.tgz" -C "$RUNNER_TEMP/duckdb"
+          echo "REYLO_DUCKDB_LIBRARY=$RUNNER_TEMP/duckdb/package/libduckdb.so" >> "$GITHUB_ENV"
       - run: cargo test ${{ needs.scope.outputs.tests }}
       - if: always()
         run: sccache --show-stats
