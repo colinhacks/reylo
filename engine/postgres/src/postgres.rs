@@ -5093,7 +5093,7 @@ mod tests {
         ] {
             assert_eq!(check_values(other, "status"), None, "{other}");
         }
-        assert_eq!(with_values(Type::text().named("text"), Some(&["a".to_string()]), true), Type::text_of(vec!["a".into()]).named("text"));
+        assert_eq!(with_values(Type::text().named("text"), Some(&["a".to_string()]), true), Type::one_of(Type::text().named("text"), vec!["a".into()]));
     }
 
     #[test]
@@ -5450,12 +5450,12 @@ mod tests {
         };
         // Written whole and bare, by an INSERT's VALUES, the SELECT that feeds an INSERT, and an
         // UPDATE's SET: the column's modifier, an array's for its elements.
-        let modified = "name: varchar(≤20), price: numeric(10,2), tags: varchar(≤8)?[]";
+        let modified = "name: varchar(≤20, ¬NUL), price: numeric(10,2), tags: varchar(≤8, ¬NUL)?[]";
         assert_eq!(shown("INSERT INTO items (name, price, tags) VALUES (:name, :price, :tags)", &[1043, 1700, 1015]), modified);
         assert_eq!(shown("INSERT INTO items (name, price, tags) SELECT :name, :price, :tags", &[1043, 1700, 1015]), modified);
         assert_eq!(shown("UPDATE items SET name = :name, price = :price, tags = :tags WHERE id = :id", &[1043, 1700, 1015, 23]), format!("{modified}, id: int4"));
         // A cast one is its cast's type, and one only compared with a column is the server's.
-        assert_eq!(shown("INSERT INTO items (name, price) VALUES (:name::text, :price::numeric)", &[25, 1700]), "name: text, price: numeric");
+        assert_eq!(shown("INSERT INTO items (name, price) VALUES (:name::text, :price::numeric)", &[25, 1700]), "name: text(¬NUL), price: numeric");
         assert_eq!(shown("SELECT id FROM items WHERE name = :name AND price = :price", &[1043, 1700]), "name: varchar, price: numeric");
     }
 
@@ -5834,7 +5834,7 @@ mod tests {
         let (row, nullable) = items("SELECT jsonb_agg(e ORDER BY e.id) AS rows FROM events e");
         assert!(!nullable);
         let TyKind::Struct(record) = row.kind else { panic!("{row:?}") };
-        assert_eq!(record.fields[1].ty, Type::text_of(vec!["click".into(), "key".into()]).named("text"));
+        assert_eq!(record.fields[1].ty, Type::one_of(crate::pgtypes::text().named("text"), vec!["click".into(), "key".into()]));
         assert!(!record.fields[1].nullable && record.fields[2].nullable);
         // The preserved side of an outer join is a row; the nulled side is NULL where nothing matched,
         // unless a strict test of the WHERE rejects those rows.
@@ -5847,7 +5847,7 @@ mod tests {
         let a = replay_docs("SELECT e FROM events e", &describe);
         assert!(!a.columns[0].nullable);
         let TyKind::Struct(record) = &a.columns[0].ty.kind else { panic!("{:?}", a.columns[0].ty) };
-        assert_eq!(record.fields[1].ty, Type::text_of(vec!["click".into(), "key".into()]).named("text"));
+        assert_eq!(record.fields[1].ty, Type::one_of(crate::pgtypes::text().named("text"), vec!["click".into(), "key".into()]));
     }
 
     #[test]
@@ -5922,7 +5922,7 @@ mod tests {
             panic!("the replay did not converge");
         };
         let int = |name: &str, nullable: bool| (name.to_string(), Type::integer(32).named("int4"), nullable);
-        let text = |name: &str, nullable: bool| (name.to_string(), Type::text().named("text"), nullable);
+        let text = |name: &str, nullable: bool| (name.to_string(), crate::pgtypes::text().named("text"), nullable);
         assert_eq!(analyzed("select s.id, s.note from (select id, note from app.accounts) s"), [int("id", false), text("note", true)]);
         assert_eq!(analyzed("with a as (select id, note from app.accounts) select id, note from a"), [int("id", false), text("note", true)]);
         assert_eq!(analyzed("select s.id, s.name from (select id, name from users) s"), [int("id", false), text("name", false)]);

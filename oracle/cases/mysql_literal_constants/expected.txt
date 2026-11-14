@@ -1,0 +1,4 @@
+escapes.sql: one () -> { a: varchar('a'), f: varchar('f'), q: varchar('it''s'), n: varchar('\n') }
+long_double.sql: one () -> { d: double }
+truths.sql: one () -> { t: boolean(true), f: boolean(false), one: bigint | int, d: decimal(-2.5) }
+union_case.sql: many () -> { kind: varchar('user' | 'org'), id: int | bigint, sign: varchar('pos' | 'neg' | 'zero')? }

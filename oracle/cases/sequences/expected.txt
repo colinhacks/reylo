@@ -1,12 +1,12 @@
-beside_key.sql: at_most_one (id: int8) -> { name: text?, last_value: int8 }
-beside_scan.sql: many () -> { name: text?, last_value: int8 }
+beside_key.sql: at_most_one (id: int8) -> { name: text(¬NUL)?, last_value: int8 }
+beside_scan.sql: many () -> { name: text(¬NUL)?, last_value: int8 }
 last_value.sql: one () -> { last_value: int8 }
-left_join.sql: one (id: int8) -> { last_value: int8, name: text? }
+left_join.sql: one (id: int8) -> { last_value: int8, name: text(¬NUL)? }
 left_join_nulled.sql: at_most_one (id: int8) -> { id: int8, last_value: int8? }
 limit_param.sql: at_most_one (n: int8) -> { last_value: int8 }
 only.sql: one () -> { last_value: int8 }
 other_schema.sql: many () -> { last_value: int8? }
-pins_nothing.sql: many () -> { name: text? }
+pins_nothing.sql: many () -> { name: text(¬NUL)? }
 qualified.sql: one () -> { last_value: int8 }
 star.sql: one () -> { last_value: int8, log_cnt: int8, is_called: bool }
 two.sql: one () -> { last_value: int8, is_called: bool }

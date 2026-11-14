@@ -99,10 +99,10 @@ const files = readdirSync(path.join(site, 'content', 'docs')).filter((f) => f.en
 const found: { file: string; card: AnalyzedCard }[] = files.flatMap((file) => analyzedCards(parsePage(file)).map((card) => ({ file: path.relative(site, file), card })));
 const dir = mkdtempSync(path.join(tmpdir(), 'reylo-capture-typedefs-'));
 writeFileSync(path.join(dir, 'package.json'), '{}');
-if (existsSync(DUCKDB)) {
-  mkdirSync(path.join(dir, 'node_modules', '@duckdb'), { recursive: true });
-  symlinkSync(DUCKDB, path.join(dir, 'node_modules', '@duckdb', 'node-api'));
-}
+// The project's install, as an app's holds it: reylo, this checkout, and DuckDB's driver.
+mkdirSync(path.join(dir, 'node_modules', '@duckdb'), { recursive: true });
+symlinkSync(path.resolve(site, '..'), path.join(dir, 'node_modules', 'reylo'));
+if (existsSync(DUCKDB)) symlinkSync(DUCKDB, path.join(dir, 'node_modules', '@duckdb', 'node-api'));
 const captures: Captures = {};
 try {
   for (const { file, card } of found) {

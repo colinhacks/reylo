@@ -349,7 +349,6 @@ export const duckdb_tuple: Example = {
       columns: [
         {
           name: "pair",
-          nullable: true,
           type: {
             kind: "tuple",
             elements: [
@@ -378,7 +377,7 @@ export const structured_param: Example = {
             type: {
               kind: "struct",
               fields: [
-                { name: "kind", type: { kind: "text", size: { max: 32 }, label: "varchar" } },
+                { name: "kind", type: { kind: "text", code_points: [[1, 1114111]], size: { max: 32 }, label: "varchar" } },
                 { name: "at", nullable: true, optional: true, type: timestamptz },
               ],
             },

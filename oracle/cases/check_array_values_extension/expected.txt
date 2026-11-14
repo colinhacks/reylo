@@ -1,1 +1,1 @@
-columns.sql: many () -> { tags: (text('a' | 'b'))[]? }
+columns.sql: many () -> { tags: text(¬NUL, 'a' | 'b')[]? }

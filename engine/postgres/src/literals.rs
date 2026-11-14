@@ -88,9 +88,16 @@ fn expr(node: &Node) -> Option<Vec<Literal>> {
             if !name.typmods.is_empty() || !name.array_bounds.is_empty() || name.setof || name.pct_type {
                 return None;
             }
-            let inner = expr(cast.arg.as_deref()?)?;
-            let target = crate::infer::builtin_name(&name.names)?;
-            inner.into_iter().map(|l| cast_to(&target, l)).collect()
+            let arg = cast.arg.as_deref()?;
+            // A cast of a cast reads the value through the inner type, which may round it:
+            // `0.30000000000000004::float8::numeric` is 0.3.
+            if matches!(arg.node, Some(N::TypeCast(_))) {
+                return None;
+            }
+            // Only a type that keeps a constant as written, NULL's too: `null::"char"` makes the
+            // type a union's other arms are read as, which cuts `'abc'` to `'a'`.
+            let target = crate::infer::builtin_name(&name.names).filter(|t| KEEPS.contains(&t.as_str()))?;
+            expr(arg)?.into_iter().map(|l| cast_to(&target, l)).collect()
         }
         N::CollateClause(c) => expr(c.arg.as_deref()?),
         N::CaseExpr(c) => {
@@ -107,6 +114,9 @@ fn expr(node: &Node) -> Option<Vec<Literal>> {
         _ => None,
     }
 }
+
+/// The built-in types a constant may be cast to and keep its value as written ([`cast_to`]).
+const KEEPS: &[&str] = &["text", "varchar", "int2", "int4", "int8", "numeric", "float8", "bool"];
 
 /// A constant cast to a built-in type, where the cast keeps the value as written: a string to a
 /// string, a whole number written in digits to an integer, and a number to `numeric` or a double.
@@ -168,6 +178,9 @@ mod tests {
         assert_eq!(shown("select 1::int8 as a, '7'::integer as b, 1.5::integer as c, '1.50'::numeric as d, 0.1::double precision as e, 0.1::real as f, 1::text as g"), [v(&["1"]), v(&["7"]), None, v(&["1.50"]), v(&["0.1"]), None, None]);
         // A modifier rounds or cuts it, and a type of the user's or an extension's reads it as its own.
         assert_eq!(shown("select 'abc'::varchar(2) as a, 1.55::numeric(3,1) as b, 'x'::mood as c, 'a'::varchar as d, 'x'::public.text as e"), [None, None, None, v(&["'a'"]), None]);
+        // A NULL cast to a type that would change the other arms' values, and a cast of a cast.
+        assert_eq!(shown("select 'abc' as v union all select null::\"char\" union all select null::name"), [None]);
+        assert_eq!(shown("select 0.30000000000000004::float8::numeric as a, null::text as b"), [None, v(&[])]);
         // A string with a backslash, which the server's settings may read otherwise, and a bit string.
         assert_eq!(shown("select 'a\\b' as a, E'a\\nb' as b, B'101' as c, 'it''s' as d"), [None, v(&["'a\nb'"]), None, v(&["'it's'"])]);
     }

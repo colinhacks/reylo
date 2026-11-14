@@ -84,7 +84,15 @@ pub fn narrow(ty: &Type, literals: &[Literal]) -> Option<Type> {
             (Kind::Integer(i), Literal::Number(n)) => canonical_number(n).filter(|n| !n.contains('.') && fits_integer(n, i))?,
             (Kind::Decimal(d), Literal::Number(n)) => canonical_number(n).filter(|n| fits_decimal(n, d))?,
             (Kind::Float(f), Literal::Number(n)) if f.exponent_bits == 11 && f.mantissa_bits == 52 => {
-                let parsed = canonical_number(n)?.parse::<f64>().ok().filter(|v| v.is_finite())?;
+                let canonical = canonical_number(n)?;
+                // Fifteen significant digits at most, which every double between 10^-307 and 10^308
+                // writes back unchanged: a longer number is one a server may read or print a step
+                // away from the double nearest it, as SQLite reads 1.918287769068991566283487 and
+                // MySQL's text protocol prints 9935.636974329345.
+                if canonical.trim_start_matches('-').replace('.', "").trim_matches('0').len() > 15 {
+                    return None;
+                }
+                let parsed = canonical.parse::<f64>().ok().filter(|v| *v == 0.0 || v.is_normal())?;
                 // Its text, read back as a double, is the value: `0.1` is the double nearest 0.1.
                 canonical_number(&parsed.to_string())?
             }
@@ -219,6 +227,12 @@ mod tests {
 
         let float8 = Type::new(Kind::Float(FloatType { exponent_bits: 11, mantissa_bits: 52, ..FloatType::default() })).named("float8");
         assert_eq!(serde_json::to_value(narrow(&float8, &[number("0.1"), number("1e2"), number("1.50")]).unwrap()).unwrap()["values"], serde_json::json!(["0.1", "100", "1.5"]));
+        // A number of more than fifteen significant digits, or past a normal double's range, is one a
+        // server may read or print otherwise.
+        assert_eq!(narrow(&float8, &[number("1.918287769068991566283487")]), None);
+        assert_eq!(narrow(&float8, &[number("9935.636974329345")]), None);
+        assert!(narrow(&float8, &[number("123456789012345")]).is_some());
+        assert_eq!(narrow(&float8, &[number("1e-320")]), None);
         let float4 = Type::new(Kind::Float(FloatType { exponent_bits: 8, mantissa_bits: 23, ..FloatType::default() }));
         assert_eq!(narrow(&float4, &[number("0.5")]), None);
 

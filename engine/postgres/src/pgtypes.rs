@@ -894,8 +894,8 @@ mod tests {
             );
             // A stored row of the table holds its NOT NULL; a row value of its type need not. A
             // host that does not say the schema leaves the name bare.
-            assert_eq!(registry.render_row(90001).short(), "users{ id: int8, name: text?, tags: text?[]? }");
-            assert_eq!(registry.render(90001).short(), "users{ id: int8?, name: text?, tags: text?[]? }");
+            assert_eq!(registry.render_row(90001).short(), "users{ id: int8, name: text(¬NUL)?, tags: text(¬NUL)?[]? }");
+            assert_eq!(registry.render(90001).short(), "users{ id: int8?, name: text(¬NUL)?, tags: text(¬NUL)?[]? }");
         }
     }
 
@@ -930,7 +930,7 @@ mod tests {
         registry.missing(90001, &mut out);
         assert!(out.is_empty());
         // A domain is its base type's values under its own name, and an enum is its labels.
-        assert_eq!(registry.render(90001).short(), "users{ id: public.user_id?, tags: (public.mood('ok' | 'sad')?)[]? }");
+        assert_eq!(registry.render(90001).short(), "users{ id: public.user_id?, tags: public.mood('ok' | 'sad')?[]? }");
         assert_eq!(registry.render(90002), Type::integer(64).named("public.user_id"));
         assert_eq!(registry.domain_bases(&["public.user_id".to_string(), "public.mood".to_string()]), [("public.user_id".to_string(), "int8".to_string())].into_iter().collect());
     }
@@ -961,8 +961,8 @@ mod tests {
         let registry = TypeRegistry::with_builtins();
         let json = |oid: u32, typmod: i32| serde_json::to_value(registry.render_typmod(oid, typmod)).unwrap();
         // varchar(20) and char(5): n + 4.
-        assert_eq!(json(oid::VARCHAR, 24), json!({"kind": "text", "size": {"max": 20}, "label": "varchar"}));
-        assert_eq!(json(oid::BPCHAR, 9), json!({"kind": "text", "size": {"exact": 5}, "label": "bpchar"}));
+        assert_eq!(json(oid::VARCHAR, 24), json!({"kind": "text", "code_points": [[1, 1114111]], "size": {"max": 20}, "label": "varchar"}));
+        assert_eq!(json(oid::BPCHAR, 9), json!({"kind": "text", "code_points": [[1, 1114111]], "size": {"exact": 5}, "label": "bpchar"}));
         // numeric(10,2), numeric(5,-2) and numeric(5): NaN and no infinity, no bound beyond the digits.
         assert_eq!(json(oid::NUMERIC, 655366), json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "nan": true, "label": "numeric"}));
         assert_eq!(json(oid::NUMERIC, 329730), json!({"kind": "decimal", "precision": 5, "min_scale": -2, "max_scale": -2, "nan": true, "label": "numeric"}));
@@ -999,7 +999,7 @@ mod tests {
         // bit(7) and varbit(5), and an array's modifier on its element: varchar(20)[].
         assert_eq!(registry.render_typmod(1560, 7).short(), "bit(boolean[7])");
         assert_eq!(registry.render_typmod(1562, 5).short(), "varbit(boolean[..5])");
-        assert_eq!(registry.render_typmod(1015, 24).short(), "varchar(≤20)?[]");
+        assert_eq!(registry.render_typmod(1015, 24).short(), "varchar(≤20, ¬NUL)?[]");
         // PostGIS: geometry(Point,4326), geometry(LineStringZ,3857) and geometry(MultiPolygonZM).
         let mut registry = registry;
         registry.insert_rows(&[row(90100, "geometry", "b", 0, 0, ",", "public", 0)]);
@@ -1041,7 +1041,7 @@ mod tests {
         registry.insert_rows(&[row(90001, "vector", "b", 0, 0, ",", "extensions", 0), row(90002, "hstore", "b", 0, 0, ",", "public", 0), row(90003, "ltree", "b", 0, 0, ",", "public", 0), row(90004, "Odd Range", "r", 0, 0, ",", "My Schema", 23)]);
         assert_eq!(registry.render(90001).short(), "extensions.vector(float(8,23)[])");
         assert_eq!(serde_json::to_value(registry.render(90001)).unwrap(), json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 8, "mantissa_bits": 23}}, "label": "extensions.vector"}));
-        assert_eq!(registry.render(90002).short(), "public.hstore(text => text?)");
+        assert_eq!(registry.render(90002).short(), "public.hstore(text(¬NUL) => text(¬NUL)?)");
         assert_eq!(registry.render(90003), Type::opaque("public.ltree"));
         assert_eq!(registry.render(90004).label.as_deref(), Some("\"My Schema\".\"Odd Range\""));
     }

@@ -53,12 +53,13 @@ export type Kind = string;
 export type Columns = readonly (readonly [name: string, kind: Kind, delimiter?: string])[];
 
 /**
- * Where a JSON value holds a float or a decimal that may be NaN or an infinity, which Postgres
- * writes inside a document as text (src/render.ts, `jsonNumbers`): `true` for such a value,
- * `items` for an array's elements, through nested arrays where `deep`, and `keys` for an object's
- * fields.
+ * What the run time reads inside a Postgres document (src/render.ts, `jsonNumbers`): where it holds
+ * a float or a decimal that may be NaN or an infinity, which Postgres writes there as text, `true`
+ * for such a value; for an array, `items` for its elements (`false` where they need nothing),
+ * through nested arrays where `deep`, and `flat` where it is a Postgres array held to one level;
+ * and `keys` for an object's fields.
  */
-export type JsonNumbers = true | { readonly items: JsonNumbers; readonly deep?: true } | { readonly keys: readonly (readonly [key: string, at: JsonNumbers])[] };
+export type JsonNumbers = true | { readonly items: JsonNumbers | false; readonly deep?: true; readonly flat?: true } | { readonly keys: readonly (readonly [key: string, at: JsonNumbers])[] };
 
 /**
  * The JSON columns of a row whose non-finite numbers `.run()` gives as numbers: each name's last
@@ -73,23 +74,30 @@ export function rowMasks(columns: Columns, nonFinite: readonly (JsonNumbers | nu
 /**
  * A parsed JSON value with the text Postgres writes for each non-finite float or decimal at
  * `at`, `"NaN"`, `"Infinity"` or `"-Infinity"`, as that number, in place: JSON has no number for
- * one, and a float outside a document is one already.
+ * one, and a float outside a document is one already. A Postgres array there is written with as
+ * many levels as its value has, which Postgres doesn't hold to the one its type has, so one of
+ * more is refused, naming `column`, as `withinDimensions` refuses a column's.
  */
-export function numbersInJson(v: unknown, at: JsonNumbers): unknown {
+export function numbersInJson(v: unknown, at: JsonNumbers, column = ""): unknown {
   if (at === true) return v === "NaN" ? NaN : v === "Infinity" ? Infinity : v === "-Infinity" ? -Infinity : v;
   if (v === null || typeof v !== "object") return v;
   if ("items" in at) {
     if (!Array.isArray(v)) return v;
+    if (at.flat === true && v.some(Array.isArray)) {
+      throw new DecodeError(`Column "${column}" holds, inside its JSON, a Postgres array of more than one dimension, and its type has one: Reylo types a Postgres array with one dimension, which Postgres doesn't enforce. Write to_jsonb(<the array>) into the document to read it as JSON, or set allow_nested_arrays: true in .reylo.yaml to type it at any depth.`);
+    }
+    const items = at.items;
+    if (items === false) return v;
     // A Postgres array nests to any depth, each level an array; where its element is a JSON array
     // as well, an array is read as the element, since the two cannot be told apart.
-    const nested = at.deep === true && !(typeof at.items === "object" && "items" in at.items);
-    for (let i = 0; i < v.length; i++) v[i] = nested && Array.isArray(v[i]) ? numbersInJson(v[i], at) : numbersInJson(v[i], at.items);
+    const nested = at.deep === true && !(typeof items === "object" && "items" in items);
+    for (let i = 0; i < v.length; i++) v[i] = nested && Array.isArray(v[i]) ? numbersInJson(v[i], at, column) : numbersInJson(v[i], items, column);
     return v;
   }
   const o = v as Record<string, unknown>;
   for (const [key, inner] of at.keys) {
     if (!Object.prototype.hasOwnProperty.call(o, key)) continue;
-    const value = numbersInJson(o[key], inner);
+    const value = numbersInJson(o[key], inner, column);
     // `__proto__` is an own key JSON.parse made, which an assignment would not reach.
     if (key === "__proto__") Object.defineProperty(o, key, { value, writable: true, enumerable: true, configurable: true });
     else o[key] = value;

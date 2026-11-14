@@ -1,12 +1,12 @@
-aggregates.sql: one () -> { n: int64, e: int64, names: text(utf8)?, t: float(11,52)?, m: float(11,52)?, first: text(utf8)?, mean: float(11,52)? }
-dates.sql: one () -> { d: text(utf8), y: text(utf8), u: int64, jd: float(11,52), zero: text(utf8) }
-json.sql: many () -> { a: unknown?, l: int64?, v: int64?, o: json { n: text(utf8) }, items: int64 }
+aggregates.sql: one () -> { n: int64, e: int64, names: text(UTF-8, ill-formed)?, t: float(11,52)?, m: float(11,52)?, first: text(UTF-8, ill-formed)?, mean: float(11,52)? }
+dates.sql: one () -> { d: text(UTF-8, ill-formed), y: text(UTF-8, ill-formed), u: int64, jd: float(11,52), zero: text(UTF-8, ill-formed) }
+json.sql: many () -> { a: unknown?, l: int64?, v: int64?, o: json { n: text(UTF-8, ill-formed) }, items: int64 }
 math.sql: many () -> { id: INTEGER, a: float(11,52)? }
 math_in_where.sql: many (s: float(11,52)) -> { id: INTEGER }
 offset_missing.sql: many () -> {  } !! reylo6: no such function: sqlite_offset on this database's SQLite
 offset_missing_in_where.sql: many (s: unknown) -> {  } !! reylo6: no such function: sqlite_offset on this database's SQLite
-operators.sql: many (p: text(utf8), a: int64, b: int64) -> { l: boolean, g: boolean, j: unknown?, k: unknown?, c: text(utf8), t: text(utf8), i: int64, e: text(utf8), ty: text(utf8), n: int64 }
-soundex.sql: many (x: text(utf8)) -> { s: text(utf8), e: text(utf8) }
-strings.sql: many () -> { u: text(utf8), l: int64, s: text(utf8), r: text(utf8), t: text(utf8), i: int64, h: text(utf8), q: text(utf8), p: text(utf8), a: float(11,52)?, rd: float(11,52)?, nu: text(utf8)?, em: text(utf8), ch: text(utf8), un: int64?, rn: int64, lk: boolean }
-view.sql: at_most_one (id: int64) -> { name: text(utf8), sound: text(utf8) }
-windows.sql: many () -> { name: TEXT(text(utf8) | bytes), r: int64, prev: text(utf8)?, s: float(11,52)?, positive: int64 }
+operators.sql: many (p: text(UTF-8, ill-formed), a: int64, b: int64) -> { l: boolean, g: boolean, j: unknown?, k: unknown?, c: text(UTF-8, ill-formed), t: text(UTF-8, ill-formed), i: int64, e: text(UTF-8, ill-formed), ty: text(UTF-8, ill-formed), n: int64 }
+soundex.sql: many (x: text(UTF-8, ill-formed)) -> { s: text(UTF-8, ill-formed), e: text(UTF-8, ill-formed) }
+strings.sql: many () -> { u: text(UTF-8, ill-formed), l: int64, s: text(UTF-8, ill-formed), r: text(UTF-8, ill-formed), t: text(UTF-8, ill-formed), i: int64, h: text(UTF-8, ill-formed), q: text(UTF-8, ill-formed), p: text(UTF-8, ill-formed), a: float(11,52)?, rd: float(11,52)?, nu: text(UTF-8, ill-formed)?, em: text(UTF-8, ill-formed), ch: text(UTF-8, ill-formed), un: int64?, rn: int64, lk: boolean }
+view.sql: at_most_one (id: int64) -> { name: text(UTF-8, ill-formed), sound: text(UTF-8, ill-formed) }
+windows.sql: many () -> { name: TEXT(text(UTF-8, ill-formed) | bytes), r: int64, prev: text(UTF-8, ill-formed)?, s: float(11,52)?, positive: int64 }

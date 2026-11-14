@@ -5,7 +5,7 @@
 // value nothing types there, or a `json` or `jsonb` value nothing constrains, is any JSON value:
 // `Json`, which the generated module imports from `reylo`.
 import { CODEC_TYPE, leafCodec, type Codec, type Codecs } from "./codecs.ts";
-import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type Field, type Slot } from "./engine-type.ts";
+import { bareName, isMysqlSet, nestsAnyDeep, postgresArray, schemaOf, type EngineType, type Field, type Slot } from "./engine-type.ts";
 import { columnKind, isRowKind, kindType as typeOfKind, RANGE_BOUNDS, type Dialect, type JsonNumbers } from "./values.ts";
 
 /** The type a codec gives a value of `t`: its own, or for a SET's array an array of its members' type, by `member`. */
@@ -188,13 +188,17 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
   return inJson ? jsonImage(t, dialect) : typeOfKind(columnKind(t, dialect));
 }
 
+/** The kinds of element whose JSON is never an array, so that a Postgres array of them inside a document is deeper than one level exactly where one of its elements is an array. */
+const FLAT_ELEMENTS: ReadonlySet<EngineType["kind"]> = new Set(["boolean", "integer", "float", "decimal", "text", "bytes", "uuid", "enum", "date", "time", "datetime", "instant", "zoned_datetime", "duration", "struct", "map"]);
+
 /**
  * Where a Postgres value of type `t` holds a float or a decimal inside JSON that may be NaN or an
  * infinity, which Postgres writes there as the text `"NaN"`, `"Infinity"` or `"-Infinity"` and the
  * run time gives as that number (src/values.ts, `numbersInJson`): `true` for such a value, `items`
  * for an array's elements (through nested arrays where Postgres's own may nest), `keys` for an
  * object's fields; undefined where it holds none. It walks the type as `renderType` prints it, so
- * each place printed `number` there is one the run time converts.
+ * each place printed `number` there is one the run time converts. It marks `flat` each Postgres
+ * array inside JSON the run time holds to one level.
  */
 export function jsonNumbers(t: EngineType, inJson = false): JsonNumbers | undefined {
   const name = bareName(t);
@@ -205,7 +209,12 @@ export function jsonNumbers(t: EngineType, inJson = false): JsonNumbers | undefi
     case "array": {
       if (inJson ? json[name] !== undefined : !columnKind(t, "postgres").endsWith("[]")) return undefined;
       const items = jsonNumbers(t.element.type, inJson);
-      return items === undefined ? undefined : { items, ...(nestsAnyDeep(t) ? { deep: true as const } : {}) };
+      // A Postgres array inside a document has as many levels as its value, which the run time
+      // holds to one, as it does a column's (src/values.ts, `numbersInJson`), unless the project lets
+      // it nest; an array whose elements may be JSON arrays themselves can't be told from a deeper one.
+      const flat = inJson && !nestsAnyDeep(t) && postgresArray(t) && FLAT_ELEMENTS.has(t.element.type.kind);
+      if (items === undefined && !flat) return undefined;
+      return { items: items ?? false, ...(nestsAnyDeep(t) ? { deep: true as const } : {}), ...(flat ? { flat: true as const } : {}) };
     }
     case "struct": {
       if (!inJson || json[name] !== undefined) return undefined;

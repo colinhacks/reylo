@@ -1,12 +1,12 @@
-by_source.sql: many () -> { action: text, source_name: text?, source_id: int4?, cur: text, shout: text?, up: text }
-by_source_nothing.sql: many () -> { source_name: text, label: text, shout: text }
-by_source_update.sql: many () -> { source_name: text?, label: text?, nick: text?, shout: text }
-by_target.sql: many () -> { action: text, source_name: text, cur: text, both: text }
-delete.sql: many () -> { gone: text, source_name: text, shout: text }
-json.sql: many () -> { j: json { source: text?, target: text, row: { id: int4, name: text, label: text }?, mine: { id: int4, name: text, nick: text? } } }
-json_matched.sql: many () -> { j: json { source: text, target: text, row: { id: int4, name: text, label: text } } }
-param_source.sql: many (id: int4, name: text) -> { action: text, cur: text, given: text? }
-self.sql: many () -> { prev: text?, cur: text }
-star.sql: many () -> { id: int4?, name: text?, label: text?, id: int4?, name: text?, nick: text? } !! reylo14: Columns 1 and 4 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 2 and 5 are both named "name", and a row keeps only the last of them. Give one of them another name with `as`.
-star_source.sql: many () -> { id: int4?, name: text?, label: text?, id: int4?, name: text?, nick: text? } !! reylo14: Columns 1 and 4 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 2 and 5 are both named "name", and a row keeps only the last of them. Give one of them another name with `as`.
-subquery_source.sql: many () -> { source_name: text?, nick: text?, next: int4? }
+by_source.sql: many () -> { action: text(¬NUL), source_name: text(¬NUL)?, source_id: int4?, cur: text(¬NUL), shout: text(¬NUL)?, up: text(¬NUL) }
+by_source_nothing.sql: many () -> { source_name: text(¬NUL), label: text(¬NUL), shout: text(¬NUL) }
+by_source_update.sql: many () -> { source_name: text(¬NUL)?, label: text(¬NUL)?, nick: text(¬NUL)?, shout: text(¬NUL) }
+by_target.sql: many () -> { action: text(¬NUL), source_name: text(¬NUL), cur: text(¬NUL), both: text(¬NUL) }
+delete.sql: many () -> { gone: text(¬NUL), source_name: text(¬NUL), shout: text(¬NUL) }
+json.sql: many () -> { j: json { source: text(¬NUL)?, target: text(¬NUL), row: { id: int4, name: text(¬NUL), label: text(¬NUL) }?, mine: { id: int4, name: text(¬NUL), nick: text(¬NUL)? } } }
+json_matched.sql: many () -> { j: json { source: text(¬NUL), target: text(¬NUL), row: { id: int4, name: text(¬NUL), label: text(¬NUL) } } }
+param_source.sql: many (id: int4, name: text(¬NUL)) -> { action: text(¬NUL), cur: text(¬NUL), given: text(¬NUL)? }
+self.sql: many () -> { prev: text(¬NUL)?, cur: text(¬NUL) }
+star.sql: many () -> { id: int4?, name: text(¬NUL)?, label: text(¬NUL)?, id: int4?, name: text(¬NUL)?, nick: text(¬NUL)? } !! reylo14: Columns 1 and 4 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 2 and 5 are both named "name", and a row keeps only the last of them. Give one of them another name with `as`.
+star_source.sql: many () -> { id: int4?, name: text(¬NUL)?, label: text(¬NUL)?, id: int4?, name: text(¬NUL)?, nick: text(¬NUL)? } !! reylo14: Columns 1 and 4 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 2 and 5 are both named "name", and a row keeps only the last of them. Give one of them another name with `as`.
+subquery_source.sql: many () -> { source_name: text(¬NUL)?, nick: text(¬NUL)?, next: int4? }

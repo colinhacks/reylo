@@ -1,2 +1,2 @@
-builtin_control.sql: many () -> { m: text, u: text, x: text }
-md5.sql: many () -> { m: text? }
+builtin_control.sql: many () -> { m: text(¬NUL), u: text(¬NUL), x: text(¬NUL) }
+md5.sql: many () -> { m: text(¬NUL)? }

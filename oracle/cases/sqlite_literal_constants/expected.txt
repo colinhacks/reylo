@@ -1,0 +1,3 @@
+long_real.sql: one () -> { r: float(11,52) }
+union_case.sql: many () -> { kind: text(UTF-8, ill-formed, 'user' | 'org'), id: INTEGER, sign: text(UTF-8, ill-formed, 'pos' | 'neg' | 'zero')? }
+values_rows.sql: many () -> { column1: int64(1 | 2), column2: text(UTF-8, ill-formed, 'a' | 'b'), column3: boolean }

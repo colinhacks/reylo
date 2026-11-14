@@ -317,14 +317,37 @@ fn shallow(e: &Expr, found: &dyn Fn(&Expr) -> bool) -> bool {
     e.visit(&mut Shallow { depth: 0, found }).is_break()
 }
 
-/// The one statement of the text as `sqlparser`'s DuckDB dialect reads it, if it reads it.
+/// The one statement of the text as `sqlparser`'s DuckDB dialect reads it, if it reads it, each
+/// block comment read as DuckDB reads it ([`without_block_comments`]).
 fn parse(sql: &str) -> Option<Statement> {
-    let mut statements = Parser::parse_sql(&DuckDbDialect {}, sql).ok()?;
+    let mut statements = Parser::parse_sql(&DuckDbDialect {}, &without_block_comments(sql)).ok()?;
     if statements.len() == 1 {
         statements.pop()
     } else {
         None
     }
+}
+
+/// The text with each block comment written as spaces, a space for each character and its line
+/// breaks kept, so that a place in it, a line and a column of characters, is the same text's.
+/// DuckDB nests block comments, so `/* /* */ 'a' */` is one comment, and sqlparser's DuckDB
+/// dialect ends one at its first `*/`, which would read `'a'` as code: the engine's lexer finds
+/// them as DuckDB does.
+fn without_block_comments(sql: &str) -> Cow<'_, str> {
+    let Ok(lexed) = lex::lex(sql, Dialect::Duckdb) else { return Cow::Borrowed(sql) };
+    let comments: Vec<(usize, usize)> = lexed.opaque.iter().copied().filter(|&(start, _)| sql[start..].starts_with("/*")).collect();
+    if comments.is_empty() {
+        return Cow::Borrowed(sql);
+    }
+    let mut out = String::with_capacity(sql.len());
+    let mut at = 0;
+    for (start, end) in comments {
+        out.push_str(&sql[at..start]);
+        out.extend(sql[start..end].chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+        at = end;
+    }
+    out.push_str(&sql[at..]);
+    Cow::Owned(out)
 }
 
 /// A write that WITH queries feed (`WITH x AS (…) INSERT …`), which the tree reads as a query whose
@@ -672,6 +695,14 @@ pub fn place(message: &str, text: &str) -> (String, Option<usize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_block_comment_nests_as_duckdb_reads_it() {
+        let read = |sql: &str| parse(sql).map(|s| s.to_string());
+        assert_eq!(read("select /* /* */ 'a' -- */\n'b' as k").as_deref(), Some("SELECT 'b' AS k"));
+        assert_eq!(without_block_comments("select /* a\n/* b */ c */ 1"), "select     \n             1");
+        assert_eq!(without_block_comments("select '/* not a comment */' -- /* nor this\n"), "select '/* not a comment */' -- /* nor this\n");
+    }
 
     #[test]
     fn an_error_is_placed_at_duckdb_s_caret() {

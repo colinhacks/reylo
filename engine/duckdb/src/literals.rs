@@ -33,6 +33,9 @@ fn items(list: &[SelectItem]) -> Option<Vec<Option<Vec<Literal>>>> {
     let mut out = Vec::with_capacity(list.len());
     for item in list {
         match item {
+            // A string as an alias may be the second of two strings DuckDB joins across a line
+            // break (`'a'⏎'b'` is `'ab'`), which sqlparser reads as the first named by the second.
+            SelectItem::ExprWithAlias { alias, .. } if alias.quote_style == Some('\'') => out.push(None),
             SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => out.push(expr(e)),
             // A `*`, and `columns(…)`, stand for as many columns as they match.
             _ => return None,
@@ -145,8 +148,10 @@ mod tests {
         assert_eq!(shown("select 'a' as k intersect select 'b' except select 'c'"), Some(vec![v(&["'a'"])]));
         assert_eq!(shown("values (1, 'a'), (2, null)"), Some(vec![v(&["1", "2"]), v(&["'a'"])]));
         assert_eq!(shown("select case when x then 'a' when y then 'b' end as k, case x when 1 then 'a' else name end as m from t"), Some(vec![v(&["'a'", "'b'"]), None]));
-        // A backslash is itself, and an E'…' string's escapes are DuckDB's.
-        assert_eq!(shown("select 'a\\b' as a, E'a\\nb' as b"), Some(vec![v(&["'a\\b'"]), None]));
+        // A backslash is itself.
+        assert_eq!(shown("select 'a\\b' as a"), Some(vec![v(&["'a\\b'"])]));
+        // Two strings on two lines are one, which sqlparser reads as a string and its alias.
+        assert_eq!(shown("select 'a'\n'b'"), Some(vec![None]));
         assert_eq!(shown("insert into t (id) values (1) returning id, 'created' as status"), Some(vec![None, v(&["'created'"])]));
         // Columns paired by their names, and a `*`, are none this reads.
         assert_eq!(shown("select 'a' as k union by name select 'b' as k"), None);

@@ -4628,6 +4628,8 @@ mod tests {
     fn affinity_of(t: &Type) -> Option<&'static str> {
         let name = t.label.as_deref().unwrap_or("");
         match &t.kind {
+            // The constants a column holds, of their type's affinity.
+            Kind::Enum(e) => affinity_of(&e.ty),
             Kind::Boolean(_) => Some("bool"),
             Kind::Integer(_) if name == "BIGINT" => Some("int8"),
             Kind::Integer(_) => Some("integer"),

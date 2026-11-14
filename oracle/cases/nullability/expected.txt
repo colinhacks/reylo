@@ -1,14 +1,14 @@
 between.sql: many () -> { age: int4 }
-case_guard.sql: many () -> { n: text }
-case_not_guard.sql: many () -> { n: text? }
-filter_array.sql: many () -> { id: int4, nicks: text[]? } key (id)
-filter_json.sql: many () -> { id: int4, posts: json ({ id: int4, title: text })[]? } key (id)
-in_list.sql: many () -> { nickname: text }
-later_inner_join.sql: many () -> { title: text, name: text, team: text }
-later_left_join.sql: many () -> { title: text, name: text? }
-leaf_narrowed.sql: many () -> { l: text }
-or_arms.sql: many () -> { nickname: text }
-or_not_strict.sql: many () -> { nickname: text? }
-strict_function.sql: many (e: text) -> { nickname: text }
-where_strict_function_reduces.sql: many (n: text) -> { title: text, name: text }
-windows.sql: many () -> { r: int8, k: int8, prev: text, prev_null: text? }
+case_guard.sql: many () -> { n: text(¬NUL) }
+case_not_guard.sql: many () -> { n: text(¬NUL)? }
+filter_array.sql: many () -> { id: int4, nicks: text(¬NUL)[]? } key (id)
+filter_json.sql: many () -> { id: int4, posts: json ({ id: int4, title: text(¬NUL) })[]? } key (id)
+in_list.sql: many () -> { nickname: text(¬NUL) }
+later_inner_join.sql: many () -> { title: text(¬NUL), name: text(¬NUL), team: text(¬NUL) }
+later_left_join.sql: many () -> { title: text(¬NUL), name: text(¬NUL)? }
+leaf_narrowed.sql: many () -> { l: text(¬NUL) }
+or_arms.sql: many () -> { nickname: text(¬NUL) }
+or_not_strict.sql: many () -> { nickname: text(¬NUL)? }
+strict_function.sql: many (e: text(¬NUL)) -> { nickname: text(¬NUL) }
+where_strict_function_reduces.sql: many (n: text(¬NUL)) -> { title: text(¬NUL), name: text(¬NUL) }
+windows.sql: many () -> { r: int8, k: int8, prev: text(¬NUL), prev_null: text(¬NUL)? }

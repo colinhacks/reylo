@@ -519,7 +519,7 @@ test("DuckDB: a tuple is returned as an array of its values in order, and binds 
   try {
     assert.deepEqual(await pair.run(c, { id: 1, msg: null }), { pair: [1, null], singles: [[2]] });
     assert.deepEqual(await matched.run(c, { p: [1, "a"] }), { one: 1 });
-    assert.equal(await matched.run(c, { p: [2, "a"] }), undefined);
+    assert.equal(await matched.run(c, { p: [2, "a"] }), null);
     await assert.rejects(matched.run(c, { p: [1] }), /Parameter "p" is a tuple of 2, so it takes an array of 2 values; got 1/);
   } finally {
     c.closeSync();

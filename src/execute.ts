@@ -188,7 +188,7 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly inputs?: Inputs | undefined;
   /** Each output column's name and kind (src/values.ts), in order: what the run time gives each value (every build step puts it in the module). */
   readonly columns?: Columns | undefined;
-  /** Where each Postgres JSON column, by position beside `columns`, holds a float or a decimal that may be NaN or an infinity, which the run time gives as that number (src/values.ts, `numbersInJson`); `null` for a column that holds none. */
+  /** Where each Postgres JSON column, by position beside `columns`, holds a float or a decimal that may be NaN or an infinity, which the run time gives as that number, or a Postgres array it holds to one level (src/values.ts, `numbersInJson`); `null` for a column that holds neither. */
   readonly nonFinite?: readonly (JsonNumbers | null)[] | undefined;
   /** Each row as an object of the columns' names, one shape for every row (src/row.ts): every build step puts it in the module, beside `columns`. */
   readonly row?: RowBuilder | undefined;
@@ -285,7 +285,7 @@ export function execute<D extends Dialect>(
   return withCodecs(query, executeAsync(c, query, params).then((rows) => {
     for (const row of rows as Record<string, unknown>[]) {
       // Postgres writes a non-finite float or decimal inside JSON as text, whichever driver reads it.
-      for (const [name, at] of nonFinite) row[name] = numbersInJson(row[name], at);
+      for (const [name, at] of nonFinite) row[name] = numbersInJson(row[name], at, name);
       for (const [name, kind] of arrays) withinDimensions(row[name], kind, name);
     }
     return rows;

@@ -2729,7 +2729,7 @@ mod tests {
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert!(r.non_null);
         assert!(r.unresolved.is_empty());
-        assert_eq!(r.ty.short(), "json ({ id: uuid, body: text, score: int4? })[]");
+        assert_eq!(r.ty.short(), "json ({ id: uuid, body: text(¬NUL), score: int4? })[]");
     }
 
     #[test]
@@ -2751,7 +2751,7 @@ mod tests {
         let row = || outcome(vec![column("a", oid::INT8, "int8", false), column("name", oid::TEXT, "text", false)]);
         // A `record` takes the names its columns go by.
         let record = resolve(&shape, &[row(), outcome(vec![column("coalesce", oid::RECORD, "record", true)])], &registry, &[]);
-        assert_eq!(record.ty.short(), "json { a: int8, name: text }");
+        assert_eq!(record.ty.short(), "json { a: int8, name: text(¬NUL) }");
         // A named row type whose fields the registry cannot give is no row whose names the build
         // knows: the alias's names are never a named type's.
         let mut registry = registry;
@@ -2800,7 +2800,7 @@ mod tests {
         let columns = vec![column("id", oid::UUID, "uuid", false), column("name", oid::TEXT, "text", true)];
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false, present: None, built: Vec::new() })], &registry, &[]);
         assert!(r.non_null);
-        assert_eq!(r.ty.short(), "json { id: uuid, name: text? }");
+        assert_eq!(r.ty.short(), "json { id: uuid, name: text(¬NUL)? }");
         // An outer join in the probe's own analysis is what can null the whole row, unless a
         // column it proved non-null says the row is there (an unmatched row is every column NULL).
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
@@ -2808,11 +2808,11 @@ mod tests {
         let nullable: Vec<_> = columns.into_iter().map(|c| DescribedColumn { nullable: true, ..c }).collect();
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
-        assert_eq!(r.ty.short(), "json { id: uuid?, name: text? }");
+        assert_eq!(r.ty.short(), "json { id: uuid?, name: text(¬NUL)? }");
         // The read with the row there gives the fields of an object that exists their own.
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable, outer_join: true, present: Some(vec![false, true]), built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
-        assert_eq!(r.ty.short(), "json { id: uuid, name: text? }");
+        assert_eq!(r.ty.short(), "json { id: uuid, name: text(¬NUL)? }");
     }
 
     #[test]

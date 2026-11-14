@@ -1067,6 +1067,18 @@ fn postgres_array(ty: &Type) -> bool {
     ty.label.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_'))
 }
 
+/// Whether `.run()` holds an array inside a document to one level (src/render.ts, `jsonNumbers`):
+/// a Postgres array type's (`_int4`), whose elements are never JSON arrays themselves.
+fn flat_in_json(ty: &Type) -> bool {
+    let Kind::Array(array) = &ty.kind else { return false };
+    let named = ty.label.as_deref().is_some_and(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_'));
+    named
+        && matches!(
+            array.element.ty.kind,
+            Kind::Boolean(_) | Kind::Integer(_) | Kind::Float(_) | Kind::Decimal(_) | Kind::Text(_) | Kind::Bytes(_) | Kind::Uuid(_) | Kind::Enum(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::ZonedDateTime(_) | Kind::Duration(_) | Kind::Struct(_) | Kind::Map(_)
+        )
+}
+
 /// Why a Postgres array's text nests shallower than its type, if it does: a type fixes one
 /// dimension per level of arrays it nests. A column's array is typed flat, as the project file
 /// assumes, and a value of more dimensions is one `.run()` refuses rather than one the type
@@ -1161,6 +1173,12 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
         // An array inside a document is a JSON array of its elements, each of the element type.
         Kind::Array(array) if !written_as_text(ty) => {
             let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed an array")) };
+            // A Postgres array is written there with as many levels as its value has, which `.run()`
+            // refuses past the one its type has (src/values.ts, `numbersInJson`), as it refuses a
+            // column's, so a deeper one says nothing.
+            if flat_in_json(ty) && items.iter().any(Value::is_array) {
+                return None;
+            }
             for (i, item) in items.iter().enumerate() {
                 if item.is_null() && !array.element.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, item)) {
                     if !array.element.nullable {
@@ -1809,7 +1827,7 @@ mod tests {
     #[test]
     fn built_json_is_held_to_its_type_down_to_each_value() {
         let text = |s: &str| rusqlite::types::Value::Text(s.into());
-        let utf8 = json!({"kind": "text", "ill_formed": "utf8"});
+        let utf8 = json!({"kind": "text", "encoding": "UTF-8", "ill_formed": true});
         let ty = json!({"kind": "json", "content": {"type": {"kind": "struct", "fields": [
             {"name": "id", "type": {"kind": "integer", "bits": 64}},
             {"name": "r", "type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true}, "nullable": true},

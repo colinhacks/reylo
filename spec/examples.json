@@ -48,7 +48,6 @@
         "columns": [
           {
             "name": "pair",
-            "nullable": true,
             "type": {
               "kind": "tuple",
               "elements": [
@@ -1028,6 +1027,12 @@
                     "name": "kind",
                     "type": {
                       "kind": "text",
+                      "code_points": [
+                        [
+                          1,
+                          1114111
+                        ]
+                      ],
                       "size": {
                         "max": 32
                       },

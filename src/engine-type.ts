@@ -91,7 +91,7 @@ export function nestsAnyDeep(t: Type): boolean {
  * A Postgres array type, by its name (`_int4`, `public._mood`), at its innermost level: the one a
  * column holds, which Postgres lets hold any number of dimensions, where the format writes it flat.
  */
-function postgresArray(t: Type): boolean {
+export function postgresArray(t: Type): boolean {
   return t.kind === "array" && bareName(t).startsWith("_") && t.element.type.kind !== "array";
 }
 

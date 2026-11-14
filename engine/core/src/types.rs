@@ -1126,7 +1126,7 @@ impl Type {
             Kind::Uuid(u) => with(u.versions.iter().flatten().map(|v| format!("v{v}")).collect()),
             Kind::Enum(e) => {
                 let quoted = matches!(e.ty.kind, Kind::Text(_));
-                let values = e.values.iter().map(|v| if quoted { format!("'{v}'") } else { v.clone() }).collect::<Vec<_>>().join(" | ");
+                let values = e.values.iter().map(|v| if quoted { quote(v) } else { v.clone() }).collect::<Vec<_>>().join(" | ");
                 let base = e.ty.short();
                 let base = match &self.label {
                     // The enum's own name stands for its base's.
@@ -1149,7 +1149,7 @@ impl Type {
                     Some(s) => format!("{}..{}", s.min.map(|n| n.to_string()).unwrap_or_default(), s.max.map(|n| n.to_string()).unwrap_or_default()),
                     None => String::new(),
                 };
-                let element = if element.contains(' ') { format!("({element})") } else { element };
+                let element = if spaced(&element) { format!("({element})") } else { element };
                 // A Postgres array type's own name (`_int4`) says no more than its element.
                 match self.label.as_deref() {
                     Some(name) if !name.rsplit('.').next().unwrap_or(name).starts_with('_') => format!("{name}({element}[{sized}])"),
@@ -1192,6 +1192,43 @@ impl Type {
             _ => label(),
         }
     }
+}
+
+/// A text value in quotes, on one line: a quote doubled, a backslash, a line break, a carriage
+/// return, a tab and any other control character escaped (`'it''s'`, `'a\\nb'`).
+fn quote(v: &str) -> String {
+    let mut out = String::from("'");
+    for c in v.chars() {
+        match c {
+            '\'' => out.push_str("''"),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Whether a short form holds a space outside its parentheses, its brackets and its quoted text,
+/// so that an array of it takes parentheses (`(int4 | text)[]`, `({ a: int4 })[]`) and one of
+/// `varchar(≤8, ¬NUL)` takes none.
+fn spaced(short: &str) -> bool {
+    let (mut depth, mut quoted) = (0usize, false);
+    for c in short.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            _ if quoted => {}
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ' ' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn slot_short(s: &Slot) -> String {

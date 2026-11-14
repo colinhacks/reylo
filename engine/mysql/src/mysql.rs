@@ -3449,7 +3449,7 @@ mod tests {
         assert_eq!(types("select :a member of ('[1]') as c, substring(name, 1, :n) as d, ceil(:x) as e from users", &[8, 253, 8], &[8, 8, 5]), "unknown varchar bigint | double | decimal");
         // A user variable holds a value of any type.
         assert_eq!(types("select @n := coalesce(@n, 0) + 1 as c, id, @@max_join_size as d, @`q` as e from users", &[8, 3, 8, 251], &[]), "unknown int bigint unknown");
-        assert_eq!(types("select d.c, 'a@b' as e from (select @n as c) d", &[8, 253], &[]), "unknown varchar");
+        assert_eq!(types("select d.c, 'a@b' as e from (select @n as c) d", &[8, 253], &[]), "unknown varchar('a@b')");
         // A string bound beside a JSON value makes the result a string of bytes.
         assert_eq!(types("select coalesce(doc, :fallback) as c, json_extract(doc, :path) as d from users", &[245, 245], &[245, 253]), "unknown json");
     }
@@ -3529,7 +3529,10 @@ mod tests {
         let truth = || column(8, 1, "", "");
         // Comparisons, tests and logical operators, and what passes one through.
         let sql = "select a = b as c, a is null as c, exists (select 1) as c, a in (1, 2) as c, not a as c, a and b as c, a <=> b as c, a between 1 and 2 as c, 'x' like 'y' as c, true as c, (a = b) as c, if(a, a = b, null) as c, coalesce(a = b, false) as c, case when a then a < b end as c, nullif(a = b, 1) as c, (select a = b from users limit 1) as c from users";
-        assert_eq!(types(sql, (0..16).map(|_| truth()).collect()), ["boolean"; 16].join(" "));
+        // `true` is a truth value too, and a constant, the one value it holds.
+        let mut truths = ["boolean"; 16];
+        truths[9] = "boolean(true)";
+        assert_eq!(types(sql, (0..16).map(|_| truth()).collect()), truths.join(" "));
         // A literal number is no truth value, whatever its width, nor is what computes with one.
         let sql = "select 1 as c, 5 as c, case when a then 1 else 0 end as c, if(a, 1, a = b) as c, (a = b) + 0 as c, max(a = b) as c from users";
         assert_eq!(types(sql, vec![column(8, 2, "", ""), column(8, 2, "", ""), column(8, 2, "", ""), column(8, 2, "", ""), column(8, 3, "", ""), column(8, 1, "", "")]), ["bigint | int"; 6].join(" "));
@@ -3592,8 +3595,9 @@ mod tests {
         let body = column("body", 252, 255, 262_140, 0, "users", "body");
         let legacy = column("legacy", 252, 255, 262_140, 0, "users", "legacy");
         let price = column("price", 246, 63, 12, 2, "users", "price");
-        // A TEXT the catalog says stores UTF-8 counts its bytes, and one in latin1 its code points.
-        assert_eq!(types("select name, body, legacy, price from users", vec![name.clone(), body.clone(), legacy, price]), "varchar(≤20) text(≤65535 bytes UTF-8) text(≤65535) decimal(10,2)");
+        // A TEXT the catalog says stores UTF-8 counts its bytes, and one in latin1 its code points,
+        // each a character of latin1's set, windows-1252.
+        assert_eq!(types("select name, body, legacy, price from users", vec![name.clone(), body.clone(), legacy, price]), "varchar(≤20) text(≤65535 bytes, UTF-8) text(≤65535, windows-1252) decimal(10,2)");
         // Through a derived table the prepare names the table, and a column's origin there may be
         // its derived name, so a TEXT counts code points.
         assert_eq!(types("select name, body from (select name, body from users) d", vec![name, body]), "varchar(≤20) text(≤65535)");
