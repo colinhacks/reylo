@@ -9,7 +9,9 @@ use reylo_engine_core::dialect::Dialect;
 use serde_json::Value;
 use sqlparser::ast::{Query, Statement};
 use sqlparser::dialect::DuckDbDialect;
+use sqlparser::keywords::Keyword;
 use sqlparser::parser::Parser;
+use sqlparser::tokenizer::{Token, Tokenizer};
 use std::collections::HashSet;
 
 /// One row per column of every table and view whose name is one of `{names}`, in each one's
@@ -26,6 +28,10 @@ const COLUMNS_QUERY: &str = "select c.database_name, c.schema_name, c.table_name
 const KEYS_QUERY: &str = "select database_name, schema_name, table_name, to_json(constraint_column_names)::varchar \
     from duckdb_constraints() where constraint_type in ('PRIMARY KEY', 'UNIQUE') and lower(table_name) in ({names}) \
     order by database_name, schema_name, table_name, constraint_index";
+
+/// The text of every table whose name is one of `{names}`, whose keys are read from it where
+/// DuckDB refuses [`KEYS_QUERY`] ([`keys_of`]).
+const TEXTS_QUERY: &str = "select database_name, schema_name, table_name, sql from duckdb_tables() where lower(table_name) in ({names}) and sql is not null";
 
 /// Every macro, its definition, and whether a user defined it: a macro may call `unnest`, itself or
 /// through another macro, and so make a row of each element (`generate_subscripts`,
@@ -280,20 +286,97 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
         let comment = row.get(5).and_then(as_str).filter(|c| !c.is_empty()).map(String::from);
         tables[at].columns.push(TableColumn { name: text(&row, 3), not_null, comment, ty: text(&row, 8) });
     }
-    for row in keys.unwrap_or_default() {
-        let (database, schema, name) = (text(&row, 0), text(&row, 1), text(&row, 2));
+    let keys: Vec<(String, String, String, Vec<String>)> = match keys {
+        Ok(rows) => rows
+            .iter()
+            .filter_map(|row| {
+                let columns = match row.get(3) {
+                    Some(Value::String(json)) => serde_json::from_str::<Vec<String>>(json).unwrap_or_default(),
+                    Some(Value::Array(columns)) => columns.iter().filter_map(as_str).map(String::from).collect(),
+                    _ => return None,
+                };
+                Some((text(row, 0), text(row, 1), text(row, 2), columns))
+            })
+            .collect(),
+        // DuckDB refuses `duckdb_constraints()` for the whole database where one table's check
+        // reads a struct's field with a dot (`meta.a > 0`), which it binds as a column of the
+        // table: each table's keys are read from its own text, a round later.
+        Err(_) => host
+            .query(&TEXTS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement)?
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|row| keys_of(&text(row, 3)).into_iter().map(|key| (text(row, 0), text(row, 1), text(row, 2), key)).collect::<Vec<_>>())
+            .collect(),
+    };
+    for (database, schema, name, columns) in keys {
         let Some(table) = tables.iter_mut().find(|t| t.database == database && t.schema == schema && t.name == name) else { continue };
-        let columns = match row.get(3) {
-            Some(Value::String(json)) => serde_json::from_str::<Vec<String>>(json).unwrap_or_default(),
-            Some(Value::Array(columns)) => columns.iter().filter_map(as_str).map(String::from).collect(),
-            _ => continue,
-        };
         let key: Vec<String> = columns.iter().map(|c| c.to_lowercase()).collect();
         if !key.is_empty() {
             table.keys.push(key);
         }
     }
     Some(Catalog { tables, row_makers, table_macros: read_macros, user_macros })
+}
+
+/// Each primary key and UNIQUE constraint a table's text writes, its columns as named there, in
+/// the order the text writes them. DuckDB writes the text from its catalog, every constraint in
+/// it: a key or unique constraint of one column after the column's type, the rest after the
+/// columns (`CREATE TABLE t(id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, UNIQUE(a, b))`).
+pub fn keys_of(sql: &str) -> Vec<Vec<String>> {
+    let Ok(tokens) = Tokenizer::new(&DuckDbDialect {}, sql).tokenize() else { return Vec::new() };
+    let tokens: Vec<Token> = tokens.into_iter().filter(|t| !matches!(t, Token::Whitespace(_))).collect();
+    let Some(open) = tokens.iter().position(|t| *t == Token::LParen) else { return Vec::new() };
+    // The column list's parts, at its top level.
+    let mut parts: Vec<&[Token]> = Vec::new();
+    let (mut depth, mut start) = (0usize, open + 1);
+    for (k, t) in tokens.iter().enumerate().skip(open + 1) {
+        match t {
+            Token::LParen => depth += 1,
+            Token::RParen if depth == 0 => {
+                parts.push(&tokens[start..k]);
+                break;
+            }
+            Token::RParen => depth -= 1,
+            Token::Comma if depth == 0 => {
+                parts.push(&tokens[start..k]);
+                start = k + 1;
+            }
+            _ => {}
+        }
+    }
+    // A keyword as a word, never a quoted name (`"unique"`).
+    let is = |t: Option<&Token>, keyword: Keyword| matches!(t, Some(Token::Word(w)) if w.quote_style.is_none() && w.keyword == keyword);
+    // The names in the parentheses after `part[at]`.
+    let listed = |part: &[Token], at: usize| -> Vec<String> {
+        if part.get(at) != Some(&Token::LParen) {
+            return Vec::new();
+        }
+        part[at + 1..].iter().take_while(|t| **t != Token::RParen).filter_map(|t| if let Token::Word(w) = t { Some(w.value.clone()) } else { None }).collect()
+    };
+    let mut keys = Vec::new();
+    for mut part in parts {
+        if is(part.first(), Keyword::CONSTRAINT) {
+            part = part.get(2..).unwrap_or_default();
+        }
+        if is(part.first(), Keyword::PRIMARY) && is(part.get(1), Keyword::KEY) {
+            keys.push(listed(part, 2));
+        } else if is(part.first(), Keyword::UNIQUE) {
+            keys.push(listed(part, 1));
+        } else if let Some(Token::Word(column)) = part.first().filter(|_| !is(part.first(), Keyword::CHECK) && !is(part.first(), Keyword::FOREIGN)) {
+            // A column's own, after its type, outside any parentheses.
+            let mut depth = 0usize;
+            for (k, t) in part.iter().enumerate().skip(1) {
+                match t {
+                    Token::LParen => depth += 1,
+                    Token::RParen => depth = depth.saturating_sub(1),
+                    _ if depth == 0 && (is(Some(t), Keyword::UNIQUE) || (is(Some(t), Keyword::PRIMARY) && is(part.get(k + 1), Keyword::KEY))) => keys.push(vec![column.value.clone()]),
+                    _ => {}
+                }
+            }
+        }
+    }
+    keys.retain(|key| !key.is_empty());
+    keys
 }
 
 /// The macros in `macros` a user defined, by name ([`MACROS_QUERY`]).
@@ -373,6 +456,51 @@ mod tests {
         let found = |parts: &[&str]| catalog.table(&parts.iter().map(|p| p.to_string()).collect::<Vec<_>>()).map(|t| t.database.clone());
         assert_eq!(found(&["comments"]).as_deref(), Some("app"));
         assert_eq!(found(&["s", "comments"]).as_deref(), Some("temp"));
+    }
+
+    #[test]
+    fn a_tables_keys_are_read_from_its_text() {
+        let keys = |sql: &str| keys_of(sql);
+        assert_eq!(
+            keys(r#"CREATE TABLE "Order"(Id INTEGER PRIMARY KEY, code VARCHAR UNIQUE, a INTEGER, b INTEGER, "select" INTEGER, s STRUCT(x INTEGER, "unique" INTEGER), UNIQUE(a, b), UNIQUE("select", a), CHECK((a > 0)));"#),
+            [vec!["Id"], vec!["code"], vec!["a", "b"], vec!["select", "a"]]
+        );
+        assert_eq!(
+            keys("CREATE TABLE p(id INTEGER, n INTEGER, k VARCHAR COLLATE nocase DEFAULT('unique') UNIQUE, g INTEGER GENERATED ALWAYS AS((id + 1)), PRIMARY KEY(id, n));"),
+            [vec!["k"], vec!["id", "n"]]
+        );
+        // A check, a foreign key, and a name that is a keyword only when quoted, make no key.
+        assert_eq!(keys(r#"CREATE TABLE t(id INTEGER PRIMARY KEY, meta STRUCT(a INTEGER), "unique" INTEGER CHECK(("unique" > 0)), p_id INTEGER, FOREIGN KEY (p_id) REFERENCES p(id), CHECK((meta.a > 0)));"#), [vec!["id"]]);
+        assert_eq!(keys(r#"CREATE TABLE "a""b"("x""y" INTEGER UNIQUE);"#), [vec![r#"x"y"#]]);
+        assert!(keys("CREATE TABLE t(a INTEGER);").is_empty());
+    }
+
+    #[test]
+    fn where_duckdb_refuses_the_keys_query_they_are_read_from_each_tables_text_a_round_later() {
+        let mut answers = reylo_engine_core::api::Answers::new();
+        let host = Host::new(&answers);
+        assert!(read(&host, &[vec!["t".to_string()]]).is_none());
+        let refused = reylo_engine_core::api::DbError { message: r#"Binder Error: Table "t" does not have a column with name "a""#.into(), code: None, position: None };
+        let rows = |rows: Vec<Vec<Value>>| reylo_engine_core::api::Answer::Rows { rows };
+        let column = |name: &str| vec![json!("app"), json!("main"), json!("t"), json!(name), json!(true), Value::Null, json!(true), json!(true), json!("INTEGER"), json!(false)];
+        for need in host.needs() {
+            let reylo_engine_core::api::Need::Query { id, .. } = need else { continue };
+            let answer = if id.contains("duckdb_constraints") {
+                reylo_engine_core::api::Answer::Error { error: refused.clone() }
+            } else if id.contains("duckdb_columns") {
+                rows(vec![column("id"), column("code")])
+            } else {
+                rows(vec![])
+            };
+            answers.insert(id, answer);
+        }
+        let host = Host::new(&answers);
+        assert!(read(&host, &[vec!["t".to_string()]]).is_none());
+        assert_eq!(host.needs().len(), 1);
+        let text = "CREATE TABLE t(id INTEGER PRIMARY KEY, code VARCHAR UNIQUE, meta STRUCT(a INTEGER), CHECK((meta.a > 0)));";
+        answers.insert(format!("query:{}|[]", TEXTS_QUERY.replace("{names}", "'t'")), rows(vec![vec![json!("app"), json!("main"), json!("t"), json!(text)]]));
+        let catalog = read(&Host::new(&answers), &[vec!["t".to_string()]]).expect("answered");
+        assert_eq!(catalog.table(&["t".to_string()]).map(|t| t.keys.clone()), Some(vec![vec!["id".to_string()], vec!["code".to_string()]]));
     }
 
     #[test]

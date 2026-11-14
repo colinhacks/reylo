@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import * as runtime from 'react/jsx-runtime';
 import { useSearchParams } from 'react-router';
-import { Inferred } from '@/components/inferred';
+import { InferenceCard } from '@/components/inference-card';
 import { getMDXComponents } from '@/components/mdx';
 
 /*
- * The local playground, at /playground on the dev server only (app/routes.ts): an Inference card for
+ * The local playground, at /playground on the dev server only (app/routes.ts): an inference card for
  * the statement in the address, drawn by the page's own components from the types Reylo infers for it
  * on the page's schema (lib/playground.ts, through lib/playground-plugin.ts).
  *
@@ -101,7 +101,7 @@ export default function Playground() {
       )}
       <div id="nd-page">
         <div className="prose">
-          {Content ? <Content components={getMDXComponents({ PlaygroundCard: Inferred })} /> : !card ? <p>Analyzing…</p> : null}
+          {Content ? <Content components={getMDXComponents({ PlaygroundCard: InferenceCard })} /> : !card ? <p>Analyzing…</p> : null}
         </div>
       </div>
       {card?.failure && <pre style={{ color: 'var(--color-fd-error, #c00)', whiteSpace: 'pre-wrap' }}>{card.failure}</pre>}

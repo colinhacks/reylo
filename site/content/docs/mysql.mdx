@@ -292,7 +292,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 A schema's type reaches the column when you select it straight from its table, and inside `json_object` or `json_arrayagg`. Through a subquery or a `with` query, under a `union`, in an expression, and as a parameter written to the column, it's `Json`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_json_reach.sql" dialect="mysql"
 select json_object('p', payload) as wrapped,
@@ -300,13 +300,13 @@ select json_object('p', payload) as wrapped,
 from events
 ```
 
-</Inferred>
+</InferenceCard>
 
 **An empty array as a default**
 
 Over no rows, `json_arrayagg` returns `NULL`. A default of an empty array keeps the array's type:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_json_default.sql" dialect="mysql"
 select coalesce(json_arrayagg(id), json_array()) as ids
@@ -314,7 +314,7 @@ from orders
 where user_id = :user_id
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -355,20 +355,20 @@ Every column is typed `| null` unless Reylo can tell it never is null. On MySQL,
 
 A table's column is non-null if it's `NOT NULL`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_columns.sql" dialect="mysql"
 select name, email
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Outer joins**
 
 An outer join makes the joined table's columns nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_left_join.sql" dialect="mysql"
 select u.name, o.total
@@ -376,13 +376,13 @@ from users u
 left join orders o on o.user_id = u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Tests that rule out `NULL`**
 
 A test that fails on `NULL`, in the `where` or a later inner join's `on`, makes its column non-null, and on a joined table shows the row exists. It doesn't count under an `or` that tests another column, or through `coalesce`, `ifnull` and `<=>`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_where.sql" dialect="mysql"
 select u.name, o.total, o.ships_on
@@ -391,13 +391,13 @@ left join orders o on o.user_id = u.id
 where o.ships_on is not null
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Expressions**
 
 An expression is non-null when the server says so: `coalesce` and `ifnull` with a non-null argument, `count`, `length`, comparisons and integer arithmetic. The server is cautious with string and date functions, most casts and division, which stay nullable even over a `NOT NULL` column.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_expressions.sql" dialect="mysql"
 select length(name) as n,
@@ -407,13 +407,13 @@ select length(name) as n,
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Aggregates**
 
 Without a `group by`, an aggregate other than `count`, `bit_and`, `bit_or` and `bit_xor` returns `NULL` over no rows. Such a query returns its one row even then, so beside the aggregate a column is nullable, and so is a subquery that reads the row. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_aggregates.sql" dialect="mysql"
 select user_id,
@@ -424,13 +424,13 @@ from orders
 group by user_id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Subqueries**
 
 A scalar subquery that aggregates without a `group by` returns one row, so its `count` is non-null, whether it reads a table, a subquery in `from` or a `with` query. A column read from a `with` query or a subquery in `from` is as nullable as it is in that query.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_subqueries.sql" dialect="mysql"
 select d.id, d.orders
@@ -440,13 +440,13 @@ from (
 ) d
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Window functions**
 
 Over a window, `sum`, `avg`, `min` and `max` follow their argument, and `json_arrayagg` and `json_objectagg` are never null. A frame that can leave out the current row, such as `rows between 1 following and 2 following`, or a `range` frame with an offset keeps them nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_window.sql" dialect="mysql"
 select id,
@@ -455,13 +455,13 @@ select id,
 from orders
 ```
 
-</Inferred>
+</InferenceCard>
 
 **`WITH ROLLUP`**
 
 A `WITH ROLLUP` adds summary rows whose grouped columns are `NULL`, and the types include `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_rollup.sql" dialect="mysql"
 select role, count(*) as n
@@ -469,7 +469,7 @@ from users
 group by role with rollup
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -553,7 +553,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 
 MySQL reports every integer parameter as a `BIGINT`, so Reylo types it from the column it's compared with or written to. Elsewhere it uses MySQL's type, as for `limit`:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_param_int.sql" dialect="mysql"
 select name
@@ -562,7 +562,7 @@ where id > :after
 limit :n
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Dates and times**
 
@@ -598,7 +598,7 @@ A parameter accepts `null` in two places. Such a parameter is optional in `.run(
 
 A cast to `nullable(type)` makes the parameter that type or `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_param_nullable.sql" dialect="mysql"
 select id, name
@@ -606,20 +606,20 @@ from users
 where role = coalesce(:role::nullable(text), role)
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Written to a nullable column**
 
 Written directly into a column that accepts `NULL`, with no cast, in an `insert`, `update`, `replace` or `on duplicate key update`. A column accepts it unless it's `NOT NULL` or a `check (… is not null)` covers it.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_param_insert.sql" dialect="mysql"
 insert into orders (user_id, total, ships_on)
 values (:user_id, :total, :ships_on)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 

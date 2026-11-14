@@ -343,8 +343,13 @@ impl reylo_engine::Answerer<reylo_engine::duckdb::api::DuckdbDescribe> for Host<
         if !params.is_empty() {
             return Err("the engine's DuckDB catalog queries take no parameter".into());
         }
-        // A catalog query that fails is a failure of the case, never an empty answer.
-        let rows = self.0.rows(sql)?;
+        // A catalog query that fails is a failure of the case, never an empty answer; but for
+        // `duckdb_constraints()`, which DuckDB refuses for the whole database where a check reads a
+        // struct's field with a dot, and which the engine then reads from the tables' text.
+        let rows = match self.0.rows(sql) {
+            Err(message) if sql.contains("duckdb_constraints()") => return Ok(Err(DbError { message, code: None, position: None })),
+            rows => rows?,
+        };
         Ok(Ok(rows.into_iter().map(|r| r.into_iter().map(|v| v.map_or(Value::Null, Value::String)).collect()).collect()))
     }
 }
@@ -399,23 +404,65 @@ struct Column {
     alone: bool,
 }
 
-const TABLES_QUERY: &str = "select c.table_name, c.column_name, c.data_type, c.is_nullable, \
-    exists (select 1 from duckdb_constraints() k where k.table_name = c.table_name and k.constraint_type in ('PRIMARY KEY', 'UNIQUE') and list_contains(k.constraint_column_names, c.column_name)), \
-    exists (select 1 from duckdb_constraints() k where k.table_name = c.table_name and k.constraint_type in ('PRIMARY KEY', 'UNIQUE') and k.constraint_column_names = [c.column_name]) \
+const TABLES_QUERY: &str = "select c.table_name, c.column_name, c.data_type, c.is_nullable, t.sql, c.schema_name \
     from duckdb_columns() c join duckdb_tables() t on t.table_name = c.table_name and t.schema_name = c.schema_name and t.database_name = c.database_name \
     where c.database_name = current_database() and not t.temporary order by t.table_oid, c.column_index";
 
+/// Each primary key and UNIQUE constraint of the current database's tables: its table and its columns, as JSON text.
+const KEYS_QUERY: &str = "select table_name, to_json(constraint_column_names)::varchar, schema_name from duckdb_constraints() \
+    where database_name = current_database() and constraint_type in ('PRIMARY KEY', 'UNIQUE')";
+
 fn tables(db: &Db) -> Result<Vec<Table>, String> {
-    let mut out: Vec<Table> = Vec::new();
+    // Each table's schema and name, its text and its columns.
+    let mut read: Vec<((String, String), String, Vec<(String, String, bool)>)> = Vec::new();
     for row in db.rows(TABLES_QUERY)? {
         let get = |k: usize| row.get(k).cloned().flatten().unwrap_or_default();
-        let column = Column { name: get(1), ty: get(2), nullable: get(3) == "true", key: get(4) == "true", alone: get(5) == "true" };
-        match out.last_mut() {
-            Some(t) if t.name == get(0) => t.columns.push(column),
-            _ => out.push(Table { name: get(0), columns: vec![column] }),
+        let column = (get(1), get(2), get(3) == "true");
+        let table = (get(5), get(0));
+        match read.last_mut() {
+            Some((at, _, columns)) if *at == table => columns.push(column),
+            _ => read.push((table, get(4), vec![column])),
         }
     }
-    Ok(out)
+    // The keys the engine reads from each table's text where DuckDB refuses `duckdb_constraints()`
+    // (a check that reads a struct's field with a dot) are the ones it gives wherever it does not.
+    let written: Vec<Vec<Vec<String>>> = read.iter().map(|(_, sql, _)| reylo_engine::duckdb::catalog::keys_of(sql)).collect();
+    let keys: Vec<Vec<Vec<String>>> = match db.rows(KEYS_QUERY) {
+        Ok(rows) => {
+            let mut keys: Vec<Vec<Vec<String>>> = vec![Vec::new(); read.len()];
+            for row in rows {
+                let get = |k: usize| row.get(k).cloned().flatten().unwrap_or_default();
+                if let Some(at) = read.iter().position(|(table, _, _)| *table == (get(2), get(0))) {
+                    keys[at].push(serde_json::from_str::<Vec<String>>(&get(1)).map_err(|e| e.to_string())?);
+                }
+            }
+            for (((_, name), sql, _), (catalog, text)) in read.iter().zip(keys.iter().zip(&written)) {
+                let (mut catalog, mut text) = (catalog.clone(), text.clone());
+                catalog.sort();
+                text.sort();
+                if catalog != text {
+                    return Err(format!("the keys of {name} read from its text, {text:?}, are not the {catalog:?} duckdb_constraints() gives: {sql}"));
+                }
+            }
+            keys
+        }
+        Err(_) => written,
+    };
+    Ok(read
+        .into_iter()
+        .zip(keys)
+        .map(|(((_, name), _, columns), keys)| Table {
+            name,
+            columns: columns
+                .into_iter()
+                .map(|(column, ty, nullable)| {
+                    let key = keys.iter().any(|k| k.contains(&column));
+                    let alone = keys.iter().any(|k| k.as_slice() == [column.clone()]);
+                    Column { name: column, ty, nullable, key, alone }
+                })
+                .collect(),
+        })
+        .collect())
 }
 
 fn quote(name: &str) -> String {
