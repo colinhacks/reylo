@@ -1,24 +1,24 @@
-deferrable.sql: none (id: int8, name: text?) -> {  }
-deferrable_arbiter.sql: none (id: int8, name: text?) -> {  }
-expression.sql: none (id: int8, name: text?) -> {  }
+deferrable.sql: none (id: int8, name: text(¬NUL)?) -> {  }
+deferrable_arbiter.sql: none (id: int8, name: text(¬NUL)?) -> {  }
+expression.sql: none (id: int8, name: text(¬NUL)?) -> {  }
 half_key.sql: none (id: int8, a: int4?, b: int4?) -> {  } !! reylo13: ON CONFLICT (a) matches no unique index or constraint of `bar`: none has exactly (a) as its key. The server prepares this statement and refuses every execution (42P10).
-in_with.sql: at_most_one (id: int8, name: text?) -> { id: int8 } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
-included_column.sql: none (id: int8, code: text?, name: text?) -> {  } !! reylo13: ON CONFLICT (code, name) matches no unique index or constraint of `bar`: none has exactly (code, name) as its key. The server prepares this statement and refuses every execution (42P10).
-inheritance_parent.sql: none (id: int8, name: text?) -> {  }
-key_of_index.sql: none (id: int8, code: text?) -> {  }
+in_with.sql: at_most_one (id: int8, name: text(¬NUL)?) -> { id: int8 } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
+included_column.sql: none (id: int8, code: text(¬NUL)?, name: text(¬NUL)?) -> {  } !! reylo13: ON CONFLICT (code, name) matches no unique index or constraint of `bar`: none has exactly (code, name) as its key. The server prepares this statement and refuses every execution (42P10).
+inheritance_parent.sql: none (id: int8, name: text(¬NUL)?) -> {  }
+key_of_index.sql: none (id: int8, code: text(¬NUL)?) -> {  }
 key_reordered.sql: none (id: int8, a: int4?, b: int4?) -> {  }
 more_than_key.sql: none (id: int8, a: int4?, b: int4?) -> {  } !! reylo13: ON CONFLICT (a, b, id) matches no unique index or constraint of `bar`: none has exactly (a, b, id) as its key. The server prepares this statement and refuses every execution (42P10).
-no_index.sql: none (id: int8, name: text?) -> {  } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
-no_index_at_all.sql: none (id: int8?, name: text?) -> {  } !! reylo13: ON CONFLICT (id) matches no unique index or constraint of `plain`: none has exactly (id) as its key. The server prepares this statement and refuses every execution (42P10).
-no_index_update.sql: one (id: int8, name: text?) -> { id: int8 } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
-no_target.sql: none (id: int8, name: text?) -> {  }
-on_constraint.sql: none (id: int8, name: text?) -> {  }
-other_collation.sql: none (id: int8, tag: text?) -> {  }
-partial_with_where.sql: none (id: int8, email: text?) -> {  }
-partial_without_where.sql: none (id: int8, email: text?) -> {  } !! reylo13: ON CONFLICT (email) matches no unique index of `bar`: its unique index on (email) is partial (WHERE email <> ''::text), and only a target that repeats the predicate, ON CONFLICT (email) WHERE …, infers it. The server prepares this statement and refuses every execution (42P10).
-partitioned.sql: none (id: int8, region: text) -> {  }
-partitioned_half.sql: none (id: int8, region: text) -> {  } !! reylo13: ON CONFLICT (id) matches no unique index or constraint of `parted`: none has exactly (id) as its key. The server prepares this statement and refuses every execution (42P10).
-primary_key.sql: none (id: int8, name: text?) -> {  }
-schema_qualified.sql: none (id: int8, name: text?) -> {  } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `public.bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
-view.sql: none (id: int8, name: text) -> {  }
-written_before.sql: at_most_one () -> { k: int4, v: text? }
+no_index.sql: none (id: int8, name: text(¬NUL)?) -> {  } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
+no_index_at_all.sql: none (id: int8?, name: text(¬NUL)?) -> {  } !! reylo13: ON CONFLICT (id) matches no unique index or constraint of `plain`: none has exactly (id) as its key. The server prepares this statement and refuses every execution (42P10).
+no_index_update.sql: one (id: int8, name: text(¬NUL)?) -> { id: int8 } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
+no_target.sql: none (id: int8, name: text(¬NUL)?) -> {  }
+on_constraint.sql: none (id: int8, name: text(¬NUL)?) -> {  }
+other_collation.sql: none (id: int8, tag: text(¬NUL)?) -> {  }
+partial_with_where.sql: none (id: int8, email: text(¬NUL)?) -> {  }
+partial_without_where.sql: none (id: int8, email: text(¬NUL)?) -> {  } !! reylo13: ON CONFLICT (email) matches no unique index of `bar`: its unique index on (email) is partial (WHERE email <> ''::text), and only a target that repeats the predicate, ON CONFLICT (email) WHERE …, infers it. The server prepares this statement and refuses every execution (42P10).
+partitioned.sql: none (id: int8, region: text(¬NUL)) -> {  }
+partitioned_half.sql: none (id: int8, region: text(¬NUL)) -> {  } !! reylo13: ON CONFLICT (id) matches no unique index or constraint of `parted`: none has exactly (id) as its key. The server prepares this statement and refuses every execution (42P10).
+primary_key.sql: none (id: int8, name: text(¬NUL)?) -> {  }
+schema_qualified.sql: none (id: int8, name: text(¬NUL)?) -> {  } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `public.bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
+view.sql: none (id: int8, name: text(¬NUL)) -> {  }
+written_before.sql: at_most_one () -> { k: int4, v: text(¬NUL)? }

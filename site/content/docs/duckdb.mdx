@@ -120,7 +120,7 @@ A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, a
 
 **Nested types**
 
-A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`, except in an `array(select c from (…) c)` of a subquery's or a table's whole rows, whose elements are structs and whose fields are as their columns are. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is an error: name its fields, as in `{'a': 1, 'b': 'x'}` or `struct_pack(a := 1, b := 'x')`.
+A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`, except in an `array(select c from (…) c)` of a subquery's or a table's whole rows, whose elements are structs and whose fields are as their columns are. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is a tuple, an array of its values in order (`[number | null, string | null]`), and a parameter of one takes that array.
 
 <InferenceCard>
 
@@ -148,6 +148,32 @@ group by all
 ```
 
 Reylo keeps each query's analysis in [`reylo/.cache/`](/faq#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `reylo/.cache/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
+
+### Type descriptors
+
+How the engine writes each type.
+
+The engine gives every column its type in [Reylo Type Defs](/typedefs), as [`reylo analyze`](/cli#reylo-analyze) prints it. A column of each DuckDB type:
+
+<Analyzed file="types.sql" dialect="duckdb" format="types">
+
+```sql schema
+create type mood as enum ('sad', 'ok', 'happy')
+```
+
+```sql
+select
+  null::boolean as "BOOLEAN", null::tinyint as "TINYINT", null::integer as "INTEGER", null::bigint as "BIGINT",
+  null::hugeint as "HUGEINT", null::ubigint as "UBIGINT", null::float as "FLOAT", null::double as "DOUBLE",
+  null::decimal(10, 2) as "DECIMAL(10, 2)", null::varchar as "VARCHAR", null::blob as "BLOB", null::uuid as "UUID",
+  null::mood as "ENUM", null::date as "DATE", null::time as "TIME", null::timetz as "TIMETZ",
+  null::timestamp as "TIMESTAMP", null::timestamptz as "TIMESTAMPTZ", null::interval as "INTERVAL",
+  null::integer[] as "INTEGER[]", null::integer[3] as "INTEGER[3]", null::struct(a integer, b varchar) as "STRUCT(a INTEGER, b VARCHAR)",
+  row(1, 'a') as "STRUCT(INTEGER, VARCHAR)", null::map(varchar, integer) as "MAP(VARCHAR, INTEGER)",
+  null::union(num integer, str varchar) as "UNION(num INTEGER, str VARCHAR)", null::bit as "BIT", null::json as "JSON"
+```
+
+</Analyzed>
 
 ## Nullability
 

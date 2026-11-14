@@ -49,7 +49,8 @@ export type Plan =
   | { readonly array: Plan }
   | { readonly fields: Readonly<Record<string, Plan>> }
   | { readonly entries: { readonly key?: Plan; readonly value?: Plan } }
-  | { readonly tags: Readonly<Record<string, Plan>> };
+  | { readonly tags: Readonly<Record<string, Plan>> }
+  | { readonly items: readonly (Plan | null)[]; readonly rest?: Plan };
 
 /** The TypeScript type of a value under each codec, which a parameter of it takes too; a SET's array is of its members' type (src/render.ts). */
 export const CODEC_TYPE: Readonly<Record<Codec, string>> = {
@@ -107,9 +108,9 @@ function family(t: EngineType, dialect: Dialect): Family | undefined {
     case "timestamp":
       return "datetime";
     case "timestamptz":
-      return t.kind === "instant" && t.zone !== undefined ? undefined : "instant";
+      return t.kind === "zoned_datetime" ? undefined : "instant";
     case "text":
-      return t.kind === "time" && t.zone === undefined ? "time" : undefined;
+      return t.kind === "time" && !t.offset ? "time" : undefined;
     case "set":
       return "set";
     default:
@@ -145,11 +146,11 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
   if (leaf !== undefined) return leaf;
   switch (t.kind) {
     case "array": {
-      if (!columnKind(t, dialect).endsWith("[]") && !(param && t.element.type.kind === "record")) return undefined;
+      if (!columnKind(t, dialect).endsWith("[]") && !(param && t.element.type.kind === "struct")) return undefined;
       const element = planOf(t.element.type, dialect, codecs, param);
       return element === undefined ? undefined : { array: element };
     }
-    case "record": {
+    case "struct": {
       // A DuckDB struct, a Postgres row value and a structured parameter are objects of their fields.
       if (dialect !== "duckdb" && dialect !== "postgres" && !param) return undefined;
       const fields = Object.fromEntries(t.fields.flatMap((f) => {
@@ -169,9 +170,16 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
     }
     case "map": {
       if (dialect !== "duckdb") return undefined;
-      const key = planOf(t.key, dialect, codecs, param);
+      const key = planOf(t.key.type, dialect, codecs, param);
       const value = planOf(t.value.type, dialect, codecs, param);
       return key === undefined && value === undefined ? undefined : { entries: { ...(key === undefined ? {} : { key }), ...(value === undefined ? {} : { value }) } };
+    }
+    case "tuple": {
+      // A DuckDB tuple's values, by their places: its elements, its optional ones, then its rest.
+      if (dialect !== "duckdb") return undefined;
+      const items = [...t.elements, ...(t.optional_elements ?? [])].map((s) => planOf(s.type, dialect, codecs, param) ?? null);
+      const rest = t.rest === undefined ? undefined : planOf(t.rest.type, dialect, codecs, param);
+      return items.some((p) => p !== null) || rest !== undefined ? { items, ...(rest === undefined ? {} : { rest }) } : undefined;
     }
     case "tagged_union": {
       // A tagged union's value, `{ tag, value }`, by the alternative its tag names.
@@ -293,6 +301,11 @@ export function decodeCodec(codec: Codec, v: unknown, column: string): unknown {
   }
 }
 
+/** Whether a plan's value is an array itself, an array's or a tuple's, so that an array element is one value of it, not a further level of a Postgres array. */
+function nestsArray(plan: Plan): boolean {
+  return typeof plan === "object" && ("array" in plan || "items" in plan);
+}
+
 /**
  * A value with its plan's codecs applied, wherever they stand in it. An object or an array the
  * plan reaches into is copied, never changed: a Standard Query's `decode` is handed a driver's own
@@ -303,8 +316,15 @@ export function decodePlan(plan: Plan, v: unknown, column: string): unknown {
   if (typeof plan === "string") return decodeCodec(plan, v, column);
   if ("array" in plan) {
     // An element may be an array itself, in a Postgres array of any depth.
-    const element = (e: unknown): unknown => (Array.isArray(e) && !(typeof plan.array === "object" && "array" in plan.array) ? e.map(element) : decodePlan(plan.array, e, column));
+    const element = (e: unknown): unknown => (Array.isArray(e) && !nestsArray(plan.array) ? e.map(element) : decodePlan(plan.array, e, column));
     return Array.isArray(v) ? v.map(element) : v;
+  }
+  if ("items" in plan) {
+    if (!Array.isArray(v)) return v;
+    return v.map((e, i) => {
+      const p = i < plan.items.length ? plan.items[i] : plan.rest;
+      return p === null || p === undefined ? e : decodePlan(p, e, column);
+    });
   }
   if (typeof v !== "object") return v;
   if ("fields" in plan) {
@@ -405,8 +425,15 @@ export function encodePlan(plan: Plan, v: unknown, name: string, dialect: Dialec
   if (v === null || v === undefined) return v;
   if (typeof plan === "string") return encodeCodec(plan, v, name, dialect);
   if ("array" in plan) {
-    const element = (e: unknown): unknown => (Array.isArray(e) && !(typeof plan.array === "object" && "array" in plan.array) ? e.map(element) : encodePlan(plan.array, e, name, dialect));
+    const element = (e: unknown): unknown => (Array.isArray(e) && !nestsArray(plan.array) ? e.map(element) : encodePlan(plan.array, e, name, dialect));
     return Array.isArray(v) ? v.map(element) : v;
+  }
+  if ("items" in plan) {
+    if (!Array.isArray(v)) return v;
+    return v.map((e, i) => {
+      const p = i < plan.items.length ? plan.items[i] : plan.rest;
+      return p === null || p === undefined ? e : encodePlan(p, e, name, dialect);
+    });
   }
   if (typeof v !== "object") return v;
   if ("fields" in plan) {

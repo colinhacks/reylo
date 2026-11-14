@@ -9,7 +9,7 @@
 // The schema keeps to a small idiom, which this reads and refuses to go beyond: each definition is an
 // object (whose `allOf` names the definitions it extends), a union of definitions (`anyOf`), or a list
 // of strings (`enum`); a property is a `$ref`, a `const`, an `enum`, a string, a number, a boolean,
-// an array or an object of its own.
+// an array (a tuple where it has `prefixItems` and no `items` after them) or an object of its own.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -50,8 +50,10 @@ function type(s: Schema, indent: string): string {
     case "boolean":
       return "boolean";
     case "array": {
+      // A fixed sequence, JSON Schema's prefixItems with no items after them, is a tuple.
+      if (Array.isArray(s.prefixItems) && s.items === false) return `[${(s.prefixItems as Schema[]).map((m) => type(m, indent)).join(", ")}]`;
       const items = type(s.items as Schema, indent);
-      return /[| ]/.test(items) ? `(${items})[]` : `${items}[]`;
+      return /[| ]/.test(items) && !/^\[.*\]$/.test(items) ? `(${items})[]` : `${items}[]`;
     }
     case "object":
       return `{ ${members(s, indent).map((m) => m.trim()).join(" ")} }`;
@@ -81,7 +83,8 @@ for (const [name, def] of Object.entries(defs)) {
   } else {
     const union = type(def, "");
     // A long union takes a line per member.
-    ts += union.length > 80 && Array.isArray(def.anyOf) ? `export type ${name} =\n${(def.anyOf as Schema[]).map((m) => `  | ${type(m, "  ")}`).join("\n")};\n\n` : `export type ${name} = ${union};\n\n`;
+    const members: string[] | undefined = Array.isArray(def.anyOf) ? (def.anyOf as Schema[]).map((m) => type(m, "  ")) : Array.isArray(def.enum) ? def.enum.map((v) => JSON.stringify(v)) : undefined;
+    ts += union.length > 80 && members ? `export type ${name} =\n${members.map((m) => `  | ${m}`).join("\n")};\n\n` : `export type ${name} = ${union};\n\n`;
   }
 }
 ts = ts.trimEnd() + "\n";

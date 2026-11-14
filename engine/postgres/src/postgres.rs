@@ -20,7 +20,7 @@ use crate::levels::Columns;
 use crate::lex::{self, Lexed, Rewritten, Target};
 use crate::pgtypes::{not_null_rows, TypeRegistry, RELATION_TYPES_QUERY, TYPE_QUERY};
 use crate::returning::Rows;
-use crate::types::{Cardinality, CheckFacts, DescribedColumn, DescribedStatement, Kind as TyKind, NonFinite, Pattern, PatternDialect, StatementKind, Type};
+use crate::types::{Cardinality, CheckFacts, DescribedColumn, DescribedStatement, Kind as TyKind, NonFinite, StatementKind, Type};
 use pg_query::protobuf::node::Node as NodeEnum;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -36,6 +36,9 @@ const MAX_PROBES: usize = 24;
 /// How many times one analysis may settle a probe at all, the same statement under another
 /// assumption included.
 const MAX_PROBE_CALLS: usize = 64;
+
+/// The first oid a user's database gives an object: every type below it is built in.
+const FIRST_NORMAL_OID: u32 = 16384;
 
 // The catalog queries below are public so that a host with a driver of its own can bind their
 // parameters by type: each casts every parameter in its text, and the doc comment names them.
@@ -978,6 +981,8 @@ impl<'a> Engine<'a> {
         let mut unresolved = Vec::new();
         let mut columns = Vec::with_capacity(described.columns.len());
         let comments = self.comments.borrow();
+        // The constants each column holds, where the statement writes them ([`crate::literals`]).
+        let literals = crate::literals::columns(&rewritten.sql).filter(|l| l.len() == described.columns.len()).unwrap_or_default();
         for (position, (col, shaped)) in described.columns.iter().zip(shaped).enumerate() {
             let (ty, nullable) = match shaped {
                 Some(shaped) => {
@@ -988,7 +993,14 @@ impl<'a> Engine<'a> {
                     let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(col, &registry) };
                     // A built array of arrays carries its elements' nullability at its innermost level ([`nest`]).
                     let items = if col.nested.is_some() { None } else { col.nullable_items };
-                    (col.facts.apply(col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.holds_strings(col.type_oid)), col.document.as_ref()))), col.nullable)
+                    let ty = col.facts.apply(col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.holds_strings(col.type_oid)), col.document.as_ref())));
+                    // A built-in type holds a constant as the statement writes it; a user's type
+                    // reads it with an input function of its own.
+                    let ty = match literals.get(position).and_then(Option::as_ref) {
+                        Some(written) if col.type_oid < FIRST_NORMAL_OID && !col.whole_row => reylo_engine_core::literal::narrow(&ty, written).unwrap_or(ty),
+                        _ => ty,
+                    };
+                    (ty, col.nullable)
                 }
             };
             let comment = comments.columns.get(position).cloned().flatten();
@@ -2581,9 +2593,9 @@ impl<'a> Engine<'a> {
                 fields.push(crate::types::Field::new("*DEPTH*", registry.render(crate::pgtypes::oid::INT8), false));
             }
             fields.extend(listed.iter().zip(&found).map(|(name, c)| crate::types::Field::new(name.clone(), registry.render(c.type_oid), c.nullable)));
-            let row = Type::record(fields).named("record");
+            let row = Type::structure(fields).named("record");
             out.push(Some(match array {
-                true => Type::new(TyKind::Array(crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(row)), size: None, any_depth: true })).named("_record"),
+                true => Type::new(TyKind::Array(crate::types::ArrayType::of(crate::types::Slot::non_null(row)))).named("_record"),
                 false => row,
             }));
         }
@@ -4095,17 +4107,18 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
                     out = std::mem::take(&mut out).and(CheckFacts { multiple_of: Some(divisor), ..CheckFacts::default() });
                 }
             }
+            // A LIKE, as the I-Regexp of the same values (its escape the default backslash). An
+            // ILIKE and a regular expression are tested too, and say nothing: no I-Regexp is known
+            // to match exactly what they do.
             "~~" | "~~*" | "~" | "~*" if deterministic => {
                 let ty = string_column(l)?;
                 let (source, constant_ty) = string_constant(r)?;
                 compared.push((op.clone(), [ty, constant_ty]));
-                let pattern = match op.as_str() {
-                    "~~" => Pattern { dialect: PatternDialect::Like, source },
-                    "~~*" => Pattern { dialect: PatternDialect::Ilike, source },
-                    "~" => Pattern { dialect: PatternDialect::Postgres, source },
-                    _ => Pattern { dialect: PatternDialect::Postgres, source: format!("(?i){source}") },
-                };
-                out = std::mem::take(&mut out).and(CheckFacts { pattern: Some(pattern), ..CheckFacts::default() });
+                if op == "~~" {
+                    if let Some(pattern) = reylo_engine_core::pattern::from_like(&source, Some('\\')) {
+                        out = std::mem::take(&mut out).and(CheckFacts { pattern: Some(pattern), ..CheckFacts::default() });
+                    }
+                }
             }
             _ => return None,
         }
@@ -4140,19 +4153,19 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
 
 /// A described column's type, a built array of arrays at its depth ([`infer::Nesting`]) under the
 /// result's name: its levels of rows over the innermost arrays, each of which collects arrays of
-/// the element type, of any depth as a column's array is, or else holds the result's elements, as
+/// the element type, each flat as a column's array is, or else holds the result's elements, as
 /// `nullable_items` says ([`with_items`]), and no arrays. Each level is non-null, and of the depth
 /// it shows. The column's type modifier is its elements', which the arrays it collects share,
 /// since Postgres reports one only where every element has it.
 pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
-    let level = |element: Type| crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(element)), size: None, any_depth: false };
+    let level = |element: Type| crate::types::ArrayType::of(crate::types::Slot::non_null(element));
     let Type { kind, label, comment } = registry.render_typmod(col.type_oid, col.typmod);
     let named = |kind| Type { kind, label: label.clone(), comment: comment.clone() };
     match (col.nested, kind) {
         (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
             let mut inner = match element {
                 Some(oid) => named(TyKind::Array(level(registry.render_typmod(oid, col.typmod)))),
-                None => with_items(named(TyKind::Array(crate::types::ArrayType { any_depth: false, ..array })), col.nullable_items),
+                None => with_items(named(TyKind::Array(array)), col.nullable_items),
             };
             for _ in 0..rows {
                 inner = named(TyKind::Array(level(inner)));
@@ -4750,11 +4763,14 @@ fn named_as(mut ty: Type, type_oid: u32, registry: &TypeRegistry) -> Type {
     ty
 }
 
+/// Whether a value of `ty` is told apart from another by its value alone, so that a key of it
+/// identifies a row. Not an array: Postgres's equality compares where its index starts
+/// (`'[0:1]={1,2}'` is not `'{1,2}'`), which is no part of its value, so two arrays the database
+/// tells apart may be one value.
 fn identifies(ty: &Type) -> bool {
     match &ty.kind {
-        TyKind::Json(_) | TyKind::Unknown => false,
-        TyKind::Array(array) => !array.any_depth && identifies(&array.element.ty),
-        TyKind::Record(_) => matches!(ty.label.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
+        TyKind::Json(_) | TyKind::Unknown | TyKind::Array(_) => false,
+        TyKind::Struct(_) => matches!(ty.label.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
         TyKind::Opaque => ty.label.as_deref() != Some("record"),
         _ => true,
     }
@@ -4762,7 +4778,7 @@ fn identifies(ty: &Type) -> bool {
 
 /// The columns of a statement's result its ORDER BY sorts on ([`Analysis::order`]), for a SELECT
 /// that can return more than one row, as [`cardinality::result_order`] reads them.
-fn result_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<crate::types::OrderColumn> {
+fn result_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<crate::types::SortKey> {
     if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
         return Vec::new();
     }
@@ -4787,7 +4803,7 @@ fn total_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, co
 
 /// Whether values of `ty` have no collation: a number, a truth value, bytes, a UUID or a time.
 fn uncollated(ty: &Type) -> bool {
-    matches!(ty.kind, TyKind::Boolean | TyKind::Integer(_) | TyKind::Float(_) | TyKind::Decimal(_) | TyKind::Bytes(_) | TyKind::Uuid(_) | TyKind::Date(_) | TyKind::Time(_) | TyKind::DateTime(_) | TyKind::Instant(_) | TyKind::Duration(_))
+    matches!(ty.kind, TyKind::Boolean(_) | TyKind::Integer(_) | TyKind::Float(_) | TyKind::Decimal(_) | TyKind::Bytes(_) | TyKind::Uuid(_) | TyKind::Date(_) | TyKind::Time(_) | TyKind::DateTime(_) | TyKind::Instant(_) | TyKind::Duration(_))
 }
 
 #[cfg(test)]
@@ -5077,7 +5093,7 @@ mod tests {
         ] {
             assert_eq!(check_values(other, "status"), None, "{other}");
         }
-        assert_eq!(with_values(Type::text().named("text"), Some(&["a".to_string()]), true), Type::text_of(vec!["a".into()]).named("text"));
+        assert_eq!(with_values(Type::text().named("text"), Some(&["a".to_string()]), true), Type::one_of(Type::text().named("text"), vec!["a".into()]));
     }
 
     #[test]
@@ -5140,7 +5156,7 @@ mod tests {
         let trust = Trust::default();
         let facts = |text: &str| check_facts(text, "id", (Some(oid::UUID), Some(oid::UUID)), true, &trust).unwrap();
         let version = |facts: CheckFacts| match facts.apply(Type::uuid()).kind {
-            K::Uuid(UuidType { version }) => version,
+            K::Uuid(UuidType { versions }) => versions.and_then(|v| v.first().copied()),
             _ => panic!(),
         };
         // `uuid_extract_version` is NULL for a UUID of a variant other than RFC 9562's, and a CHECK
@@ -5192,11 +5208,12 @@ mod tests {
         assert_eq!(facts("(qty % 1) = 0", "qty", oid::INT4).multiple_of, None);
         // A pattern, on a varchar through the server's own cast, and a domain's on `VALUE`.
         let pattern = |text: &str, ty: u32| facts(text, "e", ty).pattern;
-        assert_eq!(pattern("(e)::text ~~ 'a%'::text", oid::VARCHAR), Some(Pattern { dialect: PatternDialect::Like, source: "a%".into() }));
-        assert_eq!(pattern("e ~~* 'a%'::text", oid::TEXT), Some(Pattern { dialect: PatternDialect::Ilike, source: "a%".into() }));
-        assert_eq!(pattern("e ~ '^a'::text", oid::TEXT), Some(Pattern { dialect: PatternDialect::Postgres, source: "^a".into() }));
-        assert_eq!(pattern("e ~* 'a'::text", oid::TEXT), Some(Pattern { dialect: PatternDialect::Postgres, source: "(?i)a".into() }));
-        assert_eq!(check_facts("(VALUE)::text ~~ '%@%'::text", "value", (Some(16500), Some(oid::VARCHAR)), true, &trust).unwrap().pattern.map(|p| p.source), Some("%@%".to_string()));
+        assert_eq!(pattern("(e)::text ~~ 'a%'::text", oid::VARCHAR).as_deref(), Some("a(.|\\n|\\r)*"));
+        // An ILIKE and a regular expression say nothing: no I-Regexp is known to match the same values.
+        assert_eq!(pattern("e ~~* 'a%'::text", oid::TEXT), None);
+        assert_eq!(pattern("e ~ '^a'::text", oid::TEXT), None);
+        assert_eq!(pattern("e ~* 'a'::text", oid::TEXT), None);
+        assert_eq!(check_facts("(VALUE)::text ~~ '%@%'::text", "value", (Some(16500), Some(oid::VARCHAR)), true, &trust).unwrap().pattern.as_deref(), Some("(.|\\n|\\r)*@(.|\\n|\\r)*"));
         // Not a padded string, nor a nondeterministic collation's.
         assert_eq!(pattern("e ~~ 'a%'::text", oid::BPCHAR), None);
         assert_eq!(check_facts("e ~~ 'a%'::text", "e", (Some(oid::TEXT), Some(oid::TEXT)), false, &trust).unwrap().pattern, None);
@@ -5433,13 +5450,13 @@ mod tests {
         };
         // Written whole and bare, by an INSERT's VALUES, the SELECT that feeds an INSERT, and an
         // UPDATE's SET: the column's modifier, an array's for its elements.
-        let modified = "name: varchar(≤20), price: numeric(10,2), tags: varchar(≤8)?[]";
+        let modified = "name: varchar(≤20, ¬NUL), price: numeric(10,2), tags: varchar(≤8, ¬NUL)?[]";
         assert_eq!(shown("INSERT INTO items (name, price, tags) VALUES (:name, :price, :tags)", &[1043, 1700, 1015]), modified);
         assert_eq!(shown("INSERT INTO items (name, price, tags) SELECT :name, :price, :tags", &[1043, 1700, 1015]), modified);
         assert_eq!(shown("UPDATE items SET name = :name, price = :price, tags = :tags WHERE id = :id", &[1043, 1700, 1015, 23]), format!("{modified}, id: int4"));
         // A cast one is its cast's type, and one only compared with a column is the server's.
-        assert_eq!(shown("INSERT INTO items (name, price) VALUES (:name::text, :price::numeric)", &[25, 1700]), "name: text, price: numeric");
-        assert_eq!(shown("SELECT id FROM items WHERE name = :name AND price = :price", &[1043, 1700]), "name: varchar, price: numeric");
+        assert_eq!(shown("INSERT INTO items (name, price) VALUES (:name::text, :price::numeric)", &[25, 1700]), "name: text(¬NUL), price: numeric");
+        assert_eq!(shown("SELECT id FROM items WHERE name = :name AND price = :price", &[1043, 1700]), "name: varchar(¬NUL), price: numeric");
     }
 
     #[test]
@@ -5816,8 +5833,8 @@ mod tests {
         // A row of a table no outer join nulls is never NULL, and keeps its CHECK's union.
         let (row, nullable) = items("SELECT jsonb_agg(e ORDER BY e.id) AS rows FROM events e");
         assert!(!nullable);
-        let TyKind::Record(record) = row.kind else { panic!("{row:?}") };
-        assert_eq!(record.fields[1].ty, Type::text_of(vec!["click".into(), "key".into()]).named("text"));
+        let TyKind::Struct(record) = row.kind else { panic!("{row:?}") };
+        assert_eq!(record.fields[1].ty, Type::one_of(crate::pgtypes::text().named("text"), vec!["click".into(), "key".into()]));
         assert!(!record.fields[1].nullable && record.fields[2].nullable);
         // The preserved side of an outer join is a row; the nulled side is NULL where nothing matched,
         // unless a strict test of the WHERE rejects those rows.
@@ -5829,8 +5846,8 @@ mod tests {
         // A bare read of the row keeps the union too.
         let a = replay_docs("SELECT e FROM events e", &describe);
         assert!(!a.columns[0].nullable);
-        let TyKind::Record(record) = &a.columns[0].ty.kind else { panic!("{:?}", a.columns[0].ty) };
-        assert_eq!(record.fields[1].ty, Type::text_of(vec!["click".into(), "key".into()]).named("text"));
+        let TyKind::Struct(record) = &a.columns[0].ty.kind else { panic!("{:?}", a.columns[0].ty) };
+        assert_eq!(record.fields[1].ty, Type::one_of(crate::pgtypes::text().named("text"), vec!["click".into(), "key".into()]));
     }
 
     #[test]
@@ -5905,7 +5922,7 @@ mod tests {
             panic!("the replay did not converge");
         };
         let int = |name: &str, nullable: bool| (name.to_string(), Type::integer(32).named("int4"), nullable);
-        let text = |name: &str, nullable: bool| (name.to_string(), Type::text().named("text"), nullable);
+        let text = |name: &str, nullable: bool| (name.to_string(), crate::pgtypes::text().named("text"), nullable);
         assert_eq!(analyzed("select s.id, s.note from (select id, note from app.accounts) s"), [int("id", false), text("note", true)]);
         assert_eq!(analyzed("with a as (select id, note from app.accounts) select id, note from a"), [int("id", false), text("note", true)]);
         assert_eq!(analyzed("select s.id, s.name from (select id, name from users) s"), [int("id", false), text("name", false)]);

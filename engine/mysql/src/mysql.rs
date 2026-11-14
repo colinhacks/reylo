@@ -20,7 +20,7 @@ use crate::shape::Shape;
 use crate::dialect::Dialect;
 use crate::host::{as_str, Host, Lazy};
 use crate::lex::{self, Lexed, MysqlText, Style, Target};
-use crate::types::{Cardinality, Field, Kind as TyKind, Position, StatementKind, Type};
+use crate::types::{Cardinality, Field, Kind as TyKind, Slot, StatementKind, Type};
 use serde_json::{json, Value};
 use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, GroupByExpr, LimitClause, Query, Select, SelectItem, SetExpr, Statement, TableFactor};
 use sqlparser::dialect::MySqlDialect;
@@ -437,10 +437,13 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         }
         typed.labelled.get(&(table.to_ascii_lowercase(), column.to_ascii_lowercase())).cloned()
     };
-    // Whether a result column is a TEXT column that stores UTF-8, by the same origin.
-    let utf8_of = |c: &crate::api::MysqlColumn| -> bool {
-        let (Some(table), Some(column)) = (c.org_table.as_deref(), c.org_name.as_deref()) else { return false };
-        !column.is_empty() && traced.as_ref().is_some_and(|traced| traced.iter().any(|t| t.eq_ignore_ascii_case(table))) && typed.utf8.contains(&(table.to_string(), column.to_ascii_lowercase()))
+    // The character set a result column's table column stores its values in, by the same origin.
+    let charset_of = |c: &crate::api::MysqlColumn| -> Option<String> {
+        let (table, column) = (c.org_table.as_deref()?, c.org_name.as_deref()?);
+        if column.is_empty() || !traced.as_ref().is_some_and(|traced| traced.iter().any(|t| t.eq_ignore_ascii_case(table))) {
+            return None;
+        }
+        typed.charsets.get(&(table.to_string(), column.to_ascii_lowercase())).cloned()
     };
     // What the engine knows of each column being NULL: the server's flags, read where merging
     // could make them wrong with every derived table materialized, and what the engine proves
@@ -486,13 +489,15 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         Some(Statement::Query(q)) => crate::mysql_shape::truths(q, raw.columns.len()),
         _ => Vec::new(),
     };
+    // The constants each column holds, where the query writes nothing else into it.
+    let literals = parsed.as_ref().and_then(crate::mysql_literals::columns).filter(|l| l.len() == raw.columns.len()).unwrap_or_default();
     let columns = raw
         .columns
         .iter()
         .enumerate()
         .map(|(position, c)| {
             // A table's own column is of its type whatever is bound, narrowed by its definition.
-            let ty = settled.get(position).cloned().flatten().unwrap_or_else(|| defined_type(c, views.as_ref(), utf8_of(c)));
+            let ty = settled.get(position).cloned().flatten().unwrap_or_else(|| defined_type(c, views.as_ref(), charset_of(c).as_deref()));
             // What the statement computes as 1 or 0 is a truth value, which MySQL delivers as an
             // integer; a table's TINYINT(1) or BIT(1) column keeps its type, since it holds
             // whatever was stored in it, and a client reads it as a truth value by its name. Any
@@ -521,6 +526,10 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
                 _ => ty,
             };
             let ty = if bits.contains(&position) { Type::unknown() } else { ty };
+            let ty = match literals.get(position) {
+                Some(Some(written)) => reylo_engine_core::literal::narrow(&ty, written).unwrap_or(ty),
+                _ => ty,
+            };
             Column { comment: comment_of(c), ..Column::new(c.name.clone(), ty, !not_null) }
         })
         .collect();
@@ -535,7 +544,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             let ty = described.map_or_else(Type::unknown, |p| param_type(p.r#type, p.charset));
             // Only an integer or a BIT context is narrowed: those are the ones the prepare describes alike for every column. So are
             // an ENUM's and a SET's, which the prepare describes as a string, the text a label and members are bound as.
-            let labelled = |t: &Type| matches!(&t.kind, TyKind::Set(_)) || matches!(&t.kind, TyKind::Text(text) if text.values.is_some());
+            let labelled = |t: &Type| matches!(&t.kind, TyKind::Array(a) if a.distinct) || matches!(&t.kind, TyKind::Enum(_));
             let ty = match (described, typed.types.get(name)) {
                 (Some(p), Some(column)) if matches!(p.r#type, 1 | 2 | 3 | 8 | 9 | 13 | 16) => column.clone(),
                 (Some(p), Some(column)) if labelled(column) && matches!(p.r#type, 15 | 253 | 254) => column.clone(),
@@ -2113,8 +2122,8 @@ fn written_types(typed: &crate::mysql_params::Typed, host: &Host) -> Lazy<HashMa
             None => pending = true,
             Some(Ok(described)) => {
                 for (c, column) in described.columns.iter().zip(columns) {
-                    let utf8 = typed.utf8.contains(&(table.to_string(), column.to_string()));
-                    read.insert((*table, *column), defined_type(c, Some(&no_views), utf8));
+                    let charset = typed.charsets.get(&(table.to_string(), column.to_string()));
+                    read.insert((*table, *column), defined_type(c, Some(&no_views), charset.map(String::as_str)));
                 }
             }
             Some(Err(_)) => {}
@@ -2142,11 +2151,10 @@ fn stored_column(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>) -
 }
 
 /// A result column's type, narrowed by its definition where its values are stored under it
-/// ([`stored_column`], [`crate::mysql_types::declared`]): `utf8` where it is a `TEXT` column known
-/// to store UTF-8.
-fn defined_type(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>, utf8: bool) -> Type {
+/// ([`stored_column`], [`crate::mysql_types::declared`]), in the character set its column stores.
+fn defined_type(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>, charset: Option<&str>) -> Type {
     let ty = column_type(c);
-    if stored_column(c, views) { crate::mysql_types::declared(ty, c, utf8) } else { ty }
+    if stored_column(c, views) { crate::mysql_types::declared(ty, c, charset) } else { ty }
 }
 
 /// Each `?` the prepare typed as a VECTOR wrapped in `to_vector(…)`, so that it binds the text of
@@ -2259,17 +2267,17 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
                     Field::new(k.clone(), ty, !nn)
                 })
                 .collect();
-            (Type::record(fields), *non_null)
+            (Type::structure(fields), *non_null)
         }
         Shape::Array { items, non_null } => {
             let (ty, nn) = resolve(items, outcomes, plan, flows, documents, views);
-            (Type::array(Position::new(ty, !nn)), *non_null)
+            (Type::array(Slot::new(ty, !nn)), *non_null)
         }
         Shape::Column { probe, index } => match outcomes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
             Some(c) if plan.booleans.contains(&(*probe, *index)) => (Type::boolean(), c.flags & 1 != 0),
             // A truth value is an integer to the server, so no other type is in doubt.
             Some(c) => {
-                let ty = defined_type(c, Some(views), false);
+                let ty = defined_type(c, Some(views), None);
                 let ty = flows.get(*probe).and_then(|f| f.get(*index)).and_then(|reached| widened(&ty, *reached)).unwrap_or(ty);
                 // A JSON column a CHECK holds to a JSON Schema: the values it admits.
                 let ty = match documents.get(*probe).and_then(|d| d.get(*index)).cloned().flatten() {
@@ -3358,7 +3366,7 @@ mod tests {
         // MySQL 9.7.2 describes a VECTOR(3) column, a NULL one, and a `?` compared with one, as type 242.
         let described = json!({ "columns": [{ "name": "v", "type": 242, "flags": 4241, "charset": 63, "length": 12 }, { "name": "vn", "type": 242, "flags": 144, "charset": 63, "length": 8 }], "params": [{ "type": 242, "flags": 128, "charset": 63 }] });
         let (analysis, _) = analyzed("select v, vn from items where v = :v", described, "STRICT_TRANS_TABLES");
-        let floats = Type::array(Position::non_null(Type::single())).named("vector");
+        let floats = Type::array(Slot::non_null(Type::single())).named("vector");
         let columns: Vec<_> = analysis.columns.iter().map(|c| (c.ty.clone(), c.nullable)).collect();
         assert_eq!(columns, [(floats.clone(), false), (floats.clone(), true)]);
         assert_eq!(analysis.params[0].ty, floats);
@@ -3441,7 +3449,7 @@ mod tests {
         assert_eq!(types("select :a member of ('[1]') as c, substring(name, 1, :n) as d, ceil(:x) as e from users", &[8, 253, 8], &[8, 8, 5]), "unknown varchar bigint | double | decimal");
         // A user variable holds a value of any type.
         assert_eq!(types("select @n := coalesce(@n, 0) + 1 as c, id, @@max_join_size as d, @`q` as e from users", &[8, 3, 8, 251], &[]), "unknown int bigint unknown");
-        assert_eq!(types("select d.c, 'a@b' as e from (select @n as c) d", &[8, 253], &[]), "unknown varchar");
+        assert_eq!(types("select d.c, 'a@b' as e from (select @n as c) d", &[8, 253], &[]), "unknown varchar('a@b')");
         // A string bound beside a JSON value makes the result a string of bytes.
         assert_eq!(types("select coalesce(doc, :fallback) as c, json_extract(doc, :path) as d from users", &[245, 245], &[245, 253]), "unknown json");
     }
@@ -3521,7 +3529,10 @@ mod tests {
         let truth = || column(8, 1, "", "");
         // Comparisons, tests and logical operators, and what passes one through.
         let sql = "select a = b as c, a is null as c, exists (select 1) as c, a in (1, 2) as c, not a as c, a and b as c, a <=> b as c, a between 1 and 2 as c, 'x' like 'y' as c, true as c, (a = b) as c, if(a, a = b, null) as c, coalesce(a = b, false) as c, case when a then a < b end as c, nullif(a = b, 1) as c, (select a = b from users limit 1) as c from users";
-        assert_eq!(types(sql, (0..16).map(|_| truth()).collect()), ["boolean"; 16].join(" "));
+        // `true` is a truth value too, and a constant, the one value it holds.
+        let mut truths = ["boolean"; 16];
+        truths[9] = "boolean(true)";
+        assert_eq!(types(sql, (0..16).map(|_| truth()).collect()), truths.join(" "));
         // A literal number is no truth value, whatever its width, nor is what computes with one.
         let sql = "select 1 as c, 5 as c, case when a then 1 else 0 end as c, if(a, 1, a = b) as c, (a = b) + 0 as c, max(a = b) as c from users";
         assert_eq!(types(sql, vec![column(8, 2, "", ""), column(8, 2, "", ""), column(8, 2, "", ""), column(8, 2, "", ""), column(8, 3, "", ""), column(8, 1, "", "")]), ["bigint | int"; 6].join(" "));
@@ -3584,8 +3595,9 @@ mod tests {
         let body = column("body", 252, 255, 262_140, 0, "users", "body");
         let legacy = column("legacy", 252, 255, 262_140, 0, "users", "legacy");
         let price = column("price", 246, 63, 12, 2, "users", "price");
-        // A TEXT the catalog says stores UTF-8 counts its bytes, and one in latin1 its code points.
-        assert_eq!(types("select name, body, legacy, price from users", vec![name.clone(), body.clone(), legacy, price]), "varchar(≤20) text(≤65535 bytes UTF-8) text(≤65535) decimal(10,2)");
+        // A TEXT the catalog says stores UTF-8 counts its bytes, and one in latin1 its code points,
+        // each a character of latin1's set, windows-1252.
+        assert_eq!(types("select name, body, legacy, price from users", vec![name.clone(), body.clone(), legacy, price]), "varchar(≤20) text(≤65535 bytes, UTF-8) text(≤65535, windows-1252) decimal(10,2)");
         // Through a derived table the prepare names the table, and a column's origin there may be
         // its derived name, so a TEXT counts code points.
         assert_eq!(types("select name, body from (select name, body from users) d", vec![name, body]), "varchar(≤20) text(≤65535)");

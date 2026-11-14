@@ -173,7 +173,7 @@ test("Postgres: a float or a numeric inside JSON is a number, NaN and the infini
     await closeSessions();
     // The module names the fields that may hold one, and leaves out the ones a CHECK keeps clear.
     const { code } = await sqlModule(join(root, "built.sql"), built_);
-    assert.match(code, /nonFinite: \[null,\{"keys":\[\["rate",true\],\["amount",true\],\["total",true\],\["pair",\{"items":true,"deep":true\}\]\]\}\]/);
+    assert.match(code, /nonFinite: \[null,\{"keys":\[\["rate",true\],\["amount",true\],\["total",true\],\["pair",\{"items":true,"flat":true\}\]\]\}\]/);
     const read = await built(root, "built", built_);
     const expected = [
       { id: 1, doc: { rate: NaN, amount: Infinity, total: NaN, ratio: 0.5, score: 1, pair: [NaN, NaN] } },

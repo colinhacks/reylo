@@ -25,7 +25,7 @@ use crate::infer::Trust;
 use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::{oid, TypeRegistry};
 use crate::returning::Rows;
-use crate::types::{DescribedColumn, Field, JsonType, Kind, Position, Type};
+use crate::types::{DescribedColumn, Field, JsonType, Kind, Slot, Type};
 use pg_query::protobuf::{self, node::Node as NodeEnum, AStar, ColumnRef, Node, ParseResult, RawStmt, ResTarget, SelectStmt};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -259,11 +259,11 @@ pub fn resolve_row(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeReg
     let ctx = ResolveCtx { probes, registry, param_oids, document: false };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
     let ty = match ty.kind {
-        Kind::Record(_) => ty.named("record"),
+        Kind::Struct(_) => ty.named("record"),
         // One dimension: a row is no array, so nothing in it can add another.
-        Kind::Array(array) if matches!(array.element.ty.kind, Kind::Record(_)) => {
-            let element = Position { ty: array.element.ty.named("record"), nullable: array.element.nullable };
-            Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), any_depth: false, ..array })).named("_record")
+        Kind::Array(array) if matches!(array.element.ty.kind, Kind::Struct(_)) => {
+            let element = Slot { ty: array.element.ty.named("record"), nullable: array.element.nullable };
+            Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), ..array })).named("_record")
         }
         _ => return None,
     };
@@ -276,7 +276,7 @@ pub fn document(content: Type) -> Type {
     if content.is_json() {
         content
     } else {
-        Type::json_of(Position::non_null(content))
+        Type::json_of(Slot::non_null(content))
     }
 }
 
@@ -1685,11 +1685,11 @@ impl ResolveCtx<'_> {
                         Field::new(key.clone(), ty, !non_null)
                     })
                     .collect();
-                (Type::record(fields), *non_null)
+                (Type::structure(fields), *non_null)
             }
             Shape::Array { items, non_null } => {
                 let (of, items_non_null) = self.node(items, &join(path, "[]"), unresolved);
-                (Type::array(Position::new(of, !items_non_null)), *non_null)
+                (Type::array(Slot::new(of, !items_non_null)), *non_null)
             }
             // A tuple is the JSON Schema of an array of exactly its items, each as the database
             // writes it inside a document. Where NULL items are left out and one may be NULL,
@@ -1773,7 +1773,7 @@ impl ResolveCtx<'_> {
                     let fields = if self.document { last_of_each_name(fields) } else { fields };
                     // An outer join can null the whole row, which is then every column NULL: a
                     // column the probe proved non-null says the row is there.
-                    (Type::record(fields), !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
+                    (Type::structure(fields), !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
                 }
                 None => {
                     unresolved.push(display_path(path));
@@ -1784,11 +1784,11 @@ impl ResolveCtx<'_> {
                 // A row of a named type keeps its type's names, whatever an alias calls its columns;
                 // a `record`'s are the ones its columns go by.
                 Some((true, Some(names))) => match self.node(&Shape::Row { probe: *row }, path, unresolved) {
-                    (Type { kind: Kind::Record(record), .. }, non_null) if record.fields.len() == names.len() => {
+                    (Type { kind: Kind::Struct(record), .. }, non_null) if record.fields.len() == names.len() => {
                         let fields = record.fields.into_iter().zip(names).map(|(field, name)| Field { name, ..field }).collect();
-                        (Type::record(if self.document { last_of_each_name(fields) } else { fields }), non_null)
+                        (Type::structure(if self.document { last_of_each_name(fields) } else { fields }), non_null)
                     }
-                    (Type { kind: Kind::Record(_), .. }, _) => {
+                    (Type { kind: Kind::Struct(_), .. }, _) => {
                         unresolved.push(display_path(path));
                         (Type::unknown(), false)
                     }
@@ -2445,7 +2445,7 @@ mod tests {
         // Whether the column is nullable, and whether the first field of the object it is.
         let whole = |sql: &str| !resolved(sql).non_null;
         let field = |sql: &str| match content(resolved(sql).ty).kind {
-            Kind::Record(r) => r.fields[0].nullable,
+            Kind::Struct(r) => r.fields[0].nullable,
             other => panic!("{other:?}"),
         };
         // A column, a whole row and an aggregate of the query around the subquery.
@@ -2729,7 +2729,7 @@ mod tests {
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert!(r.non_null);
         assert!(r.unresolved.is_empty());
-        assert_eq!(r.ty.short(), "json ({ id: uuid, body: text, score: int4? })[]");
+        assert_eq!(r.ty.short(), "json ({ id: uuid, body: text(¬NUL), score: int4? })[]");
     }
 
     #[test]
@@ -2751,7 +2751,7 @@ mod tests {
         let row = || outcome(vec![column("a", oid::INT8, "int8", false), column("name", oid::TEXT, "text", false)]);
         // A `record` takes the names its columns go by.
         let record = resolve(&shape, &[row(), outcome(vec![column("coalesce", oid::RECORD, "record", true)])], &registry, &[]);
-        assert_eq!(record.ty.short(), "json { a: int8, name: text }");
+        assert_eq!(record.ty.short(), "json { a: int8, name: text(¬NUL) }");
         // A named row type whose fields the registry cannot give is no row whose names the build
         // knows: the alias's names are never a named type's.
         let mut registry = registry;
@@ -2800,7 +2800,7 @@ mod tests {
         let columns = vec![column("id", oid::UUID, "uuid", false), column("name", oid::TEXT, "text", true)];
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false, present: None, built: Vec::new() })], &registry, &[]);
         assert!(r.non_null);
-        assert_eq!(r.ty.short(), "json { id: uuid, name: text? }");
+        assert_eq!(r.ty.short(), "json { id: uuid, name: text(¬NUL)? }");
         // An outer join in the probe's own analysis is what can null the whole row, unless a
         // column it proved non-null says the row is there (an unmatched row is every column NULL).
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
@@ -2808,11 +2808,11 @@ mod tests {
         let nullable: Vec<_> = columns.into_iter().map(|c| DescribedColumn { nullable: true, ..c }).collect();
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
-        assert_eq!(r.ty.short(), "json { id: uuid?, name: text? }");
+        assert_eq!(r.ty.short(), "json { id: uuid?, name: text(¬NUL)? }");
         // The read with the row there gives the fields of an object that exists their own.
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable, outer_join: true, present: Some(vec![false, true]), built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
-        assert_eq!(r.ty.short(), "json { id: uuid, name: text? }");
+        assert_eq!(r.ty.short(), "json { id: uuid, name: text(¬NUL)? }");
     }
 
     #[test]
@@ -2861,7 +2861,7 @@ mod tests {
     fn a_path_an_item_could_not_type_goes_under_the_path_that_reads_it() {
         let registry = TypeRegistry::with_builtins();
         let p = shapes("SELECT jsonb_build_object('posts', ps.posts) AS author FROM ps");
-        let item = Type::json_of(Position::non_null(Type::array(Position::non_null(Type::record(vec![Field::new("tags", Type::unknown(), true)])))));
+        let item = Type::json_of(Slot::non_null(Type::array(Slot::non_null(Type::structure(vec![Field::new("tags", Type::unknown(), true)])))));
         let built = Built { ty: item, non_null: true, unresolved: vec!["[].tags".into(), "[]".into(), WHOLE.into()] };
         let outcome = Outcome { columns: vec![column("a0", oid::JSONB, "jsonb", false)], outer_join: false, present: None, built: vec![Some(built)] };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);

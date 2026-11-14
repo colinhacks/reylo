@@ -11,11 +11,11 @@ insert_coded.sql: none (id: int4) -> {  }
 insert_defaulted.sql: none (id: int4) -> {  }
 insert_event.sql: none (id: int4, at: date) -> {  }
 insert_ordered.sql: none (id: int4?) -> {  }
-insert_user.sql: none (id: int4, email: text, age: int4) -> {  }
+insert_user.sql: none (id: int4, email: text(¬NUL), age: int4) -> {  }
 judge_mood.sql: many () -> { n: int4? }
 query_to_xml.sql: one () -> { x: xml? }
 select_logs.sql: many (id: int4) -> { id: int4 }
 select_ordered.sql: at_most_one (id: int4) -> { id: int4 }
 select_parts.sql: many (id: int4) -> { id: int4 }
-select_view.sql: at_most_one (id: int4) -> { id: int4, email: text }
-upsert_user.sql: none (id: int4, email: text, age: int4) -> {  }
+select_view.sql: at_most_one (id: int4) -> { id: int4, email: text(¬NUL) }
+upsert_user.sql: none (id: int4, email: text(¬NUL), age: int4) -> {  }

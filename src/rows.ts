@@ -22,9 +22,9 @@ export type RowsType = { one: boolean; fields: RowField[] };
 
 /** A structured parameter's rows from its type, a record or an array of records, and its members as written. */
 export function rowsOf(type: EngineType, members: Members): RowsType {
-  const record = type.kind === "record" ? type : type.kind === "array" && type.element.type.kind === "record" ? type.element.type : undefined;
+  const record = type.kind === "struct" ? type : type.kind === "array" && type.element.type.kind === "struct" ? type.element.type : undefined;
   const fields = (record?.fields ?? []).map((f, k) => ({ name: f.name, type: f.type, written: members[k]?.written ?? "", nullable: f.nullable === true, optional: f.optional === true, ...(members[k]?.schema === undefined ? {} : { schema: members[k]!.schema }) }));
-  return { one: type.kind === "record", fields };
+  return { one: type.kind === "struct", fields };
 }
 
 /** One comma-separated list of an insert's expansion, as UTF-16 offsets into the module's `text`: an entry per member, in the column list's order. */
@@ -140,12 +140,12 @@ function check(type: EngineType, written: string, v: unknown, dialect: Dialect, 
         fail(`is ${written}, which holds a JSON value: ${(e as Error).message}.`);
       }
       return v;
-    case "text":
-      if (type.enum !== undefined) {
-        if (typeof v === "string" && (type.enum.length === 0 || type.enum.includes(v))) return v;
-        return fail(`is the enum ${type.label ?? written}, one of ${type.enum.map((l) => JSON.stringify(l)).join(", ")}; got ${describe(v)}.`);
+    case "enum":
+      if (type.type.kind === "text") {
+        if (typeof v === "string" && type.values.includes(v)) return v;
+        return fail(`is the enum ${type.label ?? written}, one of ${type.values.map((l) => JSON.stringify(l)).join(", ")}; got ${describe(v)}.`);
       }
-      break;
+      return check(type.type, written, v, dialect, fail);
     case "array":
       // A segment and a polygon, as a Postgres row value and a geometric type below.
       if (dialect === "postgres" && ["lseg", "polygon"].includes(columnKind(type, dialect))) return postgresLiteral(type, v, (message) => fail(`is ${message}`));
@@ -155,7 +155,7 @@ function check(type: EngineType, written: string, v: unknown, dialect: Dialect, 
         return v.map((e, i) => (e === null ? null : check(type.element.type, element, e, dialect, (message) => fail(`element ${i + 1} ${message}`))));
       }
       break;
-    case "record":
+    case "struct":
       // A Postgres row value, and a geometric type, as the text its input reads, from its object.
       if (dialect === "postgres") return postgresLiteral(type, v, (message) => fail(`is ${message}`));
       return v;

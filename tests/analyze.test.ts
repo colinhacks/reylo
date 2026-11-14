@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { mapperHandlers } from "../src/mapper-server.ts";
+import { reportedDiagnostics, type Reported } from "../src/mapper-diagnostics.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
 import { refusedLogin, Unreachable } from "../src/connection.ts";
 import { defineQuery } from "../src/index.ts";
@@ -72,6 +73,39 @@ test("a change to the schema makes the entry stale, and the statement is analyze
   assert.equal(after.source, "database");
   assert.deepEqual(after.analysis.columns.map((c) => c.name), ["id", "name", "email"]);
   assert.equal(after.entry, before.entry);
+});
+
+test("a session's identity, which the type check gives TypeScript, moves with the schema and the app's SQLite drivers, and is its own with no URL", async () => {
+  const { root, env } = project();
+  writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { "better-sqlite3": "*" } }));
+  // A driver that resolves and cannot open the database: it is left out of the analysis, and its version is still part of what the statements were checked with.
+  const driver = join(root, "node_modules", "better-sqlite3");
+  mkdirSync(driver, { recursive: true });
+  writeFileSync(join(driver, "index.js"), "throw new Error('no native module');\n");
+  const installed = (version: string) => writeFileSync(join(driver, "package.json"), JSON.stringify({ name: "better-sqlite3", version, main: "index.js" }));
+  const identity = async (at: Record<string, string> = env) => {
+    const session = await Session.open(root, at);
+    try {
+      return await session.identity();
+    } finally {
+      await session.close();
+    }
+  };
+  installed("12.0.0");
+  const first = await identity();
+  assert.equal(await identity(), first);
+  installed("12.1.0");
+  const upgraded = await identity();
+  assert.notEqual(upgraded, first);
+  const db = new DatabaseSync(join(root, "app.db"));
+  db.exec("alter table users add column email text");
+  db.close();
+  assert.notEqual(await identity(), upgraded);
+  // With no URL, the analyses come from reylo/.cache/, and no two sessions share an identity.
+  const unset = await identity({});
+  assert.match(unset, /"offline \d+ \d+"/);
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.notEqual(await identity({}), unset);
 });
 
 test("a database with the same schema at another URL reads the entry, and one with another schema writes its own", async () => {
@@ -258,8 +292,8 @@ test("on a server, a URL that fails reads that server's own entry and no other's
     try {
       await sqlModule(join(root, "a.sql"), statement);
       await sqlModule(join(root, "b.sql"), statement);
-      const declared = (await mapper.transform!({ fileName: join(root, "a.sql"), content: statement, projectHandle })) as { text: string; diagnostics: unknown[] };
-      assert.deepEqual(declared.diagnostics, []);
+      const declared = (await mapper.transform!({ fileName: join(root, "a.sql"), content: statement, projectHandle })) as { text: string } & Reported;
+      assert.deepEqual(reportedDiagnostics(declared), []);
       assert.match(declared.text, /\n \* reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from reylo\/\.cache\/, analyzed \d{4}-\d\d-\d\d\n \*\/\ndeclare const query: /);
     } finally {
       await mapper.closeProject!({ projectHandle });
@@ -778,7 +812,10 @@ test("the type check names the dialect of the project a kept session recovers to
   const mapper = mapperHandlers();
   const projectHandle = `recovers-${root}`;
   await mapper.openProject!({ projectHandle, configFileName: join(root, ".reylo.yaml") });
-  const transform = async () => (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string; diagnostics: { code: number }[] };
+  const transform = async () => {
+    const result = (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string } & Reported;
+    return { text: result.text, diagnostics: reportedDiagnostics(result) };
+  };
   try {
     // With no URL, and no entry in reylo/.cache/ to name one, the dialect is Postgres's.
     const before = await transform();

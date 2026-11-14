@@ -4,7 +4,7 @@ any_geometry.sql: many (gs: public.geometry?[]) -> { id: int4 } key (id)
 by_point.sql: many (x: float8, y: float8, lng: float8, lat: float8) -> { id: int4, made: public.geometry?, point: public.geography? } key (id)
 dump.sql: many () -> { id: int4, path: int4?[]?, geom: public.geometry? }
 dump_rows.sql: many () -> { id: int4, d: public.geometry_dump{ path: int4?[]?, geom: public.geometry? }? }
-geojson.sql: many () -> { id: int4, geojson: text?, wkt: text?, srid: int4?, x: float8? } key (id)
+geojson.sql: many () -> { id: int4, geojson: text(¬NUL)?, wkt: text(¬NUL)?, srid: int4?, x: float8? } key (id)
 json_agg.sql: one () -> { locations: jsonb public.geometry[]?, shapes: json public.geometry?[]? }
 json_object.sql: many () -> { doc: json { id: int4, location: public.geometry, shape: public.geometry?, area: public.geography?, bounds: public.box2d? } }
 plain.sql: many () -> { id: int4, location: public.geometry, shape: public.geometry?, area: public.geography?, bounds: public.box2d?, trail: public.geometry?[]? } key (id)

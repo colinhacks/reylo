@@ -1,6 +1,6 @@
 alter_table.sql: none () -> {  }
 ambiguous.sql: many () -> {  } !! reylo6: Column 'id' in field list is ambiguous (ER_NON_UNIQ_ERROR)
-backslash_quote.sql: at_most_one (id: int32) -> { id: int, said: varchar }
+backslash_quote.sql: at_most_one (id: int32) -> { id: int, said: varchar('it''s') }
 backslash_quote_filter.sql: at_most_one (id: int32) -> { id: int }
 backticks.sql: at_most_one (id: int32) -> { id: int, the name: varchar(≤20) }
 begin.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
@@ -39,7 +39,7 @@ placeholder_cast_like.sql: at_most_one (id: int32, name: varchar) -> { id: int }
 placeholder_colon_equals.sql: at_most_one (id: int32) -> { n: unknown }
 placeholder_dollar.sql: many () -> {  } !! reylo6: Unknown column '$1' in 'where clause' (ER_BAD_FIELD_ERROR)
 placeholder_in_limit.sql: many (n: int32) -> { id: int }
-placeholder_in_string.sql: at_most_one (id: int32) -> { text: varchar, mark: varchar, id: int }
+placeholder_in_string.sql: at_most_one (id: int32) -> { text: varchar(':x'), mark: varchar('?'), id: int }
 placeholder_mixed.sql: many (1: unknown, name: unknown) -> {  } !! reylo2: Named and positional parameters cannot be mixed in one statement.
 placeholder_numbered.sql: many () -> {  } !! reylo1: MySQL has no numbered placeholder ?1; write ? for each value, or :name
 placeholder_question.sql: at_most_one (1: int32, 2: varchar) -> { name: varchar(≤20) }
@@ -68,7 +68,7 @@ unknown_table.sql: many () -> {  } !! reylo6: Table 'reylo_oracle_mysql_statemen
 update_all.sql: none () -> {  }
 use_database.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
 user_variable_read.sql: at_most_one (id: int32) -> { x: unknown?, id: int }
-values_statement.sql: many () -> { column_0: bigint | int, column_1: varchar }
+values_statement.sql: many () -> { column_0: bigint | int, column_1: varchar('a' | 'b') }
 window_named.sql: many () -> { id: int, r: bigint }
 with_recursive_cte.sql: many () -> { i: bigint | int? }
 with_statement.sql: many () -> { id: int }

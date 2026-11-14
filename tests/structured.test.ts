@@ -55,7 +55,7 @@ async function analysis(root: string, url: string, sql: string) {
 
 /** A structured parameter's members: the fields of its record, one row's or each of an array's. */
 function members(t: EngineType): Field[] {
-  const record = t.kind === "record" ? t : t.kind === "array" && t.element.type.kind === "record" ? t.element.type : undefined;
+  const record = t.kind === "struct" ? t : t.kind === "array" && t.element.type.kind === "struct" ? t.element.type : undefined;
   assert.ok(record, `a structured parameter's type is a record or an array of them: ${JSON.stringify(t)}`);
   return record.fields;
 }

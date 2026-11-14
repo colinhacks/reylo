@@ -6,9 +6,9 @@ create_index.sql: none () -> {  }
 create_table_as.sql: none (min: int4) -> {  }
 declare_cursor.sql: none () -> {  }
 do_block.sql: none () -> {  }
-explain.sql: many (id: int4) -> { QUERY PLAN: text? }
+explain.sql: many (id: int4) -> { QUERY PLAN: text(¬NUL)? }
 notify.sql: none () -> {  }
 refresh.sql: none () -> {  }
 set_local.sql: none () -> {  }
-show.sql: many () -> { work_mem: text? }
+show.sql: many () -> { work_mem: text(¬NUL)? }
 truncate.sql: none () -> {  }

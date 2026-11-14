@@ -10,7 +10,7 @@ escaped_backslash_twice.sql: many (x: int32) -> { id: int }
 escaped_in_comment_and_string.sql: at_most_one (id: int32) -> { id: int }
 escaped_json_key.sql: at_most_one (id: int32) -> { o: json { it's: int, say "hi": varchar(≤40) } }
 escaped_like.sql: at_most_one (id: int32) -> { id: int }
-escaped_newline.sql: at_most_one (id: int32) -> { s: varchar, n: bigint, t: varchar, id: int }
+escaped_newline.sql: at_most_one (id: int32) -> { s: varchar('a\nb'), n: bigint, t: varchar('\t\u{0}\u{1a}\\%\\_'), id: int }
 escaped_quote.sql: many (id: int32) -> { id: int }
 escaped_quote_key.sql: at_most_one () -> { id: int, name: varchar(≤40) }
 hash_comment.sql: at_most_one (id: int32) -> { id: int }
