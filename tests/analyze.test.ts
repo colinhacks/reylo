@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { mapperHandlers } from "../src/mapper-server.ts";
+import { reportedDiagnostics, type Reported } from "../src/mapper-diagnostics.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
 import { refusedLogin, Unreachable } from "../src/connection.ts";
 import { defineQuery } from "../src/index.ts";
@@ -258,8 +259,8 @@ test("on a server, a URL that fails reads that server's own entry and no other's
     try {
       await sqlModule(join(root, "a.sql"), statement);
       await sqlModule(join(root, "b.sql"), statement);
-      const declared = (await mapper.transform!({ fileName: join(root, "a.sql"), content: statement, projectHandle })) as { text: string; diagnostics: unknown[] };
-      assert.deepEqual(declared.diagnostics, []);
+      const declared = (await mapper.transform!({ fileName: join(root, "a.sql"), content: statement, projectHandle })) as { text: string } & Reported;
+      assert.deepEqual(reportedDiagnostics(declared), []);
       assert.match(declared.text, /\n \* reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d\n \*\/\ndeclare const query: /);
     } finally {
       await mapper.closeProject!({ projectHandle });
@@ -778,7 +779,10 @@ test("the type check names the dialect of the project a kept session recovers to
   const mapper = mapperHandlers();
   const projectHandle = `recovers-${root}`;
   await mapper.openProject!({ projectHandle, configFileName: join(root, ".reylo.yaml") });
-  const transform = async () => (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string; diagnostics: { code: number }[] };
+  const transform = async () => {
+    const result = (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string } & Reported;
+    return { text: result.text, diagnostics: reportedDiagnostics(result) };
+  };
   try {
     // With no URL, and no entry in .reylo/ to name one, the dialect is Postgres's.
     const before = await transform();

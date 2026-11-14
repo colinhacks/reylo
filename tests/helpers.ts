@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import { reportedDiagnostics } from "../src/mapper-diagnostics.ts";
 
 export const ROOT = join(import.meta.dirname, "..");
 export const DRIVERS = join(ROOT, "lab", "drivers", "node_modules");
@@ -157,7 +158,7 @@ export async function transform(root: string, files: Record<string, string>): Pr
     const out: Record<string, { text: string; diagnostics: Diagnostic[] }> = {};
     for (const [name, content] of Object.entries(files)) {
       const result = await call("transform", { fileName: join(root, name), content, projectHandle: "p" });
-      out[name] = { text: result.text, diagnostics: result.diagnostics };
+      out[name] = { text: result.text, diagnostics: reportedDiagnostics(result) };
     }
     await call("closeProject", { projectHandle: "p" });
     return out;

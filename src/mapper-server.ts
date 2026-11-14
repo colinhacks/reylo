@@ -11,6 +11,7 @@ import { PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
 import type { Codecs } from "./codecs.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, statementAfter } from "./doc-comment.ts";
+import { reportDiagnostics, type MapperDiagnostic } from "./mapper-diagnostics.ts";
 
 type Project = {
   strictParams: boolean;
@@ -24,7 +25,7 @@ type Project = {
 const projects = new Map<string, Project>();
 
 /** A diagnostic of the file, its range kept inside the file's `size` bytes (`withinFile`). */
-function diag(size: number, messageText: string, start: number, length: number, code = 1) {
+function diag(size: number, messageText: string, start: number, length: number, code = 1): MapperDiagnostic {
   return { messageText, ...withinFile(start, length, size), code };
 }
 
@@ -71,18 +72,24 @@ export function mapperHandlers(): MapperHandlers {
       const resolved = resolveProject(await anyEngine(), projectDir);
       const projectFile = resolved.file ? relative(projectDir, resolved.file).split(sep).join("/") || resolved.file : PROJECT_FILE;
       const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
-      projects.set(p.projectHandle, { strictParams: resolved.strictParams, allowNestedArrays: resolved.allowNestedArrays, codecs: resolved.codecs, projectFile, session: Session.open(projectDir) });
-      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.allowNestedArrays, resolved.codecs, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
+      const session = Session.open(projectDir);
+      projects.set(p.projectHandle, { strictParams: resolved.strictParams, allowNestedArrays: resolved.allowNestedArrays, codecs: resolved.codecs, projectFile, session });
+      // What every file's module is a function of besides its own text: the settings, the engine
+      // and the database's schema. An incremental `tsc` keeps a file's type errors, and those of the
+      // files that import it, while its text and this identity stay the same, so a migration that
+      // changes a column's type is checked again.
+      const analyzes = await session.then((s) => s.identity()).catch((e: unknown) => `unopened ${(e as Error).message}`);
+      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.allowNestedArrays, resolved.codecs, resolved.url ?? null, resolved.error ?? null, p.options ?? null, analyzes])).digest("hex");
       return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };
     },
     async transform(params) {
       const p = params as { fileName: string; content: string; projectHandle: string };
       const sql = p.content;
       const size = Buffer.byteLength(sql);
-      const diagnostics: ReturnType<typeof diag>[] = [];
+      const diagnostics: MapperDiagnostic[] = [];
       // A project file (`.reylo.yaml` or `.reylo.yml`, or a `<name>.reylo.yaml` that `include` takes
       // in) is no query, and its module declares nothing.
-      if (PROJECT_FILES.some((name) => p.fileName.endsWith(name))) return { extension: ".ts" as const, diagnostics, text: "export {};\n", mappings: [] };
+      if (PROJECT_FILES.some((name) => p.fileName.endsWith(name))) return { extension: ".ts" as const, text: "export {};\n", mappings: [] };
       const project = projects.get(p.projectHandle);
       if (!project) {
         // A transform for a project this process never opened: answer, never throw, so the file
@@ -91,7 +98,7 @@ export function mapperHandlers(): MapperHandlers {
         const leading = leadingComment(sql);
         const doc = docComment(leading.prose, statementAfter(sql, leading));
         const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\nexport type QueryError = import("reylo").QueryError;\n${doc}declare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
-        return { extension: ".ts" as const, diagnostics, text, mappings: mapToStatement(text, sql) };
+        return { extension: ".ts" as const, ...reportDiagnostics(diagnostics), text, mappings: mapToStatement(text, sql) };
       }
       // The analysis first, and the dialect from the session after it: a session whose `direct_url`
       // command has just succeeded takes the project the command's URL resolves to (src/analyze.ts).
@@ -141,7 +148,7 @@ export function mapperHandlers(): MapperHandlers {
           `export default query;`,
           ``,
         ].join("\n");
-        return { extension: ".ts" as const, diagnostics, text, mappings: mapToStatement(text, sql) };
+        return { extension: ".ts" as const, ...reportDiagnostics(diagnostics), text, mappings: mapToStatement(text, sql) };
       };
 
       if (!outcome.ok) {

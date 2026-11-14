@@ -373,6 +373,17 @@ export class Session {
     return this.#schema;
   }
 
+  /**
+   * What this session's analyses are a function of besides the statement: the engine and the
+   * schema's fingerprint. Where there is no fingerprint (the database cannot be reached, or refuses
+   * the query), the analyses come from `.reylo/` or are not given, and the value is this process's
+   * own, matching no other.
+   */
+  async identity(): Promise<string> {
+    const { value } = await this.schema();
+    return JSON.stringify([this.#engineFingerprint, value ?? `offline ${process.pid} ${Date.now()}`]);
+  }
+
   /** Reads the schema's fingerprint again now, however recent the last read; whether it changed. */
   async recheck(): Promise<boolean> {
     const before = this.#schema?.value;
