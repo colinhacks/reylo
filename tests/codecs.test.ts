@@ -7,14 +7,19 @@ import { DatabaseSync } from "node:sqlite";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { analysisWithBases } from "../src/engine-type.ts";
-import { DRIVERS, pgLive, postgresDatabase } from "./helpers.ts";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { Decimal } from "decimal.js";
+import { BigNumber } from "bignumber.js";
+import { Big } from "big.js";
+import { DRIVERS, INDEX, pgLive, postgresDatabase, ROOT, transform } from "./helpers.ts";
 import { array, field, lite, my, pg, record } from "./descriptors.ts";
-import { decodeCodec, decodeCodecs, decodePlan, encodeCodec, encodePlan, leafCodec, planOf, type Codecs } from "../src/codecs.ts";
+import { decodeCodec, decodeCodecs, decodePlan, encodeCodec, encodePlan, leafCodec, planLibraries, planOf, type Codecs, type DecimalClass } from "../src/codecs.ts";
 import { execute, executeSync, type QueryModule } from "./run.ts";
 import { defineQuery } from "../src/index.ts";
 import { moduleTypes, standardColumnsType } from "../src/module-types.ts";
 import { renderParamType, renderType } from "../src/render.ts";
-import { querySchemas } from "../src/schema.ts";
+import { querySchemas, typeSchema } from "../src/schema.ts";
 import { DecodeError, ParameterError } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 
@@ -360,6 +365,169 @@ test("a Postgres analysis gives each column of a family its codec, and none to a
     assert.deepEqual(await plans("select at from logs"), ["instant"]);
   } finally {
     await session.close();
+    await own.drop();
+  }
+});
+
+// A decimal library `js.codecs.decimal` names by its package: decimal.js, bignumber.js and big.js,
+// each the app's own install, which the module imports and hands the run time.
+const LIBRARIES = [
+  ["decimal.js", Decimal, "Decimal"],
+  ["bignumber.js", BigNumber, "BigNumber"],
+  ["big.js", Big, "Big"],
+] as const;
+const libraryClass = (cls: unknown) => ({ decimal: cls as DecimalClass });
+const make = (cls: unknown, text: string) => new (cls as DecimalClass)(text);
+
+test("a decimal library's class is a decimal's type at every position outside JSON, and its parameter's", () => {
+  for (const [library, , type] of LIBRARIES) {
+    const codecs: Codecs = { decimal: library };
+    for (const [t, dialect] of [[pg("numeric"), "postgres"], [my("decimal"), "mysql"], [duck("decimal"), "duckdb"]] as const) assert.equal(leafCodec(t, dialect, codecs), `decimal:${library}`);
+    assert.equal(renderType(pg("numeric"), false, "postgres", codecs), `import("${library}").${type}`);
+    assert.equal(renderParamType(pg("numeric"), "postgres", false, undefined, codecs), `import("${library}").${type}`);
+    assert.equal(renderType(array(pg("numeric")), false, "postgres", codecs), `(import("${library}").${type} | null)[]`);
+    // Inside a JSON document a decimal is the document's number.
+    assert.notEqual(renderType(pg("numeric"), true, "postgres", codecs), `import("${library}").${type}`);
+    assert.deepEqual([...planLibraries({ array: { fields: { n: `decimal:${library}`, at: "instant" } } })], [library]);
+  }
+  // The JSON form is the text a library's toJSON() writes.
+  assert.deepEqual(typeSchema(pg("numeric"), "postgres", false, false, false, undefined, { decimal: "decimal.js" }), { type: "string", format: "decimal", description: "a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)" });
+});
+
+test("a decimal library's value holds a decimal's exact text, and a parameter of it binds every digit", () => {
+  const long = "-12345678901234567890.1234567890123456789012345678901";
+  const wide = `1${"0".repeat(40)}`;
+  for (const [library, cls, type] of LIBRARIES) {
+    const codec = `decimal:${library}` as const;
+    const libraries = libraryClass(cls);
+    const v = decodeCodec(codec, long, "price", libraries) as InstanceType<typeof cls>;
+    assert.ok(v instanceof cls, library);
+    assert.equal(v.toFixed(), long, library);
+    // Written back with no exponent, where its toString() writes 1e+40.
+    assert.equal(encodeCodec(codec, decodeCodec(codec, wide, "price", libraries), "price", "postgres", libraries), wide, library);
+    assert.equal(encodeCodec(codec, make(cls, "1.50"), "price", "postgres", libraries), "1.5", library);
+    assert.deepEqual((decodePlan({ array: codec }, [["1.5", null], ["3"]], "grid", libraries) as unknown[][]).map((r) => r.map((e) => (e === null ? null : (e as { toFixed(): string }).toFixed()))), [["1.5", null], ["3"]]);
+    assert.throws(() => encodeCodec(codec, "1.50", "price", "postgres", libraries), (e: Error) => e instanceof ParameterError && e.message === `Parameter "price" takes a ${type} from ${library}, as js.codecs.decimal in the project file says; got "1.50".`, library);
+    // A module built without the class says so.
+    assert.throws(() => decodeCodec(codec, "1.5", "price"), (e: Error) => e instanceof DecodeError && e.message.endsWith(`this query's module imports no ${library}: build it again.`));
+  }
+  // decimal.js and bignumber.js hold NaN and the infinities a numeric does; big.js holds neither.
+  for (const [library, cls] of LIBRARIES.slice(0, 2)) {
+    const codec = `decimal:${library}` as const;
+    for (const special of ["NaN", "Infinity", "-Infinity"]) assert.equal(encodeCodec(codec, decodeCodec(codec, special, "price", libraryClass(cls)), "price", "postgres"), special);
+  }
+  for (const special of ["NaN", "Infinity", "-Infinity"]) {
+    assert.throws(() => decodeCodec("decimal:big.js", special, "price", libraryClass(Big)), (e: Error) => e instanceof DecodeError && e.message === `Column "price" holds ${special}, which a Big cannot hold (js.codecs.decimal is big.js in the project file). Map it in the statement (nullif(price, 'NaN')), or cast it to text (price::text) to read it as it is.`);
+  }
+});
+
+test("a decimal library's class whose range the app narrowed refuses a value past it, rather than give an infinity or zero", () => {
+  const big = `1${"0".repeat(20)}`;
+  const small = `0.${"0".repeat(20)}1`;
+  for (const [library, cls] of [["decimal.js", Decimal.clone({ maxE: 10, minE: -10 })], ["bignumber.js", BigNumber.clone({ RANGE: 10 })]] as const) {
+    const codec = `decimal:${library}` as const;
+    assert.throws(() => decodeCodec(codec, big, "price", libraryClass(cls)), (e: Error) => e instanceof DecodeError && e.message.startsWith(`Column "price" holds ${big}, which this ${library === "decimal.js" ? "Decimal" : "BigNumber"} turns into an infinity: the app has narrowed ${library}'s range`), library);
+    assert.throws(() => decodeCodec(codec, small, "price", libraryClass(cls)), (e: Error) => e instanceof DecodeError && /turns into zero/.test(e.message), library);
+    // Zero itself and a value inside the range are read.
+    assert.equal((decodeCodec(codec, "0.000", "price", libraryClass(cls)) as { toFixed(): string }).toFixed(), "0");
+    assert.equal((decodeCodec(codec, "12345.5", "price", libraryClass(cls)) as { toFixed(): string }).toFixed(), "12345.5");
+  }
+  // A long value is shown with its middle left out.
+  assert.throws(() => decodeCodec("decimal:decimal.js", `1${"0".repeat(60)}`, "price", libraryClass(Decimal.clone({ maxE: 10 }))), (e: Error) => e instanceof DecodeError && e.message.startsWith(`Column "price" holds 10000000000000000000…000000000000, which`));
+});
+
+test("a parameter takes a decimal library's value from another copy or clone of it", () => {
+  // decimal.js and bignumber.js tell their values apart by a check of their own, which holds across copies; big.js by its fields.
+  assert.equal(encodeCodec("decimal:decimal.js", new (Decimal.clone({ precision: 40 }))("2.5"), "p", "postgres", libraryClass(Decimal)), "2.5");
+  const other = BigNumber.clone();
+  assert.ok(!(new other("2.5") instanceof BigNumber));
+  assert.equal(encodeCodec("decimal:bignumber.js", new other("2.5"), "p", "postgres", libraryClass(BigNumber)), "2.5");
+  assert.equal(encodeCodec("decimal:big.js", new (Big())("2.5"), "p", "postgres", libraryClass(Big)), "2.5");
+  // Without the module's class, a value is still told by its own marks.
+  assert.equal(encodeCodec("decimal:decimal.js", new Decimal("2.5"), "p", "postgres"), "2.5");
+  assert.equal(encodeCodec("decimal:bignumber.js", new BigNumber("2.5"), "p", "postgres"), "2.5");
+  assert.equal(encodeCodec("decimal:big.js", new Big("2.5"), "p", "postgres"), "2.5");
+  // One library's value is no other's.
+  assert.throws(() => encodeCodec("decimal:decimal.js", new BigNumber("2.5"), "p", "postgres", libraryClass(Decimal)), ParameterError);
+  assert.throws(() => encodeCodec("decimal:bignumber.js", new Decimal("2.5"), "p", "postgres", libraryClass(BigNumber)), ParameterError);
+  assert.throws(() => encodeCodec("decimal:big.js", 2.5, "p", "postgres", libraryClass(Big)), ParameterError);
+});
+
+test("run gives a decimal library's values and binds them back, on a real driver", () => {
+  // SQLite has no decimal of its own, so the column is text, given the codec as a decimal's would be.
+  const db = new DatabaseSync(":memory:");
+  db.exec("create table prices (id integer primary key, price text not null)");
+  db.exec("insert into prices values (1, '12345678901234567890.12')");
+  const get: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select price from prices where id = 1", params: [], columns: [["price", "text"]], codecs: { price: "decimal:decimal.js" }, libraries: libraryClass(Decimal) };
+  const [row] = executeSync(db, get, {}) as { price: InstanceType<typeof Decimal> }[];
+  assert.ok(row!.price instanceof Decimal);
+  assert.equal(row!.price.toFixed(), "12345678901234567890.12");
+  const put: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "insert into prices values (2, :price)", params: ["price"], inputs: { price: { type: lite("text"), codec: "decimal:decimal.js" } }, columns: [], libraries: libraryClass(Decimal) };
+  // decimal.js rounds arithmetic to 20 digits by default, so the value is built from its text.
+  executeSync(db, put, { price: new Decimal("12345678901234567890.120000000000000000001") });
+  assert.deepEqual({ ...(db.prepare("select price from prices where id = 2").get() as object) }, { price: "12345678901234567890.120000000000000000001" });
+});
+
+test("a project whose js.codecs.decimal names a library types each decimal as its class and imports it into each module that holds one", { skip: pgLive }, async () => {
+  const own = await postgresDatabase("reylo_decimal_libs", "create table items (id int8 primary key, price numeric(30,10) not null, name text not null); insert into items values (1, 12345678901234567890.0123456789, 'a');");
+  const root = (library: string, install: string[]) => {
+    const dir = mkdtempSync(join(tmpdir(), "reylo-decimal-libs-"));
+    writeFileSync(join(dir, "package.json"), "{}");
+    writeFileSync(join(dir, ".env"), `DATABASE_URL=${own.url}\n`);
+    writeFileSync(join(dir, ".reylo.yaml"), `js:\n  codecs:\n    decimal: ${library}\n`);
+    mkdirSync(join(dir, "node_modules", "@types"), { recursive: true });
+    symlinkSync(join(DRIVERS, "postgres"), join(dir, "node_modules", "postgres"));
+    for (const name of install) symlinkSync(join(ROOT, "node_modules", name), join(dir, "node_modules", name));
+    return dir;
+  };
+  const get = "select id, price, array[price] as prices, name from items where price > :min";
+  try {
+    const dir = root("decimal.js", ["decimal.js"]);
+    const { text, diagnostics } = (await transform(dir, { "get.sql": get, "names.sql": "select name from items" }))["get.sql"]!;
+    assert.deepEqual(diagnostics, []);
+    assert.match(text, /price: import\("decimal\.js"\)\.Decimal;/);
+    // An array of a column that holds no null holds none either.
+    assert.match(text, /prices: import\("decimal\.js"\)\.Decimal\[\];/);
+    assert.match(text, /min: import\("decimal\.js"\)\.Decimal/);
+    // TypeScript reads the class from the app's install, from the declaration's own place.
+    const declared = text.split("\n").filter((line) => /^export type (Params|Row) =/.test(line) || /^\s/.test(line)).join("\n");
+    writeFileSync(join(dir, "types.ts"), text.slice(text.indexOf("export type Params"), text.indexOf("export type QueryError")));
+    writeFileSync(join(dir, "main.ts"), `import type { Params, Row } from "./types.js";\ndeclare const row: Row;\nexport const total: string = row.price.plus(1).toFixed();\nexport const params: Params = { min: row.price };\n// @ts-expect-error a parameter takes the class, not its text\nexport const text: Params = { min: "1.5" };\n`);
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: "esnext", module: "nodenext", moduleResolution: "nodenext", types: [] }, files: ["main.ts"] }));
+    const tsc = spawnSync(process.execPath, [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", dir], { encoding: "utf8" });
+    assert.equal(tsc.status, 0, `${declared}\n${tsc.stdout}${tsc.stderr}`);
+    // The module imports the class where the statement holds a decimal, and nowhere else.
+    const { code } = await sqlModule(join(dir, "get.sql"), get);
+    assert.match(code, /^import ReyloDecimal from "decimal\.js";$/m);
+    assert.match(code, /, libraries: \{ decimal: ReyloDecimal \}/);
+    assert.doesNotMatch((await sqlModule(join(dir, "names.sql"), "select name from items")).code, /ReyloDecimal/);
+    // Run, the module gives the class's values and binds one back.
+    const out = join(dir, "get.mjs");
+    writeFileSync(out, code.replace(`from "reylo"`, `from ${JSON.stringify(INDEX)}`));
+    const query = (await import(pathToFileURL(out).href)).default as { run(client: unknown, params: unknown): Promise<{ price: InstanceType<typeof Decimal>; prices: unknown[] }[]> };
+    const [row] = await query.run(own.sql, { min: new Decimal("1") });
+    assert.ok(row!.price instanceof Decimal);
+    assert.equal(row!.price.toFixed(), "12345678901234567890.0123456789");
+    assert.ok(row!.prices[0] instanceof Decimal);
+    assert.equal((await query.run(own.sql, { min: row!.price })).length, 0);
+    await assert.rejects(query.run(own.sql, { min: "1" }), (e: Error) => e instanceof ParameterError && /takes a Decimal from decimal\.js/.test(e.message));
+    // A library the app does not install, or big.js without its types, is named on the file and refused by the build.
+    for (const [library, install, message] of [
+      ["decimal.js", [], "js.codecs.decimal is decimal.js in the project file, and no decimal.js is installed where this file can import it: install it (npm install decimal.js), or set js.codecs.decimal to string."],
+      ["big.js", ["big.js"], "js.codecs.decimal is big.js in the project file, which ships no types of its own: install @types/big.js beside it (npm install --save-dev @types/big.js)."],
+    ] as const) {
+      const bare = root(library, [...install]);
+      const got = (await transform(bare, { "get.sql": get }))["get.sql"]!.diagnostics;
+      assert.deepEqual(got.map((d) => [d.messageText, d.code]), [[message, 11]]);
+      await assert.rejects(sqlModule(join(bare, "get.sql"), get), (e: Error) => e.message === `${join(bare, "get.sql")}: ${message}`);
+    }
+    // With its types beside it, big.js is a Big.
+    const typed = root("big.js", ["big.js", "@types/big.js"]);
+    const big = (await transform(typed, { "get.sql": get }))["get.sql"]!;
+    assert.deepEqual(big.diagnostics, []);
+    assert.match(big.text, /price: import\("big\.js"\)\.Big;/);
+  } finally {
+    for (const session of Session.opened()) await session.close();
     await own.drop();
   }
 });

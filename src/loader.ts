@@ -7,13 +7,13 @@
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { Session } from "./analyze.ts";
-import { sourceName } from "./project.ts";
+import { decimalLibraryProblem, sourceName } from "./project.ts";
 import { rowSource } from "./row.ts";
 import { querySchemas } from "./schema.ts";
 import { columnKind } from "./values.ts";
 import { jsonNumbers } from "./render.ts";
 import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
-import { planOf } from "./codecs.ts";
+import { planLibraries, planOf, type DecimalLibrary } from "./codecs.ts";
 import type { Dialect } from "./execute.ts";
 
 export type SqlModule = {
@@ -102,6 +102,14 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     const plan = planOf(c.type, dialect, session.project.codecs);
     return plan === undefined ? [] : [[c.name, plan]];
   }));
+  // A decimal library a codec builds values with, imported from the app's own install beside the
+  // `.sql` file (a default import, which every version Reylo reads gives as its class), only where
+  // the statement holds one.
+  const libraries = new Set<DecimalLibrary>();
+  for (const plan of [...Object.values(codecs), ...Object.values(inputs).map((i) => i.codec)]) if (plan !== undefined) planLibraries(plan, libraries);
+  const [library] = libraries;
+  const missing = library === undefined ? undefined : decimalLibraryProblem(session.project.codecs, dirname(path));
+  if (missing) throw new Error(`${path}: ${missing}`);
   const source = sourceName(path);
   // The compiled statement without the file's trailing blank lines; the comment naming the file
   // is added where the statement is sent (src/execute.ts, `sentText`).
@@ -119,13 +127,14 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   const define = DEFINE[session.project.dialect];
   const code = [
     `import { ${define}${checked ? ", checks" : ""} } from "reylo";`,
+    ...(library === undefined ? [] : [`import ReyloDecimal from ${JSON.stringify(library)};`]),
     // `sql` is the compiled statement and `raw` the file as written; the definition's own `sql` is
     // the statement as written and its `text` the compiled one. The comment naming the file
     // (src/sqlcommenter.ts) is added where the statement is sent, so `sql` leaves it out.
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default ${define}({ sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}${analysis.value ? "value: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
+    `export default ${define}({ sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}${analysis.value ? "value: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${library === undefined ? "" : ", libraries: { decimal: ReyloDecimal }"}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };

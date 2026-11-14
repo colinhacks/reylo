@@ -10,6 +10,11 @@
 // interval whose parts differ in sign). A 64-bit integer has no codec: a bigint is its one exact
 // type, and a statement that wants a number or text casts it.
 //
+// A decimal may also be a value of a decimal library the project installs, named by its package
+// (`decimal.js`, `bignumber.js`, `big.js`): the module imports the library from the app's own
+// install, beside the `.sql` file, and hands its class to the run time (`libraries`), which builds
+// each value from the decimal's exact text and binds a parameter as the text `toFixed()` writes.
+//
 // The build decides each column's codecs from its type descriptor, so that the module's declared
 // type and the value `run` returns agree. The renderer (src/render.ts) and the JSON Schema writer
 // (src/schema.ts) apply a codec at each position they reach outside JSON, and the module carries,
@@ -24,7 +29,7 @@ import { columnKind, DecodeError, describe, isoYear, ParameterError, type Dialec
 
 /** The `js.codecs` section as the engine parses it (engine/core/src/config.rs). */
 export type Codecs = {
-  readonly decimal?: "string" | "number";
+  readonly decimal?: "string" | "number" | DecimalLibrary;
   readonly bytes?: "Uint8Array" | "string";
   readonly date?: "string" | "Temporal.PlainDate";
   readonly time?: "string" | "Temporal.PlainTime";
@@ -36,8 +41,23 @@ export type Codecs = {
 
 type Family = keyof Codecs;
 
+/** A decimal library `js.codecs.decimal` may name, by its package. */
+export type DecimalLibrary = "decimal.js" | "bignumber.js" | "big.js";
+
+/**
+ * Each decimal library's class, as its package's types export it by name (a default import is a
+ * CommonJS namespace to TypeScript under `nodenext`), and the package that holds its types where
+ * it ships none. The run time calls only what every version since years back has: the constructor
+ * from a string, `toFixed()`, `isFinite()` and `isZero()`.
+ */
+export const DECIMAL_LIBRARIES: Readonly<Record<DecimalLibrary, { readonly type: string; readonly types?: string }>> = {
+  "decimal.js": { type: "Decimal" },
+  "bignumber.js": { type: "BigNumber" },
+  "big.js": { type: "Big", types: "@types/big.js" },
+};
+
 /** A codec at one position: its family, and the type it gives where the family has more than one besides its default. */
-export type Codec = "decimal:number" | "bytes:string" | "date" | "time" | "datetime" | "instant" | "duration" | "set:array";
+export type Codec = "decimal:number" | `decimal:${DecimalLibrary}` | "bytes:string" | "date" | "time" | "datetime" | "instant" | "duration" | "set:array";
 
 /**
  * Where a value's codecs stand: a codec for the value itself, or the parts that hold one, an
@@ -54,6 +74,10 @@ export type Plan =
 /** The TypeScript type of a value under each codec, which a parameter of it takes too; a SET's array is of its members' type (src/render.ts). */
 export const CODEC_TYPE: Readonly<Record<Codec, string>> = {
   "decimal:number": "number",
+  // Imported from the `.sql` file's own place, so it is the app's install of the library.
+  "decimal:decimal.js": `import("decimal.js").Decimal`,
+  "decimal:bignumber.js": `import("bignumber.js").BigNumber`,
+  "decimal:big.js": `import("big.js").Big`,
   "bytes:string": "string",
   date: "Temporal.PlainDate",
   time: "Temporal.PlainTime",
@@ -71,6 +95,9 @@ const TEMPORAL: Partial<Readonly<Record<Codec, TemporalName>>> = { date: "PlainD
 /** The family each codec belongs to, which its setting is named by. */
 const FAMILY: Readonly<Record<Codec, Family>> = {
   "decimal:number": "decimal",
+  "decimal:decimal.js": "decimal",
+  "decimal:bignumber.js": "decimal",
+  "decimal:big.js": "decimal",
   "bytes:string": "bytes",
   date: "date",
   time: "time",
@@ -125,7 +152,7 @@ export function leafCodec(t: EngineType, dialect: Dialect, codecs: Codecs): Code
     case "set":
       return v === "Array" ? "set:array" : undefined;
     case "decimal":
-      return v === "number" ? "decimal:number" : undefined;
+      return v === undefined || v === "string" ? undefined : `decimal:${v as "number" | DecimalLibrary}`;
     case "bytes":
       return v === "string" ? "bytes:string" : undefined;
     case undefined:
@@ -186,8 +213,79 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
   }
 }
 
+/** The decimal libraries a value's plan builds values with: the packages its module imports. */
+export function planLibraries(plan: Plan, into = new Set<DecimalLibrary>()): Set<DecimalLibrary> {
+  if (typeof plan === "string") {
+    if (plan.startsWith("decimal:") && plan !== "decimal:number") into.add(plan.slice("decimal:".length) as DecimalLibrary);
+  } else if ("array" in plan) planLibraries(plan.array, into);
+  else if ("entries" in plan) {
+    if (plan.entries.key !== undefined) planLibraries(plan.entries.key, into);
+    if (plan.entries.value !== undefined) planLibraries(plan.entries.value, into);
+  } else for (const p of Object.values("fields" in plan ? plan.fields : plan.tags)) planLibraries(p, into);
+  return into;
+}
+
 // ---------------------------------------------------------------------------------------------
 // The run time.
+
+/** A value of a decimal library: whatever its class builds, which writes its every digit with no exponent through `toFixed()`. */
+type DecimalValue = { toFixed(): string; isFinite?(): boolean; isZero?(): boolean };
+/** A decimal library's class, which the module imports: decimal.js's and bignumber.js's tell their own values from others by a static check, which holds across two copies of the package. */
+export type DecimalClass = (new (text: string) => DecimalValue) & { isDecimal?(v: unknown): boolean; isBigNumber?(v: unknown): boolean };
+/** The classes a module's codecs build values with, which it imports from the app's install: `decimal`, the class of `js.codecs.decimal`'s library. */
+export type Libraries = { readonly decimal?: DecimalClass };
+
+/** A decimal library's codec's package. */
+const libraryOf = (codec: Codec) => codec.slice("decimal:".length) as DecimalLibrary;
+
+/** A decimal's text as an error shows it, its middle left out where it runs past 40 characters (a `numeric` holds 147455 digits). */
+const shown = (text: string) => (text.length > 40 ? `${text.slice(0, 20)}…${text.slice(-12)}` : text);
+
+/** The class a module's codec builds its values with, which the module was built to import. */
+function decimalClass(codec: Codec, libraries: Libraries | undefined, name: string, what: "Column" | "Parameter"): DecimalClass {
+  const cls = libraries?.decimal;
+  if (cls === undefined) throw new (what === "Column" ? DecodeError : ParameterError)(`${what} "${name}" is a ${DECIMAL_LIBRARIES[libraryOf(codec)].type} by js.codecs.decimal in the project file, and this query's module imports no ${libraryOf(codec)}: build it again.`);
+  return cls;
+}
+
+/**
+ * The library's value of a decimal's exact text. A library builds every finite value exactly
+ * whatever precision the app sets, but decimal.js's `maxE` and `minE` and bignumber.js's `RANGE`
+ * turn a value past them into an infinity or zero without an error, and big.js holds no NaN or
+ * infinity: each is refused, naming the column, rather than given as another value.
+ */
+function decimalOf(codec: Codec, cls: DecimalClass, text: string, column: string): DecimalValue {
+  const library = libraryOf(codec);
+  const { type } = DECIMAL_LIBRARIES[library];
+  const special = /^[+-]?(?:nan|infinity)$/i.test(text.trim());
+  let value: DecimalValue;
+  try {
+    value = new cls(text);
+  } catch {
+    throw new DecodeError(`Column "${column}" holds ${shown(text)}, which a ${type} cannot hold (js.codecs.decimal is ${library} in the project file). ${special ? `Map it in the statement (nullif(${column}, 'NaN')), or cast` : "Cast"} it to text (${column}::text) to read it as it is.`);
+  }
+  if (!special && value.isFinite !== undefined && (!value.isFinite() || (value.isZero!() && /[1-9]/.test(text)))) {
+    const setting = library === "bignumber.js" ? "BigNumber.config({ RANGE })" : "Decimal.set({ maxE, minE })";
+    throw new DecodeError(`Column "${column}" holds ${shown(text)}, which this ${type} turns into ${value.isFinite() ? "zero" : "an infinity"}: the app has narrowed ${library}'s range (${setting}) to less than the value, so Reylo refuses it rather than return another one. Widen the range, or cast the column to text (${column}::text) to read it exactly.`);
+  }
+  return value;
+}
+
+/** Whether `v` is a value of the codec's decimal library, from the module's own copy of it or another. */
+function isDecimalValue(codec: Codec, cls: DecimalClass | undefined, v: unknown): v is DecimalValue {
+  if (v === null || typeof v !== "object") return false;
+  if (cls !== undefined && v instanceof cls) return true;
+  const o = v as Record<string, unknown>;
+  switch (libraryOf(codec)) {
+    case "decimal.js":
+      return cls?.isDecimal?.(v) ?? Object.prototype.toString.call(v) === "[object Decimal]";
+    case "bignumber.js":
+      return cls?.isBigNumber?.(v) ?? o._isBigNumber === true;
+    default:
+      // big.js has no check of its own: a value is its sign, exponent and digits.
+      return typeof o.s === "number" && typeof o.e === "number" && Array.isArray(o.c) && typeof o.toFixed === "function";
+  }
+}
 
 type TemporalClass = { from(text: string): unknown };
 
@@ -256,10 +354,10 @@ const SHAPE: Partial<Record<Codec, RegExp>> = {
   instant: new RegExp(`^${DAY}[T ]${CLOCK}(?:Z|[+-]\\d\\d(?::?\\d\\d)?)$`, "i"),
 };
 
-/** The value a position of `codec` holds, from the one src/values.ts decoded; null stays null, and an array is decoded element by element. */
-export function decodeCodec(codec: Codec, v: unknown, column: string): unknown {
+/** The value a position of `codec` holds, from the one src/values.ts decoded; null stays null, and an array is decoded element by element. `libraries`: the classes the module imports. */
+export function decodeCodec(codec: Codec, v: unknown, column: string, libraries?: Libraries): unknown {
   if (v === null || v === undefined) return v;
-  if (Array.isArray(v)) return v.map((e) => decodeCodec(codec, e, column));
+  if (Array.isArray(v)) return v.map((e) => decodeCodec(codec, e, column, libraries));
   switch (codec) {
     case "set:array":
       // A SET's members, in the order the column declares them.
@@ -272,6 +370,10 @@ export function decodeCodec(codec: Codec, v: unknown, column: string): unknown {
       if (Number.isFinite(n) ? sameDecimal(v, n) : /^[+-]?(?:infinity|nan)$/i.test(v.trim())) return n;
       throw new DecodeError(`Column "${column}" holds ${v}, which a number cannot hold exactly (js.codecs.decimal is number in the project file), so Reylo refuses it rather than return a rounded value. Cast it to text in the statement (${column}::text) to read it exactly.`);
     }
+    case "decimal:decimal.js":
+    case "decimal:bignumber.js":
+    case "decimal:big.js":
+      return typeof v === "string" ? decimalOf(codec, decimalClass(codec, libraries, column, "Column"), v, column) : v;
     case "bytes:string":
       return v instanceof Uint8Array ? base64(v) : v;
     default: {
@@ -298,19 +400,19 @@ export function decodeCodec(codec: Codec, v: unknown, column: string): unknown {
  * plan reaches into is copied, never changed: a Standard Query's `decode` is handed a driver's own
  * rows, which it gives back as they came.
  */
-export function decodePlan(plan: Plan, v: unknown, column: string): unknown {
+export function decodePlan(plan: Plan, v: unknown, column: string, libraries?: Libraries): unknown {
   if (v === null || v === undefined) return v;
-  if (typeof plan === "string") return decodeCodec(plan, v, column);
+  if (typeof plan === "string") return decodeCodec(plan, v, column, libraries);
   if ("array" in plan) {
     // An element may be an array itself, in a Postgres array of any depth.
-    const element = (e: unknown): unknown => (Array.isArray(e) && !(typeof plan.array === "object" && "array" in plan.array) ? e.map(element) : decodePlan(plan.array, e, column));
+    const element = (e: unknown): unknown => (Array.isArray(e) && !(typeof plan.array === "object" && "array" in plan.array) ? e.map(element) : decodePlan(plan.array, e, column, libraries));
     return Array.isArray(v) ? v.map(element) : v;
   }
   if (typeof v !== "object") return v;
   if ("fields" in plan) {
     // A spread copies a field named `__proto__` as the own property it is.
     const o = { ...(v as Record<string, unknown>) };
-    for (const [name, p] of Object.entries(plan.fields)) if (name in o) o[name] = decodePlan(p, o[name], column);
+    for (const [name, p] of Object.entries(plan.fields)) if (name in o) o[name] = decodePlan(p, o[name], column, libraries);
     return o;
   }
   if ("entries" in plan) {
@@ -318,22 +420,22 @@ export function decodePlan(plan: Plan, v: unknown, column: string): unknown {
     const { key, value } = plan.entries;
     return (v as { key: unknown; value: unknown }[]).map((e) => ({
       ...e,
-      ...(key === undefined ? {} : { key: decodePlan(key, e.key, column) }),
-      ...(value === undefined ? {} : { value: decodePlan(value, e.value, column) }),
+      ...(key === undefined ? {} : { key: decodePlan(key, e.key, column, libraries) }),
+      ...(value === undefined ? {} : { value: decodePlan(value, e.value, column, libraries) }),
     }));
   }
   const u = v as { tag?: unknown; value: unknown };
   const p = typeof u.tag === "string" ? plan.tags[u.tag] : undefined;
-  return p === undefined ? u : { ...u, value: decodePlan(p, u.value, column) };
+  return p === undefined ? u : { ...u, value: decodePlan(p, u.value, column, libraries) };
 }
 
 /** Each column of every row a plan names given its codecs, in place. */
-export function decodeCodecs(rows: unknown[], plans: Readonly<Record<string, Plan>>): unknown[] {
+export function decodeCodecs(rows: unknown[], plans: Readonly<Record<string, Plan>>, libraries?: Libraries): unknown[] {
   const entries = Object.entries(plans);
   for (const row of rows) {
     if (row === null || typeof row !== "object") continue;
     const r = row as Record<string, unknown>;
-    for (const [column, plan] of entries) if (column in r) r[column] = decodePlan(plan, r[column], column);
+    for (const [column, plan] of entries) if (column in r) r[column] = decodePlan(plan, r[column], column, libraries);
   }
   return rows;
 }
@@ -358,10 +460,11 @@ function mysqlTime(v: { sign: number; years: number; months: number; weeks: numb
 /**
  * A value of `codec` as the driver binds it, the text or bytes its type reads: a Temporal value's
  * ISO 8601 text (a SQLite date and time with a space, as SQLite's own functions write it, and a
- * duration for MySQL's TIME as its hours), base64's bytes, a number's digits. Anything but the
- * codec's type is refused, since TypeScript holds the parameter to it.
+ * duration for MySQL's TIME as its hours), base64's bytes, a number's digits, a decimal library's
+ * value's every digit. Anything but the codec's type is refused, since TypeScript holds the
+ * parameter to it.
  */
-export function encodeCodec(codec: Codec, v: unknown, name: string, dialect: Dialect): unknown {
+export function encodeCodec(codec: Codec, v: unknown, name: string, dialect: Dialect, libraries?: Libraries): unknown {
   if (v === null || v === undefined) return v;
   const refuse = (expected: string) => new ParameterError(`Parameter "${name}" takes ${expected}, as js.codecs.${FAMILY[codec]} in the project file says; got ${describe(v)}.`);
   // A SET's members as an array, which binds as the Set the run time writes as MySQL's text.
@@ -369,11 +472,19 @@ export function encodeCodec(codec: Codec, v: unknown, name: string, dialect: Dia
     if (!Array.isArray(v) || !v.every((m) => typeof m === "string")) throw refuse("an array of the SET's members");
     return new Set(v);
   }
-  if (Array.isArray(v)) return v.map((e) => encodeCodec(codec, e, name, dialect));
+  if (Array.isArray(v)) return v.map((e) => encodeCodec(codec, e, name, dialect, libraries));
   switch (codec) {
     case "decimal:number":
       if (typeof v !== "number") throw refuse("a number");
       return String(v);
+    case "decimal:decimal.js":
+    case "decimal:bignumber.js":
+    case "decimal:big.js": {
+      // `toFixed()` with no digits writes every digit with no exponent, whatever the library's
+      // display settings, where `toString()` writes 1e+40.
+      if (!isDecimalValue(codec, libraries?.decimal, v)) throw refuse(`a ${DECIMAL_LIBRARIES[libraryOf(codec)].type} from ${libraryOf(codec)}`);
+      return v.toFixed();
+    }
     case "bytes:string": {
       if (typeof v !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(v) || v.length % 4 === 1) throw refuse("binary data as its base64");
       return fromBase64(v);
@@ -401,30 +512,30 @@ function pastMicroseconds(codec: Codec, v: unknown): boolean {
 }
 
 /** A parameter's value with its plan's codecs written as the driver binds them, wherever they stand in it. */
-export function encodePlan(plan: Plan, v: unknown, name: string, dialect: Dialect): unknown {
+export function encodePlan(plan: Plan, v: unknown, name: string, dialect: Dialect, libraries?: Libraries): unknown {
   if (v === null || v === undefined) return v;
-  if (typeof plan === "string") return encodeCodec(plan, v, name, dialect);
+  if (typeof plan === "string") return encodeCodec(plan, v, name, dialect, libraries);
   if ("array" in plan) {
-    const element = (e: unknown): unknown => (Array.isArray(e) && !(typeof plan.array === "object" && "array" in plan.array) ? e.map(element) : encodePlan(plan.array, e, name, dialect));
+    const element = (e: unknown): unknown => (Array.isArray(e) && !(typeof plan.array === "object" && "array" in plan.array) ? e.map(element) : encodePlan(plan.array, e, name, dialect, libraries));
     return Array.isArray(v) ? v.map(element) : v;
   }
   if (typeof v !== "object") return v;
   if ("fields" in plan) {
     const o = { ...(v as Record<string, unknown>) };
-    for (const [field, p] of Object.entries(plan.fields)) if (field in o) o[field] = encodePlan(p, o[field], name, dialect);
+    for (const [field, p] of Object.entries(plan.fields)) if (field in o) o[field] = encodePlan(p, o[field], name, dialect, libraries);
     return o;
   }
   if ("entries" in plan) {
     if (!Array.isArray(v)) return v;
     return (v as { key: unknown; value: unknown }[]).map((e) => ({
       ...e,
-      ...(plan.entries.key === undefined ? {} : { key: encodePlan(plan.entries.key, e.key, name, dialect) }),
-      ...(plan.entries.value === undefined ? {} : { value: encodePlan(plan.entries.value, e.value, name, dialect) }),
+      ...(plan.entries.key === undefined ? {} : { key: encodePlan(plan.entries.key, e.key, name, dialect, libraries) }),
+      ...(plan.entries.value === undefined ? {} : { value: encodePlan(plan.entries.value, e.value, name, dialect, libraries) }),
     }));
   }
   const u = v as { tag?: unknown; value: unknown };
   const p = typeof u.tag === "string" ? plan.tags[u.tag] : undefined;
-  return p === undefined ? u : { ...u, value: encodePlan(p, u.value, name, dialect) };
+  return p === undefined ? u : { ...u, value: encodePlan(p, u.value, name, dialect, libraries) };
 }
 
 // Base64 through the runtime's own: Uint8Array's toBase64 and fromBase64 where it has them (Node

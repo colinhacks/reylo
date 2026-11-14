@@ -335,9 +335,15 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
 }
 
 /** The query's input and output schemas: the parameters as an object, and the result as `run` returns it once JSON. */
+/** A decimal library's value as JSON: its `toJSON()` writes its `toString()`, which turns to exponent form for a large or small value. */
+const LIBRARY_DECIMAL: Schema = { type: "string", format: "decimal", description: "a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)" };
+
 /** The JSON form of each codec's value: what `JSON.stringify` writes of it, a Temporal value's being its ISO 8601 text, which a SQLite column declared as a date gives where it otherwise holds any storage class. */
 const CODEC_SCHEMA: Readonly<Record<Codec, Schema>> = {
   "decimal:number": { type: "number" },
+  "decimal:decimal.js": LIBRARY_DECIMAL,
+  "decimal:bignumber.js": LIBRARY_DECIMAL,
+  "decimal:big.js": LIBRARY_DECIMAL,
   "bytes:string": { type: "string", format: "byte", contentEncoding: "base64" },
   date: { type: "string", format: "date" },
   time: { type: "string", description: "a time of day without a time zone (10:00:00.5)" },

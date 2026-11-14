@@ -79,7 +79,8 @@ impl Js {
 #[serde(deny_unknown_fields)]
 pub struct Codecs {
     /// An exact decimal: Postgres's `numeric` and MySQL's and DuckDB's `DECIMAL`. A `number` refuses
-    /// a value a double cannot hold.
+    /// a value a double cannot hold; a decimal library, named by its package, is that library's
+    /// value, from the app's own install.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decimal: Option<DecimalCodec>,
     /// Bytes: Postgres's `bytea`, MySQL's `BINARY`, `VARBINARY` and `BLOB`, and SQLite's and
@@ -117,10 +118,17 @@ impl Codecs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
 pub enum DecimalCodec {
+    #[serde(rename = "string")]
     String,
+    #[serde(rename = "number")]
     Number,
+    #[serde(rename = "decimal.js")]
+    DecimalJs,
+    #[serde(rename = "bignumber.js")]
+    BigNumberJs,
+    #[serde(rename = "big.js")]
+    BigJs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -326,6 +334,14 @@ mod tests {
         assert_eq!(serde_json::to_value(parse("js:\n  codecs:\n    set: Set\n    bytes: Uint8Array\n").unwrap()).unwrap(), serde_json::json!({ "js": { "codecs": { "set": "Set", "bytes": "Uint8Array" } } }));
         assert_eq!(serde_json::to_value(parse("js:\n  codecs: {}\n").unwrap()).unwrap(), serde_json::json!({}));
         // A family or a type the section does not know is an error that names what it takes.
+        // A decimal library is named by its package.
+        for (library, codec) in [("decimal.js", DecimalCodec::DecimalJs), ("bignumber.js", DecimalCodec::BigNumberJs), ("big.js", DecimalCodec::BigJs)] {
+            let p = parse(&format!("js:\n  codecs:\n    decimal: {library}\n")).unwrap();
+            assert_eq!(p.js.codecs.decimal, Some(codec));
+            assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "js": { "codecs": { "decimal": library } } }));
+        }
+        let e = parse("js:\n  codecs:\n    decimal: Decimal\n").unwrap_err();
+        assert!(e.message.contains("unknown variant `Decimal`, expected one of `string`, `number`, `decimal.js`, `bignumber.js`, `big.js`"), "{}", e.message);
         let e = parse("js:\n  codecs:\n    instant: Date\n").unwrap_err();
         assert!(e.message.contains("unknown variant `Date`, expected `string` or `Temporal.Instant`"), "{}", e.message);
         let e = parse("js:\n  codecs:\n    decimal: number\n    interval: Temporal.Duration\n").unwrap_err();

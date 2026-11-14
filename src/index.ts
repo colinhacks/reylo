@@ -1,7 +1,7 @@
 // The runtime query object behind `import query from "./file.sql"`.
 // Types come from the content mapper; values come from the runtime loader.
 import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type Runtime, type SyncClientFor } from "./execute.ts";
-import type { Plan } from "./codecs.ts";
+import type { Libraries, Plan } from "./codecs.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
@@ -185,6 +185,8 @@ export type QueryDefinition = {
   ordered?: boolean;
   /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts): a build step writes them where there are any. */
   codecs?: Readonly<Record<string, Plan>>;
+  /** The classes the codecs build values with (`decimal`, the class of `js.codecs.decimal`'s library), which a build step's module imports from the app's install where a codec needs one. */
+  libraries?: Libraries;
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
   structured?: readonly Structured[];
   /** The catalog facts the statement relied on, which the run time checks before it runs (src/fresh.ts). */
@@ -268,6 +270,7 @@ function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: 
     ordered: def.ordered,
     cardinality,
     codecs: def.codecs,
+    libraries: def.libraries,
     structured: def.structured,
     fresh: def.fresh,
     source: def.source,
