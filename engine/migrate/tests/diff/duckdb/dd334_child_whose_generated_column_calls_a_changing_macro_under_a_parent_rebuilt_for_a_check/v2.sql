@@ -1,0 +1,1 @@
+create macro norm(s) as lower(trim(s)); create table p (id integer primary key, n integer check (n > 0)); create table c (id integer primary key, p_id integer references p (id), s varchar, k varchar generated always as (norm(s)) virtual);

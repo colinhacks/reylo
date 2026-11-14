@@ -1,0 +1,1 @@
+create schema a; create macro a.valid(s) as s <> ''; create macro valid(s) as length(s) > 0; create table pages (id integer primary key, parent_id integer references pages (id), code varchar check (valid(code)));

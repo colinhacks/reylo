@@ -4571,6 +4571,19 @@ comment on macro table app.recent is 'last n';
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn introspect_replays_a_view_over_a_view_its_schema_names_bare() {
+        let Some(p) = duckdb().await else { return };
+        // DuckDB reads a view's bare name in the view's own schema first, and exports `atop` first.
+        p.exec("create schema rpt; create view rpt.zbase as select 1 as x; create view rpt.atop as select * from zbase;").await;
+        let text = introspect(&p).await.unwrap();
+        let q = P::sibling(&p);
+        let mut db = Db::connect(&q.url, &q.dir).await.unwrap();
+        let replayed = db.script(&text).await;
+        db.close().await;
+        assert!(replayed.is_ok(), "introspect's text fails on an empty database: {:?}\n{text}", replayed.err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn new_writes_a_macro_calling_a_macro_of_its_name_in_another_schema() {
         let Some(mut p) = duckdb().await else { return };
         p.schema(SAME_MACROS);
@@ -4850,4 +4863,618 @@ comment on macro table app.recent is 'last n';
         p.output();
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
+
+
+    // The fifth round's: what one group makes again meeting renames, moves, new keys and other
+    // schemas' names, and DuckDB's own type changes.
+
+    fn available() -> bool {
+        std::env::var_os("REYLO_DUCKDB_LIBRARY").is_some()
+    }
+
+    async fn memory() -> Db {
+        Db::connect("duckdb::memory:", &std::env::temp_dir()).await.unwrap()
+    }
+
+    async fn plan(from: &mut Db, to: &mut Db) -> reylo_migrate::diff::Plan {
+        let alterer = reylo_migrate::diff::duckdb::DuckdbAlterer::default();
+        reylo_migrate::diff::plan(&reylo_migrate::diff::duckdb::read(from).await.unwrap(), &reylo_migrate::diff::duckdb::read(to).await.unwrap(), &alterer)
+    }
+
+    /// A project at `v1` by `dev`, with `seed`'s rows (`;;` between statements run apart).
+    async fn at(v1: &str, seed: &str) -> Option<P> {
+        let mut p = duckdb().await?;
+        p.file("20261101000000_v1.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "dev v1: {}", p.output());
+        for part in seed.split(";;").filter(|x| !x.trim().is_empty()) {
+            p.exec(part).await;
+        }
+        p.output();
+        Some(p)
+    }
+
+    /// `new` to `v2` (with `drop` and `rename`), then `dev` and `deploy --dry-run`: the migration.
+    async fn evolve(p: &mut P, v2: &str, drop: &[&str], rename: &[(&str, &str)]) -> String {
+        p.schema(v2);
+        let code = new_with(p, "v2", drop, rename).await;
+        assert_eq!(code, 0, "new:\n{}", p.output());
+        let sql = written(p, "v2");
+        p.output();
+        let code = p.dev().await;
+        assert_eq!(code, 0, "dev:\n{}\nwritten:\n{sql}", p.output());
+        let code = p.dry_run().await;
+        assert_eq!(code, 0, "dry run:\n{}\nwritten:\n{sql}", p.output());
+        p.output();
+        sql
+    }
+
+    /// `db push` to `v2`, then `db push` again, which must find the database at schema.sql.
+    async fn push(p: &mut P, v2: &str) {
+        p.schema(v2);
+        let code = p.db_push().await;
+        assert_eq!(code, 0, "db push:\n{}", p.output());
+        let first = p.output();
+        let code = p.db_push().await;
+        let again = p.output();
+        assert_eq!(code, 0, "db push again:\n{again}");
+        assert!(!again.contains("  + ") && !again.contains("  - "), "db push again still pushes:\n{again}\nfirst:\n{first}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_tree_whose_check_calls_b_valid_deploys_a_change_to_a_valid() {
+        let v1 = "create schema a; create schema b; create macro a.valid(s) as s <> ''; create macro b.valid(s) as length(s) > 0; create table pages (id integer primary key, parent_id integer references pages (id), code varchar check (b.valid(code)));";
+        let Some(mut p) = at(v1, "insert into pages values (1, null, 'x');; insert into pages values (2, 1, 'y')").await else { return };
+        let sql = evolve(&mut p, &v1.replace("a.valid(s) as s <> ''", "a.valid(s) as s <> '' and s <> '-'"), &[], &[]).await;
+        assert!(!sql.contains("drop table"), "{sql}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_tree_whose_check_calls_main_valid_deploys_a_change_to_a_valid() {
+        let v1 = "create schema a; create macro a.valid(s) as s <> ''; create macro valid(s) as length(s) > 0; create table pages (id integer primary key, parent_id integer references pages (id), code varchar check (valid(code)));";
+        let Some(mut p) = at(v1, "insert into pages values (1, null, 'x');; insert into pages values (2, 1, 'y')").await else { return };
+        let sql = evolve(&mut p, &v1.replace("a.valid(s) as s <> ''", "a.valid(s) as s <> '' and s <> '-'"), &[], &[]).await;
+        assert!(!sql.contains("drop table"), "{sql}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_tree_with_a_column_of_main_mood_deploys_a_change_to_a_mood() {
+        let v1 = "create schema a; create type a.mood as enum ('x'); create type mood as enum ('a', 'b'); create table pages (id integer primary key, parent_id integer references pages (id), m varchar check (m::mood <> 'b'));";
+        let Some(mut p) = at(v1, "insert into pages values (1, null, 'a');; insert into pages values (2, 1, 'a')").await else { return };
+        let sql = evolve(&mut p, &v1.replace("a.mood as enum ('x')", "a.mood as enum ('x', 'y')"), &[], &[]).await;
+        assert!(!sql.contains("drop table"), "{sql}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_tree_whose_default_reads_main_s_deploys_a_change_to_a_s() {
+        let v1 = "create schema a; create sequence a.s; create sequence s; create table pages (id integer primary key default nextval('s'), parent_id integer references pages (id));";
+        let Some(mut p) = at(v1, "insert into pages (parent_id) values (null);; insert into pages (parent_id) values (1)").await else { return };
+        let sql = evolve(&mut p, &v1.replace("create sequence a.s;", "create sequence a.s increment by 5;"), &[], &[]).await;
+        assert!(!sql.contains("drop table"), "{sql}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_where_a_view_reads_it() {
+        let v1 = "create schema s2; create table t (id integer primary key, n integer); create view v as select id, n from t;";
+        let Some(mut p) = at(v1, "insert into t values (1, 1)").await else { return };
+        evolve(&mut p, "create schema s2; create table s2.t (id integer primary key, n integer); create view v as select id, n from s2.t;", &[], &[("t", "s2.t")]).await;
+        assert_eq!(one(&p, "select count(*) as v from v").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_while_the_macro_its_check_calls_changes() {
+        let v1 = "create schema s2; create macro valid(s) as s <> ''; create table t (id integer primary key, code varchar check (valid(code)));";
+        let Some(mut p) = at(v1, "insert into t values (1, 'a')").await else { return };
+        evolve(&mut p, "create schema s2; create macro valid(s) as length(s) > 0; create table s2.t (id integer primary key, code varchar check (valid(code)));", &[], &[("t", "s2.t")]).await;
+        assert_eq!(one(&p, "select count(*) as v from s2.t").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_while_its_enum_gains_a_label() {
+        let v1 = "create schema s2; create type mood as enum ('a', 'b'); create table t (id integer primary key, m mood);";
+        let Some(mut p) = at(v1, "insert into t values (1, 'b')").await else { return };
+        evolve(&mut p, "create schema s2; create type mood as enum ('a', 'b', 'c'); create table s2.t (id integer primary key, m mood);", &[], &[("t", "s2.t")]).await;
+        assert_eq!(one(&p, "select m::varchar as v from s2.t").await, "b");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_with_its_sequence_default_while_the_sequence_changes() {
+        let v1 = "create schema s2; create sequence ids; create table t (id bigint primary key default nextval('ids'), n integer);";
+        let Some(mut p) = at(v1, "insert into t (n) values (1), (2)").await else { return };
+        evolve(&mut p, "create schema s2; create sequence ids start 50; create table s2.t (id bigint primary key default nextval('ids'), n integer);", &[], &[("t", "s2.t")]).await;
+        assert_eq!(one(&p, "select count(*) as v from s2.t").await, "2");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_into_a_new_schema_renames_a_column() {
+        let v1 = "create table t (id integer primary key, n integer, s varchar); create index t_s on t (s); comment on column t.s is 'es';";
+        let Some(mut p) = at(v1, "insert into t values (1, 1, 'a')").await else { return };
+        evolve(&mut p, "create schema s2; create table s2.t (id integer primary key, n integer, label varchar); create index t_s on s2.t (label); comment on column s2.t.label is 'es';", &[], &[("t", "s2.t"), ("t.s", "label")]).await;
+        assert_eq!(one(&p, "select label as v from s2.t").await, "a");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_and_renamed_at_once() {
+        let v1 = "create schema s2; create table t (id integer primary key, n integer); comment on table t is 'tee';";
+        let Some(mut p) = at(v1, "insert into t values (1, 1)").await else { return };
+        evolve(&mut p, "create schema s2; create table s2.u (id integer primary key, n integer); comment on table s2.u is 'tee';", &[], &[("t", "s2.u")]).await;
+        assert_eq!(one(&p, "select count(*) as v from s2.u").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_by_db_push() {
+        let v1 = "create schema s2; create table t (id integer primary key, n integer);";
+        let Some(mut p) = at(v1, "insert into t values (1, 1)").await else { return };
+        push(&mut p, "create schema s2; create table s2.t (id integer primary key, n integer);").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_of_an_enum_and_a_sequence_that_one_table_uses() {
+        let v1 = "create sequence s; create type mood as enum ('a', 'b'); create table t (id bigint primary key default nextval('s'), m mood);";
+        let Some(mut p) = at(v1, "insert into t (m) values ('a'), ('b')").await else { return };
+        push(&mut p, "create sequence s increment by 10; create type mood as enum ('a', 'b', 'c'); create table t (id bigint primary key default nextval('s'), m mood);").await;
+        p.exec("insert into t (m) values ('c')").await;
+        assert_eq!(one(&p, "select id as v from t where m = 'c'").await, "3", "the sequence goes on from its value");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_of_a_macro_group_while_a_child_is_renamed() {
+        let v1 = "create macro valid(s) as s <> ''; create table t (id integer primary key, code varchar check (valid(code))); create table c (id integer primary key, t_id integer references t (id), note varchar);";
+        let Some(mut p) = at(v1, "insert into t values (1, 'a'); insert into c values (1, 1, 'n')").await else { return };
+        push(&mut p, "create macro valid(s) as length(s) > 0; create table t (id integer primary key, code varchar check (valid(code))); create table c (id integer primary key, t_id integer references t (id), body varchar);").await;
+        assert_eq!(one(&p, "select body as v from c").await, "n");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_of_a_macro_group_and_a_rewind_of_it() {
+        let v1 = "create macro valid(s) as s <> ''; create table t (id integer primary key, code varchar check (valid(code))); create table c (id integer primary key, t_id integer references t (id));";
+        let Some(mut p) = at(v1, "insert into t values (1, 'a'); insert into c values (1, 1)").await else { return };
+        let v2 = "create macro valid(s) as length(s) > 0; create table t (id integer primary key, code varchar check (valid(code)), n integer check (n > 0)); create table c (id integer primary key, t_id integer references t (id));";
+        push(&mut p, v2).await;
+        push(&mut p, v1).await;
+        assert_eq!(one(&p, "select count(*) as v from c").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_enum_column_on_a_referenced_table_with_rows_deploys_a_label() {
+        let v1 = "create type mood as enum ('a', 'b'); create table t (id integer primary key, m mood default 'a'); create table c (id integer primary key, t_id integer references t (id));";
+        let Some(mut p) = at(v1, "insert into t values (1, 'b'); insert into c values (1, 1)").await else { return };
+        evolve(&mut p, &v1.replace("enum ('a', 'b')", "enum ('a', 'b', 'c')"), &[], &[]).await;
+        assert_eq!(one(&p, "select m::varchar as v from t").await, "b");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wipe_and_reset_a_schema_whose_tables_use_enums_macros_and_sequences_across_schemas() {
+        let v1 = "create schema a; create type a.mood as enum ('x', 'y'); create sequence a.s; create macro a.ok(s) as s <> ''; create table a.t (id bigint primary key default nextval('a.s'), m a.mood, code varchar check (a.ok(code))); create table a.c (id integer primary key, t_id bigint references a.t (id)); create index c_t on a.c (t_id);";
+        let Some(mut p) = at(v1, "insert into a.t (m, code) values ('x', 'q'); insert into a.c values (1, 1)").await else { return };
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_wipe(o, false, log).await).await, 0, "{}", p.output());
+        p.output();
+        assert_eq!(one(&p, "select count(*) as v from a.t").await, "0");
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.output());
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+    }
+
+
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_into_a_schema_new_in_the_migration() {
+        let v1 = "create table t (id integer primary key, n integer);";
+        let Some(mut p) = at(v1, "insert into t values (1, 1)").await else { return };
+        evolve(&mut p, "create schema s2; create table s2.t (id integer primary key, n integer);", &[], &[("t", "s2.t")]).await;
+        assert_eq!(one(&p, "select count(*) as v from s2.t").await, "1");
+    }
+
+    const SEQ_V1: &str = "create sequence zs; create macro a_lead(s) as s <> ''; create table t (id bigint primary key default nextval('zs'), code varchar check (a_lead(code)));";
+
+    const SEQ_V2: &str = "create sequence zs increment by 3; create macro a_lead(s) as s <> '-'; create table t (id bigint primary key default nextval('zs'), code varchar check (a_lead(code)));";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn every_type_change_that_loses_a_value_is_named() {
+        if !available() {
+            return;
+        }
+        let pairs: &[(&str, &str, &str)] = &[
+            ("timestamp", "date", "timestamp '2024-01-02 10:30:00'"),
+            ("timestamp", "time", "timestamp '2024-01-02 10:30:00'"),
+            ("timestamptz", "date", "timestamptz '2024-01-02 10:30:00+00'"),
+            ("timestamptz", "time", "timestamptz '2024-01-02 10:30:00+00'"),
+            ("timestamptz", "timestamp", "timestamptz '2024-01-02 10:30:00+05'"),
+            ("bigint", "double", "9007199254740993"),
+            ("bigint", "float", "16777217"),
+            ("integer", "float", "16777217"),
+            ("hugeint", "double", "170141183460469231731687303715884105727"),
+            ("ubigint", "double", "18446744073709551615"),
+            ("decimal(10,2)", "integer", "1.5"),
+            ("decimal(10,2)", "decimal(10,1)", "1.25"),
+            ("decimal(18,4)", "double", "12345678901234.5678"),
+            ("double", "decimal(10,2)", "1.234"),
+            ("double", "integer", "1.5"),
+            ("double", "float", "0.1"),
+            ("varchar", "uuid", "'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11'"),
+            ("varchar", "integer", "' 7 '"),
+            ("varchar", "double", "'1e400'"),
+            ("varchar", "date", "'2024-01-02'"),
+            ("varchar", "timestamp", "'2024-01-02 10:30:00.123456789'"),
+            ("varchar", "json", "'{\"a\": 1,  \"a\": 2}'"),
+            ("varchar", "interval", "'90 minutes'"),
+            ("varchar", "decimal(10,2)", "'1.239'"),
+            ("varchar", "bit", "'0101'"),
+            ("time", "time_ns", "time '10:30:00'"),
+            ("interval", "varchar", "interval '90 minutes'"),
+            ("interval", "time", "interval '25 hours'"),
+            ("integer[]", "integer[2]", "[1, 2]"),
+            ("integer[]", "varchar[]", "[1, 2]"),
+            ("double[]", "integer[]", "[1.5]"),
+            ("struct(a double)", "struct(a integer)", "{'a': 1.5}"),
+            ("map(varchar, double)", "map(varchar, integer)", "map {'k': 1.5}"),
+            ("uuid", "varchar", "'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid"),
+            ("blob", "varchar", "'abc'::blob"),
+            ("boolean", "varchar", "true"),
+            ("date", "timestamp_s", "date '2024-01-02'"),
+            ("timestamp", "timestamp_s", "timestamp '2024-01-02 10:30:00.5'"),
+            ("timestamp", "timestamp_ms", "timestamp '2024-01-02 10:30:00.1234'"),
+            ("float", "decimal(4,1)", "1.25"),
+            ("bigint", "decimal(38,0)", "9007199254740993"),
+            ("hugeint", "decimal(38,0)", "170141183460469231731687303715884105727"),
+            ("utinyint", "tinyint", "100"),
+            ("json", "varchar", "'{\"a\":1}'::json"),
+        ];
+        let mut misses = Vec::new();
+        for (from, to, value) in pairs {
+            let (mut a, mut b) = (memory().await, memory().await);
+            let v1 = format!("create table t (id integer primary key, c {from});");
+            if a.exec(&v1).await.is_err() || a.exec(&format!("insert into t values (1, {value})")).await.is_err() {
+                misses.push(format!("{from} -> {to}: v1 or its row refused"));
+                continue;
+            }
+            b.exec(&format!("create table t (id integer primary key, c {to});")).await.unwrap();
+            // DuckDB's verdict: the value cast to the new type, and back, is the value it was, or the cast fails.
+            let verdict = a.rows(&format!("select (c::{to})::{from} is not distinct from c as same, c::varchar as before, (c::{to})::varchar as after from t")).await;
+            let Ok(rows) = verdict else { continue };
+            if rows[0].text("same") == "true" {
+                continue;
+            }
+            let plan = plan(&mut a, &mut b).await;
+            let text = plan.sql();
+            if !text.contains("loses") {
+                misses.push(format!("{from} -> {to}: {} becomes {}, and the plan names no loss:\n{text}", rows[0].text("before"), rows[0].text("after")));
+            }
+        }
+        assert!(misses.is_empty(), "{}", misses.join("\n"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_a_new_table_reading_a_sequence_a_macro_group_makes_again() {
+        let Some(mut p) = at(SEQ_V1, "insert into t (code) values ('x')").await else { return };
+        evolve(&mut p, &format!("{SEQ_V2} create table u (id bigint primary key default nextval('zs'));"), &[], &[]).await;
+    }
+
+    async fn init_round(sql: &str) {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec(sql).await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "init: {}", p.output());
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        assert_has!(p.output(), "Up to date");
+        assert_eq!(p.dry_run().await, 0, "dry run: {}", p.output());
+        p.output();
+        let mut q = P::sibling(&p);
+        std::fs::copy(p.dir.join("migrations").join("init.sql"), q.dir.join("migrations").join("init.sql")).unwrap();
+        std::fs::copy(p.dir.join("schema.sql"), q.dir.join("schema.sql")).unwrap();
+        assert_eq!(q.migrate().await, 0, "init.sql on an empty database: {}", q.output());
+        let mut a = Db::connect(&p.url, &p.dir).await.unwrap();
+        let mut b = Db::connect(&q.url, &q.dir).await.unwrap();
+        let (x, y) = difference(&catalog(&mut a).await.unwrap(), &catalog(&mut b).await.unwrap());
+        assert!(x.is_empty() && y.is_empty(), "{x:?}\n{y:?}");
+        let text = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
+        let r = P::sibling(&p);
+        let mut c = Db::connect(&r.url, &r.dir).await.unwrap();
+        c.script(&text).await.unwrap_or_else(|e| panic!("introspect's text: {e}\n{text}"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_views_with_lambdas_comprehensions_and_casts_across_schemas() {
+        init_round(
+            "create schema rpt; create table posts (id integer primary key, tags varchar[], score DOUBLE); create table tag (id integer primary key, post_id integer references posts (id)); create view rpt.clean as select id, list_filter(tags, lambda tag: tag <> '') as tags, [x || '!' for x in tags if x <> ''] as loud, CAST(score AS DECIMAL(10,2)) as s, TRY_CAST(score AS INTEGER) as i, score::VARCHAR as v from posts; create view rpt.top as select * from rpt.clean where s > 1;"
+        ).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_macros_calling_macros_across_schemas_by_other_names() {
+        init_round(
+            "create schema util; create schema app; create macro util.norm(s) as lower(trim(s)); create macro app.slug(s) as replace(util.norm(s), ' ', '-'); create macro zz_label(s) as app.slug(s) || '!'; create table app.items (id integer primary key, name varchar, slug varchar default app.slug('x'), label varchar check (zz_label(label) <> '')); create index items_slug on app.items (util.norm(name));"
+        ).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_a_macro_reading_a_sequence_that_a_default_calls() {
+        init_round(
+            "create sequence zs start 10; create macro next_id() as nextval('zs') * 10; create table t (id bigint primary key default next_id(), n integer);"
+        ).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_a_table_macro_over_a_scalar_macro_and_a_view_over_it() {
+        init_round(
+            "create macro zdouble(x) as x * 2; create table t (id integer primary key, n integer); create macro twice_of(m) as table select id, zdouble(n) as d from t where n > m; create view big as select * from twice_of(1);"
+        ).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_named_arguments_and_struct_literals() {
+        init_round(
+            "create macro tagged(t, sep := ':') as t || sep; create macro pair(x) as struct_pack(a := x, b := tagged(x::VARCHAR, sep := '-')); create table t (id integer primary key, n integer, p struct(a integer, b varchar) default pair(1));"
+        ).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_overloaded_macro_is_no_drift_and_its_change_deploys() {
+        let v1 = "create macro m(a) as a + 1, (a, b) as a + b; create table t (id integer primary key, n integer check (m(n, 0) > 0));";
+        let Some(mut p) = at(v1, "insert into t values (1, 1)").await else { return };
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        p.output();
+        evolve(&mut p, "create macro m(a) as a + 2, (a, b) as a + b + 0; create table t (id integer primary key, n integer check (m(n, 0) > 0));", &[], &[]).await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_of_an_enum_change_on_a_parent_whose_child_drops_its_key() {
+        let v1 = "create type mood as enum ('a', 'b'); create table p (id integer primary key, code varchar check (code::mood <> 'b')); create table c (id integer primary key, p_id integer references p (id));";
+        let Some(mut p) = at(v1, "insert into p values (1, 'a'); insert into c values (1, 1)").await else { return };
+        push(&mut p, "create type mood as enum ('a', 'b', 'c'); create table p (id integer primary key, code varchar check (code::mood <> 'b')); create table c (id integer primary key, p_id integer);").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_an_enum_change_on_a_parent_whose_child_drops_its_key() {
+        let v1 = "create type mood as enum ('a', 'b'); create table p (id integer primary key, code varchar check (code::mood <> 'b')); create table c (id integer primary key, p_id integer references p (id));";
+        let Some(mut p) = at(v1, "insert into p values (1, 'a'); insert into c values (1, 1)").await else { return };
+        evolve(&mut p, "create type mood as enum ('a', 'b', 'c'); create table p (id integer primary key, code varchar check (code::mood <> 'b')); create table c (id integer primary key, p_id integer);", &[], &[]).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_macros_parameter_default_is_written_beside_a_default_calling_another_schemas_macro() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create schema app; create macro app.slug(s) as lower(s); create table app.items (id integer primary key, slug varchar default app.slug('X')); create macro add_to(a, b := 5) as a + b;");
+        assert_eq!(new(&mut p, "first").await, 0, "{}", p.peek());
+        let out = p.output();
+        let sql = written(&p, "first");
+        assert!(sql.contains("b := 5"), "the default is gone:\n{sql}\n{out}");
+        assert_has!(&out, r"macro add_to: its parameters' defaults are not read");
+        assert_eq!(p.dev().await, 0, "{}", p.output());
+        assert_eq!(p.rows("select add_to(1) as v").await[0].text("v"), "6");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn introspect_reads_a_default_calling_another_schemas_macro() {
+        let Some(p) = duckdb().await else { return };
+        p.exec("create schema app; create macro app.slug(s) as lower(s); create table app.items (id integer primary key, slug varchar default app.slug('X'));").await;
+        let text = reylo_migrate::db_introspect(&p.opts(), &[]).await;
+        assert!(text.is_ok(), "{text:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_macros_changed_parameter_default_beside_a_default_calling_another_schemas_macro_is_said() {
+        let v1 = "create schema app; create macro app.slug(s) as lower(s); create table app.items (id integer primary key, slug varchar default app.slug('X')); create macro add_to(a, b := 5) as a + b;";
+        let Some(mut p) = at(v1, "").await else { return };
+        p.schema(&v1.replace("b := 5", "b := 6"));
+        let code = new(&mut p, "six").await;
+        let out = p.output();
+        let sql = written(&p, "six");
+        assert!(sql.contains("b := 6") || out.contains("defaults are not read"), "code {code}, nothing says the default changed:\n{out}\n{sql}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_macros_changed_parameter_default_alone_is_said() {
+        let v1 = "create macro add_to(a, b := 5) as a + b;";
+        let Some(mut p) = at(v1, "").await else { return };
+        p.schema(&v1.replace("b := 5", "b := 6"));
+        let code = new(&mut p, "six").await;
+        let out = p.output();
+        let sql = written(&p, "six");
+        assert!(sql.contains("b := 6") || out.contains("defaults are not read"), "code {code}, nothing says the default changed:\n{out}\n{sql}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_and_dev_change_a_sequence_another_schemas_tree_names_bare() {
+        let v1 = "create schema a; create sequence a.s; create table a.pages (id bigint primary key default nextval('s'), parent_id bigint references a.pages (id));";
+        let Some(mut p) = at(v1, "insert into a.pages (parent_id) values (null);; insert into a.pages (parent_id) values (1)").await else { return };
+        let sql = evolve(&mut p, &v1.replace("create sequence a.s;", "create sequence a.s start 10 increment by 5;"), &[], &[]).await;
+        assert!(!sql.contains("drop table"), "{sql}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wipe_starts_sequences_where_the_docs_say() {
+        let v1 = "create schema a; create sequence up minvalue 10 start 50; create sequence down increment by -1 minvalue -100 maxvalue -1 start -5; create sequence a.s start 7; create table a.t (id bigint primary key default nextval('s'), u bigint default nextval('up'), d bigint default nextval('down'));";
+        let Some(mut p) = at(v1, "insert into a.t (id) values (100); insert into a.t default values").await else { return };
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_wipe(o, false, log).await).await, 0, "{}", p.output());
+        p.output();
+        p.exec("insert into a.t default values").await;
+        let row = p.rows("select id::varchar || ' ' || u::varchar || ' ' || d::varchar as v from a.t").await;
+        assert_eq!(row[0].text("v"), "1 10 -1", "lowest, lowest, highest");
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+    }
+
+    async fn moved(v1: &str, seed: &str, v2: &str, from: &str, to: &str, count: &str) -> (i32, String, Vec<String>) {
+        let mut p = duckdb().await.unwrap();
+        p.file("20261101000000_t.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.run(async |o, log| reylo_migrate::dev(o, false, log).await).await, 0, "dev: {}", p.output());
+        if !seed.is_empty() {
+            p.exec(seed).await;
+        }
+        p.output();
+        p.schema(v2);
+        let choices = reylo_migrate::Choices { drop: vec![], rename: if from.is_empty() { vec![] } else { vec![(from.into(), to.into())] } };
+        let new = p.run(async |o, log| reylo_migrate::create(o, "mv", &choices, log).await).await;
+        let out = p.output();
+        let written: String = std::fs::read_dir(p.dir.join("migrations")).unwrap().map(|e| e.unwrap().path()).filter(|f| f.to_string_lossy().ends_with("_mv.sql")).map(|f| std::fs::read_to_string(f).unwrap()).collect();
+        if new != 0 {
+            return (new, format!("{out}\n{written}"), vec![]);
+        }
+        let dev = p.run(async |o, log| reylo_migrate::dev(o, false, log).await).await;
+        let out = format!("{}\n{written}", p.output());
+        if dev != 0 {
+            return (dev, out, vec![]);
+        }
+        let status = p.run(async |o, log| reylo_migrate::status(o, log).await).await;
+        let status_out = p.output();
+        let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
+        let rows = db.rows(count).await.unwrap();
+        (status, format!("{out}\nstatus: {status_out}"), rows.iter().map(|r| r.text("x").to_string()).collect())
+    }
+
+    /// A table that references itself moves to another schema, with no row naming another.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_self_referencing_table_moves_to_another_schema() {
+        if !available() {
+            return;
+        }
+        let (code, out, rows) = moved(
+            "create schema archive; create table notes (id integer primary key, parent integer references notes (id), body varchar);",
+            "insert into notes values (1, null, 'a'), (2, null, 'b');",
+            "create schema archive; create table archive.notes (id integer primary key, parent integer references notes (id), body varchar);",
+            "notes",
+            "archive.notes",
+            "select count(*)::varchar as x from archive.notes",
+        )
+        .await;
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(rows, ["2"], "{out}");
+        // Its key on itself moves with it, so the plan tells no one to drop it.
+        assert!(!out.contains("drop those first"), "{out}");
+    }
+
+    /// A table with an index and comments moves to another schema.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_with_an_index_and_comments_moves_to_another_schema() {
+        if !available() {
+            return;
+        }
+        let (code, out, rows) = moved(
+            "create schema archive; create table notes (id integer primary key, body varchar); create index notes_body on notes (body); comment on table notes is 'the notes'; comment on column notes.body is 'text'; comment on index notes_body is 'by body';",
+            "insert into notes values (1, 'a');",
+            "create schema archive; create table archive.notes (id integer primary key, body varchar); create index notes_body on archive.notes (body); comment on table archive.notes is 'the notes'; comment on column archive.notes.body is 'text'; comment on index archive.notes_body is 'by body';",
+            "notes",
+            "archive.notes",
+            "select count(*)::varchar as x from archive.notes",
+        )
+        .await;
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(rows, ["1"], "{out}");
+    }
+
+    /// A table moves to a schema the same migration makes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moves_to_a_schema_the_migration_makes() {
+        if !available() {
+            return;
+        }
+        let (code, out, rows) = moved(
+            "create table notes (id integer primary key, body varchar);",
+            "insert into notes values (1, 'a');",
+            "create schema archive; create table archive.notes (id integer primary key, body varchar);",
+            "notes",
+            "archive.notes",
+            "select count(*)::varchar as x from archive.notes",
+        )
+        .await;
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(rows, ["1"], "{out}");
+    }
+
+    /// The same, with no --rename: the move is guessed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_move_to_another_schema_is_no_guess() {
+        if !available() {
+            return;
+        }
+        let (code, out, rows) = moved(
+            "create table notes (id integer primary key, body varchar);",
+            "insert into notes values (1, 'a');",
+            "create schema archive; create table archive.notes (id integer primary key, body varchar);",
+            "",
+            "",
+            "select count(*)::varchar as x from archive.notes",
+        )
+        .await;
+        // Not guessed across schemas: `new` refuses, and offers --rename.
+        assert_eq!(code, 1, "{out}");
+        assert!(out.contains("--rename notes="), "{out}");
+        let _ = rows;
+    }
+
+    /// `db push` of the same move, guessed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_makes_a_table_in_a_new_schema() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create table notes (id integer primary key, body varchar);";
+        p.file("20261101000000_t.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.run(async |o, log| reylo_migrate::dev(o, false, log).await).await, 0, "dev: {}", p.output());
+        p.exec("insert into notes values (1, 'a')").await;
+        p.output();
+        p.schema("create schema archive; create table archive.notes (id integer primary key, body varchar);");
+        let push = p.run(async |o, log| reylo_migrate::db_push(o, false, log).await).await;
+        assert_eq!(push, 0, "db push: {}", p.output());
+    }
+
+    /// `db push` makes a changed sequence again from the value it gives next, in a group with a macro.
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_continues_a_grouped_sequence() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create sequence s; create macro x() as 1; create table t (id bigint primary key default nextval('s'), v integer, check (v >= x()));";
+        p.file("20261101000000_t.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.run(async |o, log| reylo_migrate::dev(o, false, log).await).await, 0, "dev: {}", p.output());
+        p.exec("insert into t (v) values (5), (6), (7)").await;
+        p.output();
+        p.schema("create sequence s increment by 2; create macro x() as 2; create table t (id bigint primary key default nextval('s'), v integer, check (v >= x()));");
+        let push = p.run(async |o, log| reylo_migrate::db_push(o, false, log).await).await;
+        assert_eq!(push, 0, "db push: {}", p.output());
+        p.exec("insert into t (v) values (8)").await;
+        let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
+        let rows = db.rows("select string_agg(id::varchar, ',' order by id) as x from t").await.unwrap();
+        assert_eq!(rows[0].text("x"), "1,2,3,4", "{}", p.output());
+    }
+
+    /// A table renamed while the macro its check calls changes, and a table referencing it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_referenced_table_renamed_while_its_checks_macro_changes() {
+        if !available() {
+            return;
+        }
+        let (code, out, rows) = moved(
+            "create macro x() as 1; create table notes (id integer primary key, v integer, check (v >= x())); create table tags (id integer primary key, note_id integer references notes (id));",
+            "insert into notes values (1, 5); insert into tags values (1, 1);",
+            "create macro x() as 2; create table memos (id integer primary key, v integer, check (v >= x())); create table tags (id integer primary key, note_id integer references memos (id));",
+            "notes",
+            "memos",
+            "select (select count(*) from memos)::varchar || ',' || (select count(*) from tags)::varchar as x",
+        )
+        .await;
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(rows, ["1,1"], "{out}");
+    }
+
+    /// A table moved to another existing schema while the enum its check casts to changes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moved_while_the_enum_its_check_casts_to_changes() {
+        if !available() {
+            return;
+        }
+        let (code, out, rows) = moved(
+            "create schema archive; create type mood as enum ('a', 'b'); create table notes (id integer primary key, m varchar, check (m::mood <> 'b'));",
+            "insert into notes values (1, 'a');",
+            "create schema archive; create type mood as enum ('a', 'b', 'c'); create table archive.notes (id integer primary key, m varchar, check (m::main.mood <> 'b'));",
+            "notes",
+            "archive.notes",
+            "select count(*)::varchar as x from archive.notes",
+        )
+        .await;
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(rows, ["1"], "{out}");
+    }
+
 }

@@ -155,12 +155,17 @@ pub trait Alterer {
         let _ = (from, to);
         None
     }
-    /// Objects whose create or change the op of `id` (its create, its change or its drop) runs
-    /// after, beyond what its target depends on and what depends on it: what the alterer's
-    /// statements for it make, or remake as the target has it, need (DuckDB's rebuild of a table
-    /// makes the tables that reference it, and a macro made again remakes the tables that call it),
-    /// and, for a drop, the change that lets it go.
+    /// Objects whose create or change the op of `id` (its create or its change) runs after, beyond
+    /// what its target depends on: what the alterer's statements for it make, or remake as the
+    /// target has it, need (DuckDB's rebuild of a table makes the tables that reference it, and a
+    /// macro made again remakes the tables that call it).
     fn waits_for(&self, id: &str) -> Vec<String> {
+        let _ = id;
+        vec![]
+    }
+    /// Objects whose create or change the drop of `id` runs after, beyond what depends on it: the
+    /// change that lets it go, where that is another object's statements.
+    fn drop_waits_for(&self, id: &str) -> Vec<String> {
         let _ = id;
         vec![]
     }
@@ -836,7 +841,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 }
             }
             Op::Drop(id) => {
-                for d in alterer.waits_for(id) {
+                for d in alterer.drop_waits_for(id) {
                     if let Some(j) = create_of(&d) {
                         if j != k {
                             after[k].insert(j);

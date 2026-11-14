@@ -3171,9 +3171,15 @@ async fn schema_as_sql(opts: &Options, schemas: &[String]) -> Result<String, Err
 }
 
 async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
-    let dumped = dump_from(db, opts, schemas).await?;
+    // DuckDB's export fails on some schemas (a default that calls a macro of another schema), where
+    // the plan alone can still stand, if it makes exactly what the database has.
+    let (dumped, unexported) = match dump_from(db, opts, schemas).await {
+        Ok(text) => (text, None),
+        Err(e) if db.dialect() == Dialect::Duckdb => (String::new(), Some(e)),
+        Err(e) => return Err(e),
+    };
     // Where no shadow database can be made (a role without CREATEDB, and no shadow_url), the dump.
-    let Ok(mut server) = shadow_server(db, opts).await else { return Ok(dumped) };
+    let Ok(mut server) = shadow_server(db, opts).await else { return unexported.map_or(Ok(dumped), Err) };
     // The extensions the dump creates are the text's to make, as a fresh database needs them: a
     // shadow that already had them would hide a plan that leaves them out.
     server.leave_extensions(extensions_in(&dumped));
@@ -3214,10 +3220,11 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
     shadows.finish().await;
     server.close().await;
     // Whatever keeps the plan from being shown to make the dump's schema leaves the dump.
-    Ok(match styled {
-        Ok(Some(sql)) => format!("{}\n", sql.trim_end()),
-        _ => dumped,
-    })
+    match (styled, unexported) {
+        (Ok(Some(sql)), _) => Ok(format!("{}\n", sql.trim_end())),
+        (_, Some(e)) => Err(e),
+        _ => Ok(dumped),
+    }
 }
 
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {

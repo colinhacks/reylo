@@ -1,0 +1,14 @@
+create temporary table reylo_copy_t as select * from t;
+create temporary table reylo_copy_u as select * from u;
+drop table u;
+drop table t;
+drop type b;
+drop macro x;
+create macro x () as (2);
+create type b as enum('p', 'q', 'r');
+create table t (id integer, k b, v integer, primary key (id), check ((v >= x())));
+create table u (id integer, n integer default x(), w varchar, primary key (id), check ((cast(w as b) != 'q')));
+insert into t (id, k, v) select id, k, v from temp.main.reylo_copy_t;
+insert into u (id, n, w) select id, n, w from temp.main.reylo_copy_u;
+drop table temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_u;

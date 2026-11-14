@@ -1,0 +1,17 @@
+create temporary table reylo_copy_p as select * from p;
+create temporary table reylo_copy_c as select * from c;
+create temporary table reylo_copy_g as select * from g;
+drop table g;
+drop table c;
+drop table p;
+drop macro valid;
+create macro "valid" (s) as ((length(s) > 0));
+create table p (id integer, code varchar, primary key (id), check ("valid"(code)));
+create table c (id integer, p_id integer, primary key (id), foreign key (p_id) references p (id));
+create table g (id integer, c_id integer, primary key (id));
+insert into p (id, code) select id, code from temp.main.reylo_copy_p;
+insert into c (id, p_id) select id, p_id from temp.main.reylo_copy_c;
+insert into g (id, c_id) select id, c_id from temp.main.reylo_copy_g;
+drop table temp.main.reylo_copy_p;
+drop table temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_g;
