@@ -17,7 +17,7 @@ use crate::fresh::Tables;
 use crate::host::{as_str, Host, Lazy};
 use crate::lex::{self, Lexed, Target};
 use crate::sqlite_tree::{self as tree, From, Node, Sel, Tree};
-use crate::types::{Cardinality, Field, FloatType, IllFormed, Kind, Position, StatementKind, TextType, Type};
+use crate::types::{Cardinality, Field, FloatType, Kind, StatementKind, TextType, Type};
 
 /// What the analysis reasons in: a value's storage class by the affinity name SQLite gives it
 /// (`integer`, `real`, `text`, `blob`, `numeric`; `int8` for a value a column declared 64 bits wide
@@ -325,6 +325,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     }
     let (facts, kind) = a.columns();
     let booleans = a.booleans();
+    let literals = a.literals();
     // A truth value SQLite computes is a boolean, which the oracle holds to 0 and 1; a column
     // declared BOOLEAN, read or passed through, holds whatever was stored in it, and the loader's
     // run time reads it as a truth value by its name, refusing any other value (src/values.ts).
@@ -334,9 +335,15 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         .zip(&booleans)
         .zip(&t.columns)
         .zip(a.exacts())
-        .map(|(((((name, fact), flag), computed), public), exact)| {
+        .enumerate()
+        .map(|(i, (((((name, fact), flag), computed), public), exact))| {
             let ty = if flag { Ty::Scalar { name: "bool".into() } } else { fact.ty };
-            Column::new(name, descriptor(&ty, public.declared.as_deref(), *computed, exact), !fact.non_null)
+            let ty = descriptor(&ty, public.declared.as_deref(), *computed, exact);
+            let ty = match literals.get(i) {
+                Some(Some(written)) => reylo_engine_core::literal::narrow(&ty, written).unwrap_or(ty),
+                _ => ty,
+            };
+            Column::new(name, ty, !fact.non_null)
         })
         .collect();
     let (params, refused) = a.params(lexed);
@@ -601,7 +608,7 @@ fn real() -> Type {
     Type::new(Kind::Float(FloatType { exponent_bits: 11, mantissa_bits: 52, infinity: true, ..FloatType::default() }))
 }
 fn text() -> Type {
-    Type::new(Kind::Text(TextType { ill_formed: Some(IllFormed::Utf8), ..TextType::default() }))
+    Type::new(Kind::Text(TextType { encoding: Some("UTF-8".into()), ill_formed: true, ..TextType::default() }))
 }
 
 /// What a column of an affinity holds outside a STRICT table: an INTEGER or NUMERIC one any
@@ -647,10 +654,40 @@ fn descriptor(ty: &Ty, declared: Option<&str>, computed: bool, exact: bool) -> T
             (None, "numeric") => stored("numeric").named("NUMERIC"),
             _ => Type::unknown(),
         },
-        Ty::Object { .. } | Ty::List { .. } => Type::json_of(Position::non_null(content(ty))),
+        Ty::Object { .. } | Ty::List { .. } => Type::json_of(crate::types::Slot::non_null(content(ty))),
         Ty::Json { schema: Some(schema) } => Type::json_schema_of(schema.clone()),
         Ty::Json { schema: None } => Type::json(),
         Ty::Unknown => Type::unknown(),
+    }
+}
+
+/// The values an expression is one of, where it writes them all: a string, which SQLite reads as
+/// written, a number in decimal, `TRUE` and `FALSE`, a number's negation, and a `CASE` whose every
+/// result is one, through a unary plus and a `COLLATE`. NULL is none.
+fn literals_of(n: &Node) -> Option<Vec<reylo_engine_core::literal::Literal>> {
+    use reylo_engine_core::literal::Literal;
+    match n.op.as_str() {
+        "null" => Some(Vec::new()),
+        "string" => Some(vec![Literal::Text(n.value.clone()?)]),
+        "integer" | "float" => Some(vec![Literal::Number(n.value.clone()?)]),
+        "truefalse" => Some(vec![Literal::Boolean(n.value.as_deref()?.eq_ignore_ascii_case("true"))]),
+        "neg" => match literals_of(n.left.as_deref()?)?.as_slice() {
+            [Literal::Number(v)] => Some(vec![Literal::Number(match v.strip_prefix('-') {
+                Some(positive) => positive.to_string(),
+                None => format!("-{v}"),
+            })]),
+            _ => None,
+        },
+        "pos" | "collate" => literals_of(n.left.as_deref()?),
+        "case" => {
+            // `list` alternates WHEN and THEN; an odd tail is the ELSE.
+            let mut values = Vec::new();
+            for pair in n.list.chunks(2) {
+                values.extend(literals_of(pair.last()?)?);
+            }
+            Some(values)
+        }
+        _ => None,
     }
 }
 
@@ -658,8 +695,8 @@ fn descriptor(ty: &Ty, declared: Option<&str>, computed: bool, exact: bool) -> T
 /// value SQLite wrote there.
 fn content(ty: &Ty) -> Type {
     match ty {
-        Ty::Object { fields } => Type::record(fields.iter().map(|f| Field::new(f.name.clone(), content(&f.ty), f.nullable)).collect()),
-        Ty::List { of, nullable_items } => Type::array(Position::new(content(of), *nullable_items)),
+        Ty::Object { fields } => Type::structure(fields.iter().map(|f| Field::new(f.name.clone(), content(&f.ty), f.nullable)).collect()),
+        Ty::List { of, nullable_items } => Type::array(crate::types::Slot::new(content(of), *nullable_items)),
         other => descriptor(other, None, false, false),
     }
 }
@@ -1239,6 +1276,38 @@ impl Analyzer<'_> {
             })
             .collect();
         (columns, kind)
+    }
+
+    /// Per result column, the constants it holds, where the statement writes nothing else into it:
+    /// a RETURNING list's, and a select's, whose every arm a UNION joins adds its values, where an
+    /// INTERSECT's or an EXCEPT's arm only removes rows ([`literals_of`]).
+    fn literals(&self) -> Vec<Option<Vec<reylo_engine_core::literal::Literal>>> {
+        let t = self.tree;
+        if let Some(returning) = &t.returning {
+            return returning.iter().map(|c| literals_of(&c.expr)).collect();
+        }
+        let (Some(sel), None) = (&t.statement, &t.dml) else { return Vec::new() };
+        let mut arms: Vec<&Sel> = Vec::new();
+        let mut s = Some(sel);
+        while let Some(arm) = s {
+            arms.push(arm);
+            s = arm.prior.as_deref();
+        }
+        arms.reverse();
+        (0..sel.columns.len())
+            .map(|i| {
+                let mut values = Vec::new();
+                for (k, arm) in arms.iter().enumerate() {
+                    if k > 0 && matches!(arm.op.as_deref(), Some("intersect" | "except")) {
+                        continue;
+                    }
+                    for e in std::iter::once(arm.columns.get(i).map(|c| &c.expr)).chain(arm.rows.iter().map(|row| row.get(i))) {
+                        values.extend(literals_of(e?)?);
+                    }
+                }
+                Some(values)
+            })
+            .collect()
     }
 
     /// Per result column, whether it is a truth value ([`SqliteAnalysis::booleans`]).
@@ -2270,12 +2339,12 @@ impl Analyzer<'_> {
         }
         let sibling = |other: &Option<Box<Node>>| other.as_deref().map(|o| self.type_of(o, scope));
         let case_results: std::cell::OnceCell<Ty> = std::cell::OnceCell::new();
-        let child_ctx = |slot: Slot| -> Ctx {
+        let child_ctx = |slot: Position| -> Ctx {
             match n.op.as_str() {
                 "=" | "!=" | "<" | "<=" | ">" | ">=" | "is" | "is not" => {
                     let (this, other) = match slot {
-                        Slot::Left => (&n.left, &n.right),
-                        Slot::Right => (&n.right, &n.left),
+                        Position::Left => (&n.left, &n.right),
+                        Position::Right => (&n.right, &n.left),
                         _ => return Ctx::None,
                     };
                     // Row values compare element by element, so each element takes the type of
@@ -2289,15 +2358,15 @@ impl Analyzer<'_> {
                 "in" => match slot {
                     // `(created_at, id) IN (SELECT …)`: SQLite writes a list of row values as
                     // a VALUES subquery, which the left side types (see the select walk below).
-                    Slot::Left if is_vector(&n.left) => n.select.as_deref().map_or(Ctx::None, |s| Ctx::Row(self.select_columns(s, scope))),
-                    Slot::Left => Ctx::Typed(n.list.first().map(|x| self.type_of(x, scope)).or_else(|| n.select.as_deref().map(|s| self.select_column(s, 0, scope)))),
-                    Slot::List(_) => Ctx::Typed(sibling(&n.left)),
+                    Position::Left if is_vector(&n.left) => n.select.as_deref().map_or(Ctx::None, |s| Ctx::Row(self.select_columns(s, scope))),
+                    Position::Left => Ctx::Typed(n.list.first().map(|x| self.type_of(x, scope)).or_else(|| n.select.as_deref().map(|s| self.select_column(s, 0, scope)))),
+                    Position::List(_) => Ctx::Typed(sibling(&n.left)),
                     _ => Ctx::None,
                 },
                 "between" => match slot {
-                    Slot::Left if is_vector(&n.left) => Ctx::Row(self.rows(&n.list.iter().collect::<Vec<_>>(), scope)),
-                    Slot::Left => Ctx::Typed(n.list.first().map(|x| self.type_of(x, scope))),
-                    Slot::List(_) => match n.left.as_deref().and_then(|l| self.row(l, scope)) {
+                    Position::Left if is_vector(&n.left) => Ctx::Row(self.rows(&n.list.iter().collect::<Vec<_>>(), scope)),
+                    Position::Left => Ctx::Typed(n.list.first().map(|x| self.type_of(x, scope))),
+                    Position::List(_) => match n.left.as_deref().and_then(|l| self.row(l, scope)) {
                         Some(row) if is_vector(&n.left) => Ctx::Row(row),
                         _ => Ctx::Typed(sibling(&n.left)),
                     },
@@ -2305,12 +2374,12 @@ impl Analyzer<'_> {
                 },
                 // An element of a row value takes its place's type.
                 "vector" => match (slot, &ctx) {
-                    (Slot::List(i), Ctx::Row(row)) => Ctx::Typed(row.get(i).cloned().flatten()),
+                    (Position::List(i), Ctx::Row(row)) => Ctx::Typed(row.get(i).cloned().flatten()),
                     _ => Ctx::None,
                 },
                 // One column of a row subquery, as `UPDATE … SET (a, b) = (SELECT …)` writes it.
                 "select_column" => match (slot, &ctx) {
-                    (Slot::Left, Ctx::Typed(Some(f))) => {
+                    (Position::Left, Ctx::Typed(Some(f))) => {
                         let mut row = vec![None; n.index.max(0) as usize + 1];
                         row[n.index.max(0) as usize] = Some(f.clone());
                         Ctx::Row(row)
@@ -2320,7 +2389,7 @@ impl Analyzer<'_> {
                 "cast" => Ctx::Typed(Some(Fact::new(n.affinity.as_deref().unwrap_or("none"), true))),
                 "+" | "-" | "*" | "/" | "%" => {
                     let other = match slot {
-                        Slot::Left => sibling(&n.right),
+                        Position::Left => sibling(&n.right),
                         _ => sibling(&n.left),
                     };
                     Ctx::Typed(Some(match other {
@@ -2338,13 +2407,13 @@ impl Analyzer<'_> {
                     // A WHEN compares with the base when there is one, else it is a condition; a
                     // THEN or ELSE shares the other results' type, or failing that the type the
                     // CASE stands in (`name = CASE WHEN … THEN :a ELSE :b END`).
-                    Slot::List(i) if i % 2 == 0 && i + 1 < n.list.len() => match &n.left {
+                    Position::List(i) if i % 2 == 0 && i + 1 < n.list.len() => match &n.left {
                         Some(base) if base.op == "vector" => self.row(base, scope).map_or(Ctx::None, Ctx::Row),
                         Some(base) => Ctx::Typed(Some(self.type_of(base, scope))),
                         None => Ctx::Bool,
                     },
                     // Typed once for the CASE, not once per arm: a CASE of thousands of arms.
-                    Slot::List(_) => match case_results.get_or_init(|| {
+                    Position::List(_) => match case_results.get_or_init(|| {
                         let others: Vec<Fact> = n.list.iter().enumerate().filter(|(j, _)| j % 2 == 1 || (*j == n.list.len() - 1 && n.list.len() % 2 == 1)).map(|(_, x)| self.type_of(x, scope)).collect();
                         shared(&others.iter().collect::<Vec<_>>())
                     }) {
@@ -2353,12 +2422,12 @@ impl Analyzer<'_> {
                     },
                     // A base compares with each WHEN value (`CASE :kind WHEN 'a' THEN …`), a row
                     // value element by element.
-                    Slot::Left if is_vector(&n.left) => {
+                    Position::Left if is_vector(&n.left) => {
                         let values: Vec<&Node> = n.list.iter().enumerate().filter(|(j, _)| j % 2 == 0 && j + 1 < n.list.len()).map(|(_, x)| x).collect();
                         Ctx::Row(self.rows(&values, scope))
                     }
                     // A base compares with each WHEN value (`CASE :kind WHEN 'a' THEN …`).
-                    Slot::Left => {
+                    Position::Left => {
                         let values: Vec<Fact> = n.list.iter().enumerate().filter(|(j, _)| j % 2 == 0 && j + 1 < n.list.len()).map(|(_, x)| self.type_of(x, scope)).collect();
                         let refs: Vec<&Fact> = values.iter().collect();
                         match shared(&refs) {
@@ -2371,25 +2440,25 @@ impl Analyzer<'_> {
                 // A function whose result is one of its arguments gives an argument its siblings'
                 // type, or failing that the type the call stands in (`name = coalesce(:a, :b)`).
                 "function" => match (slot, self.argument(n, i_of(slot), scope)) {
-                    (Slot::Arg(_), Ctx::Typed(None) | Ctx::None) if matches!(n.name.as_deref(), Some("coalesce" | "ifnull" | "nullif" | "min" | "max")) && !n.agg => outer_type(&ctx),
-                    (Slot::Arg(i), Ctx::Typed(None) | Ctx::None) if matches!(n.name.as_deref(), Some("iif" | "if")) && iif_values(n.args.len()).contains(&i) => outer_type(&ctx),
-                    (Slot::Arg(_), c) => c,
+                    (Position::Arg(_), Ctx::Typed(None) | Ctx::None) if matches!(n.name.as_deref(), Some("coalesce" | "ifnull" | "nullif" | "min" | "max")) && !n.agg => outer_type(&ctx),
+                    (Position::Arg(i), Ctx::Typed(None) | Ctx::None) if matches!(n.name.as_deref(), Some("iif" | "if")) && iif_values(n.args.len()).contains(&i) => outer_type(&ctx),
+                    (Position::Arg(_), c) => c,
                     _ => Ctx::None,
                 },
                 _ => Ctx::None,
             }
         };
         if let Some(l) = &n.left {
-            self.walk(l, child_ctx(Slot::Left), scope, found);
+            self.walk(l, child_ctx(Position::Left), scope, found);
         }
         if let Some(r) = &n.right {
-            self.walk(r, child_ctx(Slot::Right), scope, found);
+            self.walk(r, child_ctx(Position::Right), scope, found);
         }
         for (i, x) in n.list.iter().enumerate() {
-            self.walk(x, child_ctx(Slot::List(i)), scope, found);
+            self.walk(x, child_ctx(Position::List(i)), scope, found);
         }
         for (i, x) in n.args.iter().enumerate() {
-            self.walk(x, child_ctx(Slot::Arg(i)), scope, found);
+            self.walk(x, child_ctx(Position::Arg(i)), scope, found);
         }
         if let Some(s) = &n.select {
             // A subquery's columns take the types they are compared with or stand in: `id IN
@@ -3262,9 +3331,9 @@ fn outer_type(ctx: &Ctx) -> Ctx {
 }
 
 /// The argument position of a slot (0 for any other slot).
-fn i_of(slot: Slot) -> usize {
+fn i_of(slot: Position) -> usize {
     match slot {
-        Slot::Arg(i) => i,
+        Position::Arg(i) => i,
         _ => 0,
     }
 }
@@ -3302,7 +3371,7 @@ enum Ctx {
 }
 
 #[derive(Clone, Copy)]
-enum Slot {
+enum Position {
     Left,
     Right,
     List(usize),
@@ -4537,7 +4606,7 @@ mod tests {
         let list = |s: String| if s.contains('|') { format!("({s})[]") } else { format!("{s}[]") };
         match &t.kind {
             Kind::Json(crate::types::JsonType { content: Some(c), .. }) => ts(&c.ty, true),
-            Kind::Record(r) => {
+            Kind::Struct(r) => {
                 let fields: Vec<String> = r.fields.iter().map(|f| format!("{}: {}", f.name, null(ts(&f.ty, true), f.nullable))).collect();
                 if fields.is_empty() { "Record<never, never>".into() } else { format!("{{ {} }}", fields.join("; ")) }
             }

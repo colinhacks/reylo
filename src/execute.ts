@@ -705,7 +705,7 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
     // A SET goes as its members joined by commas, in the order its column declares them: MySQL
     // stores a SET in that order, and compares one with a parameter's text as it is written.
     if (type.kind === "array" && isMysqlSet(type) && v instanceof Set) {
-      const labels = type.element.type.kind === "text" ? type.element.type.enum : undefined;
+      const labels = type.element.type.kind === "enum" ? type.element.type.values : undefined;
       return (labels === undefined ? [...v] : [...v].sort((a, b) => labels.indexOf(a as string) - labels.indexOf(b as string))).join(",");
     }
     return type.kind === "array" && bareName(type) === "vector" && Array.isArray(v) ? vectorText(v, name, "a VECTOR") : v;

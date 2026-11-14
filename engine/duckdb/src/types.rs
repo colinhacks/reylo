@@ -1,16 +1,15 @@
 //! A DuckDB logical type as the format's type (`spec/index.ts`), under DuckDB's own name
 //! for it, lowercased (`integer`, `hugeint`, `timestamptz`): a `LIST` or an `ARRAY` as an array
-//! whose elements may be NULL, a `STRUCT` as a record whose fields may each be NULL (DuckDB has no
-//! NOT NULL inside one; a struct whose fields have no names, a tuple, is no type the format has,
-//! and the analysis refuses it, [`unnamed`]), a
-//! `MAP` as a map, a `UNION` as a tagged union of its alternatives, an `ENUM` as
+//! whose elements may be NULL, a `STRUCT` as a struct whose fields may each be NULL (DuckDB has no
+//! NOT NULL inside one), and one whose fields have no names, as `(1, 'a')` and `row(…)` build, as a
+//! tuple of its values in order, each of which may be NULL too, a `MAP` as a map, a `UNION` as a tagged union of its alternatives, an `ENUM` as
 //! its labels, and a `VARCHAR` with the alias `JSON` as JSON. A type DuckDB has and the format does
 //! not structure is opaque, `GEOMETRY` among them: DuckDB writes one inside JSON as its WKT, where
 //! PostGIS and MySQL, whose geometries the format's geometry describes, write GeoJSON.
 
 use crate::api::LogicalType;
 use reylo_engine_core::types::{
-    Alternative, ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Position, Size, TimeType, Type, Zone, MICROSECOND,
+    Alternative, ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Slot, Size, TimeType, TupleType, Type, MICROSECOND,
 };
 
 /// DuckDB's earliest and latest dates and timestamps, the latter at microseconds (a
@@ -34,11 +33,11 @@ fn datetime(tick: &str) -> Type {
 }
 
 fn instant(tick: &str) -> Type {
-    Type::new(Kind::Instant(InstantType { tick: tick.into(), zone: None, bounds: Bounds::between(format!("{STAMP_MIN}Z"), format!("{STAMP_MAX}Z")), infinity: true }))
+    Type::new(Kind::Instant(InstantType { tick: tick.into(), bounds: Bounds::between(format!("{STAMP_MIN}Z"), format!("{STAMP_MAX}Z")), infinity: true }))
 }
 
-fn time(tick: &str, zone: Option<Zone>) -> Type {
-    Type::new(Kind::Time(TimeType { tick: tick.into(), zone, bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } }))
+fn time(tick: &str, offset: bool) -> Type {
+    Type::new(Kind::Time(TimeType { tick: tick.into(), offset, bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } }))
 }
 
 /// The format's type of a DuckDB logical type.
@@ -68,12 +67,12 @@ pub fn of(t: &LogicalType) -> Type {
         }
         "VARCHAR" => Type::text(),
         "BLOB" => Type::bytes(),
-        "BIT" => Type::array(Position::non_null(Type::boolean())),
+        "BIT" => Type::array(Slot::non_null(Type::boolean())),
         "UUID" => Type::uuid(),
         "DATE" => Type::new(Kind::Date(DateType { bounds: Bounds::between(DATE_MIN, DATE_MAX), infinity: true })),
-        "TIME" => time(MICROSECOND, None),
-        "TIME_NS" => time("1/1000000000", None),
-        "TIME_TZ" => time(MICROSECOND, Some(Zone::Offset)),
+        "TIME" => time(MICROSECOND, false),
+        "TIME_NS" => time("1/1000000000", false),
+        "TIME_TZ" => time(MICROSECOND, true),
         "TIMESTAMP" => datetime(MICROSECOND),
         "TIMESTAMP_S" => datetime("1"),
         "TIMESTAMP_MS" => datetime("1/1000"),
@@ -88,17 +87,19 @@ pub fn of(t: &LogicalType) -> Type {
         })),
         "ENUM" => Type::text_of(t.values.clone()),
         "LIST" => match &t.child {
-            Some(child) => return Type::array(Position::nullable(of(child))),
+            Some(child) => return Type::array(Slot::nullable(of(child))),
             None => return Type::unknown(),
         },
         "ARRAY" => match &t.child {
-            Some(child) => return Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(of(child))), size: t.size.map(|n| Size::exact(n.into())), any_depth: false, distinct: false, unique: Vec::new(), order: Vec::new() })),
+            Some(child) => return Type::new(Kind::Array(ArrayType { size: t.size.map(|n| Size::exact(n.into())), ..ArrayType::of(Slot::nullable(of(child))) })),
             None => return Type::unknown(),
         },
-        "STRUCT" if t.fields.iter().any(|f| f.name.is_empty()) => return Type::unknown(),
-        "STRUCT" => return Type::record(t.fields.iter().map(|f| Field::new(f.name.clone(), of(&f.ty), true)).collect()),
+        // A struct whose fields have no names, which DuckDB reads by their places, as it does
+        // a struct whose first field has none.
+        "STRUCT" if t.fields.iter().any(|f| f.name.is_empty()) => return Type::new(Kind::Tuple(TupleType { elements: t.fields.iter().map(|f| Slot::nullable(of(&f.ty))).collect(), ..TupleType::default() })),
+        "STRUCT" => return Type::structure(t.fields.iter().map(|f| Field::new(f.name.clone(), of(&f.ty), true)).collect()),
         "MAP" => match (&t.key, &t.value) {
-            (Some(key), Some(value)) => return Type::new(Kind::Map(MapType { key: Box::new(of(key)), value: Box::new(Position::nullable(of(value))) })),
+            (Some(key), Some(value)) => return Type::new(Kind::Map(MapType { key: Box::new(Slot::non_null(of(key))), value: Box::new(Slot::nullable(of(value))) })),
             _ => return Type::unknown(),
         },
         // One of its alternatives, by the tag every value carries, whose value may be NULL, as any
@@ -108,14 +109,6 @@ pub fn of(t: &LogicalType) -> Type {
         other => return Type::opaque(other.to_ascii_lowercase()),
     };
     ty.named(lowercase_name(&t.id))
-}
-
-/// Whether a type is or holds a struct whose fields have no names, as `(1, 'a')` and `row(…)`
-/// build: a record's fields are read by their names, so the format has no type for one.
-pub fn unnamed(t: &LogicalType) -> bool {
-    (t.id == "STRUCT" && t.fields.iter().any(|f| f.name.is_empty()))
-        || t.fields.iter().any(|f| unnamed(&f.ty))
-        || [&t.child, &t.key, &t.value].into_iter().any(|inner| inner.as_deref().is_some_and(unnamed))
 }
 
 /// DuckDB's name for a type, lowercased, as its id writes it (`timestamptz` for `TIMESTAMP_TZ`).
@@ -160,11 +153,11 @@ mod tests {
         assert_eq!(of(&t(r#"{"id":"STRUCT","fields":[{"name":"host","type":{"id":"VARCHAR"}},{"name":"pid","type":{"id":"INTEGER"}}]}"#)).short(), "{ host: varchar?, pid: integer? }");
         assert_eq!(of(&t(r#"{"id":"ENUM","text":"ENUM('a', 'b')","values":["a","b"]}"#)).short(), "enum('a' | 'b')");
         assert_eq!(of(&t(r#"{"id":"GEOMETRY"}"#)), Type::opaque("geometry"));
-        // A tuple's fields have no names, which no type of the format describes, inside a list too.
+        // A struct whose fields have no names is a tuple, inside a list too.
         let tuple = r#"{"id":"STRUCT","fields":[{"name":"","type":{"id":"INTEGER"}},{"name":"","type":{"id":"VARCHAR"}}]}"#;
-        assert!(of(&t(tuple)).is_unknown());
-        assert!(unnamed(&t(tuple)) && unnamed(&t(&format!(r#"{{"id":"LIST","child":{tuple}}}"#))));
-        assert!(!unnamed(&t(r#"{"id":"STRUCT","fields":[{"name":"host","type":{"id":"VARCHAR"}}]}"#)));
+        assert_eq!(of(&t(tuple)).short(), "(integer?, varchar?)");
+        assert_eq!(of(&t(&format!(r#"{{"id":"LIST","child":{tuple}}}"#))).short(), "(integer?, varchar?)?[]");
+        of(&t(tuple)).check().unwrap();
         assert_eq!(of(&t(r#"{"id":"UNION","fields":[{"name":"num","type":{"id":"INTEGER"}},{"name":"str","type":{"id":"VARCHAR"}}]}"#)).short(), "union<num: integer? | str: varchar?>");
         assert_eq!(of(&t(r#"{"id":"MAP","key":{"id":"VARCHAR"},"value":{"id":"INTEGER"}}"#)).short(), "map(varchar => integer?)");
         for id in ["BOOLEAN", "BIGNUM", "FLOAT", "DOUBLE", "DATE", "TIME", "TIME_NS", "TIME_TZ", "TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMP_TZ", "TIMESTAMP_TZ_NS", "INTERVAL", "UUID", "BIT", "BLOB"] {

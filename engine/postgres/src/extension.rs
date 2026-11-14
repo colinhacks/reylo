@@ -84,7 +84,7 @@ struct Remote {
     #[serde(default)]
     unique: Vec<Vec<String>>,
     #[serde(default)]
-    order: Vec<reylo_engine_core::types::OrderField>,
+    order: Vec<reylo_engine_core::types::SortKey>,
     #[serde(default)]
     ordered: bool,
     #[serde(default)]

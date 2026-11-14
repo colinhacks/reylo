@@ -21,6 +21,7 @@ pub mod host;
 pub mod infer;
 pub mod jsonshape;
 pub mod levels;
+pub mod literals;
 pub mod pgtypes;
 pub mod postgres;
 mod raw;

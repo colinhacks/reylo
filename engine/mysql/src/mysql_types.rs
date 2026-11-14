@@ -3,7 +3,7 @@
 //! the type (`bigint`, `tinyint(1)`, `datetime`).
 
 use crate::api::MysqlColumn;
-use crate::types::{ArrayType, BytesType, Bounds, DateTimeType, DateType, DecimalType, DurationType, InstantType, IntegerType, Kind, Position, Size, TextType, Type, MICROSECOND};
+use crate::types::{ArrayType, BytesType, Bounds, DateTimeType, DateType, DecimalType, DurationType, InstantType, IntegerType, Kind, Slot, Size, TextType, Type, MICROSECOND};
 
 /// The protocol's flag for an UNSIGNED integer column.
 const UNSIGNED: u32 = 32;
@@ -31,7 +31,7 @@ pub(crate) fn enumeration(labels: Option<Vec<String>>) -> Type {
 /// MySQL's `SET`: each of its members once, one of its labels where they are known.
 pub(crate) fn set_of(labels: Option<Vec<String>>) -> Type {
     let member = labels.map_or_else(Type::text, Type::text_of);
-    Type::new(Kind::Array(ArrayType { distinct: true, ..ArrayType::of(Position::non_null(member)) })).named("set")
+    Type::new(Kind::Array(ArrayType { distinct: true, ..ArrayType::of(Slot::non_null(member)) })).named("set")
 }
 
 /// The labels of an `ENUM` or a `SET` column as `information_schema.columns` writes its
@@ -67,7 +67,7 @@ pub(crate) fn labels(column_type: &str) -> Option<Vec<String>> {
 
 /// MySQL's `BIT(n)`, a string of `n` bits: exactly `n` where the length is known.
 pub(crate) fn bits(length: Option<u32>) -> Type {
-    Type::new(Kind::Array(ArrayType { size: length.map(|n| Size::exact(n.into())), ..ArrayType::of(Position::non_null(Type::boolean())) })).named("bit")
+    Type::new(Kind::Array(ArrayType { size: length.map(|n| Size::exact(n.into())), ..ArrayType::of(Slot::non_null(Type::boolean())) })).named("bit")
 }
 
 /// A `DATETIME`: wall-clock time with no zone.
@@ -112,13 +112,13 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
         4 => Type::single().named("float"),
         5 => double(),
         0 | 246 => decimal(),
-        7 => Type::new(Kind::Instant(InstantType { tick: MICROSECOND.into(), zone: None, bounds: Bounds::between("1970-01-01T00:00:01Z", "2038-01-19T03:14:07.999999Z"), infinity: false })).named("timestamp"),
+        7 => Type::new(Kind::Instant(InstantType { tick: MICROSECOND.into(), bounds: Bounds::between("1970-01-01T00:00:01Z", "2038-01-19T03:14:07.999999Z"), infinity: false })).named("timestamp"),
         12 => datetime(),
         10 | 14 => date(),
         11 => time(),
         245 => Type::json().named("json"),
         // MySQL 9's VECTOR: 32-bit floats, none of them NULL.
-        242 => Type::array(Position::non_null(Type::single())).named("vector"),
+        242 => Type::array(Slot::non_null(Type::single())).named("vector"),
         16 => bits(length),
         249..=252 if charset == BINARY => Type::bytes().named("blob"),
         254 if charset == BINARY => Type::bytes().named("binary"),
@@ -138,15 +138,16 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
 /// fractional seconds. Only a column read straight from a table holds to them: MySQL reports a
 /// length and decimals for an expression too, which may be a display width rather than a bound
 /// on its values (`group_concat` under the session's `group_concat_max_len`, a placeholder's
-/// text), so the caller passes a table's column alone.
+/// text), so the caller passes a table's column alone, with the character set it stores its
+/// values in ([`character_set`]), which narrows its characters and says what a `TEXT`'s bytes are.
 ///
 ///   - `CHAR(n)` and `VARCHAR(n)` hold at most n code points: the protocol counts n characters
 ///     of the character set the column is sent in at its widest (`varchar(20)` sent as utf8mb4
 ///     is 80), and MySQL strips the spaces a `CHAR` pads with as it reads one, so neither is
 ///     exactly n.
 ///   - A `TEXT` holds at most its capacity in bytes (255, 65535, 16777215, 4294967295), so as
-///     many code points; `utf8` says the column stores UTF-8 (`utf8mb4`, `utf8mb3`), whose bytes
-///     are a client's too. Sent in another character set than it is stored in, a `TEXT` reports
+///     many code points, and as many bytes of the character set it stores. Sent in another
+///     character set than it is stored in, a `TEXT` reports
 ///     its capacity over its narrowest character times the widest of the one it is sent in, which
 ///     tells the four capacities apart whatever the two are.
 ///   - `BINARY(n)` is exactly n bytes, which MySQL pads with zero bytes and keeps; `VARBINARY(n)`
@@ -155,22 +156,19 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
 ///     is above 0, and the sign unless UNSIGNED.
 ///   - A time of p fractional digits ticks by 10^-p, and a `TIMESTAMP`'s latest value is cut to
 ///     them (`2038-01-19T03:14:07.999Z` at 3).
-pub(crate) fn declared(ty: Type, c: &MysqlColumn, utf8: bool) -> Type {
+pub(crate) fn declared(ty: Type, c: &MysqlColumn, charset: Option<&str>) -> Type {
     let (length, decimals) = (c.length, c.decimals.filter(|&d| d <= 30));
     let fraction = decimals.filter(|&d| d <= 6);
     let kind = match (ty.kind, ty.label.as_deref()) {
         (Kind::Text(text), Some("char" | "varchar")) => {
             let per = max_bytes(c.charset);
             let n = length.zip(per).filter(|(length, per)| length % per == 0).map(|(length, per)| u64::from(length / per));
-            Kind::Text(TextType { size: n.map(Size::at_most), ..text })
+            Kind::Text(stored_text(TextType { size: n.map(Size::at_most), ..text }, charset, None))
         }
-        (Kind::Text(text), Some("text")) => {
-            let size = length.and_then(capacity).map(|n| if utf8 { Size::bytes_at_most(n, "UTF-8") } else { Size::at_most(n) });
-            Kind::Text(TextType { size, ..text })
-        }
-        (Kind::Bytes(_), Some("binary")) => Kind::Bytes(BytesType { size: length.map(|n| Size::exact(n.into())) }),
-        (Kind::Bytes(_), Some("varbinary")) => Kind::Bytes(BytesType { size: length.map(|n| Size::at_most(n.into())) }),
-        (Kind::Bytes(_), Some("blob")) => Kind::Bytes(BytesType { size: length.and_then(capacity).map(Size::at_most) }),
+        (Kind::Text(text), Some("text")) => Kind::Text(stored_text(text, charset, length.and_then(capacity))),
+        (Kind::Bytes(_), Some("binary")) => Kind::Bytes(BytesType { size: length.map(|n| Size::exact(n.into())), ..BytesType::default() }),
+        (Kind::Bytes(_), Some("varbinary")) => Kind::Bytes(BytesType { size: length.map(|n| Size::at_most(n.into())), ..BytesType::default() }),
+        (Kind::Bytes(_), Some("blob")) => Kind::Bytes(BytesType { size: length.and_then(capacity).map(Size::at_most), ..BytesType::default() }),
         (Kind::Decimal(decimal), _) => {
             let signed = c.flags & UNSIGNED == 0;
             let precision = length.zip(decimals).and_then(|(length, scale)| length.checked_sub(u32::from(scale > 0) + u32::from(signed)).filter(|&p| p >= scale.max(1) && p <= 65).map(|p| (p, scale)));
@@ -226,6 +224,73 @@ fn capacity(length: u32) -> Option<u64> {
     }
 }
 
+/// A MySQL character set as the format names it: the character set its values are held in, how
+/// many bytes a character takes at most, and the code points it narrows them to beyond that set.
+/// `utf8mb3` and `ucs2` hold the Basic Multilingual Plane alone, in UTF-8 and UTF-16 bytes (a
+/// client reads a `ucs2` column's lone surrogate converted, never as it is); `latin1` is
+/// windows-1252 as the WHATWG table maps it, its five undefined bytes control characters. `None`
+/// for a set the format names no character set for (`armscii8`, `geostd8`, `keybcs2`, `macce`,
+/// `eucjpms`) and for `binary`.
+pub(crate) fn character_set(name: &str) -> Option<(&'static str, u32, Option<Vec<[u32; 2]>>)> {
+    let bmp = || Some(vec![[0, 0xFFFF]]);
+    Some(match name.to_ascii_lowercase().as_str() {
+        "utf8mb4" | "utf8mb4_bin" => ("UTF-8", 4, None),
+        "utf8mb3" | "utf8" => ("UTF-8", 3, bmp()),
+        "utf16" | "utf16le" => ("UTF-16", 4, None),
+        "ucs2" => ("UTF-16", 2, bmp()),
+        "utf32" => ("UTF-32", 4, None),
+        "gb18030" => ("GB18030", 4, None),
+        "ascii" => ("US-ASCII", 1, None),
+        "latin1" => ("windows-1252", 1, None),
+        "latin2" => ("ISO-8859-2", 1, None),
+        "latin5" => ("ISO-8859-9", 1, None),
+        "latin7" => ("ISO-8859-13", 1, None),
+        "greek" => ("ISO-8859-7", 1, None),
+        "hebrew" => ("ISO-8859-8", 1, None),
+        "cp1250" => ("windows-1250", 1, None),
+        "cp1251" => ("windows-1251", 1, None),
+        "cp1256" => ("windows-1256", 1, None),
+        "cp1257" => ("windows-1257", 1, None),
+        "cp850" => ("IBM850", 1, None),
+        "cp852" => ("IBM852", 1, None),
+        "cp866" => ("IBM866", 1, None),
+        "koi8r" => ("KOI8-R", 1, None),
+        "koi8u" => ("KOI8-U", 1, None),
+        "macroman" => ("macintosh", 1, None),
+        "tis620" => ("TIS-620", 1, None),
+        "dec8" => ("DEC-MCS", 1, None),
+        "hp8" => ("hp-roman8", 1, None),
+        "swe7" => ("SEN_850200_B", 1, None),
+        "big5" => ("Big5", 2, None),
+        "sjis" => ("Shift_JIS", 2, None),
+        "cp932" => ("Windows-31J", 2, None),
+        "ujis" => ("EUC-JP", 3, None),
+        "euckr" => ("EUC-KR", 2, None),
+        "gb2312" => ("GB2312", 2, None),
+        "gbk" => ("GBK", 2, None),
+        _ => return None,
+    })
+}
+
+/// Text stored in `charset`, holding a string column's capacity in bytes (`bytes`, a `TEXT`'s): its
+/// encoding where that says more than any Unicode text would (a Unicode encoding only beside a
+/// size it counts), its code points, and the capacity in its bytes, or in code points where each
+/// takes one byte or the set has no name the format gives it.
+fn stored_text(text: TextType, charset: Option<&str>, bytes: Option<u64>) -> TextType {
+    const UNICODE: &[&str] = &["UTF-8", "UTF-16", "UTF-32", "GB18030"];
+    let Some((encoding, width, code_points)) = charset.and_then(character_set) else {
+        return TextType { size: bytes.map(Size::at_most).or(text.size), ..text };
+    };
+    let size = match bytes {
+        Some(n) if width == 1 => Some(Size::at_most(n)),
+        Some(n) => Some(Size::bytes_at_most(n)),
+        None => text.size,
+    };
+    let counts_bytes = size.as_ref().is_some_and(|s| s.unit.is_some());
+    let encoding = (!UNICODE.contains(&encoding) || counts_bytes).then(|| encoding.to_string());
+    TextType { encoding, code_points, size, ..text }
+}
+
 /// The most bytes one character takes in the character set a collation number names, as MySQL
 /// 8.4.11 numbers them (`information_schema.collations`, with each one's `character_sets.maxlen`):
 /// what a string column's length is counted in. `None` for a number MySQL 8.4 does not give.
@@ -279,7 +344,7 @@ pub(crate) fn widened(ty: &Type, string: bool) -> Option<Type> {
 /// A JSON document of `content`, what a shape resolves to inside one: a document as it is, and
 /// anything else, an object, an array or a SQL value, the content of a document that holds it.
 pub(crate) fn document(content: Type) -> Type {
-    if content.is_json() { content } else { Type::json_of(Position::non_null(content)) }
+    if content.is_json() { content } else { Type::json_of(Slot::non_null(content)) }
 }
 
 /// What a document holds, as a value inside another document: the content a statement built, or
@@ -309,8 +374,8 @@ mod tests {
         assert_eq!(of(13, 0, 0, None).short(), "year(0..2155)");
         assert_eq!(of(254, ENUM, 255, None).short(), "enum");
         assert_eq!(of(254, SET, 255, None).short(), "set{text}");
-        assert_eq!(serde_json::to_value(enumeration(labels("enum('x','y')"))).unwrap(), serde_json::json!({"kind": "text", "enum": ["x", "y"], "label": "enum"}));
-        assert_eq!(serde_json::to_value(set_of(labels("set('a','b')"))).unwrap(), serde_json::json!({"kind": "array", "distinct": true, "element": {"type": {"kind": "text", "enum": ["a", "b"]}}, "label": "set"}));
+        assert_eq!(serde_json::to_value(enumeration(labels("enum('x','y')"))).unwrap(), serde_json::json!({"kind": "enum", "type": {"kind": "text"}, "values": ["x", "y"], "label": "enum"}));
+        assert_eq!(serde_json::to_value(set_of(labels("set('a','b')"))).unwrap(), serde_json::json!({"kind": "array", "distinct": true, "element": {"type": {"kind": "enum", "type": {"kind": "text"}, "values": ["a", "b"]}}, "label": "set"}));
         assert_eq!(of(253, 0, BINARY, None).short(), "varbinary");
         assert_eq!(of(16, 0, 0, Some(7)).short(), "bit(boolean[7])");
         assert_eq!(unflagged(of(1, UNSIGNED, 0, Some(1))).short(), "tinyint");
@@ -327,34 +392,44 @@ mod tests {
     #[test]
     fn a_tables_column_is_narrowed_by_its_definition() {
         let column = |r#type: u32, flags: u32, charset: u32, length: u32, decimals: u32| MysqlColumn { name: "c".into(), r#type, flags, charset, length: Some(length), decimals: Some(decimals), schema: Some("app".into()), org_table: Some("t".into()), org_name: Some("c".into()) };
-        let typed = |c: MysqlColumn, utf8: bool| serde_json::to_value(declared(of(c.r#type, c.flags, c.charset, c.length), &c, utf8)).unwrap();
+        let typed = |c: MysqlColumn, charset: Option<&str>| serde_json::to_value(declared(of(c.r#type, c.flags, c.charset, c.length), &c, charset)).unwrap();
+        let (mb4, none) = (Some("utf8mb4"), None);
         // varchar(20) and char(5), whatever character set they are stored in; utf8mb3 and latin1 sent as themselves.
-        assert_eq!(typed(column(253, 0, 255, 80, 0), false), serde_json::json!({"kind": "text", "size": {"max": 20}, "label": "varchar"}));
-        assert_eq!(typed(column(254, 0, 255, 20, 0), false), serde_json::json!({"kind": "text", "size": {"max": 5}, "label": "char"}));
-        assert_eq!(typed(column(253, 0, 33, 60, 0), false)["size"], serde_json::json!({"max": 20}));
-        assert_eq!(typed(column(253, 0, 8, 20, 0), false)["size"], serde_json::json!({"max": 20}));
+        assert_eq!(typed(column(253, 0, 255, 80, 0), mb4), serde_json::json!({"kind": "text", "size": {"max": 20}, "label": "varchar"}));
+        assert_eq!(typed(column(254, 0, 255, 20, 0), mb4), serde_json::json!({"kind": "text", "size": {"max": 5}, "label": "char"}));
+        assert_eq!(typed(column(253, 0, 33, 60, 0), none)["size"], serde_json::json!({"max": 20}));
+        assert_eq!(typed(column(253, 0, 8, 20, 0), none)["size"], serde_json::json!({"max": 20}));
+        // The character set a column stores names the characters it holds: ascii and latin1 by
+        // their character sets, utf8mb3 by its code points, and a set the format names none for not at all.
+        assert_eq!(typed(column(253, 0, 255, 80, 0), Some("ascii")), serde_json::json!({"kind": "text", "encoding": "US-ASCII", "size": {"max": 20}, "label": "varchar"}));
+        assert_eq!(typed(column(253, 0, 255, 80, 0), Some("latin1"))["encoding"], "windows-1252");
+        assert_eq!(typed(column(253, 0, 255, 80, 0), Some("utf8mb3")), serde_json::json!({"kind": "text", "code_points": [[0, 65535]], "size": {"max": 20}, "label": "varchar"}));
+        assert_eq!(typed(column(253, 0, 255, 80, 0), Some("armscii8")), typed(column(253, 0, 255, 80, 0), mb4));
         // A length no character set's width divides, or a character set MySQL does not number, says nothing.
-        assert_eq!(typed(column(253, 0, 255, 81, 0), false).get("size"), None);
-        assert_eq!(typed(column(253, 0, 2047, 80, 0), false).get("size"), None);
-        // TINYTEXT, TEXT, MEDIUMTEXT and LONGTEXT: bytes where the column stores UTF-8, else code points.
-        assert_eq!(typed(column(252, 16, 255, 262_140, 0), true), serde_json::json!({"kind": "text", "size": {"unit": "byte", "encoding": "UTF-8", "max": 65535}, "label": "text"}));
-        assert_eq!(typed(column(252, 16, 255, 262_140, 0), false)["size"], serde_json::json!({"max": 65535}));
-        assert_eq!(typed(column(252, 16, 255, 1020, 0), true)["size"]["max"], 255);
-        assert_eq!(typed(column(252, 16, 255, 67_108_860, 0), true)["size"]["max"], 16_777_215);
-        assert_eq!(typed(column(252, 16, 255, u32::MAX, 0), false)["size"]["max"], 4_294_967_295u64);
+        assert_eq!(typed(column(253, 0, 255, 81, 0), mb4).get("size"), None);
+        assert_eq!(typed(column(253, 0, 2047, 80, 0), mb4).get("size"), None);
+        // TINYTEXT, TEXT, MEDIUMTEXT and LONGTEXT: bytes of the character set the column stores,
+        // which a single-byte set counts in characters too, and code points where it is unknown.
+        assert_eq!(typed(column(252, 16, 255, 262_140, 0), mb4), serde_json::json!({"kind": "text", "encoding": "UTF-8", "size": {"unit": "byte", "max": 65535}, "label": "text"}));
+        assert_eq!(typed(column(252, 16, 255, 262_140, 0), Some("utf8mb3")), serde_json::json!({"kind": "text", "encoding": "UTF-8", "code_points": [[0, 65535]], "size": {"unit": "byte", "max": 65535}, "label": "text"}));
+        assert_eq!(typed(column(252, 16, 255, 262_140, 0), Some("latin1")), serde_json::json!({"kind": "text", "encoding": "windows-1252", "size": {"max": 65535}, "label": "text"}));
+        assert_eq!(typed(column(252, 16, 255, 262_140, 0), none)["size"], serde_json::json!({"max": 65535}));
+        assert_eq!(typed(column(252, 16, 255, 1020, 0), mb4)["size"]["max"], 255);
+        assert_eq!(typed(column(252, 16, 255, 67_108_860, 0), mb4)["size"]["max"], 16_777_215);
+        assert_eq!(typed(column(252, 16, 255, u32::MAX, 0), none)["size"]["max"], 4_294_967_295u64);
         // A utf16 or utf32 TEXT sent as utf8mb4, and a TEXT sent as latin1.
-        assert_eq!(typed(column(252, 16, 255, 131_068, 0), false)["size"]["max"], 65535);
-        assert_eq!(typed(column(252, 16, 255, 65_532, 0), false)["size"]["max"], 65535);
-        assert_eq!(typed(column(252, 16, 8, 65_535, 0), false)["size"]["max"], 65535);
+        assert_eq!(typed(column(252, 16, 255, 131_068, 0), Some("utf16")), serde_json::json!({"kind": "text", "encoding": "UTF-16", "size": {"unit": "byte", "max": 65535}, "label": "text"}));
+        assert_eq!(typed(column(252, 16, 255, 65_532, 0), Some("utf32"))["size"]["max"], 65535);
+        assert_eq!(typed(column(252, 16, 8, 65_535, 0), Some("latin1"))["size"]["max"], 65535);
         // binary(3), varbinary(8), and the four BLOBs.
-        assert_eq!(typed(column(254, 128, BINARY, 3, 0), false), serde_json::json!({"kind": "bytes", "size": {"exact": 3}, "label": "binary"}));
-        assert_eq!(typed(column(253, 128, BINARY, 8, 0), false), serde_json::json!({"kind": "bytes", "size": {"max": 8}, "label": "varbinary"}));
+        assert_eq!(typed(column(254, 128, BINARY, 3, 0), None), serde_json::json!({"kind": "bytes", "size": {"exact": 3}, "label": "binary"}));
+        assert_eq!(typed(column(253, 128, BINARY, 8, 0), None), serde_json::json!({"kind": "bytes", "size": {"max": 8}, "label": "varbinary"}));
         for (length, max) in [(255, 255u64), (65_535, 65_535), (16_777_215, 16_777_215), (u32::MAX, 4_294_967_295)] {
-            assert_eq!(typed(column(252, 144, BINARY, length, 0), false)["size"], serde_json::json!({"max": max}));
+            assert_eq!(typed(column(252, 144, BINARY, length, 0), None)["size"], serde_json::json!({"max": max}));
         }
         // decimal(10,2), decimal(5,5), decimal(65,30), decimal(6,3) unsigned and decimal(1) unsigned.
         let decimal = |length: u32, decimals: u32, flags: u32| {
-            let t = typed(column(246, flags, BINARY, length, decimals), false);
+            let t = typed(column(246, flags, BINARY, length, decimals), None);
             (t["precision"].as_u64(), t["min_scale"].as_i64(), t["max_scale"].as_i64())
         };
         assert_eq!(decimal(12, 2, 0), (Some(10), Some(2), Some(2)));
@@ -362,24 +437,24 @@ mod tests {
         assert_eq!(decimal(67, 30, 0), (Some(65), Some(30), Some(30)));
         assert_eq!(decimal(7, 3, UNSIGNED), (Some(6), Some(3), Some(3)));
         assert_eq!(decimal(1, 0, UNSIGNED), (Some(1), Some(0), Some(0)));
-        assert_eq!(typed(column(246, 0, BINARY, 12, 2), false), serde_json::json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "label": "decimal"}));
+        assert_eq!(typed(column(246, 0, BINARY, 12, 2), None), serde_json::json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "label": "decimal"}));
         // datetime(3), datetime, timestamp(3), timestamp(0) and time(4).
-        assert_eq!(typed(column(12, 128, BINARY, 23, 3), false), serde_json::json!({"kind": "datetime", "tick": "1/1000", "label": "datetime"}));
-        assert_eq!(typed(column(12, 128, BINARY, 19, 0), false)["tick"], "1");
-        assert_eq!(typed(column(7, 128, BINARY, 23, 3), false), serde_json::json!({"kind": "instant", "tick": "1/1000", "min": "1970-01-01T00:00:01Z", "max": "2038-01-19T03:14:07.999Z", "label": "timestamp"}));
-        assert_eq!(typed(column(7, 128, BINARY, 19, 0), false)["max"], "2038-01-19T03:14:07Z");
-        assert_eq!(typed(column(11, 128, BINARY, 15, 4), false), serde_json::json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/10000", "label": "time"}));
+        assert_eq!(typed(column(12, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "datetime", "tick": "1/1000", "label": "datetime"}));
+        assert_eq!(typed(column(12, 128, BINARY, 19, 0), None)["tick"], "1");
+        assert_eq!(typed(column(7, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "instant", "tick": "1/1000", "min": "1970-01-01T00:00:01Z", "max": "2038-01-19T03:14:07.999Z", "label": "timestamp"}));
+        assert_eq!(typed(column(7, 128, BINARY, 19, 0), None)["max"], "2038-01-19T03:14:07Z");
+        assert_eq!(typed(column(11, 128, BINARY, 15, 4), None), serde_json::json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/10000", "label": "time"}));
         // A type that takes no modifier, an ENUM, a SET and a FLOAT(7,2) among them, keeps its type.
         for c in [column(3, 0, BINARY, 11, 0), column(254, 256, 255, 8, 0), column(254, 2048, 255, 16, 0), column(4, 0, BINARY, 7, 2), column(10, 128, BINARY, 10, 0)] {
-            assert_eq!(declared(of(c.r#type, c.flags, c.charset, c.length), &c, false), of(c.r#type, c.flags, c.charset, c.length));
+            assert_eq!(declared(of(c.r#type, c.flags, c.charset, c.length), &c, None), of(c.r#type, c.flags, c.charset, c.length));
         }
         // A host that sends no length or no decimals leaves the type as the protocol's code says it.
         let bare = MysqlColumn { length: None, decimals: None, ..column(246, 0, BINARY, 12, 2) };
-        assert_eq!(declared(decimal_type(), &bare, false), decimal_type());
+        assert_eq!(declared(decimal_type(), &bare, None), decimal_type());
         let bare = MysqlColumn { length: None, decimals: None, ..column(12, 0, BINARY, 23, 3) };
-        assert_eq!(declared(datetime(), &bare, false), datetime());
+        assert_eq!(declared(datetime(), &bare, None), datetime());
         for c in [column(253, 0, 255, 80, 0), column(252, 16, 255, 262_140, 0), column(254, 128, BINARY, 3, 0), column(246, 0, BINARY, 12, 2), column(7, 0, BINARY, 23, 3), column(11, 0, BINARY, 15, 4)] {
-            declared(of(c.r#type, c.flags, c.charset, c.length), &c, true).check().unwrap();
+            declared(of(c.r#type, c.flags, c.charset, c.length), &c, Some("utf8mb4")).check().unwrap();
         }
     }
 

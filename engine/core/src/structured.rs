@@ -58,7 +58,7 @@ use crate::api::{Analysis, Describe, Diagnostic, Scope};
 use crate::dialect::Dialect;
 use crate::host::{as_bool, as_str, Host, Lazy};
 use crate::lex;
-use crate::types::{Field, Kind, Position, Type};
+use crate::types::{Field, Kind, Slot, Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -1787,8 +1787,8 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
         }
         if let Some(p) = analysis.params.iter_mut().find(|p| p.name == f.name) {
             p.members = f.members.iter().map(|m| crate::api::Member { written: m.ty.clone(), schema: m.schema.clone() }).collect();
-            let row = Type::record(fields);
-            p.ty = if f.one { row } else { Type::array(Position::non_null(row)) };
+            let row = Type::structure(fields);
+            p.ty = if f.one { row } else { Type::array(Slot::non_null(row)) };
             p.nullable = false;
         }
     }
@@ -2234,7 +2234,7 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
             // unquoted, a domain's by its base type, as the column's base is.
             let base = match (&field.ty.kind, &field.ty.label) {
                 (Kind::Json(_), _) => m.ty.clone(),
-                (Kind::Record(_) | Kind::Unknown, _) | (_, None) => return None,
+                (Kind::Struct(_) | Kind::Unknown, _) | (_, None) => return None,
                 (_, Some(name)) => split_name(domains.get(name).unwrap_or(name)).1,
             };
             (base != c.base || modifiers(&m.ty) != modifiers(&c.written)).then(|| advice.to_string())

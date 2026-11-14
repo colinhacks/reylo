@@ -206,12 +206,3 @@ export function languageServer(root: string) {
   };
   return { request, notify, close };
 }
-
-/** A descriptor's result read as rows: each column a field of its record, and how many rows its size says, as the analysis words it. */
-export function rowsOf(result: { kind: string; size?: { exact?: number; max?: number }; element?: { type: unknown } }): { columns: Field[]; cardinality: "one" | "at_most_one" | "many" | "none" } {
-  const record = result.element?.type as { kind?: string; fields?: Field[] } | undefined;
-  if (result.kind !== "array" || record?.kind !== "record") throw new Error(`a result is an array of records, not ${JSON.stringify(result)}`);
-  const size = result.size;
-  const cardinality = size?.exact === 1 ? "one" : size?.exact === 0 ? "none" : size?.max === 1 ? "at_most_one" : "many";
-  return { columns: record.fields ?? [], cardinality };
-}

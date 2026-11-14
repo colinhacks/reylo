@@ -82,7 +82,7 @@ One per statement.
 | `kind` | What the statement does |
 | `comment` | The prose in comments before the statement |
 | `params` | Each parameter, in order: its `name`, its [`type`](/typedefs#types), and `nullable` and `optional` where they hold |
-| `result` | The rows, an [array](/typedefs#array) of records, its size how many |
+| `result` | The rows, a [table](/typedefs#table) of columns, and its cardinality |
 | `diagnostics` | What the database reports, each with a `message` and its `start` and `end` |
 
 The CLI adds `file`, the path the statement was read from.
@@ -104,18 +104,18 @@ A statement that doesn't parse has no `kind`.
 
 ### `result`
 
-The rows, as an array of records.
+The rows, as a table.
 
-Each field of the record is a column, and the array's `size` is how many rows the statement returns:
+Its `columns` are the statement's, in order, and its `cardinality` is how many rows the statement returns:
 
-| Size | Rows |
+| Cardinality | Rows |
 | --- | --- |
-| `{ "exact": 1 }` | Exactly one |
-| `{ "max": 1 }` | At most one |
-| None | Any number |
-| `{ "exact": 0 }` | None: a write without `RETURNING` |
+| `one` | Exactly one |
+| `at_most_one` | At most one |
+| `many` | Any number |
+| `none` | None: a write without `RETURNING` |
 
-Where rows can be more than one, the array's [`unique`](/typedefs#array) lists the columns no two rows share, and its `order` the columns the rows are sorted on.
+Where rows can be more than one, the table's [`unique`](/typedefs#table) lists the columns no two rows share, and its `order` the columns the rows are sorted on.
 
 ### `diagnostics`
 

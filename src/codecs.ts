@@ -107,9 +107,9 @@ function family(t: EngineType, dialect: Dialect): Family | undefined {
     case "timestamp":
       return "datetime";
     case "timestamptz":
-      return t.kind === "instant" && t.zone !== undefined ? undefined : "instant";
+      return t.kind === "zoned_datetime" ? undefined : "instant";
     case "text":
-      return t.kind === "time" && t.zone === undefined ? "time" : undefined;
+      return t.kind === "time" && !t.offset ? "time" : undefined;
     case "set":
       return "set";
     default:
@@ -145,11 +145,11 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
   if (leaf !== undefined) return leaf;
   switch (t.kind) {
     case "array": {
-      if (!columnKind(t, dialect).endsWith("[]") && !(param && t.element.type.kind === "record")) return undefined;
+      if (!columnKind(t, dialect).endsWith("[]") && !(param && t.element.type.kind === "struct")) return undefined;
       const element = planOf(t.element.type, dialect, codecs, param);
       return element === undefined ? undefined : { array: element };
     }
-    case "record": {
+    case "struct": {
       // A DuckDB struct, a Postgres row value and a structured parameter are objects of their fields.
       if (dialect !== "duckdb" && dialect !== "postgres" && !param) return undefined;
       const fields = Object.fromEntries(t.fields.flatMap((f) => {
@@ -169,7 +169,7 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
     }
     case "map": {
       if (dialect !== "duckdb") return undefined;
-      const key = planOf(t.key, dialect, codecs, param);
+      const key = planOf(t.key.type, dialect, codecs, param);
       const value = planOf(t.value.type, dialect, codecs, param);
       return key === undefined && value === undefined ? undefined : { entries: { ...(key === undefined ? {} : { key }), ...(value === undefined ? {} : { value }) } };
     }

@@ -4,7 +4,7 @@
 // type from a module's `inputs`.
 import type { Type } from "../spec/index.ts";
 
-export type { Alternative, ArrayType, Field, JsonType, Position, RecordType, TaggedUnionType, TupleType, Type, UnionType } from "../spec/index.ts";
+export type { Alternative, ArrayType, EnumType, Field, IntersectionType, JsonType, Slot, StructType, TableType, TaggedUnionType, TupleType, Type, UnionType } from "../spec/index.ts";
 
 /** A parameter's or a column's type as the engine writes it. */
 export type EngineType = Type;
@@ -57,14 +57,17 @@ export function membersOf(t: Type): readonly Type[] {
 export function withBases(t: Type, domains: Readonly<Record<string, string>> | undefined): Type {
   if (domains === undefined || !Object.keys(domains).length) return t;
   const named = "label" in t && t.label !== undefined && domains[t.label] !== undefined ? ({ ...t, label: domains[t.label] } as Type) : t;
+  const slot = <S extends { type: Type }>(s: S): S => ({ ...s, type: withBases(s.type, domains) });
   switch (named.kind) {
-    case "array": return { ...named, element: { ...named.element, type: withBases(named.element.type, domains) } };
-    case "record": return { ...named, fields: named.fields.map((f) => ({ ...f, type: withBases(f.type, domains) })), ...(named.extra && { extra: { ...named.extra, type: withBases(named.extra.type, domains) } }) };
-    case "tuple": return { ...named, elements: named.elements.map((e) => ({ ...e, type: withBases(e.type, domains) })) };
-    case "json": return named.content === undefined ? named : { ...named, content: { ...named.content, type: withBases(named.content.type, domains) } };
-    case "union": return { ...named, members: named.members.map((m) => withBases(m, domains)) };
-    case "tagged_union": return { ...named, alternatives: named.alternatives.map((a) => ({ ...a, type: withBases(a.type, domains) })) };
-    case "map": return { ...named, key: withBases(named.key, domains), value: { ...named.value, type: withBases(named.value.type, domains) } };
+    case "enum": return { ...named, type: withBases(named.type, domains) };
+    case "array": return { ...named, element: slot(named.element) };
+    case "struct": return { ...named, fields: named.fields.map(slot), ...(named.extra && { extra: slot(named.extra) }) };
+    case "table": return { ...named, columns: named.columns.map(slot) };
+    case "tuple": return { ...named, elements: named.elements.map(slot), ...(named.optional_elements && { optional_elements: named.optional_elements.map(slot) }), ...(named.rest && { rest: slot(named.rest) }) };
+    case "json": return named.content === undefined ? named : { ...named, content: slot(named.content) };
+    case "union": case "intersection": return { ...named, members: named.members.map((m) => withBases(m, domains)) };
+    case "tagged_union": return { ...named, alternatives: named.alternatives.map(slot) };
+    case "map": return { ...named, key: slot(named.key), value: slot(named.value) };
     case "range": case "multirange": return { ...named, subtype: withBases(named.subtype, domains) as typeof named.subtype };
     default: return named;
   }
@@ -84,20 +87,28 @@ export function nestsAnyDeep(t: Type): boolean {
   return (t as { [NESTS]?: true })[NESTS] === true;
 }
 
+/**
+ * A Postgres array type, by its name (`_int4`, `public._mood`), at its innermost level: the one a
+ * column holds, which Postgres lets hold any number of dimensions, where the format writes it flat.
+ */
+function postgresArray(t: Type): boolean {
+  return t.kind === "array" && bareName(t).startsWith("_") && t.element.type.kind !== "array";
+}
+
 function markNesting(t: Type): Type {
   switch (t.kind) {
     case "array": {
       const marked = { ...t, element: { ...t.element, type: markNesting(t.element.type) } };
-      return t.any_depth ? Object.assign(marked, { [NESTS]: true }) : marked;
+      return postgresArray(t) ? Object.assign(marked, { [NESTS]: true }) : marked;
     }
-    case "record": return { ...t, fields: t.fields.map((f) => ({ ...f, type: markNesting(f.type) })) };
+    case "struct": return { ...t, fields: t.fields.map((f) => ({ ...f, type: markNesting(f.type) })) };
     // A document a statement builds holds its arrays as the statement's columns do.
     case "json": return t.content === undefined ? t : { ...t, content: { ...t.content, type: markNesting(t.content.type) } };
     default: return t;
   }
 }
 
-/** The analysis with each array Postgres lets nest (`any_depth`) typed at any depth in its result, as `allow_nested_arrays: true` asks. */
+/** The analysis with each Postgres array typed at any depth in its result, as `allow_nested_arrays: true` asks: the format writes arrays flat, and Postgres lets a column's hold any number of dimensions. */
 export function analysisWithNestedArrays<A extends { columns: readonly { type: Type }[] }>(analysis: A): A {
   return { ...analysis, columns: analysis.columns.map((c) => ({ ...c, type: markNesting(c.type) })) };
 }

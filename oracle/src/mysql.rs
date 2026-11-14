@@ -69,7 +69,7 @@
 //! changes nothing else; a problem found there says so.
 
 use reylo_engine_core::types::{BytesType, DateTimeType, DecimalType, DurationType, InstantType, JsonType, Kind, Size, SizeUnit, TextType, Type};
-use crate::seed::{decimal_contradiction, length_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
+use crate::seed::{decimal_contradiction, length_contradiction, literal_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Statement, Value as My};
 use reylo_engine::clients::mysql_async::{message, quote};
@@ -1214,22 +1214,39 @@ fn type_contradiction(ty: &Value, code: u8, charset: u16) -> Option<String> {
     (!typed.contains(&returned)).then(|| format!("typed {} came back as {returned} (protocol type {code})", typed.join(" or ")))
 }
 
-/// Why a value a run returned contradicts the engine's type for its column, if it does: text or
-/// bytes of another length than the size says (text counted in the unit the size names, in the
-/// session's UTF-8), a DECIMAL of more digits than its precision or scale, or a time finer than
-/// its tick. The text protocol sends each value as its text, and the binary one a DATETIME, a
-/// TIMESTAMP or a TIME as its parts and anything else as bytes.
+/// Why a value a run returned contradicts the engine's type for its column, if it does: a value
+/// none of the labels or the literals its type lists, text or bytes of another length than the
+/// size says (text counted in the unit the size names, in the session's UTF-8), a DECIMAL of more
+/// digits than its precision or scale, or a time finer than its tick. The text protocol sends each
+/// value as its text, and the binary one a number as itself, a DATETIME, a TIMESTAMP or a TIME as
+/// its parts and anything else as bytes.
 fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
     let text = || match value {
         My::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
         _ => None,
     };
+    let number = match value {
+        My::Bytes(bytes) => std::str::from_utf8(bytes).ok().map(str::to_string),
+        My::Int(n) => Some(n.to_string()),
+        My::UInt(n) => Some(n.to_string()),
+        My::Float(f) => Some(f.to_string()),
+        My::Double(f) => Some(f.to_string()),
+        _ => None,
+    };
+    if let Some(shown) = &number {
+        let why = literal_contradiction(ty, shown);
+        if why.is_some() {
+            return why;
+        }
+    }
+    // An enum's values are of its type, whose size and precision hold them too.
+    let ty = ty.base();
     match (&ty.kind, value) {
         (Kind::Text(TextType { size: Some(size), .. }), My::Bytes(_)) => {
             let (n, unit) = text_length(size, text()?);
             length_contradiction(size, n, unit)
         }
-        (Kind::Bytes(BytesType { size: Some(size) }), My::Bytes(bytes)) => length_contradiction(size, bytes.len() as u64, "bytes"),
+        (Kind::Bytes(BytesType { size: Some(size), .. }), My::Bytes(bytes)) => length_contradiction(size, bytes.len() as u64, "bytes"),
         (Kind::Decimal(decimal), My::Bytes(_)) => decimal_contradiction(decimal, text()?),
         (Kind::DateTime(DateTimeType { tick, .. }) | Kind::Instant(InstantType { tick, .. }), My::Date(.., micros)) => micros_contradiction(tick, *micros),
         (Kind::Duration(DurationType { tick: Some(tick), .. }), My::Time(.., micros)) => micros_contradiction(tick, *micros),
@@ -1242,7 +1259,7 @@ fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
 fn text_length(size: &Size, text: &str) -> (u64, &'static str) {
     match size.unit {
         Some(SizeUnit::Byte) => (text.len() as u64, "bytes"),
-        Some(SizeUnit::Utf16Unit) => (text.encode_utf16().count() as u64, "UTF-16 units"),
+        Some(SizeUnit::CodeUnit) => (text.encode_utf16().count() as u64, "UTF-16 units"),
         None => (text.chars().count() as u64, "code points"),
     }
 }
@@ -1272,7 +1289,7 @@ fn scalar_contradiction(ty: &Type, json: &Value) -> Option<String> {
             let (n, unit) = text_length(size, text);
             length_contradiction(size, n, unit)
         }
-        (Kind::Bytes(BytesType { size: Some(size) }), Value::String(text)) => {
+        (Kind::Bytes(BytesType { size: Some(size), .. }), Value::String(text)) => {
             let encoded: String = text.strip_prefix("base64:")?.split_once(':')?.1.chars().filter(|c| !c.is_whitespace()).collect();
             let n = encoded.len() / 4 * 3 - encoded.chars().rev().take_while(|&c| c == '=').count();
             length_contradiction(size, n as u64, "bytes")
@@ -1316,7 +1333,7 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
         _ => "an object",
     };
     match &ty.kind {
-        Kind::Record(record) => {
+        Kind::Struct(record) => {
             let Some(object) = json.as_object() else { return Some(format!("holds {kind} at {at}, typed an object")) };
             for f in &record.fields {
                 let Some(value) = object.get(&f.name) else { return Some(format!("has no key {path}.{}", f.name)) };

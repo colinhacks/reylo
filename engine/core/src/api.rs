@@ -226,7 +226,7 @@ pub struct Analysis {
     pub unique: Vec<Vec<String>>,
     /// The columns of the result its ORDER BY sorts on, as far as its keys are such columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub order: Vec<types::OrderField>,
+    pub order: Vec<types::SortKey>,
     /// Whether the statement's ORDER BY orders its rows totally: no two rows of any result tie on
     /// every sort key, so the order is the same on every run. Only for a result that can hold more
     /// than one row, as `key` is.

@@ -2,7 +2,8 @@
 // each `<TypeDef>` card (lib/typedefs.ts) becomes the docs' card of labelled rows (`TypeDefCard`,
 // components/mdx.tsx), Types, Holds and Databases, its example types first held to the format's
 // JSON Schema, so that the build fails on one the format refuses; each `<Analyzed>` card the command
-// and the output `nub run capture-typedefs` captured for it; `<TypeDefsVersion />` the badge under the
+// and the output `nub run capture-typedefs` captured for it, or, for `format="types"`, a table of
+// each result column's type; `<TypeDefsVersion />` the badge under the
 // title, the format's stage and version from its JSON Schema, and the button to that schema; and
 // `<TypeDefsSpec />` its TypeScript, spec/index.ts, without its prose, so that the page restates
 // none of them by hand.
@@ -62,6 +63,28 @@ function renderType(card: TypeCard, valid: (value: unknown) => string | undefine
   card.node.children = rows;
 }
 
+/** A type as one line of JSON, spaced as the page's jsonc examples are: `{ "kind": "integer", "bits": 32 }`. */
+function oneLine(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(oneLine).join(', ')}]`;
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value);
+    return entries.length ? `{ ${entries.map(([k, v]) => `${JSON.stringify(k)}: ${oneLine(v)}`).join(', ')} }` : '{}';
+  }
+  return JSON.stringify(value);
+}
+
+/** A table of a statement's result columns, each by its name, the SQL type the card names it for, and its type. */
+function renderTypes(card: AnalyzedCard, json: string) {
+  const columns = (JSON.parse(json) as { result: { columns: { name: string; type: unknown }[] } }).result.columns;
+  const cell = (children: MdNode[]): MdNode => ({ type: 'tableCell', children });
+  const text = (value: string): MdNode => ({ type: 'text', value });
+  const header: MdNode = { type: 'tableRow', children: [cell([text('Type')]), cell([text('Reylo Type Defs')])] };
+  const rows = columns.map((c): MdNode => ({ type: 'tableRow', children: [cell([{ type: 'inlineCode', value: c.name }]), cell([{ type: 'inlineCode', value: oneLine(c.type) }])] }));
+  card.node.name = 'div';
+  card.node.attributes = [{ type: 'mdxJsxAttribute', name: 'className', value: 'typedef-types-table' }];
+  card.node.children = [{ type: 'table', align: [null, null], children: [header, ...rows] } as MdNode];
+}
+
 function renderAnalyzed(card: AnalyzedCard, output: string) {
   const command = `npx reylo analyze ${card.file}${card.format === 'json' ? ' --format json' : ''}`;
   let shown = output.trimEnd();
@@ -117,7 +140,8 @@ export function remarkTypedefs() {
       for (const card of analyzed) {
         const captured = captures[keyOf(card)];
         if (captured === undefined) throw new Error(`${page}:${card.line}: lib/${CAPTURES} holds no output for this <Analyzed> card; run \`nub run capture-typedefs\` in site/ (with the scratch databases running), then build again.`);
-        renderAnalyzed(card, captured[card.format]);
+        if (card.format === 'types') renderTypes(card, captured.json);
+        else renderAnalyzed(card, captured[card.format]);
       }
     }
     replace('TypeDefsVersion', () => {

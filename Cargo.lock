@@ -1711,6 +1711,7 @@ dependencies = [
  "futures-util",
  "libduckdb-sys",
  "mysql_async",
+ "regex",
  "reylo-engine",
  "reylo-engine-core",
  "rusqlite",

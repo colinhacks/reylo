@@ -1,29 +1,30 @@
-//! The type model every database's engine answers with: Reylo Type Defs (RTD), the type descriptor
-//! format of `spec/typedefs.schema.json`, as Rust types that serialize to exactly its JSON. A [`Type`] says
-//! which values a parameter or a column can hold, across databases: its `kind`, that kind's
-//! fields, and the database's name for it, its `label`; a [`Position`] says where a value stands and whether
-//! it may be null; a [`StatementDescriptor`] is what introspecting one statement returns.
+//! The type model every database's engine answers with: Reylo Type Defs (RTD), the type format of
+//! `spec/typedefs.schema.json`, as Rust types that serialize to exactly its JSON. A [`Type`] says
+//! which values a slot can hold: its `kind`, that kind's fields, and the source's name for it, its
+//! `label`; a [`Slot`] is where a type is used and says whether a value there may be null; a
+//! [`StatementDescriptor`] is what introspecting one statement returns.
 //!
 //! The spec is the reference for every kind, field and rule; the comments here only say how the
 //! Rust spells it. A flag is a `bool` written only when true, a value inside the format (a bound, a
-//! tick, a duration's maximum) is a `String` in its kind's canonical text, and a count (`bits`, a
-//! size, a precision, a scale) is a number. [`Type::check`] runs rule 7's validity checks.
+//! tick, a duration's maximum, an enum's values) is a `String` in its kind's canonical text, and a
+//! count (`bits`, a size, a precision, a scale) is a number. [`Type::check`] runs rule 7's
+//! validity checks.
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// A type: its kind, with that kind's fields, and what every type may carry, the database's name
-/// for it and the comment the database keeps on it.
+/// A type: its kind, with that kind's fields, and what every type may carry, the source's name
+/// for it and the comment the source keeps on it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Type {
     #[serde(flatten)]
     pub kind: Kind,
-    /// The database's name for the type, less the modifiers a field states (`numeric` for
-    /// `numeric(10,2)`), qualified where a schema defines it; absent on a type the statement builds.
+    /// The source's name for the type, less the modifiers a field states (`numeric` for
+    /// `numeric(10,2)`), qualified where a schema defines it; absent on a type the source builds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// `COMMENT ON TYPE` or `COMMENT ON DOMAIN`.
@@ -43,45 +44,44 @@ pub enum Kind {
     Text(TextType),
     Bytes(BytesType),
     Uuid(UuidType),
-    Array(ArrayType),
-    Record(RecordType),
-    Json(JsonType),
+    /// One of a fixed list of values of another kind: an enum's labels, a CHECK's list, a literal.
+    Enum(EnumType),
     Date(DateType),
     Time(TimeType),
     #[serde(rename = "datetime")]
     DateTime(DateTimeType),
     Instant(InstantType),
+    /// A moment and the zone it was written in.
+    #[serde(rename = "zoned_datetime")]
+    ZonedDateTime(ZonedDateTimeType),
     Duration(DurationType),
-    Union(UnionType),
+    Array(ArrayType),
+    Tuple(TupleType),
+    Struct(StructType),
     Map(MapType),
+    /// Rows of columns: a statement's result, or a table nested in a value.
+    Table(TableType),
+    Json(JsonType),
+    Union(UnionType),
+    /// Values of every member at once.
+    Intersection(UnionType),
+    /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
+    TaggedUnion(TaggedUnionType),
     Range(RangeType),
     Multirange(RangeType),
     Geometry(GeometryType),
     Xml(XmlType),
-    /// A type the database knows and the format does not structure; its `label` is all it says.
+    /// The value that is always null, in a nullable slot.
+    Null,
+    /// A type the source knows and the format does not structure; its `label` is all it says.
     Opaque,
     /// Nothing is known about the values.
     Unknown,
-    /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
-    /// Appended, as a new kind is, so the order of the kinds never changes.
-    TaggedUnion(TaggedUnionType),
-    /// A fixed number of values in order, each of its own type, with no names.
-    Tuple(TupleType),
 }
 
-/// A truth value; `enum` lists the only values where they are fewer than both.
+/// A truth value.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BooleanType {
-    /// The only values, `"true"` or `"false"`: one is a literal.
-    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
-    pub values: Option<Vec<String>>,
-}
-
-/// A fixed number of values in order, each of its own type, with no names.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct TupleType {
-    pub elements: Vec<Position>,
-}
+pub struct BooleanType {}
 
 /// Bounds on an ordered kind's finite values, each a value in its kind's canonical text. A side
 /// takes one of its two fields, and a whole-number kind only `min` and `max`.
@@ -109,14 +109,11 @@ impl Bounds {
 }
 
 /// How long a value is, in whole numbers of its kind's unit: `exact`, or `min`, `max` or both.
-/// Only valid Unicode text names a `unit` (code points when absent), and only a byte size an
-/// `encoding`.
+/// Only text names a `unit` (code points when absent), and only where it names its encoding.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Size {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<SizeUnit>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encoding: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,16 +131,17 @@ impl Size {
         Size { max: Some(n), ..Size::default() }
     }
 
-    /// At most `n` bytes in `encoding`.
-    pub fn bytes_at_most(n: u64, encoding: impl Into<String>) -> Size {
-        Size { unit: Some(SizeUnit::Byte), encoding: Some(encoding.into()), max: Some(n), ..Size::default() }
+    /// At most `n` bytes, in the encoding the text names.
+    pub fn bytes_at_most(n: u64) -> Size {
+        Size { unit: Some(SizeUnit::Byte), max: Some(n), ..Size::default() }
     }
 }
 
+/// What a text's size counts other than code points: the encoding's code units, or its bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SizeUnit {
-    Utf16Unit,
+    CodeUnit,
     Byte,
 }
 
@@ -157,9 +155,6 @@ pub struct IntegerType {
     pub bounds: Bounds,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiple_of: Option<String>,
-    /// The only values, as JSON Schema's `enum`.
-    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
-    pub values: Option<Vec<String>>,
 }
 
 /// An IEEE 754 binary float by its exponent and mantissa widths (the mantissa's without its
@@ -174,9 +169,6 @@ pub struct FloatType {
     pub infinity: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub nan: bool,
-    /// The only values, in canonical text: one is a literal.
-    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
-    pub values: Option<Vec<String>>,
 }
 
 /// An exact decimal: a coefficient of at most `precision` digits times 10^-scale, the scale from
@@ -197,115 +189,125 @@ pub struct DecimalType {
     pub nan: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiple_of: Option<String>,
-    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
-    pub values: Option<Vec<String>>,
 }
 
-/// Text, in one of three shapes by `ill_formed`: valid Unicode (absent), bytes meant as UTF-8 and
-/// never validated, or UTF-16 units that may hold a lone surrogate.
+/// The character sets a text's `encoding` names, by their IANA names (spec/README.md pins each to
+/// one mapping table), matched without regard to case.
+pub const CHARSETS: &[&str] = &[
+    "UTF-8", "UTF-16", "UTF-32", "CESU-8", "GB18030", "US-ASCII", "ISO-8859-1", "ISO-8859-2", "ISO-8859-3", "ISO-8859-4", "ISO-8859-5", "ISO-8859-6", "ISO-8859-7", "ISO-8859-8", "ISO-8859-9", "ISO-8859-10", "ISO-8859-13", "ISO-8859-14",
+    "ISO-8859-15", "ISO-8859-16", "windows-874", "windows-1250", "windows-1251", "windows-1252", "windows-1253", "windows-1254", "windows-1255", "windows-1256", "windows-1257", "windows-1258", "IBM437", "IBM850", "IBM852", "IBM866", "KOI8-R",
+    "KOI8-U", "macintosh", "TIS-620", "DEC-MCS", "hp-roman8", "SEN_850200_B", "Shift_JIS", "Windows-31J", "EUC-JP", "ISO-2022-JP", "EUC-KR", "GB2312", "GBK", "Big5", "Big5-HKSCS",
+];
+
+/// The encodings of [`CHARSETS`] that encode every Unicode character.
+const UNICODE_ENCODINGS: &[&str] = &["UTF-8", "UTF-16", "UTF-32", "CESU-8", "GB18030"];
+
+/// The greatest code point.
+pub const MAX_CODE_POINT: u32 = 0x10FFFF;
+
+/// Text: any valid Unicode text unless `encoding` names the character set its values are held in,
+/// `ill_formed` lets a value be any sequence of that set's code units, or `code_points` narrows the
+/// characters.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TextType {
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "ill_formed")]
-    pub ill_formed: Option<IllFormed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ill_formed: bool,
+    /// Inclusive ranges of code points every character falls in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_points: Option<Vec<[u32; 2]>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<Size>,
+    /// An I-Regexp (RFC 9485) every value matches whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pattern: Option<Pattern>,
-    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
-    pub values: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IllFormed {
-    Utf8,
-    Utf16,
-}
-
-/// `ill_formed: false` is valid Unicode, as an absent one is.
-fn ill_formed<'de, D: Deserializer<'de>>(d: D) -> Result<Option<IllFormed>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Written {
-        Flag(bool),
-        Shape(IllFormed),
-    }
-    match Option::<Written>::deserialize(d)? {
-        None | Some(Written::Flag(false)) => Ok(None),
-        Some(Written::Flag(true)) => Err(serde::de::Error::custom("ill_formed is false, \"utf8\" or \"utf16\"")),
-        Some(Written::Shape(shape)) => Ok(Some(shape)),
-    }
-}
-
-/// A pattern every value matches, in its own dialect.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Pattern {
-    pub dialect: PatternDialect,
-    pub source: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PatternDialect {
-    Postgres,
-    Mysql,
-    Posix,
-    Ecma,
-    Like,
-    Ilike,
+    pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BytesType {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<Size>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
 }
 
-/// A 128-bit identifier: any 128 bits, unless `version` names the RFC 9562 version every value has.
+/// A 128-bit identifier: any 128 bits, unless `versions` names the RFC 9562 versions its values have.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UuidType {
-    /// Each value is of RFC 9562's variant and has this version, from 1 to 8.
+    /// Each value is of RFC 9562's variant and has one of these versions, from 1 to 8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<u8>,
+    pub versions: Option<Vec<u8>>,
 }
 
-/// A sequence of `element`s; `any_depth` where an element may itself be an array of them. An
-/// array of records is rows: its size how many, `unique` the keys no two share, and `order` the
-/// fields they are sorted on.
+/// One of `values`, each a value of `ty` in its canonical text; one value is a literal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnumType {
+    #[serde(rename = "type")]
+    pub ty: Box<Type>,
+    pub values: Vec<String>,
+}
+
+/// A sequence of elements, each in the one `element` slot; flat, an element of an array kind
+/// being an array of its own.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArrayType {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<Size>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub any_depth: bool,
-    /// No two elements are equal: MySQL's `SET`.
+    /// No two elements are equal, by the source's own equality: a set, MySQL's `SET`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub distinct: bool,
-    /// For an array of records: each set of fields no two elements agree on all of, a null equal
-    /// to another null, and a table's primary key first where the rows hold it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unique: Vec<Vec<String>>,
-    /// For an array of records: the fields the elements are sorted on, in order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub order: Vec<OrderField>,
     /// Last, so that what an array says of itself reads before its elements.
-    pub element: Box<Position>,
+    pub element: Box<Slot>,
 }
 
 impl ArrayType {
-    /// An array of `element`, of any size and in any order.
-    pub fn of(element: Position) -> ArrayType {
-        ArrayType { element: Box::new(element), size: None, any_depth: false, distinct: false, unique: Vec::new(), order: Vec::new() }
+    /// An array of `element`, of any size.
+    pub fn of(element: Slot) -> ArrayType {
+        ArrayType { element: Box::new(element), size: None, distinct: false }
     }
 }
 
-/// Fields, in order, and with `extra`, any other key holding a value of its type.
+/// A sequence of values with no names: `elements` always there, then `optional_elements` that may be
+/// missing from the end, then any number in the `rest` slot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct RecordType {
-    pub fields: Vec<Field>,
-    /// Keys beyond the fields: an open object.
+pub struct TupleType {
+    pub elements: Vec<Slot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional_elements: Vec<Slot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra: Option<Box<Position>>,
+    pub rest: Option<Box<Slot>>,
+}
+
+/// Named fields, in order, and with `extra`, any other key holding a value in its slot.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StructType {
+    pub fields: Vec<Field>,
+    /// Keys beyond the fields: an open object. It says nothing of the named fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<Box<Slot>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapType {
+    pub key: Box<Slot>,
+    pub value: Box<Slot>,
+}
+
+/// Rows of `columns`, as many as `cardinality` says, unique on `unique` and sorted on `order`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TableType {
+    pub cardinality: Cardinality,
+    pub columns: Vec<Field>,
+    /// Each set of columns no two rows agree on all of, a null equal to another null, and a
+    /// table's primary key first where the rows hold it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique: Vec<Vec<String>>,
+    /// The columns the rows are sorted on, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<SortKey>,
 }
 
 /// A JSON value: what the statement built (`content`), a JSON Schema every value satisfies
@@ -313,7 +315,7 @@ pub struct RecordType {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct JsonType {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<Box<Position>>,
+    pub content: Option<Box<Slot>>,
     /// A JSON Schema every value satisfies, whose `$schema` names the draft it is read by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
@@ -331,8 +333,9 @@ pub struct DateType {
 pub struct TimeType {
     /// The smallest step, in seconds, in lowest terms: `"1/1000000"`.
     pub tick: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zone: Option<Zone>,
+    /// Each value keeps a UTC offset beside the time.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub offset: bool,
     #[serde(flatten)]
     pub bounds: Bounds,
 }
@@ -346,24 +349,27 @@ pub struct DateTimeType {
     pub infinity: bool,
 }
 
+/// A point on the timeline and nothing else.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct InstantType {
     pub tick: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zone: Option<Zone>,
     #[serde(flatten)]
     pub bounds: Bounds,
     #[serde(default, skip_serializing_if = "is_false")]
     pub infinity: bool,
 }
 
-/// What each value keeps besides the moment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Zone {
-    Offset,
-    Region,
-    RegionOrOffset,
+/// A point on the timeline and the zone it was written in, a region or a UTC offset.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ZonedDateTimeType {
+    pub tick: String,
+    /// Every value's zone is a UTC offset, never a region.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub offset_only: bool,
+    #[serde(flatten)]
+    pub bounds: Bounds,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub infinity: bool,
 }
 
 /// A length of time in the parts it has, each signed on its own: `max` writes each part (months,
@@ -378,7 +384,7 @@ pub struct DurationType {
     pub infinity: bool,
 }
 
-/// One of several types, each value one of them. Flat, its members in kind order ([`Type::union`]).
+/// A union's or an intersection's members: flat, at least two, in kind order ([`Type::union`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnionType {
     pub members: Vec<Type>,
@@ -391,7 +397,7 @@ pub struct TaggedUnionType {
     pub alternatives: Vec<Alternative>,
 }
 
-/// An alternative of a tagged union: its tag, unique in the type, and the value it holds.
+/// An alternative of a tagged union: its tag, unique in the type, and the slot of the value it holds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Alternative {
     pub tag: String,
@@ -402,15 +408,9 @@ pub struct Alternative {
 }
 
 impl Alternative {
-    pub fn position(&self) -> Position {
-        Position { ty: self.ty.clone(), nullable: self.nullable }
+    pub fn slot(&self) -> Slot {
+        Slot { ty: self.ty.clone(), nullable: self.nullable }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MapType {
-    pub key: Box<Type>,
-    pub value: Box<Position>,
 }
 
 /// A range, or a multirange, of an ordered `subtype`.
@@ -469,13 +469,13 @@ pub struct XmlType {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Positions
+// Slots
 // ---------------------------------------------------------------------------------------------
 
-/// Where a value stands: a record's field, an array's element, a map's value, or JSON content.
-/// Nullability lives here, never in a type.
+/// Where a type is used: a column, a parameter, a field, an element, a map's key or value, JSON
+/// content. Nullability lives here, never in a type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Position {
+pub struct Slot {
     #[serde(rename = "type")]
     pub ty: Type,
     /// The value may be null (inside JSON content, JSON null).
@@ -483,21 +483,21 @@ pub struct Position {
     pub nullable: bool,
 }
 
-impl Position {
-    pub fn new(ty: Type, nullable: bool) -> Position {
-        Position { ty, nullable }
+impl Slot {
+    pub fn new(ty: Type, nullable: bool) -> Slot {
+        Slot { ty, nullable }
     }
 
-    pub fn non_null(ty: Type) -> Position {
-        Position { ty, nullable: false }
+    pub fn non_null(ty: Type) -> Slot {
+        Slot { ty, nullable: false }
     }
 
-    pub fn nullable(ty: Type) -> Position {
-        Position { ty, nullable: true }
+    pub fn nullable(ty: Type) -> Slot {
+        Slot { ty, nullable: true }
     }
 }
 
-/// A record's field: a column of a row, a key of an object.
+/// A struct's field or a table's column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
@@ -521,8 +521,8 @@ impl Field {
         Field { name: name.into(), ty, nullable, optional: false, default: None, comment: None }
     }
 
-    pub fn position(&self) -> Position {
-        Position { ty: self.ty.clone(), nullable: self.nullable }
+    pub fn slot(&self) -> Slot {
+        Slot { ty: self.ty.clone(), nullable: self.nullable }
     }
 }
 
@@ -552,10 +552,10 @@ pub struct Param {
 /// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
 pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0.json";
 
-/// A field an array of records is sorted on.
+/// A column a table's rows are sorted on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OrderField {
-    pub field: String,
+pub struct SortKey {
+    pub column: String,
     /// Sorted from the highest value down.
     #[serde(default, skip_serializing_if = "is_false")]
     pub desc: bool,
@@ -563,7 +563,7 @@ pub struct OrderField {
     pub nulls: NullsOrder,
 }
 
-/// Where NULLs sort among a field's values.
+/// Where NULLs sort among a column's values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NullsOrder {
@@ -571,39 +571,32 @@ pub enum NullsOrder {
     Last,
 }
 
-/// What a statement returns: an array of records, a record per row, its size how many rows. It
-/// reads and writes as a [`Type`], and refuses any but an array of records, as the format does.
+/// What a statement returns: a table. It reads and writes as a [`Type`], and refuses any but a
+/// table, as the format does.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "Type", into = "Type")]
 pub struct ResultRows(Type);
 
 impl ResultRows {
-    /// The rows of `columns`, as many as `cardinality` says, unique on `unique` and sorted on `order`.
-    pub fn new(cardinality: Cardinality, columns: Vec<Field>, unique: Vec<Vec<String>>, order: Vec<OrderField>) -> ResultRows {
-        let size = match cardinality {
-            Cardinality::One => Some(Size::exact(1)),
-            Cardinality::AtMostOne => Some(Size::at_most(1)),
-            Cardinality::None => Some(Size::exact(0)),
-            Cardinality::Many => None,
-        };
-        let element = Position::non_null(Kind::Record(RecordType { fields: columns, extra: None }).into());
-        ResultRows(Kind::Array(ArrayType { size, unique, order, ..ArrayType::of(element) }).into())
+    /// The rows of `columns`, as many as `cardinality` says, unique on `unique` and sorted on
+    /// `order`, which a table holds only where it can hold more than one row.
+    pub fn new(cardinality: Cardinality, columns: Vec<Field>, unique: Vec<Vec<String>>, order: Vec<SortKey>) -> ResultRows {
+        let many = cardinality == Cardinality::Many;
+        let (unique, order) = if many { (unique, order) } else { (Vec::new(), Vec::new()) };
+        ResultRows(Kind::Table(TableType { cardinality, columns, unique, order }).into())
     }
 
-    /// The array the rows are.
-    pub fn array(&self) -> &ArrayType {
+    /// The table the rows are.
+    pub fn table(&self) -> &TableType {
         match &self.0.kind {
-            Kind::Array(array) => array,
-            _ => unreachable!("a result is an array"),
+            Kind::Table(table) => table,
+            _ => unreachable!("a result is a table"),
         }
     }
 
-    /// The columns, each a field of the rows' record.
+    /// The columns.
     pub fn columns(&self) -> &[Field] {
-        match &self.array().element.ty.kind {
-            Kind::Record(record) => &record.fields,
-            _ => unreachable!("a result's element is a record"),
-        }
+        &self.table().columns
     }
 }
 
@@ -612,8 +605,8 @@ impl TryFrom<Type> for ResultRows {
 
     fn try_from(ty: Type) -> Result<Self, String> {
         match &ty.kind {
-            Kind::Array(ArrayType { element, .. }) if matches!(element.ty.kind, Kind::Record(_)) => Ok(ResultRows(ty)),
-            other => Err(format!("a statement's result is an array of records, not {}", other.name())),
+            Kind::Table(_) => Ok(ResultRows(ty)),
+            other => Err(format!("a statement's result is a table, not {}", other.name())),
         }
     }
 }
@@ -689,7 +682,7 @@ impl StatementKind {
     }
 }
 
-/// How many rows the statement returns.
+/// How many rows a table holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cardinality {
@@ -750,24 +743,29 @@ impl Kind {
             Kind::Text(_) => 4,
             Kind::Bytes(_) => 5,
             Kind::Uuid(_) => 6,
-            Kind::Array(_) => 7,
-            Kind::Record(_) => 8,
-            Kind::Json(_) => 9,
-            Kind::Date(_) => 10,
-            Kind::Time(_) => 11,
-            Kind::DateTime(_) => 12,
-            Kind::Instant(_) => 13,
-            Kind::Duration(_) => 14,
-            Kind::Union(_) => 15,
+            Kind::Enum(_) => 7,
+            Kind::Date(_) => 8,
+            Kind::Time(_) => 9,
+            Kind::DateTime(_) => 10,
+            Kind::Instant(_) => 11,
+            Kind::ZonedDateTime(_) => 12,
+            Kind::Duration(_) => 13,
+            Kind::Array(_) => 14,
+            Kind::Tuple(_) => 15,
+            Kind::Struct(_) => 16,
             Kind::Map(_) => 17,
-            Kind::Range(_) => 18,
-            Kind::Multirange(_) => 19,
-            Kind::Geometry(_) => 20,
-            Kind::Xml(_) => 21,
-            Kind::Opaque => 22,
-            Kind::Unknown => 23,
-            Kind::TaggedUnion(_) => 24,
-            Kind::Tuple(_) => 25,
+            Kind::Table(_) => 18,
+            Kind::Json(_) => 19,
+            Kind::Union(_) => 20,
+            Kind::Intersection(_) => 21,
+            Kind::TaggedUnion(_) => 22,
+            Kind::Range(_) => 23,
+            Kind::Multirange(_) => 24,
+            Kind::Geometry(_) => 25,
+            Kind::Xml(_) => 26,
+            Kind::Null => 27,
+            Kind::Opaque => 28,
+            Kind::Unknown => 29,
         }
     }
 
@@ -781,25 +779,35 @@ impl Kind {
             Kind::Text(_) => "text",
             Kind::Bytes(_) => "bytes",
             Kind::Uuid(_) => "uuid",
-            Kind::Array(_) => "array",
-            Kind::Record(_) => "record",
-            Kind::Json(_) => "json",
+            Kind::Enum(_) => "enum",
             Kind::Date(_) => "date",
             Kind::Time(_) => "time",
             Kind::DateTime(_) => "datetime",
             Kind::Instant(_) => "instant",
+            Kind::ZonedDateTime(_) => "zoned_datetime",
             Kind::Duration(_) => "duration",
-            Kind::Union(_) => "union",
+            Kind::Array(_) => "array",
+            Kind::Tuple(_) => "tuple",
+            Kind::Struct(_) => "struct",
             Kind::Map(_) => "map",
+            Kind::Table(_) => "table",
+            Kind::Json(_) => "json",
+            Kind::Union(_) => "union",
+            Kind::Intersection(_) => "intersection",
+            Kind::TaggedUnion(_) => "tagged_union",
             Kind::Range(_) => "range",
             Kind::Multirange(_) => "multirange",
             Kind::Geometry(_) => "geometry",
             Kind::Xml(_) => "xml",
+            Kind::Null => "null",
             Kind::Opaque => "opaque",
             Kind::Unknown => "unknown",
-            Kind::TaggedUnion(_) => "tagged_union",
-            Kind::Tuple(_) => "tuple",
         }
+    }
+
+    /// Whether the format writes the kind's values as text, so that an enum may list them.
+    pub fn has_canonical_text(&self) -> bool {
+        matches!(self, Kind::Boolean(_) | Kind::Integer(_) | Kind::Float(_) | Kind::Decimal(_) | Kind::Text(_) | Kind::Bytes(_) | Kind::Uuid(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::ZonedDateTime(_) | Kind::Duration(_))
     }
 }
 
@@ -814,7 +822,7 @@ impl Type {
         kind.into()
     }
 
-    /// The same type under the database's name for it.
+    /// The same type under the source's name for it.
     pub fn named(mut self, name: impl Into<String>) -> Type {
         self.label = Some(name.into());
         self
@@ -857,9 +865,17 @@ impl Type {
         Kind::Text(TextType::default()).into()
     }
 
+    /// One of `values`, each a value of `ty`; an empty list is no enum, and `ty` itself.
+    pub fn one_of(ty: Type, values: Vec<String>) -> Type {
+        if values.is_empty() {
+            return ty;
+        }
+        Kind::Enum(EnumType { ty: Box::new(ty), values }).into()
+    }
+
     /// Text that is one of `values`.
     pub fn text_of(values: Vec<String>) -> Type {
-        Kind::Text(TextType { values: Some(values), ..TextType::default() }).into()
+        Type::one_of(Type::text(), values)
     }
 
     pub fn bytes() -> Type {
@@ -870,12 +886,12 @@ impl Type {
         Kind::Uuid(UuidType::default()).into()
     }
 
-    pub fn array(element: Position) -> Type {
+    pub fn array(element: Slot) -> Type {
         Kind::Array(ArrayType::of(element)).into()
     }
 
-    pub fn record(fields: Vec<Field>) -> Type {
-        Kind::Record(RecordType { fields, extra: None }).into()
+    pub fn structure(fields: Vec<Field>) -> Type {
+        Kind::Struct(StructType { fields, extra: None }).into()
     }
 
     /// Any JSON.
@@ -884,7 +900,7 @@ impl Type {
     }
 
     /// JSON the statement built, of `content`.
-    pub fn json_of(content: Position) -> Type {
+    pub fn json_of(content: Slot) -> Type {
         Kind::Json(JsonType { content: Some(Box::new(content)), schema: None }).into()
     }
 
@@ -929,13 +945,27 @@ impl Type {
         Kind::Unknown.into()
     }
 
+    /// The value that is always null; its slot is nullable.
+    pub fn null() -> Type {
+        Kind::Null.into()
+    }
+
     pub fn is_unknown(&self) -> bool {
         matches!(self.kind, Kind::Unknown)
     }
 
+    /// The type an enum's values are of, or the type itself.
+    pub fn base(&self) -> &Type {
+        match &self.kind {
+            Kind::Enum(e) => &e.ty,
+            _ => self,
+        }
+    }
+
     /// A union of `members` as rule 4 spells it: flat (a member that is an unnamed union gives its
     /// members), each member once, in kind order (members of one kind in the order given), and a
-    /// lone member itself. An empty union holds no value.
+    /// lone member itself. A union of none is the null kind, whose slot is nullable: the one value
+    /// a slot of no other type holds.
     pub fn union(members: Vec<Type>) -> Type {
         let mut flat: Vec<Type> = Vec::new();
         for member in members {
@@ -949,8 +979,10 @@ impl Type {
                 }
             }
         }
-        if flat.len() == 1 {
-            return flat.pop().expect("one member");
+        match flat.len() {
+            0 => return Type::null(),
+            1 => return flat.pop().expect("one member"),
+            _ => {}
         }
         flat.sort_by_key(|t| t.kind.rank());
         Kind::Union(UnionType { members: flat }).into()
@@ -974,24 +1006,28 @@ impl Type {
                 out.push(name.clone());
             }
         }
+        for inner in self.inner() {
+            inner.collect_names(out);
+        }
+    }
+
+    /// The types directly inside this one, in order: an enum's type, an array's element, a tuple's
+    /// elements, a struct's fields and extra, a map's key and value, a table's columns, JSON
+    /// content, the members of a union or an intersection, a tagged union's alternatives, and a
+    /// range's subtype.
+    pub fn inner(&self) -> Vec<&Type> {
         match &self.kind {
-            Kind::Array(a) => a.element.ty.collect_names(out),
-            Kind::Record(r) => {
-                r.fields.iter().for_each(|f| f.ty.collect_names(out));
-                if let Some(extra) = &r.extra {
-                    extra.ty.collect_names(out);
-                }
-            }
-            Kind::Tuple(t) => t.elements.iter().for_each(|e| e.ty.collect_names(out)),
-            Kind::Json(JsonType { content: Some(c), .. }) => c.ty.collect_names(out),
-            Kind::Union(u) => u.members.iter().for_each(|m| m.collect_names(out)),
-            Kind::TaggedUnion(t) => t.alternatives.iter().for_each(|a| a.ty.collect_names(out)),
-            Kind::Map(m) => {
-                m.key.collect_names(out);
-                m.value.ty.collect_names(out);
-            }
-            Kind::Range(r) | Kind::Multirange(r) => r.subtype.collect_names(out),
-            _ => {}
+            Kind::Enum(e) => vec![&e.ty],
+            Kind::Array(a) => vec![&a.element.ty],
+            Kind::Tuple(t) => t.elements.iter().chain(&t.optional_elements).chain(t.rest.as_deref()).map(|s| &s.ty).collect(),
+            Kind::Struct(s) => s.fields.iter().map(|f| &f.ty).chain(s.extra.as_deref().map(|e| &e.ty)).collect(),
+            Kind::Map(m) => vec![&m.key.ty, &m.value.ty],
+            Kind::Table(t) => t.columns.iter().map(|c| &c.ty).collect(),
+            Kind::Json(JsonType { content: Some(c), .. }) => vec![&c.ty],
+            Kind::Union(u) | Kind::Intersection(u) => u.members.iter().collect(),
+            Kind::TaggedUnion(t) => t.alternatives.iter().map(|a| &a.ty).collect(),
+            Kind::Range(r) | Kind::Multirange(r) => vec![&r.subtype],
+            _ => Vec::new(),
         }
     }
 
@@ -1001,17 +1037,21 @@ impl Type {
         if let Some(name) = self.label.as_deref().and_then(rename) {
             self.label = Some(name);
         }
-        let position = |p: Position| Position { ty: p.ty.renamed(rename), ..p };
+        let slot = |s: Slot| Slot { ty: s.ty.renamed(rename), ..s };
+        let field = |f: Field| Field { ty: f.ty.renamed(rename), ..f };
         self.kind = match self.kind {
-            Kind::Array(a) => Kind::Array(ArrayType { element: Box::new(position(*a.element)), ..a }),
-            Kind::Record(r) => Kind::Record(RecordType { fields: r.fields.into_iter().map(|f| Field { ty: f.ty.renamed(rename), ..f }).collect(), extra: r.extra.map(|e| Box::new(position(*e))) }),
-            Kind::Tuple(t) => Kind::Tuple(TupleType { elements: t.elements.into_iter().map(position).collect() }),
-            Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(position(*c))), schema }),
+            Kind::Enum(e) => Kind::Enum(EnumType { ty: Box::new(e.ty.renamed(rename)), ..e }),
+            Kind::Array(a) => Kind::Array(ArrayType { element: Box::new(slot(*a.element)), ..a }),
+            Kind::Tuple(t) => Kind::Tuple(TupleType { elements: t.elements.into_iter().map(slot).collect(), optional_elements: t.optional_elements.into_iter().map(slot).collect(), rest: t.rest.map(|r| Box::new(slot(*r))) }),
+            Kind::Struct(s) => Kind::Struct(StructType { fields: s.fields.into_iter().map(field).collect(), extra: s.extra.map(|e| Box::new(slot(*e))) }),
+            Kind::Map(m) => Kind::Map(MapType { key: Box::new(slot(*m.key)), value: Box::new(slot(*m.value)) }),
+            Kind::Table(t) => Kind::Table(TableType { columns: t.columns.into_iter().map(field).collect(), ..t }),
+            Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(slot(*c))), schema }),
             Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect() }),
+            Kind::Intersection(u) => Kind::Intersection(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect() }),
             Kind::TaggedUnion(t) => Kind::TaggedUnion(TaggedUnionType { alternatives: t.alternatives.into_iter().map(|a| Alternative { ty: a.ty.renamed(rename), ..a }).collect() }),
-            Kind::Map(m) => Kind::Map(MapType { key: Box::new(m.key.renamed(rename)), value: Box::new(position(*m.value)), ..m }),
-            Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
-            Kind::Multirange(r) => Kind::Multirange(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
+            Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)) }),
+            Kind::Multirange(r) => Kind::Multirange(RangeType { subtype: Box::new(r.subtype.renamed(rename)) }),
             other => other,
         };
         self
@@ -1033,14 +1073,15 @@ impl Type {
 impl Type {
     /// The type in one short line, as the oracle's `expected.txt` and the engines' tests print it:
     /// its name (else its kind), then what narrows it in parentheses: an enum's values
-    /// (`varchar('a' | 'b')`), a size (`varchar(≤255)`, `bytes(=6)`), a decimal's precision and
-    /// scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`) and divisor
-    /// (`int4(×5)`), a uuid's version (`uuid(v7)`). An array is its element and
-    /// `[]`, `?` after an element that may be null (`text?[]`); a record is its fields
-    /// (`point{ x: float8, y: float8 }`, `?` after a field that may be null and before one that
-    /// may be absent); JSON a statement built is its content after its name (`json { id: int4 }`),
-    /// and JSON a schema holds to the schema (`json {"type":"string"}`); a union is its members
-    /// between `|`.
+    /// (`varchar('a' | 'b')`, `int4(1)`), a size (`varchar(≤255)`, `bytes(=6)`), a decimal's
+    /// precision and scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`)
+    /// and divisor (`int4(×5)`), a uuid's versions (`uuid(v7)`), a text's encoding and code points.
+    /// An array is its element and `[]`, `?` after an element that may be null (`text?[]`), and a
+    /// set its element in braces (`set{text}`); a struct is its fields (`point{ x: float8, y: float8 }`,
+    /// `?` after a field that may be null and before one that may be absent); a table its cardinality
+    /// and columns (`many{ id: int8 }`); JSON a statement built is its content after its name
+    /// (`json { id: int4 }`), and JSON a schema holds to the schema; a union is its members between `|`,
+    /// an intersection between `&`.
     pub fn short(&self) -> String {
         let label = || self.label.clone().unwrap_or_else(|| self.kind.name().to_string());
         let with = |facts: Vec<String>| if facts.is_empty() { label() } else { format!("{}({})", label(), facts.join(", ")) };
@@ -1051,9 +1092,6 @@ impl Type {
                 let mut facts = Vec::new();
                 facts.extend(short_bounds(&i.bounds));
                 facts.extend(i.multiple_of.as_ref().map(|m| format!("×{m}")));
-                if let Some(values) = &i.values {
-                    facts.push(values.join(" | "));
-                }
                 if facts.is_empty() { label } else { format!("{label}({})", facts.join(", ")) }
             }
             Kind::Float(f) if self.label.is_none() => format!("float({},{})", f.exponent_bits, f.mantissa_bits),
@@ -1070,23 +1108,42 @@ impl Type {
             }
             Kind::Text(t) => {
                 let mut facts = size(&t.size);
-                if let Some(values) = &t.values {
-                    facts.push(values.iter().map(|v| format!("'{v}'")).collect::<Vec<_>>().join(" | "));
+                facts.extend(t.encoding.clone());
+                if t.ill_formed {
+                    facts.push("ill-formed".into());
                 }
-                if let Some(p) = &t.pattern {
-                    facts.push(format!("{:?} {}", p.dialect, p.source).to_ascii_lowercase());
+                // Every character but NUL, which every Postgres text is, reads as `¬NUL`.
+                match t.code_points.as_deref() {
+                    Some([[1, MAX_CODE_POINT]]) => facts.push("¬NUL".into()),
+                    Some(points) => facts.push(points.iter().map(|[lo, hi]| format!("U+{lo:04X}..U+{hi:04X}")).collect::<Vec<_>>().join(" ")),
+                    None => {}
                 }
-                if let Some(shape) = t.ill_formed {
-                    facts.push(format!("{shape:?}").to_ascii_lowercase());
-                }
+                facts.extend(t.pattern.as_ref().map(|p| format!("/{p}/")));
+                facts.extend(t.media_type.clone());
                 with(facts)
             }
-            Kind::Bytes(b) => with(size(&b.size)),
-            Kind::Uuid(u) => with(u.version.map(|v| format!("v{v}")).into_iter().collect()),
-            Kind::Array(a) if a.distinct => format!("{}{{{}}}", label(), position_short(&a.element)),
-            Kind::Boolean(BooleanType { values: Some(values) }) => format!("{}({})", label(), values.join(" | ")),
+            Kind::Bytes(b) => with(size(&b.size).into_iter().chain(b.media_type.clone()).collect()),
+            Kind::Uuid(u) => with(u.versions.iter().flatten().map(|v| format!("v{v}")).collect()),
+            Kind::Enum(e) => {
+                let quoted = matches!(e.ty.kind, Kind::Text(_));
+                let values = e.values.iter().map(|v| if quoted { format!("'{v}'") } else { v.clone() }).collect::<Vec<_>>().join(" | ");
+                let base = e.ty.short();
+                let base = match &self.label {
+                    // The enum's own name stands for its base's.
+                    Some(name) => match base.find('(') {
+                        Some(at) => format!("{name}{}", &base[at..]),
+                        None => name.clone(),
+                    },
+                    None => base,
+                };
+                match base.strip_suffix(')') {
+                    Some(open) if base.contains('(') && !base.ends_with("[])") => format!("{open}, {values})"),
+                    _ => format!("{base}({values})"),
+                }
+            }
+            Kind::Array(a) if a.distinct => format!("{}{{{}}}", label(), slot_short(&a.element)),
             Kind::Array(a) => {
-                let element = position_short(&a.element);
+                let element = slot_short(&a.element);
                 let sized = match &a.size {
                     Some(Size { exact: Some(n), .. }) => n.to_string(),
                     Some(s) => format!("{}..{}", s.min.map(|n| n.to_string()).unwrap_or_default(), s.max.map(|n| n.to_string()).unwrap_or_default()),
@@ -1099,79 +1156,57 @@ impl Type {
                     _ => format!("{element}[{sized}]"),
                 }
             }
-            Kind::Record(r) => {
-                let fields: Vec<String> = r.fields.iter().map(|f| format!("{}{}: {}", f.name, if f.optional { "?" } else { "" }, position_short(&f.position()))).collect();
+            Kind::Struct(s) => {
+                let mut fields: Vec<String> = s.fields.iter().map(field_short).collect();
+                fields.extend(s.extra.as_ref().map(|e| format!("*: {}", slot_short(e))));
                 format!("{}{{ {} }}", self.label.clone().unwrap_or_default(), fields.join(", "))
             }
+            Kind::Table(t) => format!("{}{{ {} }}", t.cardinality.as_str(), t.columns.iter().map(field_short).collect::<Vec<_>>().join(", ")),
             Kind::Json(j) => match (&j.content, self.schema()) {
-                (Some(content), _) => format!("{} {}", label(), position_short(content)),
+                (Some(content), _) => format!("{} {}", label(), slot_short(content)),
                 (None, Some(schema)) => format!("{} {}", label(), schema),
                 (None, None) => label(),
             },
-            Kind::Union(u) => {
-                let inner = u.members.iter().map(Type::short).collect::<Vec<_>>().join(" | ");
+            Kind::Union(u) | Kind::Intersection(u) => {
+                let mark = if matches!(self.kind, Kind::Union(_)) { " | " } else { " & " };
+                let inner = u.members.iter().map(Type::short).collect::<Vec<_>>().join(mark);
                 match &self.label {
                     Some(name) => format!("{name}({inner})"),
                     None => inner,
                 }
             }
             Kind::TaggedUnion(t) => {
-                let alternatives: Vec<String> = t.alternatives.iter().map(|a| format!("{}: {}", a.tag, position_short(&a.position()))).collect();
+                let alternatives: Vec<String> = t.alternatives.iter().map(|a| format!("{}: {}", a.tag, slot_short(&a.slot()))).collect();
                 format!("{}<{}>", self.label.as_deref().unwrap_or("tagged"), alternatives.join(" | "))
             }
-            Kind::Tuple(t) => format!("({})", t.elements.iter().map(position_short).collect::<Vec<_>>().join(", ")),
-            Kind::Map(m) => format!("{}({} => {})", label(), m.key.short(), position_short(&m.value)),
+            Kind::Tuple(t) => {
+                let mut items: Vec<String> = t.elements.iter().map(slot_short).collect();
+                items.extend(t.optional_elements.iter().map(|s| format!("{}=", slot_short(s))));
+                items.extend(t.rest.as_ref().map(|r| format!("...{}", slot_short(r))));
+                format!("({})", items.join(", "))
+            }
+            Kind::Map(m) => format!("{}({} => {})", label(), slot_short(&m.key), slot_short(&m.value)),
+            Kind::Time(t) if t.offset => format!("{}(offset)", label()),
+            Kind::ZonedDateTime(z) if z.offset_only => format!("{}(offset)", label()),
             Kind::Range(r) | Kind::Multirange(r) if self.label.is_none() => format!("{}({})", self.kind.name(), r.subtype.short()),
             _ => label(),
         }
     }
 }
 
-/// Rule 7 on an array's keys and order: only on an array of records that can hold more than one
-/// element, each naming its fields, an order naming each once, and `distinct` never beside
-/// `unique`, which implies it.
-fn check_rows(a: &ArrayType) -> Result<(), String> {
-    if a.unique.is_empty() && a.order.is_empty() {
-        return Ok(());
-    }
-    let Kind::Record(record) = &a.element.ty.kind else {
-        return Err("unique and order are only for an array of records".into());
-    };
-    let fits = |name: &str| record.fields.iter().any(|f| f.name == name);
-    let more_than_one = a.size.as_ref().is_none_or(|s| s.exact.or(s.max).is_none_or(|n| n > 1));
-    if !more_than_one {
-        return Err("unique and order are only for an array that can hold more than one element".into());
-    }
-    if a.distinct && !a.unique.is_empty() {
-        return Err("distinct beside unique, which implies it".into());
-    }
-    for key in &a.unique {
-        if key.is_empty() {
-            return Err("a set of unique fields holds at least one".into());
-        }
-        if let Some(k) = key.iter().find(|k| !fits(k)) {
-            return Err(format!("unique field {k:?} is not a field"));
-        }
-    }
-    if let Some(o) = a.order.iter().find(|o| !fits(&o.field)) {
-        return Err(format!("order field {:?} is not a field", o.field));
-    }
-    if let Some((at, o)) = a.order.iter().enumerate().find(|(at, o)| a.order[..*at].iter().any(|p| p.field == o.field)) {
-        return Err(format!("order names field {:?} twice, at {at}", o.field));
-    }
-    Ok(())
+fn slot_short(s: &Slot) -> String {
+    format!("{}{}", s.ty.short(), if s.nullable { "?" } else { "" })
 }
 
-fn position_short(p: &Position) -> String {
-    format!("{}{}", p.ty.short(), if p.nullable { "?" } else { "" })
+fn field_short(f: &Field) -> String {
+    format!("{}{}: {}", f.name, if f.optional { "?" } else { "" }, slot_short(&f.slot()))
 }
 
 fn short_size(size: &Size) -> String {
-    let unit = match (size.unit, &size.encoding) {
-        (Some(SizeUnit::Byte), Some(encoding)) => format!(" bytes {encoding}"),
-        (Some(SizeUnit::Byte), None) => " bytes".to_string(),
-        (Some(SizeUnit::Utf16Unit), _) => " utf16".to_string(),
-        (None, _) => String::new(),
+    let unit = match size.unit {
+        Some(SizeUnit::Byte) => " bytes",
+        Some(SizeUnit::CodeUnit) => " units",
+        None => "",
     };
     let n = match (size.exact, size.min, size.max) {
         (Some(n), _, _) => format!("={n}"),
@@ -1183,16 +1218,82 @@ fn short_size(size: &Size) -> String {
     format!("{n}{unit}")
 }
 
+/// Rule 7 on a table's keys and order: only where it can hold more than one row, each naming its
+/// columns, an order naming each once, and no column optional, since a row has every column.
+fn check_table(t: &TableType) -> Result<(), String> {
+    if let Some(c) = t.columns.iter().find(|c| c.optional || c.default.is_some()) {
+        return Err(format!("column {:?} is optional, and a row has every column", c.name));
+    }
+    if t.unique.is_empty() && t.order.is_empty() {
+        return Ok(());
+    }
+    if t.cardinality != Cardinality::Many {
+        return Err("unique and order are only for a table of many rows".into());
+    }
+    let fits = |name: &str| t.columns.iter().any(|c| c.name == name);
+    for key in &t.unique {
+        if key.is_empty() {
+            return Err("a set of unique columns holds at least one".into());
+        }
+        if let Some(k) = key.iter().find(|k| !fits(k)) {
+            return Err(format!("unique column {k:?} is not a column"));
+        }
+    }
+    if let Some(o) = t.order.iter().find(|o| !fits(&o.column)) {
+        return Err(format!("order column {:?} is not a column", o.column));
+    }
+    if let Some((at, o)) = t.order.iter().enumerate().find(|(at, o)| t.order[..*at].iter().any(|p| p.column == o.column)) {
+        return Err(format!("order names column {:?} twice, at {at}", o.column));
+    }
+    Ok(())
+}
+
+/// Rule 7 on text: `ill_formed` and a unit only with an `encoding`, of the names the format
+/// accepts, a Unicode encoding only where it says more than any Unicode text would, and code
+/// points sorted, disjoint, never adjacent and no greater than U+10FFFF.
+fn check_text(t: &TextType) -> Result<(), String> {
+    let encoding = t.encoding.as_deref();
+    if let Some(e) = encoding {
+        if !CHARSETS.iter().any(|c| c.eq_ignore_ascii_case(e)) {
+            return Err(format!("{e:?} is no character set the format names"));
+        }
+    }
+    if t.ill_formed && encoding.is_none() {
+        return Err("ill_formed names the encoding whose code units a value is".into());
+    }
+    let unit = t.size.as_ref().and_then(|s| s.unit);
+    if unit.is_some() && encoding.is_none() {
+        return Err("a size counts code units or bytes only of an encoding the text names".into());
+    }
+    if encoding.is_some_and(|e| UNICODE_ENCODINGS.iter().any(|u| u.eq_ignore_ascii_case(e))) && !t.ill_formed && unit.is_none() {
+        return Err("a Unicode encoding is written only beside ill_formed, or a size that counts its code units or bytes".into());
+    }
+    if let Some(points) = &t.code_points {
+        if points.is_empty() {
+            return Err("code_points lists at least one range".into());
+        }
+        for (i, [lo, hi]) in points.iter().enumerate() {
+            if lo > hi || *hi > MAX_CODE_POINT {
+                return Err(format!("code point range {lo}..{hi} is not one"));
+            }
+            if i > 0 && points[i - 1][1].saturating_add(1) >= *lo {
+                return Err("code point ranges are sorted, disjoint and never adjacent".into());
+            }
+        }
+    }
+    if let Some(size) = &t.size {
+        check_size(size)?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Rule 7: what no shape rules out
 // ---------------------------------------------------------------------------------------------
 
 impl Type {
     /// The first of rule 7's validity checks this type fails, at any depth, with where it is, or
-    /// `Ok` for a valid type: a side of a range takes one bound, a whole-number kind no exclusive
-    /// one, a minimum is at most its maximum, a size's `exact` stands alone and its `min` never
-    /// equals its `max`, `encoding` comes only with a byte unit, a tick is positive and a float's
-    /// widths are too; and an opaque type has its label.
+    /// `Ok` for a valid type.
     pub fn check(&self) -> Result<(), String> {
         self.check_at("")
     }
@@ -1200,7 +1301,25 @@ impl Type {
     fn check_at(&self, at: &str) -> Result<(), String> {
         let here = if at.is_empty() { self.kind.name().to_string() } else { format!("{at} ({})", self.kind.name()) };
         let fail = |why: String| Err(format!("{here}: {why}"));
-        let position = |p: &Position, step: &str| p.ty.check_at(&format!("{at}{step}"));
+        let slot = |s: &Slot, step: &str| -> Result<(), String> {
+            if matches!(s.ty.kind, Kind::Null) && !s.nullable {
+                return Err(format!("{here}: the null kind stands only in a nullable slot"));
+            }
+            s.ty.check_at(&format!("{at}{step}"))
+        };
+        let field = |f: &Field| -> Result<(), String> {
+            if f.default.is_some() && !f.optional {
+                return Err(format!("{here}: field {:?} has a default but is not optional", f.name));
+            }
+            slot(&f.slot(), &format!(".{}", f.name))
+        };
+        let unsized_ = |size: &Option<Size>| -> Result<(), String> {
+            match size {
+                Some(s) if s.unit.is_some() => Err(format!("{here}: only a text's size names a unit")),
+                Some(s) => check_size(s).or_else(fail),
+                None => Ok(()),
+            }
+        };
         match &self.kind {
             Kind::Integer(i) => {
                 if i.bits == 0 {
@@ -1212,8 +1331,13 @@ impl Type {
                 check_order(&i.bounds, decimal_order).or_else(fail)?;
             }
             Kind::Uuid(u) => {
-                if u.version.is_some_and(|v| !(1..=8).contains(&v)) {
-                    return fail("a uuid's version is from 1 to 8".into());
+                if let Some(versions) = &u.versions {
+                    if versions.is_empty() || versions.iter().any(|v| !(1..=8).contains(v)) {
+                        return fail("a uuid's versions are one or more from 1 to 8".into());
+                    }
+                    if versions.windows(2).any(|w| w[0] >= w[1]) {
+                        return fail("a uuid's versions are listed once each, in order".into());
+                    }
                 }
             }
             Kind::Float(f) => {
@@ -1230,46 +1354,63 @@ impl Type {
                     }
                 }
             }
-            Kind::Text(t) => {
-                if let Some(size) = &t.size {
-                    check_size(size, t.ill_formed.is_none()).or_else(fail)?;
+            Kind::Text(t) => check_text(t).or_else(fail)?,
+            Kind::Bytes(b) => unsized_(&b.size)?,
+            Kind::Enum(e) => {
+                if !e.ty.kind.has_canonical_text() {
+                    return fail(format!("an enum lists values of a kind written as text, not of {}", e.ty.kind.name()));
                 }
-            }
-            Kind::Bytes(BytesType { size: Some(size) }) => check_size(size, false).or_else(fail)?,
-            Kind::Array(a) => {
-                if let Some(size) = &a.size {
-                    check_size(size, false).or_else(fail)?;
+                if e.values.is_empty() {
+                    return fail("an enum lists at least one value".into());
                 }
-                position(&a.element, "[]")?;
-                check_rows(a).or_else(fail)?;
-            }
-            Kind::Record(r) => {
-                for f in &r.fields {
-                    f.ty.check_at(&format!("{at}.{}", f.name))?;
-                    if f.default.is_some() && !f.optional {
-                        return fail(format!("field {:?} has a default but is not optional", f.name));
+                if let Some((i, v)) = e.values.iter().enumerate().find(|(i, v)| e.values[..*i].contains(v)) {
+                    return fail(format!("value {v:?} is listed twice, at {i}"));
+                }
+                if matches!(e.ty.kind, Kind::Boolean(_)) {
+                    if e.values.iter().any(|v| v != "true" && v != "false") {
+                        return fail(format!("a boolean's values are true and false, not {:?}", e.values));
+                    }
+                    if e.values.len() == 2 {
+                        return fail("an enum of both booleans is a boolean".into());
                     }
                 }
-                if let Some(extra) = &r.extra {
-                    position(extra, ".*")?;
+                e.ty.check_at(&format!("{at}<enum>"))?;
+            }
+            Kind::Array(a) => {
+                unsized_(&a.size)?;
+                slot(&a.element, "[]")?;
+            }
+            Kind::Struct(s) => {
+                for f in &s.fields {
+                    field(f)?;
                 }
+                if let Some(extra) = &s.extra {
+                    if s.fields.is_empty() {
+                        return fail("a struct of no fields with extra keys is a map".into());
+                    }
+                    slot(extra, ".*")?;
+                }
+            }
+            Kind::Table(t) => {
+                for c in &t.columns {
+                    field(c)?;
+                }
+                check_table(t).or_else(fail)?;
             }
             Kind::Tuple(t) => {
-                if t.elements.is_empty() {
-                    return fail("a tuple holds at least one element".into());
+                if t.elements.is_empty() && t.optional_elements.is_empty() {
+                    return fail("a tuple holds at least one of elements and optional_elements; one with neither is an array".into());
                 }
-                for (i, e) in t.elements.iter().enumerate() {
-                    position(e, &format!(".{i}"))?;
+                for (i, e) in t.elements.iter().chain(&t.optional_elements).enumerate() {
+                    slot(e, &format!(".{i}"))?;
                 }
-            }
-            Kind::Boolean(BooleanType { values: Some(values) }) => {
-                if values.is_empty() || values.iter().any(|v| v != "true" && v != "false") {
-                    return fail(format!("a boolean's enum lists true or false, not {values:?}"));
+                if let Some(rest) = &t.rest {
+                    slot(rest, ".*")?;
                 }
             }
             Kind::Json(j) => {
                 if let Some(content) = &j.content {
-                    position(content, "<json>")?;
+                    slot(content, "<json>")?;
                 }
             }
             Kind::Date(d) => check_bounds(&d.bounds, text_order).or_else(fail)?,
@@ -1285,14 +1426,31 @@ impl Type {
                 check_tick(&t.tick).or_else(fail)?;
                 check_bounds(&t.bounds, text_order).or_else(fail)?;
             }
+            Kind::ZonedDateTime(t) => {
+                check_tick(&t.tick).or_else(fail)?;
+                check_bounds(&t.bounds, text_order).or_else(fail)?;
+            }
             Kind::Duration(d) => match (duration_has_time(&d.max).map_err(|why| format!("{here}: {why}"))?, &d.tick) {
                 (true, Some(tick)) => check_tick(tick).or_else(fail)?,
                 (false, None) => {}
                 _ => return fail("a duration has a tick exactly when its max has a time part".into()),
             },
-            Kind::Union(u) => {
+            Kind::Union(u) | Kind::Intersection(u) => {
+                if u.members.len() < 2 {
+                    return fail("a union or an intersection has at least two members".into());
+                }
                 for (i, m) in u.members.iter().enumerate() {
+                    if matches!(m.kind, Kind::Null) {
+                        return fail("null is no member; the slot says a value may be null".into());
+                    }
                     m.check_at(&format!("{at}|{i}"))?;
+                }
+                if matches!(self.kind, Kind::Intersection(_)) {
+                    let structs = u.members.iter().filter(|m| matches!(m.kind, Kind::Struct(_))).count();
+                    let text_maps = u.members.iter().filter(|m| matches!(&m.kind, Kind::Map(map) if matches!(map.key.ty.kind, Kind::Text(_)))).count();
+                    if structs == u.members.len() || (structs == 1 && structs + text_maps == u.members.len()) {
+                        return fail("an intersection one struct can write is written as that struct".into());
+                    }
                 }
             }
             Kind::TaggedUnion(t) => {
@@ -1301,12 +1459,12 @@ impl Type {
                     if !tags.insert(a.tag.as_str()) {
                         return fail(format!("tag {:?} names two alternatives", a.tag));
                     }
-                    a.ty.check_at(&format!("{at}<{}>", a.tag))?;
+                    slot(&a.slot(), &format!("<{}>", a.tag))?;
                 }
             }
             Kind::Map(m) => {
-                m.key.check_at(&format!("{at}<key>"))?;
-                position(&m.value, "<value>")?;
+                slot(&m.key, "<key>")?;
+                slot(&m.value, "<value>")?;
             }
             Kind::Range(r) | Kind::Multirange(r) => r.subtype.check_at(&format!("{at}<subtype>"))?,
             Kind::Opaque if self.label.is_none() => return fail("an opaque type has its label".into()),
@@ -1363,7 +1521,7 @@ fn text_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     (plain(a) && plain(b)).then(|| a.cmp(b))
 }
 
-fn check_size(size: &Size, unicode: bool) -> Result<(), String> {
+fn check_size(size: &Size) -> Result<(), String> {
     if size.exact.is_some() && (size.min.is_some() || size.max.is_some()) {
         return Err("a size's exact beside its min or max".into());
     }
@@ -1374,12 +1532,6 @@ fn check_size(size: &Size, unicode: bool) -> Result<(), String> {
         if min >= max {
             return Err(format!("a size's min {min} is not below its max {max}"));
         }
-    }
-    if size.unit.is_some() && !unicode {
-        return Err("only valid Unicode text names a size's unit".into());
-    }
-    if size.encoding.is_some() != (size.unit == Some(SizeUnit::Byte)) {
-        return Err("encoding comes with unit: \"byte\" and only with it".into());
     }
     Ok(())
 }
@@ -1460,13 +1612,13 @@ mod tests {
                 param.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", param.name));
                 types += 1;
             }
-            for value in descriptor["result"]["element"]["type"]["fields"].as_array().into_iter().flatten() {
+            for value in descriptor["result"]["columns"].as_array().into_iter().flatten() {
                 let column: Field = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
                 assert_eq!(serde_json::to_value(&column).unwrap(), *value, "{name}");
                 column.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", column.name));
                 types += 1;
             }
-            // The rows themselves, whose `unique` sets and `order` rule 7 holds to their fields.
+            // The table itself, whose `unique` sets and `order` rule 7 holds to its columns.
             if let Some(result) = descriptor.get("result") {
                 round_trip(result.clone());
             }
@@ -1480,30 +1632,44 @@ mod tests {
         assert!(types > 0);
     }
 
-    /// The kinds and fields no example in spec/examples.ts shows, and a tagged union's short form.
+    /// The kinds and fields no example in spec/examples.ts shows, and their short forms.
     #[test]
     fn what_no_example_shows_reads_and_writes_as_the_spec_spells_it() {
         let tagged = round_trip(json!({"kind": "tagged_union", "label": "union", "alternatives": [{"tag": "num", "nullable": true, "type": {"kind": "integer", "bits": 32}}, {"tag": "str", "type": {"kind": "text"}}]}));
         assert_eq!(tagged.short(), "union<num: int32? | str: text>");
         assert!(serde_json::from_value::<Type>(json!({"kind": "tagged_union", "alternatives": [{"tag": "a", "type": {"kind": "text"}}, {"tag": "a", "type": {"kind": "text"}}]})).unwrap().check().is_err());
-        round_trip(json!({"kind": "text", "size": {"unit": "byte", "encoding": "UTF-8", "max": 65535}, "label": "text"}));
-        round_trip(json!({"kind": "text", "size": {"max": 255}, "pattern": {"dialect": "like", "source": "%@%"}, "label": "public.email"}));
+        assert_eq!(round_trip(json!({"kind": "text", "encoding": "UTF-8", "size": {"unit": "byte", "max": 65535}, "label": "text"})).short(), "text(≤65535 bytes, UTF-8)");
+        round_trip(json!({"kind": "text", "encoding": "UTF-16", "ill_formed": true, "size": {"unit": "code_unit", "max": 100}, "label": "nvarchar"}));
+        round_trip(json!({"kind": "text", "encoding": "UTF-32", "ill_formed": true, "code_points": [[0, 1114111]]}));
+        assert_eq!(round_trip(json!({"kind": "text", "code_points": [[1, 1114111]], "label": "text"})).short(), "text(¬NUL)");
+        assert_eq!(round_trip(json!({"kind": "text", "code_points": [[0, 65535]], "label": "varchar"})).short(), "varchar(U+0000..U+FFFF)");
+        round_trip(json!({"kind": "text", "encoding": "windows-1252", "size": {"max": 255}, "pattern": "[^@]+@[^@]+", "media_type": "text/plain"}));
+        round_trip(json!({"kind": "bytes", "size": {"exact": 6}, "media_type": "image/png"}));
         round_trip(json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/1000000", "label": "time"}));
         round_trip(json!({"kind": "duration", "max": "P1199M"}));
         round_trip(json!({"kind": "duration", "max": "PT0.5S", "tick": "1/1000"}));
-        round_trip(json!({"kind": "array", "size": {"max": 2}, "label": "set", "distinct": true, "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
-        round_trip(json!({"kind": "tuple", "elements": [{"type": {"kind": "integer", "bits": 32}}, {"nullable": true, "type": {"kind": "text"}}]}));
-        round_trip(json!({"kind": "record", "fields": [{"name": "id", "type": {"kind": "integer", "bits": 32}}, {"name": "tag", "optional": true, "default": "none", "comment": "What it is", "type": {"kind": "text"}}], "extra": {"type": {"kind": "text"}}}));
-        round_trip(json!({"kind": "boolean", "enum": ["true"]}));
-        round_trip(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "enum": ["0.5"]}));
-        round_trip(json!({"kind": "map", "label": "hstore", "key": {"kind": "text"}, "value": {"nullable": true, "type": {"kind": "text"}}}));
+        assert_eq!(round_trip(json!({"kind": "array", "size": {"max": 2}, "label": "set", "distinct": true, "element": {"type": {"kind": "enum", "type": {"kind": "text"}, "values": ["a", "b"]}}})).short(), "set{text('a' | 'b')}");
+        assert_eq!(round_trip(json!({"kind": "tuple", "elements": [{"type": {"kind": "integer", "bits": 32}}], "optional_elements": [{"nullable": true, "type": {"kind": "text"}}], "rest": {"type": {"kind": "boolean"}}})).short(), "(int32, text?=, ...boolean)");
+        assert_eq!(round_trip(json!({"kind": "struct", "fields": [{"name": "id", "type": {"kind": "integer", "bits": 32}}, {"name": "tag", "optional": true, "default": "none", "comment": "What it is", "type": {"kind": "text"}}], "extra": {"type": {"kind": "text"}}})).short(), "{ id: int32, tag?: text, *: text }");
+        assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "boolean"}, "values": ["true"]})).short(), "boolean(true)");
+        assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "integer", "bits": 32, "label": "int4"}, "values": ["1", "2"]})).short(), "int4(1 | 2)");
+        assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "text", "size": {"max": 20}, "label": "varchar"}, "values": ["a", "b"]})).short(), "varchar(≤20, 'a' | 'b')");
+        assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "text"}, "values": ["sad", "ok"], "label": "public.mood"})).short(), "public.mood('sad' | 'ok')");
+        round_trip(json!({"kind": "enum", "type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "label": "float8"}, "values": ["0.5"]}));
+        round_trip(json!({"kind": "map", "label": "hstore", "key": {"type": {"kind": "text"}}, "value": {"nullable": true, "type": {"kind": "text"}}}));
+        round_trip(json!({"kind": "map", "key": {"nullable": true, "type": {"kind": "text"}}, "value": {"type": {"kind": "integer", "bits": 32}}}));
+        assert_eq!(round_trip(json!({"kind": "intersection", "members": [{"kind": "struct", "fields": []}, {"kind": "opaque", "label": "row"}]})).short(), "{  } & row");
         round_trip(json!({"kind": "geometry", "model": "geodetic", "srid": 4326, "subtype": "point", "coordinates": "xy", "label": "geography"}));
         round_trip(json!({"kind": "xml", "fragment": true, "label": "xml"}));
         round_trip(json!({"kind": "opaque", "label": "ltree"}));
         round_trip(json!({"kind": "uuid", "label": "uuid"}));
-        round_trip(json!({"kind": "uuid", "version": 7, "label": "uuid"}));
+        assert_eq!(round_trip(json!({"kind": "uuid", "versions": [4, 7], "label": "uuid"})).short(), "uuid(v4, v7)");
         round_trip(json!({"kind": "datetime", "tick": "1/1000000", "label": "timestamp"}));
+        assert_eq!(round_trip(json!({"kind": "time", "tick": "1/1000000", "offset": true, "label": "timetz"})).short(), "timetz(offset)");
+        round_trip(json!({"kind": "zoned_datetime", "tick": "1/10000000", "offset_only": true, "label": "datetimeoffset"}));
         round_trip(json!({"kind": "multirange", "subtype": {"kind": "integer", "bits": 32, "label": "int4"}, "label": "int4multirange"}));
+        let nothing = Slot::nullable(Type::null());
+        assert_eq!(serde_json::to_value(Type::json_of(nothing)).unwrap(), json!({"kind": "json", "content": {"type": {"kind": "null"}, "nullable": true}}));
     }
 
     #[test]
@@ -1521,6 +1687,8 @@ mod tests {
         let u = Type::union(vec![nested, Type::integer(64), text.clone()]);
         assert_eq!(serde_json::to_value(&u).unwrap(), json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}, {"kind": "bytes"}]}));
         assert_eq!(Type::union(vec![text.clone(), text.clone()]), text);
+        // A union of none is the null kind.
+        assert_eq!(Type::union(Vec::new()), Type::null());
         // A named union stays a member: its name is the database's type.
         let named = Type::union(vec![Type::integer(64), Type::double()]).named("NUMERIC");
         assert_eq!(Type::union(vec![named, Type::text()]).members().len(), 2);
@@ -1532,13 +1700,21 @@ mod tests {
         refused(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "min": "0", "exclusive_min": "0"}));
         refused(json!({"kind": "integer", "bits": 32, "exclusive_min": "0"}));
         refused(json!({"kind": "integer", "bits": 32, "min": "5", "max": "1"}));
-        refused(json!({"kind": "uuid", "version": 9}));
-        refused(json!({"kind": "uuid", "version": 0}));
+        refused(json!({"kind": "uuid", "versions": [9]}));
+        refused(json!({"kind": "uuid", "versions": []}));
+        refused(json!({"kind": "uuid", "versions": [7, 4]}));
         refused(json!({"kind": "text", "size": {"exact": 3, "max": 4}}));
         refused(json!({"kind": "text", "size": {"min": 4, "max": 4}}));
-        refused(json!({"kind": "text", "size": {"unit": "utf16_unit", "encoding": "UTF-8", "max": 4}}));
+        // An encoding the format names, ill_formed and a unit only beside one, a Unicode encoding only where it counts.
+        refused(json!({"kind": "text", "encoding": "EBCDIC-US"}));
+        refused(json!({"kind": "text", "ill_formed": true}));
+        refused(json!({"kind": "text", "size": {"unit": "byte", "max": 4}}));
+        refused(json!({"kind": "text", "encoding": "UTF-8"}));
+        refused(json!({"kind": "text", "code_points": [[5, 1]]}));
+        refused(json!({"kind": "text", "code_points": [[0, 1114112]]}));
+        refused(json!({"kind": "text", "code_points": [[0, 10], [11, 20]]}));
+        refused(json!({"kind": "text", "code_points": [[0, 10], [5, 20]]}));
         refused(json!({"kind": "bytes", "size": {"unit": "byte", "max": 4}}));
-        refused(json!({"kind": "text", "ill_formed": "utf8", "size": {"unit": "byte", "encoding": "UTF-8", "max": 4}}));
         refused(json!({"kind": "time", "tick": "0"}));
         // A duration's max: its tick exactly with a time part, and only the spec's units, in order, above zero.
         refused(json!({"kind": "duration", "max": "PT838H59M59S"}));
@@ -1549,42 +1725,56 @@ mod tests {
         refused(json!({"kind": "decimal", "min_scale": 3, "max_scale": 2}));
         refused(json!({"kind": "opaque"}));
         refused(json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 0, "mantissa_bits": 3}}}));
+        // An enum: of a kind written as text, values once each, not of both booleans.
+        refused(json!({"kind": "enum", "type": {"kind": "struct", "fields": []}, "values": ["x"]}));
+        refused(json!({"kind": "enum", "type": {"kind": "enum", "type": {"kind": "text"}, "values": ["a"]}, "values": ["a"]}));
+        refused(json!({"kind": "enum", "type": {"kind": "text"}, "values": ["a", "a"]}));
+        refused(json!({"kind": "enum", "type": {"kind": "boolean"}, "values": ["true", "false"]}));
+        refused(json!({"kind": "enum", "type": {"kind": "boolean"}, "values": ["yes"]}));
+        // Unions and intersections: two members at least, null never one, and no intersection one struct writes.
+        refused(json!({"kind": "union", "members": [{"kind": "text"}]}));
+        refused(json!({"kind": "union", "members": [{"kind": "text"}, {"kind": "null"}]}));
+        refused(json!({"kind": "intersection", "members": [{"kind": "struct", "fields": []}, {"kind": "struct", "fields": []}]}));
+        refused(json!({"kind": "intersection", "members": [{"kind": "struct", "fields": []}, {"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "text"}}}]}));
+        // The null kind stands in a nullable slot alone.
+        refused(json!({"kind": "array", "element": {"type": {"kind": "null"}}}));
+        refused(json!({"kind": "tuple", "elements": []}));
+        refused(json!({"kind": "struct", "fields": [{"name": "a", "default": "1", "type": {"kind": "integer", "bits": 32}}]}));
+        refused(json!({"kind": "struct", "fields": [], "extra": {"type": {"kind": "text"}}}));
         let id = json!({"name": "id", "type": {"kind": "integer", "bits": 32}});
-        let rows = |extra: Value| {
-            let mut array = json!({"kind": "array", "element": {"type": {"kind": "record", "fields": [id]}}});
-            array.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-            array
+        let table = |extra: Value| {
+            let mut table = json!({"kind": "table", "cardinality": "many", "columns": [id]});
+            table.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            table
         };
         let passes = |value: Value| serde_json::from_value::<Type>(value).unwrap().check().unwrap();
-        refused(rows(json!({"unique": [["missing"]]})));
-        refused(rows(json!({"unique": [[]]})));
-        refused(rows(json!({"size": {"max": 1}, "unique": [["id"]]})));
-        refused(rows(json!({"size": {"exact": 1}, "unique": [["id"]]})));
-        refused(rows(json!({"unique": [["id"]], "distinct": true})));
-        passes(rows(json!({"unique": [["id"]]})));
-        refused(rows(json!({"order": [{"field": "missing", "nulls": "last"}]})));
-        refused(rows(json!({"size": {"max": 1}, "order": [{"field": "id", "nulls": "last"}]})));
-        refused(rows(json!({"order": [{"field": "id", "nulls": "last"}, {"field": "id", "desc": true, "nulls": "first"}]})));
-        passes(rows(json!({"order": [{"field": "id", "desc": true, "nulls": "first"}]})));
-        // Keys and an order are for records alone.
-        refused(json!({"kind": "array", "unique": [["id"]], "element": {"type": {"kind": "integer", "bits": 32}}}));
-        refused(json!({"kind": "tuple", "elements": []}));
-        refused(json!({"kind": "record", "fields": [{"name": "a", "default": "1", "type": {"kind": "integer", "bits": 32}}]}));
-        refused(json!({"kind": "boolean", "enum": ["yes"]}));
+        refused(table(json!({"unique": [["missing"]]})));
+        refused(table(json!({"unique": [[]]})));
+        refused(table(json!({"cardinality": "at_most_one", "unique": [["id"]]})));
+        refused(table(json!({"cardinality": "one", "order": [{"column": "id", "nulls": "last"}]})));
+        passes(table(json!({"unique": [["id"]]})));
+        refused(table(json!({"order": [{"column": "missing", "nulls": "last"}]})));
+        refused(table(json!({"order": [{"column": "id", "nulls": "last"}, {"column": "id", "desc": true, "nulls": "first"}]})));
+        passes(table(json!({"order": [{"column": "id", "desc": true, "nulls": "first"}]})));
+        // A row has every column.
+        refused(json!({"kind": "table", "cardinality": "many", "columns": [{"name": "id", "optional": true, "type": {"kind": "integer", "bits": 32}}]}));
     }
 
     #[test]
-    fn a_statements_result_is_an_array_of_records_and_nothing_else() {
+    fn a_statements_result_is_a_table_and_nothing_else() {
         let result = |result: Value| serde_json::from_value::<StatementDescriptor>(json!({"$schema": SCHEMA, "dialect": {"name": "postgres", "version": "18"}, "sql": "select 1", "params": [], "result": result, "diagnostics": []}));
         assert!(result(json!({"kind": "integer", "bits": 32})).is_err());
-        assert!(result(json!({"kind": "array", "element": {"type": {"kind": "integer", "bits": 32}}})).is_err());
-        let rows = json!({"kind": "array", "size": {"exact": 1}, "element": {"type": {"kind": "record", "fields": []}}});
+        assert!(result(json!({"kind": "array", "element": {"type": {"kind": "struct", "fields": []}}})).is_err());
+        let rows = json!({"kind": "table", "cardinality": "one", "columns": []});
         let read = result(rows.clone()).unwrap();
-        assert_eq!(read.result.array().size, Some(Size::exact(1)));
+        assert_eq!(read.result.table().cardinality, Cardinality::One);
         assert_eq!(serde_json::to_value(&read).unwrap()["result"], rows);
-        // Each cardinality is the array's size.
-        let sized = |c: Cardinality| serde_json::to_value(ResultRows::new(c, Vec::new(), Vec::new(), Vec::new())).unwrap().get("size").cloned();
-        assert_eq!([sized(Cardinality::One), sized(Cardinality::AtMostOne), sized(Cardinality::Many), sized(Cardinality::None)], [Some(json!({"exact": 1})), Some(json!({"max": 1})), None, Some(json!({"exact": 0}))]);
+        // A table of one row, or of none, keeps no keys and no order.
+        let id = Field::new("id", Type::integer(32), false);
+        let key = vec![vec!["id".to_string()]];
+        let one = ResultRows::new(Cardinality::One, vec![id.clone()], key.clone(), Vec::new());
+        assert!(one.table().unique.is_empty());
+        assert_eq!(ResultRows::new(Cardinality::Many, vec![id], key.clone(), Vec::new()).table().unique, key);
     }
 
     #[test]
@@ -1592,5 +1782,15 @@ mod tests {
         let spec: serde_json::Value = serde_json::from_str(include_str!("../../../spec/typedefs.schema.json")).unwrap();
         assert_eq!(spec["$id"], SCHEMA);
         assert_eq!(spec["$defs"]["StatementDescriptor"]["properties"]["$schema"]["const"], SCHEMA);
+    }
+
+    /// The character sets the format accepts are the ones its JSON Schema lists, and its kinds the ones `Type` lists.
+    #[test]
+    fn the_names_are_the_ones_the_schema_lists() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!("../../../spec/typedefs.schema.json")).unwrap();
+        let listed: Vec<&str> = spec["$defs"]["Charset"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(listed, CHARSETS);
+        let kinds: Vec<String> = spec["$defs"]["Type"]["anyOf"].as_array().unwrap().iter().map(|r| r["$ref"].as_str().unwrap().rsplit('/').next().unwrap().to_string()).collect();
+        assert_eq!(kinds.len(), 30);
     }
 }

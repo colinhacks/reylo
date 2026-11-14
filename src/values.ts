@@ -302,7 +302,7 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "tagged_union":
       // A DuckDB union is decoded by the result's own types (src/decode-duckdb.ts).
       return "unknown";
-    case "record": {
+    case "struct": {
       // A DuckDB struct is decoded by the result's own types (src/decode-duckdb.ts).
       if (dialect !== "postgres") return "unknown";
       // A Postgres row value is an object of its fields, each decoded from its text as a column of
@@ -316,8 +316,11 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
       }).join(",")})`;
     }
     case "text":
-      // A MySQL ENUM of known labels holds one of them or `''`, which the run time refuses.
-      return dialect === "mysql" && name === "enum" && t.enum !== undefined && !t.enum.includes("") ? "enum" : "text";
+      return "text";
+    // One of a few values of its type: a MySQL ENUM of known labels holds one of them or `''`,
+    // which the run time refuses, and any other is its type's.
+    case "enum":
+      return dialect === "mysql" && name === "enum" && t.type.kind === "text" && !t.values.includes("") ? "enum" : columnKind(t.type, dialect);
     case "range":
     case "multirange":
       // A Postgres range is an object of its bounds, each decoded from its text as its subtype is.
@@ -329,6 +332,9 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
       return dialect === "postgres" ? "text" : "unknown";
     case "unknown":
     case "tuple":
+    case "table":
+    case "intersection":
+    case "null":
       return "unknown";
     default:
       return "text";
@@ -910,7 +916,7 @@ export function postgresLiteral(t: EngineType, v: unknown, fail: (message: strin
   const shape = geometric(t);
   if (shape !== undefined) return geometricText(shape, v) ?? fail(`a ${shape}, ${TS_TYPE[shape]}; got ${describe(v)}.`);
   const kind = columnKind(t, "postgres");
-  if (t.kind === "record" && isRowKind(kind)) {
+  if (t.kind === "struct" && isRowKind(kind)) {
     const name = t.label ?? "a row value";
     if (!isObject(v)) return fail(`${name}, an object of its fields (${t.fields.map((f) => f.name).join(", ")}); got ${describe(v)}.`);
     const names = new Set(t.fields.map((f) => f.name));

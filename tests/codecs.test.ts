@@ -46,8 +46,8 @@ test("each family reaches the values that hold its kind, on every database, and 
   // and an array is its elements' (planOf, below).
   for (const name of ["int8", "timetz", "text", "uuid", "int4", "float8", "bool", "jsonb", "money", "macaddr"]) assert.equal(onPg(pg(name)), undefined, name);
   assert.equal(onPg(array(pg("timestamptz"))), undefined);
-  // An instant that keeps an offset per value would lose it in a Temporal.Instant.
-  assert.equal(onPg({ ...pg("timestamptz"), zone: "offset" } as EngineType), undefined);
+  // A moment kept with the zone it was written in would lose the zone in a Temporal.Instant.
+  assert.equal(onPg({ kind: "zoned_datetime", tick: "1/1000000", offset_only: true, label: "timestamptz" }), undefined);
   // MySQL's TIMESTAMP reaches the client as the session's wall-clock time; its TIME is a duration,
   // which runs past 24 hours and below zero; its BOOLEAN is a tinyint(1); its SET is a Set.
   const onMy = (t: EngineType) => leafCodec(t, "mysql", every);
@@ -72,7 +72,7 @@ test("a plan follows every part of a value Reylo decodes, and stops at JSON", ()
   // A DuckDB struct's fields, a map's keys and values, a tagged union's value.
   const struct = record([field("at", duck("timestamptz")), field("name", duck("varchar")), field("n", duck("decimal"))]);
   assert.deepEqual(planOf(struct, "duckdb", every), { fields: { at: "instant", n: "decimal:number" } });
-  assert.deepEqual(planOf({ kind: "map", key: duck("date"), value: { type: duck("varchar"), nullable: true } }, "duckdb", every), { entries: { key: "date" } });
+  assert.deepEqual(planOf({ kind: "map", key: { type: duck("date") }, value: { type: duck("varchar"), nullable: true } }, "duckdb", every), { entries: { key: "date" } });
   assert.deepEqual(planOf(tagged(["at", duck("timestamptz")], ["s", duck("varchar")]), "duckdb", every), { tags: { at: "instant" } });
   assert.deepEqual(planOf(array(struct), "duckdb", every), { array: { fields: { at: "instant", n: "decimal:number" } } });
   // A structured parameter's members are fields too.
@@ -93,7 +93,7 @@ test("a codec position is declared its codec's type, through every part Reylo de
   assert.equal(renderType(record([field("at", duck("timestamptz")), field("n", duck("decimal"))]), false, "duckdb", every), "{ at: Temporal.Instant | null; n: number | null }");
   // A SET's array is of its members' type.
   assert.equal(renderType(my("set"), false, "mysql", every), "string[]");
-  assert.equal(renderType({ ...my("set"), element: { type: { kind: "text", enum: ["a", "b"] } } } as EngineType, false, "mysql", every), '("a" | "b")[]');
+  assert.equal(renderType({ ...my("set"), element: { type: { kind: "enum", type: { kind: "text" }, values: ["a", "b"] } } } as EngineType, false, "mysql", every), '("a" | "b")[]');
   assert.equal(renderType(tagged(["at", duck("timestamptz")], ["s", duck("varchar")]), false, "duckdb", every), '{ tag: "at"; value: Temporal.Instant | null } | { tag: "s"; value: string | null }');
   // Inside JSON the database writes the value, which keeps JSON's type.
   assert.equal(renderType({ kind: "json", content: { type: pg("timestamptz") } }, false, "postgres", every), "string");

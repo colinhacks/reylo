@@ -5,7 +5,7 @@
 // value nothing types there, or a `json` or `jsonb` value nothing constrains, is any JSON value:
 // `Json`, which the generated module imports from `reylo`.
 import { CODEC_TYPE, leafCodec, type Codec, type Codecs } from "./codecs.ts";
-import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type Field, type Position } from "./engine-type.ts";
+import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type Field, type Slot } from "./engine-type.ts";
 import { columnKind, isRowKind, kindType as typeOfKind, RANGE_BOUNDS, type Dialect, type JsonNumbers } from "./values.ts";
 
 /** The type a codec gives a value of `t`: its own, or for a SET's array an array of its members' type, by `member`. */
@@ -75,8 +75,9 @@ function jsonImage(t: EngineType, dialect: Dialect, inUnion = false): string {
   // MySQL writes a SET inside a document as its members joined by commas.
   if (isMysqlSet(t)) return dialect === "sqlite" ? JSON_TYPE : "string";
   switch (t.kind) {
-    case "boolean": return t.enum?.length ? t.enum.join(" | ") : "boolean";
-    case "tuple": return `[${t.elements.map((e) => (e.nullable ? orNull(jsonImage(e.type, dialect)) : jsonImage(e.type, dialect))).join(", ")}]`;
+    case "boolean": return "boolean";
+    case "enum": return enumLiteral(t, jsonImage(t.type, dialect, inUnion));
+    case "tuple": return tupleOf(t, (e) => jsonImage(e, dialect));
     case "integer":
       if (dialect === "postgres" && name === "oid") return "string";
       return "number";
@@ -91,7 +92,7 @@ function jsonImage(t: EngineType, dialect: Dialect, inUnion = false): string {
       return ["number", ...text].join(" | ");
     }
     case "text":
-      return t.enum?.length ? t.enum.map((l) => JSON.stringify(l)).join(" | ") : "string";
+      return "string";
     case "union": {
       // SQLite: a value of a column a NUMERIC declares is a number or the text it holds.
       if (dialect === "sqlite") return /^bool(ean)?$/i.test(name) ? "boolean" : name.toUpperCase() === "NUMERIC" ? "number | string" : JSON_TYPE;
@@ -117,15 +118,11 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
   const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
   if (codec !== undefined) return codecType(codec, t, (e) => renderType(e, false, dialect));
   switch (t.kind) {
-    // A literal: a truth value or a float of one value, or any of a few.
-    case "boolean":
-      if (t.enum?.length) return t.enum.join(" | ");
-      break;
-    case "float":
-      if (t.enum?.length && !inJson) return t.enum.join(" | ");
-      break;
+    // An enum's labels, a CHECK's list, or a literal.
+    case "enum":
+      return enumLiteral(t, renderType(t.type, inJson, dialect, codecs));
     case "tuple":
-      return `[${t.elements.map((e) => (e.nullable ? orNull(renderType(e.type, inJson, dialect, codecs)) : renderType(e.type, inJson, dialect, codecs))).join(", ")}]`;
+      return tupleOf(t, (e) => renderType(e, inJson, dialect, codecs));
     case "array": {
       // A MySQL SET is a Set of its members, and its text inside a document or on another database.
       if (isMysqlSet(t)) return !inJson && dialect === "mysql" ? `Set<${renderType(t.element.type, false, dialect, codecs)}>` : "string";
@@ -148,7 +145,7 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       // An array of arrays reads `(number | null)[][]`: an inner array takes no more parentheses.
       return /[|&]/.test(inner) && !/^(?:\(.*\)\[\]|NestedArray<.*>)(?:\[\])*$/.test(inner) ? `(${inner})[]` : `${inner}[]`;
     }
-    case "record":
+    case "struct":
       // A row inside a document is an object of its fields; a built-in geometric type, its text.
       if (inJson) return dialect === "postgres" && name !== "record" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect, t.extra);
       // A DuckDB struct's fields stand as a row's values do.
@@ -168,17 +165,13 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       return t.schema === undefined ? JSON_TYPE : schemaType(schemaOf(t));
     case "map":
       // A DuckDB map's entries stand as a row's values do.
-      if (dialect === "duckdb") return `{ key: ${renderType(t.key, false, dialect, codecs)}; value: ${orNull(renderType(t.value.type, false, dialect, codecs))} }[]`;
+      if (dialect === "duckdb") return `{ key: ${renderType(t.key.type, false, dialect, codecs)}; value: ${orNull(renderType(t.value.type, false, dialect, codecs))} }[]`;
       break;
     case "tagged_union":
       // A tagged union is one alternative, `{ tag, value }`, as DuckDB's client returns it; inside
       // a document, whose form of it the engine does not read, any JSON.
       if (inJson) break;
       return t.alternatives.length ? t.alternatives.map((a) => `{ tag: ${JSON.stringify(a.tag)}; value: ${a.nullable ? orNull(renderType(a.type, false, dialect, codecs)) : renderType(a.type, false, dialect, codecs)} }`).join(" | ") : "never";
-    case "text":
-      // An enum's labels, or the strings a CHECK keeps a column to.
-      if (t.enum !== undefined) return t.enum.length ? t.enum.map((l) => JSON.stringify(l)).join(" | ") : "string";
-      break;
     // A Postgres range is an object of its bounds, a multirange an array of ranges.
     case "range":
     case "multirange":
@@ -212,9 +205,9 @@ export function jsonNumbers(t: EngineType, inJson = false): JsonNumbers | undefi
     case "array": {
       if (inJson ? json[name] !== undefined : !columnKind(t, "postgres").endsWith("[]")) return undefined;
       const items = jsonNumbers(t.element.type, inJson);
-      return items === undefined ? undefined : { items, ...(t.any_depth ? { deep: true as const } : {}) };
+      return items === undefined ? undefined : { items, ...(nestsAnyDeep(t) ? { deep: true as const } : {}) };
     }
-    case "record": {
+    case "struct": {
       if (!inJson || json[name] !== undefined) return undefined;
       const keys = lastOfEachName(t.fields).flatMap((f): [string, JsonNumbers][] => {
         const inner = jsonNumbers(f.type, true);
@@ -319,6 +312,39 @@ function union(parts: string[]): string {
   return real.length ? real.join(" | ") : "never";
 }
 
+/**
+ * An enum's values as TypeScript's literal types, where its base renders as the primitive they are
+ * values of: a truth value as itself, a number as a number or a BigInt's literal, text as a
+ * string's. Any other base stands alone, a decimal's among them, whose text the database writes
+ * at the scale it stores (`1.50`), where the format writes the value (`1.5`).
+ */
+function enumLiteral(t: Extract<EngineType, { kind: "enum" }>, base: string): string {
+  const values = t.values;
+  switch (t.type.kind) {
+    case "boolean":
+      if (base === "boolean") return values.join(" | ");
+      break;
+    case "integer":
+      if (base === "number") return values.join(" | ");
+      if (base === "bigint") return values.map((v) => `${v}n`).join(" | ");
+      break;
+    case "float":
+      if (base === "number") return values.join(" | ");
+      break;
+    case "text":
+      if (base === "string") return values.map((v) => JSON.stringify(v)).join(" | ");
+      break;
+  }
+  return base;
+}
+
+/** A tuple's TypeScript: its elements, then its optional ones with `?`, then its rest. */
+function tupleOf(t: Extract<EngineType, { kind: "tuple" }>, render: (t: EngineType) => string): string {
+  const slot = (s: { type: EngineType; nullable?: true }) => (s.nullable ? orNull(render(s.type)) : render(s.type));
+  const items = [...t.elements.map(slot), ...(t.optional_elements ?? []).map((s) => `${grouped(slot(s))}?`), ...(t.rest ? [`...${grouped(slot(t.rest))}[]`] : [])];
+  return `[${items.join(", ")}]`;
+}
+
 /** A type in parentheses where it is a union at its own top level, as an array's element or an optional tuple element must be. */
 function grouped(ts: string): string {
   let depth = 0;
@@ -345,7 +371,7 @@ export function lastOfEachName<T extends { name: string }>(items: readonly T[]):
 }
 
 /** An object type of JSON-encoded fields, each nullable as the engine says. */
-function renderFields(fields: readonly Field[], dialect: Dialect, extra?: Position): string {
+function renderFields(fields: readonly Field[], dialect: Dialect, extra?: Slot): string {
   fields = lastOfEachName(fields);
   const each = fields.map((f) => [f, f.nullable ? orNull(renderType(f.type, true, dialect)) : renderType(f.type, true, dialect)] as const);
   // An open object's other keys: an index signature, which each named field's type must also fit.
@@ -389,9 +415,9 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   if (dialect === "duckdb") {
     if (kind === "int8") return "number | bigint | string";
     if (kind === "decimal" || kind === "date" || kind === "timestamp" || kind === "timestamptz" || kind === "interval") return "string";
-    if (t.kind === "record" && t.fields.length && t.fields.every((f) => f.name === "")) return `readonly [${t.fields.map((f) => orNull(renderParamType(f.type, dialect, true, undefined, codecs))).join(", ")}]`;
-    if (t.kind === "record" && members === undefined) return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${orNull(renderParamType(f.type, dialect, true, undefined, codecs))}`).join("; ")} }` : "Record<never, never>";
-    if (t.kind === "map") return `readonly { key: ${renderParamType(t.key, dialect, true, undefined, codecs)}; value: ${orNull(renderParamType(t.value.type, dialect, true, undefined, codecs))} }[]`;
+    if (t.kind === "tuple") return `readonly ${tupleOf(t, (e) => renderParamType(e, dialect, true, undefined, codecs))}`;
+    if (t.kind === "struct" && members === undefined) return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${orNull(renderParamType(f.type, dialect, true, undefined, codecs))}`).join("; ")} }` : "Record<never, never>";
+    if (t.kind === "map") return `readonly { key: ${renderParamType(t.key.type, dialect, true, undefined, codecs)}; value: ${orNull(renderParamType(t.value.type, dialect, true, undefined, codecs))} }[]`;
   }
   // A JSON parameter takes the JSON a result of its type holds, which `.run()` writes with
   // `JSON.stringify`, so one with no schema takes whatever that writes, a value with a `toJSON()`
@@ -401,14 +427,14 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   // A structured parameter: one row, or an array of rows, each key as a parameter of its type
   // takes it, `?` where the caller may leave it out, `| null` where it may be null.
   if (members !== undefined) {
-    const record = t.kind === "record" ? t : t.kind === "array" && t.element.type.kind === "record" ? t.element.type : undefined;
+    const record = t.kind === "struct" ? t : t.kind === "array" && t.element.type.kind === "struct" ? t.element.type : undefined;
     if (record !== undefined) {
       const fields = record.fields.map((f) => {
         const type = renderParamType(f.type, dialect, true, undefined, codecs);
         return `${ident(f.name)}${f.optional ? "?" : ""}: ${f.nullable ? orNull(type) : type}`;
       });
       const row = fields.length ? `{ ${fields.join("; ")} }` : "Record<never, never>";
-      return t.kind === "record" ? row : `readonly ${row}[]`;
+      return t.kind === "struct" ? row : `readonly ${row}[]`;
     }
   }
   if (dialect === "postgres" && (t.kind === "range" || t.kind === "multirange")) {
@@ -417,7 +443,7 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   }
   // A Postgres row value takes an object of its fields, each as a member of a structured parameter
   // takes it, null where the field may be; a geometric type the object it returns.
-  if (dialect === "postgres" && t.kind === "record" && members === undefined && kind !== "text") {
+  if (dialect === "postgres" && t.kind === "struct" && members === undefined && kind !== "text") {
     if (!isRowKind(kind)) return renderType(t, false, dialect, codecs);
     return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${(f.nullable ? orNull : (x: string) => x)(renderParamType(f.type, dialect, true, undefined, codecs))}`).join("; ")} }` : "Record<never, never>";
   }

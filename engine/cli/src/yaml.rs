@@ -248,20 +248,17 @@ params:
   - name: id
     type: { kind: integer, bits: 64, label: int8 }
 result:
-  kind: array
-  size: { max: 1 }
-  element:
-    type:
-      kind: record
-      fields:
-        - name: id
-          type: { kind: integer, bits: 64, label: int8 }
-        - name: email
-          type: { kind: text, size: { max: 255 }, label: varchar }
-        - name: bio
-          nullable: true
-          type: { kind: text, label: text }
-          comment: Shown on the profile page
+  kind: table
+  cardinality: at_most_one
+  columns:
+    - name: id
+      type: { kind: integer, bits: 64, label: int8 }
+    - name: email
+      type: { kind: text, code_points: [[1, 1114111]], size: { max: 255 }, label: varchar }
+    - name: bio
+      nullable: true
+      type: { kind: text, code_points: [[1, 1114111]], label: text }
+      comment: Shown on the profile page
 diagnostics: []
 "#
         );
@@ -275,7 +272,7 @@ diagnostics: []
             "a\nb", "a\nb\n", "a\nb\n\n", "a\n\nb", " a\nb", "\na", "a\n  b", "a\n \nb", "a\r\nb", "a\n\tb", "\n", "a\n---\nb", "a\n#b",
         ];
         for s in strings {
-            let value = json!({ "s": s, "in": [s], "type": { "kind": "text", "enum": [s, "x"] } });
+            let value = json!({ "s": s, "in": [s], "type": { "kind": "enum", "type": { "kind": "text" }, "values": [s, "x"] } });
             assert_eq!(read_back(&value), value, "{s:?}\n{}", document(&value));
         }
     }

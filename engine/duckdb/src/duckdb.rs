@@ -23,7 +23,7 @@ use std::ops::ControlFlow;
 /// A type under what the statement shows of an array of rows ([`Out::rows`]): its elements are structs, and each field is NULL only where its column may be.
 fn with_rows(mut ty: Type, out: &Out) -> Type {
     if let (Some(rows), Kind::Array(array)) = (&out.rows, &mut ty.kind) {
-        if let Kind::Record(record) = &mut array.element.ty.kind {
+        if let Kind::Struct(record) = &mut array.element.ty.kind {
             if record.fields.len() == rows.len() {
                 array.element.nullable = false;
                 for (field, row) in record.fields.iter_mut().zip(rows) {
@@ -39,7 +39,7 @@ fn with_rows(mut ty: Type, out: &Out) -> Type {
 /// A UUID type under the version of every UUID the column holds ([`Out::version`]).
 fn with_version(mut ty: Type, out: &Out) -> Type {
     if let Kind::Uuid(uuid) = &mut ty.kind {
-        uuid.version = out.version.or(uuid.version);
+        uuid.versions = out.version.map(|v| vec![v]).or(uuid.versions.take());
     }
     ty
 }
@@ -55,10 +55,6 @@ const RETURN_ROWS: &[&str] = &["SELECT", "EXPLAIN", "CALL", "PRAGMA", "RELATION"
 pub fn analyze_text(sql: &str, host: &Host) -> Lazy<Analysis> {
     reylo_engine_core::structured::analyze(sql, Dialect::Duckdb, host, &|sql, marked| analyze(sql, host, marked), &|diagnostics| reylo_engine_core::analysis::bare_of(sql, Dialect::Duckdb, diagnostics))
 }
-
-/// The diagnostic code of a column or a parameter that holds a struct whose fields have no names
-/// ([`crate::types::unnamed`]).
-pub const UNNAMED_FIELDS: u32 = 22;
 
 /// The analysis of a statement whose placeholders are Reylo's and DuckDB's own; `marked` names the
 /// parameters cast to `nullable(…)`.
@@ -136,13 +132,20 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let proven = shaped.as_deref().filter(|_| rows).and_then(|s| outputs(s, &ctx)).filter(|out| {
         out.len() == raw.columns.len() && out.iter().zip(&raw.columns).all(|(o, c)| o.name.as_deref().is_none_or(|n| n.eq_ignore_ascii_case(&c.name)))
     });
+    // The constants each column holds, where the statement writes nothing else into it.
+    let literals = shaped.as_deref().filter(|_| rows).and_then(crate::literals::columns).filter(|l| l.len() == raw.columns.len()).unwrap_or_default();
     let columns: Vec<Column> = if rows {
         raw.columns
             .iter()
             .enumerate()
             .map(|(i, c)| {
                 let out = proven.as_ref().map(|p| &p[i]);
-                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), out.map_or_else(|| crate::types::of(&c.ty), |o| with_version(with_rows(crate::types::of(&c.ty), o), o)), !out.is_some_and(|o| o.not_null)) }
+                let ty = out.map_or_else(|| crate::types::of(&c.ty), |o| with_version(with_rows(crate::types::of(&c.ty), o), o));
+                let ty = match literals.get(i) {
+                    Some(Some(written)) => reylo_engine_core::literal::narrow(&ty, written).unwrap_or(ty),
+                    _ => ty,
+                };
+                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), ty, !out.is_some_and(|o| o.not_null)) }
             })
             .collect()
     } else {
@@ -185,25 +188,6 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             None => (Cardinality::Many, Some("the engine does not read this statement's syntax, so nothing bounds its rows".to_string())),
         }
     };
-    // A struct whose fields have no names is refused where a column or a parameter has one.
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    if rows {
-        for c in raw.columns.iter().filter(|c| crate::types::unnamed(&c.ty)) {
-            let message = format!("Column \"{}\" holds a struct whose fields have no names, as (1, 'a') and row(…) build, and a value's fields are read by their names: name them, as in {{'a': 1, 'b': 'x'}} or struct_pack(a := 1, b := 'x')", c.name);
-            diagnostics.push(Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: UNNAMED_FIELDS, server_code: None });
-        }
-    }
-    for (i, name) in lexed.params.iter().enumerate() {
-        let n = (i + 1).to_string();
-        let described = raw.params.iter().find(|p| p.name == n).or_else(|| raw.params.get(i));
-        if !described.and_then(|p| p.ty.as_ref()).is_some_and(crate::types::unnamed) {
-            continue;
-        }
-        let Some(p) = lexed.placeholders.iter().find(|p| &p.name == name) else { continue };
-        let written = &sql[p.start..p.end];
-        let message = format!("{written} takes a struct whose fields have no names, and a value's fields are read by their names: cast it to a struct that names them, as in {written}::struct(a integer, b varchar)");
-        diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
-    }
     let rewritten_sql = rewritten.sql.clone();
     let analysis_columns = columns.len();
     let targets = shaped.as_deref().and_then(|statement| {
@@ -229,7 +213,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         value: false,
         rewritten,
         style: lexed.style,
-        diagnostics,
+        diagnostics: Vec::new(),
         unresolved: Vec::new(),
         structured: Vec::new(),
         fresh: None,
