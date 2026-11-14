@@ -1828,23 +1828,15 @@ impl Alterer for DuckdbAlterer {
     fn drop_waits_for(&self, id: &str) -> Vec<String> {
         let schemas = self.schemas();
         let Some((fs, ts)) = schemas.as_ref() else { return vec![] };
-        // The defaults its drop takes off and sets back read, by the same name, what the plan makes
-        // in its place: that first.
-        if let Some(x) = fs.objects.get(id).filter(|_| !ts.objects.contains_key(id)) {
-            // And they bind it as it will be: after its change, as after its create. Each after the
-            // table's own statements too, which may rename the column (`drop` names it as the target
-            // does).
-            let taken = self.drop_taken(fs, ts, x);
-            let mut out: Vec<String> = taken.iter().filter_map(|c| self.target_column(ts, c)).flat_map(|t| t.deps.iter().cloned().chain([t.id.clone()]).chain(t.owner.clone())).collect();
-            out.extend(self.groups(fs, ts).iter().filter(|g| g.touched.iter().any(|t| fs.objects.get(t).is_some_and(|o| fields(o, "recorded").contains(&id)))).map(|g| g.ids[0].clone()));
-            return out;
-        }
-        // A macro, type or sequence the plan drops, after the groups that make again the tables
-        // DuckDB records as using it, which let it go; anything else the plan drops goes first.
-        if ts.objects.contains_key(id) || !fs.objects.get(id).is_some_and(|x| matches!(x.kind, Some(Kind::Function | Kind::Type | Kind::Sequence))) {
-            return vec![];
-        }
-        self.groups(fs, ts).iter().filter(|g| g.touched.iter().any(|t| fs.objects.get(t).is_some_and(|o| fields(o, "recorded").contains(&id)))).map(|g| g.ids[0].clone()).collect()
+        // Only a macro, type or sequence the plan drops waits: anything else goes first.
+        let Some(x) = fs.objects.get(id).filter(|x| !ts.objects.contains_key(id) && matches!(x.kind, Some(Kind::Function | Kind::Type | Kind::Sequence))) else { return vec![] };
+        // The defaults its drop takes off and sets back bind what they read by its name as the plan
+        // leaves it: after that one's create or change, and after their tables' own statements,
+        // which may rename the column (`drop` names it as the target does).
+        let mut out: Vec<String> = self.drop_taken(fs, ts, x).iter().filter_map(|c| self.target_column(ts, c)).flat_map(|t| t.deps.iter().cloned().chain([t.id.clone()]).chain(t.owner.clone())).collect();
+        // After the groups that make again the tables DuckDB records as using it, which let it go.
+        out.extend(self.groups(fs, ts).iter().filter(|g| g.touched.iter().any(|t| fs.objects.get(t).is_some_and(|o| fields(o, "recorded").contains(&id)))).map(|g| g.ids[0].clone()));
+        out
     }
 
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
