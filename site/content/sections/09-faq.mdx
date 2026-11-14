@@ -20,7 +20,7 @@ Yes: [`reylo migrate`](/migrations) writes each migration from your `schema.sql`
 </Accordion>
 <Accordion title="How do I type-check in CI?" id="in-ci">
 
-Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too. [`direct_url`](/configuration#direct_url) names the database it reads. To skip analyzing what hasn't changed, keep `reylo/.cache/` in your CI's cache: a database built by the same migrations reads its entries. Before Reylo 0.8.0, a Postgres built with JIT, as most Docker images are, can make the type check take minutes: add `?options=-c%20jit%3Doff` to its URL.
+Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too. [`direct_url`](/configuration#direct_url) names the database it reads. To skip analyzing what hasn't changed, keep `reylo/.cache/` in your CI's cache: a database built by the same migrations reads its entries. Before Reylo 0.8.0, a Postgres built with JIT, as most Docker images are, can make the type check take minutes: add `?options=-c%20jit%3Doff` to its URL. [CI](/ci) has a complete GitHub Actions workflow.
 
 </Accordion>
 <Accordion title="How do I move a project from Prisma?" id="faq-prisma">
@@ -40,7 +40,15 @@ It holds your [migrations](/migrations), which you commit, and Reylo's cache of 
 </Accordion>
 <Accordion title="Can I build without a database?" id="faq-no-database">
 
-No, not yet: Reylo reads your types from a live database, so a type check or a build needs one. A host that builds before it migrates, such as Vercel, can build against a database of its own:
+Yes, where `reylo/.cache/` already holds each query's analysis. A type check or a build that can't reach the database reads its types from there, and says so: every build step prints one line, and a query's hover shows it.
+
+```txt
+reylo: cannot connect to the database at localhost:5432/app (DATABASE_URL in .env): connection refused; building from reylo/.cache/, analyzed 2026-11-07
+```
+
+The types are then as old as that analysis, so a migration since doesn't show. With a server's URL set, a build reads only what was analyzed on that database. With none, or where the database is a file, as on SQLite and DuckDB, it reads the newest analysis of any. A query that `reylo/.cache/` doesn't hold is an error.
+
+A host that builds before it migrates, such as Vercel, starts with no `reylo/.cache/`, so build against a database of its own there:
 
 1. Create an empty database.
 2. Run your migrations into it, which also tries each one before it reaches production.
@@ -51,7 +59,7 @@ No, not yet: Reylo reads your types from a live database, so a type check or a b
 </Accordion>
 <Accordion title="Why are dates strings, and 64-bit integers bigints?" id="faq-value-types">
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](/inference#data-types).
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](/inference#primitives).
 
 </Accordion>
 <Accordion title="How do I add observability to my queries?" id="faq-observability">

@@ -571,6 +571,12 @@ enum Target {
     Position(usize),
 }
 
+/// The parameters `statement` writes whole and bare to a column: a VALUES item, a SET's value, a
+/// column of the SELECT that feeds an INSERT. By the tree alone, whatever schema the table is in.
+pub(crate) fn written_whole(statement: &Statement, names: &Names) -> HashSet<String> {
+    filled(statement, names, Fill::Bare).into_iter().map(|(param, _, _)| param).collect()
+}
+
 /// Every table `statement` writes a parameter to whole, bare or cast, the SELECT that feeds an
 /// INSERT included: the tables whose columns [`nullable`] reads.
 fn written(statement: &Statement, names: &Names) -> Vec<String> {

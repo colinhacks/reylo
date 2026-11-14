@@ -63,6 +63,21 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from Postgres's own analysis of it.
+
+Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type. This information is cross-referenced against the schema catalog, enabling high-fidelity type inference for any query.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the server's description of the prepared statement |
+| Column types | the server's description; an enum as its labels, a domain as its base type, a JSON column as what its JSON Schema `CHECK` admits |
+| Nullability | the catalog's `NOT NULL`, outer joins, the expressions |
+| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
+| Nested rows | an `array(select r from (…) r)` of a subquery's or a table's whole rows, typed field by field |
+| Nested JSON | built with `jsonb_build_object`, `jsonb_agg` or `to_jsonb` of a row, typed from their arguments |
+
 ## Data types
 
 Each Postgres type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from what `Bun.sql` loses ([Drivers](#drivers)):
@@ -196,7 +211,7 @@ A `date`, `timestamp` or `timestamptz` uses ISO 8601's extended year, a sign and
 
 **Times**
 
-A `time` or `timetz` is the text Postgres writes in its default `DateStyle`. If your session changes it, the text changes too.
+A `time` or `timetz` is the text Postgres writes in its default `DateStyle`. If your session changes it, the text changes too. A `date`, `timestamp` or `timestamptz` is read in the ISO style only: under another `DateStyle`, set on the session, the role or the database, `.run()` throws rather than return a date in another format. Where the role or the database the type check connects to sets one, a query that returns such a column is a type error too.
 
 <Pairs>
 
@@ -1214,7 +1229,7 @@ await client.query("commit");
 client.release();
 ```
 
-A client created with `binary: true` isn't supported, and neither is pg's native client, `pg.native`, which ignores the type parsers a query passes. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy, since Reylo tells one by its shape.
+A client created with `binary: true` isn't supported, and neither is pg's native client, `pg.native`, which ignores the type parsers a query passes. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy. Reylo tells a client by its shape, and `.run()` throws on an object that is none of these drivers' clients before it runs the query, since a wrapper returns the values `pg` already converted.
 
 ### postgres.js
 

@@ -59,7 +59,7 @@ Supports Postgres, MySQL and SQLite, with one set of commands.
 </Feature>
 </Features>
 
-<MigrationsDiagram />
+<MigrationsDiagram caption="Your schema, migrations and database, and the commands that move a change between them" />
 
 ## Basic usage
 
@@ -120,55 +120,13 @@ Applying to postgres://db.example.com/app
 ✓ Applied 1 migration
 ```
 
-## Shadow databases
+## Schema modeling
 
-Many Reylo Migrate operations rely on a shadow database.
+Your schema lives in `schema.sql`, or in your migrations alone.
 
-It's a throwaway database beside yours: Reylo Migrate runs your migrations on it, reads the schema they make, and drops it. That's why hand-written SQL counts, and why there's no snapshot file to keep in step. You don't set anything up: on a local database you're a superuser on, you'll never notice them. Writing and repairing migrations need one, and a deploy doesn't:
+By default it's `schema.sql`: the whole schema you want, as plain SQL, from which `reylo migrate new` writes each change as a migration, as in [Basic usage](#basic-usage).
 
-| Needs a shadow database | Needs none |
-| --- | --- |
-| `reylo migrate init` | `reylo migrate deploy` |
-| `reylo migrate new` | `reylo migrate status` |
-| `reylo migrate dev` | `reylo db introspect` |
-| `reylo migrate deploy --dry-run` | `reylo db wipe` |
-| `reylo migrate lock` | |
-| `reylo migrate history push` | |
-| `reylo migrate history pull` | |
-| `reylo db push` | |
-| `reylo db reset` | |
-
-Each database makes them its own way:
-
-- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
-- **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
-- **SQLite:** in memory. There's nothing to grant.
-
-On Supabase, each shadow also gets what Supabase made in your database: its extensions, and its own schemas such as `auth` and `storage`. A migration that references `auth.users`, or adds a policy on `storage.objects`, replays as it runs.
-
-Where your role can't create a database, point `shadow_url` at a server that can, running the same version:
-
-```yaml title=".reylo.yaml"
-# a local Postgres 18, for a hosted Postgres 18
-shadow_url: postgres://localhost:5433/postgres
-```
-
-## The lock
-
-The lock lists your migrations in the order they run.
-
-Each line has a checksum chained to the line before. A migration it doesn't list is a draft, free to edit, which only `reylo migrate dev` runs:
-
-```yaml title="reylo-lock.yaml"
-schema: c7bf681b
-migrations:
-  - 20261104120000_users.sql c86e9de4
-  - 20261104140347_add_bio.sql 78ad08c0
-```
-
-When two branches each add a migration, git conflicts on the lock, before anything is deployed. Keep main's lines, then run `reylo migrate dev`, which runs your branch's migrations after main's and adds them back.
-
-## Schemaless mode
+### Schemaless mode
 
 Delete `schema.sql`, and your migrations are your schema.
 
@@ -197,7 +155,22 @@ What changes:
 
 You give up the one file that shows your whole schema, and the check that your migrations make the schema you meant.
 
-## Lock-free mode
+## Ordering
+
+The lockfile, `reylo-lock.yaml`, keeps your migrations in one order.
+
+Each of its lines has a checksum chained to the one before. A migration it doesn't list is a draft, free to edit, which only `reylo migrate dev` runs:
+
+```yaml title="reylo-lock.yaml"
+schema: c7bf681b
+migrations:
+  - 20261104120000_users.sql c86e9de4
+  - 20261104140347_add_bio.sql 78ad08c0
+```
+
+When two branches each add a migration, git conflicts on the lock, before anything is deployed. Keep main's lines, then run `reylo migrate dev`, which runs your branch's migrations after main's and adds them back.
+
+### Lock-free mode
 
 Delete `reylo-lock.yaml`, and your migrations run in name order.
 
@@ -232,23 +205,6 @@ You give up:
 - **Checksums.** With none, a migration edited before any database ran it goes unseen, and only a dry run holds `schema.sql` against your migrations.
 
 To turn the lock back on, `reylo migrate lock` writes it from a database's history.
-
-## Changing a column
-
-Add before you remove.
-
-Your migration and your new build don't go live at the same moment, so add the new column, then ship the code that uses it, and only then drop the old one. A migration that only adds leaves a running build alone.
-
-While the old build is live:
-
-| The migration | Each query in the old build that names the column |
-| --- | --- |
-| Retypes it or makes it nullable | Runs, [warns once](/observability#when-the-schema-changes), and may return a value its types don't allow |
-| Renames or drops it | Fails with the database's error, and after a `*` runs without the column |
-
-The same holds when you roll back to a build from before such a migration, and when someone makes such a change by hand, until you build again.
-
-To roll back across a migration, redeploy the older commit, so that it builds against the schema you have now.
 
 ## CLI
 
@@ -513,6 +469,22 @@ $ reylo migrate deploy --dry-run
 
 A migration that fails rolls back, and your database records nothing of it. Fix the file, run `reylo migrate dev`, which locks it again as it now reads, and deploy the fix. A database that already ran the old version refuses the edited one, so where one did, write a new migration instead.
 
+Your migration and your new build go live at different moments, so a change the live build depends on takes steps. While that build runs, its queries fail on a column a migration renamed or dropped, and [warn](/observability#when-the-schema-changes) on one it retyped or made nullable. To rename `users.email` to `contact`, deploy each step before the next. First, add the new column and copy its values, then deploy code that reads `contact` and writes both columns:
+
+```sql title="20261110120000_add_contact.sql"
+alter table users add column contact text;
+update users set contact = email;
+```
+
+Once that build runs everywhere, copy what the old build wrote in the meantime, and drop the old column:
+
+```sql title="20261112120000_drop_email.sql"
+update users set contact = email where contact is null or contact <> email;
+alter table users drop column email;
+```
+
+To roll back across a migration, redeploy the older commit, so that it builds against the schema you have now.
+
 Two things the fingerprint leaves out:
 
 - **Comments.** Your database's `COMMENT ON` comments aren't compared. A migration writes them, but one added in a dashboard stops no deploy.
@@ -752,23 +724,6 @@ The object holds:
 - Why a command couldn't start, such as a database it can't reach, in `error`.
 - Every line the command would have printed, in `log`.
 
-## Configuration
-
-Each setting is optional. Here they are with their defaults:
-
-```yaml title=".reylo.yaml"
-# the directory of schema.sql, the migrations, the lock and the cache
-dir: reylo
-
-# the database to migrate
-direct_url: ${DATABASE_URL}
-
-# a server for shadow databases; null uses your database's own
-shadow_url: null
-```
-
-To migrate another database, pass `--url`.
-
 ## Examples
 
 In development:
@@ -816,4 +771,54 @@ $ reylo migrate lock --url $PROD_URL
 
 # run a SQL file on a database, recording nothing
 $ reylo run --file backfill.sql --url $PROD_URL
+```
+
+## Configuration
+
+Each setting is optional. Here they are with their defaults:
+
+```yaml title=".reylo.yaml"
+# the directory of schema.sql, the migrations, the lock and the cache
+dir: reylo
+
+# the database to migrate
+direct_url: ${DATABASE_URL}
+
+# a server for shadow databases; null uses your database's own
+shadow_url: null
+```
+
+To migrate another database, pass `--url`.
+
+### Shadow databases
+
+Many Reylo Migrate operations rely on a shadow database.
+
+It's a throwaway database beside yours: Reylo Migrate runs your migrations on it, reads the schema they make, and drops it. That's why hand-written SQL counts, and why there's no snapshot file to keep in step. You don't set anything up: on a local database you're a superuser on, you'll never notice them. Writing and repairing migrations need one, and a deploy doesn't:
+
+| Needs a shadow database | Needs none |
+| --- | --- |
+| `reylo migrate init` | `reylo migrate deploy` |
+| `reylo migrate new` | `reylo migrate status` |
+| `reylo migrate dev` | `reylo db introspect` |
+| `reylo migrate deploy --dry-run` | `reylo db wipe` |
+| `reylo migrate lock` | |
+| `reylo migrate history push` | |
+| `reylo migrate history pull` | |
+| `reylo db push` | |
+| `reylo db reset` | |
+
+Each database makes them its own way:
+
+- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
+- **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
+- **SQLite:** in memory. There's nothing to grant.
+
+On Supabase, each shadow also gets what Supabase made in your database: its extensions, and its own schemas such as `auth` and `storage`. A migration that references `auth.users`, or adds a policy on `storage.objects`, replays as it runs.
+
+Where your role can't create a database, point `shadow_url` at a server that can, running the same version:
+
+```yaml title=".reylo.yaml"
+# a local Postgres 18, for a hosted Postgres 18
+shadow_url: postgres://localhost:5433/postgres
 ```

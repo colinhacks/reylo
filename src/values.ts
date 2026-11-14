@@ -345,7 +345,8 @@ export function kindType(kind: Kind): string {
 // ---------------------------------------------------------------------------------------------
 // The value of each kind from the server's text, as every Postgres driver but Bun.sql hands it
 // over (pg, pg-promise, Neon, PGlite, and postgres.js through `.raw()`), at the server's default
-// DateStyle (ISO), IntervalStyle and bytea_output, which the drivers' own parsers read too.
+// DateStyle (ISO), IntervalStyle and bytea_output, which the drivers' own parsers read too. A date
+// or a timestamp written under another DateStyle is refused (`isoStyle`).
 
 export type Decoder = (text: string) => unknown;
 
@@ -367,11 +368,22 @@ function isoDate(x: string): string {
   return isoYear(bc ? 1 - +digits : +digits) + x.slice(dash, bc ? -3 : undefined);
 }
 
+/**
+ * A date's, a timestamp's or a timestamptz's text, where it is ISO's: the year first, of four
+ * digits or more, or an infinity. Under another DateStyle the server writes `04/03/2026`,
+ * `04.03.2026` or `Wed Mar 04 10:00:00 2026`, which reads as another day or as none, so it is
+ * refused rather than returned as the type's string.
+ */
+function isoStyle(x: string): string {
+  if ((x.length >= 4 && digits(x, 0, 4)) || x === "infinity" || x === "-infinity") return x;
+  throw new DecodeError(`The database wrote a date or a time as ${JSON.stringify(x)}, which is not ISO 8601: the connection's DateStyle is another style, set on the session, the role or the database. Reylo reads the ISO style alone, so set it there (set datestyle = 'ISO').`);
+}
+
 /** `2026-10-20` as it is; `0002-06-01 BC` → `-000001-06-01` and `12345-01-01` → `+012345-01-01` (`isoDate`). */
-const date: Decoder = isoDate;
+const date: Decoder = (x) => isoDate(isoStyle(x));
 
 /** `2026-10-20 10:00:00.5` → `2026-10-20T10:00:00.500000`, its year as a date's (`isoDate`) and its fraction six digits (`sixDigits`); `infinity` as written. */
-const timestamp: Decoder = (x) => sixDigits(isoDate(x.replace(" ", "T")));
+const timestamp: Decoder = (x) => sixDigits(isoDate(isoStyle(x).replace(" ", "T")));
 
 /**
  * A Postgres `timestamp`'s ISO 8601 text with a fraction of six digits, the microseconds Postgres
@@ -501,10 +513,10 @@ function digits(x: string, start: number, end: number): boolean {
 /** The two digits at `i` as a number. */
 const two = (x: string, i: number) => (x.charCodeAt(i) - 48) * 10 + x.charCodeAt(i + 1) - 48;
 
-/** `instant` by the pattern, for every text: BC, any year, infinity, and text that is not a timestamptz's, returned as it is. */
+/** `instant` by the pattern, for every text: BC, any year, infinity, and text that is not a timestamptz's, returned as it is where it is ISO's (`isoStyle`). */
 function instantByPattern(x: string): string {
   const m = TSTZ.exec(x);
-  if (m === null) return x;
+  if (m === null) return isoStyle(x);
   const year = m[12] === undefined ? +m[1]! : 1 - +m[1]!;
   const offset = (m[8] === "-" ? -1 : 1) * (+m[9]! * 3600 + (m[10] === undefined ? 0 : +m[10] * 60) + (m[11] === undefined ? 0 : +m[11]));
   const seconds = daysFromCivil(year, +m[2]!, +m[3]!) * 86400 + +m[4]! * 3600 + +m[5]! * 60 + +m[6]! - offset;

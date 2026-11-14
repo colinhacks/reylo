@@ -3,7 +3,7 @@ title: "Inference"
 ---
 
 
-Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
+Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL, SQLite and DuckDB are all supported.
 
 Reylo is a [content mapper](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/#content-mappers), the kind of plugin [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) introduced for files that aren't TypeScript. Whenever the type checker meets a `.sql` import, in `tsc` or in your editor, it hands Reylo the file and takes back the module's types.
 
@@ -17,11 +17,27 @@ To type a query, Reylo has your live database prepare it, without running it, an
 - **Cardinality** — from keys, aggregates, `limit 1` and `returning`
 - **Column comments** — on Postgres and MySQL, shown when you hover a field that reads the column
 
+For example, `id` is the primary key, so this query returns at most one row:
+
+<Inferred>
+
+```sql file="get_user.sql" dialect="all"
+select id, name, email from users where id = :id::int
+```
+
+</Inferred>
+
 <PlaygroundLink />
 
-<Details summary="The TypeScript type of each SQL type, in each dialect" id="data-types">
+At run time, the [preload](/#setup-node) or a bundler [plugin](/#plugins) turns the same file into a module that runs the query through your driver.
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
+Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
+
+## Primitives [#primitives]
+
+Each SQL type has one TypeScript type, the same on every driver.
+
+A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
 
 <DialectTabs>
 <Dialect value="Postgres">
@@ -93,61 +109,6 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 </DialectTabs>
 
 For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types), [SQLite](/sqlite#data-types) and [DuckDB](/duckdb#data-types).
-
-</Details>
-
-At run time, the [preload](/#setup-node) or a bundler [plugin](/#plugins) turns the same file into a module that runs the query through your driver.
-
-Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
-
-<Details summary="Where each type comes from, in each dialect" id="sources">
-
-<DialectTabs>
-<Dialect value="Postgres">
-
-Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type. This information is cross-referenced against the schema catalog, enabling high-fidelity type inference for any query.
-
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | the server's description of the prepared statement |
-| Column types | the server's description; an enum as its labels, a domain as its base type, a JSON column as what its JSON Schema `CHECK` admits |
-| Nullability | the catalog's `NOT NULL`, outer joins, the expressions |
-| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
-| Nested rows | an `array(select r from (…) r)` of a subquery's or a table's whole rows, typed field by field |
-| Nested JSON | built with `jsonb_build_object`, `jsonb_agg` or `to_jsonb` of a row, typed from their arguments |
-
-</Dialect>
-<Dialect value="MySQL">
-
-Reylo sends the query to the live database [prepared](https://dev.mysql.com/doc/refman/8.4/en/sql-prepared-statements.html) and reads back the database's own type information on its parameters and return type.
-
-Reylo adds which parameters may be null, the row count, and the shape of JSON the query builds.
-
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | the prepared statement's metadata; whether one may be null, from the statement, as on Postgres |
-| Column types | the prepared statement's metadata; a JSON column read from its table as what its JSON Schema `CHECK` admits |
-| Nullability | the server's `NOT NULL` flag, then what the `where` and `group by` rule out |
-| Cardinality | primary and unique keys, aggregates; a write is `void` |
-| Nested JSON | built with `json_object` and `json_arrayagg`, typed from their arguments |
-
-</Dialect>
-<Dialect value="SQLite">
-
-Reylo reads the schema from the database file and [prepares](https://sqlite.org/c3ref/prepare.html) the query in its own copy of SQLite, which reports where each column and parameter comes from.
-
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | where SQLite places the parameter: a comparison with a column, an element of a row value, an `insert` or `update` column, a `cast`, `limit` and `offset` |
-| Column types | the declared type's affinity |
-| Nullability | the table's `NOT NULL`, outer joins, Reylo's table of SQLite's built-in functions |
-| Cardinality | unique indexes and `integer primary key` |
-| Nested JSON | built with `json_object` and `json_group_array`, typed from their arguments |
-
-</Dialect>
-</DialectTabs>
-
-</Details>
 
 ## Named parameters [#naming]
 

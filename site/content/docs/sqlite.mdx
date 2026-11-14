@@ -52,6 +52,20 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from SQLite's own analysis of it.
+
+Reylo reads the schema from the database file and [prepares](https://sqlite.org/c3ref/prepare.html) the query in its own copy of SQLite, which reports where each column and parameter comes from.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | where SQLite places the parameter: a comparison with a column, an element of a row value, an `insert` or `update` column, a `cast`, `limit` and `offset` |
+| Column types | the declared type's affinity |
+| Nullability | the table's `NOT NULL`, outer joins, Reylo's table of SQLite's built-in functions |
+| Cardinality | unique indexes and `integer primary key` |
+| Nested JSON | built with `json_object` and `json_group_array`, typed from their arguments |
+
 ## Data types
 
 SQLite doesn't enforce column types: a column's declared type only sets its affinity, except in a `STRICT` table ([Declared types and STRICT tables](#declared-types-and-strict-tables)). Reylo types each column by its declared type, and `.run()` returns the same value for it on every driver, or throws where a driver would round it ([Drivers](#drivers)):

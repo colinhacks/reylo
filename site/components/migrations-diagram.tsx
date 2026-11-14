@@ -254,11 +254,11 @@ function Figure({ without, narrow }: { without?: Without; narrow: boolean }) {
 /**
  * The diagram at the top of Migrations: schema.sql, the migrations and the database, and the
  * commands that move between them. `without` draws it with schema.sql or the lock deleted, the
- * parts that go with it grayed out. A container query picks the form: the wide one (520px) where
+ * parts that go with it grayed out, and `caption` says what it shows, under it. A container query picks the form: the wide one (520px) where
  * the column has room for it, and below that the narrow one (388px), which a phone's column shows
  * at no less than 92% of its size.
  */
-export function MigrationsDiagram({ without }: { without?: Without }) {
+export function MigrationsDiagram({ without, caption }: { without?: Without; caption?: string }) {
   return (
     <figure className="@container my-8">
       <div className="hidden @min-[520px]:block">
@@ -267,6 +267,7 @@ export function MigrationsDiagram({ without }: { without?: Without }) {
       <div className="@min-[520px]:hidden">
         <Figure without={without} narrow />
       </div>
+      {caption ? <figcaption className="reylo-figure-caption">{caption}</figcaption> : null}
     </figure>
   );
 }

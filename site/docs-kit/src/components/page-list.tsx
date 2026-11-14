@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'fumadocs-core/link';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { GitHubIcon, GitHubStar, ThemeRow } from './chrome';
 
 /** A page of the list. */
@@ -20,6 +20,21 @@ export type PageList = {
   /** The address of the page being read, which the list marks. */
   current: string;
 };
+
+/*
+ * The page being read is kept in view in the list, which otherwise opens at its top: a site with
+ * more pages than a window shows would mark a page low in the list out of sight. When the mark is
+ * out of the list's view, the list (not the window) scrolls to put it in the middle; when it is in
+ * view, nothing moves, so picking a page the list shows leaves the list where it was. The column
+ * does this from the first paint, by a script after the list, run as the page is parsed, and after
+ * each navigation; the sheet each time it opens.
+ */
+const CENTER_CURRENT = `var item = list && list.querySelector('[aria-current="page"]');
+if (!item) return;
+var box = list.getBoundingClientRect(), at = item.getBoundingClientRect();
+if (at.top < box.top || at.bottom > box.bottom) list.scrollTop += at.top - box.top - (box.height - at.height) / 2;`;
+const centerCurrent = new Function('list', CENTER_CURRENT) as (list: Element | null) => void;
+const CENTER_COLUMN_SCRIPT = `try { (function (list) { ${CENTER_CURRENT} })(document.currentScript.previousElementSibling); } catch (e) {}`;
 
 function Groups({ list, onPick }: { list: PageList; onPick?: () => void }) {
   return (
@@ -55,15 +70,22 @@ function Foot({ list, github, star }: { list: PageList; github: string; star: bo
   );
 }
 
-/** The left column: the name, the pages, and at its foot the links away from the docs, the theme switch and the note under the repository's link. */
+/**
+ * The left column: the name, then the pages and after them the links away from the docs, the theme
+ * switch and the note under the repository's link, which scroll with the pages rather than stay
+ * pinned to the column's foot.
+ */
 export function PageListColumn({ list, brand, github }: { list: PageList; brand: ReactNode; github: string }) {
+  const scroll = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => centerCurrent(scroll.current), [list.current]);
   return (
     <aside id="dk-page-list">
       <div className="dk-pages-brand">{brand}</div>
-      <div className="dk-pages-scroll">
+      <div ref={scroll} className="dk-pages-scroll">
         <Groups list={list} />
+        <Foot list={list} github={github} star />
       </div>
-      <Foot list={list} github={github} star />
+      <script dangerouslySetInnerHTML={{ __html: CENTER_COLUMN_SCRIPT }} />
     </aside>
   );
 }
@@ -83,6 +105,10 @@ function MenuIcon({ open }: { open?: boolean }) {
  */
 export function PageListMenu({ list, brand, github, title }: { list: PageList; brand: ReactNode; github: string; title: string }) {
   const [open, setOpen] = useState(false);
+  const scroll = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (open) centerCurrent(scroll.current);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const { overflow } = document.body.style;
@@ -105,10 +131,10 @@ export function PageListMenu({ list, brand, github, title }: { list: PageList; b
               <MenuIcon open />
             </button>
           </div>
-          <div className="dk-pages-scroll">
+          <div ref={scroll} className="dk-pages-scroll">
             <Groups list={list} onPick={() => setOpen(false)} />
+            <Foot list={list} github={github} star={false} />
           </div>
-          <Foot list={list} github={github} star={false} />
         </div>
       ) : null}
     </>

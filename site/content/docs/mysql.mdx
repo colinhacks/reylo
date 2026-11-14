@@ -56,6 +56,20 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from MySQL's own analysis of it.
+
+Reylo sends the query to the live database [prepared](https://dev.mysql.com/doc/refman/8.4/en/sql-prepared-statements.html) and reads back the database's own type information on its parameters and return type. Reylo adds which parameters may be null, the row count, and the shape of JSON the query builds.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the prepared statement's metadata; whether one may be null, from the statement |
+| Column types | the prepared statement's metadata; a JSON column read from its table as what its JSON Schema `CHECK` admits |
+| Nullability | the server's `NOT NULL` flag, then what the `where` and `group by` rule out |
+| Cardinality | primary and unique keys, aggregates; a write is `void` |
+| Nested JSON | built with `json_object` and `json_arrayagg`, typed from their arguments |
+
 ## Data types
 
 Each MySQL type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from a `FLOAT`'s last digits ([Decimals](#decimals)) and what `Bun.sql` loses ([Drivers](#drivers)):
@@ -569,6 +583,8 @@ select id from orders where placed_at > :since
 A `BINARY`, `VARBINARY` or `BLOB` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since MySQL would store the text's own bytes. Decode the text into a `Uint8Array` first.
 
 A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`.
+
+MySQL reads that JSON as a document where the parameter is written whole to a column, as in `set doc = :doc`, where it is the document a JSON function reads, as in `json_extract(:doc, '$.a')`, and where it is cast. Anywhere else, as in `json_set(doc, '$.name', :name)`, `:tag member of (…)` or a comparison, it would take the text for a string and store `"\"Ada\""`, so the query is a type error until you cast the parameter: `:name::json`.
 
 Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `NOT NULL` `JSON` column can hold. A `coalesce` or a null test doesn't make a parameter take null, so write `coalesce(:doc::nullable(json), doc)` to keep `doc` for `null`.
 

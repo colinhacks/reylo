@@ -55,6 +55,19 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from DuckDB's own analysis of it.
+
+DuckDB runs inside your app, so the type check [prepares](https://duckdb.org/docs/stable/sql/query_syntax/prepared_statements) the query on your project's own `@duckdb/node-api` and reads back DuckDB's own type information on its parameters and return type. Reylo reads the catalog for the rest.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the prepared statement's description |
+| Column types | the prepared statement's description |
+| Nullability | the table's `NOT NULL` and primary key columns, then what the query rules out |
+| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
+
 ## Data types
 
 DuckDB's prepared statement reports the exact type of every parameter and column, and `.run()` returns one value for each type:
