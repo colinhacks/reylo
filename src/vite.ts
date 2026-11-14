@@ -6,6 +6,8 @@
 // "pre"`, wherever it is listed): the Cloudflare Vite plugin (`@cloudflare/vite-plugin` 1.64) makes
 // every `.sql` import in a Worker an external text module in its own resolveId, so the import never
 // reached `load`, and `.run` was undefined on the string it gave (examples/cloudflare-workers).
+//
+// Both hooks carry a filter, so a host that reads one (Vite from 6.3, Rollup from 4.38, Rolldown) calls them only for a `.sql` id, and Rolldown makes no call into JavaScript for any other module. Each handler checks the id again for an older host, which calls it for every module.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { releaseConnections, tooling } from "./tooling-loader.ts";
@@ -22,6 +24,7 @@ export default function reylo() {
     enforce: "pre" as const,
     resolveId: {
       order: "pre" as const,
+      filter: { id: /\.sql$/ },
       handler(source: string, importer: string | undefined): string | null {
         if (!source.endsWith(".sql") || importer === undefined) return null;
         if (!source.startsWith("./") && !source.startsWith("../")) return null;
@@ -32,13 +35,16 @@ export default function reylo() {
         return existsSync(path) ? path : null;
       },
     },
-    async load(this: { addWatchFile(id: string): void }, id: string) {
-      if (!id.endsWith(".sql")) return null;
-      const { code, entry, watched } = await (await tooling(dirname(id))).sqlModule(id, readFileSync(id, "utf8"));
-      // A new analysis of the statement (the type check's, after a migration) rebuilds the module,
-      // and so does a change to the project file or a `.env` file, which the module's text reads.
-      for (const file of [entry, ...watched]) this.addWatchFile(file);
-      return { code, map: null };
+    load: {
+      filter: { id: /\.sql$/ },
+      async handler(this: { addWatchFile(id: string): void }, id: string) {
+        if (!id.endsWith(".sql")) return null;
+        const { code, entry, watched } = await (await tooling(dirname(id))).sqlModule(id, readFileSync(id, "utf8"));
+        // A new analysis of the statement (the type check's, after a migration) rebuilds the module,
+        // and so does a change to the project file or a `.env` file, which the module's text reads.
+        for (const file of [entry, ...watched]) this.addWatchFile(file);
+        return { code, map: null };
+      },
     },
     // Vitest keeps a transformed module across runs (`fsModuleCache`, on by default from Vitest
     // 5.0.5), keyed by its file's text, and in watch mode keeps its key until that file changes. A

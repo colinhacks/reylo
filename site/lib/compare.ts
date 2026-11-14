@@ -4,7 +4,7 @@ import results from '@/lib/compare-results.json';
  * The docs' comparison, /compare: which tools and rows it shows. Every mark comes from
  * lib/compare-results.json, which lab/compare writes from real runs of each tool.
  */
-export type CompareCell = { state: 'y' | 'p' | 'n'; note?: string; wrong: number; examples: { sql: string; problem: string; on?: string }[] };
+export type CompareCell = { state: 'y' | 'p' | 'n'; note?: string };
 
 export const compareResults = results as unknown as { at: string; tools: Record<string, { name: string; version: string; cells: Record<string, CompareCell> }> };
 
@@ -51,12 +51,7 @@ export const compareRows: { group: string; rows: { id: string; label: string; as
   },
 ];
 
-export const compareCell = (tool: string, row: string): CompareCell => compareResults.tools[tool]?.cells[row] ?? { state: 'n', wrong: 0, examples: [] };
-
-/** When the lab last ran, as the page and its Markdown say it. */
-export const compareDate = new Date(compareResults.at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
-
-export const compareLabUrl = 'https://github.com/colinhacks/reylo/tree/main/lab/compare';
+export const compareCell = (tool: string, row: string): CompareCell => compareResults.tools[tool]?.cells[row] ?? { state: 'n' };
 
 /** The page's `<CompareTable />` as Markdown, for /compare.md and /llms.txt. */
 export function expandCompare(text: string): string {
@@ -65,5 +60,5 @@ export function expandCompare(text: string): string {
   const head = `| | Reylo | ${compareTools.map((t) => `[${t.id === 'postgrestypedsql' ? 'Postgres Typed SQL' : t.name}](${t.href})`).join(' | ')} |`;
   const rule = `| --- | --- | ${compareTools.map(() => '---').join(' | ')} |`;
   const rows = compareRows.flatMap((g) => g.rows).map((r) => `| ${r.label} | ${word[compareCell('reylo', r.id).state]} | ${compareTools.map((t) => word[compareCell(t.id, r.id).state]).join(' | ')} |`);
-  return text.replace('<CompareTable />', `${[head, rule, ...rows].join('\n')}\n\nRun on ${compareDate}, on each tool's latest release. [The queries, the answers and the code that runs them](${compareLabUrl}) are in the repository.`);
+  return text.replace('<CompareTable />', [head, rule, ...rows].join('\n'));
 }

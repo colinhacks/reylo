@@ -1,0 +1,1 @@
+select u.id, array(select p from (select po.id, length(po.title) as size, array(select c from (select x.id, x.big + 1 as more, array(select r from (select id, upper(body) as loud, length(body) + 1 as size from replies where comment_id = x.id) r) as replies from comments x where x.post_id = po.id) c) as comments from posts po where po.author_id = u.id) p) as posts from users u

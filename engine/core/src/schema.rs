@@ -9,7 +9,7 @@
 //! field of an `Object` or item of a `List`) takes the database's: `int8` and `numeric` as JSON
 //! numbers, `bytea` as its own `\x…` hex.
 
-use crate::types::{Field, JsonType, Kind, RecordType, Type};
+use crate::types::{Field, JsonType, Kind, RecordType, Type, UuidType};
 use serde_json::{json, Map, Value};
 
 /// Where a value stands and how the caller encodes what it decodes itself.
@@ -71,12 +71,12 @@ fn member_schema(ty: &Type, opts: SchemaOptions) -> Value {
 
 /// The type's name without the schema that qualifies it: `hstore` of `public.hstore`.
 fn bare_name(ty: &Type) -> &str {
-    ty.name.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("")
+    ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("")
 }
 
 /// A value the database writes as its text, where its own JSON form is a string too.
 fn text_of(ty: &Type) -> Value {
-    json!({"type": "string", "description": format!("pg type {}", ty.name.as_deref().unwrap_or(ty.kind.name()))})
+    json!({"type": "string", "description": format!("pg type {}", ty.label.as_deref().unwrap_or(ty.kind.name()))})
 }
 
 /// The values JSON writes as text when a float or a decimal holds them.
@@ -118,7 +118,9 @@ impl Type {
                 Some(values) => json!({"type": "string", "enum": values}),
                 None => json!({"type": "string"}),
             },
-            Kind::Uuid => json!({"type": "string", "format": "uuid"}),
+            Kind::Uuid(UuidType { version: None }) => json!({"type": "string", "format": "uuid"}),
+            // RFC 9562's text form, its version digit and its variant fixed.
+            Kind::Uuid(UuidType { version: Some(v) }) => json!({"type": "string", "format": "uuid", "pattern": format!("^[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-{v:x}[0-9a-fA-F]{{3}}-[89abAB][0-9a-fA-F]{{3}}-[0-9a-fA-F]{{12}}$")}),
             Kind::DateTime(_) | Kind::Instant(_) => json!({"type": "string", "format": "date-time"}),
             Kind::Date(_) => json!({"type": "string", "format": "date"}),
             Kind::Time(_) => json!({"type": "string", "format": "time"}),
@@ -149,7 +151,7 @@ impl Type {
             // DuckDB struct).
             Kind::Record(r) => object(&r.fields, |f| {
                 let schema = f.ty.json_schema(opts);
-                match (f.nullable, self.name.is_some()) {
+                match (f.nullable, self.label.is_some()) {
                     (false, _) => schema,
                     (true, true) => json!({"anyOf": [schema, {"type": "null"}]}),
                     (true, false) => nullable(schema),
@@ -163,7 +165,7 @@ impl Type {
             // The values a CHECK's JSON Schema admits, as the engine reduced it; else any JSON,
             // null included.
             Kind::Json(JsonType { schema: Some(_), .. }) => self.schema().unwrap_or(Value::Bool(true)),
-            Kind::Json(_) | Kind::Unknown | Kind::Any => json!({}),
+            Kind::Json(_) | Kind::Unknown => json!({}),
             // An hstore is an object of its keys inside a document, each value text or null.
             Kind::Map(_) if bare_name(self) == "hstore" && opts.in_json => json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}),
             Kind::Map(_) if bare_name(self) == "hstore" => text_of(self),
@@ -173,6 +175,8 @@ impl Type {
                 let entry = json!({"type": "object", "properties": {"key": m.key.json_schema(opts), "value": if m.value.nullable { nullable(value) } else { value }}, "required": ["key", "value"]});
                 json!({"type": "array", "items": entry})
             }
+            // A relation nested in a value, as a list of its rows.
+            Kind::Rows(_) => json!({"type": "array", "items": {"type": "object"}}),
             // A tagged union as a client returns one: its tag and its value, `{ tag, value }`.
             Kind::TaggedUnion(t) => json!({"anyOf": t.alternatives.iter().map(|a| {
                 let value = a.ty.json_schema(opts);
@@ -263,6 +267,7 @@ mod tests {
             (numeric(), json!({"type": "string", "format": "decimal"})),
             (Type::text().named("varchar"), json!({"type": "string"})),
             (Type::uuid(), json!({"type": "string", "format": "uuid"})),
+            (Kind::Uuid(UuidType { version: Some(7) }).into(), json!({"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"})),
             (Type::bytes().named("bytea"), json!({"type": "string", "format": "byte", "contentEncoding": "base64"})),
             (Type::unknown(), json!({})),
             (Type::opaque("ltree"), json!({"type": "string", "description": "pg type ltree"})),

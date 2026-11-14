@@ -1,0 +1,36 @@
+b01_not_valid_not_null_top.sql: many () -> { n: int4? }
+b02_not_valid_not_null_row.sql: one () -> { arr: (public.nv{ id: int4, n: int4? })[] }
+b03_not_valid_not_null_derived.sql: one () -> { arr: (record{ n: int4? })[] }
+b04_no_inherit_not_null_top.sql: many () -> { n: int4? }
+b05_no_inherit_not_null_row.sql: one () -> { arr: (public.par2{ id: int4?, n: int4? })[] }
+b06_not_valid_check_top.sql: many () -> { n: int4? }
+b07_not_valid_check_row.sql: one () -> { arr: (public.ck{ id: int4, n: int4? })[] }
+b08_no_inherit_check_top.sql: many () -> { n: int4? }
+b09_no_inherit_check_row.sql: one () -> { arr: (record{ n: int4? })[] }
+b10_lateral_dup_names.sql: many () -> { v: int4?, v: text? } !! reylo14: Columns 1 and 2 are both named "v", and a row keeps only the last of them. Give one of them another name with `as`.
+b11_lateral_dup_alias_list.sql: many () -> { v: text?, v: int4? } !! reylo14: Columns 1 and 2 are both named "v", and a row keeps only the last of them. Give one of them another name with `as`.
+b12_lateral_dup_expr.sql: many () -> { v: int8?, v: text? } !! reylo14: Columns 1 and 2 are both named "v", and a row keeps only the last of them. Give one of them another name with `as`.
+b13_lateral_dup_nested.sql: one () -> { arr: (record{ v: int4?, v: text? })[] }
+b14_lateral_set_arms_dup.sql: many () -> { v: int8?, v: text? } !! reylo14: Columns 1 and 2 are both named "v", and a row keeps only the last of them. Give one of them another name with `as`.
+b15_star_unqualified_lateral.sql: many () -> { id: int8, author_id: int8, title: text, more: int8? } key (id)
+b16_lateral_then_right_join.sql: many () -> { n: int8? }
+b17_join_alias_row.sql: one () -> { arr: (record{ n: int4?, m: int4? }?)[] }
+b18_using_alias_row.sql: one () -> { arr: (record{ id: int4? }?)[] }
+b19_window_array_agg.sql: many () -> { id: int8, arr: (public.comments{ id: int8, post_id: int8, body: text?, big: int8 })[]? } key (id)
+b20_nullif_array.sql: one () -> { arr: record?[]? }
+b21_case_array.sql: one () -> { arr: record?[]? }
+b22_subscript_first.sql: one () -> { first: record? }
+b23_array_append_null.sql: one () -> { arr: record?[]? }
+b24_returning_old_insert.sql: one () -> { arr: record?[] }
+b25_returning_old_top.sql: one () -> { ob: text? }
+b26_returning_new_delete.sql: at_most_one () -> { arr: record?[] }
+b27_star_dropped_derived.sql: one () -> { arr: (record{ id: int4, kept: text })[] }
+b31_correlated_param.sql: many (k: int8) -> { id: int8, arr: (record{ id: int8, s: int8? })[] } key (id)
+b32_lateral_param.sql: many (k: int8) -> { s: int8 }
+b33_rollup_lateral.sql: many () -> { author_id: int8?, n: int8? }
+b35_rows_from_lateral.sql: many () -> { a: int4?, b: int4? }
+b36_union_top_fields.sql: many () -> { arr: record?[] }
+b37_union_top_element.sql: many () -> { arr: record?[] }
+b38_cte_union_array.sql: many () -> { arr: record?[] }
+b39_derived_outer_array.sql: many () -> { arr: (record{ n: int4 })[]? }
+b40_values_array.sql: many () -> { arr: record?[]? }

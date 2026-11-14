@@ -1,0 +1,1 @@
+select o.id, json_build_object('c', x.customer) as j, array_agg(x.customer) as cs from orders o left join lateral (select o.customer from items i where i.order_id = o.id) x on true group by o.id, x.customer

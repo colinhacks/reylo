@@ -34,7 +34,7 @@ const isEmptyObject = (v: unknown) => v !== null && typeof v === "object" && !Ar
 
 /** A type's name without the schema that qualifies it: `vector` of `public.vector`, `"Odd"` of `app."Odd"` unquoted. */
 export function bareName(t: Type): string {
-  const name = "name" in t ? (t.name ?? "") : "";
+  const name = "label" in t ? (t.label ?? "") : "";
   const last = /(?:^|\.)("(?:[^"]|"")*"|[^."]*)$/.exec(name)?.[1] ?? name;
   return last.startsWith('"') ? last.slice(1, -1).replaceAll('""', '"') : last;
 }
@@ -51,7 +51,7 @@ export function membersOf(t: Type): readonly Type[] {
  */
 export function withBases(t: Type, domains: Readonly<Record<string, string>> | undefined): Type {
   if (domains === undefined || !Object.keys(domains).length) return t;
-  const named = "name" in t && t.name !== undefined && domains[t.name] !== undefined ? ({ ...t, name: domains[t.name] } as Type) : t;
+  const named = "label" in t && t.label !== undefined && domains[t.label] !== undefined ? ({ ...t, label: domains[t.label] } as Type) : t;
   switch (named.kind) {
     case "array": return { ...named, element: { ...named.element, type: withBases(named.element.type, domains) } };
     case "set": return { ...named, element: { ...named.element, type: withBases(named.element.type, domains) } };
@@ -59,6 +59,7 @@ export function withBases(t: Type, domains: Readonly<Record<string, string>> | u
     case "json": return named.content === undefined ? named : { ...named, content: { ...named.content, type: withBases(named.content.type, domains) } };
     case "union": return { ...named, members: named.members.map((m) => withBases(m, domains)) };
     case "tagged_union": return { ...named, alternatives: named.alternatives.map((a) => ({ ...a, type: withBases(a.type, domains) })) };
+    case "rows": return { ...named, columns: named.columns.map((c) => ({ ...c, type: withBases(c.type, domains) })) };
     case "map": return { ...named, key: withBases(named.key, domains), value: { ...named.value, type: withBases(named.value.type, domains) } };
     case "range": case "multirange": return { ...named, subtype: withBases(named.subtype, domains) as typeof named.subtype };
     default: return named;
@@ -86,6 +87,8 @@ function markNesting(t: Type): Type {
       return t.any_depth ? Object.assign(marked, { [NESTS]: true }) : marked;
     }
     case "record": return { ...t, fields: t.fields.map((f) => ({ ...f, type: markNesting(f.type) })) };
+    // A document a statement builds holds its arrays as the statement's columns do.
+    case "json": return t.content === undefined ? t : { ...t, content: { ...t.content, type: markNesting(t.content.type) } };
     default: return t;
   }
 }

@@ -1,0 +1,76 @@
+aggregate.sql: one (p: bigint) -> { n: bigint, m: bigint? }
+aggregate_filtered.sql: at_most_one (p: bigint) -> { n: bigint }
+alias_list.sql: many (p: bigint) -> { a: bigint, body: varchar }
+amount_by_decimal.sql: at_most_one () -> { amount: decimal(38,2), n: integer }
+amount_by_double.sql: many () -> { amount: decimal(38,2), n: integer }
+amount_by_long.sql: many () -> { amount: decimal(38,2), n: integer }
+argument_makes_rows.sql: many () -> { v: integer? }
+argument_makes_rows_aggregate.sql: many () -> { n: bigint, v: integer? }
+argument_makes_rows_filtered.sql: many () -> { v: integer }
+capture_with.sql: many (p: bigint) -> { id: bigint?, body: varchar? }
+ci_by_param.sql: many (c: varchar) -> { code: varchar, n: integer }
+ci_by_text.sql: many () -> { code: varchar, n: integer }
+code_as_number.sql: many () -> { code: varchar, n: integer }
+code_as_text.sql: at_most_one (c: varchar) -> { code: varchar, n: integer }
+code_body_cast.sql: many () -> { code: varchar, n: integer }
+code_macro_param.sql: at_most_one (c: varchar) -> { code: varchar, n: integer }
+code_plain_cast.sql: many (c: bigint) -> { code: varchar, n: integer }
+code_plain_number.sql: many () -> { code: varchar, n: integer }
+code_plain_param.sql: at_most_one (c: varchar) -> { code: varchar, n: integer }
+code_plain_text.sql: at_most_one () -> { code: varchar, n: integer }
+code_through_macro.sql: many () -> { code: varchar, n: integer }
+code_through_text.sql: at_most_one () -> { code: varchar, n: integer }
+code_volatile.sql: many () -> { code: varchar, n: integer }
+count_star.sql: one (p: bigint) -> { n: bigint }
+default_given.sql: many (p: bigint) -> { id: bigint }
+default_used.sql: many () -> { id: bigint }
+echoed_literal.sql: one () -> { v: integer? }
+echoed_null.sql: one () -> { v: sqlnull? }
+echoed_param.sql: one (x: bigint) -> { v: bigint? }
+echoed_row.sql: many (x: bigint) -> { v: bigint?, id: bigint }
+from_first.sql: many (p: bigint) -> { id: bigint, body: varchar }
+grouped.sql: many (p: bigint) -> { post_id: bigint, n: bigint }
+id_by_double.sql: many () -> { id: bigint, n: integer }
+id_by_number.sql: at_most_one () -> { id: bigint, n: integer }
+in_a_join.sql: many () -> { title: varchar, body: varchar }
+in_a_subquery.sql: many (p: bigint) -> { id: bigint, body: varchar }
+in_a_with.sql: many (p: bigint) -> { id: bigint, body: varchar }
+key_by_decimal.sql: at_most_one () -> { id: bigint, body: varchar }
+key_by_double.sql: many () -> { id: bigint, body: varchar }
+key_by_expression.sql: many () -> { id: bigint, body: varchar }
+key_by_literal.sql: at_most_one () -> { id: bigint, body: varchar }
+key_by_named.sql: at_most_one (x: bigint) -> { id: bigint, body: varchar }
+key_by_text.sql: at_most_one () -> { id: bigint, body: varchar }
+key_inside.sql: at_most_one (x: bigint) -> { id: bigint, body: varchar }
+key_outside.sql: many (p: bigint, id: bigint) -> { id: bigint, body: varchar }
+lateral_call.sql: many () -> { title: varchar, body: varchar? }
+left_join_body.sql: many (p: bigint) -> { id: bigint, note: varchar? }
+left_lateral.sql: many () -> { title: varchar, body: varchar? }
+limited.sql: at_most_one (p: bigint) -> { id: bigint, body: varchar }
+mood_by_number.sql: many () -> { m: enum('1' | '01'), n: integer }
+mood_by_text.sql: at_most_one () -> { m: enum('1' | '01'), n: integer }
+named_argument.sql: many (p: bigint) -> { id: bigint }
+nested_key.sql: at_most_one () -> { id: bigint, body: varchar }
+nullable_stays.sql: many (p: bigint) -> { id: bigint, note: varchar? }
+outer_limit.sql: many (p: bigint) -> { id: bigint, body: varchar }
+overloaded.sql: many (a: bigint) -> { id: bigint? }
+past_the_levels.sql: many (p: bigint) -> { id: bigint? }
+returns_rows.sql: many (p: bigint) -> { id: bigint, body: varchar }
+row_maker_in_body.sql: many (p: bigint) -> { id: bigint, v: integer? }
+scalar_macro.sql: many () -> { v: bigint? }
+setof_like.sql: many (p: bigint) -> { id: bigint, post_id: bigint, body: varchar, note: varchar? }
+shadow_null.sql: many (b: varchar?) -> { id: bigint, body: varchar? }
+shadow_pin.sql: many () -> { c: varchar?, n: integer }
+shadow_qualified.sql: at_most_one () -> { k: sqlnull?, n: integer }
+shadowed.sql: many (id: bigint) -> { found: bigint }
+six_levels.sql: many (p: bigint) -> { id: bigint }
+star.sql: many (p: bigint) -> { id: bigint, body: varchar }
+through_a_macro.sql: many (p: bigint) -> { id: bigint, body: varchar }
+to_json_row.sql: many (p: bigint) -> { doc: json? }
+union_body.sql: many (p: bigint) -> { id: bigint }
+unnested.sql: many () -> { v: integer? }
+view_body.sql: many () -> { id: bigint?, body: varchar? }
+whole_row.sql: many (p: bigint) -> { c: { id: bigint?, body: varchar? }? }
+with_body.sql: many (p: bigint) -> { id: bigint, body: varchar }
+with_capture_derived.sql: many () -> { id: bigint?, body: varchar? }
+with_capture_nested.sql: many () -> { id: bigint?, body: varchar? }

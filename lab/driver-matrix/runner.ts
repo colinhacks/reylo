@@ -95,6 +95,8 @@ for (const [alias, v] of [["sqlite3-5", "5.1.7"], ["sqlite3-6", "6.0.1"]]) {
   add({ id: `sqlite3@${v}`, bin: NODE26, file: "drivers/sqlite3.ts", args: ["--pkg", alias, "--version", v], sqlite: true, meta: { pkg: "sqlite3", version: v, target: "SQLite file", runtime: n26 } });
   add({ id: `sqlite@5.1.1/sqlite3@${v}`, bin: NODE26, file: "drivers/sqlite3.ts", args: ["--wrapper", "sqlite", "--pkg", alias, "--version", "5.1.1", "--driverVersion", v], sqlite: true, meta: { pkg: "sqlite", version: "5.1.1", target: `SQLite file (over sqlite3 ${v})`, runtime: n26 } });
 }
+add({ id: "sqlite-wasm@3.54.1-build1", bin: NODE26, file: "drivers/wasm-sqlite.ts", args: ["--lib", "sqlite-wasm", "--version", "3.54.1-build1"], sqlite: true, meta: { pkg: "@sqlite.org/sqlite-wasm", version: "3.54.1-build1", target: "SQLite file, copied into memory", runtime: n26 } });
+add({ id: "sql.js@1.15.2", bin: NODE26, file: "drivers/wasm-sqlite.ts", args: ["--lib", "sql.js", "--version", "1.15.2"], sqlite: true, meta: { pkg: "sql.js", version: "1.15.2", target: "SQLite file, copied into memory", runtime: n26 } });
 add({ id: "d1/miniflare@4.20260730.0", bin: NODE26, file: "drivers/d1.ts", args: ["--pkg", "miniflare-4", "--version", "4.20260730.0"], meta: { pkg: "miniflare D1", version: "4.20260730.0", target: "D1 (Miniflare, local workerd)", runtime: n26 } });
 
 // Failing controls

@@ -1,6 +1,6 @@
 # Results
 
-Written by `./run.sh` on 2026-11-05. Each mark comes from what the tool answered; [probes.ts](probes.ts) holds the queries and the right answers, and [grade.ts](grade.ts) the rules.
+Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered; [probes.ts](probes.ts) holds the queries and the right answers, and [grade.ts](grade.ts) the rules.
 
 | | Reylo | sqlc | PgTyped | TypedSQL | sqlx-ts | SafeQL | sqlx | TypeSQL | Postgres Typed SQL |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -459,31 +459,31 @@ Written by `./run.sh` on 2026-11-05. Each mark comes from what the tool answered
 
 **Parameter types**: partly, 7 of 17
 
-- mysql: `select name from users where id = $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes a number
-- mysql: `select id from users where name = $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes text
-- mysql: `insert into posts (id, author_id, title, score) values ($1, $2, $3, $4)`: parameter 1 is typed `any value (it counts arguments only)`, but it takes a number; parameter 2 is typed `any value (it counts arguments only)`, but it takes a number; parameter 3 is typed `any value (it counts arguments only)`, but it takes text; parameter 4 is typed `any value (it counts arguments
-- mysql: `select id from users limit $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes a number
-- mysql: `select id from users where name like $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes text
-- sqlite: `select name from users where id = $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes a number
-- sqlite: `select id from users where name = $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes text
-- sqlite: `insert into posts (id, author_id, title, score) values ($1, $2, $3, $4)`: parameter 1 is typed `any value (it counts arguments only)`, but it takes a number; parameter 2 is typed `any value (it counts arguments only)`, but it takes a number; parameter 3 is typed `any value (it counts arguments only)`, but it takes text; parameter 4 is typed `any value (it counts arguments
-- sqlite: `select id from users limit $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes a number
-- sqlite: `select id from users where name like $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes text
+- mysql: `select name from users where id = $1`: any value passes for parameter 1, which takes a number
+- mysql: `select id from users where name = $1`: any value passes for parameter 1, which takes text
+- mysql: `insert into posts (id, author_id, title, score) values ($1, $2, $3, $4)`: any value passes for parameter 1, which takes a number; any value passes for parameter 2, which takes a number; any value passes for parameter 3, which takes text; any value passes for parameter 4, which takes a number
+- mysql: `select id from users limit $1`: any value passes for parameter 1, which takes a number
+- mysql: `select id from users where name like $1`: any value passes for parameter 1, which takes text
+- sqlite: `select name from users where id = $1`: any value passes for parameter 1, which takes a number
+- sqlite: `select id from users where name = $1`: any value passes for parameter 1, which takes text
+- sqlite: `insert into posts (id, author_id, title, score) values ($1, $2, $3, $4)`: any value passes for parameter 1, which takes a number; any value passes for parameter 2, which takes a number; any value passes for parameter 3, which takes text; any value passes for parameter 4, which takes a number
+- sqlite: `select id from users limit $1`: any value passes for parameter 1, which takes a number
+- sqlite: `select id from users where name like $1`: any value passes for parameter 1, which takes text
 
 **Nullable parameters**: no, 0 of 12. It gives every parameter the same answer.
 
-- postgres: `insert into users (id, email, name, nickname) values ($1, $2, $3, $4)`: parameter 1 is typed `INT4 or Option<INT4>`, but it takes no null; parameter 2 is typed `TEXT or Option<TEXT>`, but it takes no null; parameter 3 is typed `TEXT or Option<TEXT>`, but it takes no null
-- postgres: `update users set nickname = $1 where id = $2`: parameter 2 is typed `INT4 or Option<INT4>`, but it takes no null
-- postgres: `select name from users where id = $1`: parameter 1 is typed `INT4 or Option<INT4>`, but it takes no null
-- postgres: `select id from users where nickname = $1`: parameter 1 is typed `TEXT or Option<TEXT>`, but it takes no null
-- mysql: `insert into users (id, email, name, nickname) values ($1, $2, $3, $4)`: parameter 1 is typed `any value (it counts arguments only)`, but it takes no null; parameter 2 is typed `any value (it counts arguments only)`, but it takes no null; parameter 3 is typed `any value (it counts arguments only)`, but it takes no null
-- mysql: `update users set nickname = $1 where id = $2`: parameter 2 is typed `any value (it counts arguments only)`, but it takes no null
-- mysql: `select name from users where id = $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes no null
-- mysql: `select id from users where nickname = $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes no null
-- sqlite: `insert into users (id, email, name, nickname) values ($1, $2, $3, $4)`: parameter 2 is typed `any value (it counts arguments only)`, but it takes no null; parameter 3 is typed `any value (it counts arguments only)`, but it takes no null
-- sqlite: `update users set nickname = $1 where id = $2`: parameter 2 is typed `any value (it counts arguments only)`, but it takes no null
-- sqlite: `select name from users where id = $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes no null
-- sqlite: `select id from users where nickname = $1`: parameter 1 is typed `any value (it counts arguments only)`, but it takes no null
+- postgres: `insert into users (id, email, name, nickname) values ($1, $2, $3, $4)`: a null value passes for parameter 1, which takes no null; a null value passes for parameter 2, which takes no null; a null value passes for parameter 3, which takes no null
+- postgres: `update users set nickname = $1 where id = $2`: a null value passes for parameter 2, which takes no null
+- postgres: `select name from users where id = $1`: a null value passes for parameter 1, which takes no null
+- postgres: `select id from users where nickname = $1`: a null value passes for parameter 1, which takes no null
+- mysql: `insert into users (id, email, name, nickname) values ($1, $2, $3, $4)`: a null value passes for parameter 1, which takes no null; a null value passes for parameter 2, which takes no null; a null value passes for parameter 3, which takes no null
+- mysql: `update users set nickname = $1 where id = $2`: a null value passes for parameter 2, which takes no null
+- mysql: `select name from users where id = $1`: a null value passes for parameter 1, which takes no null
+- mysql: `select id from users where nickname = $1`: a null value passes for parameter 1, which takes no null
+- sqlite: `insert into users (id, email, name, nickname) values ($1, $2, $3, $4)`: a null value passes for parameter 2, which takes no null; a null value passes for parameter 3, which takes no null
+- sqlite: `update users set nickname = $1 where id = $2`: a null value passes for parameter 2, which takes no null
+- sqlite: `select name from users where id = $1`: a null value passes for parameter 1, which takes no null
+- sqlite: `select id from users where nickname = $1`: a null value passes for parameter 1, which takes no null
 
 **Cardinality**: no, 0 of 28. You pick it on each call: `fetch_one`, `fetch_optional` or `fetch_all`.
 

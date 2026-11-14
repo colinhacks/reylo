@@ -547,6 +547,9 @@ pub struct Trust {
     /// is every PostgreSQL before 18 ([`POSTGRES_JSONB_NULL_CASTS`]). A host that did not ask
     /// leaves it unset, and a cast of a `jsonb` value then proves nothing.
     pub jsonb_casts_raise: bool,
+    /// Whether the database holds no nondeterministic collation, so no value can bring one to a
+    /// comparison. A host that did not ask leaves it unset.
+    pub deterministic_only: bool,
 }
 
 impl Trust {
@@ -690,12 +693,14 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
         NodeEnum::SelectStmt(s) if grouped => Some(GroupingKeys::of(s)),
         _ => None,
     };
-    let starred = targets.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(is_star)));
+    let starred = targets.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(|v| is_star(v) || expands(v))));
     let mut plan = Plan::default();
     for (position, target) in targets.iter().enumerate() {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
-        if is_star(val) {
+        // `(row).*` is as many columns as the row's type has, none at all included, which the
+        // rules do not count: a `*` whose columns the plan leaves to the describe.
+        if is_star(val) || expands(val) {
             let expanded = match (scope.as_ref(), level.as_ref(), val.node.as_ref()) {
                 (Some(scope), Some(level), Some(NodeEnum::ColumnRef(c))) => star_columns(c, level).map(|columns| {
                     columns.iter().map(|column| {
@@ -2831,6 +2836,16 @@ impl Around {
         Some(Around { statement: arm_text(version, &select, with)?, has_items: !items.is_empty() })
     }
 
+    /// `SELECT * FROM …`, every column of the items beside the subquery.
+    pub fn beside(&self) -> String {
+        self.statement.replacen("SELECT reylo_arm.*", "SELECT *", 1)
+    }
+
+    /// Whether a FROM item stands beside the subquery, which a name in it may read.
+    pub fn reads_beside(&self) -> bool {
+        self.has_items
+    }
+
     /// The statement over this subquery's text.
     pub fn with(&self, subquery: &str) -> String {
         format!("{} {} LATERAL ({subquery}) AS reylo_arm", self.statement, if self.has_items { "," } else { "FROM" })
@@ -2856,6 +2871,7 @@ pub fn array_subqueries(sql: &str) -> Option<Vec<Option<String>>> {
                 let Some(NodeEnum::ResTarget(target)) = target.node.as_ref() else { return None };
                 match target.val.as_deref()?.node.as_ref()? {
                     NodeEnum::ColumnRef(c) if c.fields.iter().any(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => None,
+                    _ if expands(target.val.as_deref()?) => None,
                     NodeEnum::SubLink(s) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => {
                         let text = s.subselect.as_deref().and_then(as_select).and_then(|sub| arm_text(version, sub, None));
                         let around = around.get_or_init(|| Around::of(version, &select.from_clause, select.with_clause.as_ref()));
@@ -2866,6 +2882,55 @@ pub fn array_subqueries(sql: &str) -> Option<Vec<Option<String>>> {
             })
             .collect()
     })
+}
+
+/// Per target of the statement's select list or RETURNING list, the RFC 9562 version of each UUID
+/// a target makes whole: 4 for `gen_random_uuid()` and `uuidv4()`, and 7 for `uuidv7()`, with or
+/// without its shift, each where only the built-in can answer the call. A UUID a statement reads, or
+/// one a default wrote, may be any. `None` where the list is not one the rules read, a `*` among it.
+pub fn uuid_versions(sql: &str, trust: &Trust) -> Option<Vec<Option<u8>>> {
+    let parsed = crate::stack::parse(sql).ok()?;
+    let targets = match parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref()? {
+        NodeEnum::SelectStmt(s) if set_kind(s).is_none() && s.values_lists.is_empty() => s.target_list.clone(),
+        NodeEnum::InsertStmt(s) => crate::jsonshape::returning(&s.returning_clause),
+        NodeEnum::UpdateStmt(s) => crate::jsonshape::returning(&s.returning_clause),
+        NodeEnum::DeleteStmt(s) => crate::jsonshape::returning(&s.returning_clause),
+        NodeEnum::MergeStmt(s) => crate::jsonshape::returning(&s.returning_clause),
+        _ => return None,
+    };
+    targets
+        .iter()
+        .map(|target| {
+            let Some(NodeEnum::ResTarget(target)) = target.node.as_ref() else { return None };
+            Some(match target.val.as_deref()?.node.as_ref()? {
+                // A `*` expands to any number of columns, none at all included (`(x).*` of a type
+                // with no column), which leaves the targets and the columns out of line.
+                NodeEnum::ColumnRef(c) if c.fields.iter().any(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => return None,
+                _ if expands(target.val.as_deref()?) => return None,
+                NodeEnum::FuncCall(f) if !f.agg_star && !f.func_variadic && f.over.is_none() && f.agg_order.is_empty() && f.agg_filter.is_none() => {
+                    let name = builtin_name(&f.funcname);
+                    // A call of one argument over a row is that row's column of the name
+                    // ([`Expr::NotRow`]), so `uuidv7(x)` is the function only where `x` is its
+                    // `interval` shift for certain: a constant, a cast to `interval`, or a parameter
+                    // the describe types so (`$1` of a row type is that row's column).
+                    let shift = |arg: &Node| match arg.node.as_ref() {
+                        Some(NodeEnum::AConst(_)) => true,
+                        Some(NodeEnum::TypeCast(c)) => c.type_name.as_ref().and_then(|t| builtin_name(&t.names)).as_deref() == Some("interval"),
+                        Some(NodeEnum::ParamRef(p)) => trust.param(p.number) == Operand::Param(Some(oid::INTERVAL)),
+                        _ => false,
+                    };
+                    let version = match (name.as_deref(), f.args.as_slice()) {
+                        (Some("gen_random_uuid" | "uuidv4"), []) => Some(4),
+                        (Some("uuidv7"), []) => Some(7),
+                        (Some("uuidv7"), [arg]) if shift(arg) => Some(7),
+                        _ => None,
+                    };
+                    version.filter(|_| name.as_deref().is_some_and(|n| trust.builtin(n)))
+                }
+                _ => None,
+            })
+        })
+        .collect()
 }
 
 /// The columns of a LATERAL subquery's select list as the rules read them without a probe, which a
@@ -3577,6 +3642,11 @@ fn is_star(node: &Node) -> bool {
     }
 }
 
+/// Whether a target is `(row).*`, which expands to the columns of the row's type.
+fn expands(node: &Node) -> bool {
+    matches!(node.node.as_ref(), Some(NodeEnum::AIndirection(i)) if i.indirection.iter().any(|n| matches!(n.node, Some(NodeEnum::AStar(_)))))
+}
+
 /// A string literal, bare or cast to `text` or `varchar`: one key of `->`. A cast to anything
 /// else is not one (`'0'::int` indexes an array).
 fn string_literal(node: &Node) -> Option<String> {
@@ -3720,6 +3790,29 @@ pub fn dollar_placeholders(sql: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_target_that_makes_a_uuid_has_its_version() {
+        let trust = Trust::default();
+        assert_eq!(uuid_versions("select gen_random_uuid() as a, uuidv4(), uuidv7(), pg_catalog.uuidv7('1 day'::interval), id from t", &trust), Some(vec![Some(4), Some(4), Some(7), Some(7), None]));
+        // A RETURNING list, where the column a default wrote may hold any UUID.
+        assert_eq!(uuid_versions("insert into t (name) values ('a') returning id, uuidv7() as made", &trust), Some(vec![None, Some(7)]));
+        // What the rules cannot line up with the columns, and an aggregate or a cast of one.
+        assert_eq!(uuid_versions("select * from t", &trust), None);
+        // A call of one argument over a row is that row's column of the name.
+        assert_eq!(uuid_versions("select uuidv7(t), uuidv7(t.created), uuidv7(now(1)), uuidv7(x + 1), uuidv7(interval '1 day'), uuidv7('1 day') from t", &trust), Some(vec![None, None, None, None, Some(7), Some(7)]));
+        // A parameter is a shift only where the describe types it `interval`.
+        assert_eq!(uuid_versions("select uuidv7($1)", &Trust { param_types: vec![oid::INTERVAL], ..Trust::default() }), Some(vec![Some(7)]));
+        assert_eq!(uuid_versions("select uuidv7($1)", &Trust { param_types: vec![16500], ..Trust::default() }), Some(vec![None]));
+        assert_eq!(uuid_versions("select uuidv7($1)", &trust), Some(vec![None]));
+        // A composite's `*` may expand to no column at all.
+        assert_eq!(uuid_versions("select (null::empty).*, uuidv7(), (w).* from w", &trust), None);
+        assert_eq!(uuid_versions("select uuidv7() union all select uuidv7()", &trust), None);
+        assert_eq!(uuid_versions("select min(uuidv7()), uuidv7()::text, coalesce(id, uuidv7()) from t", &trust), Some(vec![None, None, None]));
+        // A name a user also defined proves nothing: pgcrypto's own `gen_random_uuid()` among them.
+        let shadowed = Trust { shadowed: HashSet::from(["gen_random_uuid".to_string()]), ..Trust::default() };
+        assert_eq!(uuid_versions("select gen_random_uuid(), uuidv7()", &shadowed), Some(vec![None, Some(7)]));
+    }
+
     /// The plan over a catalog of the tables the tests name in a scalar subquery.
     fn plan(sql: &str, dialect: Dialect, trust: &Trust) -> Plan {
         let columns: Columns = [("todos", vec!["id", "owner_id", "title", "n"]), ("owners", vec!["id", "name"])].into_iter().collect();
@@ -3764,7 +3857,7 @@ mod tests {
     }
 
     fn col(nullable: bool, type_oid: u32) -> DescribedColumn {
-        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), whole_row: false }
+        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
     }
 
     #[test]
@@ -3997,6 +4090,10 @@ mod tests {
         // did not answer for, and a join that merges columns with USING.
         assert!(pg("SELECT * FROM tags WHERE name = $1").star);
         assert!(pg("SELECT * FROM todos JOIN owners USING (id) WHERE title = $1").star);
+        // `(row).*` may expand to no column at all, so what follows it lines up with no column.
+        let expanded = pg("SELECT (NULL::empty).*, now() AS at, (t).* FROM todos t");
+        assert!(expanded.star);
+        assert_eq!(expanded.claims(3), [None, None, None]);
         assert!(narrows_star("SELECT * FROM todos WHERE title = $1"));
         assert!(narrows_star("SELECT t.* FROM todos t JOIN owners o ON o.id = t.owner_id"));
         assert!(!narrows_star("SELECT * FROM todos"));
@@ -4640,8 +4737,8 @@ mod tests {
         assert_eq!(p.head[1], None);
         assert_eq!(p.leaves.as_deref(), Some("SELECT u AS a0 FROM users u WHERE u.id = NULL"));
         // The probe says whether it was the row after all: a column named like the alias is not.
-        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), whole_row: false };
-        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), whole_row: false };
+        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
+        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
         assert!(resolve(p.head[0].as_ref().unwrap(), Some(&[row])).non_null);
         assert!(!resolve(p.head[0].as_ref().unwrap(), Some(&[column])).non_null);
         assert_eq!(pg("SELECT p FROM users u LEFT JOIN posts p ON p.user_id = u.id").head[0], None);
@@ -4889,3 +4986,60 @@ mod tests {
         assert_eq!(lite("SELECT json_extract('not json', '$') AS boom").head, vec![Some(Expr::Unknown)]);
     }
 }
+
+/// The bare names a statement reads, anywhere in it, that are also the names of FROM items in it, at any depth: each a whole row only where no query in scope has a column of the name, which Postgres reads first.
+pub fn whole_row_names(sql: &str) -> Option<HashSet<String>> {
+    use serde_json::Value;
+    fn walk(v: &Value, bare: &mut HashSet<String>, items: &mut HashSet<String>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(Value::Object(c)) = map.get("ColumnRef") {
+                    if let Some(Value::Array(fields)) = c.get("fields") {
+                        if let [only] = fields.as_slice() {
+                            if let Some(name) = only.pointer("/node/String/sval").and_then(Value::as_str) {
+                                bare.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+                for (kind, name) in [("RangeVar", "/alias/aliasname"), ("RangeSubselect", "/alias/aliasname"), ("RangeFunction", "/alias/aliasname"), ("JoinExpr", "/alias/aliasname")] {
+                    if let Some(item) = map.get(kind) {
+                        if let Some(n) = item.pointer(name).and_then(Value::as_str) {
+                            items.insert(n.to_string());
+                        } else if kind == "RangeVar" {
+                            if let Some(n) = item.get("relname").and_then(Value::as_str) {
+                                items.insert(n.to_string());
+                            }
+                        }
+                    }
+                }
+                map.values().for_each(|v| walk(v, bare, items));
+            }
+            Value::Array(list) => list.iter().for_each(|v| walk(v, bare, items)),
+            _ => {}
+        }
+    }
+    crate::stack::run(|| {
+        let parsed = crate::stack::parse(sql).ok()?;
+        let tree = serde_json::to_value(&parsed.protobuf).ok()?;
+        let (mut bare, mut items) = (HashSet::new(), HashSet::new());
+        walk(&tree, &mut bare, &mut items);
+        Some(bare.intersection(&items).cloned().collect())
+    })
+}
+
+#[cfg(test)]
+mod whole_row_names_tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_name_that_is_also_an_items_name_is_read_at_any_depth() {
+        let names = |sql: &str| { let mut v: Vec<String> = whole_row_names(sql).unwrap().into_iter().collect(); v.sort(); v };
+        assert_eq!(names("SELECT array(SELECT c FROM replies c) AS arr"), ["c"]);
+        assert_eq!(names("SELECT (SELECT to_jsonb(c) FROM replies c LIMIT 1) AS j"), ["c"]);
+        assert_eq!(names("SELECT to_jsonb(replies) FROM replies UNION ALL SELECT '{}'::jsonb"), ["replies"]);
+        assert!(names("SELECT id, body FROM replies r WHERE r.comment_id = 1").is_empty());
+        assert!(names("SELECT array[g.id, g.id] FROM grids g ORDER BY g.id").is_empty());
+    }
+}
+

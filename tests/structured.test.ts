@@ -224,7 +224,7 @@ test("Postgres: a rows insert keeps the array's order and exact 64-bit ids, a ke
     const insert = `insert into events :events::rows(id int8 not null, ts timestamptz not null, status? text not null, amount numeric(12,2), meta jsonb('{"type": "object"}')) returning id, status, amount`;
     const a = await analysis(root, url.href, insert);
     const events = members(a.params[0]!.type);
-    assert.deepEqual(events.map((f, i) => [f.name, f.type.kind === "json" ? "json" : "name" in f.type ? f.type.name : f.type.kind, a.params[0]!.members?.[i]?.written]), [["id", "int8", "int8"], ["ts", "timestamptz", "timestamptz"], ["status", "text", "text"], ["amount", "numeric", "numeric(12,2)"], ["meta", "json", "jsonb"]]);
+    assert.deepEqual(events.map((f, i) => [f.name, f.type.kind === "json" ? "json" : "label" in f.type ? f.type.label : f.type.kind, a.params[0]!.members?.[i]?.written]), [["id", "int8", "int8"], ["ts", "timestamptz", "timestamptz"], ["status", "text", "text"], ["amount", "numeric", "numeric(12,2)"], ["meta", "json", "jsonb"]]);
     assert.deepEqual(a.columns.map((c) => [c.name, c.nullable === true]), [["id", false], ["status", false], ["amount", true]]);
     const q = await built(root, url.href, "insert_events", insert);
     // postgres.js serializes a JSON parameter itself; pg takes its text.
@@ -387,7 +387,7 @@ test("MySQL: a rows insert reads each column with ERROR ON ERROR, keeps a 64-bit
     const insert = `insert into events :events::rows(id bigint not null, ts datetime(6) not null, status? varchar(32) not null, amount decimal(12,2), meta json('{"type": "object"}'))`;
     const a = await analysis(root, url.href, insert);
     const events = members(a.params[0]!.type);
-    assert.deepEqual(events.map((f) => [f.name, f.type.kind === "json" ? "json" : "name" in f.type ? f.type.name : f.type.kind]), [["id", "bigint"], ["ts", "datetime"], ["status", "varchar"], ["amount", "decimal"], ["meta", "json"]]);
+    assert.deepEqual(events.map((f) => [f.name, f.type.kind === "json" ? "json" : "label" in f.type ? f.type.label : f.type.kind]), [["id", "bigint"], ["ts", "datetime"], ["status", "varchar"], ["amount", "decimal"], ["meta", "json"]]);
     const q = await built(root, url.href, "insert_events", insert);
     await q.run(db, { events: [{ id: 9223372036854775807n, ts: "2026-10-20 10:00:00", amount: "1.50", meta: { a: 1 } }, { id: 1, ts: "2026-10-20 11:00:00", amount: null, meta: null }] });
     await assert.rejects(q.run(db, { events: [{ id: 2, ts: "2026-10-20 10:00:00", status: "x".repeat(33) }] }), /at most 32 characters/);
@@ -470,7 +470,7 @@ select value ->> '$.title', value ->> '$.done' from json_each(:todos::json('{
   try {
     const a = await analysis(root, url, insert);
     const p = a.params[0]!;
-    assert.deepEqual([p.name, p.type.kind === "json" ? p.type.name : undefined, p.type.kind], ["todos", "json", "json"]);
+    assert.deepEqual([p.name, p.type.kind === "json" ? p.type.label : undefined, p.type.kind], ["todos", "json", "json"]);
     // `done` has a default, so the caller may leave it out; the run time fills it.
     assert.deepEqual((schemaOf(p.type) as { items: { required: string[] } } | undefined)?.items.required, ["title"]);
     const q = await built(root, url, "insert_todos", insert);

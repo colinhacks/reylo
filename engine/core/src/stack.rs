@@ -3,9 +3,9 @@
 //! A statement's tree is as deep as its expressions nest, and every pass over it recurses: the
 //! reading of a parser's tree into Rust (libpg_query's C nodes, `engine/postgres/src/raw.rs`, and
 //! serde on each level of SQLite's), the walks of the expression rules, the
-//! row-count proof and the JSON shapes, and the drop of the tree. Each parser bounds the depth of
-//! what it hands over (libpg_query by the patch in `engine/postgres/vendor/`, SQLite by the limit
-//! `engine/sqlite/csrc/reylo_sqlite.c` sets on its expression depth), so the stack all of that
+//! row-count proof and the JSON shapes, and the drop of the tree. The depth of each parser's tree
+//! is bounded where the engine reads it (libpg_query's by `engine/postgres/src/raw.rs`, SQLite's by
+//! the limit `engine/sqlite/csrc/reylo_sqlite.c` sets on its expression depth), so the stack all of that
 //! needs is bounded too, and every host gives the engine at least that much: natively the analysis
 //! runs on a thread of its own with [`STACK_BYTES`] of stack, whatever thread the host calls from
 //! (a tokio worker has 2 MiB, a Postgres backend whatever the server was started with); the
@@ -16,14 +16,14 @@
 #[cfg(not(target_family = "wasm"))]
 use std::cell::Cell;
 
-/// How deeply a statement may nest, in libpg_query's measure, the protobuf messages of its tree,
-/// which the engine's reader of the tree counts the same way (`engine/postgres/src/raw.rs`) and
-/// refuses past with "parse tree is nested too deeply to read". An
+/// How deeply a statement may nest, in the protobuf messages of libpg_query's tree, which the
+/// engine's reader of the tree counts (`engine/postgres/src/raw.rs`) and refuses past with "parse
+/// tree is nested too deeply to read". An
 /// expression level is two messages (the `Node` and the node inside it), so this is about 500
 /// levels of `a + b + …`, of nested `CASE`, `coalesce` or `json_build_object`, and 165 nested
 /// scalar subqueries; a flat list (`a or b or …`, a `CASE` with many `WHEN`s, an `IN` list) does
-/// not nest at all. The bound is set in the patch to libpg_query (`engine/postgres/vendor/`), the
-/// same for every host, so a statement parses on all of them or on none, and a client engine and
+/// not nest at all. The bound is the engine's own, not libpg_query's (whose protobuf encoding,
+/// which the engine does not use, takes ten times as deep), the same for every host, so a statement parses on all of them or on none, and a client engine and
 /// one inside a server-side extension give the same answer. It is what the WebAssembly engine can afford: there the
 /// recursion runs on the JavaScript engine's own stack, about 1 MB in Node and shared with the
 /// host's frames, and the deepest statement of each shape leaves the host 45% of it

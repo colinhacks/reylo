@@ -1,0 +1,1 @@
+select (select json_object('rl', regexp_like(p.title, 'a'), 'isn', isnull(p.tag), 'it', p.n is true, 'co', coalesce(p.n = 1, false), 'if', if(p.n = 1, true, false), 'a', json_arrayagg(p.n = 1)) from posts p group by p.id order by p.id limit 1) as o

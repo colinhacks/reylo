@@ -14,3 +14,6 @@ reylo-engine-core = { path = "../core" }
 reylo-engine-native = { path = "../native" }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+serde_yaml = "0.9"

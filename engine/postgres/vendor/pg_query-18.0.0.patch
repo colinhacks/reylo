@@ -71,8 +71,8 @@ diff -ruN a/libpg_query/src/pg_query.c b/libpg_query/src/pg_query.c
 +/*
 + * Reylo: one key for the process, made once. Made in every thread that
 + * initializes, as upstream does, the keys run out after PTHREAD_KEYS_MAX
-+ * threads (512 on macOS): no later thread's memory context is freed when it
-+ * exits, and no other library in the process can make a key.
++ * threads (1,024 on glibc, 512 on macOS), and then no other library in the
++ * process can make one.
 + */
 +static pthread_once_t pg_query_thread_exit_once = PTHREAD_ONCE_INIT;
 +static void pg_query_make_thread_exit_key(void)
@@ -91,43 +91,6 @@ diff -ruN a/libpg_query/src/pg_query.c b/libpg_query/src/pg_query.c
  	pthread_setspecific(pg_query_thread_exit_key, TopMemoryContext);
  #endif
  }
-@@ -242,9 +253,14 @@
- 	if (new_limit <= 100)
- 		return;
- 
--	/* Clamp at 2MB, like Postgres auto-detection logic. */
--	if (new_limit > 2048)
--		new_limit = 2048;
-+	/*
-+	 * Clamp at 16MB. Postgres clamps its auto-detected limit at 2MB, but an
-+	 * unoptimized build spends over 4kB of stack per level of a nested
-+	 * expression, and the bound that matters is the stack this thread has,
-+	 * which the limit above already leaves 512kB of.
-+	 */
-+	if (new_limit > 16384)
-+		new_limit = 16384;
- 
- 	max_stack_depth = (int) new_limit;
- 	assign_max_stack_depth((int) new_limit, NULL);
-diff -ruN a/libpg_query/src/pg_query_internal.h b/libpg_query/src/pg_query_internal.h
---- a/libpg_query/src/pg_query_internal.h
-+++ b/libpg_query/src/pg_query_internal.h
-@@ -23,7 +23,14 @@
-  * tree walkers do via check_stack_depth(). Depending on the available stack
-  * and the stack used per level, that limit may be reached first.
-  */
--#define PG_QUERY_PROTOBUF_MAX_DEPTH 10000
-+/*
-+ * Reylo: 1,000, not 10,000. The bound is what decides whether a statement
-+ * parses, and it has to decide the same on every host: a WebAssembly engine
-+ * runs on what is left of the JavaScript engine's own stack, about 1MB in
-+ * Node, and spends some 0.4kB of it per message level, so at 1,000 a host
-+ * keeps more than half of that stack (reylo-engine's src/stack.rs).
-+ */
-+#define PG_QUERY_PROTOBUF_MAX_DEPTH 1000
- 
- typedef struct
- {
 diff -ruN a/libpg_query/src/pg_query_json_plpgsql.c b/libpg_query/src/pg_query_json_plpgsql.c
 --- a/libpg_query/src/pg_query_json_plpgsql.c
 +++ b/libpg_query/src/pg_query_json_plpgsql.c
@@ -148,49 +111,3 @@ diff -ruN a/libpg_query/src/pg_query_json_plpgsql.c b/libpg_query/src/pg_query_j
  				dump_var(out, (PLpgSQL_var *) d);
  				break;
  			case PLPGSQL_DTYPE_ROW:
-diff -ruN a/libpg_query/src/pg_query_outfuncs_protobuf.c b/libpg_query/src/pg_query_outfuncs_protobuf.c
---- a/libpg_query/src/pg_query_outfuncs_protobuf.c
-+++ b/libpg_query/src/pg_query_outfuncs_protobuf.c
-@@ -246,9 +246,33 @@
- #include "pg_query_enum_defs.c"
- #include "pg_query_outfuncs_defs.c"
- 
-+/*
-+ * Reylo: how deep _outNode has recursed. Every level is two message levels
-+ * (the Node and the node inside it), so a tree past half of
-+ * PG_QUERY_PROTOBUF_MAX_DEPTH would be refused when it is serialized; it is
-+ * refused here instead, before the recursion that builds it goes deeper. In
-+ * WebAssembly this recursion also spends the JavaScript engine's own stack,
-+ * which check_stack_depth() cannot see.
-+ */
-+static __thread int out_node_depth = 0;
-+
-+static void _outNodeAt(pg_query_Node* out, const void *obj);
-+
- static void
- _outNode(pg_query_Node* out, const void *obj)
- {
-+	if (++out_node_depth > PG_QUERY_PROTOBUF_MAX_DEPTH / 2)
-+	{
-+		out_node_depth = 0;
-+		elog(ERROR, "parse tree is nested too deeply to serialize to protobuf");
-+	}
-+	_outNodeAt(out, obj);
-+	out_node_depth--;
-+}
-+
-+static void
-+_outNodeAt(pg_query_Node* out, const void *obj)
-+{
- 	check_stack_depth();
- 
- 	if (obj == NULL)
-@@ -273,6 +297,8 @@
- 	pg_query_ParseResult *parse_result;
- 	char	   *data;
- 	size_t		len;
-+
-+	out_node_depth = 0;
- 
- 	out_arena = upb_Arena_New();
- 	parse_result = pg_query_ParseResult_new(out_arena);

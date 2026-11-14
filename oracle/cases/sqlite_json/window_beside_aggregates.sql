@@ -1,0 +1,1 @@
+select user_id, json_object('ids', json_group_array(id)) as doc, json_array(max(json_object('t', title))) as top, json_object('n', count(*)) as counted, count(*) over () as total from posts group by user_id

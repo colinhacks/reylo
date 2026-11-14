@@ -1,0 +1,1 @@
+select (select json_object('t', p.title, 'c', (select count(*) from posts q where q.title = p.title), 'o', (select json_object('x', max(q.n), 'a', json_arrayagg(q.id)) from posts q where q.title = p.title group by q.tag limit 1)) from posts p group by p.title order by p.title limit 1) as o

@@ -1,0 +1,1 @@
+select (select jsonb_build_object('nm', u.name || '', 't', u.title, 'c', count(p.id), 'a', jsonb_agg(p.id)) from users u left join posts p on p.user_id = u.id group by u.id order by u.id limit 1) as j

@@ -1,0 +1,1 @@
+select (select jsonb_build_object('k', d.user_id, 'c', count(*), 'a', jsonb_agg(p.id)) from posts p group by p.tag order by 1 limit 1) as j from (select user_id from posts group by rollup (user_id)) d

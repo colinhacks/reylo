@@ -1,0 +1,20 @@
+-- Edge cases of the inference of arrays of whole rows: names that resolve elsewhere, outer joins, aggregates and windows over correlated items, grouping sets, set operations and functions inside the item.
+create type addr as (street text, zip int);
+create domain nn as int not null;
+create table users (id bigint primary key, name text not null);
+create table posts (id bigint primary key, author_id bigint not null references users, title text not null);
+create table comments (id bigint primary key, post_id bigint not null references posts, body text, big bigint not null, d nn);
+create table replies (id bigint primary key, comment_id bigint not null references comments, body text not null);
+create table cc (id int primary key, c addr);
+create table gen (id int primary key, n int, g int generated always as (n * 2) stored);
+create table dropped (id int primary key, gone int, kept text not null);
+alter table dropped drop column gone;
+create view post_comments as select p.id as pid, x.big from posts p left join comments x on x.post_id = p.id;
+create function addr_rows() returns setof addr language sql stable as $$ select null::text, null::int union all select 'a', 1 $$;
+insert into users values (1, 'ada'), (2, 'bob');
+insert into posts values (1, 1, 'has'), (2, 1, 'none');
+insert into comments values (1, 1, 'x', 5, 1), (2, 1, null, 7, 2);
+insert into replies values (1, 1, 'r');
+insert into cc values (1, row('s', 1)), (2, null);
+insert into gen (id, n) values (1, 1), (2, null);
+insert into dropped values (1, 'k');

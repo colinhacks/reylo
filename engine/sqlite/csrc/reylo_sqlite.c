@@ -166,6 +166,21 @@ static const char *rowidName(Table *pTab){
   return 0;
 }
 
+/* Whether a generated column's expression calls a function or reads another generated column.
+** SQLite computes a VIRTUAL column's expression where the column is read, so the JSON subtype a
+** function there sets (`as (json_object('a', a)) virtual`) is still on the value read. */
+static int callsOrReadsGenerated(Table *pTab, Expr *p){
+  int i;
+  if( p==0 ) return 0;
+  if( p->op==TK_FUNCTION || p->op==TK_AGG_FUNCTION || ExprUseXSelect(p) ) return 1;
+  if( p->op==TK_COLUMN && p->iColumn>=0 && p->iColumn<pTab->nCol && (pTab->aCol[p->iColumn].colFlags & COLFLAG_GENERATED) ) return 1;
+  if( callsOrReadsGenerated(pTab, p->pLeft) || callsOrReadsGenerated(pTab, p->pRight) ) return 1;
+  for(i=0; ExprUseXList(p) && p->x.pList && i<p->x.pList->nExpr; i++){
+    if( callsOrReadsGenerated(pTab, p->x.pList->a[i].pExpr) ) return 1;
+  }
+  return 0;
+}
+
 /* The provenance members of a column reference (the object is already open). */
 static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
   Table *pTab = ExprUseYTab(p) ? p->y.pTab : 0;
@@ -191,6 +206,7 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
     kv_bool(s, "notNull", pCol->notNull!=0);
     kv_bool(s, "rowid", p->iColumn<0 || iCol==pTab->iPKey);
     if( pCol->colFlags & COLFLAG_GENERATED ) kv_bool(s, "generated", 1);
+    if( (pCol->colFlags & COLFLAG_VIRTUAL) && callsOrReadsGenerated(pTab, sqlite3ColumnExpr(pTab, pCol)) ) kv_bool(s, "subtype", 1);
   }
   kv_bool(s, "outer", ExprHasProperty(p, EP_CanBeNull) || (p->op==TK_COLUMN && outerCursor(pSel, p->iTable)));
   if( pTab->tabFlags & TF_Strict ) kv_bool(s, "strict", 1);
@@ -425,21 +441,25 @@ static const char *onErrorName(int onError){
     case OE_Rollback: return "rollback"; case OE_Fail: return "fail"; default: return "default";
   }
 }
+/* Every ON CONFLICT clause of an upsert, in order: SQLite tries each against the conflict. */
 static void upsert(sqlite3_str *s, Upsert *pUpsert){
   int i;
-  if( pUpsert==0 ){ sqlite3_str_appendall(s, "null"); return; }
-  sqlite3_str_appendchar(s, 1, '{');
-  kv_bool(s, "doUpdate", pUpsert->isDoUpdate);
-  key(s, "set"); sqlite3_str_appendchar(s, 1, '[');
-  for(i=0; pUpsert->pUpsertSet && i<pUpsert->pUpsertSet->nExpr; i++){
+  sqlite3_str_appendchar(s, 1, '[');
+  for(; pUpsert; pUpsert=pUpsert->pNextUpsert){
     sqlite3_str_appendchar(s, 1, '{');
-    kv_str(s, "column", pUpsert->pUpsertSet->a[i].zEName);
-    key(s, "expr"); expr(s, pUpsert->pUpsertSet->a[i].pExpr, 0); sqlite3_str_appendchar(s, 1, ',');
+    kv_bool(s, "doUpdate", pUpsert->isDoUpdate);
+    key(s, "set"); sqlite3_str_appendchar(s, 1, '[');
+    for(i=0; pUpsert->pUpsertSet && i<pUpsert->pUpsertSet->nExpr; i++){
+      sqlite3_str_appendchar(s, 1, '{');
+      kv_str(s, "column", pUpsert->pUpsertSet->a[i].zEName);
+      key(s, "expr"); expr(s, pUpsert->pUpsertSet->a[i].pExpr, 0); sqlite3_str_appendchar(s, 1, ',');
+      closeObj(s); sqlite3_str_appendchar(s, 1, ',');
+    }
+    closeArr(s); sqlite3_str_appendchar(s, 1, ',');
+    key(s, "where"); expr(s, pUpsert->pUpsertWhere, 0); sqlite3_str_appendchar(s, 1, ',');
     closeObj(s); sqlite3_str_appendchar(s, 1, ',');
   }
-  closeArr(s); sqlite3_str_appendchar(s, 1, ',');
-  key(s, "where"); expr(s, pUpsert->pUpsertWhere, 0); sqlite3_str_appendchar(s, 1, ',');
-  closeObj(s);
+  closeArr(s);
 }
 static void insertHook(Parse *pParse, Table *pTab, IdList *pColumn, ExprList *pList, Select *pSelect, int onError, Upsert *pUpsert){
   int i, n;
@@ -450,7 +470,7 @@ static void insertHook(Parse *pParse, Table *pTab, IdList *pColumn, ExprList *pL
   kv_str(gDml, "kind", "insert");
   kv_str(gDml, "table", pTab->zName);
   kv_str(gDml, "onError", onErrorName(onError));
-  key(gDml, "upsert"); upsert(gDml, pUpsert); sqlite3_str_appendchar(gDml, 1, ',');
+  key(gDml, "upserts"); upsert(gDml, pUpsert); sqlite3_str_appendchar(gDml, 1, ',');
   n = pList ? pList->nExpr : pSelect && pSelect->pEList ? pSelect->pEList->nExpr : 0;
   key(gDml, "columns"); sqlite3_str_appendchar(gDml, 1, '[');
   for(i=0; i<n; i++){
@@ -511,6 +531,7 @@ static void returningHook(Parse *pParse, Table *pTab, ExprList *pNew){
   for(i=0; pNew && i<pNew->nExpr; i++){
     sqlite3_str_appendchar(gReturning, 1, '{');
     kv_str(gReturning, "name", pNew->a[i].zEName);
+    kv_bool(gReturning, "named", pNew->a[i].fg.eEName==ENAME_NAME);
     key(gReturning, "expr"); expr(gReturning, pNew->a[i].pExpr, 0); sqlite3_str_appendchar(gReturning, 1, ',');
     closeObj(gReturning); sqlite3_str_appendchar(gReturning, 1, ',');
   }
@@ -543,6 +564,17 @@ static int checkedNotNull(Table *pTab, int iCol){
   return 0;
 }
 
+/* Whether the table declares a constraint ON CONFLICT IGNORE (a NOT NULL, a UNIQUE or the PRIMARY
+** KEY): a write that breaks it skips the row, unless the statement's own OR clause says otherwise. */
+static int ignoresConflict(Table *pTab){
+  Index *pIdx;
+  int i;
+  if( pTab->keyConf==OE_Ignore ) return 1;
+  for(i=0; i<pTab->nCol; i++) if( pTab->aCol[i].notNull==OE_Ignore ) return 1;
+  for(pIdx=pTab->pIndex; pIdx; pIdx=pIdx->pNext) if( pIdx->onError==OE_Ignore ) return 1;
+  return 0;
+}
+
 static void tables(sqlite3_str *s){
   int t, i, k;
   sqlite3_str_appendchar(s, 1, '{');
@@ -553,6 +585,7 @@ static void tables(sqlite3_str *s){
     kv_bool(s, "strict", (pTab->tabFlags & TF_Strict)!=0);
     kv_bool(s, "withoutRowid", (pTab->tabFlags & TF_WithoutRowid)!=0);
     kv_str(s, "rowidAlias", pTab->iPKey>=0 ? pTab->aCol[pTab->iPKey].zCnName : 0);
+    kv_bool(s, "ignores", ignoresConflict(pTab));
     key(s, "columns"); sqlite3_str_appendchar(s, 1, '[');
     for(i=0; i<pTab->nCol; i++){
       Column *pCol = &pTab->aCol[i];
@@ -724,6 +757,12 @@ static int openSchema(
     }
     sqlite3_free(zErr);
   }
+  /* A double-quoted word that names no column is a string to SQLite only where the build allows
+  ** it. better-sqlite3, node:sqlite, libSQL and Turso build without it (SQLITE_DQS=0) and refuse
+  ** `select "hello"`, so a statement is prepared without it too. The replay above keeps it, since
+  ** SQLite always reads a schema it loads from a file that way, whatever the build. */
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DML, 0, (int*)0);
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DDL, 0, (int*)0);
   return SQLITE_OK;
 }
 
@@ -803,19 +842,20 @@ static char *missingSchema(const char *zSql, const char *zMsg, int *piOfst, int 
 
 /*
 ** Analyzes one statement against the schema DDL, with the host's scalar functions (azFn[i] taking
-** aFnArg[i] arguments, -1 for any number) registered on the replay, and the functions of the
+** aFnArg[i] arguments, -1 for any number) registered on the replay, its columns named as zSent,
+** the same statement as the application runs it, names them (zSql when it is null), and the functions of the
 ** host's SQLite (azHost[i] taking aHostArg[i] arguments, of type zHostType[i]; nHost is negative
 ** when the host did not list them, and every function this build has is then taken to exist).
 ** Returns a JSON document (free with reylo_sqlite_free): { statement, dml, returning, tables,
 ** columns, params, readonly, error, schemaErrors }.
 */
 char *reylo_sqlite_analyze(
-  const char *const *azDdl, int nDdl, const char *zSql, const char *const *azFn, const int *aFnArg, int nFn,
+  const char *const *azDdl, int nDdl, const char *zSql, const char *zSent, const char *const *azFn, const int *aFnArg, int nFn,
   const char *const *azHost, const int *aHostArg, const char *zHostType, int nHost
 ){
   sqlite3_str *out = sqlite3_str_new(0);
   sqlite3_str *schemaErrors = sqlite3_str_new(0);
-  sqlite3_stmt *pStmt = 0;
+  sqlite3_stmt *pStmt = 0, *pNames = 0;
   const char *zTail = 0;
   int rc, i, n, nDepth;
   sqlite3_str_appendchar(schemaErrors, 1, '[');
@@ -835,8 +875,8 @@ char *reylo_sqlite_analyze(
   installHooks(1);
   /* The statement's expressions nest at most REYLO_SQLITE_EXPR_DEPTH deep, 350 where SQLite's own
   ** bound is 1,000: the analysis of a tree that deep is what the WebAssembly engine can afford on
-  ** the JavaScript engine's stack beside a host that holds 45% of it, as libpg_query's bound is
-  ** for Postgres (core/src/stack.rs). At 500, a nested CASE or function call needed 55% of Node's
+  ** the JavaScript engine's stack beside a host that holds 45% of it, as the bound on libpg_query's
+  ** tree is for Postgres (core/src/stack.rs). At 500, a nested CASE or function call needed 55% of Node's
   ** stack before V8 optimized the engine and 62% after on Node 24; at 350 the deepest statement
   ** of every shape needs at most 42% (measured on Node 24 and 26, 2026-10-21). The schema's own
   ** statements keep SQLite's bound. */
@@ -871,10 +911,15 @@ char *reylo_sqlite_analyze(
     key(out, "returning"); if( sqlite3_str_length(gReturning) ) sqlite3_str_appendall(out, sqlite3_str_value(gReturning)); else sqlite3_str_appendall(out, "null");
     sqlite3_str_appendchar(out, 1, ',');
     n = sqlite3_column_count(pStmt);
+    /* zSent is the statement as the application runs it, whose parameters are written differently,
+    ** and SQLite names a column with no alias after its text: `select ?1 + 1` is `?1 + 1` where
+    ** `select ? + 1` is `? + 1`. Each name is read from that text, which nothing else is. */
+    if( zSent ) sqlite3_prepare_v2(gDb, zSent, -1, &pNames, 0);
+    if( pNames && sqlite3_column_count(pNames)!=n ){ sqlite3_finalize(pNames); pNames = 0; }
     key(out, "columns"); sqlite3_str_appendchar(out, 1, '[');
     for(i=0; i<n; i++){
       sqlite3_str_appendchar(out, 1, '{');
-      kv_str(out, "name", sqlite3_column_name(pStmt, i));
+      kv_str(out, "name", sqlite3_column_name(pNames ? pNames : pStmt, i));
       kv_str(out, "declared", sqlite3_column_decltype(pStmt, i));
       kv_str(out, "table", sqlite3_column_table_name(pStmt, i));
       kv_str(out, "column", sqlite3_column_origin_name(pStmt, i));
@@ -897,6 +942,7 @@ char *reylo_sqlite_analyze(
   key(out, "schemaErrors"); sqlite3_str_appendall(out, sqlite3_str_value(schemaErrors) ? sqlite3_str_value(schemaErrors) : "[]");
   sqlite3_str_appendchar(out, 1, ',');
   closeObj(out);
+  sqlite3_finalize(pNames);
   sqlite3_finalize(pStmt);
   sqlite3_free(sqlite3_str_finish(gStmt)); sqlite3_free(sqlite3_str_finish(gDml)); sqlite3_free(sqlite3_str_finish(gReturning));
   sqlite3_free(sqlite3_str_finish(schemaErrors));
@@ -907,6 +953,9 @@ char *reylo_sqlite_analyze(
 }
 
 void reylo_sqlite_free(char *p){ sqlite3_free(p); }
+
+/* The version of this SQLite, as "3.53.4": the one that prepares every statement the engine types. */
+const char *reylo_sqlite_version(void){ return sqlite3_libversion(); }
 
 #ifdef REYLO_SQLITE_MAIN
 /* reylo_sqlite_check <database file> <statements file>: the DDL of the file, one JSON line per statement. */
@@ -923,7 +972,7 @@ int main(int argc, char **argv){
   while( fgets(line, sizeof line, f) ){
     char *nl = strchr(line, '\n'); if( nl ) *nl = 0;
     if( line[0]==0 || line[0]=='#' ) continue;
-    char *json = reylo_sqlite_analyze(azDdl, nDdl, line, 0, 0, 0, 0, 0, 0, -1);
+    char *json = reylo_sqlite_analyze(azDdl, nDdl, line, 0, 0, 0, 0, 0, 0, 0, -1);
     printf("%s\n", json);
     reylo_sqlite_free(json);
   }

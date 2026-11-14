@@ -1,5 +1,5 @@
-built.sql: many () -> { doc: json { total: numeric(10,2), rate: float8?, ratio: float8?, amount: numeric?, score: float8?, open_ended: numeric?, raw: float8? } }
-columns.sql: many () -> { total: numeric(10,2), rate: float8?, ratio: float8?, amount: numeric?, score: float8?, open_ended: numeric?, raw: float8? }
+built.sql: many () -> { doc: json { total: numeric(10,2, 0..), rate: float8?, ratio: float8(0..1)?, amount: numeric(0..)?, score: float8(>-1000000000..<1000000000)?, open_ended: numeric?, raw: float8? } }
+columns.sql: many () -> { total: numeric(10,2, 0..), rate: float8?, ratio: float8(0..1)?, amount: numeric(0..)?, score: float8(>-1000000000..<1000000000)?, open_ended: numeric?, raw: float8? }
 expression.sql: many () -> { twice: float8?, negated: float8? }
 not_valid.sql: many () -> { v: float8? }
-whole_rows.sql: one () -> { rows: jsonb (public.prices{ id: int4, total: numeric(10,2), rate: float8?, ratio: float8?, amount: numeric?, score: public.finite_score?, open_ended: numeric?, raw: float8? })[]? }
+whole_rows.sql: one () -> { rows: jsonb (public.prices{ id: int4, total: numeric(10,2, 0..), rate: float8?, ratio: float8(0..1)?, amount: numeric(0..)?, score: public.finite_score(>-1000000000..<1000000000)?, open_ended: numeric?, raw: float8? })[]? }

@@ -1,0 +1,1 @@
+select json_object('e', exists(select 1 from posts), 's', (select max(p.id) from posts p), 'n', count(*), 'k', concat((select p2.title from posts p2 order by p2.id limit 1), '')) as o from users u where false

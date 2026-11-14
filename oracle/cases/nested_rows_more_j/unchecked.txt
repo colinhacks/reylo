@@ -1,0 +1,2 @@
+j02_alone_outer_query_jsonb.sql: more than one row returned by a subquery used as an expression (21000)
+j03_alone_outer_same_type.sql: more than one row returned by a subquery used as an expression (21000)

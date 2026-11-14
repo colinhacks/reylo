@@ -69,8 +69,8 @@ test("SQLite: `sql` is the compiled statement and `raw` the file, at run time an
   try {
     const getUser = await built(root, "get_user", GET_USER);
     assert.equal(getUser.default.sql, "select id, name, email from users where id = ?");
-    // The statement Reylo sends ends with the comment naming the file, which `sql` leaves out.
-    assert.equal(getUser.default["~standard"].query.text, "select id, name, email from users where id = ? /*file='get_user.sql'*/");
+    // The statement Reylo sends opens with the comment naming the file on SQLite, which `sql` leaves out.
+    assert.equal(getUser.default["~standard"].query.text, "/*file='get_user.sql'*/ select id, name, email from users where id = ?");
     assert.equal(getUser.default.raw, GET_USER);
     assert.equal(getUser.sql, getUser.default.sql);
     assert.equal(getUser.raw, GET_USER);
@@ -179,6 +179,36 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
   }
 });
 
+test("Postgres: the hover says where a function's volatile label keeps Postgres from planning it into the query, and only there", { skip: pgLive }, async () => {
+  const own = await postgresDatabase("reylo_volatile_note");
+  const url = new URL(own.url);
+  const sql = own.sql;
+  const root = project(url.href, "postgres");
+  const note = "comments_for(bigint) is volatile, but its body calls nothing volatile, so Postgres can't plan it into this query. Marking it stable lets a filter on its rows use an index.";
+  try {
+    await sql.unsafe(`
+      create table comments (id int8 primary key, post_id int8 not null, body text not null);
+      create function comments_for(p int8) returns table (id int8, body text) language sql as $$ select id, body from comments where post_id = p $$;
+      create function comments_seen(p int8) returns table (id int8, seen_at timestamptz) language sql as $$ select id, clock_timestamp() from comments where post_id = p $$;
+      create function comments_stable(p int8) returns table (id int8, body text) language sql stable as $$ select id, body from comments where post_id = p $$;
+      create function comments_definer(p int8) returns table (id int8, body text) language sql security definer as $$ select id, body from comments where post_id = p $$;
+      create function count_for(p int8) returns int8 language sql as $$ select count(*) from comments where post_id = p $$;
+    `).simple();
+    const declared = await declarations(root, {
+      "reads.sql": "select id, body from comments_for(:p::int8)\n",
+      "seen.sql": "select id, seen_at from comments_seen(:p::int8)\n",
+      "stable.sql": "select id, body from comments_stable(:p::int8)\n",
+      "definer.sql": "select id, body from comments_definer(:p::int8)\n",
+      "scalar.sql": "select count_for(:p::int8) as n\n",
+    });
+    assert.ok(declared["reads.sql"]!.includes(note), declared["reads.sql"]!);
+    for (const file of ["seen.sql", "stable.sql", "definer.sql", "scalar.sql"]) assert.ok(!declared[file]!.includes("is volatile"), file);
+  } finally {
+    await closeSessions();
+    await own.drop();
+  }
+});
+
 test("Postgres: a statement that runs only the server's own code declares its QueryError narrowed to what it writes through, and one a trigger runs on the whole of it", { skip: pgLive }, async () => {
   const own = await postgresDatabase("reylo_query_error");
   const url = new URL(own.url);
@@ -262,11 +292,11 @@ test("the comment naming the file is sent and left out of sql, sqlcommenter: fal
     const declared = await declarations(root, { "get_user.sql": GET_USER });
     assert.ok(texts(declared["get_user.sql"]!).includes(`export declare const sql: "select id, name, email from users where id = ?";`), declared["get_user.sql"]!);
     // The same process, after the project file turns it back on: the session it builds with is a
-    // new one, and the statement it sends ends with the comment, which `sql` leaves out.
+    // new one, and the statement it sends opens with the comment, as on SQLite, which `sql` leaves out.
     writeFileSync(join(root, ".reylo.yaml"), "sqlcommenter: true\n");
     const tagged = await built(root, "get_user_again", GET_USER);
     assert.equal(tagged.sql, "select id, name, email from users where id = ?");
-    assert.equal(tagged.default["~standard"].query.text, "select id, name, email from users where id = ? /*file='get_user_again.sql'*/");
+    assert.equal(tagged.default["~standard"].query.text, "/*file='get_user_again.sql'*/ select id, name, email from users where id = ?");
     assert.deepEqual({ ...((await tagged.default.run(db, { id: 1 })) as object) }, { id: 1, name: "Ada", email: "ada@example.com" });
   } finally {
     db.close();

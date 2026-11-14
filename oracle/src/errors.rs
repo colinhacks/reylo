@@ -86,7 +86,8 @@ fn mysql_fields(errno: u16, message: &str) -> Vec<(&'static str, String)> {
         1364 => out.extend(between("Field '", "' doesn't have a default value").map(|c| ("column", c))),
         1264 | 1265 | 1292 | 1366 | 1406 => {
             if let (Some(at), Some(row)) = (message.rfind(" for column '"), message.rfind("' at row ")) {
-                if row > at && message[row + 9..].bytes().all(|b| b.is_ascii_digit()) {
+                // A value no column holds, as a cast's, is named `(null)`.
+                if row > at && message[row + 9..].bytes().all(|b| b.is_ascii_digit()) && &message[at + 13..row] != "(null)" {
                     out.push(("column", message[at + 13..row].to_string()));
                 }
             }
@@ -249,6 +250,7 @@ mod tests {
         assert_eq!(mysql_fields(1452, "Cannot add or update a child row: a foreign key constraint fails (`db`.`t`, CONSTRAINT `t_pid` FOREIGN KEY (`pid`) REFERENCES `parent` (`id`))"), vec![("table", "t".to_string()), ("constraint", "t_pid".to_string())]);
         assert_eq!(mysql_fields(3819, "Check constraint 'n_positive' is violated."), vec![("constraint", "n_positive".to_string())]);
         assert_eq!(mysql_fields(1406, "Data too long for column 'email' at row 1"), vec![("column", "email".to_string())]);
+        assert_eq!(mysql_fields(1264, "Out of range value for column '(null)' at row 1"), vec![]);
         let errors = serde_json::json!({ "ER_DUP_ENTRY": { "key": ["t.PRIMARY", "t.email"] } });
         assert_eq!(mysql_contradiction(&errors, 1062, "Duplicate entry 'a' for key 't.email'"), None);
         assert!(mysql_contradiction(&errors, 1062, "Duplicate entry 'a' for key 'u.email'").is_some());

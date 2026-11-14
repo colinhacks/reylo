@@ -16,18 +16,157 @@
 //! column's own name, an alias), and the caller holds those against the describe's: where they
 //! differ, the tree is not the statement DuckDB read, and nothing is proven.
 
-use crate::catalog::Catalog;
+use crate::catalog::{body_relations, Catalog, Table, TableMacro, MAX_MACRO_LEVELS};
 use sqlparser::ast::{
     BinaryOperator, CastKind, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, LimitClause, ObjectName, ObjectNamePart, Query, Select, SelectItem, SetExpr, SetOperator,
     TableAlias, TableFactor, TableWithJoins, UnaryOperator, Value,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// What the analysis reads besides the tree: the catalog, and the parameters the caller may pass
 /// NULL for, by the number `$n` binds them at.
 pub struct Ctx<'a> {
     pub catalog: &'a Catalog,
     pub nullable_params: &'a HashSet<String>,
+    /// Each parameter's type as the prepared statement describes it, by the number `$n` binds it at.
+    pub param_types: &'a HashMap<String, String>,
+    /// Inside a table macro's body, its parameters' names, lowercased: each is the parameter, not a
+    /// column of that name, wherever it stands unqualified in the body. None elsewhere.
+    pub macro_names: &'a [String],
+    /// Inside a table macro's body read for its rows, the parameters the call gives one value, by
+    /// name lowercased, with what each value compares as; none elsewhere.
+    pub macro_params: &'a [(String, ValueKind)],
+    /// The WITH queries around the statement's call of the macro this is read inside, and around
+    /// each call that led here: DuckDB binds every body where the statement calls it, so such a query
+    /// takes the place of a table a body reads, however deep.
+    pub outer_with: Vec<String>,
+    /// How many table macros' bodies this is read inside.
+    pub macro_level: usize,
+}
+
+impl<'a> Ctx<'a> {
+    /// The table macro a FROM item calls, where its body can stand for it: by one name, in the levels
+    /// read, and with no WITH query around the call named as a table the body reads, which would be
+    /// that query for all this reading can say.
+    fn table_macro(&self, name: &[String], with: &[&str]) -> Option<&'a TableMacro> {
+        let [one] = name else { return None };
+        let found = self.catalog.table_macros.get(&one.to_lowercase())?;
+        if self.macro_level >= MAX_MACRO_LEVELS {
+            return None;
+        }
+        let reads = body_relations(&found.body);
+        let clear = reads.iter().all(|parts| match parts.as_slice() {
+            [table] => !with.iter().any(|w| w.eq_ignore_ascii_case(table)) && !self.outer_with.iter().any(|w| w.eq_ignore_ascii_case(table)),
+            _ => true,
+        });
+        clear.then_some(found)
+    }
+
+    /// This context for the body of the table macro `found`, called where the WITH queries `with` are
+    /// in scope: its own WITH queries are its own, and its parameters' names are the parameters.
+    fn within<'b>(&'b self, found: &'b TableMacro, arguments: &'b [(String, ValueKind)], with: &[&str]) -> Ctx<'b> {
+        let mut outer_with = self.outer_with.clone();
+        outer_with.extend(with.iter().map(|w| w.to_lowercase()));
+        Ctx { catalog: self.catalog, nullable_params: self.nullable_params, param_types: self.param_types, macro_names: &found.params, macro_params: arguments, outer_with, macro_level: self.macro_level + 1 }
+    }
+
+    /// The built-in function a call names ([`builtin`]), but for one a user's macro of the name
+    /// takes the place of.
+    pub fn builtin(&self, f: &Function) -> Option<String> {
+        builtin(f).filter(|name| !self.catalog.user_macros.contains(name))
+    }
+
+    /// The context of a statement read alone.
+    pub fn top(catalog: &'a Catalog, nullable_params: &'a HashSet<String>, param_types: &'a HashMap<String, String>) -> Ctx<'a> {
+        Ctx { catalog, nullable_params, param_types, macro_names: &[], macro_params: &[], outer_with: Vec::new(), macro_level: 0 }
+    }
+}
+
+/// What a value is compared as beside a key, as far as the statement says. DuckDB converts one side
+/// of a comparison of two types: a text key beside a number is compared as numbers, so that `'1'` and
+/// `'01'` both match `1`, and a number key beside a float as floats, where two keys may round to one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ValueKind {
+    /// An integer or a decimal.
+    Exact,
+    /// A float or a double, and a number too long for a decimal, which DuckDB reads as a double.
+    Float,
+    Text,
+    Other,
+}
+
+/// What a type compares as, from the name DuckDB or a cast writes for it.
+fn type_kind(ty: &str) -> ValueKind {
+    let upper = ty.to_ascii_uppercase();
+    match upper.split(['(', ' ']).next().unwrap_or("") {
+        "TINYINT" | "SMALLINT" | "INTEGER" | "BIGINT" | "HUGEINT" | "UTINYINT" | "USMALLINT" | "UINTEGER" | "UBIGINT" | "UHUGEINT" | "INT" | "INT1" | "INT2" | "INT4" | "INT8" | "INT16" | "INT32" | "INT64" | "INT128" | "BYTEINT" | "SHORT" | "LONG" | "SIGNED" | "DECIMAL" | "NUMERIC" | "DEC" => ValueKind::Exact,
+        "FLOAT" | "FLOAT4" | "FLOAT8" | "REAL" | "DOUBLE" => ValueKind::Float,
+        "VARCHAR" | "TEXT" | "STRING" | "CHAR" | "BPCHAR" => ValueKind::Text,
+        _ => ValueKind::Other,
+    }
+}
+
+/// What a value is compared as: `arguments` are the table macro's it stands in, and `params` the
+/// prepared statement's types of its parameters, which DuckDB gives a parameter from where it is first
+/// used, so a parameter beside a key may still compare as another type.
+fn value_kind(e: &Expr, arguments: &[(String, ValueKind)], params: &HashMap<String, String>) -> ValueKind {
+    match e {
+        Expr::Value(v) => match &v.value {
+            Value::Number(n, _) if n.len() > 38 || n.contains(['e', 'E']) => ValueKind::Float,
+            Value::Number(..) => ValueKind::Exact,
+            Value::SingleQuotedString(_) | Value::DollarQuotedString(_) | Value::EscapedStringLiteral(_) => ValueKind::Text,
+            Value::Placeholder(p) => p.strip_prefix('$').and_then(|n| params.get(n)).map_or(ValueKind::Other, |ty| type_kind(ty)),
+            _ => ValueKind::Other,
+        },
+        Expr::Identifier(id) => arguments.iter().find(|(name, _)| *name == id.value.to_lowercase()).map_or(ValueKind::Other, |(_, kind)| *kind),
+        Expr::Nested(inner) => value_kind(inner, arguments, params),
+        Expr::Cast { data_type, .. } => type_kind(&data_type.to_string()),
+        Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => value_kind(expr, arguments, params),
+        _ => ValueKind::Other,
+    }
+}
+
+/// Whether a value keeps a key of the type `column` to one row: a text key, or an enum's, takes no
+/// number; a number key takes no float, and nothing it can't tell the type of.
+fn holds_to_one(value: ValueKind, column: ValueKind) -> bool {
+    match column {
+        ValueKind::Text => value == ValueKind::Text,
+        ValueKind::Exact => matches!(value, ValueKind::Exact | ValueKind::Text),
+        ValueKind::Float => value != ValueKind::Other,
+        _ => matches!(value, ValueKind::Text | ValueKind::Other),
+    }
+}
+
+/// Whether an expression is one value whatever the row, so that a key equal to it is one key.
+fn constant(e: &Expr, arguments: &[(String, ValueKind)]) -> bool {
+    match e {
+        Expr::Value(v) => !matches!(v.value, Value::Null),
+        Expr::TypedString(_) => true,
+        Expr::Identifier(id) => arguments.iter().any(|(name, _)| *name == id.value.to_lowercase()),
+        Expr::Nested(inner) => constant(inner, arguments),
+        Expr::Cast { kind, expr, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && constant(expr, arguments),
+        Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => constant(expr, arguments),
+        _ => false,
+    }
+}
+
+/// The parameters of a table macro that a call gives one value, with what each is compared as. Any
+/// other argument is left out: DuckDB writes it in at each place the parameter stands, so `random()`
+/// is a new value on every row, and a parameter a default fills is not known here.
+fn macro_arguments(params: &[String], args: &[FunctionArg], ctx: &Ctx) -> Vec<(String, ValueKind)> {
+    let mut out = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        let (name, value) = match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => (params.get(i).cloned(), e),
+            FunctionArg::Named { name, arg: FunctionArgExpr::Expr(e), .. } => (Some(name.value.to_lowercase()), e),
+            FunctionArg::ExprNamed { name: Expr::Identifier(name), arg: FunctionArgExpr::Expr(e), .. } => (Some(name.value.to_lowercase()), e),
+            _ => continue,
+        };
+        if let Some(name) = name.filter(|_| constant(value, ctx.macro_params)) {
+            out.push((name, value_kind(value, ctx.macro_params, ctx.param_types)));
+        }
+    }
+    out
 }
 
 /// One result column: the name DuckDB gives it where the tree says (an alias, a column's own
@@ -37,6 +176,14 @@ pub struct Out {
     pub name: Option<String>,
     pub not_null: bool,
     pub comment: Option<String>,
+    /// For `array(select c from … c)`, an array of the whole rows of an item no outer join pads: the rows' columns, its fields.
+    pub rows: Option<Vec<Out>>,
+    /// Whether its type is certainly no JSON and no VARIANT ([`plain`]): a JSON `null` is a value
+    /// until a cast to another type makes NULL of it.
+    pub plain: bool,
+    /// The RFC 9562 version of every UUID it holds, where the call that made each says so
+    /// ([`made_version`]).
+    pub version: Option<u8>,
 }
 
 /// The WITH queries in scope, innermost last: each one's name, lowercased, and its columns.
@@ -59,11 +206,24 @@ struct Scope {
     rejected: HashSet<(usize, usize)>,
     /// Grouped by ROLLUP, CUBE or GROUPING SETS, which make a key NULL in the rows that total it.
     grouping_sets: bool,
+    /// One of those keys is no column of the FROM: an expression, a literal, a position or an
+    /// item's alias, so any select item may be the key, whatever it is built of.
+    expression_keys: bool,
     /// Grouped by keys (GROUP BY with any key, or ALL), so that each group has a row.
     grouped: bool,
+    /// The WITH queries in scope.
+    ctes: Ctes,
+    /// Inside a table macro's body, its parameters' names: a bare one is the parameter, never a column.
+    params: Vec<String>,
 }
 
 impl Scope {
+    /// Whether a bare word may be a column here: a relation has a column of that name, or a relation's
+    /// columns are not known.
+    fn may_name(&self, word: &str) -> bool {
+        self.rels.iter().any(|r| r.columns.as_ref().is_none_or(|cs| cs.iter().any(|c| c.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(word)))))
+    }
+
     /// The relation and column a reference names: `c` where exactly one relation has a column of
     /// that name and every relation's columns are known, `r.c` (or `s.r.c`) where the relation is
     /// named. Anything else (a struct's field, a lambda's parameter, a column of a table function)
@@ -72,7 +232,7 @@ impl Scope {
         let same = |a: &str, b: &Ident| a.eq_ignore_ascii_case(&b.value);
         match parts {
             [column] => {
-                if self.rels.iter().any(|r| r.columns.is_none()) {
+                if self.rels.iter().any(|r| r.columns.is_none()) || self.params.iter().any(|p| same(p, column)) {
                     return None;
                 }
                 let mut found = None;
@@ -117,7 +277,7 @@ impl Scope {
 
     fn column(&self, (i, j): (usize, usize)) -> Out {
         let rel = &self.rels[i];
-        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None });
+        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None, rows: None, plain: false, version: None });
         let not_null = !self.grouping_sets && (self.rejected.contains(&(i, j)) || (!rel.padded && c.not_null));
         Out { not_null, ..c }
     }
@@ -130,13 +290,13 @@ pub fn query(q: &Query, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
     if let Some(with) = &q.with {
         for cte in &with.cte_tables {
             // A recursive query's rows come from itself too: its columns are named by its first
-            // part, and each may be NULL.
+            // part, and each may be NULL, as may each field of an array of rows.
             let columns = if with.recursive {
                 let first = match &*cte.query.body {
                     SetExpr::SetOperation { left, .. } => set_expr(left, ctx, &ctes),
                     _ => query(&cte.query, ctx, &ctes),
                 };
-                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, ..c }).collect())
+                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, rows: None, version: None, ..c }).collect())
             } else {
                 query(&cte.query, ctx, &ctes)
             };
@@ -180,6 +340,13 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                         },
                         comment: None,
                         name: a.name,
+                        rows: None,
+                        plain: a.plain && b.plain,
+                        version: match op {
+                            SetOperator::Union => a.version.filter(|v| b.version == Some(*v)),
+                            SetOperator::Intersect => a.version.or(b.version),
+                            SetOperator::Except | SetOperator::Minus => a.version,
+                        },
                     })
                     .collect(),
             )
@@ -191,7 +358,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                 return None;
             }
             // DuckDB names a VALUES list's columns col0, col1, …
-            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None }).collect())
+            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None, rows: None, plain: values.rows.iter().all(|row| plain(&row[k], &scope, ctx)), version: None }).collect())
         }
         _ => None,
     }
@@ -199,16 +366,22 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
 
 fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
     let mut scope = from(&s.from, ctx, ctes)?;
+    scope.ctes = ctes.clone();
     if let Some(selection) = &s.selection {
         reject(selection, &mut scope);
     }
-    let g = grouping(s, &|e| match e {
-        Expr::Identifier(id) => scope.resolve(std::slice::from_ref(id)).is_some(),
-        Expr::CompoundIdentifier(ids) => scope.resolve(ids).is_some(),
-        _ => false,
-    });
+    let g = grouping(
+        s,
+        &|e| match e {
+            Expr::Identifier(id) => scope.resolve(std::slice::from_ref(id)).is_some(),
+            Expr::CompoundIdentifier(ids) => scope.resolve(ids).is_some(),
+            _ => false,
+        },
+        ctx,
+    );
     scope.grouped = g.keyed;
     scope.grouping_sets = g.sets;
+    scope.expression_keys = g.expressions;
     // `FROM t` alone selects every column.
     let star = [SelectItem::Wildcard(Default::default())];
     let items = if s.projection.is_empty() { &star[..] } else { &s.projection[..] };
@@ -219,7 +392,7 @@ fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
 /// called `alias` in the statement: its NOT NULL columns are not NULL.
 pub fn returning(items: &[SelectItem], name: &[String], alias: Option<String>, ctx: &Ctx) -> Option<Vec<Out>> {
     let table = ctx.catalog.table(name)?;
-    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone() }).collect();
+    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty), version: None }).collect();
     let scope = Scope { rels: vec![Rel { name: alias.or_else(|| name.last().cloned()), columns: Some(columns), padded: false }], ..Scope::default() };
     projection(items, &scope, ctx)
 }
@@ -229,6 +402,12 @@ fn projection(items: &[SelectItem], scope: &Scope, ctx: &Ctx) -> Option<Vec<Out>
     let mut out = Vec::new();
     for item in items {
         match item {
+            // An `unnest` or `unpack` of a struct makes a column of each field, named by the field,
+            // which the tree does not say, parenthesized or not; and an item that calls `columns`
+            // makes a column of each column it matches, none at all included, which leaves the
+            // items and the columns out of line.
+            SelectItem::UnnamedExpr(e) if matches!(bare(e), Expr::Function(f) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n))) => return None,
+            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } if calls(e, &|f| f.name.to_string().eq_ignore_ascii_case("columns")) => return None,
             SelectItem::UnnamedExpr(e) => out.push(column_of(e, None, scope, ctx)),
             SelectItem::ExprWithAlias { expr, alias } => out.push(column_of(expr, Some(&alias.value), scope, ctx)),
             SelectItem::Wildcard(options) => {
@@ -271,7 +450,7 @@ fn expand(scope: &Scope, i: usize, options: &sqlparser::ast::WildcardAdditionalO
         }
         let replaced = options.opt_replace.as_ref().and_then(|r| r.items.iter().find(|item| item.column_name.value.eq_ignore_ascii_case(&name)));
         match replaced {
-            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None }),
+            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None, rows: None, plain: plain(&item.expr, scope, ctx), version: made_version(&item.expr, ctx) }),
             None => out.push(Out { name: Some(name), ..scope.column((i, j)) }),
         }
     }
@@ -294,8 +473,61 @@ fn column_of(e: &Expr, alias: Option<&str>, scope: &Scope, ctx: &Ctx) -> Out {
     let name = alias.map(String::from).or(own_name);
     match read {
         Some(at) => Out { name, ..scope.column(at) },
-        None => Out { name, not_null: not_null(e, scope, ctx), comment: None },
+        // Under grouping sets with a key that is no column, the item may be that key, NULL in
+        // the rows that total it: `case … end as bucket … group by rollup (bucket)`. A count
+        // is no key, and neither is `grouping`.
+        None if scope.expression_keys => Out { name, not_null: counts(e, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx), version: made_version(e, ctx) },
+        None => Out { name, not_null: not_null(e, scope, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx), version: made_version(e, ctx) },
     }
+}
+
+/// An expression without the parentheses around it.
+fn bare(e: &Expr) -> &Expr {
+    match e {
+        Expr::Nested(inner) => bare(inner),
+        e => e,
+    }
+}
+
+/// The RFC 9562 version of each UUID an expression makes whole: 4 for `uuid()`, `gen_random_uuid()`
+/// and `uuidv4()`, and 7 for `uuidv7()`. A UUID read from a table, or written by a default, may be
+/// any.
+fn made_version(e: &Expr, ctx: &Ctx) -> Option<u8> {
+    match e {
+        Expr::Nested(inner) => made_version(inner, ctx),
+        Expr::Function(f) if f.over.is_none() && f.filter.is_none() && args(f).is_some_and(|a| a.is_empty()) => match ctx.builtin(f)?.as_str() {
+            "uuid" | "gen_random_uuid" | "uuidv4" => Some(4),
+            "uuidv7" => Some(7),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether the expression is, whole, a count or a `grouping` call: never NULL, and no key of a GROUP BY.
+fn counts(e: &Expr, ctx: &Ctx) -> bool {
+    match e {
+        Expr::Nested(inner) => counts(inner, ctx),
+        Expr::Function(f) => ctx.builtin(f).is_some_and(|name| COUNTS.contains(&name.as_str()) || matches!(name.as_str(), "grouping" | "grouping_id")),
+        _ => false,
+    }
+}
+
+/// The columns of the rows `array(select c from … c)` collects: an item of the subquery's own FROM that no outer join pads, under a name that is no column in scope. A whole row of such an item is a struct, whatever its fields hold.
+fn array_of_rows(e: &Expr, scope: &Scope, ctx: &Ctx) -> Option<Vec<Out>> {
+    let Expr::Function(f) = e else { return None };
+    let (true, FunctionArguments::Subquery(q)) = (ctx.builtin(f).as_deref() == Some("array"), &f.args) else { return None };
+    let SetExpr::Select(s) = &*q.body else { return None };
+    let [SelectItem::UnnamedExpr(Expr::Identifier(id))] = s.projection.as_slice() else { return None };
+    let plain = q.with.is_none() && matches!(&s.group_by, sqlparser::ast::GroupByExpr::Expressions(keys, _) if keys.is_empty()) && s.having.is_none() && s.qualify.is_none();
+    let is_column = |rel: &Rel| rel.columns.as_ref().is_none_or(|cs| cs.iter().any(|c| c.name.as_deref().is_none_or(|n| n.eq_ignore_ascii_case(&id.value))));
+    let inner = from(&s.from, ctx, &scope.ctes).filter(|_| plain)?;
+    if inner.rels.iter().chain(&scope.rels).any(is_column) {
+        return None;
+    }
+    let mut named = inner.rels.iter().filter(|r| r.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&id.value)));
+    let (Some(rel), None) = (named.next(), named.next()) else { return None };
+    rel.columns.clone().filter(|_| !rel.padded)
 }
 
 /// How a SELECT groups its rows.
@@ -304,6 +536,8 @@ struct Grouping {
     keyed: bool,
     /// Grouped by ROLLUP, CUBE or GROUPING SETS.
     sets: bool,
+    /// One of those sets has a key `column` does not say is a column.
+    expressions: bool,
     /// Not grouped at all: an aggregate over every row, which returns one row even over none.
     ungrouped: bool,
 }
@@ -312,14 +546,14 @@ struct Grouping {
 /// reads a column, so it is keyed where such an item reads one `column` says is (outside a
 /// subquery, with no lambda whose parameter it may be), and not grouped where no item without
 /// an aggregate reads anything: a literal, a parameter or `random()` is no key.
-fn grouping(s: &Select, column: &dyn Fn(&Expr) -> bool) -> Grouping {
+fn grouping(s: &Select, column: &dyn Fn(&Expr) -> bool, ctx: &Ctx) -> Grouping {
     match &s.group_by {
         GroupByExpr::All(modifiers) => {
             let (mut keyed, mut ungrouped) = (false, true);
             for item in &s.projection {
                 match item {
                     SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
-                        if has_aggregate(e) {
+                        if has_aggregate(e, ctx) {
                             continue;
                         }
                         let r = reads(e, column);
@@ -332,13 +566,25 @@ fn grouping(s: &Select, column: &dyn Fn(&Expr) -> bool) -> Grouping {
                     }
                 }
             }
-            Grouping { keyed, sets: !modifiers.is_empty(), ungrouped: ungrouped && modifiers.is_empty() }
+            // Under ALL, each item without an aggregate is a key.
+            Grouping { keyed, sets: !modifiers.is_empty(), expressions: !modifiers.is_empty(), ungrouped: ungrouped && modifiers.is_empty() }
         }
         GroupByExpr::Expressions(exprs, modifiers) => {
             let sets = !modifiers.is_empty() || exprs.iter().any(|e| matches!(e, Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_)));
             // `GROUP BY ()` is the one empty grouping set: no grouping at all.
             let keys = exprs.iter().any(|e| !matches!(e, Expr::Tuple(t) if t.is_empty()));
-            Grouping { keyed: keys, sets, ungrouped: !keys && !sets }
+            // Whether every key under `e` is a column. A key beside the sets (`group by a,
+            // rollup (b)`) is in every set, and never NULL for it.
+            fn columns(e: &Expr, column: &dyn Fn(&Expr) -> bool) -> bool {
+                match e {
+                    Expr::Rollup(sets) | Expr::Cube(sets) | Expr::GroupingSets(sets) => sets.iter().flatten().all(|k| columns(k, column)),
+                    Expr::Tuple(items) => items.iter().all(|k| columns(k, column)),
+                    Expr::Nested(inner) => columns(inner, column),
+                    _ => column(e),
+                }
+            }
+            let expressions = exprs.iter().any(|e| (!modifiers.is_empty() || matches!(e, Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_))) && !columns(e, column));
+            Grouping { keyed: keys, sets, expressions, ungrouped: !keys && !sets }
         }
     }
 }
@@ -392,7 +638,7 @@ fn reads(e: &Expr, column: &dyn Fn(&Expr) -> bool) -> Reads {
 /// The relations of a FROM, joined, with what each ON shows; `None` for a join the engine does
 /// not follow.
 fn from(items: &[TableWithJoins], ctx: &Ctx, ctes: &Ctes) -> Option<Scope> {
-    let mut scope = Scope::default();
+    let mut scope = Scope { params: ctx.macro_names.to_vec(), ..Scope::default() };
     for item in items {
         scope.rels.extend(factor(&item.relation, ctx, ctes)?);
         for join in &item.joins {
@@ -466,7 +712,16 @@ fn factor(f: &TableFactor, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Rel>> {
             let parts = parts(name);
             let rel_name = alias_name(alias).or_else(|| parts.last().cloned());
             if args.is_some() {
-                return Some(vec![Rel { name: rel_name, columns: None, padded: false }]);
+                // A table macro's body stands in its place when DuckDB binds the statement, and is
+                // read as a derived table of its own. Its parameters are names no table has there,
+                // which read as nothing known; any other table function's columns are unknown.
+                let with: Vec<&str> = ctes.iter().map(|(n, _)| n.as_str()).collect();
+                let columns = ctx.table_macro(&parts, &with).and_then(|m| query(&m.body, &ctx.within(m, &[], &with), &Vec::new())).map(|cs| cs.into_iter().map(|c| Out { comment: None, ..c }).collect::<Vec<_>>());
+                let columns = match (columns, alias) {
+                    (Some(cs), Some(alias)) => Some(renamed(cs, alias)),
+                    (cs, _) => cs,
+                };
+                return Some(vec![Rel { name: rel_name, columns, padded: false }]);
             }
             let cte = match parts.as_slice() {
                 [one] => ctes.iter().rev().find(|(n, _)| n.eq_ignore_ascii_case(one)).map(|(_, cs)| cs.clone()),
@@ -474,7 +729,7 @@ fn factor(f: &TableFactor, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Rel>> {
             };
             let columns = match cte {
                 Some(columns) => Some(columns),
-                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone() }).collect()),
+                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty), version: None }).collect()),
             };
             let columns = match (columns, alias) {
                 (Some(cs), Some(alias)) => Some(renamed(cs, alias)),
@@ -650,7 +905,8 @@ fn not_null(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
         },
         Expr::TypedString(_) | Expr::Interval(_) => true,
         Expr::Nested(inner) | Expr::Collate { expr: inner, .. } => nn(inner),
-        Expr::Cast { kind, expr, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && nn(expr),
+        // A JSON `null` is a value, and its cast to any type but text or JSON is NULL.
+        Expr::Cast { kind, expr, data_type, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && nn(expr) && (plain(expr, scope, ctx) || keeps_json_null(&data_type.to_string())),
         Expr::UnaryOp { expr, .. } => nn(expr),
         Expr::BinaryOp { left, op, right } => match op {
             // A division by zero is NULL where the session says so (`error_on_division_by_zero`).
@@ -684,7 +940,66 @@ fn not_null(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
         Expr::Position { expr, r#in } => nn(expr) && nn(r#in),
         Expr::Substring { expr, substring_from, substring_for, .. } => nn(expr) && substring_from.as_deref().is_none_or(nn) && substring_for.as_deref().is_none_or(nn),
         Expr::AtTimeZone { timestamp, time_zone } => nn(timestamp) && nn(time_zone),
+        // A word DuckDB calls without parentheses (`current_date`) is read as a column of that name
+        // where the FROM has one, which may hold NULL.
+        Expr::Function(f) if matches!(f.args, FunctionArguments::None) && scope.may_name(&f.name.to_string()) => {
+            scope.resolve(&[Ident::new(f.name.to_string())]).is_some_and(|at| scope.column(at).not_null)
+        }
         Expr::Function(f) => function(f, scope, ctx),
+        _ => false,
+    }
+}
+
+/// The built-in types that are no JSON and no VARIANT, by the first word DuckDB or a statement
+/// writes each with. A name that is none of them may stand for JSON (`create type doc as json`).
+const PLAIN_TYPES: &[&str] = &[
+    "BOOLEAN", "BOOL", "LOGICAL", "TINYINT", "INT1", "SMALLINT", "INT2", "SHORT", "INTEGER", "INT", "INT4", "SIGNED", "BIGINT", "INT8", "LONG", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
+    "UHUGEINT", "FLOAT", "FLOAT4", "REAL", "DOUBLE", "FLOAT8", "DECIMAL", "NUMERIC", "DEC", "VARCHAR", "CHAR", "BPCHAR", "CHARACTER", "NVARCHAR", "TEXT", "STRING", "BLOB", "BYTEA", "BINARY", "VARBINARY", "BIT",
+    "BITSTRING", "DATE", "TIME", "TIMETZ", "TIMESTAMP", "TIMESTAMPTZ", "DATETIME", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMP_US", "INTERVAL", "UUID", "BIGNUM", "VARINT",
+];
+
+/// The types a JSON `null` stays a value under a cast to: text, where it is the word `null`, and JSON.
+const KEEP_JSON_NULL: &[&str] = &["VARCHAR", "CHAR", "BPCHAR", "CHARACTER", "NVARCHAR", "TEXT", "STRING", "JSON"];
+
+fn first_word(ty: &str) -> String {
+    ty.trim().split(['(', ' ', '<']).next().unwrap_or_default().to_ascii_uppercase()
+}
+
+fn keeps_json_null(ty: &str) -> bool {
+    !ty.trim_end().ends_with(']') && KEEP_JSON_NULL.contains(&first_word(ty).as_str())
+}
+
+/// Whether a type, as DuckDB or the statement writes it, is certainly no JSON and no VARIANT: a
+/// built-in scalar type, an enum, or a list, a struct or a map, whose cast reads its elements one
+/// by one and stays a value itself.
+fn plain_type(ty: &str) -> bool {
+    let word = first_word(ty);
+    ty.trim_end().ends_with(']') || ["STRUCT", "MAP", "ENUM"].contains(&word.as_str()) || PLAIN_TYPES.contains(&word.as_str())
+}
+
+/// Whether an expression's value is certainly no JSON and no VARIANT, by what the statement says
+/// of its type: anything unsure is not. Read only of an expression [`not_null`] can hold not NULL.
+fn plain(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
+    let p = |e: &Expr| plain(e, scope, ctx);
+    match e {
+        Expr::Identifier(id) => scope.resolve(std::slice::from_ref(id)).is_some_and(|at| scope.column(at).plain),
+        Expr::CompoundIdentifier(ids) => scope.resolve(ids).is_some_and(|at| scope.column(at).plain),
+        // A parameter under a cast is given as the cast's type.
+        Expr::Value(_) | Expr::TypedString(_) | Expr::Interval(_) => true,
+        Expr::Nested(inner) | Expr::Collate { expr: inner, .. } => p(inner),
+        Expr::Cast { data_type, .. } => plain_type(&data_type.to_string()),
+        // An operator [`not_null`] reads makes a number, a truth value, text or a list, and takes no JSON but `||`, which makes text of it.
+        Expr::UnaryOp { .. } | Expr::BinaryOp { .. } => true,
+        Expr::IsNull(_) | Expr::IsNotNull(_) | Expr::IsTrue(_) | Expr::IsNotTrue(_) | Expr::IsFalse(_) | Expr::IsNotFalse(_) | Expr::IsUnknown(_) | Expr::IsNotUnknown(_) | Expr::IsDistinctFrom(..) | Expr::IsNotDistinctFrom(..) => true,
+        Expr::InList { .. } | Expr::Between { .. } | Expr::Like { .. } | Expr::ILike { .. } | Expr::SimilarTo { .. } | Expr::Exists { .. } => true,
+        Expr::Case { conditions, else_result, .. } => else_result.as_deref().is_none_or(p) && conditions.iter().all(|w| p(&w.result)),
+        Expr::Array(_) | Expr::Struct { .. } | Expr::Dictionary(_) | Expr::Map(_) | Expr::Tuple(_) => true,
+        Expr::Ceil { .. } | Expr::Floor { .. } | Expr::Trim { .. } | Expr::Position { .. } | Expr::Substring { .. } | Expr::AtTimeZone { .. } => true,
+        Expr::Function(f) if matches!(f.args, FunctionArguments::None) && scope.may_name(&f.name.to_string()) => scope.resolve(&[Ident::new(f.name.to_string())]).is_some_and(|at| scope.column(at).plain),
+        // A count and a rank are numbers. Any other function may hand on its argument's type, as
+        // `coalesce`, `min` and `greatest` do, and one that makes JSON (`to_json`) makes JSON's
+        // `null` only of one.
+        Expr::Function(f) => ctx.builtin(f).is_some_and(|name| COUNTS.contains(&name.as_str()) || RANKS.contains(&name.as_str()) || name == "ntile" || args(f).is_some_and(|args| args.iter().all(|a| p(a)))),
         _ => false,
     }
 }
@@ -715,8 +1030,12 @@ pub fn builtin(f: &Function) -> Option<String> {
 }
 
 fn function(f: &Function, scope: &Scope, ctx: &Ctx) -> bool {
-    let Some(name) = builtin(f) else { return false };
+    let Some(name) = ctx.builtin(f) else { return false };
     let name = name.as_str();
+    // `array(select …)` is an empty list over no rows.
+    if name == "array" && matches!(f.args, FunctionArguments::Subquery(_)) {
+        return true;
+    }
     // A ranking function given an ORDER BY of its own, as in `ntile(2 ORDER BY id) OVER (…)`, ranks
     // within the window's frame, and is NULL where the frame is empty.
     let framed = matches!(&f.args, FunctionArguments::List(list) if !list.clauses.is_empty());
@@ -766,8 +1085,8 @@ fn calls(e: &Expr, is: &dyn Fn(&Function) -> bool) -> bool {
 }
 
 /// Whether an expression calls an aggregate (not as a window function), outside any subquery.
-pub fn has_aggregate(e: &Expr) -> bool {
-    calls(e, &|f| f.over.is_none() && builtin(f).is_some_and(|n| AGGREGATES.contains(&n.as_str())))
+pub fn has_aggregate(e: &Expr, ctx: &Ctx) -> bool {
+    calls(e, &|f| f.over.is_none() && ctx.builtin(f).is_some_and(|n| AGGREGATES.contains(&n.as_str())))
 }
 
 /// Whether an expression calls `unnest`, or a macro that does, which makes a row of each element,
@@ -841,7 +1160,7 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
     let filtered = s.selection.is_some() || s.having.is_some() || s.qualify.is_some();
     // Any name may be a column here, so a GROUP BY ALL is taken as no grouping only where no item
     // without an aggregate reads a name at all.
-    let grouped = grouping(s, &|_| true);
+    let grouped = grouping(s, &|_| true, ctx);
     let ungrouped = grouped.ungrouped;
     // Grouping sets make a row of each set, even over one row: `grouping sets ((), ())` is two.
     if grouped.sets {
@@ -850,9 +1169,30 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
     if s.from.is_empty() {
         return if filtered { ("maybeOne", Some("its WHERE, HAVING or QUALIFY may leave out the one row".into())) } else { ("one", None) };
     }
-    let aggregate = items.iter().any(|e| has_aggregate(e)) || s.having.as_ref().is_some_and(has_aggregate);
+    let aggregate = items.iter().any(|e| has_aggregate(e, ctx)) || s.having.as_ref().is_some_and(|h| has_aggregate(h, ctx));
     if aggregate && ungrouped {
         return if s.having.is_some() || s.qualify.is_some() { ("maybeOne", Some("its HAVING or QUALIFY may leave out the one row".into())) } else { ("one", None) };
+    }
+    // A table macro alone in the FROM returns what its body returns, or fewer under a filter or a
+    // grouping.
+    if let [item] = s.from.as_slice() {
+        if let (true, TableFactor::Table { name, args: Some(args), .. }) = (item.joins.is_empty(), &item.relation) {
+            let with: Vec<&str> = ctes.iter().map(String::as_str).collect();
+            // An argument that makes rows is written in at each place its parameter stands, so it
+            // multiplies the body's rows.
+            let makes_rows = args.args.iter().any(|a| match a {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) | FunctionArg::Named { arg: FunctionArgExpr::Expr(e), .. } | FunctionArg::ExprNamed { arg: FunctionArgExpr::Expr(e), .. } => has_unnest(e, &ctx.catalog.row_makers),
+                _ => true,
+            });
+            if let Some(found) = ctx.table_macro(&parts(name), &with).filter(|_| !makes_rows) {
+                let arguments = macro_arguments(&found.params, &args.args, ctx);
+                return match cardinality_in(&found.body, &ctx.within(found, &arguments, &with), &[]) {
+                    ("one", _) if !filtered && ungrouped => ("one", None),
+                    ("one" | "maybeOne", _) => ("maybeOne", None),
+                    (_, why) => ("many", why),
+                };
+            }
+        }
     }
     // One table, a key of which the WHERE holds equal to one value each; not a WITH query that
     // takes a table's name, which has none of its keys.
@@ -862,7 +1202,7 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
                 let shadowed = matches!(parts(name).as_slice(), [one] if ctes.contains(&one.to_lowercase()));
                 if let Some(table) = ctx.catalog.table(&parts(name)).filter(|_| !shadowed) {
                     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| parts(name).pop());
-                    if key_equal(selection, &table.keys, qualifier.as_deref()) {
+                    if key_equal(selection, table, qualifier.as_deref(), ctx) {
                         return ("maybeOne", None);
                     }
                 }
@@ -873,8 +1213,16 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
 }
 
 /// Whether the AND-ed parts of `filter` hold every column of one of `keys` equal to a value that
-/// reads no column: a literal or a parameter, cast or not.
-pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>) -> bool {
+/// reads no column: a literal or a parameter, cast or not, or one of a table macro's `arguments`.
+pub fn key_equal(filter: &Expr, table: &Table, qualifier: Option<&str>, ctx: &Ctx) -> bool {
+    let keys = &table.keys;
+    let arguments = ctx.macro_params;
+    // A macro's parameter is the parameter where it stands bare, whether or not a column has its name.
+    let is_parameter = |id: &str| ctx.macro_names.iter().any(|name| name.eq_ignore_ascii_case(id));
+    let holds = |column: &str, value: &Expr| {
+        let kind = table.columns.iter().find(|c| c.name.eq_ignore_ascii_case(column)).map_or(ValueKind::Other, |c| type_kind(&c.ty));
+        !(table.collated && kind == ValueKind::Text) && holds_to_one(value_kind(value, arguments, ctx.param_types), kind)
+    };
     let mut equal: Vec<String> = Vec::new();
     fn conjuncts<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
         match e {
@@ -886,25 +1234,16 @@ pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>) -
             other => out.push(other),
         }
     }
-    fn constant(e: &Expr) -> bool {
-        match e {
-            Expr::Value(v) => !matches!(v.value, Value::Null),
-            Expr::TypedString(_) => true,
-            Expr::Nested(inner) => constant(inner),
-            Expr::Cast { kind, expr, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && constant(expr),
-            Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => constant(expr),
-            _ => false,
-        }
-    }
     let column = |e: &Expr| -> Option<String> {
         match e {
+            Expr::Identifier(id) if is_parameter(&id.value) => None,
             Expr::Identifier(id) => Some(id.value.to_lowercase()),
             Expr::CompoundIdentifier(ids) if ids.len() >= 2 => {
                 let rel = &ids[ids.len() - 2].value;
                 qualifier.filter(|q| q.eq_ignore_ascii_case(rel)).map(|_| ids[ids.len() - 1].value.to_lowercase())
             }
             Expr::Nested(inner) => match inner.as_ref() {
-                Expr::Identifier(id) => Some(id.value.to_lowercase()),
+                Expr::Identifier(id) if !is_parameter(&id.value) => Some(id.value.to_lowercase()),
                 _ => None,
             },
             _ => None,
@@ -915,8 +1254,8 @@ pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>) -
     for p in parts {
         if let Expr::BinaryOp { left, op: BinaryOperator::Eq, right } = p {
             match (column(left), column(right)) {
-                (Some(c), None) if constant(right) => equal.push(c),
-                (None, Some(c)) if constant(left) => equal.push(c),
+                (Some(c), None) if constant(right, arguments) && holds(&c, right) => equal.push(c),
+                (None, Some(c)) if constant(left, arguments) && holds(&c, left) => equal.push(c),
                 _ => {}
             }
         }
@@ -939,8 +1278,9 @@ mod tests {
             name: name.into(),
             current: true,
             current_database: true,
-            columns: columns.iter().map(|(c, nn)| TableColumn { name: c.to_string(), not_null: *nn, comment: None }).collect(),
+            columns: columns.iter().map(|(c, nn)| TableColumn { name: c.to_string(), not_null: *nn, comment: None, ty: "BIGINT".into() }).collect(),
             keys: keys.iter().map(|k| k.iter().map(|c| c.to_string()).collect()).collect(),
+            collated: false,
         }
     }
 
@@ -959,7 +1299,8 @@ mod tests {
     fn proven(sql: &str) -> String {
         let catalog = catalog();
         let nullable = HashSet::from(["2".to_string()]);
-        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+        let types = HashMap::new();
+        let ctx = Ctx::top(&catalog, &nullable, &types);
         match super::query(&query(sql), &ctx, &Vec::new()) {
             None => "-".into(),
             Some(out) => out.iter().map(|o| format!("{}{}", o.name.as_deref().unwrap_or("_"), if o.not_null { "" } else { "?" })).collect::<Vec<_>>().join(" "),
@@ -969,7 +1310,38 @@ mod tests {
     fn rows(sql: &str) -> &'static str {
         let catalog = catalog();
         let nullable = HashSet::new();
-        super::cardinality(&query(sql), &Ctx { catalog: &catalog, nullable_params: &nullable }).0
+        // The prepared statement types `$1` as the column it stands beside: the test tables' are all BIGINT.
+        let types: HashMap<String, String> = [("1".to_string(), "BIGINT".to_string())].into();
+        super::cardinality(&query(sql), &Ctx::top(&catalog, &nullable, &types)).0
+    }
+
+    /// A value holds a key to one row only where DuckDB compares the two without losing a difference.
+    #[test]
+    fn a_value_of_another_type_does_not_pin_a_key() {
+        use super::{holds_to_one, ValueKind::*};
+        // Text beside a number is compared as numbers: `'1'` and `'01'` both match `1`.
+        assert!(holds_to_one(Text, Text));
+        assert!(!holds_to_one(Exact, Text));
+        assert!(!holds_to_one(Float, Text));
+        assert!(!holds_to_one(Other, Text));
+        // A number beside a float is compared as floats, where two keys may round to one.
+        assert!(holds_to_one(Exact, Exact));
+        assert!(holds_to_one(Text, Exact));
+        assert!(!holds_to_one(Float, Exact));
+        assert!(!holds_to_one(Other, Exact));
+        // An enum beside a number is compared as text beside a number.
+        assert!(holds_to_one(Text, Other));
+        assert!(holds_to_one(Other, Other));
+        assert!(!holds_to_one(Exact, Other));
+        // A float key holds each value once.
+        assert!(holds_to_one(Exact, Float));
+        // A parameter compares as the type the prepared statement gives it, which DuckDB takes from
+        // where it is first used: `n + 0 = $1 and code = $1` makes it an integer beside a text key.
+        let params: std::collections::HashMap<String, String> = [("1".to_string(), "INTEGER".to_string()), ("2".to_string(), "VARCHAR".to_string())].into();
+        let placeholder = |p: &str| sqlparser::ast::Expr::value(sqlparser::ast::Value::Placeholder(p.into()));
+        assert_eq!(super::value_kind(&placeholder("$1"), &[], &params), Exact);
+        assert_eq!(super::value_kind(&placeholder("$2"), &[], &params), Text);
+        assert_eq!(super::value_kind(&placeholder("$3"), &[], &params), Other);
     }
 
     #[test]
@@ -1071,7 +1443,8 @@ mod tests {
         let mut catalog = catalog();
         catalog.row_makers.insert("generate_subscripts".into());
         let nullable = HashSet::new();
-        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+        let types = HashMap::new();
+        let ctx = Ctx::top(&catalog, &nullable, &types);
         assert_eq!(super::cardinality(&query("select generate_subscripts([4, 5, 6], 1)"), &ctx).0, "many");
         assert_eq!(super::cardinality(&query("select main.generate_subscripts([4, 5, 6], 1)"), &ctx).0, "many");
         // A ranking function given its own ORDER BY ranks within the frame, which may be empty.
@@ -1083,5 +1456,47 @@ mod tests {
         assert_eq!(rows("select * from users limit 1"), "maybeOne");
         assert_eq!(rows("select count(*) from users offset 1"), "maybeOne");
         assert_eq!(rows("select * from users fetch first 1 rows only"), "maybeOne");
+    }
+
+    /// Each column's RFC 9562 version, `-` for none, under a user's macros of these names.
+    fn versions(sql: &str, macros: &[&str]) -> String {
+        let mut catalog = catalog();
+        catalog.user_macros.extend(macros.iter().map(|m| m.to_string()));
+        let (nullable, types) = (HashSet::new(), HashMap::new());
+        let ctx = Ctx::top(&catalog, &nullable, &types);
+        let out = super::query(&query(sql), &ctx, &Vec::new()).unwrap();
+        out.iter().map(|o| o.version.map_or("-".to_string(), |v| v.to_string())).collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn a_uuid_a_call_makes_has_its_version() {
+        assert_eq!(versions("select uuid() as a, gen_random_uuid() as b, uuidv4() as c, uuidv7() as d, (uuidv7()) as e", &[]), "4 4 4 7 7");
+        // Through a WITH query and a derived table, and a UNION whose arms agree.
+        assert_eq!(versions("with x as (select uuidv7() as id) select id from x", &[]), "7");
+        assert_eq!(versions("select id from (select uuid() as id from users) t", &[]), "4");
+        assert_eq!(versions("select uuidv7() as id union all select uuidv7()", &[]), "7");
+        // Arms that disagree, a UUID a table holds, and any other expression have none.
+        assert_eq!(versions("select uuidv7() as id union all select uuid()", &[]), "-");
+        assert_eq!(versions("select coalesce(uuidv7(), uuid()) as a, uuidv7()::varchar as b, id from users", &[]), "- - -");
+        // A recursive query's later rows are its own.
+        assert_eq!(versions("with recursive r(id, n) as (select uuidv7(), 1 union all select uuid(), n + 1 from r where n < 3) select id from r", &[]), "-");
+        // `columns` may match no column, and a parenthesized `unnest` of a struct makes several.
+        assert_eq!(proven("select columns(* exclude (id, name, email, team_id)), uuidv7(), columns('email|team_id') from users"), "-");
+        assert_eq!(proven("select uuidv7() as id, (unnest({'a': 1, 'b': 2}))"), "-");
+        assert_eq!(proven("select columns('e.*') + 1 as x, uuidv7() as id from users"), "-");
+    }
+
+    /// A user's macro takes the place of a built-in of its name: `create macro uuid() as 1`.
+    #[test]
+    fn a_users_macro_is_no_built_in() {
+        assert_eq!(versions("select uuid() as a, uuidv7() as b", &["uuid"]), "- 7");
+        let mut catalog = catalog();
+        catalog.user_macros.insert("now".into());
+        catalog.user_macros.insert("count".into());
+        let (nullable, types) = (HashSet::new(), HashMap::new());
+        let ctx = Ctx::top(&catalog, &nullable, &types);
+        let out = super::query(&query("select now() as a, current_date as b"), &ctx, &Vec::new()).unwrap();
+        assert_eq!(out.iter().map(|o| o.not_null).collect::<Vec<_>>(), [false, true]);
+        assert_eq!(super::cardinality(&query("select count(*) from users"), &ctx).0, "many");
     }
 }

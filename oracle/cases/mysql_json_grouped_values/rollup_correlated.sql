@@ -1,0 +1,1 @@
+select u.id, (select json_object('k', u.id, 'c', count(*)) from posts p where p.user_id = u.id or u.id is null group by p.user_id order by p.user_id limit 1) as o from users u group by u.id with rollup

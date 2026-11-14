@@ -1,4 +1,4 @@
-// The local playground (app/routes/playground.tsx): an Inference card for any statement, drawn as
+// The local playground (app/routes/playground.tsx): an inference card for any statement, drawn as
 // the page draws one, from the types Reylo infers for it on the page's schema. The dev server alone
 // serves it (lib/playground-plugin.ts), and only on a machine with scratch databases: it builds the
 // page's schema, or the one the address gives, in Postgres and MySQL databases named
@@ -20,7 +20,7 @@ import { ident, orNull, renderParamType, renderType } from '../../src/render.ts'
 import { schemaType } from '../scripts/schema-type.ts';
 import { mdxOptions } from './mdx-options.ts';
 import { pageFiles } from './page-files.ts';
-import { collectFiles, DIALECT_NAME, INFERRED_LAYOUT, SCHEMA_FILE, type Dialect as PageDialect } from './remark-mapper.ts';
+import { collectFiles, DIALECT_NAME, INFERENCE_CARD_LAYOUT, SCHEMA_FILE, type Dialect as PageDialect } from './remark-mapper.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
 
 /** The dialects the playground tries a statement on: the main page's, each against its own schema. */
@@ -176,14 +176,14 @@ function fence(lang: string, text: string): string {
   return `${ticks}${lang}\n${text}\n${ticks}`;
 }
 
-/** The card for `request`: one panel per dialect the statement types on, laid out as lib/remark-mapper.ts lays out an `<Inferred>` card. */
+/** The card for `request`: one panel per dialect the statement types on, laid out as lib/remark-mapper.ts lays out an inference card. */
 export async function card(request: Request): Promise<Card> {
   const written = request.sql.trim();
   const own = request.schema?.trim();
   const schemas = own ? Object.fromEntries(ORDER.map((d) => [d, own])) : pageSchemas();
   const errors: Card['errors'] = {};
   const panels: string[] = [];
-  const width = TYPE_WIDTH[INFERRED_LAYOUT];
+  const width = TYPE_WIDTH[INFERENCE_CARD_LAYOUT];
   for (const dialect of request.dialects?.length ? ORDER.filter((d) => request.dialects!.includes(d)) : ORDER) {
     const schema = schemas[dialect];
     if (schema === undefined) {
@@ -201,19 +201,19 @@ export async function card(request: Request): Promise<Card> {
       continue;
     }
     const rows = [];
-    if (own) rows.push(`<InferredRow label="Schema">\n\n${fence('sql', own)}\n\n</InferredRow>`);
-    rows.push(`<InferredRow label="Query">\n\n${fence('sql', written)}\n\n</InferredRow>`);
+    if (own) rows.push(`<InferenceCardRow label="Schema">\n\n${fence('sql', own)}\n\n</InferenceCardRow>`);
+    rows.push(`<InferenceCardRow label="Query">\n\n${fence('sql', written)}\n\n</InferenceCardRow>`);
     const typeRows = [];
-    typeRows.push(`<InferredRow label="Params">\n\n${fence('ts', types.params ? formatType(types.params, width) : 'void')}\n\n</InferredRow>`);
-    typeRows.push(`<InferredRow label="Returns">\n\n${fence('ts', formatType(resultType(types.row, types.cardinality), width))}\n\n</InferredRow>`);
-    rows.push(`<InferredTypes>\n${typeRows.join('\n')}\n</InferredTypes>`);
+    typeRows.push(`<InferenceCardRow label="Params">\n\n${fence('ts', types.params ? formatType(types.params, width) : 'void')}\n\n</InferenceCardRow>`);
+    typeRows.push(`<InferenceCardRow label="Returns">\n\n${fence('ts', formatType(resultType(types.row, types.cardinality), width))}\n\n</InferenceCardRow>`);
+    rows.push(`<InferenceCardTypes>\n${typeRows.join('\n')}\n</InferenceCardTypes>`);
     panels.push(`<Dialect value="${DIALECT_NAME[dialect]}">\n${rows.join('\n')}\n</Dialect>`);
   }
   if (!panels.length) return { errors };
   const shown = ORDER.filter((d) => errors[d] === undefined && (request.dialects?.length ? request.dialects.includes(d) : true)).map((d) => DIALECT_NAME[d]);
-  // `<PlaygroundCard>` is the page's `<Inferred>` under another name (app/routes/playground.tsx), since
-  // lib/remark-mapper.ts fills every `<Inferred>` from the captured modules.
-  const mdx = `<PlaygroundCard dialects="${shown.join(',')}" layout="${INFERRED_LAYOUT}">\n<DialectTabs follow>\n${panels.join('\n')}\n</DialectTabs>\n</PlaygroundCard>\n`;
+  // `<PlaygroundCard>` is the page's inference card under another name (app/routes/playground.tsx), since
+  // lib/remark-mapper.ts fills every inference card from the captured modules.
+  const mdx = `<PlaygroundCard dialects="${shown.join(',')}" layout="${INFERENCE_CARD_LAYOUT}">\n<DialectTabs follow>\n${panels.join('\n')}\n</DialectTabs>\n</PlaygroundCard>\n`;
   const options = await mdxOptions('runtime');
   const file = await compile({ value: mdx, path: path.join(root, 'playground.mdx') }, { ...options, outputFormat: 'function-body' });
   return { code: String(file), errors };

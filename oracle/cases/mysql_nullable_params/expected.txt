@@ -6,20 +6,20 @@ guard_other_column.sql: many (name: varchar) -> { id: int }
 guard_with.sql: many (name: varchar) -> { id: int, name: text? }
 guard_with_alias.sql: many (min: int32) -> { id: int }
 guard_with_columns.sql: many (q: varchar) -> { id: int }
-insert_positions.sql: none (id: int32, name: varchar, email: varchar?, bio: varchar?) -> {  }
-insert_rows.sql: none (n1: varchar, e1: varchar?, n2: varchar, e2: varchar?) -> {  }
-insert_select_mixed.sql: none (email: varchar?, bio: varchar?) -> {  }
-insert_select_params.sql: none (name: varchar, email: varchar?) -> {  }
-insert_set.sql: none (name: varchar, email: varchar?) -> {  }
-insert_upsert.sql: none (name: varchar, email: varchar?, bio: varchar?) -> {  }
-insert_values.sql: none (name: varchar, email: varchar?) -> {  }
+insert_positions.sql: none (id: int, name: varchar(≤20), email: varchar(≤40)?, bio: varchar(≤40)?) -> {  }
+insert_rows.sql: none (n1: varchar(≤20), e1: varchar(≤40)?, n2: varchar(≤20), e2: varchar(≤40)?) -> {  }
+insert_select_mixed.sql: none (email: varchar(≤40)?, bio: varchar(≤40)?) -> {  }
+insert_select_params.sql: none (name: varchar(≤20), email: varchar(≤40)?) -> {  }
+insert_set.sql: none (name: varchar(≤20), email: varchar(≤40)?) -> {  }
+insert_upsert.sql: none (name: varchar(≤20), email: varchar(≤40)?, bio: varchar(≤40)?) -> {  }
+insert_values.sql: none (name: varchar(≤20), email: varchar(≤40)?) -> {  }
 isnull_call.sql: many (p: varchar) -> { id: int, missing: bigint | int }
 null_safe.sql: many (email: varchar) -> { id: int }
-replace_parenthesized.sql: none (name: varchar, email: varchar?, bio: varchar?) -> {  }
-replace_values.sql: none (id: int32, name: varchar, bio: varchar) -> {  }
-update_aliased.sql: none (bio: varchar?, id: int32) -> {  }
+replace_parenthesized.sql: none (name: varchar(≤20), email: varchar(≤40)?, bio: varchar(≤40)?) -> {  }
+replace_values.sql: none (id: int, name: varchar(≤20), bio: varchar) -> {  }
+update_aliased.sql: none (bio: varchar(≤40)?, id: int32) -> {  }
 update_expression.sql: none (email: varchar, id: int32) -> {  }
-update_join.sql: none (bio: varchar?, title: varchar, tag: varchar?, id: int32) -> {  }
-update_join_tag.sql: none (email: varchar?, title: varchar, tag: varchar?, id: int32) -> {  }
-update_set.sql: none (email: varchar?, name: varchar, id: int32) -> {  }
-upsert_update_list.sql: none (name: varchar, email: varchar?, bio: varchar?, again: varchar) -> {  }
+update_join.sql: none (bio: varchar(≤40)?, title: varchar(≤40), tag: varchar(≤20)?, id: int32) -> {  }
+update_join_tag.sql: none (email: varchar(≤40)?, title: varchar(≤40), tag: varchar(≤20)?, id: int32) -> {  }
+update_set.sql: none (email: varchar(≤40)?, name: varchar(≤20), id: int32) -> {  }
+upsert_update_list.sql: none (name: varchar(≤20), email: varchar(≤40)?, bio: varchar(≤40)?, again: varchar(≤20)) -> {  }

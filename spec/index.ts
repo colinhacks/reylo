@@ -26,14 +26,14 @@ export type Type =
   | GeometryType
   | XmlType
   | OpaqueType
-  | AnyType
   | UnknownType
-  | TaggedUnionType;
+  | TaggedUnionType
+  | RowsType;
 
 /** What every type may carry. */
 export interface Base {
   /**
-   * The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, the name is qualified, and it is the type's identity.
+   * The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, it is qualified, and it is the type's identity.
    *   - Postgres: `int4`, `varchar`, `timestamptz`, `public.mood` (an enum), `public.email` (a domain), `public.vector` (an extension's type).
    *   - MySQL: `bigint`, `enum`, `json`.
    *   - SQLite: the declared type the value traces to, through `max`, `coalesce` and union arms too.
@@ -41,15 +41,19 @@ export interface Base {
    *
    * Absent on a type the statement builds, such as the record inside a `json_build_object`. It never changes what the type means. Generators and drivers key their conventions on it, such as MySQL's `tinyint(1)` as a boolean.
    */
-  name?: string;
+  label?: string;
   /** The comment the database keeps on a named type: `COMMENT ON TYPE` or `COMMENT ON DOMAIN`. A column's own comment is on the column. */
   comment?: string;
 }
 
-/** Bounds on an ordered kind's values, in its canonical text (`"-1.50"`, `"2026-10-23"`, and for a decimal an exponent where it is shorter, `"1e126"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: "0"`. A side takes one of its two fields. A whole-number kind takes only `min` and `max` (`x > 0` is `min: "1"`); any other kind writes a bound as the constraint states it, so `x > 0` on a `numeric(10,2)` is `exclusive_min: "0"`, never `min: "0.01"`. Bounds constrain the finite values only: whether infinity, -infinity and NaN also occur is said by the `infinity` and `nan` flags alone, whatever the bounds. */
-export interface Bounds {
+/** Inclusive bounds on an integer's values, in its canonical text, as JSON Schema's `minimum` and `maximum` are. Every bound on a whole number has an inclusive spelling, `x > 0` being `min: "1"`, so an integer takes no exclusive bound. Its bounds constrain its values only beyond what its width implies. */
+export interface InclusiveBounds {
   min?: string;
   max?: string;
+}
+
+/** Bounds on an ordered kind's values, in its canonical text (`"-1.50"`, `"2026-10-23"`, and for a decimal an exponent where it is shorter, `"1e126"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: "0"`. A side takes one of its two fields. A bound is written as the constraint states it, so `x > 0` on a `numeric(10,2)` is `exclusive_min: "0"`, never `min: "0.01"`; an integer takes only `min` and `max` (`InclusiveBounds`). Bounds constrain the finite values only: whether infinity, -infinity and NaN also occur is said by the `infinity` and `nan` flags alone, whatever the bounds. */
+export interface Bounds extends InclusiveBounds {
   exclusive_min?: string;
   exclusive_max?: string;
 }
@@ -71,7 +75,7 @@ export interface BooleanType extends Base {
 }
 
 /** A whole number of a fixed width, two's complement unless `unsigned`: `int4` is 32 bits, MySQL `BIGINT UNSIGNED` 64 bits unsigned, SQL Server `tinyint` 8 bits unsigned, MySQL `MEDIUMINT` 24 bits, DuckDB `HUGEINT` 128 bits, SQLite `INTEGER` 64 bits, and Vertica's `TINYINT`, despite its name, 64 bits. Its range follows from the width; bounds narrow it further, from a CHECK or for a type narrower than any width, as MySQL `YEAR` (0 and 1901 to 2155, 16 bits bounded at 0 and 2155). A whole-number bound is always written inclusive, since `x > 0` is `x >= 1`. An integer of no fixed width is a `decimal` whose scale is at most 0. */
-export interface IntegerType extends Base, Bounds {
+export interface IntegerType extends Base, InclusiveBounds {
   kind: "integer";
   bits: number;
   /** From 0 to 2^bits − 1: MySQL `UNSIGNED`, SQL Server `tinyint`, Postgres `oid`. */
@@ -162,9 +166,11 @@ export interface BytesType extends Base, Lengths {
   kind: "bytes";
 }
 
-/** A 128-bit identifier (RFC 9562): Postgres `uuid`, SQL Server `uniqueidentifier`, MariaDB `UUID`. */
+/** A 128-bit identifier, in RFC 9562's text form: Postgres `uuid`, SQL Server `uniqueidentifier`, MariaDB and DuckDB `UUID`. It holds any 128 bits unless `version` says otherwise: none of these types keeps to a version or a variant, so a column holds the nil UUID and bits no RFC version describes, and a `default uuidv7()` does not stop an insert writing any other. */
 export interface UuidType extends Base {
   kind: "uuid";
+  /** Every value is of RFC 9562's variant, with this version. Written only where the database guarantees it: a value the function that made it names (`gen_random_uuid()` and `uuidv4()` make version 4, `uuidv7()` version 7), a column whose CHECKs hold `uuid_extract_version` to it and non-null (the function is NULL for a UUID of another variant, which a CHECK lets through), or a type that keeps to one, as Cassandra's `timeuuid` does to version 1. */
+  version?: number;
 }
 
 /**
@@ -182,7 +188,7 @@ export interface ArrayType extends Base, Lengths {
 }
 
 /**
- * Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `name`:
+ * Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `label`:
  *   - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;
  *   - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;
  *   - an Oracle `BFILE` is `{ directory, file }`.
@@ -321,15 +327,10 @@ export interface XmlFragment extends Base {
   fragment: true;
 }
 
-/** A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, and Postgres `money`, whose scale follows the session's locale. Its `name` is all the format says; what a value looks like is the driver's to decide. */
+/** A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `label` is all the format says; what a value looks like is the driver's to decide. */
 export interface OpaqueType extends Base {
   kind: "opaque";
-  name: string;
-}
-
-/** The database's own type admits a value of any type, each carrying its type, which is one of this format's types: SQL Server `sql_variant`, Oracle `ANYDATA`. */
-export interface AnyType extends Base {
-  kind: "any";
+  label: string;
 }
 
 /** Nothing is known about the values. */
@@ -348,6 +349,29 @@ export interface Alternative extends Position {
   tag: string;
 }
 
+/** A column rows are sorted on. */
+export interface OrderColumn {
+  /** The column's name. */
+  column: string;
+  /** Sorted from the highest value down. */
+  desc?: true;
+  /** Where NULLs sort, which a database's default decides unless the statement says. */
+  nulls: "first" | "last";
+}
+
+/** Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name. */
+export interface RowsType extends Base {
+  kind: "rows";
+  /** How many rows: exactly one, at most one, any number, or none (a write without `RETURNING`). */
+  cardinality: "one" | "at_most_one" | "many" | "none";
+  /** In order; empty where there are no rows. */
+  columns: Column[];
+  /** Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, none inside another: `[["id"], ["email"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only for rows that can be more than one, and absent where none is known. */
+  unique?: string[][];
+  /** The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the column's own, unless the key names another, which ends the list. Rows that tie on all of them come back in any order. Only for rows that can be more than one, and absent where the rows aren't sorted on a column of the result. */
+  order?: OrderColumn[];
+}
+
 /** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
 export interface StatementDescriptor {
   /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything. */
@@ -360,10 +384,8 @@ export interface StatementDescriptor {
   /** The prose written in comments before the statement: its summary, as an editor's hover shows it. */
   comment?: string;
   params: Param[];
-  /** In order; empty when the statement returns no rows. */
-  columns: Column[];
-  /** How many rows the statement returns: exactly one, at most one, any number, or none (a write without `RETURNING`). */
-  cardinality: "one" | "at_most_one" | "many" | "none";
+  /** What the statement returns. */
+  result: RowsType;
   /** What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns. */
   diagnostics: Diagnostic[];
 }
@@ -407,7 +429,7 @@ export interface Param extends Position {
   comment?: string;
 }
 
-/** The database a document of descriptors describes, stated once at the document's top: every `name` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `oracle` or `sqlserver`, and `version` its server version. */
+/** The database a document of descriptors describes, stated once at the document's top: every `label` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `oracle` or `sqlserver`, and `version` its server version. */
 export interface Dialect {
   name: string;
   version: string;

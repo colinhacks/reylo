@@ -24,7 +24,19 @@ export type Entry = {
 };
 
 export type Outcome =
-  | { ok: true; analysis: Analysis; source: "cache" | "database"; entry: string }
+  | {
+      ok: true;
+      analysis: Analysis;
+      source: "cache" | "database";
+      entry: string;
+      /**
+       * Where the analysis is `.reylo/`'s and nothing held it to the database's schema, why, and
+       * when it was made: `cannot connect to the database at localhost:5432/app (DATABASE_URL in
+       * .env): connection refused; building from .reylo/, analyzed 2026-11-07`. The types are then
+       * as old as the entry, so a build step prints the line and a hover shows it.
+       */
+      unverified?: string;
+    }
   | { ok: false; message: string; code: number };
 
 /**
@@ -144,8 +156,8 @@ export class Session {
    * Where this session's entry for a statement lives, whether or not it exists yet: named by the
    * statement, then by the server. Two databases keep an entry each, and one whose schema matches
    * reads the other's (`#sameSchema`), so a fresh database built by the same migrations analyzes
-   * nothing again. A session that cannot reach its database, or has no URL, reads another server's
-   * entry for the statement where it has none of its own (`#offlineEntry`).
+   * nothing again. A session that cannot reach its database reads its own entry all the same, and
+   * one with no URL the newest of any server's (`#offlineEntry`), each saying so (`#unverified`).
    */
   entryFile(sql: string): string {
     return join(this.root, ".reylo", "queries", `${this.#statementKey(sql)}-${sha256(this.#server()).slice(0, 16)}.json`);
@@ -155,11 +167,19 @@ export class Session {
     return sha256(JSON.stringify([ENTRY_VERSION, this.#engineFingerprint, this.project.dialect, sql])).slice(0, 32);
   }
 
-  /** The statement's entry from this session's server, else the newest from any other: for a session that cannot reach its database, or has no URL. */
-  #offlineEntry(sql: string): { file: string; entry: Entry } | undefined {
+  /**
+   * The statement's entry for a session that cannot reach its database, or has no URL: its own
+   * server's, else the newest from any other where `others` allows. A URL that names a server and
+   * fails reads that server's entry alone, since another's says nothing of the database the URL
+   * asks for, and a mistyped host would otherwise build from whichever database was analyzed
+   * last. A database that is a file has no server to mistake: its project built elsewhere, as in
+   * a container, names the same file at another path.
+   */
+  #offlineEntry(sql: string, others = !this.project.url || this.project.dialect === "sqlite" || this.project.dialect === "duckdb"): { file: string; entry: Entry } | undefined {
     const own = this.entryFile(sql);
     const entry = readEntry(own);
     if (entry) return { file: own, entry };
+    if (!others) return undefined;
     const dir = join(this.root, ".reylo", "queries");
     const prefix = `${this.#statementKey(sql)}-`;
     let names: string[];
@@ -260,7 +280,7 @@ export class Session {
     // is the one its entries record, src/project.ts), and a statement it lacks needs a URL.
     if (!this.project.url) {
       const hit = this.#engine instanceof MissingEngine || options.force ? undefined : this.#offlineEntry(sql);
-      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file } : { ok: false, message: this.project.missingUrl, code: 4 };
+      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry) } : { ok: false, message: this.project.missingUrl, code: 4 };
     }
     // The URL names the database, whose engine reylo has to be able to run.
     const engine = this.#engine;
@@ -270,8 +290,11 @@ export class Session {
     if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
     if (schema.value === null) {
       const hit = options.force ? undefined : this.#offlineEntry(sql);
-      if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file };
-      return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run the type check or a build where the database can be reached first.`, code: 5 };
+      if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry, schema.error) };
+      // Another database's analysis is no answer for the one the URL names.
+      const elsewhere = !options.force && this.#offlineEntry(sql, true) !== undefined;
+      const next = elsewhere ? ".reylo has this statement's analysis from another database only, which a build reads where no database URL is set: run the type check or a build where this database can be reached, or build with no URL" : ".reylo has no analysis of this statement, so run the type check or a build where the database can be reached first";
+      return { ok: false, message: `${this.cannotConnect(schema.error)}; ${next}.`, code: 5 };
     }
     const entry = options.force || options.store === false ? undefined : readEntry(file);
     // An entry for another fingerprint, written since this session read its own, is another
@@ -282,7 +305,7 @@ export class Session {
       await this.recheck();
       schema = await this.schema();
       if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
-      if (schema.value === null) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
+      if (schema.value === null) return { ok: true, analysis: entry.analysis, source: "cache", entry: file, unverified: this.#unverified(entry, schema.error) };
     }
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     // A database with this schema, at another URL: a fresh one built by the same migrations.
@@ -355,6 +378,16 @@ export class Session {
     const before = this.#schema?.value;
     if (this.#schema) this.#schema = { ...this.#schema, at: -Infinity };
     return (await this.schema()).value !== before;
+  }
+
+  /**
+   * What an analysis read from `.reylo/` with no schema to hold it to says of itself
+   * (`Outcome.unverified`): why the database was not asked, and the day the entry was written.
+   */
+  #unverified(entry: Entry, why?: string): string {
+    const found = this.project.url ? this.cannotConnect(why) : "no database URL is set";
+    const day = Number.isFinite(entry.at) ? `, analyzed ${new Date(entry.at).toISOString().slice(0, 10)}` : "";
+    return `${found[0]!.toLowerCase()}${found.slice(1)}; building from .reylo/${day}`;
   }
 
   /** Where the database was looked for, and where that came from; never the credentials. */
@@ -569,12 +602,12 @@ function writeEntry(root: string, file: string, entry: Entry): void {
 
 /**
  * One query per dialect whose rows change when anything an analysis reads changes: relations and
- * their columns with their type modifiers (a `varchar(n)`'s size, a `numeric(p,s)`'s precision), inheritance, constraints, indexes, row triggers and rules (nullability and the row
- * count read them), enum labels, domains with their base type's modifier, functions with their defaults, volatility, strictness,
+ * their columns with their type modifiers (a `varchar(n)`'s size, a `numeric(p,s)`'s precision) and whether each is an identity or a generated one, inheritance, constraints, indexes, row triggers and rules (nullability and the row
+ * count read them), enum labels, domains with their base type's modifier, functions with their arguments' names, their result columns, their defaults, volatility, strictness,
  * kind and variadic argument, user operators and casts (the trust check reads them), view
  * definitions and column comments (a field's doc comment), and the server settings that change a statement's types;
  * and what the errors a statement may raise are read from: defaults (a domain's too), generated columns, policies and
- * operator classes on Postgres, and triggers, foreign keys, checks and every schema's stored functions on MySQL. SQLite's whole schema is
+ * operator classes on Postgres, and triggers, foreign keys, checks with their expressions and whether each is enforced, and every schema's stored functions on MySQL. SQLite's whole schema is
  * its `sqlite_schema` table, and the functions of the SQLite that opened it are part of what an
  * analysis reads: another Node has another SQLite. A `"char"` column is cast to text:
  * `text || "char"` is ambiguous, and a query the server refuses leaves every entry unverified.
@@ -604,10 +637,13 @@ const eq = (a: string, b: string) => `${a} operator(pg_catalog.=) ${b}`;
 const rel = (alias: string, column: string) => `join pg_catalog.pg_class c on ${eq("c.oid", `${alias}.${column}`)} join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")}`;
 const PG_CLASS = "'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid";
 const USER = "'16384'::pg_catalog.oid";
+// Its first line holds what the session itself adds to an analysis: the server's version, the
+// search path that resolves each name, and the style the session writes dates in (the first part
+// of DateStyle, `ISO` or another), which the engine's host reports an error for (engine/native).
 const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_agg(t.x, E'\\n'::pg_catalog.text order by t.x), ''::pg_catalog.text)) from (
-    select ${line("v", "pg_catalog.current_setting('server_version_num'::pg_catalog.text)", "pg_catalog.current_setting('search_path'::pg_catalog.text)")} as x
+    select ${line("v", "pg_catalog.current_setting('server_version_num'::pg_catalog.text)", "pg_catalog.current_setting('search_path'::pg_catalog.text)", "pg_catalog.split_part(pg_catalog.current_setting('DateStyle'::pg_catalog.text), ','::pg_catalog.text, 1)")} as x
     union all select ${line("r", cat(txt("n.nspname"), lit("."), txt("c.relname")), txt("c.relkind"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where ${NS}
-    union all select ${line("a", relation("a.attrelid"), out("int2", "a.attnum"), txt("a.attname"), type("a.atttypid"), out("int4", "a.atttypmod"), txt("a.attnotnull"), named("regcollation", "a.attcollation"))} from pg_catalog.pg_attribute a ${rel("a", "attrelid")} where a.attnum operator(pg_catalog.>) 0 and not a.attisdropped and ${NS}
+    union all select ${line("a", relation("a.attrelid"), out("int2", "a.attnum"), txt("a.attname"), type("a.atttypid"), out("int4", "a.atttypmod"), txt("a.attnotnull"), named("regcollation", "a.attcollation"), txt("a.attidentity"), txt("a.attgenerated"))} from pg_catalog.pg_attribute a ${rel("a", "attrelid")} where a.attnum operator(pg_catalog.>) 0 and not a.attisdropped and ${NS}
     union all select ${line("h", relation("h.inhrelid"), relation("h.inhparent"), out("int4", "h.inhseqno"))} from pg_catalog.pg_inherits h ${rel("h", "inhrelid")} where ${NS}
     union all select ${line("c", relation("o.conrelid"), type("o.contypid"), txt("o.conname"), "pg_catalog.pg_get_constraintdef(o.oid)")} from pg_catalog.pg_constraint o join pg_catalog.pg_namespace n on ${eq("n.oid", "o.connamespace")} where ${NS}
     union all select ${line("i", relation("i.indexrelid"), txt("i.indisvalid"), "pg_catalog.pg_get_indexdef(i.indexrelid)")} from pg_catalog.pg_index i ${rel("i", "indrelid")} where ${NS}
@@ -616,7 +652,7 @@ const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_a
     union all select ${line("o", named("regoperator", "o.oid"), named("regprocedure", "o.oprcode::pg_catalog.oid"))} from pg_catalog.pg_operator o where o.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("e", type("e.enumtypid"), out("float4", "e.enumsortorder"), txt("e.enumlabel"))} from pg_catalog.pg_enum e
     union all select ${line("t", type("t.oid"), txt("t.typname"), txt("t.typtype"), type("t.typbasetype"), out("int4", "t.typtypmod"), txt("t.typnotnull"), md5(or("t.typdefault")))} from pg_catalog.pg_type t join pg_catalog.pg_namespace n on ${eq("n.oid", "t.typnamespace")} where ${NS}
-    union all select ${line("f", named("regprocedure", "p.oid"), type("p.prorettype"), txt("p.proretset"), md5(or("p.prosrc")), txt("p.prokind"), txt("p.provolatile"), txt("p.proisstrict"), out("int2", "p.pronargdefaults"), type("p.provariadic"))} from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on ${eq("n.oid", "p.pronamespace")} where ${NS}
+    union all select ${line("f", named("regprocedure", "p.oid"), type("p.prorettype"), txt("p.proretset"), md5(or("p.prosrc")), md5(or("pg_catalog.pg_get_function_sqlbody(p.oid)")), or(txt("p.proconfig")), md5(or("pg_catalog.pg_get_expr(p.proargdefaults, 0::pg_catalog.oid)")), txt("p.prokind"), txt("p.provolatile"), txt("p.proisstrict"), out("int2", "p.pronargdefaults"), type("p.provariadic"), or(txt("p.proargnames")), or(txt("p.proargmodes")), or(txt("p.proallargtypes::pg_catalog.regtype[]")))} from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on ${eq("n.oid", "p.pronamespace")} where ${NS}
     union all select ${line("k", type("k.castsource"), type("k.casttarget"), named("regprocedure", "k.castfunc"), txt("k.castcontext"), txt("k.castmethod"))} from pg_catalog.pg_cast k where k.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("w", relation("c.oid"), md5("pg_catalog.pg_get_viewdef(c.oid)"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where c.relkind operator(pg_catalog.=) any ('{v,m}'::pg_catalog."char"[]) and ${NS}
     union all select ${line("x", relation("d.adrelid"), out("int2", "d.adnum"), md5("pg_catalog.pg_get_expr(d.adbin, d.adrelid)"))} from pg_catalog.pg_attrdef d ${rel("d", "adrelid")} where ${NS}
@@ -634,18 +670,22 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
     union all select concat_ws(' ', 'p', routine_schema, routine_name) from information_schema.routines where routine_schema <> database() and routine_type = 'FUNCTION'
     union all select concat_ws(' ', 'g', event_object_table, trigger_name, event_manipulation, action_timing) from information_schema.triggers where event_object_schema = database()
     union all select concat_ws(' ', 'f', table_name, constraint_name, referenced_table_name, update_rule, delete_rule) from information_schema.referential_constraints where constraint_schema = database()
-    union all select concat_ws(' ', 'k', table_name, constraint_name, constraint_type) from information_schema.table_constraints where table_schema = database()
+    union all select concat_ws(' ', 'k', table_name, constraint_name, constraint_type, enforced) from information_schema.table_constraints where table_schema = database()
+    union all select concat_ws(' ', 'h', constraint_name, md5(check_clause)) from information_schema.check_constraints where constraint_schema = database()
   ) t`,
   sqlite: `select type, name, tbl_name, coalesce(sql, '') from sqlite_schema
     union all select 'function', name, type, narg from pragma_function_list order by 1, 2, 3, 4`,
-  // The columns, keys, views, types and macros of every attached database, and the version, whose
-  // functions and binder an analysis reads.
+  // The columns, the tables' text, views, types with an enum's labels, and macros with their
+  // parameters, of every attached database, and the version, whose functions and binder an
+  // analysis reads. DuckDB writes a table's text from its catalog, every key and check in it, so
+  // no line reads duckdb_constraints(), which DuckDB refuses for the whole database where one
+  // check reads a struct's field with a dot (`meta.a > 0`).
   duckdb: `select md5(coalesce(string_agg(x, chr(10) order by x), '')) from (
     select concat_ws(' ', 'v', version()) as x
     union all select concat_ws(' ', 'c', database_name, schema_name, table_name, column_index, column_name, data_type, is_nullable, coalesce(column_default, ''), md5(coalesce(comment, ''))) from duckdb_columns() where not internal
-    union all select concat_ws(' ', 'k', database_name, schema_name, table_name, constraint_type, constraint_text) from duckdb_constraints()
+    union all select concat_ws(' ', 'b', database_name, schema_name, table_name, md5(coalesce(sql, ''))) from duckdb_tables() where not internal
     union all select concat_ws(' ', 'w', database_name, schema_name, view_name, md5(coalesce(sql, ''))) from duckdb_views() where not internal
-    union all select concat_ws(' ', 't', database_name, schema_name, type_name, logical_type) from duckdb_types() where not internal
-    union all select concat_ws(' ', 'f', database_name, schema_name, function_name, function_type, md5(coalesce(macro_definition, ''))) from duckdb_functions() where not internal
+    union all select concat_ws(' ', 't', database_name, schema_name, type_name, logical_type, md5(coalesce(cast(labels as varchar), ''))) from duckdb_types() where not internal
+    union all select concat_ws(' ', 'f', database_name, schema_name, function_name, function_type, md5(coalesce(macro_definition, '')), md5(coalesce(cast(parameters as varchar), '')), md5(coalesce(cast(parameter_types as varchar), ''))) from duckdb_functions() where not internal
   ) t`,
 };

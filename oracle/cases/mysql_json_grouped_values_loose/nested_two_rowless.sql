@@ -1,0 +1,1 @@
+select (select json_object('n', count(*), 's', (select json_object('c', count(*), 't', (select json_object('k', x.name) from posts q order by q.id limit 1)) from posts p)) from users x where false) as o

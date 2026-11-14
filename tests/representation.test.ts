@@ -10,7 +10,7 @@ import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { renderType } from "../src/render.ts";
 import { defineQuery } from "../src/index.ts";
-import { DRIVERS, PG, MYSQL, INDEX } from "./helpers.ts";
+import { DRIVERS, PG, MYSQL, INDEX, sqliteWasmCopy } from "./helpers.ts";
 
 // Reylo's one representation per SQL type (src/values.ts), on the real drivers, each set up by the
 // app against it: the module a build step writes, run on each, must give the same rows, and each
@@ -332,6 +332,17 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
   await assert.rejects(looseN.run(wrapper), textInN);
   await assert.rejects(looseS.run(wrapper), blobInS);
   await wrapper.close();
+  // SQLite Wasm, on a copy of the file: it answers at once, and hands an integer past 2^53 over as a BigInt.
+  const wasm = await sqliteWasmCopy(file);
+  assert.deepEqual(plain(q.runSync(wasm)), rows, "SQLite Wasm");
+  assert.deepEqual(plain(wasm.transaction(() => q.runSync(wasm))), rows, "SQLite Wasm in db.transaction");
+  assert.throws(() => big.runSync(wasm), bigError);
+  assert.throws(() => odd.runSync(wasm), refused);
+  assert.throws(() => looseN.runSync(wasm), textInN);
+  assert.throws(() => looseS.runSync(wasm), blobInS);
+  assert.deepEqual(plain(mixed.runSync(wasm)), [{ v: 5 }, { v: "x" }], "SQLite Wasm: a STRICT table's union of a number and text");
+  assert.equal(wasm.selectValue("select v from big"), 9007199254740993n, "the control: the app's own statement");
+  wasm.close();
 });
 
 test("SQLite: libSQL's intMode \"string\" changes no value Reylo types a number or a NUMERIC's: an INTEGER is its number, exact up to 2^53 - 1 and refused past it; a column with no type keeps libSQL's digits", { skip: drivers === true ? false : drivers, timeout: 60_000 }, async () => {
@@ -445,6 +456,13 @@ test("SQLite: a column declared BIGINT or INT8 is a BigInt on every driver, exac
   await assert.rejects(exact.run(wrapper), rounded);
   assert.deepEqual(plain(await byV.run(wrapper, { v: 5n })), [{ id: 2, v: 5n }], "sqlite: a BIGINT within 2^53");
   await wrapper.close();
+  // SQLite Wasm hands an integer past 2^53 over as a BigInt and any other as a number, and binds a BigInt exactly.
+  const wasm = await sqliteWasmCopy(file);
+  assert.deepEqual(plain(exact.runSync(wasm)), exactRows, "SQLite Wasm");
+  assert.throws(() => all.runSync(wasm), plusError);
+  assert.deepEqual(plain(byV.runSync(wasm, { v: 9007199254740993n })), [{ id: 1, v: 9007199254740993n }], "SQLite Wasm: the BIGINT's value as a parameter");
+  assert.deepEqual(plain(byV.runSync(wasm, { v: 5n })), [{ id: 2, v: 5n }], "SQLite Wasm: a BIGINT within 2^53");
+  wasm.close();
 });
 
 test("SQLite: JSON a statement builds is the object its type says on every driver, and a text column that holds JSON stays a string", { skip: drivers === true ? false : drivers, timeout: 60_000 }, async () => {
@@ -532,4 +550,7 @@ from users u where u.id = :id::int`,
   const wrapper = await open({ filename: file, driver: sqlite3.Database });
   await check("sqlite", (q, p) => q.run(wrapper, p));
   await wrapper.close();
+  const wasm = await sqliteWasmCopy(file);
+  await check("SQLite Wasm", (q, p) => q.runSync(wasm, p));
+  wasm.close();
 });

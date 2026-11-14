@@ -1,0 +1,1 @@
+select (select json_object('a', json_arrayagg(p.title), 'm', max(p.title), 's', sum(p.n), 'g', group_concat(p.title)) from users u left join posts p on p.user_id = u.id group by u.id order by u.id limit 1) as o

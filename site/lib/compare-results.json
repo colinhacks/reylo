@@ -1,5 +1,5 @@
 {
- "at": "2026-11-05T01:04:38.628Z",
+ "at": "2026-11-09T23:16:43.183Z",
  "tools": {
   "reylo": {
    "name": "Reylo",
@@ -7,69 +7,43 @@
    "cells": {
     "no-codegen": {
      "state": "y",
-     "note": "Nothing to commit after a run.",
-     "wrong": 0,
-     "examples": []
+     "note": "Nothing to commit after a run."
     },
     "from-the-database": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "outer-joins": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "expression-nullability": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "parameter-types": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "parameter-nullability": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "cardinality": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "json-shapes": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "json-schema": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "sqlite": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "duckdb": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     }
    }
   },
@@ -79,113 +53,142 @@
    "cells": {
     "no-codegen": {
      "state": "n",
-     "note": "A run leaves new files to commit: `db/db.go`, `db/models.go`, `db/query.sql.go`.",
-     "wrong": 0,
-     "examples": []
+     "note": "A run leaves new files to commit: `db/db.go`, `db/models.go`, `db/query.sql.go`."
     },
     "from-the-database": {
      "state": "p",
-     "note": "By default it reads your schema files and never connects. A `database:` setting asks Postgres for types, but not for nullability.",
-     "wrong": 0,
-     "examples": []
+     "note": "By default it reads your schema files and never connects. A `database:` setting asks Postgres for types, but not for nullability."
     },
     "outer-joins": {
      "state": "p",
-     "wrong": 3,
-     "examples": [
-      {
-       "sql": "select u.name, x.title from users u left join (select author_id, title from posts) x on x.author_id = u.id",
-       "problem": "`title` is typed `string`, but it can be null."
+     "example": {
+      "sql": "select u.name, x.title from users u left join (select author_id, title from posts) x on x.author_id = u.id",
+      "params": [],
+      "columns": [
+       {
+        "name": "name",
+        "type": "string"
+       },
+       {
+        "name": "title",
+        "type": "string",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ name: string; title: string | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "expression-nullability": {
      "state": "p",
-     "wrong": 20,
-     "examples": [
-      {
-       "sql": "select sum(score) as v from posts",
-       "problem": "`v` is typed `int64`, but it can be null.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select nickname is null as v from users",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "interface{}",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: boolean }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select name || '!' as v from users",
-       "problem": "`v` is typed `interface{}`, but it is never null.",
-       "on": "Postgres and SQLite"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "parameter-types": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "parameter-nullability": {
      "state": "p",
-     "wrong": 3,
-     "examples": [
-      {
-       "sql": "select id from users where nickname = $1",
-       "problem": "Parameter 1 is typed `sql.NullString`, but it takes no null."
+     "example": {
+      "sql": "select id from users where nickname = $1",
+      "params": [
+       {
+        "type": "sql.NullString",
+        "wrong": true
+       }
+      ],
+      "columns": [
+       {
+        "name": "id",
+        "type": "int32"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: string }",
+       "row": "{ id: number }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "cardinality": {
      "state": "n",
-     "note": "Declared by hand on each query: `:one`, `:many` or `:exec`. The annotation decides the method's return type, and sqlc accepts any of them.",
-     "wrong": 0,
-     "examples": []
+     "note": "Declared by hand on each query: `:one`, `:many` or `:exec`. The annotation decides the method's return type, and sqlc accepts any of them."
     },
     "json-shapes": {
      "state": "n",
-     "wrong": 6,
-     "examples": [
-      {
-       "sql": "select json_build_object('id', id, 'name', name) as v from users",
-       "problem": "`v` is typed `json.RawMessage`, without its fields.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select json_build_object('id', id, 'name', name) as v from users",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "json.RawMessage",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: { id: number; name: string } }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select json_agg(json_build_object('id', id, 'title', title)) as v from posts",
-       "problem": "`v` is typed `json.RawMessage`, without its fields.",
-       "on": "Postgres"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "json-schema": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select payload from events",
-       "problem": "`payload` is typed `json.RawMessage`, without its fields."
-      },
-      {
-       "sql": "insert into events (id, payload) values ($1, $2)",
-       "problem": "Parameter 2 is typed `json.RawMessage`, without its fields."
+     "example": {
+      "sql": "select payload from events",
+      "schema": "create table events (id int primary key, payload jsonb not null check (jsonb_matches_schema('{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false}', payload)));",
+      "params": [],
+      "columns": [
+       {
+        "name": "payload",
+        "type": "json.RawMessage",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ payload: { x: number } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "sqlite": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "duckdb": {
      "state": "n",
-     "note": "Not in v1.31.1, the latest release. A DuckDB engine is on its unreleased main branch.",
-     "wrong": 0,
-     "examples": []
+     "note": "Not in v1.31.1, the latest release. A DuckDB engine is on its unreleased main branch."
     }
    }
   },
@@ -195,120 +198,141 @@
    "cells": {
     "no-codegen": {
      "state": "n",
-     "note": "A run leaves new files to commit: `src/q.queries.ts`.",
-     "wrong": 0,
-     "examples": []
+     "note": "A run leaves new files to commit: `src/q.queries.ts`."
     },
     "from-the-database": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "outer-joins": {
      "state": "n",
-     "wrong": 6,
-     "examples": [
-      {
-       "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id",
-       "problem": "`title` is typed `string`, but it can be null."
-      },
-      {
-       "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id order by p.title",
-       "problem": "`title` is typed `string`, but it can be null."
+     "example": {
+      "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id",
+      "params": [],
+      "columns": [
+       {
+        "name": "name",
+        "type": "string"
+       },
+       {
+        "name": "title",
+        "type": "string",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ name: string; title: string | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "expression-nullability": {
      "state": "n",
-     "note": "It gives every expression the same answer.",
-     "wrong": 10,
-     "examples": [
-      {
-       "sql": "select count(*) as v from posts",
-       "problem": "`v` is typed `string | null`, but it is never null."
-      },
-      {
-       "sql": "select coalesce(nickname, 'x') as v from users",
-       "problem": "`v` is typed `string | null`, but it is never null."
+     "example": {
+      "sql": "select count(*) as v from posts",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "string | null",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: bigint }",
+       "cardinality": "one",
+       "rows": "exactly one row"
       }
-     ]
+     }
     },
     "parameter-types": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "parameter-nullability": {
      "state": "n",
-     "note": "It gives every parameter the same answer.",
-     "wrong": 4,
-     "examples": [
-      {
-       "sql": "insert into users (id, email, name, nickname) values ($1, $2, $3, $4)",
-       "problem": "Parameter 1 is typed `optional number | null | void`, but it takes no null. Parameter 2 is typed `optional string | null | void`, but it takes no null. Parameter 3 is typed `optional string | null | void`, but it takes no null."
-      },
-      {
-       "sql": "update users set nickname = $1 where id = $2",
-       "problem": "Parameter 2 is typed `optional number | null | void`, but it takes no null."
+     "example": {
+      "sql": "select name from users where id = $1",
+      "params": [
+       {
+        "type": "optional number | null | void",
+        "wrong": true
+       }
+      ],
+      "columns": [
+       {
+        "name": "name",
+        "type": "string"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: number }",
+       "row": "{ name: string }",
+       "cardinality": "maybeOne",
+       "rows": "at most one row"
       }
-     ]
+     }
     },
     "cardinality": {
      "state": "n",
-     "note": "A query's `.run()` always returns an array, whatever the statement.",
-     "wrong": 0,
-     "examples": []
+     "note": "A query's `.run()` always returns an array, whatever the statement."
     },
     "json-shapes": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select json_build_object('id', id, 'name', name) as v from users",
-       "problem": "`v` is typed `Json | null`, without its fields."
-      },
-      {
-       "sql": "select json_agg(json_build_object('id', id, 'title', title)) as v from posts",
-       "problem": "`v` is typed `Json | null`, without its fields."
+     "example": {
+      "sql": "select json_build_object('id', id, 'name', name) as v from users",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "Json | null",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: { id: number; name: string } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "json-schema": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select payload from events",
-       "problem": "`payload` is typed `Json`, without its fields."
-      },
-      {
-       "sql": "insert into events (id, payload) values ($1, $2)",
-       "problem": "Parameter 2 is typed `optional Json | null | void`, without its fields."
+     "example": {
+      "sql": "select payload from events",
+      "schema": "create table events (id int primary key, payload jsonb not null check (jsonb_matches_schema('{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false}', payload)));",
+      "params": [],
+      "columns": [
+       {
+        "name": "payload",
+        "type": "Json",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ payload: { x: number } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
      "state": "n",
-     "note": "It is not available for MySQL.",
-     "wrong": 0,
-     "examples": []
+     "note": "It is not available for MySQL."
     },
     "sqlite": {
      "state": "n",
-     "note": "It is not available for SQLite.",
-     "wrong": 0,
-     "examples": []
+     "note": "It is not available for SQLite."
     },
     "duckdb": {
      "state": "n",
-     "note": "PgTyped is Postgres only.",
-     "wrong": 0,
-     "examples": []
+     "note": "PgTyped is Postgres only."
     }
    }
   },
@@ -318,136 +342,166 @@
    "cells": {
     "no-codegen": {
      "state": "n",
-     "note": "A run leaves new files to commit: `generated/prisma/browser.ts`, `generated/prisma/client.ts`, `generated/prisma/commonInputTypes.ts`.",
-     "wrong": 0,
-     "examples": []
+     "note": "A run leaves new files to commit: `generated/prisma/browser.ts`, `generated/prisma/client.ts`, `generated/prisma/commonInputTypes.ts`."
     },
     "from-the-database": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "outer-joins": {
      "state": "p",
-     "wrong": 5,
-     "examples": [
-      {
-       "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id",
-       "problem": "`name` is typed `string | null`, but it is never null. `title` is typed `string`, but it can be null.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id",
+      "params": [],
+      "columns": [
+       {
+        "name": "name",
+        "type": "string | null",
+        "wrong": true
+       },
+       {
+        "name": "title",
+        "type": "string",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ name: string; title: string | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id order by p.title",
-       "problem": "`title` is typed `string`, but it can be null.",
-       "on": "Postgres"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "expression-nullability": {
      "state": "p",
-     "wrong": 13,
-     "examples": [
-      {
-       "sql": "select count(*) as v from posts",
-       "problem": "`v` is typed `bigint | null`, but it is never null.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select count(*) as v from posts",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "bigint | null",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: bigint }",
+       "cardinality": "one",
+       "rows": "exactly one row"
       },
-      {
-       "sql": "select coalesce(nickname, 'x') as v from users",
-       "problem": "`v` is typed `string | null`, but it is never null.",
-       "on": "Postgres"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "parameter-types": {
      "state": "p",
-     "wrong": 5,
-     "examples": [
-      {
-       "sql": "select name from users where id = $1",
-       "problem": "Parameter 1 is typed `unknown`, but it takes a number.",
-       "on": "SQLite"
+     "example": {
+      "sql": "select id from users limit $1",
+      "params": [
+       {
+        "type": "unknown",
+        "wrong": true
+       }
+      ],
+      "columns": [
+       {
+        "name": "id",
+        "type": "number | null"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: number }",
+       "row": "{ id: number }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select id from users where name = $1",
-       "problem": "Parameter 1 is typed `unknown`, but it takes text.",
-       "on": "SQLite"
-      }
-     ]
+      "on": "SQLite"
+     }
     },
     "parameter-nullability": {
      "state": "n",
-     "note": "It gives every parameter the same answer.",
-     "wrong": 8,
-     "examples": [
-      {
-       "sql": "insert into users (id, email, name, nickname) values ($1, $2, $3, $4)",
-       "problem": "Parameter 4 is typed `string`, but it takes null.",
-       "on": "Postgres and MySQL"
+     "example": {
+      "sql": "select name from users where id = $1",
+      "params": [
+       {
+        "type": "unknown",
+        "wrong": true
+       }
+      ],
+      "columns": [
+       {
+        "name": "name",
+        "type": "string"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: number }",
+       "row": "{ name: string }",
+       "cardinality": "maybeOne",
+       "rows": "at most one row"
       },
-      {
-       "sql": "update users set nickname = $1 where id = $2",
-       "problem": "Parameter 1 is typed `string`, but it takes null.",
-       "on": "Postgres and MySQL"
-      }
-     ]
+      "on": "SQLite"
+     }
     },
     "cardinality": {
      "state": "n",
-     "note": "Every query returns an array, whatever the statement.",
-     "wrong": 0,
-     "examples": []
+     "note": "Every query returns an array, whatever the statement."
     },
     "json-shapes": {
      "state": "n",
-     "wrong": 6,
-     "examples": [
-      {
-       "sql": "select json_build_object('id', id, 'name', name) as v from users",
-       "problem": "`v` is typed `$runtime.JsonValue | null`, without its fields.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select json_build_object('id', id, 'name', name) as v from users",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "$runtime.JsonValue | null",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: { id: number; name: string } }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select json_agg(json_build_object('id', id, 'title', title)) as v from posts",
-       "problem": "`v` is typed `$runtime.JsonValue | null`, without its fields.",
-       "on": "Postgres"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "json-schema": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select payload from events",
-       "problem": "`payload` is typed `$runtime.JsonValue`, without its fields."
-      },
-      {
-       "sql": "insert into events (id, payload) values ($1, $2)",
-       "problem": "Parameter 2 is typed `$runtime.InputJsonObject`, without its fields."
+     "example": {
+      "sql": "select payload from events",
+      "schema": "create table events (id int primary key, payload jsonb not null check (jsonb_matches_schema('{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false}', payload)));",
+      "params": [],
+      "columns": [
+       {
+        "name": "payload",
+        "type": "$runtime.JsonValue",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ payload: { x: number } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "sqlite": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "duckdb": {
      "state": "n",
-     "note": "DuckDB isn't a Prisma datasource.",
-     "wrong": 0,
-     "examples": []
+     "note": "DuckDB isn't a Prisma datasource."
     }
    }
   },
@@ -457,125 +511,181 @@
    "cells": {
     "no-codegen": {
      "state": "n",
-     "note": "A run leaves new files to commit: `q.queries.ts`.",
-     "wrong": 0,
-     "examples": []
+     "note": "A run leaves new files to commit: `q.queries.ts`."
     },
     "from-the-database": {
      "state": "p",
-     "note": "It connects, but types some expressions itself.",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select add_one(id) as v from users",
-       "problem": "It types the result `unknown`."
-      },
-      {
-       "sql": "select array_agg(id) as v from users",
-       "problem": "It types the result `unknown`."
+     "example": {
+      "sql": "select add_one(id) as v from users",
+      "schema": "create table users (id int primary key, email text not null unique, name text not null, nickname text, external_id uuid);\ncreate function add_one(n int) returns int language sql immutable as 'select n + 1';",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "unknown",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: number | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "outer-joins": {
      "state": "n",
-     "wrong": 17,
-     "examples": [
-      {
-       "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id",
-       "problem": "`title` is typed `string`, but it can be null."
-      },
-      {
-       "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id order by p.title",
-       "problem": "`title` is typed `string`, but it can be null."
+     "example": {
+      "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id",
+      "params": [],
+      "columns": [
+       {
+        "name": "name",
+        "type": "string"
+       },
+       {
+        "name": "title",
+        "type": "string",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ name: string; title: string | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "expression-nullability": {
      "state": "p",
-     "wrong": 27,
-     "examples": [
-      {
-       "sql": "select max(id) as v from posts",
-       "problem": "`v` is typed `number`, but it can be null."
-      },
-      {
-       "sql": "select sum(score) as v from posts",
-       "problem": "`v` is typed `number`, but it can be null."
+     "example": {
+      "sql": "select sum(score) as v from posts",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "number",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: bigint | null }",
+       "cardinality": "one",
+       "rows": "exactly one row"
       }
-     ]
+     }
     },
     "parameter-types": {
      "state": "p",
-     "wrong": 1,
-     "examples": [
-      {
-       "sql": "select id from posts where created_at > $1",
-       "problem": "Parameter 1 is typed `unknown`, but it takes a timestamp.",
-       "on": "Postgres"
-      }
-     ]
+     "example": {
+      "sql": "select id from posts where created_at > $1",
+      "schema": "create table posts (id int primary key, author_id int not null references users(id), title text not null, score int, created_at timestamptz not null default now());",
+      "params": [
+       {
+        "type": "unknown",
+        "wrong": true
+       }
+      ],
+      "columns": [
+       {
+        "name": "id",
+        "type": "number"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: string }",
+       "row": "{ id: number }",
+       "cardinality": "many",
+       "rows": "many rows"
+      },
+      "on": "Postgres"
+     }
     },
     "parameter-nullability": {
      "state": "p",
-     "wrong": 3,
-     "examples": [
-      {
-       "sql": "select id from users where nickname = $1",
-       "problem": "Parameter 1 is typed `string | null`, but it takes no null."
+     "example": {
+      "sql": "select id from users where nickname = $1",
+      "params": [
+       {
+        "type": "string | null",
+        "wrong": true
+       }
+      ],
+      "columns": [
+       {
+        "name": "id",
+        "type": "number"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: string }",
+       "row": "{ id: number }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "cardinality": {
      "state": "n",
-     "note": "It types the row only, and how many rows come back is left to you.",
-     "wrong": 0,
-     "examples": []
+     "note": "It types the row only, and how many rows come back is left to you."
     },
     "json-shapes": {
      "state": "p",
-     "wrong": 1,
-     "examples": [
-      {
-       "sql": "select json_group_array(json_object('id', id, 'title', title)) as v from posts",
-       "problem": "`v` is typed `unknown`, without its fields.",
-       "on": "SQLite"
-      }
-     ]
+     "example": {
+      "sql": "select json_group_array(json_object('id', id, 'title', title)) as v from posts",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "unknown",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: { id: number; title: string }[] }",
+       "cardinality": "one",
+       "rows": "exactly one row"
+      },
+      "on": "SQLite"
+     }
     },
     "json-schema": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select payload from events",
-       "problem": "`payload` is typed `object`, without its fields."
-      },
-      {
-       "sql": "insert into events (id, payload) values ($1, $2)",
-       "problem": "Parameter 2 is typed `object`, without its fields."
+     "example": {
+      "sql": "select payload from events",
+      "schema": "create table events (id int primary key, payload jsonb not null check (jsonb_matches_schema('{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false}', payload)));",
+      "params": [],
+      "columns": [
+       {
+        "name": "payload",
+        "type": "object",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ payload: { x: number } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "sqlite": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "duckdb": {
      "state": "n",
-     "note": "Its `--db-type` takes Postgres, MySQL and SQLite.",
-     "wrong": 0,
-     "examples": []
+     "note": "Its `--db-type` takes Postgres, MySQL and SQLite."
     }
    }
   },
@@ -585,116 +695,149 @@
    "cells": {
     "no-codegen": {
      "state": "p",
-     "note": "A run leaves changed source to commit: `right.ts`.",
-     "wrong": 0,
-     "examples": []
+     "note": "A run leaves changed source to commit: `right.ts`."
     },
     "from-the-database": {
      "state": "p",
-     "note": "It connects, but types some expressions itself.",
-     "wrong": 1,
-     "examples": [
-      {
-       "sql": "select add_one(id) as v from users",
-       "problem": "It types the result `unknown | null`."
+     "example": {
+      "sql": "select add_one(id) as v from users",
+      "schema": "create table users (id int primary key, email text not null unique, name text not null, nickname text, external_id uuid);\ncreate function add_one(n int) returns int language sql immutable as 'select n + 1';",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "unknown | null",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: number | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "outer-joins": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "expression-nullability": {
      "state": "p",
-     "wrong": 4,
-     "examples": [
-      {
-       "sql": "select upper(nickname) as v from users",
-       "problem": "`v` is typed `string`, but it can be null."
-      },
-      {
-       "sql": "select nullif(name, 'x') as v from users",
-       "problem": "`v` is typed `boolean`, but it can be null."
+     "example": {
+      "sql": "select nullif(name, 'x') as v from users",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "boolean",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: string | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "parameter-types": {
      "state": "p",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "insert into posts (id, author_id, title, score) values ($1, $2, $3, $4)",
-       "problem": "A boolean value passes for parameter 3, which takes text."
-      },
-      {
-       "sql": "select id from users where external_id = $1",
-       "problem": "It stops with an error on this query."
+     "example": {
+      "sql": "insert into posts (id, author_id, title, score) values ($1, $2, $3, $4)",
+      "schema": "create table posts (id int primary key, author_id int not null references users(id), title text not null, score int, created_at timestamptz not null default now());",
+      "params": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "number"
+       },
+       {
+        "type": "string",
+        "wrong": true,
+        "says": "A boolean passes for $3"
+       },
+       {
+        "type": "number"
+       }
+      ],
+      "columns": [],
+      "reylo": {
+       "params": "{ p1: number; p2: number; p3: string; p4?: number | null }",
+       "row": "never",
+       "cardinality": "none",
+       "rows": "no rows"
       }
-     ]
+     }
     },
     "parameter-nullability": {
      "state": "n",
-     "note": "It gives every parameter the same answer.",
-     "wrong": 4,
-     "examples": [
-      {
-       "sql": "insert into users (id, email, name, nickname) values ($1, $2, $3, $4)",
-       "problem": "A null value passes for parameter 1, which takes no null. A null value passes for parameter 2, which takes no null. A null value passes for parameter 3, which takes no null."
-      },
-      {
-       "sql": "update users set nickname = $1 where id = $2",
-       "problem": "A null value passes for parameter 2, which takes no null."
+     "example": {
+      "sql": "select name from users where id = $1",
+      "params": [
+       {
+        "type": "number",
+        "wrong": true,
+        "says": "A null passes for $1"
+       }
+      ],
+      "columns": [
+       {
+        "name": "name",
+        "type": "string"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: number }",
+       "row": "{ name: string }",
+       "cardinality": "maybeOne",
+       "rows": "at most one row"
       }
-     ]
+     }
     },
     "cardinality": {
      "state": "n",
-     "note": "Every query is typed as an array, unless your own transform says otherwise.",
-     "wrong": 0,
-     "examples": []
+     "note": "Every query is typed as an array, unless your own transform says otherwise."
     },
     "json-shapes": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "json-schema": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select payload from events",
-       "problem": "`payload` is typed `any`, without its fields."
-      },
-      {
-       "sql": "insert into events (id, payload) values ($1, $2)",
-       "problem": "It stops with an error on this query."
+     "example": {
+      "sql": "select payload from events",
+      "schema": "create table events (id int primary key, payload jsonb not null check (jsonb_matches_schema('{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false}', payload)));",
+      "params": [],
+      "columns": [
+       {
+        "name": "payload",
+        "type": "any",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ payload: { x: number } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
      "state": "n",
-     "note": "It is not available for MySQL.",
-     "wrong": 0,
-     "examples": []
+     "note": "It is not available for MySQL."
     },
     "sqlite": {
      "state": "n",
-     "note": "It is not available for SQLite.",
-     "wrong": 0,
-     "examples": []
+     "note": "It is not available for SQLite."
     },
     "duckdb": {
      "state": "n",
-     "note": "SafeQL is Postgres only.",
-     "wrong": 0,
-     "examples": []
+     "note": "SafeQL is Postgres only."
     }
    }
   },
@@ -704,136 +847,167 @@
    "cells": {
     "no-codegen": {
      "state": "y",
-     "note": "Nothing to commit after a run.",
-     "wrong": 0,
-     "examples": []
+     "note": "Nothing to commit after a run."
     },
     "from-the-database": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "outer-joins": {
      "state": "p",
-     "wrong": 5,
-     "examples": [
-      {
-       "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id",
-       "problem": "`name` is typed `Option<TEXT>`, but it is never null. `title` is typed `TEXT`, but it can be null.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id",
+      "params": [],
+      "columns": [
+       {
+        "name": "name",
+        "type": "Option<TEXT>",
+        "wrong": true
+       },
+       {
+        "name": "title",
+        "type": "TEXT",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ name: string; title: string | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select u.name, p.title from users u left join posts p on p.author_id = u.id order by p.title",
-       "problem": "`title` is typed `TEXT`, but it can be null.",
-       "on": "Postgres"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "expression-nullability": {
      "state": "p",
-     "wrong": 13,
-     "examples": [
-      {
-       "sql": "select count(*) as v from posts",
-       "problem": "`v` is typed `Option<INT8>`, but it is never null.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select count(*) as v from posts",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "Option<INT8>",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: bigint }",
+       "cardinality": "one",
+       "rows": "exactly one row"
       },
-      {
-       "sql": "select coalesce(nickname, 'x') as v from users",
-       "problem": "`v` is typed `Option<TEXT>`, but it is never null.",
-       "on": "Postgres"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "parameter-types": {
      "state": "p",
-     "wrong": 10,
-     "examples": [
-      {
-       "sql": "select name from users where id = $1",
-       "problem": "Parameter 1 is typed `any value (it counts arguments only)`, but it takes a number.",
-       "on": "MySQL and SQLite"
+     "example": {
+      "sql": "select id from users limit $1",
+      "params": [
+       {
+        "type": "any value (it counts arguments only)",
+        "wrong": true,
+        "says": "Any value passes for $1"
+       }
+      ],
+      "columns": [
+       {
+        "name": "id",
+        "type": "INT"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: number }",
+       "row": "{ id: number }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select id from users where name = $1",
-       "problem": "Parameter 1 is typed `any value (it counts arguments only)`, but it takes text.",
-       "on": "MySQL and SQLite"
-      }
-     ]
+      "on": "MySQL, SQLite"
+     }
     },
     "parameter-nullability": {
      "state": "n",
-     "note": "It gives every parameter the same answer.",
-     "wrong": 12,
-     "examples": [
-      {
-       "sql": "insert into users (id, email, name, nickname) values ($1, $2, $3, $4)",
-       "problem": "Parameter 1 is typed `INT4 or Option<INT4>`, but it takes no null. Parameter 2 is typed `TEXT or Option<TEXT>`, but it takes no null. Parameter 3 is typed `TEXT or Option<TEXT>`, but it takes no null.",
-       "on": "Postgres"
-      },
-      {
-       "sql": "update users set nickname = $1 where id = $2",
-       "problem": "Parameter 2 is typed `INT4 or Option<INT4>`, but it takes no null.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select name from users where id = $1",
+      "params": [
+       {
+        "type": "INT4 or Option<INT4>",
+        "wrong": true,
+        "says": "A null passes for $1"
+       }
+      ],
+      "columns": [
+       {
+        "name": "name",
+        "type": "TEXT"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: number }",
+       "row": "{ name: string }",
+       "cardinality": "maybeOne",
+       "rows": "at most one row"
       }
-     ]
+     }
     },
     "cardinality": {
      "state": "n",
-     "note": "You pick it on each call: `fetch_one`, `fetch_optional` or `fetch_all`.",
-     "wrong": 0,
-     "examples": []
+     "note": "You pick it on each call: `fetch_one`, `fetch_optional` or `fetch_all`."
     },
     "json-shapes": {
      "state": "n",
-     "wrong": 6,
-     "examples": [
-      {
-       "sql": "select json_build_object('id', id, 'name', name) as v from users",
-       "problem": "`v` is typed `Option<JSON>`, without its fields.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select json_build_object('id', id, 'name', name) as v from users",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "Option<JSON>",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: { id: number; name: string } }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select json_agg(json_build_object('id', id, 'title', title)) as v from posts",
-       "problem": "`v` is typed `Option<JSON>`, without its fields.",
-       "on": "Postgres"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "json-schema": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select payload from events",
-       "problem": "`payload` is typed `JSONB`, without its fields."
-      },
-      {
-       "sql": "insert into events (id, payload) values ($1, $2)",
-       "problem": "Parameter 2 is typed `JSONB or Option<JSONB>`, without its fields."
+     "example": {
+      "sql": "select payload from events",
+      "schema": "create table events (id int primary key, payload jsonb not null check (jsonb_matches_schema('{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false}', payload)));",
+      "params": [],
+      "columns": [
+       {
+        "name": "payload",
+        "type": "JSONB",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ payload: { x: number } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "sqlite": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "duckdb": {
      "state": "n",
-     "note": "sqlx has no DuckDB driver.",
-     "wrong": 0,
-     "examples": []
+     "note": "sqlx has no DuckDB driver."
     }
    }
   },
@@ -843,128 +1017,154 @@
    "cells": {
     "no-codegen": {
      "state": "n",
-     "note": "A run leaves new files to commit: `sql/index.ts`, `sql/q0.ts`, `sql/q1.ts`.",
-     "wrong": 0,
-     "examples": []
+     "note": "A run leaves new files to commit: `sql/index.ts`, `sql/q0.ts`, `sql/q1.ts`."
     },
     "from-the-database": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "outer-joins": {
      "state": "p",
-     "wrong": 6,
-     "examples": [
-      {
-       "sql": "select u.name, p.title from posts p right join users u on u.id = p.author_id",
-       "problem": "`title` is typed `string`, but it can be null.",
-       "on": "Postgres and SQLite"
+     "example": {
+      "sql": "select u.name, x.title from users u left join (select author_id, title from posts) x on x.author_id = u.id",
+      "params": [],
+      "columns": [
+       {
+        "name": "name",
+        "type": "string"
+       },
+       {
+        "name": "title",
+        "type": "string",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ name: string; title: string | null }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select u.name, p.title from users u full join posts p on p.author_id = u.id",
-       "problem": "`name` is typed `string`, but it can be null. `title` is typed `string`, but it can be null.",
-       "on": "Postgres and SQLite"
-      }
-     ]
+      "on": "SQLite"
+     }
     },
     "expression-nullability": {
      "state": "p",
-     "wrong": 8,
-     "examples": [
-      {
-       "sql": "select upper(name) as v from users",
-       "problem": "`v` is typed `string | null`, but it is never null.",
-       "on": "Postgres"
+     "example": {
+      "sql": "select (select count(*) from posts) as v",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "string | null",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: bigint }",
+       "cardinality": "one",
+       "rows": "exactly one row"
       },
-      {
-       "sql": "select (select count(*) from posts) as v",
-       "problem": "`v` is typed `string | null`, but it is never null.",
-       "on": "Postgres"
-      }
-     ]
+      "on": "Postgres"
+     }
     },
     "parameter-types": {
      "state": "p",
-     "wrong": 1,
-     "examples": [
-      {
-       "sql": "select id from users limit $1",
-       "problem": "Parameter 1 is typed `string`, but it takes a number.",
-       "on": "Postgres"
-      }
-     ]
+     "example": {
+      "sql": "select id from users limit $1",
+      "params": [
+       {
+        "type": "string",
+        "wrong": true
+       }
+      ],
+      "columns": [
+       {
+        "name": "id",
+        "type": "number"
+       }
+      ],
+      "reylo": {
+       "params": "{ p1: number | bigint | string }",
+       "row": "{ id: number }",
+       "cardinality": "many",
+       "rows": "many rows"
+      },
+      "on": "Postgres"
+     }
     },
     "parameter-nullability": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "cardinality": {
      "state": "p",
-     "wrong": 12,
-     "examples": [
-      {
-       "sql": "select id from users where email = $1",
-       "problem": "It says many rows, but this returns at most one row.",
-       "on": "Postgres and SQLite"
-      },
-      {
-       "sql": "select count(*) as v from users",
-       "problem": "It says at most one row, but this returns exactly one row."
+     "example": {
+      "sql": "select count(*) as v from users",
+      "params": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "string"
+       }
+      ],
+      "rows": "at most one row",
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: bigint }",
+       "cardinality": "one",
+       "rows": "exactly one row"
       }
-     ]
+     }
     },
     "json-shapes": {
      "state": "p",
-     "wrong": 4,
-     "examples": [
-      {
-       "sql": "select json_object('id', id, 'name', name) as v from users",
-       "problem": "It marks this query as invalid SQL.",
-       "on": "MySQL and SQLite"
+     "example": {
+      "sql": "select json_object('id', id, 'name', name) as v from users",
+      "error": "It marks this query as invalid SQL.",
+      "params": [],
+      "columns": [],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ v: { id: number; name: string } }",
+       "cardinality": "many",
+       "rows": "many rows"
       },
-      {
-       "sql": "select json_arrayagg(json_object('id', id, 'title', title)) as v from posts",
-       "problem": "It marks this query as invalid SQL.",
-       "on": "MySQL"
-      }
-     ]
+      "on": "MySQL, SQLite"
+     }
     },
     "json-schema": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select payload from events",
-       "problem": "`payload` is typed `any`, without its fields."
-      },
-      {
-       "sql": "insert into events (id, payload) values ($1, $2)",
-       "problem": "Parameter 2 is typed `any`, without its fields."
+     "example": {
+      "sql": "select payload from events",
+      "schema": "create table events (id int primary key, payload jsonb not null check (jsonb_matches_schema('{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false}', payload)));",
+      "params": [],
+      "columns": [
+       {
+        "name": "payload",
+        "type": "any",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ payload: { x: number } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "sqlite": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "duckdb": {
      "state": "n",
-     "note": "Its clients are Postgres, MySQL, SQLite, LibSQL and D1.",
-     "wrong": 0,
-     "examples": []
+     "note": "Its clients are Postgres, MySQL, SQLite, LibSQL and D1."
     }
    }
   },
@@ -974,97 +1174,111 @@
    "cells": {
     "no-codegen": {
      "state": "p",
-     "note": "By default it writes files to commit. An experimental workflow on TypeScript 7.1 types the import with nothing generated.",
-     "wrong": 0,
-     "examples": []
+     "note": "By default it writes files to commit. An experimental workflow on TypeScript 7.1 types the import with nothing generated."
     },
     "from-the-database": {
      "state": "n",
-     "note": "It loads your schema file into an embedded Postgres, and never connects to your database.",
-     "wrong": 0,
-     "examples": []
+     "note": "It loads your schema file into an embedded Postgres, and never connects to your database."
     },
     "outer-joins": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "expression-nullability": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "parameter-types": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "parameter-nullability": {
      "state": "n",
-     "note": "It gives every parameter the same answer.",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "insert into users (id, email, name, nickname) values ($1, $2, $3, $4)",
-       "problem": "Parameter 4 is typed `string`, but it takes null."
-      },
-      {
-       "sql": "update users set nickname = $1 where id = $2",
-       "problem": "Parameter 1 is typed `string`, but it takes null."
+     "example": {
+      "sql": "update users set nickname = $1 where id = $2",
+      "params": [
+       {
+        "type": "string",
+        "wrong": true
+       },
+       {
+        "type": "bigint | number | string"
+       }
+      ],
+      "columns": [],
+      "reylo": {
+       "params": "{ p1?: string | null; p2: number }",
+       "row": "never",
+       "cardinality": "none",
+       "rows": "no rows"
       }
-     ]
+     }
     },
     "cardinality": {
      "state": "p",
-     "wrong": 1,
-     "examples": [
-      {
-       "sql": "insert into users (id, email, name) values ($1, $2, $3) returning id",
-       "problem": "It says many rows, but this returns exactly one row."
+     "example": {
+      "sql": "insert into users (id, email, name) values ($1, $2, $3) returning id",
+      "params": [
+       {
+        "type": "bigint | number | string"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "columns": [
+       {
+        "name": "id",
+        "type": "number"
+       }
+      ],
+      "rows": "many rows",
+      "reylo": {
+       "params": "{ p1: number; p2: string; p3: string }",
+       "row": "{ id: number }",
+       "cardinality": "one",
+       "rows": "exactly one row"
       }
-     ]
+     }
     },
     "json-shapes": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "json-schema": {
      "state": "n",
-     "wrong": 2,
-     "examples": [
-      {
-       "sql": "select payload from events",
-       "problem": "`payload` is typed `DbJsonSelected`, without its fields."
-      },
-      {
-       "sql": "insert into events (id, payload) values ($1, $2)",
-       "problem": "Parameter 2 is typed `DbJsonParameter`, without its fields."
+     "example": {
+      "sql": "select payload from events",
+      "schema": "create table events (id int primary key, payload jsonb not null check (jsonb_matches_schema('{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false}', payload)));",
+      "params": [],
+      "columns": [
+       {
+        "name": "payload",
+        "type": "DbJsonSelected",
+        "wrong": true
+       }
+      ],
+      "reylo": {
+       "params": "Record<never, never>",
+       "row": "{ payload: { x: number } }",
+       "cardinality": "many",
+       "rows": "many rows"
       }
-     ]
+     }
     },
     "postgres": {
-     "state": "y",
-     "wrong": 0,
-     "examples": []
+     "state": "y"
     },
     "mysql": {
      "state": "n",
-     "note": "It is not available for MySQL.",
-     "wrong": 0,
-     "examples": []
+     "note": "It is not available for MySQL."
     },
     "sqlite": {
      "state": "n",
-     "note": "It is not available for SQLite.",
-     "wrong": 0,
-     "examples": []
+     "note": "It is not available for SQLite."
     },
     "duckdb": {
      "state": "n",
-     "note": "It is Postgres only.",
-     "wrong": 0,
-     "examples": []
+     "note": "It is Postgres only."
     }
    }
   }

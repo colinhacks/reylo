@@ -158,7 +158,7 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
 pub(crate) fn declared(ty: Type, c: &MysqlColumn, utf8: bool) -> Type {
     let (length, decimals) = (c.length, c.decimals.filter(|&d| d <= 30));
     let fraction = decimals.filter(|&d| d <= 6);
-    let kind = match (ty.kind, ty.name.as_deref()) {
+    let kind = match (ty.kind, ty.label.as_deref()) {
         (Kind::Text(text), Some("char" | "varchar")) => {
             let per = max_bytes(c.charset);
             let n = length.zip(per).filter(|(length, per)| length % per == 0).map(|(length, per)| u64::from(length / per));
@@ -247,8 +247,8 @@ pub(crate) fn max_bytes(collation: u32) -> Option<u32> {
 /// width says nothing of its values, so a `tinyint(1)` is a TINYINT and a `BIT(1)` bits of no
 /// known number.
 pub(crate) fn unflagged(ty: Type) -> Type {
-    match (&ty.kind, ty.name.as_deref()) {
-        (Kind::Integer(_), Some("tinyint(1)")) => Type { name: Some("tinyint".into()), ..ty },
+    match (&ty.kind, ty.label.as_deref()) {
+        (Kind::Integer(_), Some("tinyint(1)")) => Type { label: Some("tinyint".into()), ..ty },
         (Kind::Array(_), Some("bit")) => bits(None),
         _ => ty,
     }
@@ -303,14 +303,14 @@ mod tests {
     #[test]
     fn each_protocol_type_is_its_values_under_mysqls_name() {
         assert_eq!(of(8, UNSIGNED, 0, Some(20)).short(), "bigint");
-        assert_eq!(serde_json::to_value(of(8, UNSIGNED, 0, Some(20))).unwrap(), serde_json::json!({"kind": "integer", "bits": 64, "unsigned": true, "name": "bigint"}));
+        assert_eq!(serde_json::to_value(of(8, UNSIGNED, 0, Some(20))).unwrap(), serde_json::json!({"kind": "integer", "bits": 64, "unsigned": true, "label": "bigint"}));
         assert_eq!(of(1, 0, 0, Some(1)).short(), "tinyint(1)");
         assert_eq!(of(1, 0, 0, Some(4)).short(), "tinyint");
         assert_eq!(of(13, 0, 0, None).short(), "year(0..2155)");
         assert_eq!(of(254, ENUM, 255, None).short(), "enum");
         assert_eq!(of(254, SET, 255, None).short(), "set{text}");
-        assert_eq!(serde_json::to_value(enumeration(labels("enum('x','y')"))).unwrap(), serde_json::json!({"kind": "text", "enum": ["x", "y"], "name": "enum"}));
-        assert_eq!(serde_json::to_value(set_of(labels("set('a','b')"))).unwrap(), serde_json::json!({"kind": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}, "name": "set"}));
+        assert_eq!(serde_json::to_value(enumeration(labels("enum('x','y')"))).unwrap(), serde_json::json!({"kind": "text", "enum": ["x", "y"], "label": "enum"}));
+        assert_eq!(serde_json::to_value(set_of(labels("set('a','b')"))).unwrap(), serde_json::json!({"kind": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}, "label": "set"}));
         assert_eq!(of(253, 0, BINARY, None).short(), "varbinary");
         assert_eq!(of(16, 0, 0, Some(7)).short(), "bit(boolean[7])");
         assert_eq!(unflagged(of(1, UNSIGNED, 0, Some(1))).short(), "tinyint");
@@ -329,15 +329,15 @@ mod tests {
         let column = |r#type: u32, flags: u32, charset: u32, length: u32, decimals: u32| MysqlColumn { name: "c".into(), r#type, flags, charset, length: Some(length), decimals: Some(decimals), schema: Some("app".into()), org_table: Some("t".into()), org_name: Some("c".into()) };
         let typed = |c: MysqlColumn, utf8: bool| serde_json::to_value(declared(of(c.r#type, c.flags, c.charset, c.length), &c, utf8)).unwrap();
         // varchar(20) and char(5), whatever character set they are stored in; utf8mb3 and latin1 sent as themselves.
-        assert_eq!(typed(column(253, 0, 255, 80, 0), false), serde_json::json!({"kind": "text", "size": {"max": 20}, "name": "varchar"}));
-        assert_eq!(typed(column(254, 0, 255, 20, 0), false), serde_json::json!({"kind": "text", "size": {"max": 5}, "name": "char"}));
+        assert_eq!(typed(column(253, 0, 255, 80, 0), false), serde_json::json!({"kind": "text", "size": {"max": 20}, "label": "varchar"}));
+        assert_eq!(typed(column(254, 0, 255, 20, 0), false), serde_json::json!({"kind": "text", "size": {"max": 5}, "label": "char"}));
         assert_eq!(typed(column(253, 0, 33, 60, 0), false)["size"], serde_json::json!({"max": 20}));
         assert_eq!(typed(column(253, 0, 8, 20, 0), false)["size"], serde_json::json!({"max": 20}));
         // A length no character set's width divides, or a character set MySQL does not number, says nothing.
         assert_eq!(typed(column(253, 0, 255, 81, 0), false).get("size"), None);
         assert_eq!(typed(column(253, 0, 2047, 80, 0), false).get("size"), None);
         // TINYTEXT, TEXT, MEDIUMTEXT and LONGTEXT: bytes where the column stores UTF-8, else code points.
-        assert_eq!(typed(column(252, 16, 255, 262_140, 0), true), serde_json::json!({"kind": "text", "size": {"unit": "byte", "encoding": "UTF-8", "max": 65535}, "name": "text"}));
+        assert_eq!(typed(column(252, 16, 255, 262_140, 0), true), serde_json::json!({"kind": "text", "size": {"unit": "byte", "encoding": "UTF-8", "max": 65535}, "label": "text"}));
         assert_eq!(typed(column(252, 16, 255, 262_140, 0), false)["size"], serde_json::json!({"max": 65535}));
         assert_eq!(typed(column(252, 16, 255, 1020, 0), true)["size"]["max"], 255);
         assert_eq!(typed(column(252, 16, 255, 67_108_860, 0), true)["size"]["max"], 16_777_215);
@@ -347,8 +347,8 @@ mod tests {
         assert_eq!(typed(column(252, 16, 255, 65_532, 0), false)["size"]["max"], 65535);
         assert_eq!(typed(column(252, 16, 8, 65_535, 0), false)["size"]["max"], 65535);
         // binary(3), varbinary(8), and the four BLOBs.
-        assert_eq!(typed(column(254, 128, BINARY, 3, 0), false), serde_json::json!({"kind": "bytes", "size": {"exact": 3}, "name": "binary"}));
-        assert_eq!(typed(column(253, 128, BINARY, 8, 0), false), serde_json::json!({"kind": "bytes", "size": {"max": 8}, "name": "varbinary"}));
+        assert_eq!(typed(column(254, 128, BINARY, 3, 0), false), serde_json::json!({"kind": "bytes", "size": {"exact": 3}, "label": "binary"}));
+        assert_eq!(typed(column(253, 128, BINARY, 8, 0), false), serde_json::json!({"kind": "bytes", "size": {"max": 8}, "label": "varbinary"}));
         for (length, max) in [(255, 255u64), (65_535, 65_535), (16_777_215, 16_777_215), (u32::MAX, 4_294_967_295)] {
             assert_eq!(typed(column(252, 144, BINARY, length, 0), false)["size"], serde_json::json!({"max": max}));
         }
@@ -362,13 +362,13 @@ mod tests {
         assert_eq!(decimal(67, 30, 0), (Some(65), Some(30), Some(30)));
         assert_eq!(decimal(7, 3, UNSIGNED), (Some(6), Some(3), Some(3)));
         assert_eq!(decimal(1, 0, UNSIGNED), (Some(1), Some(0), Some(0)));
-        assert_eq!(typed(column(246, 0, BINARY, 12, 2), false), serde_json::json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "name": "decimal"}));
+        assert_eq!(typed(column(246, 0, BINARY, 12, 2), false), serde_json::json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "label": "decimal"}));
         // datetime(3), datetime, timestamp(3), timestamp(0) and time(4).
-        assert_eq!(typed(column(12, 128, BINARY, 23, 3), false), serde_json::json!({"kind": "datetime", "tick": "1/1000", "name": "datetime"}));
+        assert_eq!(typed(column(12, 128, BINARY, 23, 3), false), serde_json::json!({"kind": "datetime", "tick": "1/1000", "label": "datetime"}));
         assert_eq!(typed(column(12, 128, BINARY, 19, 0), false)["tick"], "1");
-        assert_eq!(typed(column(7, 128, BINARY, 23, 3), false), serde_json::json!({"kind": "instant", "tick": "1/1000", "min": "1970-01-01T00:00:01Z", "max": "2038-01-19T03:14:07.999Z", "name": "timestamp"}));
+        assert_eq!(typed(column(7, 128, BINARY, 23, 3), false), serde_json::json!({"kind": "instant", "tick": "1/1000", "min": "1970-01-01T00:00:01Z", "max": "2038-01-19T03:14:07.999Z", "label": "timestamp"}));
         assert_eq!(typed(column(7, 128, BINARY, 19, 0), false)["max"], "2038-01-19T03:14:07Z");
-        assert_eq!(typed(column(11, 128, BINARY, 15, 4), false), serde_json::json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/10000", "name": "time"}));
+        assert_eq!(typed(column(11, 128, BINARY, 15, 4), false), serde_json::json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/10000", "label": "time"}));
         // A type that takes no modifier, an ENUM, a SET and a FLOAT(7,2) among them, keeps its type.
         for c in [column(3, 0, BINARY, 11, 0), column(254, 256, 255, 8, 0), column(254, 2048, 255, 16, 0), column(4, 0, BINARY, 7, 2), column(10, 128, BINARY, 10, 0)] {
             assert_eq!(declared(of(c.r#type, c.flags, c.charset, c.length), &c, false), of(c.r#type, c.flags, c.charset, c.length));

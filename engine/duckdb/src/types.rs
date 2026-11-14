@@ -5,7 +5,8 @@
 //! and the analysis refuses it, [`unnamed`]), a
 //! `MAP` as a map, a `UNION` as a tagged union of its alternatives, an `ENUM` as
 //! its labels, and a `VARCHAR` with the alias `JSON` as JSON. A type DuckDB has and the format does
-//! not structure (`GEOMETRY`, a type an extension adds) is opaque.
+//! not structure is opaque, `GEOMETRY` among them: DuckDB writes one inside JSON as its WKT, where
+//! PostGIS and MySQL, whose geometries the format's geometry describes, write GeoJSON.
 
 use crate::api::LogicalType;
 use reylo_engine_core::types::{
@@ -151,7 +152,7 @@ mod tests {
     #[test]
     fn each_kind_of_type() {
         assert_eq!(of(&t(r#"{"id":"HUGEINT"}"#)).short(), "hugeint");
-        assert_eq!(serde_json::to_value(of(&t(r#"{"id":"UINTEGER"}"#))).unwrap(), serde_json::json!({"kind": "integer", "bits": 32, "unsigned": true, "name": "uinteger"}));
+        assert_eq!(serde_json::to_value(of(&t(r#"{"id":"UINTEGER"}"#))).unwrap(), serde_json::json!({"kind": "integer", "bits": 32, "unsigned": true, "label": "uinteger"}));
         assert_eq!(of(&t(r#"{"id":"DECIMAL","width":10,"scale":2}"#)).short(), "decimal(10,2)");
         assert_eq!(of(&t(r#"{"id":"VARCHAR","alias":"JSON"}"#)), Type::json().named("json"));
         assert_eq!(of(&t(r#"{"id":"LIST","child":{"id":"VARCHAR"}}"#)).short(), "varchar?[]");

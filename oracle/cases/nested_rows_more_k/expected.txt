@@ -1,0 +1,27 @@
+k01_derived_top.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }
+k02_derived_beside.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k03_derived_two_out.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k04_renamed_column_out.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k05_cte_out.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k06_function_out.sql: many () -> { arr: record?[]? }
+k07_alias_list_out.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k08_values_out.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k09_json_to_recordset_out.sql: many () -> { j: jsonb? }
+k10_field_select.sql: many () -> { s: text? }
+k11_cast_text.sql: many () -> { s: text? }
+k12_qualified_star.sql: many () -> { j: jsonb { street: int4 } }
+k13_cte_in_subquery.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k14_quoted_upper_out.sql: one () -> { arr: record?[]? }
+k15_quoted_lower_out.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k16_inner_quoted_upper.sql: many () -> { arr: record?[]? }
+k17_inner_quoted_lower.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k18_deep_in_item.sql: many () -> { j: jsonb? }
+k19_plain_derived_out.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k20_plain_derived_json_out.sql: many () -> { j: jsonb? }
+k21_derived_in_lateral_field.sql: many () -> { v: int4? }
+k22_derived_in_lateral_array.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k23_derived_in_lateral_json.sql: many () -> { j: jsonb? }
+k24_three_out.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+k25_window_alias_out.sql: many () -> { j: json? }
+k26_function_no_alias.sql: many () -> { arr: record?[]? }
+k27_function_alias_list.sql: many () -> { arr: text?[]? }

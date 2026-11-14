@@ -1,0 +1,15 @@
+key_through_setof.sql: at_most_one (id: int8) -> { id: int8, title: text }
+p10_with_window.sql: many () -> { author: text, title: text, comment_count: int8, rank: int8 }
+p11_write_in_function.sql: many (id: int8) -> { id: int8?, status: text? }
+p3_filter_narrows.sql: many () -> { id: int8, published_at: timestamptz } key (id)
+p3_filters.sql: many (viewer: int8) -> { id: int8, title: text, status: text('draft' | 'published') } key (id)
+p4_any_table.sql: many (query: text) -> { id: int8, title: text } key (id)
+p4_one_expression.sql: many (needle: text) -> { id: int8, name: text } key (id)
+p5_key.sql: at_most_one (id: int8) -> { id: int8, author: jsonb { id: int8, name: text }?, n: int8 }
+p5_relations.sql: many (viewer: int8) -> { id: int8, title: text, author: jsonb { id: int8, name: text }?, tags: jsonb ({ id: int8, name: text })[], comments: jsonb ({ id: int8, body: text, by: { id: int8, name: text }? })[], comment_count: int8 } key (id) sorted (id nulls last) ordered
+p6_keyset.sql: many (at: timestamptz, id: int8) -> { id: int8, title: text, published_at: timestamptz? } key (id) sorted (published_at desc nulls first, id desc nulls first) ordered
+p6_offset.sql: many (size: int8, skip: int8) -> { id: int8, title: text } key (id) sorted (id nulls last) ordered
+p7_search.sql: many (tag: text, since: timestamptz) -> { id: int8, title: text } key (id)
+p8_page.sql: many (q: text, skip: int8) -> { id: int8, title: text, author: jsonb { id: int8, name: text }?, tags: jsonb ({ id: int8, name: text })[] } key (id) sorted (id nulls last) ordered
+p8_total.sql: one (q: text) -> { total: int8 }
+p9_optional.sql: at_most_one (with_comments: bool, id: int8) -> { id: int8, title: text, comments: jsonb ({ id: int8, body: text, by: { id: int8, name: text }? })[]? }

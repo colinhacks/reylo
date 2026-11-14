@@ -1,0 +1,1 @@
+select coalesce(body, '1')::integer as a, (case when n > 0 then body else typed end)::integer as b, greatest(body, body)::integer as c from docs where json_type(body) = 'NULL' and json_type(typed) = 'NULL'

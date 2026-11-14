@@ -1,0 +1,1 @@
+select utc_timestamp

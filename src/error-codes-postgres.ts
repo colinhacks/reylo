@@ -1,4 +1,4 @@
-// Written by scripts/error-codes.ts from Postgres's src/backend/utils/errcodes.txt at REL_18_0; run it again rather than editing this file.
+// Written by scripts/error-codes.ts from Postgres's src/backend/utils/errcodes.txt at REL_19_RC2; run it again rather than editing this file.
 
 /** Every SQLSTATE Postgres raises as an error, with its condition name. */
 export const POSTGRES_CODES = {
@@ -91,6 +91,7 @@ export const POSTGRES_CODES = {
   "22P04": "bad_copy_file_format",
   "22P05": "untranslatable_character",
   "22P06": "nonstandard_use_of_escape_character",
+  "22P07": "datum_version_mismatch",
   "23000": "integrity_constraint_violation",
   "23001": "restrict_violation",
   "23502": "not_null_violation",

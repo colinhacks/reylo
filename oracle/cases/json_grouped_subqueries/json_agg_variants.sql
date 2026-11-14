@@ -1,0 +1,1 @@
+select (select json_build_object('a', json_agg(p.tag), 'b', array_to_json(array_agg(p.tag)), 'o', json_build_object('in', json_agg(p.score))) from posts p group by p.user_id order by p.user_id limit 1) as j

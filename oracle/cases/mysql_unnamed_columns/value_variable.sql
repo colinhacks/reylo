@@ -1,0 +1,1 @@
+select @@sql_mode

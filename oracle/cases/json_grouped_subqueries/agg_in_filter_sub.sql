@@ -1,0 +1,1 @@
+select (select jsonb_build_object('a', jsonb_agg(p.id order by p.n), 'b', jsonb_agg(distinct p.n), 'c', jsonb_agg(p.id) filter (where p.n > 0)) from posts p group by p.user_id order by 1 limit 1) as j

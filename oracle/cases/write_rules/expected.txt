@@ -1,5 +1,5 @@
 insert_plain.sql: one (id: int8) -> { id: int8 }
-insert_rule_none.sql: many (id: int8) -> { id: int8 }
-insert_rule_three.sql: many (id: int8) -> { id: int8 }
-insert_view.sql: many (id: int8) -> { id: int8 }
+insert_rule_none.sql: many (id: int8) -> { id: int8? }
+insert_rule_three.sql: many (id: int8) -> { id: int8? }
+insert_view.sql: many (id: int8) -> { id: int8? }
 update_rule.sql: none (id: int8) -> {  }

@@ -1,0 +1,6 @@
+checked.sql: many () -> { id: uuid(v7), typed: uuid(v4)? }
+loose.sql: many () -> { id: uuid? }
+made.sql: many () -> { v4: uuid(v4), also_v4: uuid(v4), v7: uuid(v7), shifted: uuid(v7), id: uuid } key (id)
+returning.sql: one () -> { id: uuid, made: uuid(v7) }
+whole_row.sql: many () -> { v: public.versioned{ id: uuid } }
+written.sql: none (id: uuid(v7)) -> {  }

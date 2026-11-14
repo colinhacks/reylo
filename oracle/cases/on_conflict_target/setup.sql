@@ -15,3 +15,5 @@ create table parted (id bigint, region text, primary key (id, region)) partition
 create table parted_eu partition of parted for values in ('eu', 'a', 'A', 'b', '', 'a ', 'k900000');
 create table plain (id bigint, name text);
 create view bar_view as select id, name from bar;
+create table upserted (k int primary key, v text);
+insert into upserted values (2, 'Blue');

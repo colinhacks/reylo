@@ -2,8 +2,6 @@
 title: "Configuration"
 ---
 
-## Configuration
-
 Configure Reylo in a `.reylo.yaml` (or `.reylo.yml`) file beside `package.json`. Every key is optional:
 
 ```yaml title=".reylo.yaml"
@@ -19,7 +17,7 @@ allow_nested_arrays: false
 sqlcommenter: true
 ```
 
-### `direct_url`
+## `direct_url`
 
 The dev database Reylo reads your schema from. It defaults to `DATABASE_URL`, and its scheme names the dialect:
 
@@ -58,7 +56,35 @@ To keep a password out of every file, `$(…)` runs a command, such as a passwor
 direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
 ```
 
-### `env`
+A type check or a build reads this database, so in CI and on your host it needs your migrations applied. The database a query runs on is the client you pass to `.run()`, so the two can differ.
+
+A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([Schema changes](/schema-changes)). To type it on the database it runs on:
+
+```sh
+DATABASE_URL="$PRODUCTION_URL" node --import reylo/register report.ts
+```
+
+### TLS
+
+The type check reads TLS settings from the URL in `direct_url`:
+
+```sh title=".env"
+# postgres: encrypted, no certificate check
+DATABASE_URL=postgres://…/app?sslmode=require
+# postgres: the certificate and host checked
+DATABASE_URL=postgres://…/app?sslmode=verify-full
+# mysql: encrypted, no certificate check
+DATABASE_URL=mysql://…/app?ssl-mode=REQUIRED
+# mysql: the certificate and host checked
+DATABASE_URL=mysql://…/app?ssl-mode=VERIFY_IDENTITY
+```
+
+- With no setting, a Postgres connection is encrypted where the server offers it, and a MySQL connection isn't.
+- Postgres also reads `sslrootcert`, `sslcert`, `sslkey` and `channel_binding`, as libpq does, and node-postgres's `ssl=true`.
+- MySQL also reads mysql2's `ssl` setting, as JSON with `rejectUnauthorized`, `ca`, `cert` and `key`, and Prisma's `sslaccept=strict`.
+- A certificate is also checked against the certificates `NODE_EXTRA_CA_CERTS` names, as Node checks it.
+
+## `env`
 
 The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that sets a variable wins, and the environment wins over every file.
 
@@ -67,18 +93,24 @@ The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that set
 env: [.env.development, .env]
 ```
 
-### `allow_untyped_params`
+Reylo reads them as `dotenv` does. A `#` outside quotes starts a comment, so quote a value that holds one:
 
-Whether a [parameter whose type cannot be inferred](#a-parameter-nothing-types) may stay `unknown`.
+```sh title=".env"
+DATABASE_URL="postgres://app:pa#ss@localhost:5432/app" # the dev database
+```
 
-By default it's an error that says to [cast it](#casts).
+## `allow_untyped_params`
+
+Whether a [parameter whose type cannot be inferred](/inference#a-parameter-nothing-types) may stay `unknown`.
+
+By default it's an error that says to [cast it](/inference#casts).
 
 ```yaml title=".reylo.yaml"
 # the default is false
 allow_untyped_params: true
 ```
 
-### `allow_nested_arrays`
+## `allow_nested_arrays`
 
 Whether a Postgres array column may hold nested arrays.
 
@@ -89,9 +121,9 @@ Postgres doesn't track an array's dimensions, so by default Reylo types an array
 allow_nested_arrays: true
 ```
 
-### `sqlcommenter`
+## `sqlcommenter`
 
-Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. The query's [`.sql`](#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
+Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. On SQLite the comment opens the query instead, since SQLite would write it into the name of a last column with no alias. The query's [`.sql`](/usage#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
 
 ```yaml title=".reylo.yaml"
 # the default is true
@@ -102,14 +134,14 @@ sqlcommenter: false
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
 ```
 
-### `js.codecs`
+## `js.codecs`
 
-The TypeScript type `.run()` gives a family of values, and that its parameters take. A family you leave out keeps [its default](#data-types):
+The TypeScript type `.run()` gives a family of values, and that its parameters take. A family you leave out keeps [its default](/inference#primitives):
 
 ```yaml title=".reylo.yaml"
 js:
   codecs:
-    decimal: number  # or string (the default)
+    decimal: decimal.js  # or bignumber.js, big.js, number, or string (the default)
     bytes: string  # base64, or Uint8Array (the default)
     date: Temporal.PlainDate  # or string (the default)
     time: Temporal.PlainTime  # or string (the default)
@@ -132,6 +164,8 @@ js:
 
 - Every codec is exact. A number refuses a decimal a double cannot hold, and a Temporal class refuses a value it has no form for, such as Postgres's `infinity` or an interval of one month less a day, so the error names the column instead of returning a wrong value.
 - A parameter takes the codec's type: a `Temporal.Instant` where the column is an `instant`, so a row goes back in as it came out.
+- A decimal library, named by its package, makes each decimal a value of its class, from your own install of it beside the `.sql` file. For big.js, also install `@types/big.js`. Since big.js has no `NaN` or infinity, it refuses a `numeric` that holds one.
+- A decimal library rounds its own arithmetic as you set it: decimal.js rounds to 20 significant digits unless you raise its `precision`.
 - A codec reaches every value Reylo decodes: an array's elements, a Postgres row value's fields, a DuckDB struct's fields, a map's keys and values, a union's value, and the members of a structured parameter. A value inside JSON the query builds keeps its JSON type.
 - A 64-bit integer is always a `bigint`, its one exact type. Cast it in the query where you want a `number` or text, as `count(*)::int`.
 - A Temporal codec needs a runtime with a global `Temporal`, and TypeScript's `esnext` lib.

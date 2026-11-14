@@ -1,0 +1,3 @@
+main_schema.sql: many () -> { id: bigint, body: varchar? }
+temp_schema.sql: many () -> { id: bigint, body: varchar? }
+temporary.sql: many () -> { id: bigint, body: varchar? }

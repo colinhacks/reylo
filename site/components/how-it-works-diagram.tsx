@@ -13,7 +13,7 @@ const mono = 'var(--font-code), ui-monospace, monospace';
 const sans = 'var(--font-text), ui-sans-serif, system-ui, sans-serif';
 
 const label =
-  'How Reylo types a .sql import. TypeScript 7.1 hands get_user.sql to Reylo, its content mapper. Reylo has your database (Postgres, MySQL or SQLite) prepare the statement without running it, reads the catalog, and gives TypeScript the types: for select id, name, email from users where id = :id, the parameters { id: number } and the result { id: number; name: string; email: string | null } | null, at most one row because id is the primary key.';
+  'How Reylo types a .sql import. TypeScript 7.1 hands the .sql file to Reylo, its content mapper. Reylo has your database (Postgres, MySQL or SQLite) prepare the statement without running it, reads the catalog, and gives TypeScript the types of its parameters and result.';
 
 const nodes = [
   { title: 'TypeScript 7.1', note: 'tsc and the editor' },
@@ -23,11 +23,9 @@ const nodes = [
 
 // What goes along each leg between two nodes: the request, then the answer.
 const legs = [
-  { request: 'get_user.sql', code: true, answer: 'its types' },
+  { request: 'a .sql file', code: false, answer: 'its types' },
   { request: 'prepare, not run', code: false, answer: 'catalog' },
 ];
-
-const rowCount = 'at most one row: id is the primary key';
 
 type TextProps = { x: number; y: number; children: ReactNode; size?: number; fill?: string; weight?: number; anchor?: 'start' | 'middle' | 'end'; code?: boolean };
 
@@ -43,11 +41,6 @@ function Text({ x, y, children, size = 12, fill = color.muted, weight = 400, anc
 /** A box with the code blocks' thin border and rounded corners; Reylo's in the accent. */
 function Box({ x, y, w, h, accent = false }: { x: number; y: number; w: number; h: number; accent?: boolean }) {
   return <rect x={x} y={y} width={w} height={h} rx={12} style={{ fill: color.card, stroke: accent ? color.accent : color.border, strokeWidth: 1 }} />;
-}
-
-/** A rule across a box: solid under its title bar, dashed between its statement and its types. */
-function Rule({ x, y, w, dashed = false }: { x: number; y: number; w: number; dashed?: boolean }) {
-  return <line x1={x} x2={x + w} y1={y} y2={y} style={{ stroke: color.border, strokeDasharray: dashed ? '3 4' : undefined }} />;
 }
 
 /** A straight arrow from (x1, y1) to (x2, y2) with an open head, drawn thin and muted. */
@@ -130,65 +123,61 @@ function Stack({ w }: { w: number }) {
 }
 
 const stackHeight = 3 * 64 + 2 * 72;
-const cardHeight = 272;
 
-/** The statement and the types TypeScript gets for it, wrapped to a card 328px wide. */
-function Card({ x, y }: { x: number; y: number }) {
-  const w = 328;
-  const pad = 16;
-  const code = { size: 12.5, fill: color.headings, code: true };
-  return (
-    <g transform={`translate(${x + 0.5} ${y})`}>
-      <Box x={0} y={0} w={w - 1} h={cardHeight} />
-      <Text x={pad} y={22} code>get_user.sql</Text>
-      <Rule x={0} y={34} w={w - 1} />
-      <Text x={pad} y={60} {...code} fill={color.text}>select id, name, email</Text>
-      <Text x={pad} y={80} {...code} fill={color.text}>from users where id = :id</Text>
-      <Rule x={0} y={98} w={w - 1} dashed />
-      <Text x={pad} y={122}>parameters</Text>
-      <Text x={pad} y={142} {...code}>{'{ id: number }'}</Text>
-      <Text x={pad} y={170}>result</Text>
-      <Text x={pad} y={190} {...code}>{'{ id: number;'}</Text>
-      <Text x={pad} y={208} {...code}>{'  name: string;'}</Text>
-      <Text x={pad} y={226} {...code}>{'  email: string | null } | null'}</Text>
-      <Text x={pad} y={252}>{rowCount}</Text>
-    </g>
-  );
-}
+/** The widths of the three nodes in the row, each wide enough for its note. */
+const rowWidths = [140, 124, 176];
+const rowHeight = 72;
 
 /**
- * The figure at the text column's width (672px, the 42rem column, at a 1440px window), drawn at
- * that size so its text is the size it was drawn at: the nodes stacked on the left and the
- * statement with its types beside them, on the right, so the figure meets both edges of the column.
+ * The three nodes in a row at the text column's width (672px, the 42rem column, at a 1440px
+ * window), drawn at that size so its text is the size it was drawn at: each leg's request above its
+ * arrows and the answer under them, so the figure meets both edges of the column.
  */
 function Wide() {
   const w = 672;
+  const gap = (w - 1 - rowWidths.reduce((a, b) => a + b, 0)) / 2;
+  const xs = [0.5, 0.5 + rowWidths[0]! + gap, 0.5 + rowWidths[0]! + rowWidths[1]! + 2 * gap];
+  const y = 0.5;
+  const middle = y + rowHeight / 2;
   return (
-    <Figure w={w} h={stackHeight + 1}>
-      <Stack w={w - 328 - 16} />
-      <Card x={w - 328} y={(stackHeight - cardHeight) / 2} />
+    <Figure w={w} h={rowHeight + 1}>
+      {nodes.map((node, i) => (
+        <g key={node.title}>
+          <Box x={xs[i]!} y={y} w={rowWidths[i]!} h={rowHeight} accent={node.accent} />
+          <NodeTitle x={xs[i]! + rowWidths[i]! / 2} y={y + 32} node={node} />
+          <Text x={xs[i]! + rowWidths[i]! / 2} y={y + 52} anchor="middle" size={12.5}>{node.note}</Text>
+        </g>
+      ))}
+      {legs.map((leg, i) => {
+        const from = xs[i]! + rowWidths[i]! + 10;
+        const to = xs[i + 1]! - 10;
+        const center = (from + to) / 2;
+        return (
+          <g key={leg.request}>
+            <Text x={center} y={middle - 14} anchor="middle" code={leg.code}>{leg.request}</Text>
+            <Arrow x1={from} y1={middle - 5} x2={to} y2={middle - 5} />
+            <Arrow x1={to} y1={middle + 5} x2={from} y2={middle + 5} />
+            <Text x={center} y={middle + 24} anchor="middle">{leg.answer}</Text>
+          </g>
+        );
+      })}
     </Figure>
   );
 }
 
-/**
- * The same figure for a phone's column (328px on a 360px screen): the stack, and the statement
- * and its types under it.
- */
+/** The same figure for a phone's column (328px on a 360px screen): the nodes stacked. */
 function Narrow() {
   const w = 328;
-  const cardY = stackHeight + 24;
   return (
-    <Figure w={w} h={cardY + cardHeight + 1}>
+    <Figure w={w} h={stackHeight + 1}>
       <Stack w={w} />
-      <Card x={0} y={cardY} />
     </Figure>
   );
 }
 
 /**
- * The diagram under How it works: a `.sql` import through TypeScript, Reylo and the database, and
- * the type that comes back. A container query picks the form: the wide one from a 588px column
+ * The diagram that opens Inference: a `.sql` import through TypeScript, Reylo and the database,
+ * and the types that come back. A container query picks the form: the wide one from a 588px column
  * (drawn for the page's 672px, where its text is the size it was drawn at, and no smaller than
  * 10.5px at 588px), and the stacked one below that, kept to 400px so that it does not grow larger
  * than the page's text on a small tablet.

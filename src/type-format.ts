@@ -236,6 +236,7 @@ export function resultType(row: string, cardinality: string): string {
   if (cardinality === "none" || row === "never") return "void";
   const wrapped = /\|/.test(row.replace(/\{[^{}]*\}/g, "")) ? `(${row})` : row;
   if (cardinality === "one") return row;
-  if (cardinality === "maybeOne") return `${row} | null`;
+  // A value that may be NULL already says what no row would.
+  if (cardinality === "maybeOne") return row.replace(/\{[^{}]*\}/g, "").split("|").some((part) => part.trim() === "null") ? row : `${row} | null`;
   return `${wrapped}[]`;
 }

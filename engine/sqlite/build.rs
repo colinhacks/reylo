@@ -48,9 +48,9 @@ fn main() {
         .define("SQLITE_TEMP_STORE", "3");
     // Every consumer of this rlib may link its own SQLite (the engine's program links rusqlite's
     // bundled one to read a database file, in the component and natively alike), so the
-    // amalgamation's public API stays private to this translation unit: only `reylo_sqlite_analyze`
-    // and `reylo_sqlite_free` are exported, and nothing here is reachable from, or shadows, the other
-    // copy.
+    // amalgamation's public API stays private to this translation unit: only `reylo_sqlite_analyze`,
+    // `reylo_sqlite_free` and `reylo_sqlite_version` are exported, and nothing here is reachable
+    // from, or shadows, the other copy.
     build.define("SQLITE_API", "static").define("SQLITE_EXTERN", "");
     if target.contains("linux") {
         // The amalgamation defines `_GNU_SOURCE` for itself, but `csrc/reylo_sqlite.c` has

@@ -1,0 +1,7 @@
+aggregate.sql: one () -> { j: jsonb int4?[][]? }
+column.sql: many () -> { j: jsonb { a: int4?[], s: text?[]? } }
+constructed.sql: one () -> { j: jsonb { a: int4[] } }
+lateral.sql: one () -> { j: jsonb { a: int4?[] } }
+literal.sql: one () -> { j: jsonb { a: int4[] } }
+to_jsonb_column.sql: many () -> { j: jsonb }
+whole_row.sql: many () -> { j: jsonb { id: int8, a: int4?[], s: text?[]? } }

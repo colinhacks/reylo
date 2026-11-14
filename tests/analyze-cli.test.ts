@@ -1,10 +1,10 @@
 // `reylo analyze`, the native binary's own command line: each statement's type descriptor
-// (spec/index.ts) as one line of JSON, from the database the project names as the type
-// check finds it.
+// (spec/index.ts), from the database the project names as the type check finds it, as YAML or,
+// with `--format json`, one line of JSON per statement.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -22,10 +22,12 @@ const SCHEMA: string = schema.$id;
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 const valid = ajv.compile(schema);
 
-/** `reylo analyze` run in `cwd`, with no connection of the developer's own in its environment; each line it prints names the format's version and validates against its schema. */
+/** The environment a run inherits: the developer's own, but for a connection or project file of theirs. */
+const inherited = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "DATABASE_URL" && name !== "REYLO_CONFIG"));
+
+/** `reylo analyze --format json` run in `cwd`, with no connection of the developer's own in its environment; each line it prints names the format's version and validates against its schema. */
 function analyzeIn(cwd: string, args: string[], env: Record<string, string> = {}, input?: string) {
-  const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "DATABASE_URL" && name !== "REYLO_CONFIG"));
-  const run = spawnSync(nativeBinary(), ["analyze", ...args], { cwd, env: { ...inherited, ...env }, input, encoding: "utf8" });
+  const run = spawnSync(nativeBinary(), ["analyze", "--format", "json", ...args], { cwd, env: { ...inherited(), ...env }, input, encoding: "utf8" });
   const lines = run.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
   for (const line of lines) {
     assert.equal(line.$schema, SCHEMA);
@@ -62,10 +64,30 @@ test("analyze prints each .sql file's descriptor under a directory, and exits 1 
   const [broken, user] = lines as [Line, Line];
   assert.equal(user.dialect.name, "sqlite");
   assert.match(user.dialect.version, /^3\.\d+\.\d+$/);
-  assert.deepEqual({ kind: user.kind, comment: user.comment, params: user.params, cardinality: user.cardinality, diagnostics: user.diagnostics }, { kind: "select", comment: "One user, by id", params: [{ name: "id", type: { kind: "integer", bits: 64 } }], cardinality: "at_most_one", diagnostics: [] });
-  assert.deepEqual(user.columns.map((c) => c.name), ["id", "name"]);
+  assert.deepEqual({ kind: user.kind, comment: user.comment, params: user.params, cardinality: user.result.cardinality, diagnostics: user.diagnostics }, { kind: "select", comment: "One user, by id", params: [{ name: "id", type: { kind: "integer", bits: 64 } }], cardinality: "at_most_one", diagnostics: [] });
+  assert.deepEqual(user.result.columns.map((c) => c.name), ["id", "name"]);
   // A diagnostic's place is in UTF-16 units of the statement as written.
   assert.deepEqual(broken.diagnostics.map((d) => [d.message, "select nope from users\n".slice(d.start, d.end)]), [["no such column: nope", "nope"]]);
+});
+
+test("analyze prints YAML by default, a document per statement, and each diagnostic on standard error under a caret", () => {
+  const root = project({ "q/a.sql": "-- Names, by id.\nselect name from users where id = :id\n", "q/b.sql": "select id,\n  nope from users\n" });
+  const run = spawnSync(nativeBinary(), ["analyze", "q"], { cwd: root, env: inherited(), encoding: "utf8" });
+  assert.equal(run.status, 1, run.stderr);
+  const [a, b] = run.stdout.split("\n---\n") as [string, string];
+  assert.ok(a.startsWith(`file: q/a.sql\n$schema: ${SCHEMA}\ndialect:\n  name: sqlite\n  version: "3.`), a);
+  // A statement of several lines is a literal block, a comment of one line plain, and a type on its own line.
+  assert.match(a, /\nsql: \|\n  -- Names, by id\.\n  select name from users where id = \S+\nkind: select\ncomment: Names, by id\.\nparams:\n  - name: id\n    type: \{ kind: integer, bits: 64 \}\n/);
+  assert.match(a, /\ndiagnostics: \[\]$/);
+  assert.ok(b.startsWith("file: q/b.sql\n") && b.includes("\ndiagnostics:\n  - message: \"no such column: nope\"\n"), b);
+  // The same descriptors as --format json prints, which the JSON lines hold to the schema.
+  assert.deepEqual(analyzeIn(root, ["q"]).lines.map((l) => [l.file, l.diagnostics.length]), [["q/a.sql", 0], ["q/b.sql", 1]]);
+  assert.equal(run.stderr, "q/b.sql:2:3: no such column: nope\n    nope from users\n    ^^^^\n");
+  const json = spawnSync(nativeBinary(), ["analyze", "--format=json", "--sql", "select name from users"], { cwd: root, env: inherited(), encoding: "utf8" });
+  assert.equal((JSON.parse(json.stdout) as Line).result.columns[0]!.name, "name");
+  const toml = spawnSync(nativeBinary(), ["analyze", "--format", "toml", "--sql", "select 1"], { cwd: root, env: inherited(), encoding: "utf8" });
+  assert.equal(toml.status, 2);
+  assert.match(toml.stderr, /^reylo analyze: --format takes yaml or json, not toml\n/);
 });
 
 test("analyze reads a statement from --sql or standard input, and a file from a subdirectory finds the package's project", () => {
@@ -73,12 +95,12 @@ test("analyze reads a statement from --sql or standard input, and a file from a 
   const sql = analyzeIn(root, ["--sql", "select count(*) as n from users"]);
   assert.equal(sql.status, 0, sql.stderr);
   assert.equal(sql.lines[0]!.file, undefined);
-  assert.equal(sql.lines[0]!.cardinality, "one");
+  assert.equal(sql.lines[0]!.result.cardinality, "one");
   const stdin = analyzeIn(root, ["-"], {}, "select email from users");
-  assert.deepEqual(stdin.lines.map((l) => [l.columns[0]!.name, l.columns[0]!.nullable]), [["email", true]]);
+  assert.deepEqual(stdin.lines.map((l) => [l.result.columns[0]!.name, l.result.columns[0]!.nullable]), [["email", true]]);
   const nested = analyzeIn(join(root, "q"), ["get_user.sql"]);
   assert.equal(nested.status, 0, nested.stderr);
-  assert.deepEqual(nested.lines.map((l) => [l.file, l.cardinality]), [["get_user.sql", "at_most_one"]]);
+  assert.deepEqual(nested.lines.map((l) => [l.file, l.result.cardinality]), [["get_user.sql", "at_most_one"]]);
 });
 
 test("analyze holds a parameter nothing types to the project's allow_untyped_params, as the type check does", () => {
@@ -98,7 +120,7 @@ test("analyze takes the project's direct_url and --url, and says what it cannot 
   writeFileSync(join(root, ".reylo.yaml"), 'direct_url: "$(echo file:./other.db)"\n');
   const own = analyzeIn(root, ["--sql", "select label from things"]);
   assert.equal(own.status, 0, own.stderr);
-  assert.deepEqual(own.lines[0]!.columns.map((c) => c.name), ["label"]);
+  assert.deepEqual(own.lines[0]!.result.columns.map((c) => c.name), ["label"]);
   const given = analyzeIn(root, ["--sql", "select name from users", "--url", "file:./app.db"]);
   assert.equal(given.status, 0, given.stderr);
   const duckdb = analyzeIn(root, ["--sql", "select 1", "--url", "duckdb:./dev.duckdb"]);
@@ -124,7 +146,7 @@ test("analyze prints a statement the engine cannot analyze as its line with one 
   assert.equal(status, 1, stderr);
   assert.deepEqual(lines.map((l) => [l.file, l.diagnostics.length]), [["q/a.sql", 0], ["q/b.sql", 1], ["q/c.sql", 0]]);
   const line = lines[1]!;
-  assert.deepEqual({ sql: line.sql, kind: line.kind, params: line.params, columns: line.columns, cardinality: line.cardinality }, { sql: broken, kind: undefined, params: [], columns: [], cardinality: "many" });
+  assert.deepEqual({ sql: line.sql, kind: line.kind, params: line.params, columns: line.result.columns, cardinality: line.result.cardinality }, { sql: broken, kind: undefined, params: [], columns: [], cardinality: "many" });
   const [diagnostic] = line.diagnostics as [Line["diagnostics"][number]];
   assert.match(diagnostic.message, /carray/);
   assert.deepEqual([diagnostic.start, diagnostic.end, diagnostic.code], [0, broken.length, undefined]);
@@ -136,11 +158,54 @@ test("analyze reads a relative SQLite path in --url from the working directory, 
   new DatabaseSync(join(root, "sub", "x.db")).exec("create table things (label text not null)");
   const given = analyzeIn(join(root, "sub"), ["--sql", "select label from things", "--url", "file:./x.db"]);
   assert.equal(given.status, 0, given.stderr);
-  assert.deepEqual(given.lines[0]!.columns.map((c) => c.name), ["label"]);
+  assert.deepEqual(given.lines[0]!.result.columns.map((c) => c.name), ["label"]);
   // The project's DATABASE_URL, file:./app.db, is the root's app.db from the subdirectory too.
   const own = analyzeIn(join(root, "sub"), ["--sql", "select name from users"]);
   assert.equal(own.status, 0, own.stderr);
-  assert.deepEqual(own.lines[0]!.columns.map((c) => c.name), ["name"]);
+  assert.deepEqual(own.lines[0]!.result.columns.map((c) => c.name), ["name"]);
+});
+
+test("analyze names each file and where the URL came from as the type check does, from any directory", () => {
+  const root = project({ "q/get_user.sql": "select id from users\n" });
+  // A variable nothing sets, run from a subdirectory: each file named from there.
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: file:./${NOPE}.db\nenv: [config/.env, .env]\n");
+  const unset = analyzeIn(join(root, "q"), ["get_user.sql"]);
+  assert.equal(unset.status, 2);
+  assert.equal(unset.stderr, 'reylo analyze: ../.reylo.yaml: "direct_url" names ${NOPE}, which neither the environment nor ../config/.env nor ../.env sets.\n');
+  // A URL whose scheme reylo does not read: where it came from, never the URL itself.
+  const unread = /^reylo analyze: Cannot tell the database from the URL \((.*)\): reylo reads postgres:\/\//;
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: ftp://u:${DB_PASSWORD}@h/db\nenv: [secrets.env]\n");
+  writeFileSync(join(root, "secrets.env"), "DB_PASSWORD=pw\n");
+  assert.equal(unread.exec(analyzeIn(root, ["--sql", "select 1"]).stderr)?.[1], '"direct_url" in .reylo.yaml, DB_PASSWORD in secrets.env');
+  rmSync(join(root, ".reylo.yaml"));
+  assert.equal(unread.exec(analyzeIn(root, ["--sql", "select 1"], { DATABASE_URL: "ftp://h/db" }).stderr)?.[1], "DATABASE_URL in the environment");
+  writeFileSync(join(root, ".env"), "DATABASE_URL=ftp://h/db\n");
+  assert.equal(unread.exec(analyzeIn(root, ["--sql", "select 1"]).stderr)?.[1], "DATABASE_URL in .env");
+  // An empty REYLO_CONFIG names no file, so two beside the package are still one too many.
+  writeFileSync(join(root, ".env"), "DATABASE_URL=file:./app.db\n");
+  writeFileSync(join(root, ".reylo.yaml"), "allow_untyped_params: true\n");
+  writeFileSync(join(root, ".reylo.yml"), "allow_untyped_params: true\n");
+  assert.equal(analyzeIn(root, ["--sql", "select 1"], { REYLO_CONFIG: "" }).stderr, "reylo analyze: .reylo.yaml and .reylo.yml are both project files; keep one.\n");
+  assert.equal(analyzeIn(root, ["--sql", "select 1"], { REYLO_CONFIG: "missing.yaml" }).stderr, "reylo analyze: Cannot read missing.yaml: it does not exist.\n");
+  // A directory is named as one, which Windows refuses to open as access denied.
+  mkdirSync(join(root, "conf"));
+  assert.equal(analyzeIn(root, ["--sql", "select 1"], { REYLO_CONFIG: "conf" }).stderr, "reylo analyze: Cannot read conf: it is a directory.\n");
+});
+
+test("analyze names a file: URL Node reads as no file, and where it came from", { skip: process.platform === "win32" && "Windows reads a URL's host as a share" }, () => {
+  const root = project({});
+  writeFileSync(join(root, ".env"), "DATABASE_URL=file://db.example/app.db\n");
+  const own = analyzeIn(root, ["--sql", "select 1"]);
+  assert.equal(own.status, 2);
+  assert.equal(own.stderr, "reylo analyze: Cannot read the SQLite URL file://db.example/app.db (DATABASE_URL in .env): its host must be localhost or empty, not db.example.\n");
+  assert.equal(analyzeIn(root, ["--sql", "select 1", "--url", "file:///var/a%2Fb.db"]).stderr, "reylo analyze: Cannot read the SQLite URL file:///var/a%2Fb.db (--url): its path encodes a separator.\n");
+});
+
+test("analyze reads an environment variable that is not UTF-8 as Node does, rather than stopping", { skip: process.platform === "win32" && "its variable is set by a POSIX shell" }, () => {
+  const root = project({});
+  const run = spawnSync("/bin/sh", ["-c", `export NOT_UTF8="$(printf '\\377')"; exec "$0" analyze --format json --sql "select id from users"`, nativeBinary()], { cwd: root, env: inherited(), encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal((JSON.parse(run.stdout) as Line).result.columns[0]!.name, "id");
 });
 
 test("analyze reads a Postgres statement over its own connection, the server's version beside it", { skip: pgLive }, async () => {
@@ -153,9 +218,9 @@ test("analyze reads a Postgres statement over its own connection, the server's v
     assert.equal(line.dialect.name, "postgres");
     assert.match(line.dialect.version, /^\d+(\.\d+)?$/);
     assert.equal(line.sql, "select id, name from users where id = $1");
-    assert.deepEqual(line.params, [{ name: "id", type: { kind: "integer", bits: 32, name: "int4" } }]);
-    assert.deepEqual(line.columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
-    assert.equal(line.cardinality, "at_most_one");
+    assert.deepEqual(line.params, [{ name: "id", type: { kind: "integer", bits: 32, label: "int4" } }]);
+    assert.deepEqual(line.result.columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
+    assert.equal(line.result.cardinality, "at_most_one");
   } finally {
     await own.drop();
   }
@@ -171,8 +236,8 @@ test("analyze reads a MySQL statement over its own connection, the server's vers
     assert.equal(line.dialect.name, "mysql");
     assert.match(line.dialect.version, /^\d+\.\d+\.\d+/);
     assert.equal(line.sql, "select id, name from users where id = ?");
-    assert.deepEqual(line.columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
-    assert.equal(line.cardinality, "at_most_one");
+    assert.deepEqual(line.result.columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
+    assert.equal(line.result.cardinality, "at_most_one");
   } finally {
     await own.drop();
   }

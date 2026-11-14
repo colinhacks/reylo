@@ -1,0 +1,1 @@
+select c from chars()

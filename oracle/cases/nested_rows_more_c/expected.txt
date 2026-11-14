@@ -1,0 +1,20 @@
+a41_cte_shadows_table.sql: one () -> { arr: (record{ id: int8?, big: int8? })[] }
+a42_cte_shadows_table_deeper.sql: one () -> { arr: record?[] }
+a43_cte_shadows_inside_derived.sql: one () -> { arr: (record{ id: int8? })[] }
+a44_view_outer.sql: one () -> { arr: (public.post_comments{ pid: int8?, big: int8? })[] }
+a45_view_derived.sql: one () -> { arr: (record{ pid: int8, big: int8? })[] }
+a46_view_outer_joined.sql: one () -> { arr: (public.post_comments{ pid: int8?, big: int8? }?)[] }
+a47_generated.sql: one () -> { arr: (public.gen{ id: int4, n: int4?, g: int4? })[] }
+a48_dropped_column.sql: one () -> { arr: (public.dropped{ id: int4, kept: text })[] }
+a49_star_left_join.sql: one () -> { arr: (record{ id: int8, author_id: int8, title: text, id: int8?, post_id: int8?, body: text?, big: int8?, d: int4? })[] }
+a50_star_using.sql: one () -> { arr: (record{ id: int8, author_id: int8, title: text, post_id: int8?, body: text?, big: int8?, d: int4? })[] }
+a51_star_natural_full.sql: one () -> { arr: (record{ id: int8?, author_id: int8?, title: text?, name: text? }?)[] }
+a52_table_alias_colnames.sql: one () -> { arr: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, d: public.nn? })[] }
+a53_setof_composite.sql: one () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }
+a54_where_is_null.sql: one () -> { arr: (record{ body: text? })[] }
+a55_left_join_derived_columns.sql: many () -> { id: int8, arr: (record{ id: int8, rb: text?, rid: int8? })[] } key (id)
+a56_correlated_outer_join_inside.sql: many () -> { id: int8, arr: (record{ s: int8? }?)[] } key (id)
+a57_except_intersect.sql: one () -> { arr: (record{ id: int8, body: text? })[] }
+a58_limit_zero_nested.sql: one () -> { arr: (record{ id: int8, rs: (record{ id: int8 })[] })[] }
+a59_lateral_inside_derived.sql: one () -> { arr: (record{ id: int8, s: numeric? })[] }
+a60_lateral_inside_derived_expr.sql: one () -> { arr: (record{ id: int8, n: int8? })[] }

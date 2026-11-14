@@ -3,10 +3,10 @@ column_beside_aggregate_empty.sql: one () -> { name: varchar(≤20)?, id: int?, 
 column_beside_aggregate_key.sql: one (id: int32) -> { name: varchar(≤20)?, n: bigint }
 column_not_grouped.sql: many () -> { id: int, name: varchar(≤20), n: bigint }
 object_beside_aggregate.sql: one () -> { o: json { name: varchar(≤20)?, n: bigint } }
-object_truth_beside_aggregate.sql: many () -> { o: json { t: boolean | bigint?, m: bigint?, c: boolean?, l: boolean } }
+object_truth_beside_aggregate.sql: many () -> { o: json { t: boolean | bigint, m: bigint?, c: boolean?, l: boolean } }
 object_truth_beside_aggregate_ungrouped.sql: one () -> { o: json { t: boolean | bigint?, m: bigint?, c: boolean?, l: boolean } }
 object_truth_beside_nested_list.sql: many () -> { o: json { t: boolean | bigint, f: tinyint(1), titles: varchar(≤20)[] } }
 object_truth_beside_window.sql: many () -> { o: json { t: boolean | bigint, w: bigint, c: boolean | bigint } }
-object_truth_in_nested_object.sql: many () -> { o: json { o: { t: boolean? }, m: bigint? } }
+object_truth_in_nested_object.sql: many () -> { o: json { o: { t: boolean }, m: bigint? } }
 param_group_by.sql: many (n: int32) -> { bucket: bigint?, c: bigint }
 subquery_column_beside_aggregate.sql: many () -> { id: int, title: varchar?, o: json { title: varchar(≤20)?, n: bigint } }

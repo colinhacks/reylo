@@ -1,9 +1,10 @@
 // `nub run typedefs` at the root: the TypeScript of the type descriptor format, spec/index.ts,
-// generated from its JSON Schema, spec/typedefs.schema.json, which is the source of truth; and the
-// schema as reylo.dev publishes it, site/public/typedefs/<version>.json, the version its `$id` names.
-// Each version's published file is kept once written, so a descriptor of an older version still
-// validates against its own. With `--check`, nothing is written, and a file that differs from what
-// the schema gives fails.
+// generated from its JSON Schema, spec/typedefs.schema.json, which is the source of truth; the
+// schema as reylo.dev publishes it, site/public/typedefs/<version>.json, the version its `$id` names;
+// and spec/examples.json, the examples of spec/examples.ts as JSON, which the engine's own tests read
+// (engine/core/src/types.rs). Each version's published file is kept once written, so a descriptor of
+// an older version still validates against its own. With `--check`, nothing is written, and a file
+// that differs from what its source gives fails.
 //
 // The schema keeps to a small idiom, which this reads and refuses to go beyond: each definition is an
 // object (whose `allOf` names the definitions it extends), a union of definitions (`anyOf`), or a list
@@ -85,15 +86,20 @@ for (const [name, def] of Object.entries(defs)) {
 }
 ts = ts.trimEnd() + "\n";
 
-const outputs: [string, string][] = [
-  [path.join(root, "spec", "index.ts"), ts],
-  [path.join(root, "site", "public", "typedefs", `${version}.json`), readFileSync(source, "utf8").replaceAll("\r\n", "\n")],
+// The examples, by name, as one JSON document.
+const examples = `${JSON.stringify({ ...(await import("./examples.ts")) }, null, 2)}\n`;
+
+// Each file written, its text, and the file it is written from.
+const outputs: [string, string, string][] = [
+  [path.join(root, "spec", "index.ts"), ts, "spec/typedefs.schema.json"],
+  [path.join(root, "site", "public", "typedefs", `${version}.json`), readFileSync(source, "utf8").replaceAll("\r\n", "\n"), "spec/typedefs.schema.json"],
+  [path.join(root, "spec", "examples.json"), examples, "spec/examples.ts"],
 ];
 // A checkout on Windows may hold any of these with CRLF line endings, which change nothing they say.
 const lf = (text: string) => text.replaceAll("\r\n", "\n");
 const stale = outputs.filter(([file, text]) => !existsSync(file) || lf(readFileSync(file, "utf8")) !== lf(text));
 if (check) {
-  for (const [file] of stale) console.error(`${path.relative(root, file)} is not what spec/typedefs.schema.json gives: run \`nub run typedefs\`.`);
+  for (const [file, , from] of stale) console.error(`${path.relative(root, file)} is not what ${from} gives: run \`nub run typedefs\`.`);
   if (stale.length) process.exit(1);
 } else {
   for (const [file, text] of stale) {

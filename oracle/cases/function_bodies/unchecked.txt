@@ -1,0 +1,2 @@
+no_such_syntax.sql: syntax error at or near "selec" (42601)
+no_such_table.sql: relation "nowhere" does not exist (42P01)

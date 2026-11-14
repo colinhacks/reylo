@@ -7,14 +7,21 @@ use crate::host::{as_bool, as_str, Host, Lazy};
 use reylo_engine_core::api::{Analysis, Scope};
 use reylo_engine_core::dialect::Dialect;
 use serde_json::Value;
+use sqlparser::ast::{Query, Statement};
+use sqlparser::dialect::DuckDbDialect;
+use sqlparser::keywords::Keyword;
+use sqlparser::parser::Parser;
+use sqlparser::tokenizer::{Token, Tokenizer};
 use std::collections::HashSet;
 
 /// One row per column of every table and view whose name is one of `{names}`, in each one's
 /// order: where it is, whether it may be NULL, its comment, whether it is in the database and
-/// schema an unqualified name reads first, and whether it is in that database.
-const COLUMNS_QUERY: &str = "select database_name, schema_name, table_name, column_name, is_nullable, comment, \
-    database_name = current_database() and schema_name = current_schema() as current, database_name = current_database() as current_database \
-    from duckdb_columns() where lower(table_name) in ({names}) order by database_name, schema_name, table_name, column_index";
+/// schema an unqualified name reads first, whether it is in that database, its type, and whether
+/// its table was made with a collation, which only the table's own text says.
+const COLUMNS_QUERY: &str = "select c.database_name, c.schema_name, c.table_name, c.column_name, c.is_nullable, c.comment, \
+    c.database_name = current_database() and c.schema_name = current_schema() as current, c.database_name = current_database() as current_database, c.data_type, \
+    exists (select 1 from duckdb_tables() t where t.database_name = c.database_name and t.schema_name = c.schema_name and t.table_name = c.table_name and t.sql ilike '%collate%') as collated \
+    from duckdb_columns() c where lower(c.table_name) in ({names}) order by c.database_name, c.schema_name, c.table_name, c.column_index";
 
 /// One row per primary key and UNIQUE constraint of every table whose name is one of `{names}`,
 /// its columns as JSON text, which every host reads alike.
@@ -22,23 +29,43 @@ const KEYS_QUERY: &str = "select database_name, schema_name, table_name, to_json
     from duckdb_constraints() where constraint_type in ('PRIMARY KEY', 'UNIQUE') and lower(table_name) in ({names}) \
     order by database_name, schema_name, table_name, constraint_index";
 
-/// Every macro and its definition: a macro may call `unnest`, itself or through another macro,
-/// and so make a row of each element (`generate_subscripts`, `regexp_split_to_table`).
-const MACROS_QUERY: &str = "select lower(function_name), macro_definition from duckdb_functions() where function_type = 'macro' and macro_definition is not null";
+/// The text of every table whose name is one of `{names}`, whose keys are read from it where
+/// DuckDB refuses [`KEYS_QUERY`] ([`keys_of`]).
+const TEXTS_QUERY: &str = "select database_name, schema_name, table_name, sql from duckdb_tables() where lower(table_name) in ({names}) and sql is not null";
+
+/// Every macro, its definition, and whether a user defined it: a macro may call `unnest`, itself or
+/// through another macro, and so make a row of each element (`generate_subscripts`,
+/// `regexp_split_to_table`), and a user's takes the place of a built-in function of its name.
+const MACROS_QUERY: &str = "select lower(function_name), macro_definition, not internal from duckdb_functions() where function_type = 'macro' and macro_definition is not null";
 
 /// Every macro and view a user defined, by lowercased name: its definition, and whether it is a view.
 const DEFINITIONS_QUERY: &str = "select lower(function_name), macro_definition, false from duckdb_functions() where function_type in ('macro', 'table_macro') and macro_definition is not null and not internal \
     union all select lower(view_name), sql, true from duckdb_views() where not internal and sql is not null";
 
+/// Every table macro and table function, built in or a user's: which it is, whether it is a user's
+/// in the session's own schema, its definition and its parameters' names as JSON text. A macro is
+/// read by its name alone, so one that shares it with another, an overload or a function, is not.
+const TABLE_FUNCTIONS_QUERY: &str = "select lower(function_name), function_type = 'table_macro' and not internal and database_name = current_database() and schema_name = current_schema(), \
+    macro_definition, to_json(parameters)::varchar from duckdb_functions() where function_type in ('table', 'table_macro')";
+
+/// How many levels of table macros are read: a macro whose body reads a macro is one more.
+pub const MAX_MACRO_LEVELS: usize = 6;
+
 /// The functions that move a sequence, or run SQL they are given as text, which may.
 const MOVES_A_SEQUENCE: [&str; 4] = ["nextval", "setval", "query", "query_table"];
 
-/// Whether the statement is certain to write nothing: a SELECT that moves no sequence, itself or
-/// through a view or a macro, however deep. A view counts wherever its name stands as a word, a
+/// Whether the statement is certain to write nothing: a SELECT with no WITH query that writes,
+/// that moves no sequence, itself or through a view or a macro, however deep. A view counts wherever its name stands as a word, a
 /// column or an alias of that name too, which can only say a read may write.
 pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
     let sql = &analysis.rewritten.sql;
     if analysis.kind != Some(reylo_engine_core::types::StatementKind::Select) {
+        return Some(false);
+    }
+    // A SELECT whose WITH query inserts, updates, deletes or merges writes as that query does. By
+    // the keyword wherever it stands as a word, a column of that name too, which can only say a
+    // read may write, and holds for a statement the engine's parser does not read.
+    if reylo_engine_core::errors::has_word(sql, Dialect::Duckdb, &["insert", "update", "delete", "merge"]) {
         return Some(false);
     }
     let Ok(rows) = host.query(DEFINITIONS_QUERY, Vec::new(), Scope::Session)? else { return Some(false) };
@@ -74,6 +101,9 @@ pub struct Table {
     pub columns: Vec<TableColumn>,
     /// Each primary key and UNIQUE constraint, its columns lowercased.
     pub keys: Vec<Vec<String>>,
+    /// Whether it was made with a collation: a key under one holds `'a'` and `'A'`, which compare
+    /// equal, so its text keys say nothing of how many rows a value matches.
+    pub collated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +111,8 @@ pub struct TableColumn {
     pub name: String,
     pub not_null: bool,
     pub comment: Option<String>,
+    /// Its type as DuckDB writes it, empty where the catalog does not say.
+    pub ty: String,
 }
 
 /// The catalog's answers for the tables a statement names, and the functions that make rows.
@@ -90,18 +122,90 @@ pub struct Catalog {
     /// `unnest` and every macro that calls it, by lowercased name: a call of one in a select list
     /// makes a row of each element.
     pub row_makers: HashSet<String>,
+    /// Each table macro whose body is read, by lowercased name.
+    pub table_macros: std::collections::HashMap<String, TableMacro>,
+    /// The names of the scalar macros a user defined, lowercased: a call of one is the macro, even
+    /// where a built-in function has the name (`create macro uuid() as 1`).
+    pub user_macros: HashSet<String>,
+}
+
+/// A table macro: its parameters' names, lowercased, and its body, which the bind reads in its place.
+#[derive(Debug, Clone)]
+pub struct TableMacro {
+    pub params: Vec<String>,
+    pub body: Query,
+    /// Its definition, whose names a freshness check reads.
+    pub text: String,
+}
+
+/// The table macros in `rows` that are one name each, a user's in the session's schema, of a body
+/// that reads as one query.
+fn table_macros(rows: &[Vec<Value>]) -> std::collections::HashMap<String, TableMacro> {
+    let mut by_name: std::collections::HashMap<String, Vec<&Vec<Value>>> = std::collections::HashMap::new();
+    for row in rows {
+        if let Some(name) = row.first().and_then(as_str) {
+            by_name.entry(name.to_string()).or_default().push(row);
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for (name, rows) in by_name {
+        let [row] = rows.as_slice() else { continue };
+        if row.get(1).and_then(as_bool) != Some(true) {
+            continue;
+        }
+        let Some(text) = row.get(2).and_then(as_str) else { continue };
+        let params: Vec<String> = match row.get(3) {
+            Some(Value::String(json)) => serde_json::from_str::<Vec<String>>(json).unwrap_or_default(),
+            Some(Value::Array(names)) => names.iter().filter_map(as_str).map(String::from).collect(),
+            _ => continue,
+        };
+        let Ok(statements) = Parser::parse_sql(&DuckDbDialect {}, text) else { continue };
+        let [Statement::Query(body)] = statements.as_slice() else { continue };
+        out.insert(name, TableMacro { params: params.iter().map(|p| p.to_lowercase()).collect(), body: (**body).clone(), text: text.to_string() });
+    }
+    out
+}
+
+/// The tables and macros a macro's body names, each as a list of parts.
+pub fn body_relations(body: &Query) -> Vec<Vec<String>> {
+    let mut found = Vec::new();
+    let _ = sqlparser::ast::visit_relations(body, |name| {
+        found.push(crate::nulls::parts(name));
+        std::ops::ControlFlow::<()>::Continue(())
+    });
+    found
+}
+
+/// `names`, with what the table macros among them read, however deep; and the macros reached.
+pub fn through_macros(names: &[Vec<String>], macros: &std::collections::HashMap<String, TableMacro>) -> (Vec<Vec<String>>, Vec<String>) {
+    let mut all = names.to_vec();
+    let mut reached: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < all.len() {
+        if let [one] = all[at].as_slice() {
+            let name = one.to_lowercase();
+            if let (Some(m), false) = (macros.get(&name), reached.contains(&name)) {
+                reached.push(name);
+                all.extend(body_relations(&m.body));
+            }
+        }
+        at += 1;
+    }
+    (all, reached)
 }
 
 impl Default for Catalog {
     fn default() -> Self {
-        Catalog { tables: Vec::new(), row_makers: HashSet::from(["unnest".to_string()]) }
+        Catalog { tables: Vec::new(), row_makers: HashSet::from(["unnest".to_string()]), table_macros: Default::default(), user_macros: HashSet::new() }
     }
 }
 
 impl Catalog {
     /// The table a name as written resolves to: `t`, `s.t` or `d.s.t`, each part compared without
-    /// case. An unqualified name is the current schema's table where it has one, else the one
-    /// table of that name anywhere; a name the catalog has twice otherwise resolves to none.
+    /// case. A name that names no database is the session's temporary table where it has one in
+    /// that schema (`main` for an unqualified name), which DuckDB reads before any other (`main.t` too, since the temporary
+    /// catalog has a `main`); else an unqualified name is the current schema's table, else the one
+    /// table of that name anywhere. A name the catalog has twice otherwise resolves to none.
     pub fn table(&self, parts: &[String]) -> Option<&Table> {
         let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
         let Some((name, qualifiers)) = parts.split_last() else { return None };
@@ -111,12 +215,21 @@ impl Catalog {
             .filter(|t| same(&t.name, name))
             .filter(|t| match qualifiers {
                 [] => true,
-                // A schema of the current database, or a database whose schema is `main`.
-                [q] => (same(&t.schema, q) && t.current_database) || (same(&t.database, q) && same(&t.schema, "main")),
+                // A schema of the temporary catalog or the current database, or a database whose
+                // schema is `main`.
+                [q] => (same(&t.schema, q) && (t.current_database || same(&t.database, "temp"))) || (same(&t.database, q) && same(&t.schema, "main")),
                 [d, s] => same(&t.database, d) && same(&t.schema, s),
                 _ => false,
             })
             .collect();
+        if qualifiers.len() <= 1 {
+            // The search path holds the temporary catalog's `main` alone, so an unqualified name
+            // reads no other temporary schema.
+            let schema = qualifiers.first().map_or("main", String::as_str);
+            if let Some(temporary) = found.iter().find(|t| same(&t.database, "temp") && same(&t.schema, schema)) {
+                return Some(temporary);
+            }
+        }
         if qualifiers.is_empty() {
             if let Some(current) = found.iter().find(|t| t.current) {
                 return Some(current);
@@ -133,18 +246,27 @@ impl Catalog {
 /// empty catalog where the statement names none or DuckDB refuses the queries.
 pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
     let macros = host.query(MACROS_QUERY, Vec::new(), Scope::Session);
+    let table_functions = host.query(TABLE_FUNCTIONS_QUERY, Vec::new(), Scope::Session);
+    // A table macro's body is read as the macro, so the catalog holds the tables it names, a round
+    // after the macros are known.
+    let read_macros = table_macros(table_functions.as_ref().and_then(|r| r.as_ref().ok()).map_or(&[], |rows| rows.as_slice()));
+    let (names, _) = through_macros(names, &read_macros);
     let mut wanted: Vec<String> = names.iter().filter_map(|n| n.last()).map(|n| n.to_lowercase()).collect();
     wanted.sort();
     wanted.dedup();
     if wanted.is_empty() {
-        return Some(Catalog { row_makers: row_makers(macros?.unwrap_or_default()), ..Catalog::default() });
+        let (macros, _) = (macros?, table_functions?);
+        let macros = macros.unwrap_or_default();
+        return Some(Catalog { user_macros: user_macros(&macros), row_makers: row_makers(macros), table_macros: read_macros, ..Catalog::default() });
     }
     let list = wanted.iter().map(|n| format!("'{}'", n.replace('\'', "''"))).collect::<Vec<_>>().join(", ");
     let columns = host.query(&COLUMNS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement);
     let keys = host.query(&KEYS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement);
-    // Every need is recorded before any is awaited, so the three are asked in the same round.
-    let (macros, columns, keys) = (macros?, columns?, keys?);
-    let row_makers = row_makers(macros.unwrap_or_default());
+    // Every need is recorded before any is awaited, so these are asked in the same round.
+    let (macros, _, columns, keys) = (macros?, table_functions?, columns?, keys?);
+    let macros = macros.unwrap_or_default();
+    let user_macros = user_macros(&macros);
+    let row_makers = row_makers(macros);
     let text = |row: &[Value], k: usize| row.get(k).and_then(as_str).unwrap_or_default().to_string();
     let mut tables: Vec<Table> = Vec::new();
     for row in columns.unwrap_or_default() {
@@ -154,29 +276,112 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
             None => {
                 let current = row.get(6).and_then(as_bool).unwrap_or(false);
                 let current_database = row.get(7).and_then(as_bool).unwrap_or(false);
-                tables.push(Table { database, schema, name, current, current_database, ..Table::default() });
+                let collated = row.get(9).and_then(as_bool).unwrap_or(false);
+                tables.push(Table { database, schema, name, current, current_database, collated, ..Table::default() });
                 tables.len() - 1
             }
         };
         // A column the catalog does not say is NOT NULL may hold NULL.
         let not_null = row.get(4).and_then(as_bool).map(|nullable| !nullable).unwrap_or(false);
         let comment = row.get(5).and_then(as_str).filter(|c| !c.is_empty()).map(String::from);
-        tables[at].columns.push(TableColumn { name: text(&row, 3), not_null, comment });
+        tables[at].columns.push(TableColumn { name: text(&row, 3), not_null, comment, ty: text(&row, 8) });
     }
-    for row in keys.unwrap_or_default() {
-        let (database, schema, name) = (text(&row, 0), text(&row, 1), text(&row, 2));
+    let keys: Vec<(String, String, String, Vec<String>)> = match keys {
+        Ok(rows) => rows
+            .iter()
+            .filter_map(|row| {
+                let columns = match row.get(3) {
+                    Some(Value::String(json)) => serde_json::from_str::<Vec<String>>(json).unwrap_or_default(),
+                    Some(Value::Array(columns)) => columns.iter().filter_map(as_str).map(String::from).collect(),
+                    _ => return None,
+                };
+                Some((text(row, 0), text(row, 1), text(row, 2), columns))
+            })
+            .collect(),
+        // DuckDB refuses `duckdb_constraints()` for the whole database where one table's check
+        // reads a struct's field with a dot (`meta.a > 0`), which it binds as a column of the
+        // table: each table's keys are read from its own text, a round later.
+        Err(_) => host
+            .query(&TEXTS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement)?
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|row| keys_of(&text(row, 3)).into_iter().map(|key| (text(row, 0), text(row, 1), text(row, 2), key)).collect::<Vec<_>>())
+            .collect(),
+    };
+    for (database, schema, name, columns) in keys {
         let Some(table) = tables.iter_mut().find(|t| t.database == database && t.schema == schema && t.name == name) else { continue };
-        let columns = match row.get(3) {
-            Some(Value::String(json)) => serde_json::from_str::<Vec<String>>(json).unwrap_or_default(),
-            Some(Value::Array(columns)) => columns.iter().filter_map(as_str).map(String::from).collect(),
-            _ => continue,
-        };
         let key: Vec<String> = columns.iter().map(|c| c.to_lowercase()).collect();
         if !key.is_empty() {
             table.keys.push(key);
         }
     }
-    Some(Catalog { tables, row_makers })
+    Some(Catalog { tables, row_makers, table_macros: read_macros, user_macros })
+}
+
+/// Each primary key and UNIQUE constraint a table's text writes, its columns as named there, in
+/// the order the text writes them. DuckDB writes the text from its catalog, every constraint in
+/// it: a key or unique constraint of one column after the column's type, the rest after the
+/// columns (`CREATE TABLE t(id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, UNIQUE(a, b))`).
+pub fn keys_of(sql: &str) -> Vec<Vec<String>> {
+    let Ok(tokens) = Tokenizer::new(&DuckDbDialect {}, sql).tokenize() else { return Vec::new() };
+    let tokens: Vec<Token> = tokens.into_iter().filter(|t| !matches!(t, Token::Whitespace(_))).collect();
+    let Some(open) = tokens.iter().position(|t| *t == Token::LParen) else { return Vec::new() };
+    // The column list's parts, at its top level.
+    let mut parts: Vec<&[Token]> = Vec::new();
+    let (mut depth, mut start) = (0usize, open + 1);
+    for (k, t) in tokens.iter().enumerate().skip(open + 1) {
+        match t {
+            Token::LParen => depth += 1,
+            Token::RParen if depth == 0 => {
+                parts.push(&tokens[start..k]);
+                break;
+            }
+            Token::RParen => depth -= 1,
+            Token::Comma if depth == 0 => {
+                parts.push(&tokens[start..k]);
+                start = k + 1;
+            }
+            _ => {}
+        }
+    }
+    // A keyword as a word, never a quoted name (`"unique"`).
+    let is = |t: Option<&Token>, keyword: Keyword| matches!(t, Some(Token::Word(w)) if w.quote_style.is_none() && w.keyword == keyword);
+    // The names in the parentheses after `part[at]`.
+    let listed = |part: &[Token], at: usize| -> Vec<String> {
+        if part.get(at) != Some(&Token::LParen) {
+            return Vec::new();
+        }
+        part[at + 1..].iter().take_while(|t| **t != Token::RParen).filter_map(|t| if let Token::Word(w) = t { Some(w.value.clone()) } else { None }).collect()
+    };
+    let mut keys = Vec::new();
+    for mut part in parts {
+        if is(part.first(), Keyword::CONSTRAINT) {
+            part = part.get(2..).unwrap_or_default();
+        }
+        if is(part.first(), Keyword::PRIMARY) && is(part.get(1), Keyword::KEY) {
+            keys.push(listed(part, 2));
+        } else if is(part.first(), Keyword::UNIQUE) {
+            keys.push(listed(part, 1));
+        } else if let Some(Token::Word(column)) = part.first().filter(|_| !is(part.first(), Keyword::CHECK) && !is(part.first(), Keyword::FOREIGN)) {
+            // A column's own, after its type, outside any parentheses.
+            let mut depth = 0usize;
+            for (k, t) in part.iter().enumerate().skip(1) {
+                match t {
+                    Token::LParen => depth += 1,
+                    Token::RParen => depth = depth.saturating_sub(1),
+                    _ if depth == 0 && (is(Some(t), Keyword::UNIQUE) || (is(Some(t), Keyword::PRIMARY) && is(part.get(k + 1), Keyword::KEY))) => keys.push(vec![column.value.clone()]),
+                    _ => {}
+                }
+            }
+        }
+    }
+    keys.retain(|key| !key.is_empty());
+    keys
+}
+
+/// The macros in `macros` a user defined, by name ([`MACROS_QUERY`]).
+fn user_macros(macros: &[Vec<Value>]) -> HashSet<String> {
+    macros.iter().filter(|r| r.get(2).and_then(as_bool) == Some(true)).filter_map(|r| Some(as_str(r.first()?)?.to_string())).collect()
 }
 
 /// `unnest` and every macro whose definition calls it or another such macro, by name.
@@ -237,10 +442,72 @@ mod tests {
     }
 
     #[test]
+    fn an_unqualified_name_reads_the_sessions_temporary_table_first() {
+        let table = |database: &str, current: bool| Table { database: database.into(), schema: "main".into(), name: "comments".into(), current, current_database: current, ..Table::default() };
+        let catalog = of(vec![table("app", true), table("temp", false)]);
+        let found = |parts: &[&str]| catalog.table(&parts.iter().map(|p| p.to_string()).collect::<Vec<_>>()).map(|t| t.database.clone());
+        assert_eq!(found(&["comments"]).as_deref(), Some("temp"));
+        assert_eq!(found(&["main", "comments"]).as_deref(), Some("temp"));
+        assert_eq!(found(&["app", "main", "comments"]).as_deref(), Some("app"));
+        assert_eq!(found(&["temp", "comments"]).as_deref(), Some("temp"));
+        // A temporary table in another schema is off the search path.
+        let other = Table { schema: "s".into(), ..table("temp", false) };
+        let catalog = of(vec![table("app", true), other]);
+        let found = |parts: &[&str]| catalog.table(&parts.iter().map(|p| p.to_string()).collect::<Vec<_>>()).map(|t| t.database.clone());
+        assert_eq!(found(&["comments"]).as_deref(), Some("app"));
+        assert_eq!(found(&["s", "comments"]).as_deref(), Some("temp"));
+    }
+
+    #[test]
+    fn a_tables_keys_are_read_from_its_text() {
+        let keys = |sql: &str| keys_of(sql);
+        assert_eq!(
+            keys(r#"CREATE TABLE "Order"(Id INTEGER PRIMARY KEY, code VARCHAR UNIQUE, a INTEGER, b INTEGER, "select" INTEGER, s STRUCT(x INTEGER, "unique" INTEGER), UNIQUE(a, b), UNIQUE("select", a), CHECK((a > 0)));"#),
+            [vec!["Id"], vec!["code"], vec!["a", "b"], vec!["select", "a"]]
+        );
+        assert_eq!(
+            keys("CREATE TABLE p(id INTEGER, n INTEGER, k VARCHAR COLLATE nocase DEFAULT('unique') UNIQUE, g INTEGER GENERATED ALWAYS AS((id + 1)), PRIMARY KEY(id, n));"),
+            [vec!["k"], vec!["id", "n"]]
+        );
+        // A check, a foreign key, and a name that is a keyword only when quoted, make no key.
+        assert_eq!(keys(r#"CREATE TABLE t(id INTEGER PRIMARY KEY, meta STRUCT(a INTEGER), "unique" INTEGER CHECK(("unique" > 0)), p_id INTEGER, FOREIGN KEY (p_id) REFERENCES p(id), CHECK((meta.a > 0)));"#), [vec!["id"]]);
+        assert_eq!(keys(r#"CREATE TABLE "a""b"("x""y" INTEGER UNIQUE);"#), [vec![r#"x"y"#]]);
+        assert!(keys("CREATE TABLE t(a INTEGER);").is_empty());
+    }
+
+    #[test]
+    fn where_duckdb_refuses_the_keys_query_they_are_read_from_each_tables_text_a_round_later() {
+        let mut answers = reylo_engine_core::api::Answers::new();
+        let host = Host::new(&answers);
+        assert!(read(&host, &[vec!["t".to_string()]]).is_none());
+        let refused = reylo_engine_core::api::DbError { message: r#"Binder Error: Table "t" does not have a column with name "a""#.into(), code: None, position: None };
+        let rows = |rows: Vec<Vec<Value>>| reylo_engine_core::api::Answer::Rows { rows };
+        let column = |name: &str| vec![json!("app"), json!("main"), json!("t"), json!(name), json!(true), Value::Null, json!(true), json!(true), json!("INTEGER"), json!(false)];
+        for need in host.needs() {
+            let reylo_engine_core::api::Need::Query { id, .. } = need else { continue };
+            let answer = if id.contains("duckdb_constraints") {
+                reylo_engine_core::api::Answer::Error { error: refused.clone() }
+            } else if id.contains("duckdb_columns") {
+                rows(vec![column("id"), column("code")])
+            } else {
+                rows(vec![])
+            };
+            answers.insert(id, answer);
+        }
+        let host = Host::new(&answers);
+        assert!(read(&host, &[vec!["t".to_string()]]).is_none());
+        assert_eq!(host.needs().len(), 1);
+        let text = "CREATE TABLE t(id INTEGER PRIMARY KEY, code VARCHAR UNIQUE, meta STRUCT(a INTEGER), CHECK((meta.a > 0)));";
+        answers.insert(format!("query:{}|[]", TEXTS_QUERY.replace("{names}", "'t'")), rows(vec![vec![json!("app"), json!("main"), json!("t"), json!(text)]]));
+        let catalog = read(&Host::new(&answers), &[vec!["t".to_string()]]).expect("answered");
+        assert_eq!(catalog.table(&["t".to_string()]).map(|t| t.keys.clone()), Some(vec![vec!["id".to_string()], vec!["code".to_string()]]));
+    }
+
+    #[test]
     fn the_macros_columns_and_keys_are_asked_in_one_round() {
         let answers = reylo_engine_core::api::Answers::new();
         let host = Host::new(&answers);
         assert!(read(&host, &[vec!["t".to_string()]]).is_none());
-        assert_eq!(host.needs().len(), 3);
+        assert_eq!(host.needs().len(), 4);
     }
 }

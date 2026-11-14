@@ -31,7 +31,7 @@ export type Codecs = {
   readonly datetime?: "string" | "Temporal.PlainDateTime";
   readonly instant?: "string" | "Temporal.Instant";
   readonly duration?: "string" | "Temporal.Duration";
-  readonly set?: "Set" | "array";
+  readonly set?: "Set" | "Array";
 };
 
 type Family = keyof Codecs;
@@ -123,7 +123,7 @@ export function leafCodec(t: EngineType, dialect: Dialect, codecs: Codecs): Code
   const v = f === undefined ? undefined : codecs[f];
   switch (f) {
     case "set":
-      return v === "array" ? "set:array" : undefined;
+      return v === "Array" ? "set:array" : undefined;
     case "decimal":
       return v === "number" ? "decimal:number" : undefined;
     case "bytes":
@@ -293,7 +293,11 @@ export function decodeCodec(codec: Codec, v: unknown, column: string): unknown {
   }
 }
 
-/** A value with its plan's codecs applied, wherever they stand in it. */
+/**
+ * A value with its plan's codecs applied, wherever they stand in it. An object or an array the
+ * plan reaches into is copied, never changed: a Standard Query's `decode` is handed a driver's own
+ * rows, which it gives back as they came.
+ */
 export function decodePlan(plan: Plan, v: unknown, column: string): unknown {
   if (v === null || v === undefined) return v;
   if (typeof plan === "string") return decodeCodec(plan, v, column);
@@ -304,22 +308,23 @@ export function decodePlan(plan: Plan, v: unknown, column: string): unknown {
   }
   if (typeof v !== "object") return v;
   if ("fields" in plan) {
-    const o = v as Record<string, unknown>;
+    // A spread copies a field named `__proto__` as the own property it is.
+    const o = { ...(v as Record<string, unknown>) };
     for (const [name, p] of Object.entries(plan.fields)) if (name in o) o[name] = decodePlan(p, o[name], column);
     return o;
   }
   if ("entries" in plan) {
     if (!Array.isArray(v)) return v;
-    for (const e of v as { key: unknown; value: unknown }[]) {
-      if (plan.entries.key !== undefined) e.key = decodePlan(plan.entries.key, e.key, column);
-      if (plan.entries.value !== undefined) e.value = decodePlan(plan.entries.value, e.value, column);
-    }
-    return v;
+    const { key, value } = plan.entries;
+    return (v as { key: unknown; value: unknown }[]).map((e) => ({
+      ...e,
+      ...(key === undefined ? {} : { key: decodePlan(key, e.key, column) }),
+      ...(value === undefined ? {} : { value: decodePlan(value, e.value, column) }),
+    }));
   }
   const u = v as { tag?: unknown; value: unknown };
   const p = typeof u.tag === "string" ? plan.tags[u.tag] : undefined;
-  if (p !== undefined) u.value = decodePlan(p, u.value, column);
-  return u;
+  return p === undefined ? u : { ...u, value: decodePlan(p, u.value, column) };
 }
 
 /** Each column of every row a plan names given its codecs, in place. */

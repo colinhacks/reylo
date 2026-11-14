@@ -1,6 +1,6 @@
 // The runtime query object behind `import query from "./file.sql"`.
 // Types come from the content mapper; values come from the runtime loader.
-import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
+import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type Runtime, type SyncClientFor } from "./execute.ts";
 import type { Plan } from "./codecs.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
@@ -9,7 +9,11 @@ import type { RowBuilder } from "./row.ts";
 import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns, type JsonNumbers } from "./values.ts";
-import { readQueryError, readQueryErrorSync, type QueryError } from "./query-error.ts";
+import type { QueryError } from "./query-error.ts";
+import { postgres } from "./decode.ts";
+import { mysql } from "./decode-mysql.ts";
+import { sqlite } from "./decode-sqlite.ts";
+import { duckdb } from "./decode-duckdb.ts";
 import { listening, type QueryTrace } from "./trace.ts";
 import { buildTime, type AnalyzeInput, type StatementDescriptor } from "./build-time.ts";
 
@@ -125,7 +129,7 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E 
   /** The JSON Schema (2020-12) of the result as JSON: what `run` returns, written as JSON, a BigInt as the integer it is. */
   readonly outputSchema: Record<string, unknown>;
   /** Standard JSON Schema's `jsonSchema` and Standard Query's `query`: a driver that supports Standard Query runs the import with the same input and output as `.run()`. */
-  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>> & StandardQueryV1.Props<Params, Materialize<Row, C>, D> & { readonly query: { output(rows: readonly Record<string, unknown>[]): Materialize<Row, C> } };
+  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>> & StandardQueryV1.Props<Params, Materialize<Row, C>, D> & { readonly query: { readonly cardinality: C; output(rows: readonly Record<string, unknown>[]): Materialize<Row, C> } };
   readonly "~reylo": ReyloTypes<Params, Row, C>;
   /**
    * Runs the statement on the client, or on a transaction or connection taken from it. The
@@ -189,9 +193,11 @@ export type QueryDefinition = {
   source?: string;
   /** Whether a Postgres array column may hold nested arrays, as a build step writes where the project file says `allow_nested_arrays: true`: none is refused. */
   nestedArrays?: boolean;
-  /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
+  /** Whether the statement Reylo sends carries a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
   sqlcommenter?: boolean;
   cardinality?: Cardinality;
+  /** Whether the result is the one column's values rather than rows that hold them, as a build step writes where the statement gives the column no name: the query's `Row` is that value's type. */
+  value?: boolean;
   /** Whether the engine finds nothing in the statement that could write: the query's `readOnly`. */
   readOnly?: boolean;
   jsonSchema?: { input: Record<string, unknown>; output: Record<string, unknown> };
@@ -199,9 +205,47 @@ export type QueryDefinition = {
   checks?: Checks;
 };
 
-export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(
-  def: QueryDefinition & { dialect: D; cardinality?: C },
-): Query<Params, Row, C, D> {
+/** The value of a row of one column. Its key is a name the database or the driver made up, which can differ from the one the analysis read, so the value is read without it. */
+function onlyValue(row: unknown): unknown {
+  for (const name in row as Record<string, unknown>) return (row as Record<string, unknown>)[name];
+  return undefined;
+}
+
+/** Each dialect's half of the run time, for a query defined by hand, which names its dialect. */
+const RUNTIMES: { readonly [D in Dialect]: Runtime<D> } = { postgres, mysql, sqlite, duckdb };
+
+/**
+ * A query, from its definition: a query defined by hand names its dialect. A module a build step
+ * writes calls its dialect's own define function instead (`definePostgresQuery`, `defineMysqlQuery`,
+ * `defineSqliteQuery`, `defineDuckdbQuery`), which alone names that dialect's half of the run time,
+ * so that a bundle holds no other dialect's drivers and error codes.
+ */
+export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(def: QueryDefinition & { dialect: D; cardinality?: C }): Query<Params, Row, C, D> {
+  return define(RUNTIMES[def.dialect] as Runtime<D>, def);
+}
+
+/** A Postgres query, as a module a build step writes defines one (`defineQuery`). */
+export function definePostgresQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "postgres"> {
+  return define(postgres, def);
+}
+
+/** A MySQL query, as a module a build step writes defines one (`defineQuery`). */
+export function defineMysqlQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "mysql"> {
+  return define(mysql, def);
+}
+
+/** A SQLite query, as a module a build step writes defines one (`defineQuery`). */
+export function defineSqliteQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "sqlite"> {
+  return define(sqlite, def);
+}
+
+/** A DuckDB query, as a module a build step writes defines one (`defineQuery`). */
+export function defineDuckdbQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "duckdb"> {
+  return define(duckdb, def);
+}
+
+function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: Runtime<D>, def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, D> {
+  const dialect = runtime.dialect;
   const cardinality = (def.cardinality ?? "many") as C;
   const missingSchema = () => {
     throw new Error(`No JSON Schema is available for this query: a module a build step writes carries it, and a query defined by hand has none.`);
@@ -210,7 +254,8 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
   const where = def.source ? `${def.source}: ` : "";
   // What the run time reads, kept off the query object, whose `sql` is the compiled statement.
   const module: QueryModule<D> = {
-    dialect: def.dialect,
+    dialect,
+    runtime,
     sql: def.sql,
     params: def.params,
     text: def.text,
@@ -221,6 +266,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     row: def.row,
     key: def.key,
     ordered: def.ordered,
+    cardinality,
     codecs: def.codecs,
     structured: def.structured,
     fresh: def.fresh,
@@ -231,7 +277,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
   };
   let compiled: string | undefined;
   const query: Query<Params, Row, C, D> = {
-    dialect: def.dialect,
+    dialect,
     // A query defined by hand is compiled when its `sql` is first read, so a placeholder its
     // `params` misses fails there and in `run`, not where it is defined.
     get sql() {
@@ -255,7 +301,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
         input: () => def.jsonSchema?.input ?? missingSchema(),
         output: () => def.jsonSchema?.output ?? missingSchema(),
       },
-      query: standardQuery(module, (rows) => materialize(rows as Row[])),
+      query: standardQuery(module, (rows) => materialize(rows as Row[])) as ReturnType<typeof standardQuery<D, Materialize<Row, C>>> & { readonly cardinality: C },
     },
     "~reylo": undefined as unknown as ReyloTypes<Params, Row, C>,
     run: ((client: ClientFor<D>, params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["run"],
@@ -275,7 +321,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
       run(client, params ?? ({} as Params)).then(
         (value) => ({ value }),
         async (error) => {
-          const read = await readQueryError(def.dialect, error);
+          const read = await runtime.readError(error);
           if (read) return { error: read };
           throw error;
         },
@@ -284,7 +330,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
       try {
         return { value: query.runSync(client, ...([params] as ParamsArg<Params>)) };
       } catch (error) {
-        const read = readQueryErrorSync(def.dialect, error);
+        const read = runtime.readErrorSync?.(error);
         if (read) return { error: read };
         throw error;
       }
@@ -327,18 +373,19 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     }
     return error;
   }
+  const element = def.value ? onlyValue : (row: unknown) => row;
   function materialize(rows: Row[]): Materialize<Row, C> {
     switch (cardinality) {
       case "none":
         return undefined as Materialize<Row, C>;
       case "many":
-        return rows as Materialize<Row, C>;
+        return (def.value ? rows.map(onlyValue) : rows) as Materialize<Row, C>;
       case "one":
         if (rows.length !== 1) throw new Error(`${where}Expected exactly one row, got ${rows.length}`);
-        return rows[0] as Materialize<Row, C>;
+        return element(rows[0]) as Materialize<Row, C>;
       default:
         if (rows.length > 1) throw new Error(`${where}Expected at most one row, got ${rows.length}`);
-        return (rows[0] ?? null) as Materialize<Row, C>;
+        return (rows.length ? element(rows[0]) : null) as Materialize<Row, C>;
     }
   }
   return query;

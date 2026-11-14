@@ -2,9 +2,10 @@ import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 /**
- * The main page's files, in the order it shows them: content/docs/index.mdx, which holds the title,
- * the opening and the schema, then one file per h2 section, content/sections/*.mdx, by name. A
- * section is a file of its own so that an edit compiles that section alone (wiki/docs-site.md).
+ * The files that share one namespace of statements and one schema, whichever page shows them
+ * (lib/page-sections.ts): content/docs/index.mdx, which holds the schema, then each file of
+ * content/sections/, by name. A section is a file of its own so that an edit compiles that section
+ * alone (wiki/docs-site.md).
  */
 export function pageFiles(site = process.cwd()): string[] {
   const sections = path.join(site, 'content', 'sections');

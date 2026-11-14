@@ -1,0 +1,20 @@
+a21_array_agg_derived_left.sql: many () -> { id: int8, arr: (record{ id: int8, big: int8 }?)[] } key (id)
+a22_right_join_element.sql: one () -> { arr: (record{ id: int8 }?)[] }
+a23_full_join_element.sql: one () -> { arr: (record{ id: int8 }?)[] }
+a24_nested_join_element.sql: one () -> { arr: (record{ id: int8 }?)[] }
+a25_table_right_join_element.sql: one () -> { arr: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, d: public.nn? }?)[] }
+a26_domain_not_null_outer.sql: one () -> { arr: (record{ d: int4?, big: int8? }?)[] }
+a27_union_inside.sql: one () -> { arr: (record{ id: int8?, body: text? })[] }
+a28_rollup_inside.sql: one () -> { arr: (record{ post_id: int8?, n: int8? })[] }
+a29_cube_inside.sql: one () -> { arr: (record{ post_id: int8?, big: int8?, n: int8? })[] }
+a30_recursive.sql: one () -> { arr: (record{ n: int4, m: int4? })[] }
+a31_rows_from.sql: one () -> { arr: record?[] }
+a32_unnest_multi.sql: one () -> { arr: record?[] }
+a33_json_to_recordset.sql: one () -> { arr: (record{ a: int4?, b: text? })[] }
+a34_ordinality.sql: one () -> { arr: record?[] }
+a35_duplicate_names_null.sql: one () -> { arr: (record{ a: int4, a: int4? })[] }
+a36_duplicate_names_columns.sql: one () -> { arr: (record{ a: int8, a: text? })[] }
+a37_nested_array_left_lateral.sql: many () -> { id: int8, arr: (record{ id: int8, rs: (public.replies{ id: int8, comment_id: int8, body: text })[]? })[] } key (id)
+a38_nested_array_case.sql: one () -> { arr: (record{ id: int8, rs: record?[]? })[] }
+a39_nested_array_scalar.sql: one () -> { arr: (record{ id: int8, rs: record?[]? })[] }
+a40_cte_materialized.sql: one () -> { arr: (record{ id: int8, body: text? })[] }

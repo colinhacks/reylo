@@ -8,7 +8,8 @@ import type { Card, Db, Kind, Probe } from "../probes.ts";
 
 // `checksValues`: the tool types no parameter, and checks the value at each call instead; `wrongValuePasses` names a wrong value it let through.
 export interface TypedValue { type: string; kind: Kind; nullable: boolean; fields?: string[]; checksValues?: boolean; wrongValuePasses?: string }
-export interface Answer { ok: boolean; error?: string; params: TypedValue[] | null; columns: (TypedValue & { name: string })[] | null; cardinality: Card | null }
+// `shown`: the parameters and row as the tool writes them in TypeScript, for a tool whose types the docs show whole.
+export interface Answer { ok: boolean; error?: string; params: TypedValue[] | null; columns: (TypedValue & { name: string })[] | null; cardinality: Card | null; shown?: { params: string; row: string } }
 export interface Statement { key: string; probe: Probe; sql: string }
 export interface Urls { postgres: string; mysql: string; sqlite: string }
 export interface Tool {

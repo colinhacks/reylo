@@ -1,0 +1,1 @@
+with earlier as (insert into upserted values (2, 'Blue') on conflict (k) do update set v = 'Green' returning k) insert into upserted values (2, 'Red') on conflict (k) do update set v = (select e.k::text from earlier e where e.k = upserted.k) returning k, v

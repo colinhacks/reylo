@@ -25,12 +25,19 @@
 //   on better-sqlite3; at its defaults an INTEGER past 2^53 comes back rounded, with no error.
 // - A Durable Object's `ctx.storage.sql`: exec()'s cursor, read whole. An INTEGER past 2^53 comes
 //   back rounded, with no error, and a BLOB as an ArrayBuffer.
+// - SQLite Wasm's oo1 Database: Reylo prepares its statement, reads it row by row by position, and
+//   finalizes it after its one run. An INTEGER past 2^53 comes back a BigInt and any other a number,
+//   so none is rounded; its BLOB is a Uint8Array.
 // - sqlite3 and the sqlite wrapper, libSQL, D1 and Bun.SQL's SQLite: the rows the driver gives,
 //   normalized. sqlite3 and sqlite are not cached: a statement left open makes the app's close()
 //   fail with SQLITE_BUSY. An INTEGER the driver already rounded (sqlite3, sqlite, D1, Bun.SQL
 //   without safeIntegers) is refused in an INTEGER or BIGINT column, where a number past 2^53 can
 //   only be one; a BIGINT's number within 2^53, or libSQL's BigInt or digits, is its BigInt.
-import { bigInteger, coerce, DecodeError, exactInteger, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
+import { lastOfEach, namesInResult, rowOf } from "./row.ts";
+import { bigInteger, coerce, columnKind, DecodeError, exactInteger, ParameterError, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
+import { isDurableObjectSql, isSqliteWasm, isTurso, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { readSqliteError } from "./query-error.ts";
+import type { EngineType } from "./engine-type.ts";
 
 type AnyClient = Record<string, any>;
 type Statement = AnyClient;
@@ -46,16 +53,20 @@ const KEPT = 500;
  * compat Database (maxWriteReplicationIndex()) gets a new statement per call, closed after it: on
  * 0.4 a statement with a subquery run a second time returned no rows.
  */
-function statementFor(db: AnyClient, text: string, typed: boolean): Kept {
+function statementFor(db: AnyClient, text: string, typed: boolean, proto: boolean): Kept {
   const keep = typeof db.maxWriteReplicationIndex !== "function";
   let kept = statements.get(db);
   if (!kept && keep) statements.set(db, (kept = new Map()));
-  const key = `${typed ? "n" : "b"}${text}`;
+  const key = `${typed ? "n" : "b"}${proto ? "p" : ""}:${text}`;
   const found = kept?.get(key);
   if (found) return found;
   const st = db.prepare(text) as Statement;
   let exact = false;
   // node:sqlite's StatementSync; better-sqlite3's and bun:sqlite's Statement.
+  // Turso's engine names a column with no alias its own way (`select a + 1 from t` is `t.a + 1` on 0.4, `select (a) from t` is `(a)` on 0.8), and only the embedded SQLite's analysis says what the row's type declares: its rows are read as arrays, by position.
+  if (!keep && typeof st.raw === "function") st.raw(true);
+  // better-sqlite3 (its pluck() tells it from bun:sqlite, whose raw() runs the statement) builds a row by assigning each name, and a column named `__proto__` sets the object's prototype instead. Such a statement is read by position.
+  else if (proto && typeof st.pluck === "function" && typeof st.raw === "function") st.raw(true);
   if (typeof st.setReadBigInts === "function") {
     st.setReadBigInts(true);
     if (typeof st.setReturnArrays === "function") st.setReturnArrays(false);
@@ -77,13 +88,30 @@ function statementFor(db: AnyClient, text: string, typed: boolean): Kept {
  * such database) gives the promise, which `runSync` refuses.
  */
 export function runSyncSqlite(db: AnyClient, text: string, values: unknown[], columns: Columns | undefined): unknown[] | Promise<unknown[]> {
-  const entry = statementFor(db, text, everyColumnTyped(columns));
+  const entry = statementFor(db, text, everyColumnTyped(columns), hasProto(columns));
   if (entry.kept) return runStatement(entry, values, columns);
   try {
     return runStatement(entry, values, columns);
   } finally {
     entry.st.close?.();
   }
+}
+
+/** Rows read as arrays, as objects: under the names the module declares where the result is still its columns (`namesInResult`), else under the driver's. */
+function byPosition(rows: unknown[][], columns: Columns | undefined, driver: () => string[]): unknown[] {
+  const build = rowOf(columns?.length === rows[0]!.length ? namesInResult(columns.map(([name]) => name), driver()) : driver());
+  return rows.map(build);
+}
+
+/**
+ * libSQL's rows by position, where the module declares their columns and the result is still theirs (`namesInResult`, by the `driver`'s names). A libSQL row holds each value under its index as well as its name, and the index comes first: `select 1, 2 + 3` has a column named `1`, and `row["1"]` is the second column's 5.
+ */
+export function libsqlRows(rows: unknown[], columns: Columns | undefined, driver?: readonly string[]): unknown[] {
+  const n = columns?.length;
+  if (!n || !rows.length || (rows[0] as { length?: unknown }).length !== n) return rows;
+  const declared = columns!.map(([name]) => name);
+  const build = rowOf(driver ? namesInResult(declared, driver) : declared);
+  return rows.map((row) => build(row as ArrayLike<unknown> as readonly unknown[]));
 }
 
 function runStatement({ st, exact }: Kept, values: unknown[], columns: Columns | undefined): unknown[] | Promise<unknown[]> {
@@ -95,11 +123,8 @@ function runStatement({ st, exact }: Kept, values: unknown[], columns: Columns |
   const all = st.all(...values) as unknown[] | Promise<unknown[]>;
   if (!Array.isArray(all)) return Promise.resolve(all).then((rows) => normalize(rows, columns));
   let rows = all;
-  // A database opened with returnArrays, on a Node whose statements cannot turn it off.
-  if (rows.length && Array.isArray(rows[0]) && typeof st.columns === "function") {
-    const names = (st.columns() as { name: string }[]).map((c) => c.name);
-    rows = (rows as unknown[][]).map((r) => Object.fromEntries(names.map((n, i) => [n, r[i]])));
-  }
+  // Turso's rows, or a database opened with returnArrays, on a Node whose statements cannot turn it off.
+  if (rows.length && Array.isArray(rows[0])) rows = byPosition(rows as unknown[][], columns, () => (st.columns() as { name: string }[]).map((c) => c.name));
   return normalize(rows, columns, { exact });
 }
 
@@ -111,6 +136,11 @@ function reader(st: Statement): boolean | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Whether a column is named `__proto__`, which only an own property of a row can hold (src/row.ts). */
+function hasProto(columns: Columns | undefined): boolean {
+  return columns?.some(([name]) => name === "__proto__") ?? false;
 }
 
 // Every column typed: a number past 2^53 in one can be told as rounded (src/values.ts). A column
@@ -130,7 +160,11 @@ export async function runTurso(db: AnyClient, text: string, values: unknown[], c
   const st = (await db.prepare(text)) as Statement;
   try {
     if (typeof st.safeIntegers === "function") st.safeIntegers(!typed);
-    return normalize(await st.all(...values), columns, { exact: !typed });
+    // By position, as on the compat Database (`statementFor`). A statement that returns no rows gives none under either.
+    if (typeof st.raw === "function") st.raw(true);
+    const rows = (await st.all(...values)) as unknown[];
+    const objects = rows.length && Array.isArray(rows[0]) ? byPosition(rows as unknown[][], columns, () => (st.columns() as { name: string }[]).map((c) => c.name)) : rows;
+    return normalize(objects, columns, { exact: !typed });
   } finally {
     if (typeof st.close === "function") st.close();
   }
@@ -143,6 +177,26 @@ export async function runTurso(db: AnyClient, text: string, values: unknown[], c
  */
 export function runDurableObject(sql: AnyClient, text: string, values: unknown[], columns: Columns | undefined): unknown[] {
   return normalize(sql.exec(text, ...values).toArray(), columns);
+}
+
+/**
+ * Runs `text` on SQLite Wasm's oo1 Database (`@sqlite.org/sqlite-wasm`, and its `OpfsDb` and
+ * `OpfsSAHPoolDb`), whose statement answers at once, row by row, and returns its normalized rows.
+ * The rows are read by position, since oo1 builds an object row by assigning each name. The
+ * statement is finalized after its one run, as oo1's own exec() does, so none holds the
+ * WebAssembly heap until the database closes.
+ */
+export function runSqliteWasm(db: AnyClient, text: string, values: unknown[], columns: Columns | undefined): unknown[] {
+  const st = db.prepare(text) as Statement;
+  try {
+    // bind() refuses an array, even an empty one, on a statement that has no parameters.
+    if (values.length) st.bind(values);
+    const rows: unknown[][] = [];
+    while (st.step()) rows.push(st.get([]));
+    return rows.length ? normalize(byPosition(rows, columns, () => st.getColumnNames()), columns) : rows;
+  } finally {
+    st.finalize();
+  }
 }
 
 type Plan = {
@@ -242,7 +296,10 @@ function numericOnly(kinds: string[]): boolean {
  */
 export function normalize(rows: unknown[], columns: Columns | undefined, { exact = false, d1 = false } = {}): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
-  const plans = (columns ? [...columns] : Object.keys(rows[0] as object).map((name) => [name, "unknown"] as const)).map(([name, kind]) => plan(name, kind, exact));
+  // sqlite3 and the sqlite wrapper assign each name to the row they build, with no way to read by position, so the value of this column is gone. `row.__proto__` would read Object.prototype.
+  if (hasProto(columns) && !Object.hasOwn(rows[0] as object, "__proto__")) throw new DecodeError(`This client cannot return a column named __proto__: it builds each row by assigning each name, which sets the object's prototype and loses the value. Give the column an alias in the statement.`);
+  // The last column of each name, whose value a row keeps.
+  const plans = (columns ? lastOfEach(columns) : Object.keys(rows[0] as object).map((name) => [name, "unknown"] as const)).map(([name, kind]) => plan(name, kind, exact));
   const n = plans.length;
   for (const row of rows as Record<string, unknown>[]) {
     if (Object.getPrototypeOf(row) === null) Object.setPrototypeOf(row, Object.prototype);
@@ -281,3 +338,66 @@ export function sqliteDecoder(name: string, kind: Kind): (v: unknown) => unknown
   const p = plan(name, kind, false);
   return (v) => normalized(p, v, false);
 }
+
+// sqlite3 6.0.1 binds a BigInt as NULL, with no error (`select cast(? as text)` with
+// 9007199254740993n gave null), and a Durable Object's exec() refuses one, where every other
+// SQLite driver binds it exactly. A BigInt a number holds exactly goes as that number. A larger
+// one goes as its digits to a parameter of a BIGINT column (the engine's int8), whose INTEGER
+// affinity reads the text as that integer in an insert and a comparison alike, and is refused
+// anywhere else, where the text would stay text.
+function numberOrDigits(v: unknown, type: EngineType | undefined, driver: "sqlite3" | "durable-object" | "d1"): unknown {
+  if (typeof v !== "bigint") return v;
+  if (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
+  if (type !== undefined && columnKind(type, "sqlite") === "int8") return String(v);
+  const digits = "pass it as a string of digits, which SQLite stores as that integer in an INTEGER column";
+  if (driver === "durable-object") throw new ParameterError(`A Durable Object's SQL storage binds no BigInt, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}.`);
+  if (driver === "d1") throw new ParameterError(`Cloudflare D1 binds no BigInt, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}.`);
+  throw new ParameterError(`sqlite3 binds a BigInt as NULL, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}, or run the statement on better-sqlite3, node:sqlite or libSQL, which bind a BigInt.`);
+}
+
+/** A SQLite statement's rows on each SQLite driver's client that answers through a promise, each value given its kind, or undefined on any other client. */
+async function runSqlite(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
+  const type = (i: number) => query.inputs?.[names[i]!]?.type;
+  const columns = query.columns;
+  if (typeof c.unsafe === "function") return normalize(await c.unsafe(text, values), columns);
+  if (typeof c.execute === "function") {
+    const result = await c.execute({ sql: text, args: values });
+    return normalize(libsqlRows(result.rows, columns, Array.isArray(result.columns) ? result.columns : undefined), columns);
+  }
+  if (isTurso(c)) return await runTurso(c, text, values, columns);
+  // The sqlite package wraps sqlite3, and sqlite3 binds a BigInt as NULL.
+  if (typeof c.getDatabaseInstance === "function") return normalize(await c.all(text, values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"))), columns);
+  if (typeof c.all === "function" && typeof c.exec === "function") {
+    const bound = values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"));
+    return normalize(
+      await new Promise<unknown[]>((resolve, reject) => c.all(text, bound, (error: Error | null, rows: unknown[]) => (error ? reject(error) : resolve(rows)))),
+      columns,
+    );
+  }
+  if (typeof c.prepare === "function") {
+    const prepared = c.prepare(text);
+    // D1 refuses a BigInt, which `.run()` returns for a BIGINT column.
+    if (typeof prepared.first === "function") return normalize((await prepared.bind(...values.map((v, i) => numberOrDigits(v, type(i), "d1"))).all()).results, columns, { d1: true });
+    return normalize(await prepared.all(...values), columns);
+  }
+  return undefined;
+}
+
+// SQLite Wasm binds a whole number as a 64-bit integer, which wraps around past 2^63: 1e20 would be
+// stored as 7766279631452241920.
+function sqliteWasmValues(names: readonly string[], values: unknown[]): unknown[] {
+  values.forEach((v, i) => {
+    if (typeof v === "number" && Number.isInteger(v) && (v >= 2 ** 63 || v < -(2 ** 63))) throw new ParameterError(`Parameter "${names[i]}" is ${v}, a whole number past 2^63, which SQLite Wasm binds as a 64-bit integer that wraps around, so it would store another number.`);
+  });
+  return values;
+}
+
+/** The rows of a synchronous client: a Durable Object's SQL storage, whose exec() refuses a BigInt ("Cannot convert a BigInt value to a number"), SQLite Wasm's oo1 Database (`runSqliteWasm`), or a database with prepare() (`runSyncSqlite`). */
+function runSqliteSync(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): unknown[] | Promise<unknown[]> {
+  if (isDurableObjectSql(c)) return runDurableObject(c, text, values.map((v, i) => numberOrDigits(v, query.inputs?.[names[i]!]?.type, "durable-object")), query.columns);
+  if (isSqliteWasm(c)) return runSqliteWasm(c, text, sqliteWasmValues(names, values), query.columns);
+  return runSyncSqlite(c, text, values, query.columns);
+}
+
+/** SQLite's half of the run time (src/execute.ts, `Runtime`), which `defineSqliteQuery` passes. */
+export const sqlite: Runtime<"sqlite"> = { dialect: "sqlite", run: runSqlite, runSync: runSqliteSync, readError: readSqliteError, readErrorSync: readSqliteError, decoder: sqliteDecoder };

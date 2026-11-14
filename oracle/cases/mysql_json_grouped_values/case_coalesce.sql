@@ -1,0 +1,1 @@
+select (select json_object('k', case when count(*) > 1 then max(p.title) end, 'c', coalesce(max(p.score), 0), 'a', coalesce(json_arrayagg(p.id), json_array()), 'z', ifnull(max(p.tag), min(p.tag))) from posts p group by p.user_id order by p.user_id limit 1) as o

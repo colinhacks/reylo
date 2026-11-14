@@ -60,8 +60,8 @@ export const sqlx: Tool = {
       const d = described[i];
       if (!d.ok) { answers[s.key] = failed(d.error); return; }
       const count = new Set([...s.sql.matchAll(/\$(\d+)/g)].map((m) => m[1])).size;
-      // Where the database names no types, the macro checks only how many arguments there are. Every argument may be T or Option<T>.
-      const params: TypedValue[] = Array.isArray(d.params) ? d.params.map((t: string) => ({ type: `${t} or Option<${t}>`, kind: kindOf(t), nullable: optionAccepted !== false })) : Array.from({ length: count }, () => ({ type: "any value (it counts arguments only)", kind: "any" as Kind, nullable: true }));
+      // The macro checks the value passed for each parameter: a T or an Option<T> of the type the database names, so a null passes. Where the database names no types, it counts the arguments only, so any value passes.
+      const params: TypedValue[] = Array.isArray(d.params) ? d.params.map((t: string) => ({ type: `${t} or Option<${t}>`, kind: kindOf(t), nullable: optionAccepted !== false, checksValues: true })) : Array.from({ length: count }, () => ({ type: "any value (it counts arguments only)", kind: "any" as Kind, nullable: true, checksValues: true, wrongValuePasses: "any" }));
       const columns = d.columns.map((c: any) => { const nullable = c.nullable !== false; return { name: c.name, type: nullable ? `Option<${c.type}>` : c.type, kind: kindOf(c.type), nullable }; });
       answers[s.key] = { ok: true, params, columns, cardinality: null };
     });

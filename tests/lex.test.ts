@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { lexPlaceholders } from "../src/lex.ts";
 import { defineQuery } from "../src/index.ts";
 import { engine as load, type Dialect } from "../src/engine.ts";
+import { pgPool } from "./stand-ins.ts";
 
 const names = (sql: string, dialect: "postgres" | "mysql" | "sqlite" = "postgres") => lexPlaceholders(sql, dialect).params;
 
@@ -29,9 +30,10 @@ test("a colon that opens a Postgres subscript is a slice, not a parameter", () =
   assert.deepEqual(names("select arr[(:i)], arr[ : :hi], arr[1 : :b], arr[:i + 0] from t"), ["i", "hi", "b"]);
   // An array constructor's bracket follows `array` or another bracket, and holds parameters.
   assert.deepEqual(names("select array[:a, :b], ARRAY[[:c], [:d]], x = any(array[:e]) from t"), ["a", "b", "c", "d", "e"]);
-  // MySQL and SQLite have no slices: a colon after no name character opens a parameter there.
+  // MySQL has no slices: a colon after no name character opens a parameter there. SQLite reads
+  // `[:lo]` as a quoted name, the alias of `arr`.
   assert.deepEqual(names("select arr[:lo] from t", "mysql"), ["lo"]);
-  assert.deepEqual(names("select arr[:lo] from t", "sqlite"), ["lo"]);
+  assert.deepEqual(names("select arr[:lo] from t", "sqlite"), []);
 });
 
 test("MySQL text is read as a session in the default sql_mode reads it", () => {
@@ -62,6 +64,7 @@ test("the runtime's lexer agrees with the engine's", async () => {
     ["select tags[:n], tags[ :m], (f(x))[:pg_t.tgnargs], \"q\"[:k], array[:a, :b], tags[(:c)], tags[1::int:d] from t where y = :y", "postgres"],
     ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite"],
     ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite"],
+    ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite"],
   ];
   for (const [sql, dialect] of statements) {
     const ours = lexPlaceholders(sql, dialect);
@@ -76,7 +79,7 @@ test("the runtime's lexer agrees with the engine's", async () => {
 // Without the engine's rewritten statement (a query defined by hand) the runtime rewrites it itself.
 const capture = () => {
   const calls: { text: string; values?: unknown[] | undefined }[] = [];
-  return { calls, client: { async query(text: string, values?: unknown[]) { calls.push({ text, values }); return { rows: [{}] }; } } };
+  return { calls, client: pgPool((text: string, values: unknown[]) => (calls.push({ text, values }), { rows: [{}] })) };
 };
 
 test("run binds positional parameters by number", async () => {

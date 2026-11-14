@@ -1,0 +1,1 @@
+select (select jsonb_build_object('s', string_agg(distinct p.title, ','), 'c', count(distinct p.tag), 'a', jsonb_agg(distinct p.tag), 'm', max(distinct p.score)) from posts p group by p.user_id order by p.user_id limit 1) as j

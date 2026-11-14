@@ -16,7 +16,7 @@
 }
 
 /* A rule's pairs: one card of labelled rows, each pair its SQL value and, under it, the value
-   `.run()` returns, the labels beside the code (above it on a phone), after the Inferred card. */
+   `.run()` returns, the labels beside the code (above it on a phone), after the inference card. */
 #nd-page .reylo-pairs {
   margin: 0 0 0.25rem;
   border: 1px solid var(--color-fd-border);

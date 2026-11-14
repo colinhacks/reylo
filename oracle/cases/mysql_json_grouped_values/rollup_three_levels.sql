@@ -1,0 +1,1 @@
+select u.id, (select (select json_object('k', u.id, 'x', x.id, 'c', count(*), 'a', json_arrayagg(q.id)) from posts q group by q.user_id order by q.user_id limit 1) from users x group by x.id with rollup order by x.id limit 1) as o from users u group by u.id with rollup

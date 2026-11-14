@@ -5,7 +5,7 @@ agg_limit.sql: many () -> { id: int4, comments: json ({ id: int4, body: text })[
 agg_no_limit.sql: many () -> { id: int4, comments: json ({ id: int4, body: text })[] } key (id)
 agg_uncorrelated.sql: many () -> { id: int4, comments: json ({ id: int4, body: text })[] } key (id)
 array_agg_row.sql: many () -> { id: int4, comments: (record{ id: int4, body: text })[] } key (id)
-derived_expression.sql: many () -> { id: int4, comments: json ({ n: int4?, title: text })[] } key (id)
+derived_expression.sql: many () -> { id: int4, comments: json ({ n: int4, title: text })[] } key (id)
 derived_join_person.sql: many () -> { id: int4, comments: json ({ id: int4, author: text, deleted: timestamptz? })[] } key (id)
 derived_left_join.sql: many () -> { id: int4, comments: json ({ id: int4, author: text? })[] } key (id)
 join_on_correlated.sql: many () -> { id: int4, comments: json ({ id: int4, author: text })[] } key (id)

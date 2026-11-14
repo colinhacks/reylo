@@ -1,0 +1,12 @@
+compared.sql: many (age: int4, slug: text) -> { id: int4 } key (id)
+expressions.sql: many () -> { plus: int4?, doubled: int4, half_price: numeric?, loud: text? }
+numbers.sql: many () -> { age: int4(0..150)?, qty: int4(×5), pos: int4(1..)?, small: int2?, price: numeric(10,2, 0..)?, rate: numeric(>0..<1)?, half: numeric(6,1, ×0.5)?, ratio: float8(0..1)? }
+rounding.sql: many () -> { to_int: numeric?, to_scale: numeric?, past_float: float8?, through_real: float8?, single: float4?, below_single: float4?, kept_int: numeric(..2)?, kept_float: float8(0.3..)?, kept_single: float4(0.5..)?, kept_real: float4(0.1..)?, no_whole: int4? }
+strings.sql: many () -> { code: text(postgres ^[a-z]+$)?, slug: varchar(≤20, like a%)?, name: text(ilike x%)?, note: text(postgres (?i)abc)?, pad: bpchar(=3)?, mail: varchar(≤255, like %@%)? }
+through_subquery.sql: many () -> { age: int4(0..150)?, slug: varchar(≤20, like a%)? }
+through_view.sql: many () -> { age: int4?, price: numeric(10,2)?, slug: varchar(≤20)? }
+unbound.sql: many () -> { maybe: int4(11..)?, either: int4?, flipped: int4?, beside: int4?, pct: int4(0..100)? }
+updated.sql: none (slug: varchar(≤20, like a%)?, code: text(postgres ^[a-z]+$)?, qty: int4(×5), id: int4) -> {  }
+whole_row.sql: many () -> { i: public.items{ id: int4, age: int4(0..150)?, qty: int4(×5), pos: int4(1..)?, small: int2?, price: numeric(10,2, 0..)?, rate: numeric(>0..<1)?, half: numeric(6,1, ×0.5)?, ratio: float8(0..1)?, code: text(postgres ^[a-z]+$)?, slug: varchar(≤20, like a%)?, name: text(ilike x%)?, note: text(postgres (?i)abc)?, pad: bpchar(=3)?, maybe: int4(11..)?, either: int4?, flipped: int4?, beside: int4?, mail: public.email(≤255, like %@%)?, pct: public.percent(0..100)? } }
+written.sql: none (id: int4, age: int4(0..150)?, price: numeric(10,2, 0..)?) -> {  }
+written_cast.sql: none (id: int4, age: int4) -> {  }

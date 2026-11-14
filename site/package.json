@@ -7,6 +7,7 @@
     "build": "node scripts/playground-engine.ts && react-router typegen && tsc && react-router build && vite build --config vite.api.config.ts && vite build --config vite.share.config.ts",
     "start": "vite preview --outDir build/client --port 3311",
     "capture": "nub scripts/capture-types.ts",
+    "capture-typedefs": "nub scripts/capture-typedefs.ts",
     "playground-engine": "node scripts/playground-engine.ts",
     "build:play": "vite build --config vite.play.config.ts"
   },
@@ -40,6 +41,7 @@
     "@planetscale/database": "1.20.2",
     "@react-router/dev": "8.5.0",
     "@shikijs/twoslash": "4.4.3",
+    "@sqlite.org/sqlite-wasm": "3.54.1-build1",
     "@tailwindcss/vite": "^4.1.0",
     "@tursodatabase/database": "0.8.3",
     "@types/better-sqlite3": "9.6.0",
@@ -53,6 +55,7 @@
     "@vercel/postgres": "0.10.0",
     "better-sqlite3": "12.11.1",
     "drizzle-orm": "0.45.4",
+    "knex": "3.3.0",
     "mariadb": "3.5.4",
     "mysql2": "3.24.5",
     "pg": "8.23.0",

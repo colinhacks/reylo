@@ -1,6 +1,6 @@
 # Reylo example: Node
 
-A Node project that imports `.sql` files as typed queries and runs them on Postgres through postgres.js, with Reylo's preload loaded by `node --import reylo/register`. It is the setup of [Node](https://reylo.dev/#node) in the docs.
+A Node project that imports `.sql` files as typed queries and runs them on Postgres through postgres.js, with Reylo's preload loaded by `node --import reylo/register`. It is the setup of [Node](https://reylo.dev/#setup-node) in the docs.
 
 ## Run it
 

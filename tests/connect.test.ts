@@ -10,7 +10,7 @@ import { engine, reason, Unreachable } from "../src/engine.ts";
 import { hostUrl } from "../src/host-url.ts";
 import { nativeBinary } from "../src/native.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
-import { PG, MYSQL } from "./helpers.ts";
+import { PG, MYSQL, pgLive, postgresDatabase } from "./helpers.ts";
 
 const noPg = !PG && "REYLO_TEST_PG names no server";
 const noMysql = !MYSQL && "REYLO_TEST_MYSQL names no server";
@@ -91,6 +91,9 @@ test("a URL that names a Unix socket is opened through a bridge, on Postgres and
     for (const [dialect, url] of [
       ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}`],
       ["postgres", `postgres://${username}@${encodeURIComponent(pg.dir)}/${database.slice(1)}`],
+      // A socket carries no TLS, whichever way the URL asks for it.
+      ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}&ssl=true`],
+      ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}&sslmode=verify-full`],
       ["mysql", `mysql://root@localhost/?socketPath=${encodeURIComponent(my.path)}`],
     ] as const) {
       const c = await (await engine(dialect)).open(url);
@@ -115,14 +118,14 @@ test("reylo analyze opens a Postgres Unix socket itself, without TLS, and reads 
     writeFileSync(join(project, "q.sql"), "select 1 as x");
     // Run asynchronously: the socket's server is this process's, which a synchronous run would stall.
     const run = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done) => {
-      const child = spawn(nativeBinary(), ["analyze", "q.sql"], { cwd: project, timeout: 30_000 });
+      const child = spawn(nativeBinary(), ["analyze", "q.sql", "--format", "json"], { cwd: project, timeout: 30_000 });
       let stdout = "", stderr = "";
       child.stdout.on("data", (chunk) => (stdout += chunk));
       child.stderr.on("data", (chunk) => (stderr += chunk));
       child.on("close", (code) => done({ code, stdout, stderr }));
     });
     assert.equal(run.code, 0, run.stderr + run.stdout);
-    assert.deepEqual(JSON.parse(run.stdout).columns.map((col: { name: string }) => col.name), ["x"]);
+    assert.deepEqual(JSON.parse(run.stdout).result.columns.map((col: { name: string }) => col.name), ["x"]);
   } finally {
     pg.server.close();
   }
@@ -135,6 +138,32 @@ test("a json or jsonb column of a Postgres query reads as its value, as the serv
     assert.deepEqual(rows, [[{ a: [1, null] }, [true], null]]);
   } finally {
     await c.close();
+  }
+});
+
+test("Postgres: where the role or the database sets another DateStyle than ISO, a statement that returns a date is an error before it runs", { skip: pgLive }, async () => {
+  const { url, sql, drop } = await postgresDatabase("reylo_datestyle", "create table orders (id int primary key, ships_on date not null, placed_at timestamptz not null, days date[] not null)");
+  try {
+    await sql.unsafe(`alter database ${new URL(url).pathname.slice(1)} set datestyle = 'SQL, DMY'`);
+    const diagnostics = async (at: string, statement: string) => {
+      const c = await (await engine("postgres")).open(at);
+      try {
+        return (await c.analyze(statement)).diagnostics.map((d) => [d.code, d.message] as const);
+      } finally {
+        await c.close();
+      }
+    };
+    const dated = await diagnostics(url, "select id, ships_on from orders");
+    assert.deepEqual(dated.map(([code]) => code), [24]);
+    assert.match(dated[0]![1], /^Column "ships_on" holds a date or a time, which this database writes in the SQL style \(its DateStyle is SQL, DMY, set on the role, the database or the server\) and \.run\(\) reads in the ISO style alone: set it to ISO, /);
+    // Inside an array too; not inside JSON, which is ISO's text under every style, and not where no date is returned.
+    assert.deepEqual((await diagnostics(url, "select days from orders")).map(([code]) => code), [24]);
+    assert.deepEqual(await diagnostics(url, "select to_jsonb(o) as o, placed_at::text as written from orders o"), []);
+    assert.deepEqual(await diagnostics(url, "select id from orders"), []);
+    // The style the URL sets is the session's, as the message says.
+    assert.deepEqual(await diagnostics(`${url}?options=-c%20datestyle%3DISO`, "select id, ships_on from orders"), []);
+  } finally {
+    await drop();
   }
 });
 

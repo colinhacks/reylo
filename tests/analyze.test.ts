@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { connect, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,6 +141,8 @@ test("without the database, .reylo/ answers as it is, and a statement it lacks i
   const cached = await analyze(root, env, SELECT);
   assert.ok(cached.ok);
   assert.equal(cached.source, "cache");
+  // Nothing held the entry to the database, which the outcome says, with why and the entry's day.
+  assert.match(cached.unverified ?? "", /^cannot open the database .*app\.db \(DATABASE_URL in the environment\).*; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
   const missing = await analyze(root, env, "select name from users");
   assert.ok(!missing.ok);
   assert.equal(missing.code, 5);
@@ -184,6 +187,8 @@ test("a build that cannot reach the database reads .reylo/ with another URL, wit
   const bare = await analyze(root, {}, SELECT);
   assert.ok(bare.ok);
   assert.deepEqual([bare.source, bare.entry], ["cache", typed.entry]);
+  assert.match(bare.unverified ?? "", /^no database URL is set; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+  assert.equal(typed.unverified, undefined);
   const lacking = await analyze(root, {}, "select name from users");
   assert.ok(!lacking.ok);
   assert.deepEqual([lacking.code, lacking.message], [4, 'No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in .reylo.yaml.']);
@@ -202,6 +207,99 @@ test("a build that cannot reach the database reads .reylo/ with another URL, wit
   assert.ok(moved.entry.startsWith(join(copy, ".reylo")));
 });
 
+test("on a server, a URL that fails reads that server's own entry and no other's, and a build says once that it reads .reylo/ unchecked", { skip: live }, async (t) => {
+  const { url, sql, drop } = await postgresDatabase("reylo_offline", "create table users (id int primary key, email text not null)");
+  const root = mkdtempSync(join(tmpdir(), "reylo-offline-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const statement = "select id, email from users where id = :id";
+  // The server at an address of its own, which can stop answering while the test's server goes on.
+  const target = new URL(url);
+  const proxy = createServer((socket) => {
+    const up = connect(Number(target.port), target.hostname);
+    socket.pipe(up).pipe(socket);
+    socket.on("error", () => up.destroy());
+    up.on("error", () => socket.destroy());
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const through = new URL(url);
+  through.hostname = "127.0.0.1";
+  through.port = String((proxy.address() as AddressInfo).port);
+  const env = { DATABASE_URL: through.href };
+  try {
+    const typed = await analyze(root, env, statement);
+    assert.ok(typed.ok);
+    assert.deepEqual([typed.source, typed.unverified], ["database", undefined]);
+    await sql.unsafe("alter table users alter email drop not null");
+    await new Promise((resolve) => proxy.close(resolve));
+    // The server no longer answers: its own entry, as old as it is, and the outcome says so.
+    const stale = await analyze(root, env, statement);
+    assert.ok(stale.ok);
+    assert.deepEqual([stale.source, stale.entry], ["cache", typed.entry]);
+    assert.match(stale.unverified ?? "", /^cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in the environment\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+    // A server nothing was analyzed on reads no other's entry: a mistyped host is not the database last analyzed.
+    const elsewhere = new URL(url);
+    elsewhere.port = "1";
+    const other = await analyze(root, { DATABASE_URL: elsewhere.href }, statement);
+    assert.ok(!other.ok);
+    assert.match(other.message, /^Cannot connect to the database at .*:1\/reylo_offline_\d+ .*; \.reylo has this statement's analysis from another database only, which a build reads where no database URL is set: run the type check or a build where this database can be reached, or build with no URL\.$/);
+    // With no URL, the newest entry of any server answers, and says that nothing checked it.
+    const bare = await analyze(root, {}, statement);
+    assert.ok(bare.ok);
+    assert.deepEqual([bare.source, bare.entry], ["cache", typed.entry]);
+    assert.match(bare.unverified ?? "", /^no database URL is set; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+    // A build step prints the line once a run, however many modules it builds, and the type check's hover carries it.
+    const warned: string[] = [];
+    t.mock.method(console, "warn", (line: string) => void warned.push(line));
+    writeFileSync(join(root, ".env"), `DATABASE_URL=${through.href}\n`);
+    for (const name of ["a.sql", "b.sql"]) writeFileSync(join(root, name), statement);
+    const mapper = mapperHandlers();
+    const projectHandle = `offline-${root}`;
+    await mapper.openProject!({ projectHandle, configFileName: join(root, "tsconfig.json") });
+    try {
+      await sqlModule(join(root, "a.sql"), statement);
+      await sqlModule(join(root, "b.sql"), statement);
+      const declared = (await mapper.transform!({ fileName: join(root, "a.sql"), content: statement, projectHandle })) as { text: string; diagnostics: unknown[] };
+      assert.deepEqual(declared.diagnostics, []);
+      assert.match(declared.text, /\n \* reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d\n \*\/\ndeclare const query: /);
+    } finally {
+      await mapper.closeProject!({ projectHandle });
+      for (const session of Session.opened()) await session.close();
+    }
+    assert.equal(warned.length, 1);
+    assert.match(warned[0]!, /^reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+  } finally {
+    proxy.close();
+    await drop();
+  }
+});
+
+test("Postgres: the DateStyle error is no part of another style's entry, so it goes when the database's style is ISO again", { skip: live }, async () => {
+  const { url, sql, drop } = await postgresDatabase("reylo_datestyle_cache", "create table orders (id int primary key, ships_on date not null)");
+  const root = mkdtempSync(join(tmpdir(), "reylo-datestyle-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const database = new URL(url).pathname.slice(1);
+  const statement = "select id, ships_on from orders";
+  // Each call is a session of its own, whose connection starts with the database's style of the moment.
+  const checked = async (at = url) => {
+    const outcome = await analyze(root, { DATABASE_URL: at }, statement);
+    assert.ok(outcome.ok);
+    return [outcome.source, outcome.analysis.diagnostics.map((d) => d.code)];
+  };
+  try {
+    assert.deepEqual(await checked(), ["database", []]);
+    await sql.unsafe(`alter database ${database} set datestyle = 'SQL, DMY'`);
+    assert.deepEqual(await checked(), ["database", [24]]);
+    assert.deepEqual(await checked(), ["cache", [24]]);
+    // The URL's own setting is the session's: the entry made under the other style is not its answer.
+    assert.deepEqual(await checked(`${url}?options=-c%20datestyle%3DISO`), ["database", []]);
+    // The order of a date's fields (ISO, DMY and ISO, MDY) is no part of how one is written.
+    await sql.unsafe(`alter database ${database} reset datestyle`);
+    assert.deepEqual(await checked(), ["cache", []]);
+  } finally {
+    await drop();
+  }
+});
+
 test("the module a build step emits carries the analysis and reads nothing at run time", async () => {
   const { root, env } = project();
   const file = join(root, "user.sql");
@@ -215,11 +313,11 @@ test("the module a build step emits carries the analysis and reads nothing at ru
     // file, the only one of the project's files that exists.
     assert.deepEqual(watched, [join(root, ".env")]);
     assert.equal(code, [
-      `import { defineQuery } from "reylo";`,
+      `import { defineSqliteQuery } from "reylo";`,
       `export const sql = "select id, name from users where id = ?";`,
       `export const raw = ${JSON.stringify(SELECT)};`,
       `export const params = ["id"];`,
-      `export default defineQuery({ dialect: "sqlite", sql: raw, params, cardinality: "maybeOne", readOnly: true, text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"integer","bits":64},"nullable":false}}, columns: [["id","int"],["name","text"]], row: (v) => ({ "id": v[0], "name": v[1] }), fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", sqlcommenter: true, jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
+      `export default defineSqliteQuery({ sql: raw, params, cardinality: "maybeOne", readOnly: true, text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"integer","bits":64},"nullable":false}}, columns: [["id","int"],["name","text"]], row: (v) => ({ "id": v[0], "name": v[1] }), fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", sqlcommenter: true, jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
       ``,
     ].join("\n"));
     // A statement that relies on no catalog fact carries its file too, written with `/`.
@@ -428,8 +526,23 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       "create or replace function plus(int, int default 1) returns int language sql as 'select $1 + $2'",
       "alter function plus(int, int) immutable",
       "alter function plus(int, int) strict",
+      // What a body returns, which an analysis reads: a body stored parsed keeps prosrc empty.
+      "create or replace function plus(int, int default 2) returns int language sql strict immutable as 'select $1 + $2'",
+      "alter function plus(int, int) set search_path = public",
+      "create function atomic_plus(a int) returns int language sql begin atomic select a + 1; end",
+      "create or replace function atomic_plus(a int) returns int language sql begin atomic select a + 2; end",
       "alter table m alter column v type varchar(50)",
       "alter table m alter column n type numeric(10,2)",
+      // A function's result columns and its arguments' names, which a call reads and its body may not.
+      "create function people() returns table (id int, name text) language sql as 'select 1, ''a''::text'",
+      "drop function people(); create function people() returns table (id int, full_name text) language sql as 'select 1, ''a''::text'",
+      "create function pair(out a int, out b int) language sql as 'select 1, 2'",
+      "drop function pair(); create function pair(out a bigint, out b int) language sql as 'select 1, 2'",
+      "create function named(x int) returns int language sql as 'select $1'",
+      "drop function named(int); create function named(y int) returns int language sql as 'select $1'",
+      // Whether an INSERT may give an identity column a value.
+      "alter table m add column id int generated by default as identity",
+      "alter table m alter column id set generated always",
     ]) {
       await db.unsafe(change);
       const next = await fingerprint();
@@ -442,8 +555,9 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
   }
 });
 
-test("the MySQL fingerprint holds while nothing changes, and moves with a column's length, precision and scale, fractional seconds and character set, which its type carries", { skip: mysqlLive }, async () => {
+test("the MySQL fingerprint holds while nothing changes, and moves with a column's length, precision and scale, fractional seconds and character set, which its type carries, and with a CHECK's expression and whether it is enforced", { skip: mysqlLive }, async () => {
   const own = await mysqlDatabase("reylo_fingerprint", "create table m (v varchar(20), n decimal(10,2), at datetime(3), body text character set latin1)");
+  await own.db.query(`create table docs (j json not null, constraint j_shape check (json_schema_valid('{"type":"object","properties":{"a":{"type":"integer"}}}', j)))`);
   const root = mkdtempSync(join(tmpdir(), "reylo-fingerprint-"));
   writeFileSync(join(root, "package.json"), "{}");
   mkdirSync(join(root, "node_modules"));
@@ -462,7 +576,9 @@ test("the MySQL fingerprint holds while nothing changes, and moves with a column
     assert.match(last ?? "", /^[0-9a-f]{16}$/);
     assert.equal(await fingerprint(), last);
     // A TEXT's character set decides whether its size counts the bytes a client receives.
-    for (const change of ["alter table m modify v varchar(50)", "alter table m modify n decimal(12,4)", "alter table m modify at datetime(6)", "alter table m modify body text character set utf8mb4"]) {
+    // A JSON column is typed by the schema its CHECK holds it to, while the CHECK is enforced.
+    const checks = [`alter table docs drop check j_shape, add constraint j_shape check (json_schema_valid('{"type":"object","properties":{"a":{"type":"string"}}}', j))`, "alter table docs alter check j_shape not enforced"];
+    for (const change of ["alter table m modify v varchar(50)", "alter table m modify n decimal(12,4)", "alter table m modify at datetime(6)", "alter table m modify body text character set utf8mb4", ...checks]) {
       await own.db.query(change);
       const next = await fingerprint();
       assert.notEqual(next, last, change);

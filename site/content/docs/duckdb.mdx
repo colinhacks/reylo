@@ -16,7 +16,7 @@ DuckDB support is a preview: the types Reylo infers on DuckDB, and the values `.
 | | |
 | --- | --- |
 | DuckDB versions | 2.0, through `@duckdb/node-api` |
-| Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
+| Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
 | Drivers | `@duckdb/node-api` ([Drivers](#drivers)) |
 | Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after, and while your app has the file open, it reads a copy of it. On Windows no other process can read a file DuckDB has open for writing, so the type check needs your app stopped |
 
@@ -55,6 +55,19 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from DuckDB's own analysis of it.
+
+DuckDB runs inside your app, so the type check [prepares](https://duckdb.org/docs/stable/sql/query_syntax/prepared_statements) the query on your project's own `@duckdb/node-api` and reads back DuckDB's own type information on its parameters and return type. Reylo reads the catalog for the rest.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the prepared statement's description |
+| Column types | the prepared statement's description |
+| Nullability | the table's `NOT NULL` and primary key columns, then what the query rules out |
+| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
+
 ## Data types
 
 DuckDB's prepared statement reports the exact type of every parameter and column, and `.run()` returns one value for each type:
@@ -69,6 +82,7 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 | `VARCHAR`, `UUID`, `TIME`, `TIMETZ`, `BIT` | `string` | `"Ada"` |
 | `ENUM` | its labels | `"happy"` |
 | `BLOB` | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
+| `GEOMETRY` | `unknown` | its WKB bytes, a `Uint8Array` |
 | `DATE` | `string` | `"2026-10-20"` |
 | `TIMESTAMP`, `TIMESTAMP_S`, `TIMESTAMP_MS`, `TIMESTAMP_NS` | `string` | `"2026-10-20T10:00:00.5"` |
 | `TIMESTAMPTZ` | `string` | `"2026-10-20T08:00:00Z"` |
@@ -86,14 +100,14 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 
 A `BIGINT` or wider integer is a `bigint`, so no value is ever rounded. A parameter of one takes a `number`, a `bigint` or a string of digits.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_types_integers.sql" dialect="duckdb"
 select id, github_id, count(*) over () as n
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Decimals**
 
@@ -105,20 +119,20 @@ A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, a
 
 **Nested types**
 
-A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is an error: name its fields, as in `{'a': 1, 'b': 'x'}` or `struct_pack(a := 1, b := 'x')`.
+A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`, except in an `array(select c from (…) c)` of a subquery's or a table's whole rows, whose elements are structs and whose fields are as their columns are. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is an error: name its fields, as in `{'a': 1, 'b': 'x'}` or `struct_pack(a := 1, b := 'x')`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_types_nested.sql" dialect="duckdb"
 select tags, meta, meta.host as host
 from events
 ```
 
-</Inferred>
+</InferenceCard>
 
 **JSON**
 
-A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/#typed-json), takes any value `JSON.stringify` writes, or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
+A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/inference#typed-json), takes any value `JSON.stringify` writes, or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
 
 </Rules>
 
@@ -132,7 +146,7 @@ from read_parquet('logs/*.parquet')
 group by all
 ```
 
-Reylo keeps each query's analysis in [`.reylo/`](/#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `.reylo/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
+Reylo keeps each query's analysis in [`.reylo/`](/faq#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `.reylo/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
 
 ## Nullability
 
@@ -144,20 +158,20 @@ Every column is typed `| null` unless Reylo can tell it never is null. DuckDB's 
 
 A table's column is non-null if it's declared `NOT NULL`, or is part of its primary key.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_columns.sql" dialect="duckdb"
 select id, name, email
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Outer joins**
 
 An outer join makes the joined table's columns nullable, and a test in the `where` that fails on `NULL` shows the row exists.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_left_join.sql" dialect="duckdb"
 select u.name, t.name as team
@@ -165,9 +179,9 @@ from users u
 left join teams t on t.id = u.team_id
 ```
 
-</Inferred>
+</InferenceCard>
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_where.sql" dialect="duckdb"
 select u.name, t.name as team
@@ -176,13 +190,13 @@ left join teams t on t.id = u.team_id
 where t.id is not null
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Expressions**
 
-Arithmetic, comparisons, `||`, `coalesce` and `case` are non-null over non-null values, and so are DuckDB's functions of one value such as `lower` and `length`. A division is nullable, since `SET error_on_division_by_zero = false` makes dividing by zero return `NULL`, and so is a part of a date, such as `year(…)`, which is `NULL` for an infinite date.
+Arithmetic, comparisons, `||`, `coalesce` and `case` are non-null over non-null values, and so are DuckDB's functions of one value such as `lower` and `length`. A division is nullable, since `SET error_on_division_by_zero = false` makes dividing by zero return `NULL`, and so is a part of a date, such as `year(…)`, which is `NULL` for an infinite date. A cast of a `JSON` value to anything but text or `JSON` is nullable too, since JSON's `null` casts to `NULL`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_expressions.sql" dialect="duckdb"
 select upper(email) as shout,
@@ -192,13 +206,13 @@ select upper(email) as shout,
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Aggregates**
 
-A `count` is never null, but `count_if` is null over no rows. Any other aggregate is null over no rows, and over a group's rows only where its argument is.
+A `count` is never null, but `count_if` is null over no rows. Any other aggregate is null over no rows, and over a group's rows only where its argument is. Under `rollup`, `cube` or `grouping sets`, a key is null in the rows that total it, whether it is a column or an expression.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_aggregates.sql" dialect="duckdb"
 select team_id, count(*) as members, max(name) as last
@@ -206,7 +220,33 @@ from users
 group by team_id
 ```
 
-</Inferred>
+</InferenceCard>
+
+**Table macros**
+
+A table macro's body is read as the query it is, so its body decides which columns are null and how many rows it returns.
+
+<InferenceCard>
+
+```sql schema dialect="duckdb"
+create table comments (
+  id bigint primary key,
+  post_id bigint not null,
+  body varchar not null
+);
+
+create macro comments_for(p) as table
+  select id, body
+  from comments
+  where post_id = p;
+```
+
+```sql file="duck_null_macro.sql" dialect="duckdb"
+select id, body
+from comments_for(:post_id::bigint)
+```
+
+</InferenceCard>
 
 </Rules>
 
@@ -220,6 +260,10 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `Row \| null` | `maybeOne` | matches every column of a primary key or a `unique` constraint of its one table with `=`; has `limit 1`; inserts one row `on conflict do nothing`, or `do update` with a `where`, and has `returning`; or is an `update` or `delete` by key with `returning` |
 | `void` | `none` | is an `insert`, `update` or `delete` without `returning`, or another statement that returns no rows, such as `create table` |
 | `Row[]` | `many` | is anything else |
+
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/inference#values)). Among several columns, such an expression is a type error where DuckDB's name for it isn't an identifier, as with `count_star()`. A word DuckDB calls without parentheses, such as `current_date`, keeps its rows, since DuckDB reads it as a column wherever one has that name.
+
+A value of another type doesn't count as matching a key: DuckDB compares a text key with a number as numbers, so `where code = 1` matches both `'1'` and `'01'`, and a number key with a float as floats. Neither does any value of a text key under a collation such as `collate nocase`, which holds both `'a'` and `'A'`.
 
 ## Parameters
 
@@ -237,13 +281,13 @@ A fraction for an integer, such as `1.5` for an `INTEGER`, makes `.run()` throw 
 
 DuckDB types a parameter from where it stands: compared with a column, written to one, or cast. Anywhere else, such as a bare `select :x` or `id + :n`, DuckDB can't type the query at all, and Reylo shows an error at the parameter. Cast it:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_param_cast.sql" dialect="duckdb"
 select :limit::integer + 1 as next
 ```
 
-</Inferred>
+</InferenceCard>
 
 ### Parameters that may be null
 
@@ -255,7 +299,7 @@ A parameter accepts `null` where the query lets it be `NULL`. Such a parameter i
 
 A cast to `nullable(type)` makes the parameter that type or `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_param_nullable.sql" dialect="duckdb"
 select id, name
@@ -263,26 +307,26 @@ from users
 where name = coalesce(:name::nullable(varchar), name)
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Tested for `NULL`, or written to a nullable column**
 
 A parameter that the query tests for `NULL` or passes to `coalesce`, or writes directly into a column that accepts `NULL`, takes `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_param_insert.sql" dialect="duckdb"
 insert into users (id, name, email)
 values (:id, :name, :email)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
 ## Database errors
 
-With [`.try()`](/#try), an error DuckDB raised comes back as `{ error }`:
+With [`.try()`](/usage#try), an error DuckDB raised comes back as `{ error }`:
 
 | Field | What it holds |
 | --- | --- |
@@ -314,10 +358,12 @@ What Reylo can't type on DuckDB, and what to do instead:
 | Limit | Instead |
 | --- | --- |
 | A `PIVOT` without its values, whose columns are the values it reads | Name the values: `pivot logs on level in ('info', 'warn') using count(*)` |
-| A table function with side effects: `.readOnly` looks only for sequences and `query()` | Don't retry a query that calls one |
+| A table function with side effects: `.readOnly` looks only for a `with` query that writes, sequences and `query()` | Don't retry a query that calls one |
 | A query in syntax Reylo's parser doesn't read, such as `PIVOT` or `SUMMARIZE`: its columns are typed, but each may be `NULL` and the query returns `Row[]` | None needed: the types hold, if loosely |
 | An app that opens the database file for writing at the moment the type check reads it, which DuckDB refuses | Start the app again |
+| A session that sets `default_collation`, which the type check doesn't see: `where code = 'a'` can match more than the one row it's typed as | Declare the collation on the column |
 | `.runSync()`, since `@duckdb/node-api` answers through a promise | Use `.run()` |
 | DuckDB in the browser, through `@duckdb/duckdb-wasm`, which `.run()` doesn't take yet | Run queries through `@duckdb/node-api` |
 | `rows(…)` and `row(…)` parameters | Pass each value as a parameter of its own |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
+| What your app's connection sets for itself, which the type check's connection doesn't share: a temporary table that shadows a table of the same name, and `default_collation`, under which `'a'` can equal `'A'` | Name a temporary table apart from your tables, and write `collate` on the comparisons it should change |

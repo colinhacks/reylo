@@ -1,0 +1,6 @@
+built.sql: many () -> { id: int4, j: json { c: text? }, cs: text?[] }
+inner_join.sql: many () -> { id: int4, customer: text, sku: text } key (id)
+latest_child.sql: many () -> { id: int4, customer: text?, sku: text?, item: jsonb { customer: text, sku: text }? } key (id)
+narrowed.sql: many () -> { id: int4, customer: text } key (id)
+no_from.sql: many () -> { id: int4, c: text? } key (id)
+star.sql: many () -> { id: int4, customer: text?, sku: text? } key (id)

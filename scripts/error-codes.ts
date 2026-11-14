@@ -11,7 +11,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const POSTGRES_TAG = "REL_18_0";
+const POSTGRES_TAG = "REL_19_RC2";
 const MYSQL_TAG = "mysql-8.4.11";
 
 const root = join(import.meta.dirname, "..");

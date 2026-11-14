@@ -15,7 +15,7 @@
 // `vector` or `halfvec` as an array of its numbers; `hstore` an hstore's keys as an object, each
 // value a string or null; `text` the server's text, which every other type is (time, uuid, an
 // enum's label, a row value whose fields are not known); `unknown` whatever the driver gives (a
-// SQLite column with no declared type); `(…)` a Postgres row value of known fields as an object
+// SQLite column with no declared type); `geometry` a MySQL GEOMETRY's bytes, which a driver may parse unless asked for them; `(…)` a Postgres row value of known fields as an object
 // of them, each field listed as `[name, kind]` (`(["id","int8"],["name","text"])`); `point`,
 // `line`, `lseg`, `box`, `path`, `polygon` and `circle` Postgres's geometric types as objects of
 // their fields, as the type descriptor gives them; and `range:k` and `multirange:k` a range of `k`
@@ -33,9 +33,20 @@ import { bareName, type EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 
 /** A scalar value's representation. */
-export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "unknown";
+export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
 /** Postgres's built-in geometric types, each an object of its fields (`point` is `{ x, y }`). */
 export type Geometric = "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle";
+/**
+ * What an object holds under a name, for a parameter or a row's member read by its name: its own
+ * value, or one it inherits as data, as an instance of a class with getters gives. An inherited
+ * function is no value (`constructor` and `toString`, which every object answers), and neither is
+ * the prototype that `__proto__` reads: such a name the object does not hold is left out.
+ */
+export function given(from: Record<string, unknown>, name: string): unknown {
+  const v = from[name];
+  return v !== undefined && (typeof v === "function" || name === "__proto__") && !Object.hasOwn(from, name) ? undefined : v;
+}
+
 /** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either, `(…)` for a Postgres row value of the fields it lists, `range:k` and `multirange:k` for a range of `k` and a multirange. */
 export type Kind = string;
 /** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
@@ -117,6 +128,8 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   enum: "string",
   // A MySQL SET's members, which MySQL keeps once each, in the order the column declares them.
   set: "Set<string>",
+  // A GEOMETRY's bytes, `unknown` as the type of a value its WKB alone describes.
+  geometry: "unknown",
   unknown: "unknown",
 };
 
@@ -201,7 +214,7 @@ function sqliteDeclaredKind(declared: string): Kind {
 /** Postgres's built-in geometric types, which the type descriptor structures as records (`lseg` and `polygon` as arrays of points) and names with no schema, as it names every built-in type. */
 const GEOMETRIC: ReadonlySet<string> = new Set<Geometric>(["point", "line", "lseg", "box", "path", "polygon", "circle"]);
 /** The geometric type a descriptor is, by its whole name: a created type of the same name is named with its schema. */
-const geometric = (t: EngineType): Geometric | undefined => ("name" in t && t.name !== undefined && GEOMETRIC.has(t.name) ? (t.name as Geometric) : undefined);
+const geometric = (t: EngineType): Geometric | undefined => ("label" in t && t.label !== undefined && GEOMETRIC.has(t.label) ? (t.label as Geometric) : undefined);
 
 /** A Postgres row value's kind: `(…)`, each field `[name, kind]`, and an array field's delimiter third where it is not a comma. */
 export const isRowKind = (kind: Kind): boolean => kind.startsWith("(");
@@ -280,7 +293,7 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "map":
       return dialect === "postgres" && name === "hstore" ? "hstore" : "unknown";
     case "union":
-      if (dialect === "sqlite") return "name" in t && t.name !== undefined ? sqliteDeclaredKind(t.name) : "unknown";
+      if (dialect === "sqlite") return "label" in t && t.label !== undefined ? sqliteDeclaredKind(t.label) : "unknown";
       if (dialect === "postgres" && (name === "inet" || name === "cidr")) return "text";
       if (dialect === "duckdb") return "unknown";
       return either(t.members.map((m) => columnKind(m, dialect)));
@@ -311,10 +324,12 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
       // A Postgres range is an object of its bounds, each decoded from its text as its subtype is.
       return dialect === "postgres" ? `${t.kind}:${columnKind(t.subtype, dialect)}` : "text";
     case "geometry":
+      // A MySQL GEOMETRY is its bytes, which `.run()` asks each driver for.
+      return dialect === "postgres" ? "text" : dialect === "mysql" ? "geometry" : "unknown";
     case "opaque":
       return dialect === "postgres" ? "text" : "unknown";
     case "unknown":
-    case "any":
+    case "rows":
       return "unknown";
     default:
       return "text";
@@ -330,7 +345,8 @@ export function kindType(kind: Kind): string {
 // ---------------------------------------------------------------------------------------------
 // The value of each kind from the server's text, as every Postgres driver but Bun.sql hands it
 // over (pg, pg-promise, Neon, PGlite, and postgres.js through `.raw()`), at the server's default
-// DateStyle (ISO), IntervalStyle and bytea_output, which the drivers' own parsers read too.
+// DateStyle (ISO), IntervalStyle and bytea_output, which the drivers' own parsers read too. A date
+// or a timestamp written under another DateStyle is refused (`isoStyle`).
 
 export type Decoder = (text: string) => unknown;
 
@@ -352,11 +368,22 @@ function isoDate(x: string): string {
   return isoYear(bc ? 1 - +digits : +digits) + x.slice(dash, bc ? -3 : undefined);
 }
 
+/**
+ * A date's, a timestamp's or a timestamptz's text, where it is ISO's: the year first, of four
+ * digits or more, or an infinity. Under another DateStyle the server writes `04/03/2026`,
+ * `04.03.2026` or `Wed Mar 04 10:00:00 2026`, which reads as another day or as none, so it is
+ * refused rather than returned as the type's string.
+ */
+function isoStyle(x: string): string {
+  if ((x.length >= 4 && digits(x, 0, 4)) || x === "infinity" || x === "-infinity") return x;
+  throw new DecodeError(`The database wrote a date or a time as ${JSON.stringify(x)}, which is not ISO 8601: the connection's DateStyle is another style, set on the session, the role or the database. Reylo reads the ISO style alone, so set it there (set datestyle = 'ISO').`);
+}
+
 /** `2026-10-20` as it is; `0002-06-01 BC` → `-000001-06-01` and `12345-01-01` → `+012345-01-01` (`isoDate`). */
-const date: Decoder = isoDate;
+const date: Decoder = (x) => isoDate(isoStyle(x));
 
 /** `2026-10-20 10:00:00.5` → `2026-10-20T10:00:00.500000`, its year as a date's (`isoDate`) and its fraction six digits (`sixDigits`); `infinity` as written. */
-const timestamp: Decoder = (x) => sixDigits(isoDate(x.replace(" ", "T")));
+const timestamp: Decoder = (x) => sixDigits(isoDate(isoStyle(x).replace(" ", "T")));
 
 /**
  * A Postgres `timestamp`'s ISO 8601 text with a fraction of six digits, the microseconds Postgres
@@ -486,10 +513,10 @@ function digits(x: string, start: number, end: number): boolean {
 /** The two digits at `i` as a number. */
 const two = (x: string, i: number) => (x.charCodeAt(i) - 48) * 10 + x.charCodeAt(i + 1) - 48;
 
-/** `instant` by the pattern, for every text: BC, any year, infinity, and text that is not a timestamptz's, returned as it is. */
+/** `instant` by the pattern, for every text: BC, any year, infinity, and text that is not a timestamptz's, returned as it is where it is ISO's (`isoStyle`). */
 function instantByPattern(x: string): string {
   const m = TSTZ.exec(x);
-  if (m === null) return x;
+  if (m === null) return isoStyle(x);
   const year = m[12] === undefined ? +m[1]! : 1 - +m[1]!;
   const offset = (m[8] === "-" ? -1 : 1) * (+m[9]! * 3600 + (m[10] === undefined ? 0 : +m[10] * 60) + (m[11] === undefined ? 0 : +m[11]));
   const seconds = daysFromCivil(year, +m[2]!, +m[3]!) * 86400 + +m[4]! * 3600 + +m[5]! * 60 + +m[6]! - offset;
@@ -712,6 +739,8 @@ export const RANGE_BOUNDS = ["[)", "[]", "(]", "()"] as const;
 /** A range's kind, `range:<subtype's kind>`, and a multirange's, `multirange:<subtype's kind>`. */
 export const isRangeKind = (kind: Kind): boolean => kind.startsWith("range:");
 export const isMultirangeKind = (kind: Kind): boolean => kind.startsWith("multirange:");
+/** Whether one value of `kind` is itself a JavaScript array (a vector, a segment, a polygon, a multirange), so that an array of them is no deeper dimension. */
+export const isArrayValued = (kind: Kind): boolean => kind === "vector" || kind === "lseg" || kind === "polygon" || isMultirangeKind(kind);
 const subtypeKind = (kind: Kind): Kind => kind.slice(kind.indexOf(":") + 1);
 
 /** A range from its text, each bound by `bound`. */
@@ -744,20 +773,55 @@ function multirangeParts(text: string): string[] {
   return parts;
 }
 
+const COMMA = 44;
+const RIGHT_PAREN = 41;
+const RIGHT_BRACE = 125;
+const LEFT_BRACE = 123;
+const BACKSLASH = 92;
+const QUOTE = 34;
+const LETTER_N = 78;
+
 const rowDecoders = new Map<Kind, Decoder>();
 /** A row value of `kind` from its text, as an object of its fields, each from its text as a column of its kind. */
 function rowDecoder(kind: Kind): Decoder {
   let d = rowDecoders.get(kind);
   if (d !== undefined) return d;
   const fields = rowFields(kind);
+  const count = fields.length;
+  const names = fields.map(([name]) => name);
   const decoders = fields.map(([, k, delim]) => textDecoder(k, delim));
+  const plainNames = !names.includes("__proto__");
+  // One pass over the text, as record_out writes it (parseRow): each field's text is cut where it stands, and copied piece by piece only where it holds an escape.
   d = (x) => {
-    const texts = parseRow(x, fields.length);
     const row: Record<string, unknown> = {};
-    fields.forEach(([name], i) => {
-      const text = texts[i];
-      setKey(row, name, text === null || text === undefined ? null : decoders[i]!(text));
-    });
+    const n = x.length;
+    let i = 1;
+    for (let f = 0; f < count; f++) {
+      let c = x.charCodeAt(i);
+      let v: unknown = null;
+      if (c === COMMA || c === RIGHT_PAREN || i >= n) i++;
+      else {
+        let from = i;
+        let text = "";
+        let quoted = false;
+        for (; i < n; i++) {
+          c = x.charCodeAt(i);
+          if (c === BACKSLASH) {
+            text += x.slice(from, i) + (x[i + 1] ?? "");
+            from = ++i + 1;
+          } else if (c === QUOTE) {
+            text += x.slice(from, i);
+            if (quoted && x.charCodeAt(i + 1) === QUOTE) text += '"', i++;
+            else quoted = !quoted;
+            from = i + 1;
+          } else if (!quoted && (c === COMMA || c === RIGHT_PAREN)) break;
+        }
+        v = decoders[f]!(text === "" ? x.slice(from, i) : text + x.slice(from, i));
+        i++;
+      }
+      if (plainNames) row[names[f]!] = v;
+      else setKey(row, names[f]!, v);
+    }
     return row;
   };
   rowDecoders.set(kind, d);
@@ -842,8 +906,11 @@ function rangeText(t: Extract<EngineType, { kind: "range" | "multirange" }>, v: 
 /** A value inside an array's or a row value's text: quoted, with each quote and backslash escaped. */
 const quoted = (text: string) => `"${text.replace(/["\\]/g, "\\$&")}"`;
 
-/** Whether a value of `t` is itself a JavaScript array: a vector, a segment, a polygon. */
-const arrayValued = (t: EngineType) => ["vector", "lseg", "polygon"].includes(columnKind(t, "postgres"));
+/** Whether a value of `t` may itself be a JavaScript array, which is then one element, never a dimension: a vector, a segment, a polygon, a multirange (`isArrayValued`), and a JSON value. */
+const arrayValued = (t: EngineType) => {
+  const kind = columnKind(t, "postgres");
+  return isArrayValued(kind) || kind === "json";
+};
 
 /**
  * A value of the Postgres type `t` as the text its input function reads: a row value from an
@@ -857,7 +924,7 @@ export function postgresLiteral(t: EngineType, v: unknown, fail: (message: strin
   if (shape !== undefined) return geometricText(shape, v) ?? fail(`a ${shape}, ${TS_TYPE[shape]}; got ${describe(v)}.`);
   const kind = columnKind(t, "postgres");
   if (t.kind === "record" && isRowKind(kind)) {
-    const name = t.name ?? "a row value";
+    const name = t.label ?? "a row value";
     if (!isObject(v)) return fail(`${name}, an object of its fields (${t.fields.map((f) => f.name).join(", ")}); got ${describe(v)}.`);
     const names = new Set(t.fields.map((f) => f.name));
     const extra = Object.keys(v).find((key) => !names.has(key));
@@ -926,6 +993,7 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   ...GEOMETRIC_DECODERS,
   enum: identity,
   set: (x) => members(x),
+  geometry: identity,
   unknown: identity,
 };
 
@@ -971,14 +1039,14 @@ export function parseArray(text: string, element: (text: string) => unknown, del
  * column holds, so a value of more is refused, naming the column. An array the statement builds
  * of arrays (`array_agg` over an array column) is declared with a `[]` per level, and holds them.
  * Postgres's arrays are rectangular, so the depth of the first element at each level is every one's.
- * A vector element is an array itself, one level more; a JSON element may be one at any depth,
- * which its type holds whatever the dimensions around it.
+ * An element that is an array itself (a vector, a segment, a polygon, a multirange) is one level
+ * more; a JSON element may be one at any depth, which its type holds whatever the dimensions around it.
  */
 export function withinDimensions(v: unknown, kind: Kind, column: string): unknown {
   const element = elementKind(kind);
   if (!Array.isArray(v) || element === "json") return v;
   const declared = (kind.length - element.length) / 2;
-  let depth = element === "vector" ? -1 : 0;
+  let depth = isArrayValued(element) ? -1 : 0;
   for (let level: unknown = v; Array.isArray(level); level = level.find((e) => e !== null)) depth++;
   if (depth <= declared) return v;
   // An array built of arrays is too deep only where an array column it collects is.
@@ -997,11 +1065,46 @@ export function elementKind(kind: Kind): Kind {
   return kind.replace(/(?:\[\])+$/, "") as Kind;
 }
 
+/** The decoder of an array of row values: parseArray, in one pass over a flat array's text, which is nearly every array of rows. An element is quoted, a backslash escaping within it, unless it is `NULL` or a row with no character to quote. */
+function rowsDecoder(element: Decoder): Decoder {
+  return (x) => {
+    if (x.charCodeAt(0) !== LEFT_BRACE || x.charCodeAt(1) === LEFT_BRACE) return parseArray(x, element);
+    const out: unknown[] = [];
+    if (x.charCodeAt(1) === RIGHT_BRACE) return out;
+    const n = x.length;
+    let i = 1;
+    while (i < n) {
+      if (x.charCodeAt(i) === QUOTE) {
+        let text = "";
+        let from = ++i;
+        for (; i < n; i++) {
+          const c = x.charCodeAt(i);
+          if (c === BACKSLASH) {
+            text += x.slice(from, i);
+            from = ++i;
+          } else if (c === QUOTE) break;
+        }
+        out.push(element(text === "" ? x.slice(from, i) : text + x.slice(from, i)));
+        i += 2;
+      } else {
+        const from = i;
+        for (; i < n; i++) {
+          const c = x.charCodeAt(i);
+          if (c === COMMA || c === RIGHT_BRACE) break;
+        }
+        const s = x.slice(from, i++);
+        out.push(s.charCodeAt(0) === LETTER_N && s === "NULL" ? null : element(s));
+      }
+    }
+    return out;
+  };
+}
+
 /** The decoder of a Postgres value of `kind` from its text; `delim` is an array's (`;` for `box[]`). */
 export function textDecoder(kind: Kind, delim = ","): Decoder {
   if (kind.endsWith("[]")) {
     const element = textDecoder(elementKind(kind), delim);
-    return (x) => parseArray(x, element, delim);
+    return isRowKind(elementKind(kind)) && delim === "," ? rowsDecoder(element) : (x) => parseArray(x, element, delim);
   }
   if (isRowKind(kind)) return rowDecoder(kind);
   if (isRangeKind(kind)) {

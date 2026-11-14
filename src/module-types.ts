@@ -17,7 +17,7 @@ export type ModuleTypes = {
   diagnostics: FileDiagnostic[];
   /** `{ id: number }`, `Record<never, never>` for none, or `unknown` where the statement failed. */
   params: string;
-  /** `{ id: number; name: string }` (a field per line, after its doc comment, where a column's comment documents one), `never` for no columns, or `unknown` where the statement failed. */
+  /** `{ id: number; name: string }` (a field per line, after its doc comment, where a column's comment documents one), the column's type alone where the statement's one column has no name, `never` for no columns, or `unknown` where the statement failed. */
   row: string;
   /** How many rows the statement returns, as a module's `Query` names it. */
   cardinality: "one" | "maybeOne" | "many" | "none";
@@ -165,7 +165,8 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
   return {
     diagnostics,
     params: paramTypes.length ? objectType(paramTypes) : "Record<never, never>",
-    row: columns.length ? objectType(columns) : "never",
+    // A statement whose one column has no name gives that column's values, with no key to document.
+    row: analysis.value ? (analysis.columns[0]!.nullable ? orNull(renderType(analysis.columns[0]!.type, false, dialect, codecs)) : renderType(analysis.columns[0]!.type, false, dialect, codecs)) : columns.length ? objectType(columns) : "never",
     cardinality,
     names,
     queryError: queryErrorType(dialect, analysis.errors),

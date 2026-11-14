@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { execute, type QueryModule } from "../src/execute.ts";
+import { execute, type QueryModule } from "./run.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder, withinDimensions } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import { array, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
+import { pgPool } from "./stand-ins.ts";
 
 // The one table (src/values.ts): the kind of each SQL type, the TypeScript type the module declares
 // for it, the JSON Schema of its JSON form, and the value the run time gives it, which must agree.
@@ -155,16 +156,16 @@ test("a range is an object of its bounds and their brackets, each bound in its s
 });
 
 test("a MySQL ENUM of known labels is refused the '' MySQL stores for any other value, unless it lists one", () => {
-  const labelled = (...labels: string[]) => ({ kind: "text", enum: labels, name: "enum" }) as EngineType;
+  const labelled = (...labels: string[]) => ({ kind: "text", enum: labels, label: "enum" }) as EngineType;
   assert.equal(columnKind(labelled("a", "b"), "mysql"), "enum");
   assert.equal(renderType(labelled("a", "b"), false, "mysql"), '"a" | "b"');
   assert.equal(coerce("enum", "a", "kind"), "a");
   assert.throws(() => coerce("enum", "", "kind"), (e: Error) => e instanceof DecodeError && /^Column "kind" holds "", which is none of its ENUM's labels.*nullif\(kind, ''\)/.test(e.message));
   // One that lists '' holds it as any other label, and one whose labels are not known is its text.
   assert.equal(columnKind(labelled("", "a"), "mysql"), "text");
-  assert.equal(columnKind({ kind: "text", name: "enum" }, "mysql"), "text");
+  assert.equal(columnKind({ kind: "text", label: "enum" }, "mysql"), "text");
   // Postgres enforces an enum's labels itself.
-  assert.equal(columnKind({ kind: "text", enum: ["a"], name: "enum" }, "postgres"), "text");
+  assert.equal(columnKind({ kind: "text", enum: ["a"], label: "enum" }, "postgres"), "text");
 });
 
 test("a MySQL SET is a Set of its members, declared and decoded alike, and is its text inside JSON", () => {
@@ -352,9 +353,11 @@ test("timestamptz: the text read by position is the pattern's, for every server 
     const m = mp + (mp < 10 ? 3 : -9);
     return [era * 400 + yoe + (m <= 2 ? 1 : 0), m, d];
   };
+  // Text the pattern does not read is returned as it is where it starts as ISO's does, with the year, and refused otherwise, as another DateStyle's.
+  const refused = "refused";
   const byPattern = (x: string): string => {
     const m = TSTZ.exec(x);
-    if (m === null) return x;
+    if (m === null) return /^\d{4}/.test(x) || x === "infinity" || x === "-infinity" ? x : refused;
     const year = m[12] === undefined ? +m[1]! : 1 - +m[1]!;
     const offset = (m[8] === "-" ? -1 : 1) * (+m[9]! * 3600 + (m[10] === undefined ? 0 : +m[10] * 60) + (m[11] === undefined ? 0 : +m[11]));
     const seconds = daysFromCivil(year, +m[2]!, +m[3]!) * 86400 + +m[4]! * 3600 + +m[5]! * 60 + +m[6]! - offset;
@@ -392,7 +395,68 @@ test("timestamptz: the text read by position is the pattern's, for every server 
   const texts = ["infinity", "-infinity", "", "2026-10-20 10:00:00+00", "2026-10-20 10:00:00.1234567+00", "2026-10-20 10:00:00.+00", "2026-10-20 10:00:00+0", "2026-10-20 10:00:00+00:0", "2026-10-20 10:00:00+00:00:00:00"];
   for (let i = 0; i < 300_000; i++) texts.push(serverText());
   for (let i = 0; i < 100_000; i++) texts.push(mutated());
-  for (const text of texts) if (instant(text) !== byPattern(text)) assert.equal(instant(text), byPattern(text), JSON.stringify(text));
+  const read = (text: string): string => {
+    try {
+      return instant(text);
+    } catch (e) {
+      if (!(e instanceof DecodeError)) throw e;
+      return refused;
+    }
+  };
+  for (const text of texts) if (read(text) !== byPattern(text)) assert.equal(read(text), byPattern(text), JSON.stringify(text));
+});
+
+test("Postgres: a date, a timestamp and a timestamptz written under another DateStyle than ISO are refused, at every position", () => {
+  const iso: [string, string, string][] = [
+    ["date", "2026-03-04", "2026-03-04"],
+    ["date", "0044-03-15 BC", "-000043-03-15"],
+    ["date", "12345-01-01", "+012345-01-01"],
+    ["date", "infinity", "infinity"],
+    ["timestamp", "2026-03-04 10:00:00.5", "2026-03-04T10:00:00.500000"],
+    ["timestamp", "-infinity", "-infinity"],
+    ["timestamptz", "2026-10-12 12:06:48.5-07", "2026-10-12T19:06:48.500000Z"],
+    ["timestamptz", "0044-03-15 12:00:00+00 BC", "-000043-03-15T12:00:00.000000Z"],
+    ["timestamptz", "infinity", "infinity"],
+  ];
+  for (const [kind, text, value] of iso) assert.equal(textDecoder(kind)(text), value, `${kind} ${text}`);
+  // `SQL, DMY`, `German` and `Postgres`, as the server writes each.
+  const other: [string, string][] = [
+    ["date", "04/03/2026"],
+    ["date", "04.03.2026"],
+    ["date", "04-03-2026"],
+    ["timestamp", "04/03/2026 10:00:00.123456"],
+    ["timestamp", "Wed Mar 04 10:00:00.123456 2026"],
+    ["timestamptz", "12/10/2026 12:06:48.5 PDT"],
+    ["timestamptz", "12.10.2026 12:06:48.5 PDT"],
+    ["timestamptz", "Mon Oct 12 12:06:48.5 2026 PDT"],
+  ];
+  for (const [kind, text] of other) assert.throws(() => textDecoder(kind)(text), (e) => e instanceof DecodeError && /which is not ISO 8601: the connection's DateStyle/.test(e.message), `${kind} ${text}`);
+  assert.throws(() => textDecoder("date[]")("{04/03/2026}"), DecodeError);
+  assert.throws(() => textDecoder("timestamptz[]")(`{"12/10/2026 12:06:48.5 PDT"}`), DecodeError);
+  assert.throws(() => textDecoder("range:date")("[04/03/2026,05/03/2026)"), DecodeError);
+});
+
+test("Postgres: an array of polygons, segments, vectors or multiranges has one dimension, each element an array of its own", async () => {
+  const point = { x: 0, y: 0 };
+  const range = { lower: 1, upper: 3, bounds: "[)" };
+  const values: [EngineType, unknown[]][] = [
+    [array(pg("polygon")), [[point, point, point]]],
+    [array(pg("lseg")), [[point, point]]],
+    [array(pg("vector")), [[1, 2]]],
+    [array(pg("int4multirange")), [[range, range]]],
+  ];
+  for (const [type, value] of values) {
+    const kind = columnKind(type, "postgres");
+    assert.equal(withinDimensions(value, kind, "c"), value, kind);
+    // One level more is a second dimension, which the column's type does not have.
+    assert.throws(() => withinDimensions([value], kind, "c"), /holds an array of 2 dimensions/, kind);
+  }
+  // As a parameter, each element is one value of its type: the text Postgres reads for it.
+  const calls: unknown[][] = [];
+  const client = pgPool(async (_text: string, bound: unknown[]) => (calls.push(bound), { rows: [], rowCount: 0 }));
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :slots, :outlines", params: ["slots", "outlines"], inputs: { slots: { type: array(pg("int4multirange")), nullable: false }, outlines: { type: array(pg("polygon")), nullable: false } } };
+  await execute(client, q, { slots: [[range, { lower: 5, upper: 7, bounds: "[)" }]], outlines: [[point, { x: 1, y: 1 }, { x: 2, y: 0 }]] });
+  assert.deepEqual(calls, [[`{"{[\\"1\\",\\"3\\"),[\\"5\\",\\"7\\")}"}`, `{"((0,0),(1,1),(2,0))"}`]]);
 });
 
 test("SQLite: the kinds, and a NUMERIC column of either", () => {
@@ -640,7 +704,7 @@ test("runSync refuses a client whose prepared statement answers through a promis
   const db = { prepare: () => ({ all: async () => [{ n: 1 }] }) };
   const q: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select 1 as n", params: [], columns: [["n", "int"]] };
   assert.deepEqual(await execute(db as never, q), [{ n: 1 }]);
-  const { executeSync } = await import("../src/execute.ts");
+  const { executeSync } = await import("./run.ts");
   assert.throws(() => executeSync(db as never, { ...q, sql: "select 2 as n" }), /answered with a promise/);
 });
 
@@ -690,8 +754,59 @@ test("MySQL: a truth value is a boolean on every driver, whatever form it gives 
   await assert.rejects(execute(bun(5) as never, q) as Promise<unknown>, /Column "done" is a boolean, stored as 0 or 1, and holds 5/);
 });
 
+// mysql2 and mariadb read rows by position, as the real drivers answer `rowsAsArray`.
+const mysql2Arrays = (names: [string, number, number?][], row: unknown[]) => ({ query: async () => [[], []], execute: async () => [[row], names.map(([name, columnType, decimals = 0]) => ({ name, columnType, decimals }))] });
+const mariadbArrays = (names: string[], row: unknown[]) => ({ batch: async () => ({}), query: async () => Object.assign([row], { meta: names.map((name) => ({ name: () => name })) }) });
+
+test("MySQL and SQLite: of two columns with one name a row keeps the last one's value, converted as that column's kind says and no other's", async () => {
+  // select u.*, o.* over a join: users' id is a BIGINT, its active a TINYINT(1) and its created_at a DATETIME(3); orders' are an INT, an INT and a VARCHAR.
+  const columns: Columns = [["id", "int8"], ["active", "bool"], ["created_at", "timestamp"], ["tags", "set"], ["id", "int"], ["active", "int"], ["created_at", "text"], ["tags", "text"]];
+  const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select 1", params: [], columns };
+  const names: [string, number, number?][] = [["id", 8], ["active", 1], ["created_at", 12, 3], ["tags", 254], ["id", 3], ["active", 3], ["created_at", 253], ["tags", 253]];
+  const expected = [{ id: 3, active: 5, created_at: "hello world", tags: "x,y" }];
+  assert.deepEqual(await execute(mysql2Arrays(names, ["7", 1, "2026-01-01 10:00:00.000", "x", 3, 5, "hello world", "x,y"]) as never, q), expected);
+  assert.deepEqual([...((await execute(mariadbArrays(names.map(([name]) => name), [7n, 1, "2026-01-01 10:00:00.000", ["x"], 3, 5, "hello world", "x,y"]) as never, q)) as unknown[])], expected);
+  // The other way round, the last column's kind still converts its value.
+  const reversed: QueryModule<"mysql"> = { ...q, columns: [...columns.slice(4), ...columns.slice(0, 4)] };
+  assert.deepEqual(await execute(mysql2Arrays([...names.slice(4), ...names.slice(0, 4)], [3, 5, "hello world", "x,y", "7", 1, "2026-01-01 10:00:00.000", "x"]) as never, reversed), [{ id: 7n, active: true, created_at: "2026-01-01T10:00:00.000", tags: new Set(["x"]) }]);
+
+  const db = new DatabaseSync(":memory:");
+  db.exec("create table u (id integer primary key, active boolean not null, code integer not null); create table o (id integer primary key, active integer not null, code text not null); insert into u values (7, 1, 5); insert into o values (3, 5, '007')");
+  const sqlite: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select u.*, o.* from u join o", params: [], columns: [["id", "int"], ["active", "bool"], ["code", "int"], ["id", "int"], ["active", "int"], ["code", "text"]] };
+  assert.deepEqual(await execute(db, sqlite), [{ id: 3, active: 5, code: "007" }]);
+  db.close();
+});
+
+test("MySQL: a select * built before a migration moved, added or dropped a column reads each value under its own column's name, with that column's kind", async () => {
+  // Built on (id, active, name, legacy).
+  const columns: Columns = [["id", "int"], ["active", "bool"], ["name", "text"], ["legacy", "text"]];
+  const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select 1", params: [], columns };
+  const run = async (names: string[], row: unknown[]) => {
+    const types: Record<string, number> = { id: 3, active: 1, extra: 3 };
+    const mysql2 = await execute(mysql2Arrays(names.map((name) => [name, types[name] ?? 253]), row) as never, q);
+    assert.deepEqual([...((await execute(mariadbArrays(names, row) as never, q)) as unknown[])], mysql2);
+    return mysql2;
+  };
+  assert.deepEqual(await run(["id", "active", "name", "legacy"], [1, 1, "Ada", "old"]), [{ id: 1, active: true, name: "Ada", legacy: "old" }]);
+  // `modify name … after id`.
+  assert.deepEqual(await run(["id", "name", "active", "legacy"], [1, "Ada", 1, "old"]), [{ id: 1, name: "Ada", active: true, legacy: "old" }]);
+  // `add column extra … after id`.
+  assert.deepEqual(await run(["id", "extra", "active", "name", "legacy"], [1, 42, 1, "Ada", "old"]), [{ id: 1, extra: 42, active: true, name: "Ada", legacy: "old" }]);
+  // `drop column legacy, add column phone … after id`.
+  assert.deepEqual(await run(["id", "phone", "active", "name"], [1, "555", 1, "Ada"]), [{ id: 1, phone: "555", active: true, name: "Ada" }]);
+  // A column a driver names otherwise than the module, as one with no alias may be, is the module's by its position.
+  const unnamed: QueryModule<"mysql"> = { ...q, columns: [["id", "int"], ["done", "bool"]] };
+  assert.deepEqual(await execute(mysql2Arrays([["id", 3], ["done ", 8]], [1, "1"]) as never, unnamed), [{ id: 1, done: true }]);
+  // A driver that writes a value into the statement names its column after the value, here the first column's name: still the module's, by position.
+  const written: QueryModule<"mysql"> = { ...q, columns: [["hey", "text"], ["?", "text"]] };
+  assert.deepEqual([...((await execute(mariadbArrays(["hey", "hey"], ["a", "b"]) as never, written)) as unknown[])], [{ hey: "a", "?": "b" }]);
+  // mariadb's callback API hands rows over with no metadata: the module's names, by position.
+  const bare = { batch: async () => ({}), query: async () => [[1, 1, "Ada", "old"]] };
+  assert.deepEqual([...((await execute(bare as never, q)) as unknown[])], [{ id: 1, active: true, name: "Ada", legacy: "old" }]);
+});
+
 test("MySQL: a VECTOR is an array of its floats on every driver that reads one, and its parameter binds their text", async () => {
-  const vector: EngineType = { kind: "array", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } }, name: "vector" };
+  const vector: EngineType = { kind: "array", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } }, label: "vector" };
   assert.equal(columnKind(vector, "mysql"), "float[]");
   assert.equal(renderType(vector), "number[]");
   assert.equal(renderParamType(vector, "mysql"), "number[]");
@@ -793,4 +908,26 @@ test("an array of arrays decodes its innermost elements by their kind, from text
   assert.deepEqual(textDecoder("int8[][]")("{{1,2},{3,NULL}}"), [[1n, 2n], [3n, null]]);
   assert.deepEqual(coerce("int8[][]", "{{1,2}}", "c"), [[1n, 2n]]);
   assert.deepEqual(coerce("int8[][]", [["1", "2"], ["3", null]], "c"), [[1n, 2n], [3n, null]]);
+});
+
+test("an array of rows reads as parseArray and parseRow read it, in every quoting record_out and array_out write", () => {
+  const row = `(${JSON.stringify(["a", "int"])},${JSON.stringify(["b", "text"])},${JSON.stringify(["c", "text"])})`;
+  const decode = textDecoder(row) as (text: string) => unknown;
+  for (const text of ['(1,"he said ""hi"", (ok) \\\\ back",)', '(1,,"")', "(,,)", "(2,NULL,x)", '(3,"a b","c\\"d")']) {
+    const [a, b, c] = parseRow(text, 3);
+    assert.deepEqual(decode(text), { a: a === null ? null : Number(a), b, c }, text);
+  }
+  const rows = textDecoder(`${row}[]`) as (text: string) => unknown;
+  const one = textDecoder(`(${JSON.stringify(["x", "int"])})[]`) as (text: string) => unknown;
+  assert.deepEqual(rows("{}"), []);
+  assert.deepEqual(rows("{NULL}"), [null]);
+  assert.deepEqual(one("{(1),NULL,(2)}"), [{ x: 1 }, null, { x: 2 }]);
+  assert.deepEqual(one("{()}"), [{ x: null }]);
+  assert.deepEqual(rows('{"(1,x,)","(2,\\"y z\\",\\"\\")"}'), [{ a: 1, b: "x", c: null }, { a: 2, b: "y z", c: "" }]);
+  // Another shape parseArray reads: lower bounds, and more than one dimension.
+  assert.deepEqual(rows('[0:0]={"(1,x,y)"}'), [{ a: 1, b: "x", c: "y" }]);
+  assert.deepEqual(rows('{{"(1,x,y)"},{"(2,a,b)"}}'), [[{ a: 1, b: "x", c: "y" }], [{ a: 2, b: "a", c: "b" }]]);
+  // A field named __proto__ is a field, whatever an assignment would make of it.
+  const proto = textDecoder(`(${JSON.stringify(["__proto__", "int"])})`) as (text: string) => object;
+  assert.deepEqual(Object.keys(proto("(1)")), ["__proto__"]);
 });

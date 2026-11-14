@@ -1,0 +1,1 @@
+select n::bigint as a, cast(n as varchar) as b, (n + 1)::double as c, length(label)::bigint as d, upper(label)::varchar as e, to_json(n)::bigint as f, (body || '')::varchar as g, :p::integer as p from docs

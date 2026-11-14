@@ -5,5 +5,6 @@ modifiers.sql: many () -> { d: text(utf8)?, f: text(utf8)?, u: float(11,52)? }
 now.sql: many () -> { d: text(utf8), e: text(utf8), l: text(utf8), s: float(11,52), f: text(utf8), m: text(utf8), z: text(utf8), u: int64, j: float(11,52) }
 numbers.sql: many () -> { d: text(utf8)?, u: text(utf8)?, j: float(11,52)? }
 printf.sql: many () -> { p: text(utf8)?, q: text(utf8), s: text(utf8)? }
+remainder.sql: many () -> { half: float(11,52)?, almost: float(11,52)?, milli: float(11,52)?, two_half: float(11,52), two: int64, divided: float(11,52) }
 substr.sql: many () -> { s: bytes?, t: text(utf8) }
 total.sql: one () -> { r: float(11,52)?, i: float(11,52) }

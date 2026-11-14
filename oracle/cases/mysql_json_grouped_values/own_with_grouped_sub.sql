@@ -1,0 +1,1 @@
+select u.id, (with q as (select p.user_id, p.n, p.id, p.tag from posts p) select json_object('m', max(q.n), 'a', json_arrayagg(q.id), 'c', count(*), 'k', concat(q.tag, '')) from q where q.user_id = u.id group by q.tag order by q.tag limit 1) as o from users u

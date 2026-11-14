@@ -10,8 +10,8 @@ description: How Reylo types SQL queries on MySQL. The TypeScript type of each c
 | | |
 | --- | --- |
 | MySQL versions | 8.0.22 or later; tested on 8.0, 8.4, 9.7 and 26.7 |
-| Connection | A `mysql://` URL in `DATABASE_URL` or [`direct_url`](/#direct_url) |
-| Drivers | `mysql2`, `mariadb`, PlanetScale and `Bun.sql`, and Drizzle over `mysql2` or PlanetScale ([Drivers](#drivers)) |
+| Connection | A `mysql://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url) |
+| Drivers | `mysql2`, `mariadb`, PlanetScale and `Bun.sql`, Drizzle over `mysql2` or PlanetScale, and Knex over `mysql2` or `mariadb` ([Drivers](#drivers)) |
 | Type checking | Reylo's engine connects to MySQL itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -55,6 +55,20 @@ create table events (
 ```
 
 </Details>
+
+## Where types come from [#sources]
+
+Reylo types each query from MySQL's own analysis of it.
+
+Reylo sends the query to the live database [prepared](https://dev.mysql.com/doc/refman/8.4/en/sql-prepared-statements.html) and reads back the database's own type information on its parameters and return type. Reylo adds which parameters may be null, the row count, and the shape of JSON the query builds.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the prepared statement's metadata; whether one may be null, from the statement |
+| Column types | the prepared statement's metadata; a JSON column read from its table as what its JSON Schema `CHECK` admits |
+| Nullability | the server's `NOT NULL` flag, then what the `where` and `group by` rule out |
+| Cardinality | primary and unique keys, aggregates; a write is `void` |
+| Nested JSON | built with `json_object` and `json_arrayagg`, typed from their arguments |
 
 ## Data types
 
@@ -242,6 +256,8 @@ from orders o
 join users u on u.id = o.user_id
 ```
 
+Inside `json_object`, an aggregate can sit beside the query's columns wherever its `group by` allows, in a scalar subquery too: `json_object('name', u.name, 'posts', count(*))` with `group by u.id` is `{ name: string; posts: number }`. With `group by 1`, or a `group by` by an alias from the select list, an object that mixes the two has `Json` values.
+
 A schema's type carries through `json_arrayagg`:
 
 ```ts twoslash tab="main.ts"
@@ -276,7 +292,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 A schema's type reaches the column when you select it straight from its table, and inside `json_object` or `json_arrayagg`. Through a subquery or a `with` query, under a `union`, in an expression, and as a parameter written to the column, it's `Json`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_json_reach.sql" dialect="mysql"
 select json_object('p', payload) as wrapped,
@@ -284,13 +300,13 @@ select json_object('p', payload) as wrapped,
 from events
 ```
 
-</Inferred>
+</InferenceCard>
 
 **An empty array as a default**
 
 Over no rows, `json_arrayagg` returns `NULL`. A default of an empty array keeps the array's type:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_json_default.sql" dialect="mysql"
 select coalesce(json_arrayagg(id), json_array()) as ids
@@ -298,7 +314,7 @@ from orders
 where user_id = :user_id
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -308,7 +324,7 @@ MySQL validates every schema as draft 4, whatever its `$schema` says, so `const`
 
 An `ENUM` is the union of its labels, and a `SET` a JavaScript `Set` of them.
 
-MySQL keeps a `SET`'s members once each, in the order the column declares them. A parameter written to a `SET` column, or compared with one, takes a `Set` too, and [`js.codecs`](/#jscodecs) can make both an array. `JSON.stringify` writes a `Set` as `{}`, so spread it into an array before sending it as JSON.
+MySQL keeps a `SET`'s members once each, in the order the column declares them. A parameter written to a `SET` column, or compared with one, takes a `Set` too, and [`js.codecs`](/configuration#jscodecs) can make both an array. `JSON.stringify` writes a `Set` as `{}`, so spread it into an array before sending it as JSON.
 
 <Pairs>
 
@@ -339,20 +355,20 @@ Every column is typed `| null` unless Reylo can tell it never is null. On MySQL,
 
 A table's column is non-null if it's `NOT NULL`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_columns.sql" dialect="mysql"
 select name, email
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Outer joins**
 
 An outer join makes the joined table's columns nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_left_join.sql" dialect="mysql"
 select u.name, o.total
@@ -360,13 +376,13 @@ from users u
 left join orders o on o.user_id = u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Tests that rule out `NULL`**
 
 A test that fails on `NULL`, in the `where` or a later inner join's `on`, makes its column non-null, and on a joined table shows the row exists. It doesn't count under an `or` that tests another column, or through `coalesce`, `ifnull` and `<=>`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_where.sql" dialect="mysql"
 select u.name, o.total, o.ships_on
@@ -375,13 +391,13 @@ left join orders o on o.user_id = u.id
 where o.ships_on is not null
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Expressions**
 
 An expression is non-null when the server says so: `coalesce` and `ifnull` with a non-null argument, `count`, `length`, comparisons and integer arithmetic. The server is cautious with string and date functions, most casts and division, which stay nullable even over a `NOT NULL` column.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_expressions.sql" dialect="mysql"
 select length(name) as n,
@@ -391,13 +407,13 @@ select length(name) as n,
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Aggregates**
 
-Without a `group by`, an aggregate other than `count`, `bit_and`, `bit_or` and `bit_xor` returns `NULL` over no rows. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
+Without a `group by`, an aggregate other than `count`, `bit_and`, `bit_or` and `bit_xor` returns `NULL` over no rows. Such a query returns its one row even then, so beside the aggregate a column is nullable, and so is a subquery that reads the row. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_aggregates.sql" dialect="mysql"
 select user_id,
@@ -408,13 +424,13 @@ from orders
 group by user_id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Subqueries**
 
 A scalar subquery that aggregates without a `group by` returns one row, so its `count` is non-null, whether it reads a table, a subquery in `from` or a `with` query. A column read from a `with` query or a subquery in `from` is as nullable as it is in that query.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_subqueries.sql" dialect="mysql"
 select d.id, d.orders
@@ -424,13 +440,13 @@ from (
 ) d
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Window functions**
 
 Over a window, `sum`, `avg`, `min` and `max` follow their argument, and `json_arrayagg` and `json_objectagg` are never null. A frame that can leave out the current row, such as `rows between 1 following and 2 following`, or a `range` frame with an offset keeps them nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_window.sql" dialect="mysql"
 select id,
@@ -439,13 +455,13 @@ select id,
 from orders
 ```
 
-</Inferred>
+</InferenceCard>
 
 **`WITH ROLLUP`**
 
 A `WITH ROLLUP` adds summary rows whose grouped columns are `NULL`, and the types include `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_null_rollup.sql" dialect="mysql"
 select role, count(*) as n
@@ -453,7 +469,7 @@ from users
 group by role with rollup
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -469,6 +485,8 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `Row \| null` | `maybeOne` | matches every column of a primary key or unique key with `=`, against a value of the key's own type, through joins on the joined table's numeric key, and through a derived table, a `with` query or a view that keeps the key; is a `distinct` or `group by` over values the `where` pins; or has `limit 1` |
 | `void` | `none` | is an `insert`, `update`, `delete` or `replace`, `on duplicate key update` included |
 | `Row[]` | `many` | is anything else |
+
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/inference#values)). Among several columns, such an expression is a type error where MySQL's name for it, its text, isn't an identifier, as with `count(*)`. That text also holds a bound value on a driver that writes values into the statement, so reading the column by that name is unsafe.
 
 MySQL has no `returning`, so a write returns nothing. To read a new row's id, select `last_insert_id()` on the same connection:
 
@@ -535,7 +553,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 
 MySQL reports every integer parameter as a `BIGINT`, so Reylo types it from the column it's compared with or written to. Elsewhere it uses MySQL's type, as for `limit`:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_param_int.sql" dialect="mysql"
 select name
@@ -544,7 +562,7 @@ where id > :after
 limit :n
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Dates and times**
 
@@ -566,6 +584,8 @@ A `BINARY`, `VARBINARY` or `BLOB` parameter takes only a `Uint8Array`, and rejec
 
 A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`.
 
+MySQL reads that JSON as a document where the parameter is written whole to a column, as in `set doc = :doc`, where it is the document a JSON function reads, as in `json_extract(:doc, '$.a')`, and where it is cast. Anywhere else, as in `json_set(doc, '$.name', :name)`, `:tag member of (…)` or a comparison, it would take the text for a string and store `"\"Ada\""`, so the query is a type error until you cast the parameter: `:name::json`.
+
 Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `NOT NULL` `JSON` column can hold. A `coalesce` or a null test doesn't make a parameter take null, so write `coalesce(:doc::nullable(json), doc)` to keep `doc` for `null`.
 
 ### Parameters that may be null
@@ -578,7 +598,7 @@ A parameter accepts `null` in two places. Such a parameter is optional in `.run(
 
 A cast to `nullable(type)` makes the parameter that type or `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_param_nullable.sql" dialect="mysql"
 select id, name
@@ -586,20 +606,20 @@ from users
 where role = coalesce(:role::nullable(text), role)
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Written to a nullable column**
 
 Written directly into a column that accepts `NULL`, with no cast, in an `insert`, `update`, `replace` or `on duplicate key update`. A column accepts it unless it's `NOT NULL` or a `check (… is not null)` covers it.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="my_param_insert.sql" dialect="mysql"
 insert into orders (user_id, total, ships_on)
 values (:user_id, :total, :ships_on)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -628,7 +648,7 @@ A `json_table` column of a text type takes your database's collation, where its 
 
 ## Database errors
 
-With [`.try()`](/#try), an error MySQL raised comes back as `{ error }`, with the same fields on every driver:
+With [`.try()`](/usage#try), an error MySQL raised comes back as `{ error }`, with the same fields on every driver:
 
 | Field | What it holds |
 | --- | --- |
@@ -643,7 +663,7 @@ With [`.try()`](/#try), an error MySQL raised comes back as `{ error }`, with th
 
 Reylo names the error from MySQL's own list whichever driver ran it, since each driver keeps an older list, or MariaDB's. MySQL names a key, a constraint or a column only in its message, which Reylo reads in English, so on a server whose `lc_messages` is another language those fields are `undefined`.
 
-When the query fires no trigger and calls no stored function, directly or through a view, its error type is narrowed: a duplicate entry names only the unique keys of the tables it writes, and a foreign key, check, null or value error only their constraints and columns.
+When the query fires no trigger and calls no stored function, directly or through a view, its error type is narrowed: a duplicate entry names only the unique keys of the tables it writes, and a foreign key, check, null or value error only their constraints and columns. A value of no column, as a cast that overflows, leaves `column` undefined.
 
 ## Drivers
 
@@ -756,6 +776,23 @@ await db.transaction(async (tx) => {
 });
 ```
 
+### Knex
+
+Pass a Knex instance over `mysql2` or `mariadb`, or a transaction or savepoint taken from it. Each query runs on a connection from the instance's pool, or on the transaction's own:
+
+```ts twoslash tab="main.ts"
+import knex from "knex";
+import getUser from "./my_get_user.sql";
+
+const db = knex({ client: "mysql2", connection: process.env.DATABASE_URL });
+const user = await getUser.run(db, { id: 1 });
+
+await db.transaction(async (trx) => {
+  await getUser.run(trx, { id: 1 });
+  await trx.transaction((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
 ## Limits
 
 What Reylo can't type on MySQL, and what to do instead:
@@ -764,11 +801,12 @@ What Reylo can't type on MySQL, and what to do instead:
 | --- | --- |
 | The labels of an `ENUM` or a `SET` a query reads through a `WITH` query, a `UNION` or an expression: it is typed `string`, or `Set<string>` | Select the column itself where you need the union |
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
+| An `if` or a `case` that returns a `BIT` column, which MySQL sends as the column's bytes under a `DECIMAL` type, or as a number under a `BIT` one: it is typed `unknown` | Make the column a number first: `if(n > 0, enabled + 0, 0)` |
 | A loadable function (`create function … soname`), which `information_schema` doesn't list, so `.readOnly` can't see one | Don't retry a query that calls one |
 | A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `Json` |
 | A `sql_mode` that changes how MySQL reads a query (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, `PIPES_AS_CONCAT`) | None: Reylo keeps MySQL's types, with no row counts or JSON shapes |
 | A `/*! … */` comment, which MySQL runs as SQL, so it's an error | Write it as plain SQL |
-| `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [Bulk inserts](/#bulk-inserts) |
+| `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [Bulk inserts](/inference#bulk-inserts) |
 | A query past 500 operators or 200 levels of nesting | None: Reylo falls back to MySQL's own types and any number of rows |
 | A statement other than a query, such as `create index` or `show tables` | None: it returns nothing, or rows whose columns are all nullable, as MySQL reports |
 | `explain` and `call`, whose rows MySQL describes only once they run | None: each is an error |

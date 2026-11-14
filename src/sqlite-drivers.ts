@@ -12,7 +12,8 @@
 // Cloudflare D1 is asked through the project's wrangler, which runs D1 locally: D1 refuses
 // functions its SQLite has (an allowlist it applies as SQLite compiles a statement, which nothing
 // lists: it refuses `pragma_function_list` too) and lacks others (FTS4, Geopoly), so the only way
-// to know is to compile the statement there (src/d1-proxy.ts).
+// to know is to compile the statement there (src/d1-proxy.ts). A Durable Object's SQL storage
+// refuses the same, so a project with SQLite-backed Durable Objects and no D1 database is asked as well.
 import { fork } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -124,9 +125,11 @@ const DRIVERS: [string, Open][] = [
 /** How long workerd may take to start before D1 is left out. */
 const D1_START = 30_000;
 
-/** A D1 child process: the version of wrangler it runs, and a statement compiled there against `ddl`. */
+/** A D1 child process: the version of wrangler it runs, what it stands for, and a statement compiled there against `ddl`. */
 interface D1Process {
   readonly version: string;
+  /** The project's own D1 database, or the storage of its Durable Objects where it has no D1 database. */
+  readonly storage: "d1" | "durable-object";
   explain(sql: string, params: number, ddl: string[]): Promise<string | undefined>;
   close(): void;
 }
@@ -157,8 +160,8 @@ function wranglerConfig(dir: string): string {
 
 /**
  * D1 as the project's wrangler runs it locally, in a child process (src/d1-proxy.ts), given the
- * schema of the database the type check reads. A project whose wrangler config binds no D1
- * database is not asked.
+ * schema of the database the type check reads. A project whose wrangler config has neither a D1
+ * database nor a SQLite-backed Durable Object is not asked.
  */
 async function openD1(require: Require, path: string): Promise<SqliteDriver> {
   const entry = require.resolve("wrangler");
@@ -178,7 +181,7 @@ async function openD1(require: Require, path: string): Promise<SqliteDriver> {
   const schema = new DatabaseSync(path, { readOnly: true });
   return {
     name: "wrangler",
-    says: (refusal) => `Cloudflare D1, as wrangler ${d1.version} runs it locally, refuses this statement: ${refusal}`,
+    says: (refusal) => `${d1.storage === "d1" ? "Cloudflare D1" : "A Durable Object's SQL storage"}, as wrangler ${d1.version} runs it locally, refuses this statement: ${refusal}`,
     async refuses(sql, params) {
       // The schema is read for each statement, so D1 compiles it against the tables the analysis
       // read, after a migration too.
@@ -220,7 +223,7 @@ async function startD1(entry: string, dir: string, ended: () => void): Promise<D
     env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
   });
   child.unref();
-  type Reply = { kind: "ready"; d1: boolean } | { kind: "explain"; id: number; error?: string };
+  type Reply = { kind: "ready"; d1: boolean; storage?: D1Process["storage"] } | { kind: "explain"; id: number; error?: string };
   const pending = new Map<number, (error: string | undefined) => void>();
   let next = 0;
   // The schema D1 was last given, so it is sent again only when it changes.
@@ -236,6 +239,7 @@ async function startD1(entry: string, dir: string, ended: () => void): Promise<D
     if (!pending.size) child.channel?.unref();
   });
   let running = false;
+  let storage: D1Process["storage"] = "d1";
   child.once("exit", () => {
     if (running) ended();
     for (const settle of pending.values()) settle(undefined);
@@ -248,7 +252,8 @@ async function startD1(entry: string, dir: string, ended: () => void): Promise<D
   try {
     const timeout = new Promise<never>((_, fail) => setTimeout(() => fail(new Error("workerd did not start")), D1_START).unref());
     const ready = await Promise.race([gone, timeout, new Promise<Extract<Reply, { kind: "ready" }>>((done) => child.once("message", done))]);
-    if (!ready.d1) throw new Error("the wrangler config binds no D1 database");
+    if (!ready.d1) throw new Error("the wrangler config has neither a D1 database nor a SQLite-backed Durable Object");
+    storage = ready.storage ?? "d1";
   } catch (e) {
     stop();
     throw e;
@@ -257,6 +262,7 @@ async function startD1(entry: string, dir: string, ended: () => void): Promise<D
   child.channel?.unref();
   return {
     version,
+    storage,
     close: stop,
     explain: (sql, params, ddl) =>
       new Promise((done) => {

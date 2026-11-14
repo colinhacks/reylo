@@ -43,7 +43,7 @@ const URLS: Record<Exclude<Dialect, 'sqlite' | 'duckdb'>, string> = {
   postgres: process.env.REYLO_CAPTURE_POSTGRES ?? 'postgres://postgres@localhost:54329/reylo_capture',
   mysql: process.env.REYLO_CAPTURE_MYSQL ?? 'mysql://root@127.0.0.1:54336/reylo_capture',
 };
-/** The scratch database an `<Inferred>` card's own schema is built in, on the same server: made again for each card. */
+/** The scratch database an inference card's own schema is built in, on the same server: made again for each card. */
 const cardUrl = (url: string) => {
   const u = new URL(url);
   u.pathname = `/${decodeURIComponent(u.pathname.slice(1))}_card`;
@@ -172,11 +172,14 @@ async function render(session: Session, source: string, written: string, sql: st
   const order = names;
   if (dialect === 'postgres' && analysis.kind === undefined) return { error: 'the statement is empty' };
   const columns = analysis.columns.map((c) => `${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`);
+  // A statement whose one column has no name gives that column's values.
+  const [only] = analysis.columns;
+  const rowType = analysis.value && only ? (only.nullable ? orNull(renderType(only.type, false, dialect)) : renderType(only.type, false, dialect)) : columns.length ? `{ ${columns.join('; ')} }` : 'never';
   const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect, false, q.members))] as const);
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
   const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
-  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect), analysis.ordered === true), analysis };
+  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', rowType, inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect), analysis.ordered === true), analysis };
 }
 
 // ---- The scratch databases ----
@@ -278,8 +281,8 @@ try {
     try {
       blocks = collectFiles(page, site);
       needed = new Set(plan(blocks).flatMap((p) => p.variants.flatMap((v) => v.needs.map((n) => n.block))));
-      // An <Inferred> card shows its statement's types, so its module is kept whether or not a block imports it.
-      for (const block of blocks) if (block.inferred) needed.add(block);
+      // An inference card shows its statement's types, so its module is kept whether or not a block imports it.
+      for (const block of blocks) if (block.inferenceCard) needed.add(block);
     } catch (e) {
       errors.push(`${shown}: ${(e as Error).message}`);
       continue;
@@ -381,7 +384,7 @@ try {
           await mapper.close();
         }
       }
-      // A statement of an <Inferred> card that shows its own schema is analyzed against that schema,
+      // A statement of an inference card that shows its own schema is analyzed against that schema,
       // built for it alone: in a scratch database made again for each card, beside the page's, and
       // a project of its own, so no session or cache of the page's schema answers for it.
       for (const [i, block] of mine.filter((b) => b.schema !== undefined).entries()) {

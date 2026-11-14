@@ -4,7 +4,7 @@ One complete, working project for each setup the [docs](https://reylo.dev/#setup
 
 | Example | Setup | Database and driver | What runs |
 | --- | --- | --- | --- |
-| [node](./node) | `node --import reylo/register` ([Node](https://reylo.dev/#node)) | Postgres, postgres.js | a script, and tests with Node's test runner |
+| [node](./node) | `node --import reylo/register` ([Node](https://reylo.dev/#setup-node)) | Postgres, postgres.js | a script, and tests with Node's test runner |
 | [nub](./nub) | the preload in `nub.jsonc` ([nub](https://reylo.dev/#setup-nub)) | SQLite, `node:sqlite` | a script, and tests with `nub --test` |
 | [bun](./bun) | the preload in `bunfig.toml`, and `Bun.build` with `reylo/esbuild` ([Bun](https://reylo.dev/#setup-bun)) | SQLite, `bun:sqlite` | a script, `bun test`, and a bundle |
 | [vite](./vite) | `reylo/vite` in a React Router app ([Vite](https://reylo.dev/#setup-vite)) | Postgres, pg | the dev server, the production server, and Vitest |

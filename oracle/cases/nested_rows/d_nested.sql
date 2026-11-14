@@ -1,0 +1,1 @@
+select p.id, array(select c from (select x.id, array(select r from (select id, body from replies where comment_id = x.id) r) as replies from comments x where x.post_id = p.id) c) as comments from posts p

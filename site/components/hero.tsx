@@ -39,7 +39,7 @@ export function HeroTitle({ children }: { children: ReactNode }) {
  * Under the main page's subheader (content/docs/index.mdx): the licence, npm and GitHub stars
  * badges, then "Copy agent prompt", centred, as at the top of Zod's README.
  */
-export function HeroActions() {
+export function HeroActions({ agentPrompt }: { agentPrompt?: string }) {
   return (
     <div className="hero-actions not-prose">
       <p className="hero-badges">
@@ -53,7 +53,7 @@ export function HeroActions() {
           <img src="https://img.shields.io/github/stars/colinhacks/reylo" alt="GitHub stars" height={20} />
         </a>
       </p>
-      <CopyAgentPrompt />
+      <CopyAgentPrompt text={agentPrompt} />
     </div>
   );
 }

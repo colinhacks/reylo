@@ -307,17 +307,17 @@ export async function callTry(ctx: Ctx, q: any, client: Client, params?: Record<
 
 // Parameter types as the engine writes them (spec/index.ts), each with what the run time reads of it.
 const T = {
-  int4: { kind: "integer", bits: 32, name: "int4" },
-  int8: { kind: "integer", bits: 64, name: "int8" },
-  bool: { kind: "boolean", name: "bool" },
-  text: { kind: "text", name: "text" },
-  bytea: { kind: "bytes", name: "bytea" },
-  date: { kind: "date", name: "date" },
-  timestamp: { kind: "datetime", tick: "1/1000000", name: "timestamp" },
-  timestamptz: { kind: "instant", tick: "1/1000000", name: "timestamptz" },
+  int4: { kind: "integer", bits: 32, label: "int4" },
+  int8: { kind: "integer", bits: 64, label: "int8" },
+  bool: { kind: "boolean", label: "bool" },
+  text: { kind: "text", label: "text" },
+  bytea: { kind: "bytes", label: "bytea" },
+  date: { kind: "date", label: "date" },
+  timestamp: { kind: "datetime", tick: "1/1000000", label: "timestamp" },
+  timestamptz: { kind: "instant", tick: "1/1000000", label: "timestamptz" },
   json: { kind: "json" },
 };
-const array = (element: object, name?: string) => ({ kind: "array", any_depth: true, element: { type: element }, ...(name === undefined ? {} : { name }) });
+const array = (element: object, name?: string) => ({ kind: "array", any_depth: true, element: { type: element }, ...(name === undefined ? {} : { label: name }) });
 
 export function queries(d: Dialect, typed = true) {
   const t = (n: string) => (d === "sqlite" ? n : `driver_matrix.${n}`);
@@ -383,6 +383,8 @@ export function queries(d: Dialect, typed = true) {
     typedBig: q(`select id, big from ${t("typed")} where id = 1`, [], "one", { columns: [["id", "int"], ["big", d === "sqlite" ? "int" : "int8"]] }),
     // A row of no type the catalog has, and an array of them, whose oids say nothing of their fields.
     anonymousRows: q(`select s, array[s] as many from (select id, big from ${t("typed")} where id = 1) s`, [], "one", { columns: [["s", ANONYMOUS_ROW], ["many", `${ANONYMOUS_ROW}[]`]] }),
+    // The same rows as a subquery's array, which is empty over no rows.
+    arrayOfRows: q(`select array(select s from (select id, big from ${t("typed")} where id = 1) s) as many, array(select s from (select id, big from ${t("typed")} where id = 0) s) as none`, [], "one", { columns: [["many", `${ANONYMOUS_ROW}[]`], ["none", `${ANONYMOUS_ROW}[]`]] }),
     // SQLite's column declared BIGINT, which the engine types int8.
     typedWide: q(`select id, wide from ${t("typed")} where id = 1`, [], "one", { columns: [["id", "int"], ["wide", "int8"]] }),
     // SQLite: JSON the statement builds, with the kinds the loader writes from the engine's types
@@ -430,17 +432,17 @@ const TYPED_COLUMNS: Record<Dialect, ([string, string] | [string, string, string
   sqlite: [["id", "int"], ["n", "int"], ["r", "float"], ["s", "text"], ["b", "bytes"], ["doc", "json"], ["flag", "bool"], ["x", "unknown"]],
 };
 
-const mood = { kind: "text", enum: ["ok", "sad"], name: "driver_matrix.mood" };
-const my = (kind: string, name: string, more: object = {}) => ({ kind, ...more, name });
+const mood = { kind: "text", enum: ["ok", "sad"], label: "driver_matrix.mood" };
+const my = (kind: string, label: string, more: object = {}) => ({ kind, ...more, label });
 /** The parameter types the engine gives `c = :c` for each `typed` column (tests/render.test.ts, ROUND_TRIPS): on MySQL by the column it is compared with (engine/mysql `mysql_params.rs`), on SQLite by the column's affinity. */
 const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
   postgres: {
-    big: T.int8, amount: { kind: "decimal", name: "numeric" }, day: T.date, at: T.timestamp, stamp: T.timestamptz, doc: { ...T.json, name: "json" }, docb: { ...T.json, name: "jsonb" }, raw: T.bytea, flag: T.bool, f8: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, name: "float8" },
-    tags: array(T.text, "_text"), ints: array(T.int4, "_int4"), moods: array(mood, "driver_matrix._mood"), span: { kind: "duration", name: "interval" }, uid: { kind: "uuid", name: "uuid" },
-    pr: { kind: "record", name: "driver_matrix.pair", fields: [{ name: "a", type: T.int4, nullable: true }, { name: "b", type: T.text, nullable: true }] },
-    pt: { kind: "record", name: "point", fields: [{ name: "x", type: { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "float8" } }, { name: "y", type: { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "float8" } }] },
-    seats: { kind: "range", subtype: T.int4, name: "int4range" },
-    many: { kind: "multirange", subtype: T.int8, name: "int8multirange" },
+    big: T.int8, amount: { kind: "decimal", label: "numeric" }, day: T.date, at: T.timestamp, stamp: T.timestamptz, doc: { ...T.json, label: "json" }, docb: { ...T.json, label: "jsonb" }, raw: T.bytea, flag: T.bool, f8: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, label: "float8" },
+    tags: array(T.text, "_text"), ints: array(T.int4, "_int4"), moods: array(mood, "driver_matrix._mood"), span: { kind: "duration", label: "interval" }, uid: { kind: "uuid", label: "uuid" },
+    pr: { kind: "record", label: "driver_matrix.pair", fields: [{ name: "a", type: T.int4, nullable: true }, { name: "b", type: T.text, nullable: true }] },
+    pt: { kind: "record", label: "point", fields: [{ name: "x", type: { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "float8" } }, { name: "y", type: { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "float8" } }] },
+    seats: { kind: "range", subtype: T.int4, label: "int4range" },
+    many: { kind: "multirange", subtype: T.int8, label: "int8multirange" },
   },
   mysql: {
     big: my("integer", "bigint", { bits: 64 }), ubig: my("integer", "bigint", { bits: 64, unsigned: true }), amount: my("decimal", "decimal"), day: my("date", "date"), at: my("datetime", "datetime", { tick: "1/1000000" }), doc: my("json", "json"),
@@ -449,7 +451,7 @@ const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
   },
   sqlite: {
     n: { kind: "integer", bits: 64 }, r: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, s: { kind: "text", ill_formed: "utf8" }, b: { kind: "bytes" },
-    flag: { kind: "union", name: "NUMERIC", members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, { kind: "text", ill_formed: "utf8" }, { kind: "bytes" }] },
+    flag: { kind: "union", label: "NUMERIC", members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, { kind: "text", ill_formed: "utf8" }, { kind: "bytes" }] },
     x: { kind: "unknown" },
   },
 };
@@ -1007,6 +1009,7 @@ export const SCENARIOS: Scenario[] = [
           const row = { id: 1, big: TYPED[d].big };
           // Twice: PGlite names a statement's oids from its earlier runs.
           for (let run = 0; run < 2; run++) typedEq(await call(ctx, q.anonymousRows, client), { s: row, many: [row] }, "a row of no catalog type");
+          for (let run = 0; run < 2; run++) typedEq(await call(ctx, q.arrayOfRows, client), { many: [row], none: [] }, "an array of a subquery's rows");
         }
         return;
       }

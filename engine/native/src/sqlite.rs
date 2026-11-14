@@ -41,7 +41,8 @@ struct File {
 /// each, as the program's are, and keeps the engine's answers between them.
 pub struct Session {
     connection: Connection,
-    /// The version of the SQLite that reads the file, as `3.50.2`.
+    /// The version of the SQLite that types the statements, as `3.53.4`: the engine's own, not
+    /// the one that reads the file here.
     pub version: String,
 }
 
@@ -50,7 +51,7 @@ impl Session {
     pub fn open(path: &str) -> Result<Session, crate::Failure> {
         let file = File::new(path);
         file.open().map_err(|e| crate::Failure::Unreachable(e.to_string()))?;
-        Ok(Session { connection: Connection { file, answers: AnswerCache::until_cleared() }, version: rusqlite::version().to_string() })
+        Ok(Session { connection: Connection { file, answers: AnswerCache::until_cleared() }, version: reylo_engine::sqlite::sqlite_tree::version().to_string() })
     }
 
     pub fn analyze(&mut self, sql: &str) -> Result<reylo_engine_core::api::Analysis, crate::Failure> {
@@ -76,7 +77,7 @@ impl Program for Sqlite {
                     Ok(_) => {
                         self.next += 1;
                         self.connections.insert(self.next, Connection { file, answers: AnswerCache::until_cleared() });
-                        json!({ "status": "opened", "conn": self.next, "version": rusqlite::version() })
+                        json!({ "status": "opened", "conn": self.next, "version": reylo_engine::sqlite::sqlite_tree::version() })
                     }
                     // A file that cannot be opened is a database that cannot be reached: a build runs on `.reylo/`.
                     Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),

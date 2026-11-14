@@ -21,3 +21,4 @@ partitioned_half.sql: none (id: int8, region: text) -> {  } !! reylo13: ON CONFL
 primary_key.sql: none (id: int8, name: text?) -> {  }
 schema_qualified.sql: none (id: int8, name: text?) -> {  } !! reylo13: ON CONFLICT (name) matches no unique index or constraint of `public.bar`: none has exactly (name) as its key. The server prepares this statement and refuses every execution (42P10).
 view.sql: none (id: int8, name: text) -> {  }
+written_before.sql: at_most_one () -> { k: int4, v: text? }

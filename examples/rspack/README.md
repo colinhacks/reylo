@@ -50,6 +50,6 @@ Misspell a column in `queries/get_user.sql` and run `nub run typecheck` again: t
 
 ## Notes
 
-- pg requires `pg-native` inside a `try`, for `pg.native` only, and Rspack warns that it cannot resolve it. Rspack's `IgnorePlugin` leaves it out; an app that uses `pg.native` installs `pg-native` and lists it in `externals` instead, since a native addon cannot be bundled.
+- pg requires `pg-native` inside a `try`, for `pg.native` only, and Rspack warns that it cannot resolve it. Rspack's `IgnorePlugin` leaves it out. Reylo refuses pg's native client in any case, since it ignores the type parsers a query passes.
 - The loader `builtin:swc-loader` strips the types and takes its syntax target from `target`, so the bundle keeps Node 24's syntax; `tsc` checks the types.
 - The `typescript` package is pinned to `7.1.0-beta`: a range such as `^7.1.0-beta` also takes the nightlies, `7.1.0-dev.*`, which semver orders above the beta.

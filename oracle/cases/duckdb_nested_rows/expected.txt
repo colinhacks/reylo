@@ -1,0 +1,10 @@
+all_null_field.sql: one () -> { rows: ({ n: integer? })[] }
+column_named_as_alias.sql: one () -> { rows: varchar?[] }
+derived.sql: many () -> { id: bigint, comments: ({ id: bigint, body: varchar?, big: hugeint })[] }
+empty.sql: one () -> { rows: ({ id: bigint })[] }
+filtered.sql: one () -> { rows: ({ id: bigint, post_id: bigint, body: varchar?, big: hugeint })[] }
+nested.sql: many () -> { id: bigint, cs: ({ id: bigint, rs: ({ note: varchar })[] })[] }
+outer_element.sql: one () -> { rs: ({ id: bigint?, comment_id: bigint?, note: varchar? }?)[] }
+recursive.sql: many () -> { cs: ({ id: integer? }?)[]? }
+table_rows.sql: many () -> { id: bigint, comments: ({ id: bigint, post_id: bigint, body: varchar?, big: hugeint })[] }
+with_query.sql: one () -> { rows: ({ id: bigint, body: varchar? })[] }

@@ -12,8 +12,8 @@ import { querySchemas, typeSchema } from "../src/schema.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import { DRIVERS, INDEX, MYSQL, driver, mysqlDatabase, mysqlLive } from "./helpers.ts";
 
-const int4 = (facts: object): EngineType => ({ kind: "integer", bits: 32, name: "int4", ...facts }) as EngineType;
-const varchar = (facts: object): EngineType => ({ kind: "text", name: "varchar", ...facts }) as EngineType;
+const int4 = (facts: object): EngineType => ({ kind: "integer", bits: 32, label: "int4", ...facts }) as EngineType;
+const varchar = (facts: object): EngineType => ({ kind: "text", label: "varchar", ...facts }) as EngineType;
 const output = (t: EngineType, inJson = false) => typeSchema(t, "postgres", false, inJson);
 
 test("a text's size in code points and a LIKE pattern are written, and nothing else of a string", () => {
@@ -23,6 +23,17 @@ test("a text's size in code points and a LIKE pattern are written, and nothing e
   assert.deepEqual(output(varchar({ size: { unit: "byte", encoding: "UTF-8", max: 63 } })), { type: "string" });
   assert.deepEqual(output(varchar({ pattern: { dialect: "postgres", source: "^a" } })), { type: "string" });
   assert.deepEqual(output(varchar({ pattern: { dialect: "ilike", source: "a%" } })), { type: "string" });
+});
+
+test("a UUID's version fixes its version digit and its variant, and one with none is any UUID", () => {
+  const uuid = (facts: object): EngineType => ({ kind: "uuid", label: "uuid", ...facts }) as EngineType;
+  assert.deepEqual(output(uuid({})), { type: "string", format: "uuid" });
+  const regex = new RegExp((output(uuid({ version: 7 })) as { pattern: string }).pattern);
+  assert.ok(regex.test("019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"));
+  assert.ok(regex.test("019A6B2C-3D4E-7F80-BA1B-2C3D4E5F6071"));
+  // Version 4, and a 7 where the version stands in a UUID of no RFC 9562 variant.
+  assert.ok(!regex.test("3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d"));
+  assert.ok(!regex.test("00000000-0000-7000-0000-000000000003"));
 });
 
 test("a LIKE pattern reads as the regular expression matching the same whole values", () => {
@@ -43,19 +54,19 @@ test("a number's facts are written where its form here is a JSON number and they
   assert.deepEqual(output(int4({ min: "0", max: "150" })), { type: "integer", format: "int32", minimum: 0, maximum: 150 });
   assert.deepEqual(output(int4({ multiple_of: "5" })), { type: "integer", format: "int32", multipleOf: 5 });
   assert.deepEqual(output(int4({ enum: ["1", "2"] })), { type: "integer", format: "int32", enum: [1, 2] });
-  const int8 = { kind: "integer", bits: 64, name: "int8" };
+  const int8 = { kind: "integer", bits: 64, label: "int8" };
   assert.deepEqual(output({ ...int8, min: "1", max: "9223372036854775806" } as EngineType), { type: "integer", format: "int64", minimum: 1 });
-  const float8 = { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "float8" };
+  const float8 = { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "float8" };
   assert.deepEqual(output({ ...float8, exclusive_min: "0", max: "1.5" } as EngineType), { type: "number", format: "double", exclusiveMinimum: 0, maximum: 1.5 });
   // A decimal `.run()` gives as its text takes no bounds, and inside a document it is a number.
-  const numeric = { kind: "decimal", name: "numeric", min: "0", exclusive_max: "1e131072" } as EngineType;
+  const numeric = { kind: "decimal", label: "numeric", min: "0", exclusive_max: "1e131072" } as EngineType;
   assert.deepEqual(output(numeric), { type: "string", format: "decimal" });
   assert.equal((output(numeric, true) as { minimum?: number }).minimum, 0);
   assert.equal((output(numeric, true) as { exclusiveMaximum?: number }).exclusiveMaximum, undefined);
 });
 
 test("an array's size is written on an array", () => {
-  const vector = { kind: "array", name: "vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } }, size: { exact: 3 } } as EngineType;
+  const vector = { kind: "array", label: "vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } }, size: { exact: 3 } } as EngineType;
   const schema = output(vector) as { minItems?: number; maxItems?: number };
   assert.deepEqual([schema.minItems, schema.maxItems], [3, 3]);
 });
@@ -66,7 +77,7 @@ test("a nullable position keeps its facts beside null, and comments describe wha
       comment: "One user",
       params: [
         { name: "age", type: int4({ min: "0" }), nullable: true, comment: "Their age" },
-        { name: "doc", type: { kind: "json", name: "jsonb" } as EngineType, schema: { type: "object", description: "As written" }, comment: "Column comment" },
+        { name: "doc", type: { kind: "json", label: "jsonb" } as EngineType, schema: { type: "object", description: "As written" }, comment: "Column comment" },
       ],
       columns: [{ name: "name", type: varchar({ size: { max: 20 } }), nullable: true, comment: "Shown on the profile page" }],
       cardinality: "one",
@@ -81,7 +92,7 @@ test("a nullable position keeps its facts beside null, and comments describe wha
 });
 
 test("a comment stands over a description the type gives, and beneath one the statement's author wrote", () => {
-  const timestamp = { kind: "datetime", name: "timestamp" } as EngineType;
+  const timestamp = { kind: "datetime", label: "timestamp" } as EngineType;
   const schemas = querySchemas(
     {
       params: [{ name: "at", type: timestamp, comment: "When to look" }],
@@ -98,10 +109,10 @@ test("a comment stands over a description the type gives, and beneath one the st
 
 test("a time with no zone and MySQL's TIME take no format their values would fail", () => {
   const schema = (t: object, dialect: "postgres" | "mysql") => typeSchema(t as EngineType, dialect) as { type: string; format?: string };
-  const time = schema({ kind: "time", tick: "1/1000000", max: "24:00:00", name: "time" }, "postgres");
+  const time = schema({ kind: "time", tick: "1/1000000", max: "24:00:00", label: "time" }, "postgres");
   assert.equal(time.format, undefined);
   assert.equal(validate(time, "10:00:00.5"), undefined);
-  const span = schema({ kind: "duration", max: "PT838H59M59S", tick: "1/10000", name: "time" }, "mysql");
+  const span = schema({ kind: "duration", max: "PT838H59M59S", tick: "1/10000", label: "time" }, "mysql");
   assert.equal(span.format, undefined);
   for (const value of ["-838:59:59.0000", "838:59:59", "12:00:00.1235"]) assert.equal(validate(span, value), undefined);
 });

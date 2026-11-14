@@ -11,7 +11,7 @@ import { NotMysql, reason, refusedLogin } from "./connection.ts";
 import { duckdbDatabase } from "./duckdb.ts";
 import { AnswerCache, anyEngine, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
 import { placeholdersOf, untypedParams } from "./module-types.ts";
-import { dialectOf, duckdbPath, PROJECT_FILE, resolveProject, sqlitePath, type Dialect as Database } from "./project.ts";
+import { dialectOf, duckdbPath, PROJECT_FILE, resolveProject, sqlitePath, sqliteUrlProblem, type Dialect as Database } from "./project.ts";
 
 /** The format version `analyze` writes, as the URL of its JSON Schema (spec/typedefs.schema.json), which the type holds to the spec's. */
 const SCHEMA: StatementDescriptor["$schema"] = "https://reylo.dev/typedefs/0.1.0.json";
@@ -35,6 +35,8 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
   // A relative path in a URL the caller named is the caller's, from the working directory; one in the
   // project's URL is from the project's root, as the type check reads it.
   const base = given === undefined ? project.root : cwd;
+  const unusable = dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
+  if (unusable) throw new Error(`Cannot read the SQLite URL ${url} (the url given): ${unusable}.`);
   const strict: Strict = { params: project.strictParams, file: project.file ? basename(project.file) : PROJECT_FILE };
   if (dialect === "duckdb") return analyzeDuckdb(duckdbPath(url, base), project.root, sql, strict);
   const target = (u: string) => (dialect === "sqlite" ? sqlitePath(u, base) : u);
@@ -167,8 +169,13 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
     ...(a.kind !== undefined && { kind: a.kind }),
     ...(a.comment !== undefined && { comment: a.comment }),
     params: a.params.map((p) => ({ name: p.name, type: p.type, ...(p.nullable && { nullable: true }), ...(p.optional && { optional: true }), ...(p.comment !== undefined && { comment: p.comment }) })),
-    columns: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })),
-    cardinality: a.cardinality,
+    result: {
+      kind: "rows",
+      cardinality: a.cardinality,
+      columns: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })),
+      ...(a.unique?.length && { unique: a.unique }),
+      ...(a.order?.length && { order: a.order }),
+    },
     diagnostics: [...a.diagnostics, ...untyped].map((d) => {
       const start = utf16(sql, d.start);
       return { message: d.message, start, end: Math.max(utf16(sql, d.start + d.length), start), ...(d.server_code !== undefined && { code: d.server_code }) };
@@ -178,7 +185,7 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
 
 /** A statement the engine could not analyze: no parameters or columns, and one diagnostic over the whole of it. */
 function refused(sql: string, dialect: Database, version: string, message: string): StatementDescriptor {
-  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], columns: [], cardinality: "many", diagnostics: [{ message, start: 0, end: sql.length }] };
+  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], result: { kind: "rows", cardinality: "many", columns: [] }, diagnostics: [{ message, start: 0, end: sql.length }] };
 }
 
 /** The UTF-16 offset of the UTF-8 byte offset `byte` of `text`: a byte inside a character counts from the character's start, and one past the end at the end (`utf16_offset` in engine/core/src/api.rs). */

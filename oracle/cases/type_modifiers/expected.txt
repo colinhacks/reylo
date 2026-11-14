@@ -1,5 +1,5 @@
 casts.sql: many () -> { short: varchar(≤3), coarse: numeric(11,1)?, whole_second: timestamp?, padded: bpchar(=3)?, by_minute: interval? }
-columns.sql: at_most_one (id: int4) -> { name: varchar(≤20), code: bpchar(=5), flag: bpchar(=1)?, price: numeric(10,2)?, rounded: numeric(5,-2)?, whole: numeric(5,0)?, at_time: time?, at_zone: timetz?, at: timestamp?, at_tz: timestamptz?, flags: bit(boolean[7])?, bits: varbit(boolean[..5])?, tags: varchar(≤8)?[]?, mail: varchar(≤255)? }
+columns.sql: at_most_one (id: int4) -> { name: varchar(≤20), code: bpchar(=5), flag: bpchar(=1)?, price: numeric(10,2)?, rounded: numeric(5,-2)?, whole: numeric(5,0)?, at_time: time?, at_zone: timetz?, at: timestamp?, at_tz: timestamptz?, flags: bit(boolean[7])?, bits: varbit(boolean[..5])?, tags: varchar(≤8)?[]?, mail: varchar(≤255, like %@%)? }
 compared.sql: many (price: numeric, name: text) -> { id: int4 } key (id)
 composite.sql: many () -> { home: public.address{ street: text?, zip: varchar(≤10)? }?, zip: varchar(≤10)? }
 expressions.sql: many () -> { up: text, same: varchar(≤20), doubled: numeric?, first_tag: varchar(≤8)?, top: text }

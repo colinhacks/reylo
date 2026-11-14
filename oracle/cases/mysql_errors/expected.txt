@@ -4,9 +4,9 @@ call_tax.sql: one (n: int32) -> { n: int | bigint | double | decimal? }
 delete_banned.sql: none (id: int32) -> {  }
 delete_bans.sql: none (id: int32) -> {  }
 delete_user.sql: none (id: int32) -> {  }
-insert_audited.sql: none (id: int32) -> {  }
-insert_post.sql: none (id: int32, user_id: int32, title: varchar) -> {  }
-insert_user.sql: none (id: int32, email: varchar, age: int32?) -> {  }
+insert_audited.sql: none (id: int) -> {  }
+insert_post.sql: none (id: int, user_id: int, title: varchar(≤20)) -> {  }
+insert_user.sql: none (id: int, email: varchar(≤20), age: int?) -> {  }
 select_taxed.sql: many () -> { id: int | bigint, taxed: int | bigint? }
 select_view.sql: at_most_one (id: int32) -> { id: int | bigint, email: varchar }
-upsert_user.sql: none (id: int32, email: varchar, age: int32?) -> {  }
+upsert_user.sql: none (id: int, email: varchar(≤20), age: int?) -> {  }

@@ -25,3 +25,51 @@ export const pageTitle = (database: string) => `Reylo on ${database}: types, nul
 
 /** The comparison's title in search results and link previews. */
 export const compareTitle = 'Reylo compared with sqlc, sqlx, PgTyped and others';
+
+/** A page's title in search results and link previews, where the title is not a database's. */
+export const docsTitle = (title: string) => `${title} — Reylo`;
+
+/** The list of pages in the left column, by group, and the links away from the docs at its foot. */
+export const pageGroups = [
+  {
+    label: 'Docs',
+    items: [
+      { title: 'Intro', href: '/' },
+      { title: 'Usage', href: '/usage' },
+      { title: 'Inference', href: '/inference' },
+      { title: 'Observability', href: '/observability' },
+      { title: 'Schema changes', href: '/schema-changes' },
+      { title: 'Comparison', href: '/compare' },
+      { title: 'FAQ', href: '/faq' },
+    ],
+  },
+  {
+    label: 'Guides',
+    items: [
+      { title: 'Cloudflare Workers', href: '/cloudflare' },
+      { title: 'Next.js', href: '/nextjs' },
+      { title: 'Neon', href: '/neon' },
+      { title: 'Supabase', href: '/supabase' },
+      { title: 'PlanetScale', href: '/planetscale' },
+      { title: 'Turso', href: '/turso' },
+      { title: 'Deployment / CI', href: '/deployment' },
+      { title: 'Migrating from Prisma', href: '/prisma' },
+    ],
+  },
+  {
+    label: 'Reference',
+    items: [
+      { title: '.reylo.yaml', href: '/configuration' },
+      { title: 'Type Defs', href: '/typedefs' },
+      { title: 'Postgres', href: '/postgres' },
+      { title: 'MySQL', href: '/mysql' },
+      { title: 'SQLite', href: '/sqlite' },
+      { title: 'DuckDB', href: '/duckdb' },
+    ],
+  },
+];
+
+export const pageLinks = [
+  { title: 'Playground', href: '/play' },
+  { title: 'npm', href: 'https://www.npmjs.com/package/reylo' },
+];

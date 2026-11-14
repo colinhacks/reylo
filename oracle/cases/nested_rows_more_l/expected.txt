@@ -1,0 +1,20 @@
+l01_sibling_not_lateral_json.sql: many () -> { j: jsonb? }
+l02_sibling_not_lateral_array.sql: many () -> { arr: record?[]? }
+l03_sibling_after_json.sql: many () -> { j: jsonb? }
+l04_sibling_join_on.sql: many () -> { j: jsonb? }
+l05_with_query_json.sql: many () -> { j: jsonb? }
+l06_with_query_array.sql: many () -> { arr: (public.replies{ id: int8?, comment_id: int8?, body: text? }?)[]? }
+l07_sibling_same_type_array.sql: many () -> { arr: (public.replies{ id: int8?, comment_id: int8?, body: text? }?)[]? }
+l08_sibling_same_type_bare.sql: many () -> { c: public.replies{ id: int8, comment_id: int8, body: text } }
+l09_both_not_lateral.sql: many () -> { j: jsonb?, arr: record?[]? }
+l10_both_lateral.sql: many () -> { j: jsonb?, arr: (public.replies{ id: int8?, comment_id: int8?, body: text? }?)[]? }
+l11_both_lateral_mixed.sql: many () -> { j: jsonb { id: int8, comment_id: int8, body: text }, arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+l12_case_lateral.sql: many () -> { arr: (public.replies{ id: int8?, comment_id: int8?, body: text? }?)[]? }
+l13_coalesce_lateral.sql: many () -> { j: jsonb? }
+l14_case_json_lateral.sql: many () -> { j: jsonb? }
+l15_coalesce_array_sibling.sql: many () -> { arr: record?[]? }
+l16_case_bare_not_lateral.sql: many () -> { r: record? }
+l17_nested_sibling.sql: one () -> { arr: (record{ j: jsonb? })[] }
+l18_union_sibling.sql: many () -> { j: jsonb? }
+l19_left_join_sibling.sql: many () -> { arr: record?[]? }
+l20_lateral_and_plain.sql: many () -> { j: jsonb?, k: jsonb? }

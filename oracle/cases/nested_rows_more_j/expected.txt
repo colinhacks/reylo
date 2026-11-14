@@ -1,0 +1,11 @@
+j01_alone_outer_query_array.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+j02_alone_outer_query_jsonb.sql: many () -> { j: jsonb? }
+j03_alone_outer_same_type.sql: many () -> { c: public.replies{ id: int8?, comment_id: int8?, body: text? }? }
+j04_alone_sanity_array.sql: one () -> { arr: (public.replies{ id: int8, comment_id: int8, body: text })[] }
+j05_row_cast_sanity.sql: one () -> { arr: (public.addr{ street: text?, zip: int4? })[] }
+j06_alone_in_derived.sql: many () -> { arr: (record{ arr: (public.addr{ street: text?, zip: int4? }?)[]? })[] }
+j07_alone_in_lateral.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+j08_alone_same_type_array.sql: many () -> { arr: (public.replies{ id: int8?, comment_id: int8?, body: text? }?)[]? }
+j09_alone_sanity_jsonb.sql: many () -> { j: jsonb { id: int8, comment_id: int8, body: text } }
+j10_alone_cte_body.sql: one () -> { arr: (public.replies{ id: int8, comment_id: int8, body: text })[] }
+j11_row_cast_lateral.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }

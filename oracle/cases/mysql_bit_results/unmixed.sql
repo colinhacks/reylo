@@ -1,0 +1,1 @@
+select coalesce(enabled, 0) as a, ifnull(enabled, 2) as b, if(n > 0, n, 0) as c, case when n > 0 then 'x' else 'y' end as d, if(n > 0, n + 0.5, 1) as e, enabled, if(n > 0, enabled, enabled) as same from flags

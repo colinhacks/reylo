@@ -1,0 +1,1 @@
+select p.id, array(select c from (select x.id, l.rs from comments x left join lateral (select array(select r from replies r where r.comment_id = x.id) as rs) l on x.id > 1 where x.post_id = p.id) c) as arr from posts p

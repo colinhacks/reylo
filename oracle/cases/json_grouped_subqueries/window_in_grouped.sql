@@ -1,0 +1,1 @@
+select (select jsonb_build_object('l', lag(max(p.n)) over (order by p.title), 's', sum(count(*)) over (), 'f', first_value(p.title) over (order by p.title), 'r', row_number() over ()) from posts p group by p.title order by p.title limit 1) as j

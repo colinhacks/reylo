@@ -1,0 +1,1 @@
+select u.id, json_arrayagg((select json_object('c', count(*), 'm', max(p.n), 'a', json_arrayagg(p.title)) from posts p where p.user_id = u.id group by p.tag order by p.tag limit 1)) as o from users u group by u.id

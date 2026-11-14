@@ -1,0 +1,1 @@
+select p.id, array(select c from (select string_agg(x.body, ',') as sa, bool_and(x.big > 0) as ba, array_agg(x.big) as aa, max(x.big) filter (where x.id > 100) as mf from comments x where x.post_id = p.id) c) as arr from posts p

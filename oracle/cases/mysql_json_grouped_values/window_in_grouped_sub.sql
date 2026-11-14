@@ -1,0 +1,1 @@
+select (select json_object('r', row_number() over (), 's', sum(count(*)) over (), 'l', lag(max(p.n)) over (order by p.title), 'c', count(*)) from posts p group by p.title order by p.title limit 1) as o

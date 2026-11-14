@@ -21,7 +21,7 @@ executable_comment_versioned.sql: many (id: unknown) -> {  } !! reylo10: MySQL r
 executable_comment_whole.sql: many () -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 explain.sql: many () -> {  } !! reylo10: MySQL does not describe the rows of EXPLAIN before it runs, so they cannot be typed
 hash_comment.sql: at_most_one (id: int32) -> { id: int }
-insert_fires_trigger.sql: none (id: int32, name: varchar) -> {  }
+insert_fires_trigger.sql: none (id: int, name: varchar(≤20)) -> {  }
 insert_select_same_table.sql: none () -> {  }
 interval_syntax.sql: at_most_one (n: int32, id: int32) -> { id: int, later: datetime? }
 json_table_statement.sql: many () -> { a: int? }
@@ -43,7 +43,7 @@ placeholder_in_string.sql: at_most_one (id: int32) -> { text: varchar, mark: var
 placeholder_mixed.sql: many (1: unknown, name: unknown) -> {  } !! reylo2: Named and positional parameters cannot be mixed in one statement.
 placeholder_numbered.sql: many () -> {  } !! reylo1: MySQL has no numbered placeholder ?1; write ? for each value, or :name
 placeholder_question.sql: at_most_one (1: int32, 2: varchar) -> { name: varchar(≤20) }
-replace_statement.sql: none (id: int32, name: varchar) -> {  }
+replace_statement.sql: none (id: int, name: varchar(≤20)) -> {  }
 select_distinctrow.sql: many () -> { name: varchar(≤20) }
 select_for_share.sql: at_most_one (id: int32) -> { id: int }
 select_function_writes.sql: at_most_one (id: int32) -> { id: int, n: int | bigint? }

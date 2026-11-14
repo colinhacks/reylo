@@ -1,0 +1,1 @@
+select (select jsonb_build_object('ni', min(nullif(p.n, p.n)), 'y', nullif(p.n, p.n), 'm', max(p.tag || ''), 'c', count(*), 'z', max(p.n) / nullif(0, 0)) from posts p group by p.id order by p.id limit 1) as j

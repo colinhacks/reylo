@@ -19,6 +19,7 @@ type Analysis = {
   params: readonly { name: string; type: EngineType; nullable?: boolean; optional?: boolean; comment?: string; schema?: JsonSchema; members?: readonly { written: string; schema?: JsonSchema }[] }[];
   columns: readonly { name: string; type: EngineType; nullable?: boolean; comment?: string }[];
   cardinality: "one" | "at_most_one" | "many" | "none";
+  value?: boolean;
 };
 
 /** The schema admitting null as well: a bare `type` gets `"null"` beside it, anything else an `anyOf` with null. */
@@ -33,7 +34,7 @@ const GEOJSON: Schema = { type: "object", properties: { type: { type: "string" }
 
 /** A SQLite value's storage class, as the affinity of the declared type the engine traced it to names it, or of the value it computes. */
 function sqliteClass(t: EngineType): string {
-  const name = "name" in t ? (t.name ?? "") : "";
+  const name = "label" in t ? (t.label ?? "") : "";
   switch (t.kind) {
     case "boolean": return "bool";
     case "integer": return sqliteWide(name) ? "int8" : "integer";
@@ -120,7 +121,8 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
   if (kind !== "text") return schema;
   switch (t.kind) {
     case "text": case "set": return { type: "string" };
-    case "uuid": return { type: "string", format: "uuid" };
+    // RFC 9562's text form, its version digit and its variant fixed where every value has a version.
+    case "uuid": return t.version === undefined ? { type: "string", format: "uuid" } : { type: "string", format: "uuid", pattern: `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${t.version.toString(16)}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$` };
     // RFC 3339's time, which JSON Schema's `time` format names, needs an offset and stops at 23:59:60.
     case "time": return t.zone === undefined ? { type: "string", description: "a time of day without a time zone (10:00:00.5)" } : { type: "string", description: `pg type ${name}` };
     case "duration": return { type: "string", description: "a length of time as MySQL writes it, up to 838:59:59 either way (-12:00:00.5)" };
@@ -149,6 +151,7 @@ function kindSchema(kind: ScalarKind, t: EngineType, dialect: Dialect): Schema {
     case "hstore": return { type: "object", additionalProperties: { type: ["string", "null"] } };
     case "text": return { type: "string" };
     case "json": return {};
+    case "geometry": return {};
     case "unknown": return {};
     case "enum": return { type: "string" };
     // A Set's members, which a Set holds once each; `JSON.stringify` writes a Set itself as `{}`.
@@ -357,12 +360,14 @@ export function querySchemas(analysis: Analysis, dialect: Dialect, codecs: Codec
     const s = p.schema;
     return p.nullable === true || p.optional === true || (s !== null && typeof s === "object" && s !== undefined && "default" in s);
   }, true);
-  const row = object(analysis.columns, (i) => {
-    const c = analysis.columns[i]!;
+  const column = (c: Analysis["columns"][number]) => {
     const s = typeSchema(c.type, dialect, false, false, false, undefined, codecs);
     return described(c.nullable ? nullable(s) : s, c.comment);
-  });
-  const output: Schema = analysis.cardinality === "many" ? { type: "array", items: row } : analysis.cardinality === "one" ? row : analysis.cardinality === "at_most_one" ? { anyOf: [row, { type: "null" }] } : { type: "null" };
+  };
+  // A statement whose one column has no name gives that column's values.
+  const value = analysis.value ? analysis.columns[0] : undefined;
+  const row = value ? (column(value) as Schema) : object(analysis.columns, (i) => column(analysis.columns[i]!));
+  const output: Schema = analysis.cardinality === "many" ? { type: "array", items: row } : analysis.cardinality === "one" ? row : analysis.cardinality === "at_most_one" ? (value?.nullable ? row : { anyOf: [row, { type: "null" }] }) : { type: "null" };
   const about = analysis.comment === undefined ? {} : { description: analysis.comment };
   return { input: { $schema: "https://json-schema.org/draft/2020-12/schema", ...about, ...input }, output: { $schema: "https://json-schema.org/draft/2020-12/schema", ...about, ...output } };
 }

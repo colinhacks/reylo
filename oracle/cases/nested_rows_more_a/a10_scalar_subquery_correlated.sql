@@ -1,0 +1,1 @@
+select p.id, array(select c from (select x.id, (select r.id from replies r where r.comment_id = x.id) as rid, x.big + (select max(r.id) from replies r where r.comment_id = x.id) as more from comments x where x.post_id = p.id) c) as arr from posts p

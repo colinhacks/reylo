@@ -86,7 +86,7 @@ async fn replay(server: &Owned, paths: &[PathBuf], timeout_ms: u64) -> Result<bo
             let analysis = match tokio::time::timeout(timeout, reylo_engine::clients::mysql_async::analyze(&mut conn, &sql, &mut AnswerCache::default())).await {
                 Ok(Ok(a)) => serde_json::to_value(&a).unwrap_or_default(),
                 outcome => {
-                    t.analysis_failed += 1;
+                    t.analysis_failed.push(format!("{name}: {}", super::one_line(&sql)));
                     if outcome.is_err() {
                         let _ = admin.query_drop(format!("KILL {}", conn.id())).await;
                         match server.session(Some("test")).await {
@@ -99,6 +99,7 @@ async fn replay(server: &Owned, paths: &[PathBuf], timeout_ms: u64) -> Result<bo
                     continue;
                 }
             };
+            t.typed(&name, &sql, &analysis);
             if analysis["params"].as_array().is_some_and(|p| !p.is_empty()) {
                 t.with_params += 1;
                 continue;

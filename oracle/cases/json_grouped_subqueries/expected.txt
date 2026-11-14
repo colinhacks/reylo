@@ -1,0 +1,94 @@
+agg_in_filter_sub.sql: one () -> { j: jsonb { a: int8[], b: int4[], c: int8[]? }? }
+alias_named_like_column.sql: many () -> { j: jsonb { m: unknown?, a: unknown?[]? }? }
+any_value_grouped_sub.sql: one () -> { j: jsonb { k: text, a: int8[], m: text? }? }
+any_value_sub.sql: one () -> { j: jsonb { k: text?, a: int8[]? } }
+any_value_top.sql: one () -> { o: jsonb { k: text? }, n: int8 }
+bare_outer_name.sql: many () -> { j: jsonb { m: text?, c: int8 }? }
+bare_shared_name.sql: many () -> { j: jsonb { m: text, c: int8, a: text[] }? }
+coalesce_case.sql: one () -> { j: jsonb { c: int4, k: text?, a: int4?[], z: text? }? }
+correlated_group_outer.sql: many () -> { j: jsonb { m: int4, c: int8, a: int4?[] }? }
+correlated_lateral_from.sql: many () -> { j: jsonb { m: int4?, a: int4?[], k: text? }? }
+correlated_left_outer.sql: many () -> { j: jsonb { m: int4?, c: int8 }? }
+correlated_on.sql: many () -> { j: jsonb { m: int4?, c: int8, x: text? }? }
+correlated_outer_expr.sql: many () -> { j: jsonb { n: unknown?, m: unknown?, nm: unknown? }? }
+cte_carrier.sql: many () -> { id: int8?, j: jsonb { a: int8[], m: int4 }? }
+cte_rollup_outer.sql: many () -> { j: jsonb { k: unknown?, c: unknown? }? }
+derived_agg_outer.sql: one () -> { j: jsonb { k: unknown?, c: unknown? }? }
+derived_carrier.sql: one () -> { j: jsonb { a: int8[], m: int4, k: text }? }
+derived_rollup_outer.sql: many () -> { j: jsonb { k: int8?, c: int8, a: int8?[] }? }
+distinct_aggregates.sql: one () -> { j: jsonb { s: text, c: int8, a: text?[], m: int4? }? }
+empty_table.sql: one () -> { j: jsonb { c: int8, m: int4?, a: int4[]?, s: int8? } }
+empty_table_grouped.sql: one () -> { j: jsonb { c: int8, m: int4, a: int4[] }? }
+filter_outer.sql: many () -> { j: jsonb { t: unknown?, c: unknown? }? }
+filtered_aggregates.sql: one () -> { j: jsonb { m: int8?, c: int8, s: text?, a: int8[]?, aa: int8[]? }? }
+group_alias_sub.sql: one () -> { j: jsonb { c: int8, m: int4? }? }
+group_by_whole_row.sql: one () -> { j: jsonb { a: int8[], m: int4, c: int8 }? }
+group_const_sub.sql: one () -> { j: jsonb { c: int8, m: int4, a: int4?[] }? }
+group_expr_sub.sql: one () -> { j: jsonb { k: text, c: int8, a: int4?[] }? }
+group_param_like.sql: one () -> { j: jsonb { c: int8, m: int4, a: int4?[] }? }
+grouped_in_grouped_top.sql: many () -> { user_id: int8, j: jsonb { n: int8, s: { a: int8[], m: int4 }? } } key (user_id)
+grouped_sub_in_lateral.sql: many () -> { j: jsonb { a: int8[], m: int4 }? }
+having_sub.sql: one () -> { j: jsonb { t: text, c: int8, a: int8[] }? }
+in_top_aggregate.sql: many () -> { id: int8, j: jsonb ({ c: int8, m: int4, a: text[] }?)[] } key (id)
+in_top_aggregate_ungrouped.sql: one () -> { j: jsonb ({ c: int8, m: int4, a: text[] }?)[]? }
+json_agg_variants.sql: one () -> { j: json { a: text?[], b: text?[], o: { in: int4?[] } }? }
+lateral_carrier.sql: many () -> { id: int8, j: jsonb { a: int8[], m: int4 }? } key (id)
+lateral_grouped.sql: many () -> { j: jsonb { n: unknown?, t: unknown?, a: unknown?[]? } }
+lateral_rollup_outer.sql: many () -> { j: jsonb { k: unknown?, c: unknown? }? }
+lateral_ungrouped_top_grouped.sql: many () -> { id: int8, j: jsonb { a: unknown?[]?, c: unknown? }? }
+left_join_group_nullable_key.sql: one () -> { j: jsonb { k: text?, kk: text?, a: int8[], n: int8 }? }
+left_join_outer.sql: many () -> { j: jsonb { k: unknown?, t: unknown?, c: unknown? }? }
+left_join_sub.sql: one () -> { j: jsonb { n: int8, m: text?, a: text?[], aa: int4?[], s: int8?, ba: bool?, sa: text? }? }
+limit_zero.sql: one () -> { j: jsonb { t: text, a: int8[] }? }
+many_aggregates.sql: one () -> { j: jsonb { s: int8, a: numeric, mx: text, sa: text, ba: bool, ev: bool, aa: text?[], oa: jsonb, pc: float8, mo: text, bo: int4 }? }
+nested_agg_mid.sql: one () -> { j: jsonb { m: int8?, k: int4 }? }
+nested_inner_own.sql: one () -> { j: jsonb { t: text, c: int8, m: { x: int4, a: int8[] }? }? }
+nested_mid_level.sql: one () -> { j: jsonb { t: text, m: int8?, a: int8[]? }? }
+nested_outermost_agg.sql: many () -> { j: jsonb { t: text, m: int8? }? }
+no_from_grouped_top.sql: many () -> { id: int8, j: jsonb { m: unknown?, s: unknown?, a: unknown?[]? } } key (id)
+no_from_own.sql: many () -> { j: jsonb { m: int4?, c: int8, a: int4[]? } }
+null_funcs_grouped_sub.sql: one () -> { j: jsonb { ni: int4?, y: int4?, m: text?, c: int8, z: int4? }? }
+order_outer.sql: many () -> { j: jsonb { t: unknown?, s: unknown? }? }
+outer_col_in_inner_agg.sql: many () -> { j: jsonb { m: int8, a: int8[], c: int8 }? }
+own_empty_set.sql: one () -> { j: jsonb? }
+own_rollup.sql: one () -> { j: jsonb? }
+own_rollup_empty.sql: one () -> { j: jsonb? }
+returning_sub.sql: many () -> { j: jsonb { c: int8, m: int4, a: text[] }? }
+shadow_alias.sql: many () -> { j: jsonb { m: int8, c: int8 }? }
+single_row_stats.sql: one () -> { j: jsonb { sd: numeric?, vs: numeric?, c: float8?, sl: float8?, cs: float8? }? }
+single_row_stats_top.sql: many () -> { j: jsonb { sd: numeric?, vs: numeric?, c: float8?, sl: float8? } }
+sqljson_inner_arrayagg.sql: one () -> { j: jsonb { t: text, a: json? }? }
+sqljson_outer_arrayagg.sql: many () -> { j: jsonb { t: text, a: json? }? }
+sqljson_outer_arrayagg_expr.sql: many () -> { j: jsonb { a: bool, c: int8 }? }
+sqljson_outer_arrayagg_max.sql: many () -> { j: jsonb { a: json?, m: int8 }? }
+sqljson_outer_objectagg.sql: many () -> { j: jsonb { t: text, a: json? }? }
+srf_lockstep_grouped.sql: one () -> { j: jsonb { s: int4?, t: int4?, c: int8 }? }
+srf_lockstep_sub.sql: one () -> { j: jsonb { s: int4?, t: int4? }? }
+sub_agg_of_sub.sql: one () -> { j: jsonb { a: int4?[]? }? }
+sub_coalesce.sql: many () -> { j: jsonb }
+sub_group_by_outer_only.sql: many () -> { j: jsonb { c: int8, a: int8[], m: int4 }? }
+sub_group_pk_dep.sql: one () -> { j: jsonb { nm: text, t: text, c: int8, a: int8?[] }? }
+sub_in_case_branch.sql: many () -> { j: jsonb { a: int8[], c: int8 }? }
+sub_json_array_ctor.sql: one () -> { j: jsonb {"type":"array","prefixItems":[{"type":"array","items":{"type":"integer","format":"int64"}},{"type":"integer","format":"int32"},{"type":["string","null"]}],"items":false,"minItems":3}? }
+sub_json_object_ctor.sql: one () -> { j: jsonb { a: int8[], m: int4, t: text? }? }
+sub_jsonb_agg_of_object.sql: one () -> { j: jsonb ({ t: text, m: int4 })[]? }
+sub_nested_object.sql: one () -> { j: jsonb { o: { a: int8[], m: int4, t: text? } }? }
+sub_row_to_json.sql: one () -> { j: jsonb { a: (public.posts{ id: int8, user_id: int8, title: text, score: int4?, tag: text?, n: int4 })[], r: (public.posts{ id: int8, user_id: int8, title: text, score: int4?, tag: text?, n: int4 })[] }? }
+sub_window_frame.sql: one () -> { j: jsonb { w: int8[]? }? }
+top_cube_filter.sql: many () -> { id: int8?, j: jsonb { a: text[]?, k: int8? }? }
+top_cube_outer.sql: many () -> { id: int8?, j: jsonb { k: unknown?, c: unknown? }? }
+top_empty_set_outer.sql: many () -> { j: jsonb { c: int8?, m: int4? }? }
+top_rollup_lateral.sql: many () -> { id: int8?, j: jsonb { k: unknown?, c: unknown? }? }
+top_rollup_outer.sql: many () -> { id: int8?, j: jsonb { k: int8?, c: int8?, a: int8?[]? }? }
+top_rollup_sub_agg_arg.sql: many () -> { id: int8?, j: jsonb { a: ({ k: int8?, p: int8? }?)[]? }? }
+top_rollup_top_agg_sub.sql: many () -> { id: int8?, j: jsonb ({ k: int8 }?)[]? }
+top_rollup_window_agg.sql: many () -> { id: int8?, j: jsonb { w: int8?[]?, k: int8? }? }
+two_level_grouped.sql: one () -> { j: jsonb { a: int8[], in: { b: int8[], m: int4 }? }? }
+union_outer.sql: many () -> { j: jsonb { k: unknown?, c: unknown? }? }
+where_false.sql: one () -> { j: jsonb { c: int8, m: int4?, a: int8[]? } }
+whole_row_outer.sql: many () -> { j: jsonb { t: unknown?, c: unknown? }? }
+whole_row_star.sql: many () -> { j: jsonb { t: unknown?, c: unknown? }? }
+window_agg_in_grouped.sql: one () -> { j: jsonb { w: text[]?, x: int8 }? }
+window_in_grouped.sql: one () -> { j: jsonb { l: int4?, s: numeric, f: text, r: int8 }? }
+window_outer.sql: many () -> { j: jsonb { k: unknown?, c: unknown? }? }
+with_sub.sql: one () -> { j: jsonb { m: int4?, a: int4?[], k: text? }? }

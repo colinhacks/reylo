@@ -1,0 +1,1 @@
+a10_scalar_subquery_correlated.sql: more than one row returned by a subquery used as an expression (21000)

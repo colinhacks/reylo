@@ -1,0 +1,1 @@
+select l.* from posts p cross join lateral (select sum(x.big) over (order by x.id rows between current row and current row exclude current row) as ex, first_value(x.big) over (order by x.id rows between 1 following and 1 following) as fv, lag(x.big, 1, null) over (order by x.id) as lg from comments x where x.post_id = p.id) l

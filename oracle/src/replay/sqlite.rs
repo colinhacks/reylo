@@ -71,12 +71,13 @@ fn run_script(file: &Path, text: &str, path: &Path, timeout_ms: u64, t: &mut Tal
             t.statements += 1;
             let analysis = match reylo_engine::clients::rusqlite::analyze(&db, &sql, &mut AnswerCache::default()) {
                 Ok(a) => serde_json::to_value(&a).unwrap_or_default(),
-                Err(_) => {
-                    t.analysis_failed += 1;
+                Err(e) => {
+                    t.analysis_failed.push(format!("{name}: {} -- {e}", super::one_line(&sql)));
                     let _ = crate::seed::with_deadline(&db, timeout_ms, || db.execute_batch(&sql));
                     continue;
                 }
             };
+            t.typed(&name, &sql, &analysis);
             if analysis["params"].as_array().is_some_and(|p| !p.is_empty()) {
                 t.with_params += 1;
                 continue;

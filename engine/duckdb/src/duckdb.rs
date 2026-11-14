@@ -9,15 +9,40 @@ use crate::api::{Analysis, Column, DbError, Diagnostic, DuckdbDescribe, Param};
 use crate::catalog::{self, Catalog};
 use crate::host::{Host, Lazy};
 use crate::nulls::{self, Ctx, Out};
+use reylo_engine_core::analysis::ResultTarget;
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
-use reylo_engine_core::types::{Cardinality, StatementKind, Type};
-use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
+use reylo_engine_core::types::{Cardinality, Kind, StatementKind, Type};
+use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, OutputClause, Query, SelectItem, SetExpr, SetQuantifier, SqliteOnConflict, Statement, TableFactor, TableObject, Value, Visit, Visitor};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
+
+/// A type under what the statement shows of an array of rows ([`Out::rows`]): its elements are structs, and each field is NULL only where its column may be.
+fn with_rows(mut ty: Type, out: &Out) -> Type {
+    if let (Some(rows), Kind::Array(array)) = (&out.rows, &mut ty.kind) {
+        if let Kind::Record(record) = &mut array.element.ty.kind {
+            if record.fields.len() == rows.len() {
+                array.element.nullable = false;
+                for (field, row) in record.fields.iter_mut().zip(rows) {
+                    field.nullable = !row.not_null;
+                    field.ty = with_rows(field.ty.clone(), row);
+                }
+            }
+        }
+    }
+    ty
+}
+
+/// A UUID type under the version of every UUID the column holds ([`Out::version`]).
+fn with_version(mut ty: Type, out: &Out) -> Type {
+    if let Kind::Uuid(uuid) = &mut ty.kind {
+        uuid.version = out.version.or(uuid.version);
+    }
+    ty
+}
 
 /// The statements the DuckDB analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "from", "values", "table", "insert", "update", "delete", "pivot", "unpivot", "summarize"];
@@ -102,7 +127,8 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     if let Some(statement) = &parsed {
         nullable.extend(nullable_params(statement, &catalog));
     }
-    let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+    let param_types: HashMap<String, String> = raw.params.iter().enumerate().filter_map(|(i, p)| Some((if p.name.is_empty() { (i + 1).to_string() } else { p.name.clone() }, p.ty.as_ref()?.id.clone()))).collect();
+    let ctx = Ctx::top(&catalog, &nullable, &param_types);
     let shaped = parsed.as_ref().map(write_of);
     let rows = returns_rows(&raw, shaped.as_deref());
     // What the tree proves of each column, where its columns are the describe's: as many, and
@@ -116,7 +142,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             .enumerate()
             .map(|(i, c)| {
                 let out = proven.as_ref().map(|p| &p[i]);
-                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), crate::types::of(&c.ty), !out.is_some_and(|o| o.not_null)) }
+                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), out.map_or_else(|| crate::types::of(&c.ty), |o| with_version(with_rows(crate::types::of(&c.ty), o), o)), !out.is_some_and(|o| o.not_null)) }
             })
             .collect()
     } else {
@@ -178,6 +204,17 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         let message = format!("{written} takes a struct whose fields have no names, and a value's fields are read by their names: cast it to a struct that names them, as in {written}::struct(a integer, b varchar)");
         diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
     }
+    let rewritten_sql = rewritten.sql.clone();
+    let analysis_columns = columns.len();
+    let targets = shaped.as_deref().and_then(|statement| {
+        let targets = result_targets(statement, false)?;
+        // An `unnest` of a struct makes a column of each field, so a list of more columns than items
+        // is read again with each `unnest` as a `*`.
+        if !targets.contains(&ResultTarget::Star) && targets.len() != analysis_columns {
+            return result_targets(statement, true);
+        }
+        Some(targets)
+    });
     let mut analysis = Analysis {
         kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
         comment: None,
@@ -186,7 +223,10 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         cardinality,
         cardinality_reason: reason,
         key: None,
+        unique: Vec::new(),
+        order: Vec::new(),
         ordered: false,
+        value: false,
         rewritten,
         style: lexed.style,
         diagnostics,
@@ -195,11 +235,102 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         fresh: None,
         errors: None,
         read_only: false,
-        tables: parsed.as_ref().map(tables),
+        notes: Vec::new(),
+        tables: parsed.as_ref().map(|p| tables_through_macros(p, &catalog, &rewritten_sql)),
         domains: Default::default(),
     };
-    reylo_engine_core::analysis::clashes(sql, &mut analysis, &|_| None);
+    reylo_engine_core::analysis::names(sql, Dialect::Duckdb, &mut analysis, targets.as_deref(), &|_| None);
     Some(analysis)
+}
+
+/// How the statement writes its result columns: a query's select list, the first arm's of a set
+/// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
+/// and for a select list the tree does not say the columns of.
+/// `unnest` and `unpack` stand for as many columns as a struct has fields where `expand`, which the
+/// caller asks for once the list's count is not the columns'.
+fn result_targets(statement: &Statement, expand: bool) -> Option<Vec<ResultTarget>> {
+    fn body(set: &SetExpr, expand: bool) -> Option<Vec<ResultTarget>> {
+        match set {
+            // `from t` alone selects every column.
+            SetExpr::Select(s) if s.projection.is_empty() => Some(vec![ResultTarget::Star]),
+            SetExpr::Select(s) => list(&s.projection, expand),
+            SetExpr::Query(q) => body(&q.body, expand),
+            // `union by name` matches columns across its arms by name, so neither arm's list is the result's.
+            SetExpr::SetOperation { set_quantifier: SetQuantifier::ByName | SetQuantifier::AllByName | SetQuantifier::DistinctByName, .. } => None,
+            SetExpr::SetOperation { left, .. } => body(left, expand),
+            // `values (1, 2)`: named col0 and col1 by DuckDB.
+            SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed(None); values.rows.first()?.len()]),
+            SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
+            _ => None,
+        }
+    }
+    fn list(items: &[SelectItem], expand: bool) -> Option<Vec<ResultTarget>> {
+        let expanding = |e: &Expr| matches!(e, Expr::Function(f) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n)));
+        items
+            .iter()
+            .map(|item| match item {
+                SelectItem::UnnamedExpr(e) if read_as_it_is(e) || prefix_alias(e) => Some(ResultTarget::Named),
+                SelectItem::UnnamedExpr(e) if holds_columns(e) || (expand && expanding(e)) => Some(ResultTarget::Star),
+                SelectItem::UnnamedExpr(_) => Some(ResultTarget::Unnamed(None)),
+                SelectItem::ExprWithAlias { .. } => Some(ResultTarget::Named),
+                SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => Some(ResultTarget::Star),
+                _ => None,
+            })
+            .collect()
+    }
+    // A word: a column, or a function DuckDB calls without parentheses (`current_date`), which it
+    // reads as a column of that name wherever one is in scope, and names after itself either way.
+    fn read_as_it_is(e: &Expr) -> bool {
+        match e {
+            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+            Expr::Function(f) => matches!(f.args, sqlparser::ast::FunctionArguments::None),
+            Expr::Nested(e) => read_as_it_is(e),
+            _ => false,
+        }
+    }
+    // DuckDB's `y: x + 1`, an alias written first, which the parser reads as its JSON access inside
+    // the expression, since DuckDB has no such operator.
+    fn prefix_alias(e: &Expr) -> bool {
+        shallow(e, &|e| matches!(e, Expr::JsonAccess { .. }))
+    }
+    // `columns('a.*')`, alone or inside an expression, stands for as many columns as it matches.
+    fn holds_columns(e: &Expr) -> bool {
+        shallow(e, &|e| matches!(e, Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("columns")))
+    }
+    match statement {
+        Statement::Query(q) => body(&q.body, expand),
+        Statement::Insert(i) => list(i.returning.as_deref()?, expand),
+        Statement::Update(u) => list(u.returning.as_deref()?, expand),
+        Statement::Delete(d) => list(d.returning.as_deref()?, expand),
+        Statement::Merge(m) => match m.output.as_ref()? {
+            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items, expand),
+        },
+        _ => None,
+    }
+}
+
+/// Whether `found` holds of `e` or of an expression inside it, but not inside a subquery, whose
+/// select list is its own.
+fn shallow(e: &Expr, found: &dyn Fn(&Expr) -> bool) -> bool {
+    struct Shallow<'a> {
+        depth: usize,
+        found: &'a dyn Fn(&Expr) -> bool,
+    }
+    impl Visitor for Shallow<'_> {
+        type Break = ();
+        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<()> {
+            if self.depth == 0 && (self.found)(e) { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        }
+    }
+    e.visit(&mut Shallow { depth: 0, found }).is_break()
 }
 
 /// The one statement of the text as `sqlparser`'s DuckDB dialect reads it, if it reads it.
@@ -322,7 +453,7 @@ fn keyed(name: &sqlparser::ast::ObjectName, alias: &Option<sqlparser::ast::Table
     let parts = nulls::parts(name);
     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| parts.last().cloned());
     match ctx.catalog.table(&parts) {
-        Some(table) if nulls::key_equal(filter, &table.keys, qualifier.as_deref()) => ("maybeOne", None),
+        Some(table) if nulls::key_equal(filter, table, qualifier.as_deref(), ctx) => ("maybeOne", None),
         _ => ("many", Some("nothing bounds its rows to one".into())),
     }
 }
@@ -334,6 +465,31 @@ fn relations(statement: &Statement) -> Vec<Vec<String>> {
         found.push(nulls::parts(name));
         ControlFlow::<()>::Continue(())
     });
+    found
+}
+
+/// [`tables`], with what the table macros the statement calls read: a type their bodies settled
+/// holds only while those and what they read do.
+fn tables_through_macros(statement: &Statement, catalog: &Catalog, sql: &str) -> reylo_engine_core::fresh::Tables {
+    let mut found = tables(statement);
+    let (_, reached) = catalog::through_macros(&relations(statement), &catalog.table_macros);
+    if reached.is_empty() {
+        return found;
+    }
+    found.read.retain(|t| !reached.contains(&t.to_lowercase()));
+    let mut text = sql.to_string();
+    for name in &reached {
+        let Some(read) = catalog.table_macros.get(name) else { continue };
+        text.push('\n');
+        text.push_str(&read.text);
+        for table in tables(&Statement::Query(Box::new(read.body.clone()))).read {
+            if !reached.contains(&table.to_lowercase()) && !found.read.contains(&table) && !found.write.contains(&table) {
+                found.read.push(table);
+            }
+        }
+    }
+    found.functions = reached;
+    found.expanded = Some(text);
     found
 }
 
@@ -357,21 +513,30 @@ fn tables(statement: &Statement) -> reylo_engine_core::fresh::Tables {
         }
         ControlFlow::<()>::Continue(())
     });
-    let write: Vec<String> = match write_of(statement).as_ref() {
-        Statement::Insert(i) => match &i.table {
-            TableObject::TableName(name) => vec![nulls::parts(name).join(".")],
-            _ => Vec::new(),
-        },
-        Statement::Update(u) => match &u.table.relation {
-            TableFactor::Table { name, .. } => vec![nulls::parts(name).join(".")],
-            _ => Vec::new(),
-        },
-        Statement::Delete(d) => match delete_table(d).map(|t| &t.relation) {
-            Some(TableFactor::Table { name, .. }) => vec![nulls::parts(name).join(".")],
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    };
+    // The statement's own write, and that of each WITH query, however deep: a write there runs
+    // with the SELECT that reads it.
+    let mut write: Vec<String> = Vec::new();
+    let _ = sqlparser::ast::visit_statements(statement, |s| {
+        let target = match s {
+            Statement::Insert(i) => match &i.table {
+                TableObject::TableName(name) => Some(name),
+                _ => None,
+            },
+            Statement::Update(u) => match &u.table.relation {
+                TableFactor::Table { name, .. } => Some(name),
+                _ => None,
+            },
+            Statement::Delete(d) => match delete_table(d).map(|t| &t.relation) {
+                Some(TableFactor::Table { name, .. }) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = target.map(|name| nulls::parts(name).join(".")).filter(|name| !write.contains(name)) {
+            write.push(name);
+        }
+        ControlFlow::<()>::Continue(())
+    });
     let mut read: Vec<String> = Vec::new();
     for parts in relations(statement) {
         let name = parts.join(".");
@@ -380,7 +545,7 @@ fn tables(statement: &Statement) -> reylo_engine_core::fresh::Tables {
         }
         read.push(name);
     }
-    reylo_engine_core::fresh::Tables { read, write }
+    reylo_engine_core::fresh::Tables { read, write, ..Default::default() }
 }
 
 /// The parameters (by the number `$n` binds each at) the statement lets be NULL: one it tests
@@ -544,10 +709,11 @@ mod tests {
     #[test]
     fn a_write_with_queries_feed_is_read_as_the_write() {
         use crate::catalog::{Table, TableColumn};
-        let table = Table { database: "app".into(), schema: "main".into(), name: "teams".into(), current: true, current_database: true, columns: vec![TableColumn { name: "id".into(), not_null: true, comment: None }], keys: vec![vec!["id".into()]] };
+        let table = Table { database: "app".into(), schema: "main".into(), name: "teams".into(), current: true, current_database: true, columns: vec![TableColumn { name: "id".into(), not_null: true, comment: None, ty: "BIGINT".into() }], keys: vec![vec!["id".into()]], collated: false };
         let catalog = catalog::of(vec![table]);
         let nullable = HashSet::new();
-        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+        let types = HashMap::new();
+        let ctx = Ctx::top(&catalog, &nullable, &types);
         let shaped = |sql: &str| write_of(&parse(sql).unwrap()).into_owned();
         // The WITH queries move onto the INSERT's source, whose rows a key of `teams` does not bound.
         let insert = shaped("with teams as (select 1 as id union all select 1) insert into teams select * from teams where id = 1 returning id");
@@ -556,6 +722,9 @@ mod tests {
         assert_eq!(cardinality(&insert, &ctx).0, "many");
         assert_eq!(outputs(&insert, &ctx).unwrap().iter().map(|o| o.not_null).collect::<Vec<_>>(), [true]);
         assert_eq!(tables(&parse("with x as (select 1 as id) insert into teams select id from x").unwrap()).write, ["teams"]);
+        // A WITH query's write is the statement's, and its target no table the statement reads.
+        let through = tables(&parse("with gone as (delete from teams where id = 1 returning id), made as (insert into logs values (1) returning id) select count(*) from gone, made, users").unwrap());
+        assert_eq!((through.write, through.read), (vec!["teams".to_string(), "logs".to_string()], vec!["users".to_string()]));
         let update = shaped("with x as (select 1 as id) update teams set id = 2 from x where teams.id = 1 returning id");
         assert!(matches!(update, Statement::Update(_)));
         assert_eq!(cardinality(&update, &ctx).0, "many");
