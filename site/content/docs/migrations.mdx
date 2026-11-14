@@ -287,17 +287,7 @@ Writes the next migration, from your change to `schema.sql`.
 - With no `schema.sql`, it writes what your development database has that your migrations don't make ([Schemaless mode](#schemaless-mode)).
 - The file is yours: read it, and add the data changes a schema can't say.
 - It names anything in `schema.sql` that Reylo Migrate compares by name only, or not at all, such as a text search configuration or a security label. Write a change to those by hand.
-- On DuckDB, a change its `alter table` can't make, such as a check added to a table, rebuilds the table: its rows go to a temporary table, the table is made again, and the rows come back, with the rows of the tables whose keys reference it. A table whose check calls a macro, or casts to an enum, is rebuilt the same way when that macro or enum changes.
-
-<Callout title="DuckDB's own limits">
-
-DuckDB refuses a few things a migration may need, on the rows of your database rather than in the check:
-
-- A table whose key references the table itself can't take its rows back in a rebuild where a row references another, so that migration fails and changes nothing. The migration says so above the rebuild.
-- DuckDB has no `alter sequence`, so a changed sequence is made again, and in a migration it starts again where `schema.sql` starts it. Start it past the values your rows hold.
-- An `update` of a table, then `set not null` or a new index on it, is refused in one migration. Put the backfill in a migration of its own.
-
-</Callout>
+- On DuckDB, a change its `alter table` can't make rebuilds the table ([DuckDB](/duckdb#migrations)).
 
 Nothing is dropped until you name it. A change that drops a table or column, or changes a type so that values are lost, is refused:
 
@@ -651,7 +641,7 @@ Resetting postgres://localhost:5432/app
 
 Deletes every row, keeping the schema and the history.
 
-It leaves a platform's own tables alone, such as Supabase's `auth.users`. On DuckDB, it starts each sequence again at its first value:
+It leaves a platform's own tables alone, such as Supabase's `auth.users`. On DuckDB, it starts each sequence again at its lowest value, or at its highest where the sequence counts down:
 
 ```terminal
 $ reylo db wipe
