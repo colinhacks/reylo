@@ -1,0 +1,22 @@
+create temporary table reylo_copy_a as select * from a;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table a;
+create table a (id bigint, n integer, primary key (id), check ((n > 0)));
+create table c (a_id bigint, b_id bigint, note varchar, foreign key (a_id) references a (id), foreign key (b_id) references b (id));
+insert into a (id, n) select id, n from temp.main.reylo_copy_a;
+insert into c (a_id, b_id, note) select a_id, b_id, note from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_a;
+drop table temp.main.reylo_copy_c;
+create temporary table reylo_copy_b as select * from b;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table b;
+create table b (id bigint, n integer, primary key (id), check ((n > 0)));
+create table c (a_id bigint, b_id bigint, note varchar, foreign key (a_id) references a (id), foreign key (b_id) references b (id));
+insert into b (id, n) select id, n from temp.main.reylo_copy_b;
+insert into c (a_id, b_id, note) select a_id, b_id, note from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_b;
+drop table temp.main.reylo_copy_c;
+-- c.note is renamed memo, keeping its rows. If they are two columns, drop the one and add the other instead.
+alter table c rename column note to memo;

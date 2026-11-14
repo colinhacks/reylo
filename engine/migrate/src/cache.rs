@@ -268,9 +268,12 @@ impl Cache {
         h.part(state.as_bytes());
         let target = match d {
             Dialect::Sqlite => crate::db::sqlite_path(url, root),
+            Dialect::Duckdb => crate::duckdb::path_of(url, root),
             _ => crate::redact(url),
         };
-        let copies = d != Dialect::Mysql && !texts.iter().any(|t| SESSION_STATE.iter().any(|r| r.is_match(t)));
+        // MySQL has no copy of a database to start from, and DuckDB's shadows, in memory, replay
+        // quickly enough that the cache keeps their lines alone.
+        let copies = matches!(d, Dialect::Postgres | Dialect::Sqlite) && !texts.iter().any(|t| SESSION_STATE.iter().any(|r| r.is_match(t)));
         Some(Cache { d, base: h.finish(), target: hex(&Sha256::new().part(target.as_bytes()).finish()[..8]), dir: cache.join("migrate"), copies, used: vec![] })
     }
 
@@ -358,7 +361,7 @@ impl Cache {
                 touch(&file);
                 Some(Shadow { db: Db::Sqlite(to), name: ":memory:".into() })
             }
-            Dialect::Mysql => None,
+            Dialect::Mysql | Dialect::Duckdb => None,
         }
     }
 
@@ -389,7 +392,7 @@ impl Cache {
                 self.save_sqlite(&shadow, key);
                 Ok(shadow)
             }
-            Dialect::Mysql => Ok(shadow),
+            Dialect::Mysql | Dialect::Duckdb => Ok(shadow),
         }
     }
 
@@ -426,7 +429,7 @@ impl Cache {
                 self.save_sqlite(&shadow, key);
                 Some(shadow)
             }
-            Dialect::Mysql => Some(shadow),
+            Dialect::Mysql | Dialect::Duckdb => Some(shadow),
         }
     }
 
@@ -493,6 +496,14 @@ async fn server_state(server: &mut Server) -> Result<String, Error> {
             let globals: Vec<String> = globals.into_iter().filter(|(k, _)| !k.starts_with("gtid_")).map(|(k, v)| format!("{k}={v}")).collect();
             let users: Vec<String> = users.into_iter().map(|(u, h)| format!("{u}@{h}")).collect();
             Ok(format!("{v}\n\x1f{u}\n\x1f{who}\n\x1f{}\n\x1f{}\n\x1f{defaults:?}", globals.join("\n"), users.join("\n")))
+        }
+        Server::Duckdb { catalog, root } => {
+            // The DuckDB the project installs, and the extensions it can load, which a replay's
+            // types and functions may come from.
+            let mut db = crate::db::duckdb_shadow(catalog, root)?;
+            let rows = db.rows("select version() as v, (select string_agg(extension_name || ':' || installed || ':' || loaded, ',' order by extension_name) from duckdb_extensions()) as x").await?;
+            let r = rows.first().ok_or_else(|| Error("no answer".into()))?;
+            Ok(format!("{}\n\x1f{}\n\x1f{catalog}", r.text("v"), r.text("x")))
         }
         Server::Sqlite => {
             let conn = rusqlite::Connection::open_in_memory().map_err(|e| Error(e.to_string()))?;
@@ -568,6 +579,19 @@ pub(crate) async fn snapshot(db: &mut Db) -> Result<String, Error> {
             out.push(format!("temp={}", db.rows("select count(*) as n from temp.sqlite_schema").await?.first().map(|r| r.text("n").to_string()).unwrap_or_default()));
             out.push(format!("databases={}", db.rows("select count(*) as n from pragma_database_list").await?.first().map(|r| r.text("n").to_string()).unwrap_or_default()));
             Ok(out.join("\n"))
+        }
+        Dialect::Duckdb => {
+            let rows = db
+                .rows(
+                    "select concat_ws(chr(10),
+                      (select string_agg(name || '=' || coalesce(value, ''), ',' order by name) from duckdb_settings()),
+                      current_database(), current_schema(),
+                      (select string_agg(database_name, ',' order by database_name) from duckdb_databases()),
+                      (select count(*) from duckdb_tables() where temporary), (select count(*) from duckdb_views() where temporary),
+                      (select count(*) from duckdb_sequences() where temporary), (select count(*) from duckdb_secrets())) as s",
+                )
+                .await?;
+            Ok(rows.first().map(|r| r.text("s").to_string()).unwrap_or_default())
         }
     }
 }

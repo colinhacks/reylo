@@ -6,16 +6,17 @@
 //! history row, so a file that cannot (a statement that cannot run in a transaction beside others;
 //! MySQL's DDL beside anything) is refused.
 //!
-//! Postgres, MySQL and SQLite. The commands are in `commands`; the comparator is `catalog`; the
-//! lexer that splits and classifies statements is `sql`; the connections and shadows are `db`; the
-//! replays the shadows run are `replay`, which the cache of what they reached (`cache`) shortens;
-//! `lock` is the project's lock file.
+//! Postgres, MySQL, SQLite and DuckDB. The commands are in `commands`; the comparator is `catalog`;
+//! the lexer that splits and classifies statements is `sql`; the connections and shadows are `db`,
+//! DuckDB's through its C API (`duckdb`); the replays the shadows run are `replay`, which the cache
+//! of what they reached (`cache`) shortens; `lock` is the project's lock file.
 
 pub mod cache;
 pub mod catalog;
 pub mod commands;
 pub mod db;
 pub mod diff;
+pub mod duckdb;
 pub mod lock;
 mod replay;
 pub mod sql;
@@ -46,6 +47,7 @@ pub enum Dialect {
     Postgres,
     Mysql,
     Sqlite,
+    Duckdb,
 }
 
 impl Dialect {
@@ -57,7 +59,7 @@ impl Dialect {
             "postgres" | "postgresql" => Ok(Dialect::Postgres),
             "mysql" | "mariadb" => Ok(Dialect::Mysql),
             "sqlite" | "file" => Ok(Dialect::Sqlite),
-            "duckdb" => Err(Error("DuckDB has no migrations yet: they run on Postgres, MySQL and SQLite".into())),
+            "duckdb" => Ok(Dialect::Duckdb),
             _ if lower == ":memory:" || [".db", ".sqlite", ".sqlite3"].iter().any(|e| lower.ends_with(e)) => Ok(Dialect::Sqlite),
             _ => Err(Error(format!("no database for the URL's scheme: {}", redact(url)))),
         }
@@ -68,7 +70,13 @@ impl Dialect {
             Dialect::Postgres => "postgres",
             Dialect::Mysql => "mysql",
             Dialect::Sqlite => "sqlite",
+            Dialect::Duckdb => "duckdb",
         }
+    }
+
+    /// Whether the database is a file the process opens, rather than a server: SQLite and DuckDB.
+    pub fn is_file(self) -> bool {
+        matches!(self, Dialect::Sqlite | Dialect::Duckdb)
     }
 }
 
@@ -109,7 +117,8 @@ mod tests {
         assert_eq!(Dialect::of_url("postgresql://u@h/db").unwrap(), Dialect::Postgres);
         assert_eq!(Dialect::of_url("mysql://root@127.0.0.1:3306/app").unwrap(), Dialect::Mysql);
         assert_eq!(Dialect::of_url("file:./dev.db").unwrap(), Dialect::Sqlite);
-        assert!(Dialect::of_url("duckdb:./x.duckdb").unwrap_err().0.contains("DuckDB"));
+        assert_eq!(Dialect::of_url("duckdb:./x.duckdb").unwrap(), Dialect::Duckdb);
+        assert_eq!(Dialect::of_url("duckdb::memory:").unwrap(), Dialect::Duckdb);
         assert_eq!(percent_decode("a%20b%2"), "a b%2");
         assert_eq!(redact("postgres://u:p@h/db"), "postgres://…@h/db");
     }

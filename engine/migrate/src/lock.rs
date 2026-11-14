@@ -120,7 +120,7 @@ pub fn canonical(sql: &str) -> String {
             push(&mut out, &mut space, &b[k..].iter().collect::<String>());
             k = b.len();
         } else if c == '/' && b.get(k + 1) == Some(&'*') {
-            // Postgres nests block comments, while MySQL and SQLite end one at its first `*/`: where
+            // Postgres (and DuckDB) nest block comments, while MySQL and SQLite end one at its first `*/`: where
             // the two end it at different places, the rest is kept as written. MySQL runs the text
             // of `/*! … */` (as `SHOW CREATE TABLE` writes `/*!50100 PARTITION BY … */`), so that
             // comment is kept as written too, and so is the rest after a comment that never ends.

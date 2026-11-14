@@ -4,7 +4,8 @@
 //! ones are chosen to break it: ways a shadow can differ from the target that are not the
 //! migrations' doing, objects the comparison does not read, and commands that record what they did
 //! not run. Postgres's and MySQL's run against the servers `REYLO_TEST_PG` and `REYLO_TEST_MYSQL`
-//! name, and are skipped where the variable is not set; SQLite's always run.
+//! name, and are skipped where the variable is not set; SQLite's always run; DuckDB's run on the
+//! DuckDB library `REYLO_DUCKDB_LIBRARY` names, and are skipped where it names none.
 
 use reylo_migrate::catalog::catalog;
 use reylo_migrate::db::{with_database, Db, Row, Server};
@@ -36,6 +37,7 @@ fn base(d: Dialect) -> Option<String> {
         Dialect::Postgres => std::env::var("REYLO_TEST_PG").ok(),
         Dialect::Mysql => std::env::var("REYLO_TEST_MYSQL").ok(),
         Dialect::Sqlite => Some(String::new()),
+        Dialect::Duckdb => std::env::var_os("REYLO_DUCKDB_LIBRARY").map(|_| String::new()),
     }
 }
 
@@ -58,6 +60,7 @@ impl P {
         std::fs::create_dir_all(dir.join("migrations")).unwrap();
         let url = match d {
             Dialect::Sqlite => format!("sqlite:{}", dir.join("dev.db").display()),
+            Dialect::Duckdb => format!("duckdb:{}", dir.join("dev.duckdb").display()),
             _ => {
                 let admin_url = if d == Dialect::Postgres { base.clone() } else { with_database(&base, "") };
                 let mut admin = Db::connect(&admin_url, &dir).await.unwrap();
@@ -71,6 +74,9 @@ impl P {
             Dialect::Postgres => Types { id: "bigint generated always as identity primary key", text: "text", int: "bigint" },
             Dialect::Mysql => Types { id: "bigint auto_increment primary key", text: "varchar(200)", int: "bigint" },
             Dialect::Sqlite => Types { id: "integer primary key", text: "text", int: "integer" },
+            // DuckDB has no column that numbers itself but through a sequence: a random key takes
+            // rows that name no id, and those that do.
+            Dialect::Duckdb => Types { id: "bigint primary key default (random() * 1e15)::bigint", text: "varchar", int: "bigint" },
         };
         Some(P { d, dir, url, name, lines: vec![], t, strict: false })
     }
@@ -85,7 +91,11 @@ impl P {
             Dialect::Postgres => Types { id: p.t.id, text: p.t.text, int: p.t.int },
             _ => Types { id: p.t.id, text: p.t.text, int: p.t.int },
         };
-        let url = if p.d == Dialect::Sqlite { format!("sqlite:{}", dir.join("dev.db").display()) } else { p.url.clone() };
+        let url = match p.d {
+            Dialect::Sqlite => format!("sqlite:{}", dir.join("dev.db").display()),
+            Dialect::Duckdb => format!("duckdb:{}", dir.join("dev.duckdb").display()),
+            _ => p.url.clone(),
+        };
         P { d: p.d, dir, url, name: p.name.clone(), lines: vec![], t, strict: p.strict }
     }
 
@@ -313,6 +323,10 @@ macro_rules! for_each_dialect {
             #[tokio::test(flavor = "current_thread")]
             async fn sqlite() {
                 if let Some(p) = super::P::new(super::Dialect::Sqlite).await { super::$scenario(p).await }
+            }
+            #[tokio::test(flavor = "current_thread")]
+            async fn duckdb() {
+                if let Some(p) = super::P::new(super::Dialect::Duckdb).await { super::$scenario(p).await }
             }
         }
     )*};
@@ -1178,6 +1192,25 @@ async fn a_shadow_left_by_a_killed_run_is_swept(mut p: P) {
         return;
     }
     let int = p.t.int;
+    if p.d == Dialect::Duckdb {
+        // DuckDB's shadows are in memory: a run, held or killed, leaves no database to sweep, in
+        // the target's file or beside it.
+        p.schema(&format!("create table a (id {int});"));
+        p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        let mut target = Db::connect(&p.url, &p.dir).await.unwrap();
+        let mut server = Server::open(&mut target, &p.url, None).await.unwrap();
+        let held = server.shadow().await.unwrap();
+        let databases: Vec<String> = target.rows("select database_name as n from duckdb_databases() where not internal order by 1").await.unwrap().iter().map(|r| r.text("n").to_string()).collect();
+        assert_eq!(databases, ["dev"], "a shadow is no database of the target's");
+        server.drop_shadow(held).await;
+        target.close().await;
+        let mut files: Vec<String> = std::fs::read_dir(&p.dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|f| f.contains("duckdb")).collect();
+        files.sort();
+        assert_eq!(files, ["dev.duckdb"], "no file beside the target's");
+        return;
+    }
     p.schema(&format!("create table a (id {int});"));
     p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
     let mut target = Db::connect(&p.url, &p.dir).await.unwrap();
@@ -1261,7 +1294,8 @@ async fn cached_and_uncached_checks_print_the_same_lines(mut p: P) {
     let (code, out) = p.check_every_way().await;
     assert_eq!(code, 1);
     assert_has!(out, "This database was changed outside its migrations");
-    p.exec("alter table users drop column hotfix").await;
+    // DuckDB drops no column of a table with an index: the index goes around it.
+    p.exec(if p.d == Dialect::Duckdb { "drop index users_email; alter table users drop column hotfix; create index users_email on users (email)" } else { "alter table users drop column hotfix" }).await;
     // A migration that does not add up, then one that fails.
     p.file("20261027130000_nick.sql", &format!("alter table users add column nick {text};"));
     let (code, out) = p.check_every_way().await;
@@ -1305,11 +1339,12 @@ async fn a_cached_prefix_replays_only_what_follows_it(mut p: P) {
     reylo_migrate::cache::take_stats();
     assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     let stats = reylo_migrate::cache::take_stats();
-    let keeps_databases = p.d != Dialect::Mysql;
+    // MySQL has no copy of a database, and DuckDB's shadows are in memory: the cache keeps their lines.
+    let keeps_databases = !matches!(p.d, Dialect::Mysql | Dialect::Duckdb);
     if keeps_databases {
         assert_eq!((stats.replayed, stats.copies), (0, 2), "the databases the last check kept answer: {stats:?}");
     } else {
-        assert_eq!(stats.replayed, 4, "MySQL replays it all: {stats:?}");
+        assert_eq!(stats.replayed, 4, "MySQL and DuckDB replay it all: {stats:?}");
     }
     // Then their lines do, with no shadow at all.
     assert_eq!(p.dry_run().await, 0, "{}", p.peek());
@@ -1641,7 +1676,9 @@ fn choices_of(line: &str) -> reylo_migrate::Choices {
 
 async fn create_settles_every_guess_with_one_command(mut p: P) {
     let (id, int, text) = (p.t.id, p.t.int, p.t.text);
-    let (short, long) = if p.d == Dialect::Sqlite { ("text", "text not null default ''") } else { ("varchar(20)", "varchar(40)") };
+    // DuckDB keeps no length of a varchar: the change is the column's nullability, as on SQLite.
+    let not_null = format!("{text} not null default ''");
+    let (short, long) = if matches!(p.d, Dialect::Sqlite | Dialect::Duckdb) { (text, not_null.as_str()) } else { ("varchar(20)", "varchar(40)") };
     p.file("20261027100000_t.sql", &format!("create table users (id {id}, nick {short});"));
     p.file("20261027110000_t.sql", &format!("create table orders (id {id}, a {text}, b {text}, c {text}, legacy {text});"));
     p.file("20261027120000_t.sql", &format!("create table posts (id {id}, old_a {text}, old_b {text});"));
@@ -1701,7 +1738,7 @@ async fn commands_create_prints_for_names_with_spaces_run_as_printed(mut p: P) {
     let (id, text) = (p.t.id, p.t.text);
     let d = p.d;
     let q = |name: &str| if d == Dialect::Mysql { format!("`{name}`") } else { format!("\"{name}\"") };
-    let (short, long) = if p.d == Dialect::Sqlite { (text.to_string(), "text not null default ''".to_string()) } else { ("varchar(20)".to_string(), "varchar(40)".to_string()) };
+    let (short, long) = if matches!(p.d, Dialect::Sqlite | Dialect::Duckdb) { (text.to_string(), format!("{text} not null default ''")) } else { ("varchar(20)".to_string(), "varchar(40)".to_string()) };
     let before = format!("create table {} (id {id}, {} {short});", q("My Users"), q("Full Name"));
     p.file("20261027100000_t.sql", &before);
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
@@ -1839,14 +1876,21 @@ async fn create_renames_a_table_keeping_its_rows(mut p: P) {
     p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text});"));
     p.file("20261027110000_posts.sql", &format!("create table posts (id {int}, user_id {int}, foreign key (user_id) references users (id));"));
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
-    p.exec("insert into users (email) values ('a'); insert into posts values (1, 1)").await;
+    // DuckDB's keys aren't numbered from 1 (it has no identity column), so the row names its own.
+    p.exec(if p.d == Dialect::Duckdb { "insert into users (id, email) values (1, 'a'); insert into posts values (1, 1)" } else { "insert into users (email) values ('a'); insert into posts values (1, 1)" }).await;
     let sql_of = |p: &P, name: &str| p.files().into_iter().filter(|f| f.ends_with(&format!("_{name}.sql"))).map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect::<String>();
     // One table goes while one of its columns comes: renamed, and the foreign key on it follows.
     p.schema(&format!("create table accounts (id {id}, email {text}); create table posts (id {int}, user_id {int}, foreign key (user_id) references accounts (id));"));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
     assert_has!(p.output(), r"✓ Wrote [^\n]+\n  ! users → accounts is written as a rename, keeping its rows\n    If they're different tables, delete the file, then:");
     let sql = sql_of(&p, "accounts");
-    assert!(sql.contains("rename to accounts") && !sql.contains("drop table"), "{sql}");
+    // DuckDB's foreign keys would name the old table after a rename, so a table another references
+    // is made again under its new name, its rows copied across.
+    if p.d == Dialect::Duckdb {
+        assert!(sql.contains("create table accounts") && sql.contains("insert into accounts (id, email) select id, email from temp.main.reylo_copy_users"), "{sql}");
+    } else {
+        assert!(sql.contains("rename to accounts") && !sql.contains("drop table"), "{sql}");
+    }
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_eq!(p.rows("select email from accounts").await[0].text("email"), "a");
     p.output();
@@ -2061,43 +2105,47 @@ async fn create_names_a_type_change_that_loses_values_in_drop(mut p: P) {
     let id = p.t.id;
     // Each database's change that keeps the column but loses what its values hold.
     let (before, after, why) = match p.d {
-        Dialect::Postgres => ("timestamptz", "date", r"users\.at changes from timestamp with time zone to date, which keeps only the date"),
-        Dialect::Mysql => ("datetime(6)", "datetime", r"users\.at changes from datetime\(6\) to datetime, which rounds to whole seconds"),
-        Dialect::Sqlite => ("text", "integer", r"users\.at changes from text to integer, which stores text that reads as a number as that number"),
+        Dialect::Postgres => ("timestamptz", "date", r"users\.stamp changes from timestamp with time zone to date, which keeps only the date"),
+        Dialect::Mysql => ("datetime(6)", "datetime", r"users\.stamp changes from datetime\(6\) to datetime, which rounds to whole seconds"),
+        Dialect::Sqlite => ("text", "integer", r"users\.stamp changes from text to integer, which stores text that reads as a number as that number"),
+        Dialect::Duckdb => ("timestamptz", "date", r"users\.stamp changes from timestamp with time zone to date, which keeps only the date"),
     };
-    p.file("20261027100000_users.sql", &format!("create table users (id {id}, at {before});"));
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, stamp {before});"));
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
-    p.schema(&format!("create table users (id {id}, at {after});"));
+    p.schema(&format!("create table users (id {id}, stamp {after});"));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "narrow", &Default::default(), log).await).await, 1);
     let out = p.output();
-    assert_has!(&out, &format!(r"✗ {why}[^\n]*\n\n  To accept that:\n    reylo migrate new narrow --drop users\.at"));
+    assert_has!(&out, &format!(r"✗ {why}[^\n]*\n\n  To accept that:\n    reylo migrate new narrow --drop users\.stamp"));
     assert!(p.files().iter().all(|f| !f.contains("_narrow")), "nothing is written");
-    let choices = reylo_migrate::Choices { drop: vec!["users.at".into()], rename: vec![] };
+    let choices = reylo_migrate::Choices { drop: vec!["users.stamp".into()], rename: vec![] };
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "narrow", &choices, log).await).await, 0, "{}", p.peek());
     let sql = p.files().into_iter().filter(|f| f.contains("_narrow")).map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect::<String>();
-    assert!(sql.contains("-- loses data: users.at changes from"), "{sql}");
+    assert!(sql.contains("-- loses data: users.stamp changes from"), "{sql}");
     // A widening change needs nothing.
     let wider = match p.d {
         Dialect::Postgres => "timestamptz",
         Dialect::Mysql => "datetime(6)",
         Dialect::Sqlite => "text",
+        Dialect::Duckdb => "timestamptz",
     };
     for f in p.files().into_iter().filter(|f| f.contains("_narrow")) {
         std::fs::remove_file(p.dir.join("migrations").join(f)).unwrap();
     }
     p.file("20261027110000_wider.sql", &format!("{};", match p.d {
-        Dialect::Postgres => "alter table users alter column at type timestamp(3) with time zone",
-        Dialect::Mysql => "alter table users modify at datetime(3)",
+        Dialect::Postgres => "alter table users alter column stamp type timestamp(3) with time zone",
+        Dialect::Mysql => "alter table users modify stamp datetime(3)",
         Dialect::Sqlite => "alter table users add column note text",
+        Dialect::Duckdb => "alter table users alter column stamp type timestamp",
     }));
-    p.schema(&format!("create table users (id {id}, at {wider}{});", if p.d == Dialect::Sqlite { ", note text" } else { "" }));
+    p.schema(&format!("create table users (id {id}, stamp {wider}{});", if p.d == Dialect::Sqlite { ", note text" } else { "" }));
     p.output();
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "widen", &Default::default(), log).await).await, 0, "{}", p.peek());
 }
 
 async fn create_assumes_a_rename_where_one_goes_and_one_comes(mut p: P) {
-    let (id, int) = (p.t.id, p.t.int);
-    let (short, long) = if p.d == Dialect::Sqlite { ("text", "text not null default ''") } else { ("varchar(20)", "varchar(40)") };
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    let not_null = format!("{text} not null default ''");
+    let (short, long) = if matches!(p.d, Dialect::Sqlite | Dialect::Duckdb) { (text, not_null.as_str()) } else { ("varchar(20)", "varchar(40)") };
     p.file("20261027100000_users.sql", &format!("create table users (id {id}, nick {short});"));
     p.file("20261027110000_accounts.sql", &format!("create table accounts (id {int}, email {short}, name {short});"));
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
@@ -2262,7 +2310,9 @@ async fn the_drift_advice_in_a_locked_project_locks_the_migration_first(mut p: P
 async fn wipe_deletes_rows_and_keeps_the_schema(mut p: P) {
     let (id, int, text) = (p.t.id, p.t.int, p.t.text);
     // MySQL commits each DDL statement on its own, so each is a file of its own.
-    p.file("20261027100000_users.sql", &format!("create table users (id {id}, name {text});"));
+    // DuckDB numbers rows through a sequence, which a wipe starts again.
+    let users = if p.d == Dialect::Duckdb { format!("create sequence user_ids; create table users (id bigint primary key default nextval('user_ids'), name {text});") } else { format!("create table users (id {id}, name {text});") };
+    p.file("20261027100000_users.sql", &users);
     p.file("20261027110000_posts.sql", &format!("create table posts (id {int}, user_id {int} references users (id));"));
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     p.exec("insert into users (name) values ('a'), ('b'); insert into posts values (1, 1)").await;
@@ -3345,5 +3395,1082 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert!(!sql.contains("docs_fts_data"), "{sql}");
         p.exec("alter table docs add column extra int").await;
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "extra", &Default::default(), log).await).await, 0, "{}", p.peek());
+    }
+}
+
+/// DuckDB's own: what its `alter table` refuses, which the plan rebuilds or works around, its types,
+/// sequences and macros, and its shadows' catalog name.
+mod on_duckdb {
+    use super::*;
+    use reylo_migrate::catalog::difference;
+
+    async fn duckdb() -> Option<P> {
+        P::new(Dialect::Duckdb).await
+    }
+
+    fn written(p: &P, name: &str) -> String {
+        p.files().iter().filter(|f| f.ends_with(&format!("_{name}.sql"))).map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect()
+    }
+
+    async fn new(p: &mut P, name: &str) -> i32 {
+        let name = name.to_string();
+        p.run(async |o, log| reylo_migrate::create(o, &name, &Default::default(), log).await).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn constraints_added_to_a_table_rebuild_it_keeping_its_rows() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261027100000_t.sql", "create table authors (id bigint primary key); create table books (id bigint primary key, title varchar, author_id bigint, pages integer);");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into authors values (1); insert into books values (1, 'a', 1, 10), (2, 'b', 1, 20)").await;
+        // DuckDB adds no check and no foreign key to a table that has one already.
+        p.schema("create table authors (id bigint primary key); create table books (id bigint primary key, title varchar unique, author_id bigint references authors (id), pages integer check (pages > 0));");
+        assert_eq!(new(&mut p, "keys").await, 0, "{}", p.peek());
+        let sql = written(&p, "keys");
+        assert_has!(&sql, r"create temporary table reylo_copy_books as select \* from books;\ndrop table books;\ncreate table books \(");
+        assert_has!(&sql, r"insert into books \(id, title, author_id, pages\) select id, title, author_id, pages from temp\.main\.reylo_copy_books;");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from books").await[0].text("n"), "2");
+        assert!(p.try_rows("insert into books values (3, 'c', 1, 0)").await.is_err(), "the check holds");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_referenced_table_is_rebuilt_with_the_tables_that_reference_it() {
+        let Some(mut p) = duckdb().await else { return };
+        let before = "create table authors (id bigint primary key, name varchar); create table books (id bigint primary key, author_id bigint references authors (id), title varchar); create index books_title on books (title); comment on table books is 'every book'; comment on column books.title is 'as printed';";
+        p.schema(before);
+        p.file("20261027100000_t.sql", before);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into authors values (1, 'ada'); insert into books values (1, 1, 'notes')").await;
+        // A check on authors: authors is rebuilt, and books, whose key references it, with it.
+        p.schema(&before.replace("name varchar)", "name varchar check (name <> ''))"));
+        assert_eq!(new(&mut p, "named").await, 0, "{}", p.peek());
+        let sql = written(&p, "named");
+        assert_has!(&sql, r"drop table books;\ndrop table authors;");
+        assert_has!(&sql, r"create index books_title on books\(title\);");
+        assert_has!(&sql, r"comment on table books is 'every book';");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select b.title, a.name from books b join authors a on a.id = b.author_id").await[0].text("title"), "notes");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "the index and the comments came back: {}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_with_an_index_changes_with_the_index_around_the_change() {
+        let Some(mut p) = duckdb().await else { return };
+        let before = "create table users (id bigint primary key, email varchar, nick varchar, age integer); create index users_email on users (email);";
+        p.schema(before);
+        p.file("20261027100000_t.sql", before);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 'a@b.co', 'ada', 36)").await;
+        // DuckDB drops, renames and retypes no column of a table with an index.
+        p.schema("create table users (id bigint primary key, email varchar, handle varchar, age bigint); create index users_email on users (email);");
+        assert_eq!(new(&mut p, "handle").await, 0, "{}", p.peek());
+        let sql = written(&p, "handle");
+        assert_has!(&sql, r"drop index users_email;[\s\S]*alter table users rename column nick to handle;[\s\S]*alter table users alter column age set data type bigint;[\s\S]*create index users_email on users\(email\);");
+        assert!(!sql.contains("drop table"), "{sql}");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select handle from users").await[0].text("handle"), "ada");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn what_alter_table_cannot_change_is_a_rebuild() {
+        let Some(mut p) = duckdb().await else { return };
+        let before = "create table t (id bigint primary key, name varchar, n integer, k integer unique, gone integer);";
+        p.schema(before);
+        p.file("20261027100000_t.sql", before);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into t values (1, 'Ada', 2, 3, 4)").await;
+        // A collation, a generated column, and a drop before a key's column, which DuckDB refuses.
+        p.schema("create table t (id bigint primary key, name varchar collate nocase, n integer, k integer unique, twice integer generated always as (n * 2) virtual);");
+        let choices = reylo_migrate::Choices { drop: vec!["t.gone".into()], rename: vec![] };
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "rebuild", &choices, log).await).await, 0, "{}", p.peek());
+        assert_has!(written(&p, "rebuild"), r"create temporary table reylo_copy_t");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select twice from t where name = 'ada'").await[0].text("twice"), "4");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn types_sequences_and_macros_are_written_compared_and_changed() {
+        let Some(mut p) = duckdb().await else { return };
+        let schema = "create type mood as enum ('sad', 'ok'); create type point as struct(x double, y double); create sequence ids start 100 increment 10; create table entries (id bigint default nextval('ids') primary key, feeling mood, place point); create macro double_it(x) as x * 2; create macro recent(n) as table select * from entries order by id desc limit n; create view moods as select feeling, count(*) as n from entries group by feeling;";
+        p.schema(schema);
+        assert_eq!(new(&mut p, "init").await, 0, "{}", p.peek());
+        let sql = written(&p, "init");
+        assert_has!(&sql, r"create type mood as enum\('sad', 'ok'\);");
+        assert_has!(&sql, r"feeling mood");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into entries (feeling) values ('ok'), ('sad')").await;
+        assert_eq!(p.rows("select min(id) as id from entries").await[0].text("id"), "100");
+        p.output();
+        // Values drawn from the sequence, and the file opened again, are no drift.
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_has!(p.output(), "Up to date");
+        // A label, a macro's body and the view, changed: each written and run.
+        p.schema(&schema.replace("('sad', 'ok')", "('sad', 'ok', 'glad')").replace("x * 2", "x + x"));
+        assert_eq!(new(&mut p, "glad").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into entries (feeling) values ('glad')").await;
+        assert_eq!(p.rows("select double_it(21) as v").await[0].text("v"), "42");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        // A macro changed by hand is drift, which deploy refuses and shows.
+        p.exec("create or replace macro double_it(x) as x * 3").await;
+        assert_eq!(p.migrate().await, 1);
+        assert_has!(p.output(), r"✗ This database was changed outside its migrations[\s\S]*macro double_it\(x\)");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_macros_parameter_defaults_are_written_from_schema_sql() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create macro add_to(a, b := 5) as a + b;");
+        assert_eq!(new(&mut p, "macro").await, 0, "{}", p.peek());
+        let out = p.output();
+        // No catalog function holds a default, so the comparison can't see one change: it says so.
+        assert_has!(&out, r"macro add_to: its parameters' defaults are not read");
+        assert_has!(written(&p, "macro"), r"b := 5");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select add_to(1) as v").await[0].text("v"), "6");
+        // introspect reads it from DuckDB's own export, defaults and all.
+        let sql = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
+        assert_has!(&sql, r"(?i)b := 5");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_name_qualified_with_the_database_replays_in_a_shadow() {
+        let Some(mut p) = duckdb().await else { return };
+        // A shadow is attached under the target's catalog name, here the file's, `dev`.
+        p.schema("create schema billing; create table billing.invoices (id bigint primary key);");
+        p.file("20261027100000_t.sql", "create schema dev.billing; create table dev.billing.invoices (id bigint primary key);");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from billing.invoices").await[0].text("n"), "0");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_migration_that_reaches_past_the_database_is_refused() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table t (id bigint);");
+        p.file("20261027100000_t.sql", "create table t (id bigint);");
+        p.file("20261027110000_out.sql", "copy t to 'every_row.csv';");
+        assert_eq!(p.dry_run().await, 1);
+        assert_has!(p.output(), r"can't be replayed in a shadow database\n  [^\n]*copy t to");
+        p.file("20261027110000_out.sql", "attach 'other.duckdb' as other;");
+        assert_eq!(p.dry_run().await, 1);
+        assert_has!(p.output(), r"attaches another database");
+        assert!(!p.dir.join("every_row.csv").exists() && !p.dir.join("other.duckdb").exists(), "no replay wrote a file");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_every_kind_back_as_it_replays() {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec("create type mood as enum ('sad', 'ok'); create sequence ids; create table entries (id bigint default nextval('ids') primary key, feeling mood not null, note varchar collate nocase); create index entries_note on entries (note); create view sad as select * from entries where feeling = 'sad'; create macro tagged(t, sep := ':') as t || sep; comment on table entries is 'what happened'; create schema archive; create table archive.old (id bigint);").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert_has!(&schema, r"comment on table entries is 'what happened'");
+        assert_has!(&schema, r"(?i)sep := ':'");
+        p.output();
+        // What init wrote replays to this database: deploy finds it as recorded, and a check agrees.
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_has!(p.output(), "Up to date");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        let mut q = P::sibling(&p);
+        std::fs::copy(p.dir.join("migrations").join("init.sql"), q.dir.join("migrations").join("init.sql")).unwrap();
+        std::fs::copy(p.dir.join("schema.sql"), q.dir.join("schema.sql")).unwrap();
+        assert_eq!(q.migrate().await, 0, "init.sql runs on an empty database: {}", q.peek());
+        let mut a = Db::connect(&p.url, &p.dir).await.unwrap();
+        let mut b = Db::connect(&q.url, &q.dir).await.unwrap();
+        assert_eq!(catalog(&mut a).await.unwrap(), catalog(&mut b).await.unwrap());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_referenced_table_renamed_keeps_its_rows_and_the_keys_on_it() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261027100000_t.sql", "create table users (id bigint primary key, email varchar); create index users_email on users (email); create table posts (id bigint, user_id bigint references users (id));");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 'a'); insert into posts values (1, 1)").await;
+        p.schema("create table accounts (id bigint primary key, email varchar); create index users_email on accounts (email); create table posts (id bigint, user_id bigint references accounts (id));");
+        assert_eq!(new(&mut p, "accounts").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select a.email from posts p join accounts a on a.id = p.user_id").await[0].text("email"), "a");
+        // The key follows: a post of no account is refused.
+        assert!(p.try_rows("insert into posts values (2, 99)").await.is_err());
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    async fn wipe(p: &mut P) -> i32 {
+        p.run(async |o, log| reylo_migrate::db_wipe(o, false, log).await).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wipe_keeps_every_comment_and_empties_a_self_referencing_table() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261027100000_t.sql", "create sequence user_ids; comment on sequence user_ids is 'the ids of users'; create table users (id bigint primary key default nextval('user_ids'), name varchar); create index users_name on users (name); comment on index users_name is 'lookup'; comment on column users.name is 'as given'; create table node (id bigint primary key, parent bigint references node (id));");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into users (name) values ('a'), ('b'); insert into node values (1, null); insert into node values (2, 1)").await;
+        p.output();
+        // DuckDB deletes no row another of its table references in one statement: the tables are
+        // made again, empty, in one transaction, with what is on them.
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from node").await[0].text("n"), "0");
+        let comments = p.rows("select (select comment from duckdb_sequences() where sequence_name = 'user_ids') as s, (select comment from duckdb_indexes() where index_name = 'users_name') as i, (select comment from duckdb_columns() where table_name = 'users' and column_name = 'name') as c").await;
+        assert_eq!([comments[0].text("s"), comments[0].text("i"), comments[0].text("c")], ["the ids of users", "lookup", "as given"]);
+        p.exec("insert into users (name) values ('c')").await;
+        assert_eq!(p.rows("select id from users").await[0].text("id"), "1", "the sequence starts again");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_self_referencing_tables_rebuild_says_what_duckdb_refuses() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create table node (id bigint primary key, parent bigint references node (id), name varchar);";
+        p.schema(v1);
+        p.file("20261027100000_tree.sql", v1);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into node values (1, null, 'root'); insert into node values (2, 1, 'leaf')").await;
+        p.schema("create table node (id bigint primary key, parent bigint references node (id), name varchar check (name <> ''));");
+        assert_eq!(new(&mut p, "named").await, 0, "{}", p.peek());
+        // DuckDB checks a key on its own table against the rows it held when the transaction began:
+        // a copy back of rows that reference each other fails, which the file says.
+        assert_has!(written(&p, "named"), r"-- node references itself, and DuckDB checks such a key against the rows a table held when its transaction began");
+        p.output();
+        assert_eq!(p.migrate().await, 1);
+        assert_has!(p.output(), r"failed, and nothing of it was applied");
+        assert_eq!(p.rows("select count(*) as n from node").await[0].text("n"), "2", "the failed migration changed nothing");
+        // Where no row references another, it runs.
+        p.exec("delete from node where id = 2").await;
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from node").await[0].text("n"), "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_renamed_table_takes_every_table_whose_key_reaches_it() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261027100000_t.sql", "create table users (id bigint primary key, email varchar); create table posts (id bigint primary key, user_id bigint references users (id)); create table replies (id bigint, post_id bigint references posts (id)); create table node (id bigint primary key, parent bigint references node (id));");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 'a'); insert into posts values (1, 1); insert into replies values (1, 1); insert into node values (1, null)").await;
+        // A grandchild, and a table that references itself.
+        p.schema("create table accounts (id bigint primary key, email varchar); create table posts (id bigint primary key, user_id bigint references accounts (id)); create table replies (id bigint, post_id bigint references posts (id)); create table tree (id bigint primary key, parent bigint references tree (id));");
+        p.output();
+        assert_eq!(new(&mut p, "renames").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}\n{}", p.peek(), written(&p, "renames"));
+        assert_eq!(p.rows("select count(*) as n from replies r join posts p on p.id = r.post_id join accounts a on a.id = p.user_id").await[0].text("n"), "1");
+        assert!(p.try_rows("insert into tree values (3, 99)").await.is_err(), "the key holds on the new name");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_renamed_table_with_a_key_leaves_the_table_it_references_free() {
+        let Some(mut p) = duckdb().await else { return };
+        // A table that references another, renamed with `alter table`, leaves DuckDB holding the old
+        // name in the other's dependencies, whose drop it then refuses: it is made again instead.
+        p.file("20261027100000_t.sql", "create table users (id bigint primary key, name varchar); create table posts (id bigint primary key, user_id bigint references users (id));");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 'a'); insert into posts values (1, 1)").await;
+        p.schema("create table users (id bigint primary key, name varchar); create table articles (id bigint primary key, user_id bigint references users (id));");
+        assert_eq!(new(&mut p, "articles").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        // The table it references can still be made again, and dropped.
+        p.schema("create table users (id bigint primary key, name varchar check (name <> '')); create table articles (id bigint primary key, user_id bigint references users (id));");
+        assert_eq!(new(&mut p, "named").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from articles a join users u on u.id = a.user_id").await[0].text("n"), "1");
+        p.output();
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_tables_renamed_at_once_child_first_keep_their_rows() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261027100000_t.sql", "create table users (id bigint primary key, name varchar); create table posts (id bigint primary key, user_id bigint references users (id), title varchar);");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 'a'); insert into posts values (1, 1, 't')").await;
+        p.schema("create table accounts (id bigint primary key, name varchar, joined date); create table articles (id bigint primary key, user_id bigint references accounts (id), title varchar, body varchar);");
+        let choices = reylo_migrate::Choices { drop: vec![], rename: vec![("posts".into(), "articles".into()), ("users".into(), "accounts".into())] };
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "renames", &choices, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}\n{}", p.peek(), written(&p, "renames"));
+        assert_eq!(p.rows("select a.title, u.name from articles a join accounts u on u.id = a.user_id").await[0].text("title"), "t");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_renamed_and_changed_at_once_keeps_its_rows() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261027100000_t.sql", "create table users (id bigint primary key, email varchar, age integer); create index users_email on users (email); create table posts (id bigint, user_id bigint references users (id));");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 'a', 3); insert into posts values (1, 1)").await;
+        p.schema("create table accounts (id bigint primary key, email varchar, age bigint, joined date); create index users_email on accounts (email); create table posts (id bigint, user_id bigint references accounts (id));");
+        let choices = reylo_migrate::Choices { drop: vec![], rename: vec![("users".into(), "accounts".into())] };
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &choices, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}\n{}", p.peek(), written(&p, "accounts"));
+        assert_eq!(p.rows("select count(*) as n from posts p join accounts a on a.id = p.user_id").await[0].text("n"), "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_collation_of_several_parts_reaches_the_database() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table t (id bigint primary key, name varchar collate nocase.noaccent);");
+        assert_eq!(new(&mut p, "init").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into t values (1, 'É')").await;
+        assert_eq!(p.rows("select count(*) as n from t where name = 'e'").await[0].text("n"), "1", "migration:\n{}", written(&p, "init"));
+        // One part of it dropped by hand is drift.
+        p.exec("create temporary table keep as select * from t; drop table t; create table t (id bigint primary key, name varchar collate nocase); insert into t select * from keep").await;
+        p.output();
+        assert_eq!(p.migrate().await, 1);
+        assert_has!(p.output(), r"This database was changed outside its migrations");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_named_in_another_case_keeps_its_rows() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261027100000_t.sql", "create table Users (id bigint primary key, name varchar);");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 'a')").await;
+        p.schema("create table users (id bigint primary key, name varchar);");
+        p.output();
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from users").await[0].text("n"), "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_apps_ordinary_use_of_the_file_is_no_drift() {
+        let Some(mut p) = duckdb().await else { return };
+        let schema = "create sequence ids start 10; create type mood as enum ('a', 'b'); create table t (id bigint primary key default nextval('ids'), m mood, name varchar collate nocase, total decimal(10, 2), tags varchar[], meta struct(k varchar, v integer), twice bigint generated always as (id * 2) virtual); create index t_name on t (name); create view tv as select id, name from t; create macro bump(x) as x + 1; comment on table t is 'things'; create schema arch; create table arch.old (id bigint);";
+        p.schema(schema);
+        p.file("20261027100000_t.sql", schema);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        // Rows, a sequence drawn from, a checkpoint, the file opened again, what a session makes for
+        // itself, and another database attached and detached.
+        p.exec("insert into t (m, name, total, tags, meta) values ('a', 'x', 1.5, ['q'], {'k': 'a', 'v': 1}), ('b', 'y', 2, [], null); select nextval('ids'); checkpoint;").await;
+        p.exec("create temporary table scratch as select * from t; create temporary view tmpv as select 1; create temporary macro tm(x) as x; create temporary sequence ts; insert into arch.old values (1); delete from t where name = 'y'; update t set name = 'z';").await;
+        let other = p.dir.join("other.duckdb");
+        p.exec(&format!("attach '{}' as other; create table other.main.x (id integer); detach other;", other.display())).await;
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_has!(p.output(), "Up to date");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reset_drops_every_kind_with_its_rows() {
+        let Some(mut p) = duckdb().await else { return };
+        let schema = "create schema arch; create sequence ids; create type mood as enum ('a', 'b'); create table a (id bigint primary key default nextval('ids'), m mood); create table b (id bigint primary key, a_id bigint references a (id)); create table c (id bigint, b_id bigint references b (id)); create table node (id bigint primary key, parent bigint references node (id)); create index b_a on b (a_id); create view av as select * from a; create macro twice(x) as x * 2; create table arch.old (id bigint primary key); create table arch.kid (old_id bigint references old (id)); comment on table a is 'the a';";
+        p.schema(schema);
+        p.file("20261027100000_t.sql", schema);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into a (m) values ('a'); insert into b select 1, id from a; insert into c values (1, 1); insert into node values (1, null); insert into node values (2, 1); insert into arch.old values (1); insert into arch.kid values (1);").await;
+        p.output();
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from node").await[0].text("n"), "0");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_has!(p.output(), "Up to date");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_sequence_change_goes_on_from_its_value_where_one_is_known() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create sequence ids; create table users (id bigint primary key default nextval('ids'), name varchar);";
+        p.schema(v1);
+        p.file("20261027100000_t.sql", v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users (name) values ('a'), ('b'), ('c')").await;
+        let v2 = "create sequence ids increment by 1 maxvalue 1000000; create table users (id bigint primary key default nextval('ids'), name varchar);";
+        p.schema(v2);
+        p.output();
+        // db push plans from this database, whose sequence gives 4 next.
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert!(p.try_rows("insert into users (name) values ('d')").await.is_ok(), "the next row takes a free id");
+        assert_eq!(p.rows("select max(id) as id from users").await[0].text("id"), "4");
+        // A migration runs on databases whose values no plan can know: it says where it starts again.
+        assert_eq!(new(&mut p, "cap").await, 0, "{}", p.peek());
+        assert_has!(written(&p, "cap"), r"-- DuckDB makes ids again, so it starts again at 1: where rows hold its values, start it past them");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_index_comment_survives_new_and_dev() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create table t (id bigint primary key, email varchar, age integer); create index t_email on t (email); comment on index t_email is 'lookup';";
+        p.schema(v1);
+        assert_eq!(new(&mut p, "init").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.schema(&v1.replace("age integer", "age bigint"));
+        assert_eq!(new(&mut p, "age").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select comment from duckdb_indexes() where index_name = 't_email'").await[0].text("comment"), "lookup", "{}", written(&p, "age"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_nested_type_that_loses_values_is_named_in_drop() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create table t (id bigint primary key, s struct(a integer, b integer));";
+        p.schema(v1);
+        p.file("20261027100000_t.sql", v1);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.schema("create table t (id bigint primary key, s struct(a integer));");
+        p.output();
+        assert_eq!(new(&mut p, "narrow").await, 1);
+        assert_has!(p.output(), r"✗ t\.s changes from struct\(a integer, b integer\) to struct\(a integer\), which drops its field b[^\n]*\n\n  To accept that:\n    reylo migrate new narrow --drop t\.s");
+        let choices = reylo_migrate::Choices { drop: vec!["t.s".into()], rename: vec![] };
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "narrow", &choices, log).await).await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn introspect_and_init_replay_whatever_order_the_export_writes() {
+        let Some(mut p) = duckdb().await else { return };
+        // The export writes views in name order and tables before the macros they call.
+        p.exec("create macro positive(x) as x > 0; create table users (id bigint primary key, score integer check (positive(score)), name varchar); create view users_enriched as select *, upper(name) as shout from users; create view active_users as select * from users_enriched where score > 1;").await;
+        let sql = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
+        let mut fresh = Db::connect("duckdb::memory:", &p.dir).await.unwrap();
+        fresh.exec(&sql).await.unwrap_or_else(|e| panic!("introspect's SQL doesn't run on an empty database: {e}\n{sql}"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_macro_that_tables_and_indexes_call_changes_around_them() {
+        let Some(mut p) = duckdb().await else { return };
+        // DuckDB records a table whose default or check calls a macro, and an index that does, as
+        // depending on it, and makes neither before it: the first migration makes it first.
+        let v1 = "create macro code(n) as 'c-' || n; create macro positive(x) as x > 0; create macro norm(x) as lower(x); create table items (id bigint primary key, label varchar default code(1), qty integer check (positive(qty))); create table lines (item_id bigint references items (id), note varchar); create index items_label on items (norm(label)); comment on table items is 'stock';";
+        p.schema(v1);
+        assert_eq!(new(&mut p, "init").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}\n{}", p.peek(), written(&p, "init"));
+        p.exec("insert into items (id, qty) values (1, 3); insert into lines values (1, 'x')").await;
+        // Each body changed: the default is taken off and set back, the index made again, and the
+        // table whose check calls one rebuilt around it, with the table that references it.
+        p.schema(&v1.replace("'c-' || n", "'item-' || n").replace("x > 0", "x >= 0").replace("lower(x)", "upper(x)"));
+        p.output();
+        assert_eq!(new(&mut p, "bodies").await, 0, "{}", p.peek());
+        let sql = written(&p, "bodies");
+        assert_has!(&sql, r"drop table lines;\ndrop table items;\ndrop macro positive;\ncreate macro positive");
+        assert_eq!(p.dev().await, 0, "{}\n{sql}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from lines l join items i on i.id = l.item_id").await[0].text("n"), "1");
+        p.exec("insert into items (id, qty) values (2, 0)").await;
+        assert_eq!(p.rows("select label from items where id = 2").await[0].text("label"), "item-1");
+        assert_eq!(p.rows("select comment from duckdb_tables() where table_name = 'items'").await[0].text("comment"), "stock");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        // And reset drops each table before the macro it calls.
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from items").await[0].text("n"), "0");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_a_table_whose_default_calls_a_macro() {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec("create macro gen_code() as 'c-' || 1; create table items (id bigint primary key, code varchar default gen_code()); insert into items (id) values (1);").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        // What init wrote makes the database again, on an empty one.
+        let mut q = P::sibling(&p);
+        for f in p.files() {
+            std::fs::copy(p.dir.join("migrations").join(&f), q.dir.join("migrations").join(&f)).unwrap();
+        }
+        std::fs::copy(p.dir.join("schema.sql"), q.dir.join("schema.sql")).unwrap();
+        assert_eq!(q.migrate().await, 0, "{}", q.peek());
+        q.exec("insert into items (id) values (1)").await;
+        assert_eq!(q.rows("select code from items").await[0].text("code"), "c-1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_enum_a_check_casts_to_changes_with_the_table_around_it() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create type mood as enum ('calm', 'busy'); create table people (id bigint primary key, m varchar check (m::mood is not null), n varchar default 'calm'::mood);";
+        p.schema(v1);
+        p.file("20261027100000_t.sql", v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into people (id, m) values (1, 'busy')").await;
+        p.schema(&v1.replace("'busy')", "'busy', 'away')"));
+        p.output();
+        assert_eq!(new(&mut p, "away").await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}\n{}", p.peek(), written(&p, "away"));
+        p.exec("insert into people (id, m) values (2, 'away')").await;
+        assert_eq!(p.rows("select count(*) as n from people").await[0].text("n"), "2");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_schema_named_as_the_database_file_is_refused_with_why() {
+        let Some(p) = duckdb().await else { return };
+        // The file dev.duckdb is the database dev: a schema dev in it makes `dev.items` ambiguous.
+        p.schema("create schema dev; create table dev.dev.items (id bigint primary key);");
+        let opts = p.opts();
+        let mut said = Vec::new();
+        let result = reylo_migrate::create(&opts, "init", &Default::default(), &mut |l: &str| said.push(l.to_string())).await;
+        let told = format!("{}\n{}", result.as_ref().err().map(|e| e.0.as_str()).unwrap_or_default(), said.join("\n"));
+        // As any change the planner can't write: the migration is left empty, for three-part names
+        // (`dev.dev.items`), which this file reads, to be written by hand.
+        assert_has!(&told, r"The schema dev has the name of the database it is in, so DuckDB reads every name written dev\.<name> as ambiguous: rename the schema or the database file: the migration is empty");
+        let sql = written(&p, "init");
+        assert!(!sql.lines().any(|l| !l.trim().is_empty() && !l.starts_with("--")), "{sql}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dry_run_and_deploy_agree_after_hand_rebuilds_rows_and_a_reopen() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261027100000_a.sql", "create type mood as enum ('a', 'b'); create sequence ids start 10; create table users (id bigint primary key default nextval('ids'), name varchar, m mood); create table posts (id bigint primary key, user_id bigint references users (id), title varchar); create index posts_title on posts (title);");
+        p.file("20261027110000_b.sql", "alter table users add column age integer default 3; alter table users alter column name set default 'x'; drop index posts_title; alter table posts rename column title to heading;");
+        p.file("20261027120000_c.sql", "create temporary table keep as select * from posts; drop table posts; create table posts (id bigint primary key, user_id bigint references users (id), heading varchar check (heading <> '')); insert into posts select * from keep; drop table keep; create index posts_heading on posts (heading); comment on table posts is 'what people wrote';");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into users (name, m) values ('a', 'a'), ('b', 'b'); insert into posts select id, id, 'h' from users; checkpoint;").await;
+        p.exec("update users set age = 4; delete from posts where id = 11;").await;
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_has!(p.output(), "Up to date");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        // db wipe makes each table again, the one whose check calls a macro with it.
+        p.file("20261027130000_d.sql", "create macro positive(x) as x > 0; create table scores (id integer check (positive(id)), e varchar); create index scores_e on scores (lower(e));");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into scores values (1, 'A')").await;
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from scores").await[0].text("n"), "0");
+        assert!(p.try_rows("insert into scores values (0, 'x')").await.is_err(), "the check holds");
+    }
+
+    // DuckDB's own commands on projects of their own: files named every way, a schema of nearly
+    // every kind, drift by hand, and renames meeting rebuilds and macro changes.
+
+    /// A project whose database file is `<file>.duckdb`, which names its database.
+    async fn named(file: &str) -> Option<P> {
+        let mut p = duckdb().await?;
+        p.url = format!("duckdb:{}", p.dir.join(format!("{file}.duckdb")).display());
+        Some(p)
+    }
+
+    async fn new_with(p: &mut P, name: &str, drop: &[&str], rename: &[(&str, &str)]) -> i32 {
+        let name = name.to_string();
+        let choices = reylo_migrate::Choices { drop: drop.iter().map(|s| s.to_string()).collect(), rename: rename.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
+        p.run(async |o, log| reylo_migrate::create(o, &name, &choices, log).await).await
+    }
+
+    async fn reset(p: &mut P) -> i32 {
+        p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await
+    }
+
+    async fn init(p: &mut P) -> i32 {
+        p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await
+    }
+
+    async fn introspect(p: &P) -> Result<String, reylo_migrate::Error> {
+        reylo_migrate::db_introspect(&p.opts(), &[]).await
+    }
+
+    /// The column `v` of a query's first row.
+    async fn one(p: &P, sql: &str) -> String {
+        p.rows(sql).await.first().map(|r| r.text("v").to_string()).unwrap_or_default()
+    }
+
+    /// `new` then `dev`, both required to succeed.
+    async fn new_and_dev(p: &mut P, name: &str) {
+        let code = new(p, name).await;
+        assert_eq!(code, 0, "new {name}:\n{}", p.output());
+        let sql = written(p, name);
+        let code = p.dev().await;
+        assert_eq!(code, 0, "dev after new {name}:\n{}\nwritten:\n{sql}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_asks_before_a_union_member_is_rounded() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table t (id integer primary key, x union(n double, s varchar));");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into t values (1, 1.5::double)").await;
+        p.schema("create table t (id integer primary key, x union(n integer, s varchar));");
+        let code = new(&mut p, "two").await;
+        assert_ne!(code, 0, "new wrote a migration that rounds 1.5 to 2 with no --drop:\n{}\n{}", p.output(), written(&p, "two"));
+    }
+
+    /// A schema of every kind of object and most of DuckDB's types.
+    const SINK: &str = r#"
+create schema app;
+create type mood as enum ('sad', 'ok', 'happy');
+create type app.addr as struct(city varchar, zip varchar);
+create sequence ids start 100 increment by 5;
+create sequence app.down start 0 increment by -1 minvalue -1000 maxvalue 0;
+create macro twice(x) as x * 2;
+create macro clamp(x, lo := 0, hi := 10) as least(greatest(x, lo), hi);
+create table users (
+  id bigint primary key default nextval('ids'),
+  email varchar not null unique collate nocase,
+  m mood default 'ok',
+  tags varchar[] default [],
+  scores double[3],
+  meta struct(a integer, "B c" varchar),
+  props map(varchar, integer),
+  u union(n integer, s varchar),
+  amount decimal(12, 3) default 0 check (amount >= 0),
+  span interval,
+  t_s timestamp_s, t_ms timestamp_ms, t_ns timestamp_ns, t timestamp, tz timestamptz, tt timetz, tn time_ns,
+  big hugeint, ubig uhugeint, vi bignum, b bit, id2 uuid default uuid(), doc json, raw blob, var variant, geo geometry,
+  doubled bigint generated always as (twice(id)) virtual,
+  check (length(email) > 3)
+);
+create index users_m on users (m);
+create index users_lower on users (lower(email));
+create table app.people (id integer primary key, name varchar); create table app.events (id bigint primary key default nextval('app.down'), user_id integer references people (id), ts timestamptz default current_timestamp, home app.addr);
+create macro app.recent(n) as table select * from app.events order by ts desc limit n;
+create table "Order Items" ("Item ID" integer primary key, "select" varchar, qty integer default clamp(5));
+create view active as select id, email from users where m <> 'sad';
+create view app.latest as from app.recent(3);
+comment on table users is 'people';
+comment on column users.email is 'login';
+comment on index users_m is 'by mood';
+comment on sequence ids is 'user ids';
+comment on type mood is 'feelings';
+comment on view active is 'not sad';
+comment on macro twice is 'x2';
+comment on macro table app.recent is 'last n';
+"#;
+
+    /// The comparator's lines of the project's database, comments and all.
+    async fn lines_of(p: &P) -> Vec<String> {
+        let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
+        let l = catalog(&mut db).await.unwrap();
+        db.close().await;
+        l
+    }
+
+    const SINK_ROWS: &str = "insert into users (email, scores, tags, meta, props, u, amount) values ('aa@b.c', [1, 2, 3], ['x'], {'a': 1, 'B c': 'z'}, map {'k': 1}, 5::integer, 2.5), ('bb@c.d', [4, 5, 6], [], null, null, 'hi', 0);
+     insert into app.people values (1, 'x'); insert into app.events (user_id) values (1), (1);
+     insert into \"Order Items\" values (1, 'a', default);";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_sink_is_built_by_new_and_is_up_to_date() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(SINK);
+        new_and_dev(&mut p, "sink").await;
+        p.exec(SINK_ROWS).await;
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        assert_eq!(new(&mut p, "again").await, 0, "{}", p.output());
+        assert!(written(&p, "again").is_empty(), "new found something to do:\n{}", written(&p, "again"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_the_sink_and_deploys_it_up_to_date() {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec(SINK).await;
+        p.exec(SINK_ROWS).await;
+        p.exec("checkpoint").await;
+        assert_eq!(init(&mut p).await, 0, "{}", p.output());
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        let introspected = introspect(&p).await.unwrap();
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert_eq!(introspected, schema, "introspect and init disagree");
+        // A database built from it is the database it was read from.
+        let Some(mut q) = named("copy").await else { return };
+        q.schema(&schema);
+        new_and_dev(&mut q, "from_init").await;
+        let (a, b) = difference(&lines_of(&p).await, &lines_of(&q).await);
+        assert!(a.is_empty() && b.is_empty(), "built from init's schema.sql, the database differs:\n- {a:?}\n+ {b:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wipe_keeps_the_sinks_schema_whole() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(SINK);
+        new_and_dev(&mut p, "sink").await;
+        p.exec(SINK_ROWS).await;
+        let before = lines_of(&p).await;
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.output());
+        let after = lines_of(&p).await;
+        let (a, b) = difference(&before, &after);
+        assert!(a.is_empty() && b.is_empty(), "wipe changed the schema:\n- {a:?}\n+ {b:?}");
+        let mut x: Vec<String> = before.clone();
+        let mut y: Vec<String> = after.clone();
+        x.sort();
+        y.sort();
+        assert_eq!(x, y, "wipe changed a line the comparison leaves out (a comment)");
+        assert_eq!(one(&p, "select count(*) as v from users").await, "0");
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        p.exec("insert into users (email) values ('cc@d.e')").await;
+        assert_eq!(one(&p, "select min(id) as v from users").await, "1", "the sequence starts again at its minimum (accepted)");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reset_rebuilds_the_sink() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(SINK);
+        new_and_dev(&mut p, "sink").await;
+        p.exec(SINK_ROWS).await;
+        let before = lines_of(&p).await;
+        assert_eq!(reset(&mut p).await, 0, "{}", p.output());
+        let (a, b) = difference(&before, &lines_of(&p).await);
+        assert!(a.is_empty() && b.is_empty(), "reset changed the schema:\n- {a:?}\n+ {b:?}");
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_sink_reopened_after_a_checkpoint_and_use_is_no_drift() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(SINK);
+        new_and_dev(&mut p, "sink").await;
+        p.exec(SINK_ROWS).await;
+        p.exec("select nextval('ids'); select nextval('app.down'); checkpoint;").await;
+        p.exec("delete from app.events; insert into app.events (user_id) values (1); update users set amount = 7 where email = 'aa@b.c'; vacuum; analyze; checkpoint;").await;
+        p.exec("create temp table scratch as select * from users; create temp macro tm() as 1;").await;
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        assert_eq!(p.status().await, 0, "{}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drift_by_hand_is_seen() {
+        let Some(mut p) = duckdb().await else { return };
+        let schema = "create sequence s; create macro m(x) as x + 1; create type mood as enum ('a', 'b');
+            create table t (id bigint primary key default nextval('s'), e varchar, n integer default 3, k mood);
+            create index t_e on t (e);
+            create table u (id integer, k mood, v integer, extra integer);";
+        p.schema(schema);
+        new_and_dev(&mut p, "one").await;
+        for (what, change, undo) in [
+            ("an index dropped", "drop index t_e", "create index t_e on t (e)"),
+            ("a default changed", "alter table t alter column n set default 4", "alter table t alter column n set default 3"),
+            ("a macro's body", "create or replace macro m(x) as x + 2", "create or replace macro m(x) as x + 1"),
+            ("a sequence's increment", "alter table t alter column id drop default; drop sequence s; create sequence s increment by 2; alter table t alter column id set default nextval('s')", "alter table t alter column id drop default; drop sequence s; create sequence s; alter table t alter column id set default nextval('s')"),
+            ("an enum's labels", "drop type mood; create type mood as enum ('a', 'b', 'c')", "drop type mood; create type mood as enum ('a', 'b')"),
+            ("a view added", "create view v as select 1 as one", "drop view v"),
+            ("a column's type", "alter table u alter column k set data type varchar", "alter table u alter column k set data type mood"),
+            ("a column dropped", "alter table u drop column extra", "alter table u add column extra integer"),
+            ("a not null dropped", "alter table u alter column v set not null", "alter table u alter column v drop not null"),
+        ] {
+            p.exec(change).await;
+            let code = p.migrate().await;
+            let out = p.output();
+            assert_ne!(code, 0, "deploy took {what} by hand for no drift:\n{out}");
+            let code = p.dry_run().await;
+            let out = p.output();
+            assert_ne!(code, 0, "deploy --dry-run took {what} by hand for no drift:\n{out}");
+            p.exec(undo).await;
+            assert_eq!(p.migrate().await, 0, "after undoing {what}: {}", p.output());
+        }
+    }
+
+    async fn every_command_on(file: &str) {
+        let Some(mut p) = named(file).await else { return };
+        p.schema("create schema inv; create sequence ids; create table inv.t (id bigint primary key default nextval('ids'), n integer); create index t_n on inv.t (n); create view inv.v as select * from inv.t; create macro twice(x) as x * 2;");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into inv.t (n) values (1), (2)").await;
+        p.schema("create schema inv; create sequence ids; create table inv.t (id bigint primary key default nextval('ids'), n integer check (n > 0), note varchar); create index t_n on inv.t (n); create view inv.v as select * from inv.t; create macro twice(x) as x * 3;");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from inv.t").await, "2", "{file}: the rebuild kept the rows");
+        assert_eq!(p.migrate().await, 0, "{file}: {}", p.output());
+        assert_eq!(p.dry_run().await, 0, "{file}: {}", p.output());
+        assert_eq!(p.status().await, 0, "{file}: {}", p.output());
+        assert_eq!(p.db_push().await, 0, "{file}: {}", p.output());
+        assert_eq!(wipe(&mut p).await, 0, "{file}: {}", p.output());
+        assert_eq!(reset(&mut p).await, 0, "{file}: {}", p.output());
+        let text = introspect(&p).await.unwrap_or_else(|e| panic!("{file}: introspect: {e}"));
+        assert!(text.contains("twice"), "{file}: {text}");
+        let Some(mut q) = named(file).await else { return };
+        q.exec(&text).await;
+        assert_eq!(init(&mut q).await, 0, "{file}: init: {}", q.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_database_file_named_with_a_hyphen_and_capitals() {
+        every_command_on("My-App").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_database_file_named_as_a_keyword() {
+        every_command_on("order").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_database_file_named_with_a_digit_first_and_a_space() {
+        every_command_on("2026 data").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_database_file_named_with_a_dot() {
+        every_command_on("app.v2").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dotted_file_whose_first_part_names_a_schema_is_refused_with_why() {
+        // DuckDB names the database of `analytics.prod.duckdb` `analytics`, its name up to the first dot.
+        let Some(mut p) = named("analytics.prod").await else { return };
+        p.schema("create schema analytics; create table analytics.events (id bigint primary key);");
+        let code = new(&mut p, "one").await;
+        let out = p.output();
+        assert_ne!(code, 0);
+        assert!(out.contains("DuckDB names a database after its file, up to the file name's first dot"), "{out}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_check_on_a_struct_field_read_by_a_dot() {
+        let Some(mut p) = duckdb().await else { return };
+        // DuckDB takes the check, and its duckdb_constraints() then fails for the whole database.
+        p.schema("create table t (id integer primary key, meta struct(a integer), check (meta.a > 0));");
+        let code = new(&mut p, "one").await;
+        assert_eq!(code, 0, "{}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_child_renamed_while_its_parent_is_rebuilt() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table p (id integer primary key, name varchar); create table c (id integer primary key, p_id integer references p (id), note varchar); create index c_note on c (note); comment on column c.note is 'n';");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into p values (1, 'a'); insert into c values (1, 1, 'x');").await;
+        p.schema("create table p (id integer primary key, name varchar check (name <> '')); create table child (id integer primary key, p_id integer references p (id), note varchar); create index c_note on child (note); comment on column child.note is 'n';");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from child").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_parent_renamed_while_its_child_gains_a_check() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table p (id integer primary key, name varchar); create table c (id integer primary key, p_id integer references p (id), note varchar);");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into p values (1, 'a'); insert into c values (1, 1, 'x');").await;
+        p.schema("create table parent (id integer primary key, name varchar); create table c (id integer primary key, p_id integer references parent (id), note varchar check (note <> ''));");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from c").await, "1");
+        assert_eq!(one(&p, "select count(*) as v from parent").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_renamed_while_a_macro_its_check_calls_and_its_sequence_change() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create sequence s; create macro valid(c) as c <> ''; create table items (id bigint primary key default nextval('s'), code varchar check (valid(code)), qty integer); create index items_qty on items (qty); comment on index items_qty is 'q';");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into items (code, qty) values ('a', 1), ('b', 2);").await;
+        p.schema("create sequence s increment by 2; create macro valid(c) as length(c) > 0; create table products (id bigint primary key default nextval('s'), code varchar check (valid(code)), qty integer); create index items_qty on products (qty); comment on index items_qty is 'q';");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from products").await, "2");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_in_another_schema_renamed_with_its_comments_and_a_child() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create schema \"My Shop\"; create table \"My Shop\".orders (id integer primary key, total integer); create table \"My Shop\".lines (id integer primary key, order_id integer references orders (id)); comment on table \"My Shop\".orders is 'o'; comment on column \"My Shop\".orders.total is 't';");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into \"My Shop\".orders values (1, 5); insert into \"My Shop\".lines values (1, 1);").await;
+        p.schema("create schema \"My Shop\"; create table \"My Shop\".purchases (id integer primary key, total integer); create table \"My Shop\".lines (id integer primary key, order_id integer references purchases (id)); comment on table \"My Shop\".purchases is 'o'; comment on column \"My Shop\".purchases.total is 't';");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from \"My Shop\".lines").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_migration_making_a_check_on_a_struct_field_by_a_dot_deploys_and_is_recorded() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261101000000_one.sql", "create table t (id integer primary key, meta struct(a integer), check (meta.a > 0));");
+        let code = p.migrate().await;
+        let out = p.output();
+        let history = p.try_rows("select name as v from __reylo_migrations").await.map(|r| r.iter().map(|x| x.text("v").to_string()).collect::<Vec<_>>());
+        let table = p.try_rows("select count(*) as v from duckdb_tables() where table_name = 't'").await.map(|r| r[0].text("v").to_string());
+        eprintln!("deploy: {code}\n{out}\nhistory: {history:?}\ntable: {table:?}");
+        let again = p.migrate().await;
+        let out2 = p.output();
+        eprintln!("deploy again: {again}\n{out2}");
+        assert_eq!((code, again), (0, 0), "deploy: {out}\nagain: {out2}\nhistory {history:?}, table {table:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_on_a_child_that_gains_a_column_while_a_macro_its_parents_check_calls_changes() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create macro valid(s) as s <> ''; create table parent (id integer primary key, code varchar check (valid(code))); create table child (id integer primary key, parent_id integer references parent (id), note varchar);");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into parent values (1, 'a'); insert into child values (1, 1, 'n');").await;
+        p.schema("create macro valid(s) as length(s) > 0; create table parent (id integer primary key, code varchar check (valid(code))); create table child (id integer primary key, parent_id integer references parent (id), note varchar, extra integer default 0);");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from child").await, "1");
+    }
+
+    const TAGGED: &str = "create macro has_tag(tags, t) as list_contains(tags, t);
+    create table posts (id integer primary key, tags varchar[], check (not has_tag(tags, 'spam')));
+    create table tags (id integer primary key, post_id integer references posts (id), name varchar);";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_a_schema_whose_macro_names_a_parameter_as_a_table() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(TAGGED);
+        new_and_dev(&mut p, "one").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_a_schema_whose_macro_names_a_parameter_as_a_table() {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec(TAGGED).await;
+        assert_eq!(init(&mut p).await, 0, "{}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reset_and_wipe_a_schema_whose_macro_names_a_parameter_as_a_table() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261101000000_one.sql", TAGGED);
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        p.exec("insert into posts values (1, ['a']); insert into tags values (1, 1, 'a');").await;
+        assert_eq!(wipe(&mut p).await, 0, "wipe: {}", p.output());
+        assert_eq!(reset(&mut p).await, 0, "reset: {}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_referenced_table_renamed_and_given_a_check_with_a_grandchild() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table users (id integer primary key, name varchar); create table posts (id integer primary key, user_id integer references users (id)); create table likes (id integer primary key, post_id integer references posts (id));");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into users values (1, 'a'); insert into posts values (1, 1); insert into likes values (1, 1);").await;
+        p.schema("create table accounts (id integer primary key, name varchar check (name <> '')); create table posts (id integer primary key, user_id integer references accounts (id)); create table likes (id integer primary key, post_id integer references posts (id));");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from likes").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_renamed_with_a_column_renamed_and_its_index_following() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table items (id integer primary key, qty integer, sku varchar, label varchar); create index items_sku on items (sku); comment on column items.qty is 'q';");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into items values (1, 2, 'a', 'l');").await;
+        p.schema("create table products (id integer primary key, quantity integer, sku varchar, label varchar); create index items_sku on products (sku); comment on column products.quantity is 'q';");
+        assert_eq!(new_with(&mut p, "two", &[], &[("items", "products")]).await, 0, "{}", p.output());
+        assert_eq!(p.dev().await, 0, "{}\n{}", p.output(), written(&p, "two"));
+        assert_eq!(one(&p, "select quantity as v from products").await, "2");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reset_a_schema_whose_check_reaches_a_macro_through_another() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261101000000_one.sql", "create macro is_pos(x) as x > 0; create macro ok_qty(x) as is_pos(x) and x < 100; create table t (id integer primary key, qty integer check (ok_qty(qty)));");
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        p.exec("insert into t values (1, 5)").await;
+        let code = reset(&mut p).await;
+        let out = p.output();
+        let rows = one(&p, "select count(*) as v from t").await;
+        assert_eq!(code, 0, "reset: {out}\nrows left: {rows}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_rebuild_migration_rewound_by_dev_keeps_the_rows() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table p (id integer primary key, name varchar); create table c (id integer primary key, p_id integer references p (id));");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into p values (1, 'a'), (2, 'b'); insert into c values (1, 1), (2, 2);").await;
+        p.schema("create table p (id integer primary key, name varchar check (name <> '')); create table c (id integer primary key, p_id integer references p (id));");
+        new_and_dev(&mut p, "two").await;
+        // A branch switch: the migration is gone, and schema.sql is back where it was.
+        for f in p.files() {
+            if f.ends_with("_two.sql") {
+                std::fs::remove_file(p.dir.join("migrations").join(f)).unwrap();
+            }
+        }
+        p.schema("create table p (id integer primary key, name varchar); create table c (id integer primary key, p_id integer references p (id));");
+        assert_eq!(p.dev().await, 0, "{}", p.output());
+        assert_eq!(one(&p, "select count(*) as v from c").await, "2");
+        assert_eq!(one(&p, "select count(*) as v from p").await, "2");
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_of_a_macro_change_around_a_checked_family_with_rows() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create macro valid(s) as s <> ''; create table p (id integer primary key, code varchar check (valid(code))); create table c (id integer primary key, p_id integer references p (id)); create index c_p on c (p_id);");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into p values (1, 'a'); insert into c values (1, 1);").await;
+        p.schema("create macro valid(s) as length(s) > 0; create table p (id integer primary key, code varchar check (valid(code))); create table c (id integer primary key, p_id integer references p (id)); create index c_p on c (p_id);");
+        assert_eq!(p.db_push().await, 0, "{}", p.output());
+        assert_eq!(one(&p, "select count(*) as v from c").await, "1");
+    }
+
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_catalog_reads_inside_a_transaction_that_made_a_macro() {
+        let Some(p) = duckdb().await else { return };
+        // As db push reads it before it commits.
+        let mut a = Db::connect("duckdb::memory:", &p.dir).await.unwrap();
+        a.exec("create macro old_m(a, b := 2) as a + b; create table t (x integer)").await.unwrap();
+        a.exec("begin").await.unwrap();
+        a.exec("create macro new_m(a) as a * 2; drop table t; create table t (x integer, y integer)").await.unwrap();
+        let lines = catalog(&mut a).await.unwrap();
+        a.exec("commit").await.unwrap();
+        assert!(lines.iter().any(|l| l.contains("new_m")), "{lines:?}");
+        let s = reylo_migrate::diff::duckdb::read(&mut a).await.unwrap();
+        assert!(s.objects.keys().any(|k| k.contains("new_m")));
+        // And a script of nothing but a comment runs.
+        a.exec("-- only a comment\n").await.unwrap();
+        a.exec("").await.unwrap();
+        a.exec("begin; commit;").await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_schema_named_memory_migrates() {
+        // Every shadow is an in-memory database, which DuckDB opens as `memory`.
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create schema memory; create table memory.notes (id integer primary key, body varchar);";
+        p.file("20261101000000_init.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.schema("create schema memory; create table memory.notes (id integer primary key, body varchar, at_ms bigint);");
+        new_and_dev(&mut p, "at").await;
+        // One named like a database DuckDB has open in every file is refused, with why.
+        p.schema("create schema memory; create table memory.notes (id integer primary key, body varchar, at_ms bigint); create schema system;");
+        p.output();
+        new(&mut p, "system").await;
+        assert_has!(p.output(), r"The schema system has the name of DuckDB's database system, so DuckDB reads every name written system\.<name> as ambiguous: rename the schema");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_macro_changes_while_a_column_defaulting_to_it_is_dropped() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create macro m() as 1; create table t (id integer primary key, k integer default m());";
+        p.file("20261101000000_init.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into t (id) values (1)").await;
+        p.schema("create macro m() as 2; create table t (id integer primary key);");
+        assert_eq!(new_with(&mut p, "drop_k", &["t.k"], &[]).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}\n{}", p.peek(), written(&p, "drop_k"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wipe_empties_a_schema_of_every_kind() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create macro ok(x) as x > 0; create type mood as enum ('a', 'b'); create sequence s start with 100; create schema billing;
+          create table users (id bigint primary key default nextval('s'), boss bigint references users (id), name varchar check (ok(length(name))), m mood default 'a');
+          create table invoices (id bigint primary key, user_id bigint references users (id), total decimal(10,2)); create table billing.audit (id integer, at_ms bigint default nextval('s'));
+          create index users_name on users (name); comment on table users is 'people'; comment on column users.name is 'full'; comment on index users_name is 'by name';
+          create view people as select * from users;";
+        p.file("20261101000000_init.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into users (name) values ('ada'); insert into users (name, boss) values ('bob', 100); insert into invoices values (1, 101, 2.5); insert into billing.audit (id) values (1)").await;
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from users").await[0].text("n"), "0");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn use_of_a_schema_replays() {
+        let refused: Vec<Option<String>> = reylo_migrate::sql::split_statements("create schema analytics; use analytics; create table events (id integer)", Dialect::Duckdb).iter().map(|s| reylo_migrate::sql::escapes_shadow(s, Dialect::Duckdb)).collect();
+        assert!(refused.iter().all(|r| r.is_none()), "{refused:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_referenced_table_renamed_and_widened_in_one_migration() {
+        let Some(mut p) = duckdb().await else { return };
+        let v1 = "create table people (id integer primary key, name varchar, email varchar); create index people_email on people (email); comment on table people is 'everyone'; create table posts (id integer, author integer references people (id));";
+        p.file("20261101000000_init.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into people values (1, 'ada', 'a@b'); insert into posts values (1, 1)").await;
+        p.schema("create table persons (id integer primary key, name varchar, email varchar, age integer); create index people_email on persons (email); comment on table persons is 'everyone'; create table posts (id integer, author integer references persons (id));");
+        assert_eq!(new_with(&mut p, "persons", &[], &[("people", "persons")]).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from persons").await[0].text("n"), "1");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
     }
 }

@@ -1709,6 +1709,7 @@ name = "reylo-migrate"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "libloading",
  "mysql_async",
  "pg_query",
  "prost",

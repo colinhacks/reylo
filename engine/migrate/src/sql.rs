@@ -60,15 +60,16 @@ fn is_word_part(b: u8) -> bool {
 
 /// The tokens of `sql`: words (keywords and bare names), quoted names, string literals, numbers and
 /// symbols, with comments and whitespace dropped. A `;` is a symbol. The lexing follows each
-/// dialect's default reading: MySQL's backslash escapes and `#` comments, Postgres's nested block
-/// comments, dollar quotes and E'' strings, SQLite's `[name]` and backtick names. Every delimiter is
+/// dialect's default reading: MySQL's backslash escapes and `#` comments, Postgres's (and DuckDB's,
+/// whose parser is Postgres's) nested block comments, dollar quotes and E'' strings, SQLite's
+/// `[name]` and backtick names. Every delimiter is
 /// ASCII, so the text is scanned byte by byte, and a byte of a character outside ASCII is part of
 /// a word.
 pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
     let b = sql.as_bytes();
     let n = b.len();
     let mysql = dialect == Dialect::Mysql;
-    let postgres = dialect == Dialect::Postgres;
+    let postgres = matches!(dialect, Dialect::Postgres | Dialect::Duckdb);
     let mut out = Vec::new();
     let mut i = 0;
     let push = |kind: TokenKind, start: usize, end: usize, out: &mut Vec<Token>| out.push(Token { kind, text: sql[start..end].to_string(), start, end });
@@ -213,6 +214,10 @@ fn opens_body(tokens: &[Token], dialect: Dialect, next: Option<&Token>) -> bool 
     if dialect == Dialect::Postgres {
         return (has("FUNCTION") || has("PROCEDURE")) && upper(next) == "ATOMIC";
     }
+    // A DuckDB macro is an expression or a query: it has no body of statements.
+    if dialect == Dialect::Duckdb {
+        return false;
+    }
     ["TRIGGER", "PROCEDURE", "FUNCTION", "EVENT"].iter().any(|w| has(w))
 }
 
@@ -281,6 +286,7 @@ macro_rules! re {
 re!(TRANSACTION_CONTROL, r"^(BEGIN|START TRANSACTION|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|ABORT|SET TRANSACTION)\b");
 re!(PG_ALONE, r"^(CREATE (UNIQUE )?INDEX CONCURRENTLY|DROP INDEX CONCURRENTLY|REINDEX\b.*\bCONCURRENTLY|VACUUM|ALTER SYSTEM|CREATE DATABASE|DROP DATABASE|CREATE TABLESPACE|DROP TABLESPACE|CLUSTER$|REINDEX (SYSTEM|DATABASE))");
 re!(SQLITE_ALONE, r"^(VACUUM|ATTACH|DETACH)\b");
+re!(DUCKDB_ALONE, r"^(VACUUM|CHECKPOINT|FORCE CHECKPOINT|ATTACH|DETACH)\b");
 re!(MYSQL_DATA, r"^(INSERT|UPDATE|DELETE|REPLACE|SELECT|WITH|DO|TABLE|VALUES)\b|^SET (@|SESSION|LOCAL|NAMES|CHARACTER)");
 
 /// How the statement runs on the dialect: inside the file's transaction, or not.
@@ -299,6 +305,13 @@ pub fn kind_of(statement: &Statement, dialect: Dialect) -> Kind {
         }
         Dialect::Sqlite => {
             if SQLITE_ALONE.is_match(&h) {
+                Kind::Alone
+            } else {
+                Kind::Transactional
+            }
+        }
+        Dialect::Duckdb => {
+            if DUCKDB_ALONE.is_match(&h) {
                 Kind::Alone
             } else {
                 Kind::Transactional
@@ -373,6 +386,7 @@ re!(MYSQL_ACCOUNT, r"^(CREATE|ALTER|DROP|RENAME) (USER|ROLE)\b|^(GRANT|REVOKE)\b
 re!(MYSQL_SERVER, r"^(CREATE|ALTER|DROP) (DATABASE|SCHEMA|SERVER|TABLESPACE|LOGFILE|RESOURCE)\b");
 re!(MYSQL_SETTING, r"^SET (GLOBAL|PERSIST)\b|^SET @ @ (GLOBAL|PERSIST)\b");
 re!(MYSQL_ELSEWHERE, r"^(USE|INSTALL|UNINSTALL|FLUSH|KILL|PURGE|SHUTDOWN|RESTART|CHANGE)\b");
+re!(DUCKDB_FILES, r"^(EXPORT DATABASE|(CREATE|DROP|CREATE OR REPLACE) PERSISTENT SECRET)\b");
 
 /// Why replaying the statement in a shadow database would reach past the shadow, or None. A shadow
 /// is a scratch database on the target's own server, so a statement that changes the server itself
@@ -439,6 +453,32 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
             }
             None
         }
+        Dialect::Duckdb => {
+            // `use` reaches only a database that is attached, which no migration may do.
+            if h.starts_with("ATTACH") || h.starts_with("DETACH") {
+                return Some("it attaches another database".into());
+            }
+            if DUCKDB_FILES.is_match(&h) {
+                return Some("it writes files outside the database".into());
+            }
+            // `copy … to` writes a file, which every replay would write again; `copy … from` reads one.
+            if h.starts_with("COPY") && !h.starts_with("COPY FROM DATABASE") {
+                let mut depth = 0;
+                for w in &words {
+                    match w.as_str() {
+                        "(" => depth += 1,
+                        ")" => depth -= 1,
+                        "TO" if depth == 0 => return Some("it writes a file outside the database".into()),
+                        "FROM" if depth == 0 => break,
+                        _ => {}
+                    }
+                }
+            }
+            if h.starts_with("COPY FROM DATABASE") {
+                return Some("it copies into another database".into());
+            }
+            None
+        }
     }
 }
 
@@ -498,5 +538,20 @@ mod tests {
         assert!(shadow_problem("create trigger t before insert on app.users for each row set new.x = 1", Dialect::Mysql).is_some());
         assert!(shadow_problem("create table t like app.users", Dialect::Mysql).is_some());
         assert!(shadow_problem("attach 'x.db' as x", Dialect::Sqlite).is_some());
+        assert!(shadow_problem("attach 'x.duckdb' as x", Dialect::Duckdb).is_some());
+        assert!(shadow_problem("copy users to 'users.csv'", Dialect::Duckdb).is_some());
+        assert!(shadow_problem("copy (select * from users) to 'users.parquet' (format parquet)", Dialect::Duckdb).is_some());
+        assert_eq!(shadow_problem("copy users from 'users.csv'", Dialect::Duckdb), None);
+        assert!(shadow_problem("create persistent secret s (type s3)", Dialect::Duckdb).is_some());
+        assert!(shadow_problem("export database 'out'", Dialect::Duckdb).is_some());
+        assert_eq!(shadow_problem("create table app.main.users (id integer)", Dialect::Duckdb), None);
+    }
+
+    #[test]
+    fn reads_duckdb_as_postgres_is_read() {
+        assert_eq!(texts("create macro m(a) as a + 1; select $$a;b$$; select e'it\\'s'", Dialect::Duckdb).len(), 3);
+        assert_eq!(atomicity_problem("checkpoint", Dialect::Duckdb), None);
+        assert!(atomicity_problem("checkpoint; create table a (x int)", Dialect::Duckdb).is_some());
+        assert!(atomicity_problem("begin; create table a (x int); commit", Dialect::Duckdb).is_some());
     }
 }

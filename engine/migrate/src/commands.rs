@@ -148,6 +148,7 @@ fn history_ddl(d: Dialect) -> String {
         Dialect::Postgres => format!("create table if not exists {HISTORY_TABLE} (name text primary key, sql text not null, applied_at timestamptz, fingerprint text, catalog text)"),
         Dialect::Mysql => format!("create table if not exists {HISTORY_TABLE} (name varchar(255) primary key, `sql` longtext not null, applied_at datetime(6) null, fingerprint text null, catalog longtext null) engine=InnoDB"),
         Dialect::Sqlite => format!("create table if not exists {HISTORY_TABLE} (name text primary key, sql text not null, applied_at text, fingerprint text, catalog text)"),
+        Dialect::Duckdb => format!("create table if not exists main.{HISTORY_TABLE} (name varchar primary key, sql varchar not null, applied_at timestamptz, fingerprint varchar, catalog varchar)"),
     }
 }
 
@@ -159,6 +160,8 @@ fn now_sql(d: Dialect) -> String {
         Dialect::Postgres => format!("greatest(clock_timestamp(), (select max(applied_at) + interval '1 microsecond' from {HISTORY_TABLE}))"),
         Dialect::Mysql => format!("greatest(now(6), coalesce((select max(h.applied_at) + interval 1 microsecond from (select applied_at from {HISTORY_TABLE}) h), now(6)))"),
         Dialect::Sqlite => "strftime('%Y-%m-%d %H:%M:%f', 'now')".into(),
+        // A transaction's own start, as Postgres's now(): each row after the last.
+        Dialect::Duckdb => format!("greatest(now(), (select max(applied_at) + interval '1 microsecond' from {HISTORY_TABLE}))"),
     }
 }
 
@@ -175,6 +178,7 @@ async fn has_history(db: &mut Db) -> Result<bool, Error> {
         Dialect::Postgres => format!("select to_regclass('{HISTORY_TABLE}') is not null as ok"),
         Dialect::Mysql => format!("select count(*) > 0 as ok from information_schema.tables where table_schema = database() and table_name = '{HISTORY_TABLE}'"),
         Dialect::Sqlite => format!("select count(*) > 0 as ok from sqlite_schema where name = '{HISTORY_TABLE}'"),
+        Dialect::Duckdb => format!("select count(*) > 0 as ok from duckdb_tables() where database_name = current_database() and schema_name = 'main' and table_name = '{HISTORY_TABLE}'"),
     };
     Ok(db.rows(&sql).await?.first().is_some_and(|r| r.flag("ok")))
 }
@@ -212,6 +216,7 @@ async fn has_column(db: &mut Db, column: &str) -> Result<bool, Error> {
         Dialect::Postgres => format!("select count(*) > 0 as ok from pg_attribute where attrelid = to_regclass('{HISTORY_TABLE}') and attname = '{column}' and not attisdropped"),
         Dialect::Mysql => format!("select count(*) > 0 as ok from information_schema.columns where table_schema = database() and table_name = '{HISTORY_TABLE}' and column_name = '{column}'"),
         Dialect::Sqlite => format!("select count(*) > 0 as ok from pragma_table_info('{HISTORY_TABLE}') where name = '{column}'"),
+        Dialect::Duckdb => format!("select count(*) > 0 as ok from duckdb_columns() where database_name = current_database() and schema_name = 'main' and table_name = '{HISTORY_TABLE}' and column_name = '{column}'"),
     };
     Ok(db.rows(&sql).await?.first().is_some_and(|r| r.flag("ok")))
 }
@@ -273,6 +278,8 @@ async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> 
         Dialect::Postgres => "select (current_setting('server_version_num')::int / 10000)::text as v",
         Dialect::Mysql => "select substring_index(version(), '.', 2) as v",
         Dialect::Sqlite => "select sqlite_version() as v",
+        // DuckDB's major and minor version: a release of either can write its catalog anew.
+        Dialect::Duckdb => "select regexp_extract(version(), '^v?([0-9]+[.][0-9]+)', 1) as v",
     };
     let version = db.rows(version).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
     let mut digest = crate::cache::Sha256::new();
@@ -292,7 +299,8 @@ async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Err
 /// a session lock on Postgres and MySQL, held until the connection closes. SQLite's own locks would
 /// stop the app's queries for the length of the check, so a SQLite database is locked through a
 /// file named after its path in the user's temporary directory, which every checkout and worktree
-/// of theirs that opens the database shares, held while the answer lives.
+/// of theirs that opens the database shares, held while the answer lives. A DuckDB file is locked
+/// the same way: DuckDB refuses a second process the file, but not a second run in this one.
 async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Error> {
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_lock(hashtextextended('reylo_migrate', 0))").await.map(|_| None),
@@ -305,8 +313,8 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
             }
             Ok(None)
         }
-        Dialect::Sqlite => {
-            let path = crate::db::sqlite_path(&opts.url, &opts.root);
+        Dialect::Sqlite | Dialect::Duckdb => {
+            let path = if db.dialect() == Dialect::Sqlite { crate::db::sqlite_path(&opts.url, &opts.root) } else { crate::duckdb::path_of(&opts.url, &opts.root) };
             if path == ":memory:" {
                 return Ok(None);
             }
@@ -1230,6 +1238,9 @@ async fn plan_text(from: &mut Db, to: &mut Db, declared: Option<&str>) -> Option
     if let (Some(sql), Dialect::Postgres) = (declared, to.dialect()) {
         crate::diff::postgres::declare(to, &mut target, sql).await.ok()?;
     }
+    if let (Some(sql), Dialect::Duckdb) = (declared, to.dialect()) {
+        crate::diff::duckdb::declare(&mut target, sql);
+    }
     let current = crate::diff::read(from).await.ok()?;
     // Partitions the database made at run time are data, not a difference.
     crate::diff::without_extra_children(&mut target, &current);
@@ -1260,6 +1271,9 @@ async fn lane_plan(shadows: &mut Shadows<'_>, from: usize, to: usize, declared: 
     let mut target = crate::diff::read(shadows.db(to)).await.ok()?;
     if let (Some(sql), Dialect::Postgres) = (declared, shadows.db(to).dialect()) {
         crate::diff::postgres::declare(shadows.db(to), &mut target, sql).await.ok()?;
+    }
+    if let (Some(sql), Dialect::Duckdb) = (declared, shadows.db(to).dialect()) {
+        crate::diff::duckdb::declare(&mut target, sql);
     }
     let current = crate::diff::read(shadows.db(from)).await.ok()?;
     let alterer = crate::diff::alterer(shadows.db(from)).await.ok()?;
@@ -1672,6 +1686,10 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
             .iter()
             .map(|r| format!("\"{}\"", r.text("n").replace('"', "\"\"")))
             .collect(),
+        Dialect::Duckdb => {
+            let schema = crate::diff::read(db).await?;
+            schema.objects.values().filter(|o| o.kind == Some(crate::diff::Kind::Table)).map(|o| o.id.clone()).collect()
+        }
     };
     if names.is_empty() {
         return Ok(0);
@@ -1727,6 +1745,19 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
                 let _ = db.exec("rollback").await;
             }
             db.exec("pragma foreign_keys = on").await?;
+            result?
+        }
+        // DuckDB's foreign keys don't see rows deleted earlier in the same transaction, and it sets no
+        // sequence back: every table is made again, empty, and every sequence with it, in one
+        // transaction.
+        Dialect::Duckdb => {
+            let schema = crate::diff::read(db).await?;
+            let (_, statements) = crate::diff::duckdb::emptied(&schema);
+            let sql: String = statements.iter().map(|s| format!("{s};\n")).collect();
+            let result = db.exec(&format!("begin;\n{sql}commit;")).await;
+            if result.is_err() {
+                let _ = db.exec("rollback").await;
+            }
             result?
         }
     }
@@ -1993,12 +2024,21 @@ pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 /// reads, writes nothing and needs no shadow. It exits 1 where the database and the files aren't in
 /// step: a migration pending, cut off, edited or deleted, a change made by hand, or a check that fails.
 pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    // A SQLite file that isn't there is no database to read, and opening it would make one.
-    if Dialect::of_url(&opts.url)? == Dialect::Sqlite {
-        let path = crate::db::sqlite_path(&opts.url, &opts.root);
-        if path != ":memory:" && !Path::new(&path).exists() {
-            return Err(Error(format!("no SQLite database at {path}")));
+    // A SQLite or DuckDB file that isn't there is no database to read, and opening it would make one.
+    match Dialect::of_url(&opts.url)? {
+        Dialect::Sqlite => {
+            let path = crate::db::sqlite_path(&opts.url, &opts.root);
+            if path != ":memory:" && !Path::new(&path).exists() {
+                return Err(Error(format!("no SQLite database at {path}")));
+            }
         }
+        Dialect::Duckdb => {
+            let path = crate::duckdb::path_of(&opts.url, &opts.root);
+            if path != ":memory:" && !Path::new(&path).exists() {
+                return Err(Error(format!("no DuckDB database at {path}")));
+            }
+        }
+        _ => {}
     }
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = status_on(&mut db, opts, log).await;
@@ -2169,6 +2209,7 @@ async fn applied_times(db: &mut Db) -> Result<std::collections::HashMap<String, 
         Dialect::Postgres => "cast(floor(extract(epoch from applied_at)) as bigint)",
         Dialect::Mysql => "floor(unix_timestamp(applied_at))",
         Dialect::Sqlite => "cast(strftime('%s', applied_at) as integer)",
+        Dialect::Duckdb => "cast(floor(epoch(applied_at)) as bigint)",
     };
     let rows = db.rows(&format!("select name, {at} as at from {HISTORY_TABLE} where applied_at is not null")).await?;
     Ok(rows
@@ -2484,6 +2525,11 @@ async fn as_its_migrations_leave_it(opts: &Options, files: &[Migration]) -> Resu
             return Ok(Err(problems));
         }
         let schemas = if d == Dialect::Postgres { crate::catalog::user_schemas(&mut db).await? } else { vec![] };
+        // DuckDB's dump is its export, whose order need not replay: the schema as `db introspect`
+        // prints it, checked in shadows.
+        if d == Dialect::Duckdb {
+            return schema_as_sql_on(&mut db, opts, &schemas).await.map(Ok);
+        }
         dump_from(&mut db, opts, &schemas).await.map(Ok)
     }
     .await;
@@ -2620,6 +2666,9 @@ async fn read_target(db: &mut Db, declared: Option<&str>) -> Result<Target, Erro
         }
         indexes = crate::diff::postgres::index_names(db).await?;
     }
+    if let (Some(sql), Dialect::Duckdb) = (declared, db.dialect()) {
+        crate::diff::duckdb::declare(&mut schema, sql);
+    }
     Ok(Target { schema, indexes })
 }
 
@@ -2627,6 +2676,17 @@ async fn read_target(db: &mut Db, declared: Option<&str>) -> Result<Target, Erro
 /// the statements that did, as the migration writes them.
 async fn rename_tables(db: &mut Db, current: &crate::diff::Schema, target: &Target, renamed: &[(String, String, bool)]) -> Result<Vec<String>, Error> {
     let d = db.dialect();
+    // DuckDB's rename of one table can make another again, so each is planned from the database
+    // the renames before it left.
+    if d == Dialect::Duckdb && renamed.len() > 1 {
+        let mut statements = Vec::new();
+        let mut now = current.clone();
+        for one in renamed {
+            statements.extend(Box::pin(rename_tables(db, &now, target, std::slice::from_ref(one))).await?);
+            now = crate::diff::read(db).await?;
+        }
+        return Ok(statements);
+    }
     let mut statements = table_rename_statements(d, current, &target.schema, renamed);
     let sql: Vec<String> = statements.iter().filter(|s| !s.starts_with("--")).map(|s| format!("{s};")).collect();
     if sql.is_empty() {
@@ -2678,6 +2738,17 @@ fn table_rename_statements(d: Dialect, current: &crate::diff::Schema, target: &c
     let bare = |id: &str| split_name(&shown_id(id)).pop().unwrap_or_default();
     let mut out = Vec::new();
     let mut names = Vec::new();
+    if d == Dialect::Duckdb {
+        // DuckDB refuses to rename a table with an index, and leaves a foreign key that references
+        // one naming what is gone: its own statements take those down and make them again.
+        for (old_id, new_id, was_stated) in renamed {
+            if !was_stated {
+                out.push(format!("-- {} is renamed {}, keeping its rows. If they are two tables, drop the one and create the other instead.", bare(old_id), bare(new_id)));
+            }
+            out.extend(crate::diff::duckdb::rename_statements(current, &[(old_id.clone(), new_id.clone())]));
+        }
+        return out;
+    }
     for (old_id, new_id, was_stated) in renamed {
         let ((from_w, foreign), (to_w, _)) = (written(current, old_id), written(target, new_id));
         let new_name = if d == Dialect::Postgres { crate::diff::last_written(&to_w) } else { to_w };
@@ -2912,6 +2983,9 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         // table moved to another schema is moved first, keeping its rows: the moves run on the
         // replay before the rest is planned from it.
         let mut moves = Vec::new();
+        if shadows.db(c).dialect() == Dialect::Duckdb {
+            crate::diff::duckdb::declare(&mut target, schema_sql);
+        }
         if shadows.db(c).dialect() == Dialect::Postgres {
             crate::diff::postgres::declare(shadows.db(a), &mut target, schema_sql).await?;
             moves = crate::diff::postgres::moves(&current, &target);
@@ -3122,6 +3196,15 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
         let (from_dump, from_plan) = (shadows.lane(), shadows.lane());
         shadows.push(from_dump, [Step::script("the dump", &dumped)]);
         shadows.push(from_plan, [Step::script("schema.sql", &sql)]);
+        // DuckDB's dump is its export, whose order need not replay (a view before the view it reads):
+        // the plan stands where it makes exactly what the database has.
+        if db.dialect() == Dialect::Duckdb {
+            let live = catalog(db).await?;
+            return Ok(match shadows.lines(from_plan).await? {
+                Ok(b) if b == live => Some(sql),
+                _ => None,
+            });
+        }
         Ok::<_, Error>(match (shadows.lines(from_dump).await?, shadows.lines(from_plan).await?) {
             (Ok(a), Ok(b)) if a == b => Some(sql),
             _ => None,
@@ -3230,6 +3313,13 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 ))
                 .await?;
             Ok(format!("{}\n", rows.iter().map(|r| format!("{};", r.text("sql"))).collect::<Vec<_>>().join("\n\n")))
+        }
+        // DuckDB's own text of the schema, as `EXPORT DATABASE` writes it, of a copy without rows.
+        Dialect::Duckdb => {
+            let Some(text) = crate::diff::duckdb::exported(db).await? else { return Err(Error("DuckDB could not export this database's schema".into())) };
+            let mut statements: Vec<String> = crate::diff::duckdb::in_order(&text).iter().map(|s| format!("{s};")).collect();
+            statements.extend(crate::diff::duckdb::comment_statements(db).await?.iter().map(|s| format!("{s};")));
+            Ok(if statements.is_empty() { String::new() } else { format!("{}\n", statements.join("\n\n")) })
         }
         Dialect::Mysql => {
             static AUTO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" AUTO_INCREMENT=\d+").expect("a valid pattern"));
@@ -3446,6 +3536,9 @@ async fn plan_between(from: &mut Db, to: &mut Db, declared: Option<&str>) -> Res
     let mut target = crate::diff::read(to).await?;
     if let (Some(sql), Dialect::Postgres) = (declared, to.dialect()) {
         crate::diff::postgres::declare(to, &mut target, sql).await?;
+    }
+    if let (Some(sql), Dialect::Duckdb) = (declared, to.dialect()) {
+        crate::diff::duckdb::declare(&mut target, sql);
     }
     let current = crate::diff::read(from).await?;
     let alterer = crate::diff::alterer(from).await?;
@@ -3911,8 +4004,8 @@ async fn scoped_change(db: &mut Db, history: &mut Db, explaining: &[crate::diff:
             refused.push(id.clone());
         }
     }
-    // Where a refused object holds one that is kept (on MySQL and SQLite a table's definition holds
-    // its columns), the two can't be undone apart.
+    // Where a refused object holds one that is kept (on MySQL, SQLite and DuckDB a table's definition
+    // holds its columns), the two can't be undone apart.
     if kept.iter().any(|(id, _)| current.objects.get(id).or(target.objects.get(id)).and_then(|o| o.owner.as_ref()).is_some_and(|owner| refused.contains(owner))) {
         return None;
     }

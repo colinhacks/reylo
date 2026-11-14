@@ -19,6 +19,7 @@ pub async fn catalog(db: &mut Db) -> Result<Vec<String>, Error> {
         Dialect::Postgres => postgres(db).await?,
         Dialect::Mysql => mysql(db).await?,
         Dialect::Sqlite => sqlite(db).await?,
+        Dialect::Duckdb => crate::diff::duckdb::lines(db).await?,
     };
     Ok(lines.into_iter().collect::<BTreeSet<_>>().into_iter().collect())
 }
@@ -753,8 +754,12 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
 
 /// What a Postgres schema holds that Reylo reads by name alone, so that a change to its definition is
 /// never seen, or doesn't read at all, so that nothing of it is: each a line a person reads, the
-/// object and which of the two. None on the other databases, whose every kind is read.
+/// object and which of the two. On DuckDB, the macros whose parameters have defaults, which only
+/// DuckDB's export gives. None on the other databases, whose every kind is read.
 pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
+    if db.dialect() == Dialect::Duckdb {
+        return crate::diff::duckdb::unmodeled(db).await;
+    }
     if db.dialect() != Dialect::Postgres {
         return Ok(vec![]);
     }

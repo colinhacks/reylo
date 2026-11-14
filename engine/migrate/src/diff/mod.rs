@@ -7,6 +7,7 @@
 //! dependencies allow. Nothing here trusts the plan: `reylo migrate new` runs it on a shadow
 //! of the migrations and compares the result with `schema.sql` before it writes the file.
 
+pub mod duckdb;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
@@ -21,6 +22,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         Dialect::Postgres => postgres::read(db).await,
         Dialect::Mysql => mysql::read(db).await,
         Dialect::Sqlite => sqlite::read(db).await,
+        Dialect::Duckdb => duckdb::read(db).await,
     }
 }
 
@@ -33,6 +35,7 @@ pub async fn alterer(db: &mut Db) -> Result<Box<dyn Alterer>, Error> {
         }
         Dialect::Mysql => Box::new(mysql::MysqlAlterer::default()),
         Dialect::Sqlite => Box::new(sqlite::SqliteAlterer::default()),
+        Dialect::Duckdb => Box::new(duckdb::DuckdbAlterer::default()),
     })
 }
 
@@ -147,6 +150,14 @@ pub trait Alterer {
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
         let _ = (from, to);
         None
+    }
+    /// Objects whose create or change the op of `id` (its create or its change) runs after, beyond
+    /// what its target depends on: what the alterer's statements for it make, or remake as the
+    /// target has it, need (DuckDB's rebuild of a table makes the tables that reference it, and a
+    /// macro made again remakes the tables that call it).
+    fn waits_for(&self, id: &str) -> Vec<String> {
+        let _ = id;
+        vec![]
     }
     /// The plan's statements once ordered, for the settings that let them run in that order: a
     /// Postgres function's body calls others the server keeps no record of, so no order is safe.
@@ -787,6 +798,13 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 }
                 for d in needs {
                     if let Some(j) = create_of(d) {
+                        if j != k {
+                            after[k].insert(j);
+                        }
+                    }
+                }
+                for d in alterer.waits_for(id) {
+                    if let Some(j) = create_of(&d) {
                         if j != k {
                             after[k].insert(j);
                         }

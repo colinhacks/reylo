@@ -1,7 +1,7 @@
 //! The databases `reylo migrate` works on: the target, through the connection code the type check
 //! uses (`reylo-engine-native`), and the shadows it builds beside it. A shadow is a scratch database
 //! on the target's own server (`create database`), so it has the target's engine, version and
-//! extensions; SQLite's live in memory. The connection that creates a shadow holds a session lock
+//! extensions; SQLite's and DuckDB's live in memory. The connection that creates a shadow holds a session lock
 //! named after it for the whole run, and the lock dies with the session, so a run that is killed
 //! leaves a shadow nobody holds, which the next run drops before it builds its own.
 
@@ -38,6 +38,7 @@ pub enum Db {
     Postgres(tokio_postgres::Client),
     Mysql(mysql_async::Conn),
     Sqlite(rusqlite::Connection),
+    Duckdb(crate::duckdb::Conn),
 }
 
 pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
@@ -74,6 +75,18 @@ fn mysql_text(value: &mysql_async::Value) -> Option<String> {
         Float(f) => Some(f.to_string()),
         Double(f) => Some(f.to_string()),
         other => Some(other.as_sql(true).trim_matches('\'').to_string()),
+    }
+}
+
+/// A DuckDB query with each of its values cast to text, its columns keeping their names: DuckDB's C
+/// API reads only a few types as text itself (a timestamp with a time zone is none of them).
+fn duckdb_as_text(sql: &str) -> String {
+    let query = sql.trim().trim_end_matches(';').trim_end();
+    let first = query.split(|c: char| c.is_whitespace() || c == '(').next().unwrap_or_default().to_ascii_uppercase();
+    if matches!(first.as_str(), "SELECT" | "WITH" | "FROM" | "VALUES" | "TABLE") || query.starts_with('(') {
+        format!("select columns(*)::varchar from ({query})")
+    } else {
+        query.to_string()
     }
 }
 
@@ -134,6 +147,7 @@ impl Db {
             Dialect::Postgres => Ok(Db::Postgres(crate::db::open_postgres(url).await?)),
             Dialect::Mysql => Ok(Db::Mysql(crate::db::open_mysql(url).await?)),
             Dialect::Sqlite => Ok(Db::Sqlite(rusqlite::Connection::open(sqlite_path(url, base)).map_err(sqlite_error)?)),
+            Dialect::Duckdb => Ok(Db::Duckdb(crate::duckdb::Conn::open(&crate::duckdb::path_of(url, base), base)?)),
         }
     }
 
@@ -142,6 +156,7 @@ impl Db {
             Db::Postgres(_) => Dialect::Postgres,
             Db::Mysql(_) => Dialect::Mysql,
             Db::Sqlite(_) => Dialect::Sqlite,
+            Db::Duckdb(_) => Dialect::Duckdb,
         }
     }
 
@@ -184,6 +199,10 @@ impl Db {
                     .map_err(sqlite_error)?;
                 Ok(rows.into_iter().map(|values| Row { columns: columns.clone(), values }).collect())
             }
+            Db::Duckdb(conn) => {
+                let (columns, rows) = conn.query(&duckdb_as_text(sql))?;
+                Ok(rows.into_iter().map(|values| Row { columns: columns.clone(), values }).collect())
+            }
         }
     }
 
@@ -193,6 +212,7 @@ impl Db {
             Db::Postgres(client) => client.batch_execute(sql).await.map_err(pg_error),
             Db::Mysql(conn) => conn.query_drop(sql).await.map_err(mysql_error),
             Db::Sqlite(conn) => conn.execute_batch(sql).map_err(sqlite_error),
+            Db::Duckdb(conn) => conn.query(sql).map(|_| ()),
         }
     }
 
@@ -220,6 +240,7 @@ impl Db {
                 conn.exec_drop(sql, mysql_async::Params::Positional(values)).await.map_err(mysql_error)
             }
             Db::Sqlite(conn) => conn.execute(sql, rusqlite::params_from_iter(params.iter())).map(|_| ()).map_err(sqlite_error),
+            Db::Duckdb(conn) => conn.execute(sql, params),
         }
     }
 
@@ -438,6 +459,12 @@ pub enum Server {
         defaults: Option<(String, String)>,
     },
     Sqlite,
+    /// DuckDB's shadows are in memory, each attached under the target's own catalog name and used,
+    /// so that a statement naming the database (`app.main.users`) replays as it runs on the target.
+    Duckdb {
+        catalog: String,
+        root: std::path::PathBuf,
+    },
 }
 
 const PG_LISTS: &[&str] = &["search_path", "temp_tablespaces", "local_preload_libraries", "session_preload_libraries"];
@@ -538,6 +565,10 @@ impl Server {
                 Ok(Server::Mysql { admin, url: server_url.to_string(), defaults })
             }
             Dialect::Sqlite => Ok(Server::Sqlite),
+            Dialect::Duckdb => {
+                let catalog = target.rows("select current_database() as n").await?.first().map(|r| r.text("n").to_string()).unwrap_or_default();
+                Ok(Server::Duckdb { catalog, root: std::env::current_dir().unwrap_or_default() })
+            }
         }
     }
 
@@ -546,6 +577,7 @@ impl Server {
             Server::Postgres { .. } => Dialect::Postgres,
             Server::Mysql { .. } => Dialect::Mysql,
             Server::Sqlite => Dialect::Sqlite,
+            Server::Duckdb { .. } => Dialect::Duckdb,
         }
     }
 
@@ -565,6 +597,7 @@ impl Server {
                 Ok(Shadow { db, name })
             }
             Server::Sqlite => Ok(Shadow { db: Db::Sqlite(rusqlite::Connection::open_in_memory().map_err(sqlite_error)?), name: ":memory:".into() }),
+            Server::Duckdb { catalog, root } => Ok(Shadow { db: duckdb_shadow(catalog, root)?, name: ":memory:".into() }),
         }
     }
 
@@ -677,7 +710,7 @@ impl Server {
                 let _ = admin.query_drop(format!("drop database if exists `{name}`")).await;
                 let _ = admin.query_drop(format!("select release_lock('{name}')")).await;
             }
-            Server::Sqlite => {}
+            Server::Sqlite | Server::Duckdb { .. } => {}
         }
     }
 
@@ -724,7 +757,7 @@ impl Server {
                     dropped += 1;
                 }
             }
-            Server::Sqlite => {}
+            Server::Sqlite | Server::Duckdb { .. } => {}
         }
         // The replay caches no run will use, which are not counted: they are not a run's leftovers.
         crate::cache::sweep(self).await?;
@@ -736,6 +769,20 @@ impl Server {
             let _ = admin.disconnect().await;
         }
     }
+}
+
+/// A new, empty DuckDB database in memory, under the catalog name `catalog`, which is its default.
+pub(crate) fn duckdb_shadow(catalog: &str, root: &Path) -> Result<Db, Error> {
+    let mut db = Db::Duckdb(crate::duckdb::Conn::open(":memory:", root)?);
+    if !catalog.is_empty() && catalog != "memory" {
+        let name = ident(catalog);
+        if let Db::Duckdb(conn) = &mut db {
+            // The database DuckDB opens in memory is `memory`, which a schema of that name would make
+            // ambiguous where the target's file has none: it goes once the shadow is the default.
+            conn.query(&format!("attach ':memory:' as {name}; use {name}; detach memory"))?;
+        }
+    }
+    Ok(db)
 }
 
 /// Ends a Postgres shadow's session, and waits up to a second for its server process to go: a
