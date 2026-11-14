@@ -18,6 +18,7 @@ DuckDB support is a preview: the types Reylo infers on DuckDB, and the values `.
 | DuckDB versions | 2.0, through `@duckdb/node-api` |
 | Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
 | Drivers | `@duckdb/node-api` ([Drivers](#drivers)) |
+| Migrations | [Reylo Migrate](/migrations) runs on the same `@duckdb/node-api`, with its shadow databases in memory |
 | Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after, and while your app has the file open, it reads a copy of it. On Windows no other process can read a file DuckDB has open for writing, so the type check needs your app stopped |
 
 <Details summary="View the schema behind the examples" id="schema">
