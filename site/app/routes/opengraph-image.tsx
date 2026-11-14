@@ -90,7 +90,7 @@ function Card(): ReactNode {
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', padding: `60px ${PAD}px 0`, background: color.page, fontFamily: 'Geist' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <svg width={(44 * wordmark.width) / wordmark.height} height={44} viewBox={wordmark.viewBox}>
-          <path fill={color.headings} d={wordmark.mark} />
+          <path fill={color.headings} d={wordmark.markOnDark} />
           <path fill={color.headings} transform={wordmark.wordTransform} d={wordmark.word} />
         </svg>
         <div style={{ display: 'flex', fontFamily: 'Geist Mono', fontSize: 23, color: color.muted }}>reylo.dev</div>
