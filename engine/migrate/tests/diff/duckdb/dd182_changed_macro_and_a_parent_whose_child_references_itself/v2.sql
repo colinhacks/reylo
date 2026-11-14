@@ -1,0 +1,1 @@
+create macro x(a) as a >= 0; create table p (id integer primary key, v integer, check (x(v))); create table c (id integer primary key, p_id integer references p (id), parent integer references c (id));

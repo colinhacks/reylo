@@ -1,0 +1,11 @@
+drop index t_v;
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+drop macro x;
+create macro x (a) as ((a >= 0));
+create table t (id integer, v integer, w integer, primary key (id), check (x(v)));
+insert into t (id, v, w) select id, v, w from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;
+create index t_w on t(w);
+comment on index t_w is 'by w';
+comment on table t is 'two';

@@ -1,6 +1,6 @@
 //! DuckDB's schema, as the comparator's lines (`catalog`) and the diff engine's objects. DuckDB
 //! writes each definition again from what its catalog holds, whatever it was written as: a table's
-//! columns (`duckdb_columns()`), its constraints (`duckdb_constraints()`), an index's, a view's and
+//! columns (`duckdb_columns()`), its constraints (in its own text), an index's, a view's and
 //! a sequence's statement. Those renderings are the definitions. A macro's parameters' defaults are
 //! in no catalog function, only in what `EXPORT DATABASE` writes, so they are read from the export
 //! of a copy of the schema where one can be made, and otherwise left out of its definition.
@@ -94,10 +94,10 @@ pub(crate) fn literal(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 
-/// DuckDB's rendering written in lowercase, as `schema.sql` is: its keywords, and the words of a
-/// type where one stands (after `AS` in a cast), where they are uppercase and outside strings and
-/// quoted names. A name DuckDB writes bare keeps its case: DuckDB quotes every keyword it writes as a
-/// name, but not a type's name (`DATE`, `UUID`) nor a struct's field.
+/// DuckDB's rendering written in lowercase, as `schema.sql` is: its keywords, where they are
+/// uppercase and outside strings and quoted names. A name DuckDB writes bare keeps its case: DuckDB
+/// quotes every keyword it writes as a name, but not a type's name (`DATE`, `UUID`) nor a struct's
+/// field. A cast's type keeps its case too, since DuckDB keeps the name a cast was written with.
 pub(crate) fn styled(sql: &str) -> String {
     lowercased(sql, false)
 }
@@ -157,8 +157,12 @@ fn lowercased(sql: &str, whole_type: bool) -> String {
         }
         if t.upper() == "AS" && casts.last() == Some(&depth) {
             typed.push(depth);
+        } else if !whole_type && !typed.is_empty() {
+            // A cast's type keeps the name it was written with, which DuckDB keeps too: `DATE` and
+            // `date` render as written, and so read back.
+            continue;
         }
-        let in_type = whole_type || !typed.is_empty();
+        let in_type = whole_type;
         if t.kind == TokenKind::Word && t.text.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') && t.text.chars().any(|c| c.is_ascii_uppercase()) {
             let lower = t.text.to_ascii_lowercase();
             if in_type || ALL_KEYWORDS.binary_search(&lower.as_str()).is_ok() {
@@ -386,7 +390,7 @@ fn unquote(t: &Token) -> String {
 
 /// A table's constraints, read from its text as DuckDB writes it: a key or a unique constraint of
 /// one column after the column's type, the rest after the columns, a check's expression as
-/// `duckdb_constraints()` gives it.
+/// `duckdb_constraints()` gives it (a test holds the two to each other).
 fn constraints_of(schema: &str, table: &str, sql: &str) -> Vec<ConstraintRow> {
     let row = |kind: &str, columns: Vec<String>| ConstraintRow { schema: schema.into(), table: table.into(), kind: kind.into(), columns, ..ConstraintRow::default() };
     let names = |part: &[Token], open: usize| -> Vec<String> {
@@ -475,36 +479,11 @@ pub(crate) async fn read_catalog(db: &mut Db) -> Result<Read, Error> {
             comment: r.get("comment").map(String::from),
         });
     }
-    let constraints = db
-        .rows(&format!(
-            "select schema_name as s, table_name as t, constraint_type as kind, expression as expr, to_json(constraint_column_names)::varchar as cols,
-              referenced_table as ref, to_json(referenced_column_names)::varchar as refcols
-            from duckdb_constraints() where {HERE} and constraint_type in ('PRIMARY KEY', 'UNIQUE', 'CHECK', 'FOREIGN KEY') and {history}
-            order by 1, 2, constraint_index"
-        ))
-        .await;
-    match constraints {
-        Ok(rows) => {
-            for r in rows {
-                let kind = r.text("kind").to_lowercase();
-                read.constraints.push(ConstraintRow {
-                    schema: r.text("s").into(),
-                    table: r.text("t").into(),
-                    references: (kind == "foreign key").then(|| (r.text("ref").to_string(), json_list(r.text("refcols")))),
-                    kind,
-                    columns: json_list(r.text("cols")),
-                    expression: r.text("expr").to_string(),
-                });
-            }
-        }
-        // DuckDB's `duckdb_constraints()` fails for the whole database where one check reads a
-        // struct's field with a dot (`meta.a > 0`), which it binds as a table's column: each
-        // table's constraints are read from its own text instead, which writes them alike.
-        Err(_) => {
-            for t in &read.tables {
-                read.constraints.extend(constraints_of(&t.schema, &t.name, &t.sql));
-            }
-        }
+    // Each table's constraints, from its own text, which writes them as `duckdb_constraints()`
+    // gives them: that function fails for the whole database where one check reads a struct's
+    // field with a dot (`meta.a > 0`), and inside a transaction ends it.
+    for t in &read.tables {
+        read.constraints.extend(constraints_of(&t.schema, &t.name, &t.sql));
     }
     normalize_constraints(&mut read);
     for r in db.rows(&format!("select schema_name as s, index_name as n, table_name as t, sql, comment from duckdb_indexes() where {HERE} order by 1, 2")).await? {
@@ -677,16 +656,46 @@ pub(crate) fn in_order(text: &str) -> Vec<String> {
             if t.get(k).map(Token::upper).as_deref() == Some("MACRO") && t.get(at).map(Token::upper).as_deref() == Some("TABLE") {
                 at += 1;
             }
-            let (_, name) = name_at(t, at);
-            Some(name.to_lowercase())
+            let (schema, name) = name_at(t, at);
+            Some(format!("{}.{}", schema.to_lowercase(), name.to_lowercase()))
         })
         .collect();
-    // What each names, but a macro's parameters, which name nothing whatever they share a name with.
+    // What each names, each with its schema (`main`'s where it has none, which DuckDB reads it in),
+    // but a macro's parameters and a lambda's variables, which name nothing whatever they share a
+    // name with.
     let named: Vec<BTreeSet<String>> = statements
         .iter()
         .map(|s| {
-            let params = macro_params(&s.tokens);
-            s.tokens.iter().filter(|t| matches!(t.kind, TokenKind::Word | TokenKind::Quoted)).map(|t| unquote(t).to_lowercase()).filter(|n| !params.contains(n)).collect()
+            let mut params = macro_params(&s.tokens);
+            params.extend(bound(&s.text));
+            let t = &s.tokens;
+            let word = |k: usize| t.get(k).filter(|x| matches!(x.kind, TokenKind::Word | TokenKind::Quoted)).map(|x| unquote(x).to_lowercase());
+            let mut out = BTreeSet::new();
+            let mut k = 0;
+            while k < t.len() {
+                let Some(first) = word(k) else {
+                    k += 1;
+                    continue;
+                };
+                // `schema.name`, or `catalog.schema.name`, read as its last two parts.
+                let mut parts = vec![first];
+                while t.get(k + 1).is_some_and(|x| x.text == ".") {
+                    let Some(next) = word(k + 2) else { break };
+                    parts.push(next);
+                    k += 2;
+                }
+                match parts.len() {
+                    1 if !params.contains(&parts[0]) => {
+                        out.insert(format!("main.{}", parts[0]));
+                    }
+                    1 => {}
+                    n => {
+                        out.insert(format!("{}.{}", parts[n - 2], parts[n - 1]));
+                    }
+                }
+                k += 1;
+            }
+            out
         })
         .collect();
     let mut left: Vec<usize> = (0..statements.len()).collect();
@@ -696,6 +705,42 @@ pub(crate) fn in_order(text: &str) -> Vec<String> {
         out.push(statements[left.remove(ready)].text.clone());
     }
     out
+}
+
+/// Whether a `create macro` statement gives a parameter a default, `b := 2`, in one of its
+/// parameter lists: a named argument in its body, `struct_pack(a := x)`, is none.
+fn has_parameter_defaults(text: &str) -> bool {
+    let tokens = tokenize(text, Dialect::Duckdb);
+    let Some(m) = tokens.iter().position(|t| t.upper() == "MACRO") else { return false };
+    let mut depth = 0;
+    for (k, t) in tokens.iter().enumerate().skip(m + 1) {
+        match t.text.as_str() {
+            "(" => {
+                // A parameter list: after the name or a comma at the top, and before `AS`.
+                if depth == 0 && (tokens[k - 1].text == "," || matches!(tokens[k - 1].kind, TokenKind::Word | TokenKind::Quoted)) {
+                    let mut inner = 0;
+                    let mut j = k + 1;
+                    let mut defaults = false;
+                    while j < tokens.len() && !(tokens[j].text == ")" && inner == 0) {
+                        match tokens[j].text.as_str() {
+                            "(" => inner += 1,
+                            ")" => inner -= 1,
+                            ":" if inner == 0 && tokens.get(j + 1).is_some_and(|e| e.text == "=") => defaults = true,
+                            _ => {}
+                        }
+                        j += 1;
+                    }
+                    if defaults && tokens.get(j + 1).is_some_and(|a| a.upper() == "AS") {
+                        return true;
+                    }
+                }
+                depth += 1;
+            }
+            ")" => depth -= 1,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The names a `create macro` statement gives its parameters, in each of its overloads: the first
@@ -891,7 +936,7 @@ fn sequence_def(s: &SequenceRow) -> String {
 /// defaults, which no catalog function gives, so that a change to one is not seen.
 pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
     let read = read_catalog(db).await?;
-    Ok(read.macros.iter().filter(|m| m.exported.as_deref().is_some_and(|t| t.contains(":="))).map(|m| format!("macro {}: its parameters' defaults are not read", qualified(&m.schema, &m.name))).collect())
+    Ok(read.macros.iter().filter(|m| m.exported.as_deref().is_some_and(has_parameter_defaults)).map(|m| format!("macro {}: its parameters' defaults are not read", qualified(&m.schema, &m.name))).collect())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -920,6 +965,87 @@ fn sequences_in(text: &str, read: &Read) -> BTreeSet<String> {
 /// The names a text mentions, folded: what a view or a macro depends on, read from its words.
 fn mentions(sql: &str) -> BTreeSet<String> {
     tokenize(sql, Dialect::Duckdb).iter().filter(|t| matches!(t.kind, TokenKind::Word | TokenKind::Quoted)).map(|t| unquote(t).to_lowercase()).collect()
+}
+
+/// The names an index's statement mentions in what it covers, after `ON <table>`: its columns, and
+/// whatever its expressions name, but not its own name or its table's.
+fn index_mentions(sql: &str) -> BTreeSet<String> {
+    let tokens = tokenize(sql, Dialect::Duckdb);
+    let Some(on) = tokens.iter().position(|t| t.upper() == "ON") else { return BTreeSet::new() };
+    let Some(open) = tokens.iter().skip(on).position(|t| t.text == "(").map(|k| k + on) else { return BTreeSet::new() };
+    tokens[open..].iter().filter(|t| matches!(t.kind, TokenKind::Word | TokenKind::Quoted)).map(|t| unquote(t).to_lowercase()).collect()
+}
+
+/// The names a text binds for itself, which name no relation: a lambda's variables (`x -> x + 1`,
+/// `(a, b) -> a`, `lambda x: x`) and a list comprehension's (`[x for x in l]`).
+fn bound(sql: &str) -> BTreeSet<String> {
+    let tokens = tokenize(sql, Dialect::Duckdb);
+    let word = |t: &Token| matches!(t.kind, TokenKind::Word | TokenKind::Quoted);
+    let mut out = BTreeSet::new();
+    for (k, t) in tokens.iter().enumerate() {
+        if t.text == "->" && k > 0 {
+            if word(&tokens[k - 1]) {
+                out.insert(unquote(&tokens[k - 1]).to_lowercase());
+            } else if tokens[k - 1].text == ")" {
+                for x in tokens[..k - 1].iter().rev().take_while(|x| x.text != "(") {
+                    if word(x) {
+                        out.insert(unquote(x).to_lowercase());
+                    }
+                }
+            }
+        }
+        if t.upper() == "LAMBDA" {
+            for x in tokens[k + 1..].iter().take_while(|x| x.text != ":") {
+                if word(x) {
+                    out.insert(unquote(x).to_lowercase());
+                }
+            }
+        }
+        if t.upper() == "FOR" && tokens.get(k + 2).is_some_and(|x| x.upper() == "IN") && tokens.get(k + 1).is_some_and(word) {
+            out.insert(unquote(&tokens[k + 1]).to_lowercase());
+        }
+    }
+    out
+}
+
+/// The functions and macros a text calls, folded: each name followed by `(`, as a column of that
+/// name is not.
+fn calls(sql: &str) -> BTreeSet<String> {
+    let tokens = tokenize(sql, Dialect::Duckdb);
+    tokens.windows(2).filter(|w| matches!(w[0].kind, TokenKind::Word | TokenKind::Quoted) && w[1].text == "(").map(|w| unquote(&w[0]).to_lowercase()).collect()
+}
+
+/// The types a text casts to, folded: the word after `::` or a cast's `AS`, and the words of the
+/// parts in parentheses that follow it (a struct's fields' types).
+fn cast_types(sql: &str) -> BTreeSet<String> {
+    let tokens = tokenize(sql, Dialect::Duckdb);
+    let word = |t: &Token| matches!(t.kind, TokenKind::Word | TokenKind::Quoted);
+    let mut out = BTreeSet::new();
+    for (k, t) in tokens.iter().enumerate() {
+        if (t.text != "::" && t.upper() != "AS") || !tokens.get(k + 1).is_some_and(word) {
+            continue;
+        }
+        out.insert(unquote(&tokens[k + 1]).to_lowercase());
+        if tokens.get(k + 2).is_some_and(|p| p.text == "(") {
+            let mut depth = 0;
+            for x in &tokens[k + 2..] {
+                match x.text.as_str() {
+                    "(" => depth += 1,
+                    ")" => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ if word(x) => {
+                        out.insert(unquote(x).to_lowercase());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The schema of the database `db` is connected to, as the diff engine's objects.
@@ -969,10 +1095,11 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         let mut out = BTreeSet::new();
         let mut queue: Vec<(String, BTreeSet<String>)> = texts.iter().map(|t| (t.to_string(), BTreeSet::new())).collect();
         while let Some((text, params)) = queue.pop() {
-            let named: BTreeSet<String> = mentions(&text).difference(&params).cloned().collect();
+            let called: BTreeSet<String> = calls(&text).difference(&params).cloned().collect();
+            let cast = cast_types(&text);
             out.extend(sequences_in(&text, &read));
-            out.extend(read.types.iter().filter(|t| named.contains(&t.name.to_lowercase())).map(|t| format!("type {}", qualified(&t.schema, &t.name))));
-            for m in read.macros.iter().filter(|m| !m.table && named.contains(&m.name.to_lowercase())) {
+            out.extend(read.types.iter().filter(|t| cast.contains(&t.name.to_lowercase())).map(|t| format!("type {}", qualified(&t.schema, &t.name))));
+            for m in read.macros.iter().filter(|m| !m.table && called.contains(&m.name.to_lowercase())) {
                 if out.insert(macro_id(&m.schema, &m.name, false)) {
                     queue.extend(m.overloads.iter().map(|(p, body)| (body.clone(), p.iter().map(|(n, _)| n.to_lowercase()).collect())));
                 }
@@ -1007,8 +1134,18 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         let first = if q.increment.starts_with('-') { &q.max } else { &q.min };
         let restart = format!("create sequence {name} start with {first} increment by {} minvalue {} maxvalue {}{}", q.increment, q.min, q.max, if q.cycle { " cycle" } else { "" });
         // The value it gives next, where a plan made from this database starts it again.
-        let next = match (q.last.as_deref().and_then(|l| l.parse::<i128>().ok()), q.increment.parse::<i128>().ok()) {
-            (Some(last), Some(inc)) => (last + inc).to_string(),
+        let next = match (q.last.as_deref().and_then(|l| l.parse::<i128>().ok()), q.increment.parse::<i128>().ok(), q.min.parse::<i128>().ok(), q.max.parse::<i128>().ok()) {
+            // Past its last value, it goes round where it cycles, and else stays at its bound.
+            (Some(last), Some(inc), Some(min), Some(max)) => {
+                let next = last + inc;
+                match (next > max, next < min, q.cycle) {
+                    (true, _, true) => min.to_string(),
+                    (_, true, true) => max.to_string(),
+                    (true, _, false) => max.to_string(),
+                    (_, true, false) => min.to_string(),
+                    _ => next.to_string(),
+                }
+            }
             _ => q.start.clone(),
         };
         s.add(Object {
@@ -1033,6 +1170,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         let constraints: Vec<&ConstraintRow> = read.constraints.iter().filter(|k| k.schema == t.schema && k.table == t.name).collect();
         let mut deps = schema_dep(&t.schema);
         let mut parts = Vec::new();
+        let mut plain_parts = Vec::new();
         let mut lines = Vec::new();
         let mut info = vec![format!("name{SEP}{name}")];
         for c in &columns {
@@ -1053,6 +1191,10 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
                 _ => {}
             }
             parts.push(format!("{} {written}", quote(&c.name)));
+            // And as it is, its type written out: a table made again as it is, after one of the
+            // database's types changed, keeps its column's definition.
+            let plain = written.replacen(&alias_of(&c.data_type).0, &styled_type(&c.data_type), 1);
+            plain_parts.push(format!("{} {plain}", quote(&c.name)));
             let mut column_deps: BTreeSet<String> = c.default.iter().chain(c.generated.iter()).flat_map(|text| sequences_in(text, &read)).collect();
             column_deps.extend(type_dep);
             column_deps.extend(expression_deps(&c.default.iter().chain(c.generated.iter()).map(String::as_str).collect::<Vec<_>>()));
@@ -1081,7 +1223,13 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
                 inline: true,
                 change: Change::Alter { blocks: false },
                 deps: column_deps,
-                extra: vec![format!("name{SEP}{}", quote(&c.name)), format!("position{SEP}{}", c.position), format!("flags{SEP}{flags}"), format!("written{SEP}{}", parts.last().cloned().unwrap_or_default())],
+                extra: vec![
+                    format!("name{SEP}{}", quote(&c.name)),
+                    format!("position{SEP}{}", c.position),
+                    format!("flags{SEP}{flags}"),
+                    format!("written{SEP}{}", parts.last().cloned().unwrap_or_default()),
+                    format!("plain{SEP}{}", plain_parts.last().cloned().unwrap_or_default()),
+                ],
                 ..Object::default()
             });
             if let Some(comment) = &c.comment {
@@ -1094,6 +1242,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         for k in &constraints {
             lines.push(constraint_line(k));
             parts.push(constraint_sql(k));
+            plain_parts.push(constraint_sql(k));
             if let Some((to, referenced)) = &k.references {
                 // A foreign key names its table without a schema: the table's own schema's, else main's.
                 let target = [qualified(&t.schema, to), quote(to)].into_iter().find(|n| read.tables.iter().any(|x| qualified(&x.schema, &x.name) == *n)).unwrap_or_else(|| quote(to));
@@ -1114,6 +1263,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         let def = format!("table\n{}", lines.join("\n"));
         let create = format!("create table {name} ({})", parts.join(", "));
         info.push(format!("create{SEP}{create}"));
+        info.push(format!("plain{SEP}create table {name} ({})", plain_parts.join(", ")));
         s.add(Object { id: id.clone(), kind: Some(Kind::Table), def, create: vec![create], drop: vec![format!("drop table {name}")], deps, change: Change::Alter { blocks: false }, extra: info, ..Object::default() });
         if let Some(c) = &t.comment {
             add_comment(&mut s, &id, "table", &name, c);
@@ -1132,10 +1282,13 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         relations.entry(name).or_default().push(id);
     }
     let deps_of = |text: &str, own: &str, params: &BTreeSet<String>| -> BTreeSet<String> {
-        let named: BTreeSet<String> = mentions(text).difference(params).cloned().collect();
+        let local = bound(text);
+        let named: BTreeSet<String> = mentions(text).difference(params).filter(|n| !local.contains(*n)).cloned().collect();
+        let called = calls(text);
         let mut out = BTreeSet::new();
-        for id in named.iter().filter_map(|n| relations.get(n)).flatten() {
-            if id == own {
+        for (name, id) in named.iter().filter_map(|n| relations.get(n).map(|ids| (n, ids))).flat_map(|(n, ids)| ids.iter().map(move |id| (n, id))) {
+            // A macro only where it is called, as a column of its name is no call of it.
+            if id == own || (id.starts_with("macro ") && !called.contains(name)) {
                 continue;
             }
             out.insert(id.clone());
@@ -1172,9 +1325,11 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         let id = macro_id(&m.schema, &m.name, m.table);
         let def = macro_def(m);
         let create = m.exported.clone().unwrap_or_else(|| format!("create macro {name} {def}"));
-        // A parameter's name is no table's, whatever it shares a name with.
+        // A parameter's name is no table's, whatever it shares a name with. DuckDB binds the macros a
+        // macro calls as it is made, and records none of them: they come first, and change or go
+        // under it.
         let params: BTreeSet<String> = m.overloads.iter().flat_map(|(p, _)| p.iter().map(|(n, _)| n.to_lowercase())).collect();
-        let mut deps = deps_of(&def, &id, &params);
+        let (binds, mut deps): (BTreeSet<String>, BTreeSet<String>) = deps_of(&def, &id, &params).into_iter().partition(|d| d.starts_with("macro "));
         deps.extend(schema_dep(&m.schema));
         s.add(Object {
             id: id.clone(),
@@ -1183,6 +1338,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
             create: vec![styled_named(&create)],
             drop: vec![format!("drop macro {}{name}", if m.table { "table " } else { "" })],
             deps,
+            binds,
             // Made again by its alter, around what DuckDB records as using it.
             change: Change::Alter { blocks: false },
             ..Object::default()
@@ -1291,6 +1447,19 @@ pub fn declare(schema: &mut Schema, sql: &str) {
 pub struct DuckdbAlterer {
     decided: super::Decided,
     schemas: std::cell::RefCell<Option<(Schema, Schema)>>,
+    /// The macros, types and sequences the plan makes again, in the groups made again together,
+    /// once both schemas are known.
+    groups: std::cell::RefCell<Option<Vec<Group>>>,
+}
+
+/// Macros, types and sequences made again together, since their changes reach the same tables:
+/// their ids, the first of which makes all of them, the tables they make again around them, and
+/// every table they change.
+#[derive(Clone, Debug)]
+struct Group {
+    ids: Vec<String>,
+    members: BTreeSet<String>,
+    touched: BTreeSet<String>,
 }
 
 /// A table's facts, from its object and its columns'.
@@ -1397,10 +1566,11 @@ impl DuckdbAlterer {
         if a.constraints() != target_constraints {
             return Mode::Rebuild;
         }
-        let referenced = fs.objects.values().any(|o| o.kind == Some(Kind::Table) && o.id != from.id && ts.objects.contains_key(&o.id) && fields(o, "references").contains(&from.id.as_str()));
+        // By a table that keeps its key on it: one whose key the plan drops goes first.
+        let referenced = !children_of(fs, ts, &from.id).is_empty();
         // A column an index covers DuckDB changes in no way while the index stands, nor once it is
         // dropped earlier in the same transaction: such a change is a rebuild.
-        let mut indexed: BTreeSet<String> = fs.objects.values().filter(|o| o.kind == Some(Kind::Index) && o.owner.as_deref() == Some(from.id.as_str())).flat_map(|o| mentions(&o.def)).collect();
+        let mut indexed: BTreeSet<String> = fs.objects.values().filter(|o| o.kind == Some(Kind::Index) && o.owner.as_deref() == Some(from.id.as_str())).flat_map(|o| index_mentions(&o.def)).collect();
         // Nor one a generated column reads.
         indexed.extend(a.columns.iter().filter_map(|c| column_change(&c.def).generated).flat_map(|e| mentions(&e)));
         let mut blocked = false;
@@ -1524,6 +1694,7 @@ fn kept_on<'a>(from: &'a Schema, to: &Schema, id: &str, kind: Kind) -> Vec<&'a O
 impl Alterer for DuckdbAlterer {
     fn schemas(&self, from: &Schema, to: &Schema) {
         *self.schemas.borrow_mut() = Some((from.clone(), to.clone()));
+        *self.groups.borrow_mut() = None;
     }
 
     fn decide(&self, renames: &[(String, String)]) {
@@ -1533,33 +1704,58 @@ impl Alterer for DuckdbAlterer {
     fn waits_for(&self, id: &str) -> Vec<String> {
         let schemas = self.schemas();
         let Some((fs, ts)) = schemas.as_ref() else { return vec![] };
-        let changed = changed_under_tables(fs, ts);
+        let groups = self.groups(fs, ts);
         let mut out = Vec::new();
-        // A macro, type or sequence made again around tables after what the tables it makes as the
-        // target has them need.
-        if changed.iter().any(|x| x.id == id) {
-            let a = self.around_of(fs, ts, id);
-            for m in &a.members {
-                if let Some(t) = ts.objects.get(&m.id).filter(|t| t.def != m.def) {
-                    out.extend(needs_of(ts, t).into_iter().filter(|d| d != id && !a.members.iter().any(|x| x.id == *d)));
+        // A group made again around tables after what the tables it makes as the target has them
+        // need, but the tables it changes itself, which are there throughout.
+        if let Some(g) = groups.iter().find(|g| g.ids.iter().any(|x| x == id)) {
+            if g.ids[0] != id {
+                return out;
+            }
+            for m in g.members.iter().filter(|m| targeted(fs, ts, &g.members, &g.ids, m)) {
+                if let Some(t) = ts.objects.get(m) {
+                    out.extend(needs_of(ts, t).into_iter().filter(|d| !g.ids.contains(d) && !g.touched.contains(d)));
+                }
+            }
+            return out;
+        }
+        // What the plan drops goes first, but a macro, type or sequence, after the groups that make
+        // again the tables DuckDB records as using it, which let it go.
+        if !ts.objects.contains_key(id) {
+            if fs.objects.get(id).is_some_and(|x| matches!(x.kind, Some(Kind::Function | Kind::Type | Kind::Sequence))) {
+                for g in &groups {
+                    if g.touched.iter().any(|t| fs.objects.get(t).is_some_and(|o| fields(o, "recorded").contains(&id))) {
+                        out.push(g.ids[0].clone());
+                    }
                 }
             }
             return out;
         }
         let Some(table) = table_of(ts, id).or_else(|| table_of(fs, id)) else { return out };
-        // A table that one is made again around, and what is on it, after that.
-        for x in &changed {
-            if self.around_of(fs, ts, &x.id).touches(&table) {
-                out.push(x.id.clone());
+        // A table a group changes, and what is on it, after the group; and a table made, or given a
+        // key, that references one the group makes again, which DuckDB would not drop under it.
+        for g in &groups {
+            let refers = id == table && ts.objects.get(id).is_some_and(|t| !g.members.contains(id) && fields(t, "references").iter().any(|r| g.members.contains(*r)));
+            if g.touched.contains(&table) || refers {
+                out.push(g.ids[0].clone());
             }
         }
-        // A rebuild after what the tables it makes as the target has them need.
         if id == table {
             if let (Some(a), Some(b)) = (fs.objects.get(id), ts.objects.get(id)) {
-                if a.def != b.def && self.mode(a, b) == Mode::Rebuild {
-                    for c in children_of(fs, ts, id).iter().filter(|c| self.absorbed(&c.id)) {
-                        if let Some(t) = ts.objects.get(&c.id) {
-                            out.extend(needs_of(ts, t).into_iter().filter(|d| d != id && *d != c.id));
+                if a.def != b.def {
+                    // After the tables whose keys on it the plan drops, or moves to another table: their
+                    // own statements drop the key, without which DuckDB drops or changes it.
+                    for o in fs.objects.values().filter(|o| o.kind == Some(Kind::Table) && o.id != id && fields(o, "references").contains(&id)) {
+                        if ts.objects.get(&o.id).is_some_and(|t| !fields(t, "references").contains(&id)) {
+                            out.push(o.id.clone());
+                        }
+                    }
+                    // A rebuild after what the tables it makes as the target has them need.
+                    if self.mode(a, b) == Mode::Rebuild {
+                        for c in children_of(fs, ts, id).iter().filter(|c| self.absorbed(&c.id)) {
+                            if let Some(t) = ts.objects.get(&c.id) {
+                                out.extend(needs_of(ts, t).into_iter().filter(|d| d != id && *d != c.id));
+                            }
                         }
                     }
                 }
@@ -1602,22 +1798,43 @@ impl Alterer for DuckdbAlterer {
             Kind::Type | Kind::Function | Kind::Sequence => {
                 let schemas = self.schemas();
                 let (fs, ts) = schemas.as_ref()?;
-                let mut out = Vec::new();
-                let mut create = to.create.clone();
-                if to.kind == Some(Kind::Sequence) {
-                    // On the database a plan is made from, a sequence goes on from the value it gives
-                    // next; in a migration, which runs on databases whose values no plan can know, it
-                    // starts where the target's starts, which the file says.
-                    let (start, next) = (field(to, "start").unwrap_or_default(), field(from, "next").unwrap_or_default());
-                    if fs.live {
-                        create = vec![to.create[0].replacen(&format!(" start with {start} "), &format!(" start with {next} "), 1)];
-                    } else {
-                        out.push(format!("-- DuckDB makes {} again, so it starts again at {start}: where rows hold its values, start it past them", from.id.trim_start_matches("sequence ")));
-                    }
+                // Made with the others of its group, by the first.
+                let group = self.group_of(fs, ts, &from.id);
+                if group.ids[0] != from.id {
+                    return Some(vec![]);
                 }
-                let between: Vec<String> = from.drop.iter().cloned().chain(create).chain(unchanged_comment(fs, ts, &to.id)).collect();
-                out.extend(self.around(fs, ts, &from.id, between));
-                Some(out)
+                // Each made after what it depends on, as DuckDB records it or as its body reaches it
+                // (DuckDB binds a macro's body as it makes it), and dropped before it.
+                let needs = |o: &Object, x: &Object| -> bool {
+                    fields(o, "recorded").contains(&x.id.as_str()) || ts.objects.get(&o.id).is_some_and(|t| t.id != x.id && reaches(ts, &t.def, x))
+                };
+                let mut ordered: Vec<&Object> = Vec::new();
+                let mut left: Vec<&Object> = group.ids.iter().filter_map(|id| fs.objects.get(id)).collect();
+                while !left.is_empty() {
+                    let at = left.iter().position(|o| !left.iter().any(|x| x.id != o.id && needs(o, x))).unwrap_or(0);
+                    ordered.push(left.remove(at));
+                }
+                let (mut comments, mut creates) = (Vec::new(), Vec::new());
+                for x in &ordered {
+                    let Some(t) = ts.objects.get(&x.id) else { continue };
+                    let mut create = t.create.clone();
+                    if t.kind == Some(Kind::Sequence) {
+                        // On the database a plan is made from, a sequence goes on from the value it
+                        // gives next; in a migration, which runs on databases whose values no plan can
+                        // know, it starts where the target's starts, which the file says.
+                        let (start, next) = (field(t, "start").unwrap_or_default(), field(x, "next").unwrap_or_default());
+                        if fs.live {
+                            create = vec![t.create[0].replacen(&format!(" start with {start} "), &format!(" start with {next} "), 1)];
+                        } else {
+                            comments.push(format!("-- DuckDB makes {} again, so it starts again at {start}: where rows hold its values, start it past them", x.id.trim_start_matches("sequence ")));
+                        }
+                    }
+                    creates.extend(create);
+                    creates.extend(unchanged_comment(fs, ts, &x.id));
+                }
+                let between: Vec<String> = ordered.iter().rev().flat_map(|x| x.drop.iter().cloned()).chain(creates).collect();
+                comments.extend(self.around(fs, ts, &group.ids, between));
+                Some(comments)
             }
             Kind::Table => self.alter_table(from, to),
             _ => None,
@@ -1654,10 +1871,11 @@ impl DuckdbAlterer {
     /// another reason), with every table that references them and every table rebuilt in the plan
     /// that one of those references; the columns of other tables whose defaults reach it; the
     /// indexes of other tables that reach it; and the types written with it.
-    fn around_of<'a>(&self, fs: &'a Schema, ts: &'a Schema, id: &str) -> Around<'a> {
+    fn around_of<'a>(&self, fs: &'a Schema, ts: &'a Schema, ids: &[String]) -> Around<'a> {
         let mut out = Around::default();
-        let Some(x) = fs.objects.get(id) else { return out };
-        let reaches = |text: &str| reaches(fs, text, x);
+        let xs: Vec<&Object> = ids.iter().filter_map(|id| fs.objects.get(id)).collect();
+        let reaches = |text: &str| xs.iter().any(|x| reaches(fs, text, x));
+        let recorded = |o: &Object| fields(o, "recorded").iter().any(|r| ids.iter().any(|id| id == r));
         let in_both = |o: &&Object| ts.objects.contains_key(&o.id);
         let columns_of = |t: &str| -> Vec<&'a Object> { fs.objects.values().filter(|c| c.kind == Some(Kind::Column) && c.owner.as_deref() == Some(t)).collect() };
         let mut members: Vec<&Object> = fs
@@ -1668,7 +1886,7 @@ impl DuckdbAlterer {
             .filter(|t| {
                 let checked = fields(t, "constraint").iter().any(|k| k.starts_with("check ") && reaches(k)) || columns_of(&t.id).iter().any(|c| column_change(&c.def).generated.is_some_and(|g| reaches(&g)));
                 let defaulted = columns_of(&t.id).iter().any(|c| column_change(&c.def).default.is_some_and(|d| reaches(&d)));
-                checked || (fields(t, "recorded").contains(&id) && !defaulted)
+                checked || (recorded(t) && !defaulted)
             })
             .collect();
         // With every table that references one, and every table rebuilt in the plan that one of those
@@ -1703,9 +1921,9 @@ impl DuckdbAlterer {
         out.indexes = fs
             .objects
             .values()
-            .filter(|i| i.kind == Some(Kind::Index) && (fields(i, "recorded").contains(&id) || reaches(&i.def)) && !member(i.owner.as_deref().unwrap_or_default()) && ts.objects.get(&i.id).is_some_and(|t| t.def == i.def))
+            .filter(|i| i.kind == Some(Kind::Index) && (recorded(i) || reaches(&i.def)) && !member(i.owner.as_deref().unwrap_or_default()) && ts.objects.get(&i.id).is_some_and(|t| t.def == i.def))
             .collect();
-        out.types = fs.objects.values().filter(|t| t.kind == Some(Kind::Type) && t.id != id && fields(t, "recorded").contains(&id)).filter(in_both).collect();
+        out.types = fs.objects.values().filter(|t| t.kind == Some(Kind::Type) && !ids.contains(&t.id) && recorded(t)).filter(in_both).collect();
         // Each after the tables it references, as it is and as it will be.
         let mut left = members;
         while !left.is_empty() {
@@ -1721,8 +1939,45 @@ impl DuckdbAlterer {
     fn around_absorbed(&self, id: &str) -> bool {
         let schemas = self.schemas();
         let Some((fs, ts)) = schemas.as_ref() else { return false };
-        let (Some(a), Some(b)) = (fs.objects.get(id), ts.objects.get(id)) else { return false };
-        a.def != b.def && changed_under_tables(fs, ts).iter().any(|x| self.around_of(fs, ts, &x.id).members.iter().any(|m| m.id == id))
+        self.groups(fs, ts).iter().any(|g| targeted(fs, ts, &g.members, &g.ids, id))
+    }
+
+    /// The groups of what the plan makes again that are made again together: each macro, type or
+    /// sequence with every other whose change reaches one of the tables its change does.
+    fn groups(&self, fs: &Schema, ts: &Schema) -> Vec<Group> {
+        if let Some(g) = self.groups.borrow().as_ref() {
+            return g.clone();
+        }
+        let mut groups: Vec<(Vec<String>, BTreeSet<String>)> = Vec::new();
+        for x in changed_under_tables(fs, ts) {
+            let mut merged = (vec![x.id.clone()], self.around_of(fs, ts, &[x.id.clone()]).touched());
+            let mut k = 0;
+            while k < groups.len() {
+                if merged.1.is_disjoint(&groups[k].1) {
+                    k += 1;
+                } else {
+                    let (ids, touched) = groups.remove(k);
+                    merged.0.extend(ids);
+                    merged.1.extend(touched);
+                }
+            }
+            groups.push(merged);
+        }
+        let out: Vec<Group> = groups
+            .into_iter()
+            .map(|(mut ids, _)| {
+                ids.sort();
+                let a = self.around_of(fs, ts, &ids);
+                Group { members: a.members.iter().map(|m| m.id.clone()).collect(), touched: a.touched(), ids }
+            })
+            .collect();
+        *self.groups.borrow_mut() = Some(out.clone());
+        out
+    }
+
+    /// The group the macro, type or sequence `id` is made again in.
+    fn group_of(&self, fs: &Schema, ts: &Schema, id: &str) -> Group {
+        self.groups(fs, ts).into_iter().find(|g| g.ids.iter().any(|x| x == id)).unwrap_or(Group { ids: vec![id.to_string()], members: BTreeSet::new(), touched: BTreeSet::new() })
     }
 
     /// The statements that make the macro, type or sequence `id` again, `between`, around what
@@ -1730,8 +1985,8 @@ impl DuckdbAlterer {
     /// after, an index that does is dropped and made again after, a type written with it is dropped
     /// and made again as the target writes it, and a table whose check or generated column reaches
     /// it is rebuilt around it, with its family, each that changes made as the target has it.
-    fn around(&self, fs: &Schema, ts: &Schema, id: &str, between: Vec<String>) -> Vec<String> {
-        let a = self.around_of(fs, ts, id);
+    fn around(&self, fs: &Schema, ts: &Schema, ids: &[String], between: Vec<String>) -> Vec<String> {
+        let a = self.around_of(fs, ts, ids);
         let mut out: Vec<String> = a.taken.iter().map(|c| format!("alter table {} alter column {} drop default", table_name(fs, c), field(c, "name").unwrap_or_default())).collect();
         out.extend(a.indexes.iter().map(|i| i.drop[0].clone()));
         let mut between_all: Vec<String> = a.types.iter().map(|t| t.drop[0].clone()).collect();
@@ -1743,7 +1998,8 @@ impl DuckdbAlterer {
         if a.members.is_empty() {
             out.extend(between_all);
         } else {
-            let members = self.members_of(fs, ts, &a.members, &|m: &Object| ts.objects.get(&m.id).is_some_and(|t| t.def != m.def));
+            let member_ids: BTreeSet<String> = a.members.iter().map(|m| m.id.clone()).collect();
+            let members = self.members_of(fs, ts, &a.members, &|m: &Object| targeted(fs, ts, &member_ids, ids, &m.id));
             let mut after = Vec::new();
             for m in &members {
                 after.extend(kept_on(fs, ts, &m.from.id, Kind::Index).iter().map(|i| i.create[0].clone()));
@@ -1806,6 +2062,18 @@ impl DuckdbAlterer {
     }
 }
 
+/// Whether a table a group makes again around it, one of `members`, is made as the target has it:
+/// where it changes, and every table its target references is made with it or changes in no way,
+/// so that none changes later under a key the table made has on it. Else it is made as it is, and
+/// changes by its own statements after.
+fn targeted(fs: &Schema, ts: &Schema, members: &BTreeSet<String>, ids: &[String], id: &str) -> bool {
+    let (Some(a), Some(b)) = (fs.objects.get(id), ts.objects.get(id)) else { return false };
+    let kept = |r: &str| r == id || members.contains(r) || fs.objects.get(r).zip(ts.objects.get(r)).is_some_and(|(x, y)| x.def == y.def);
+    // Nor what the plan makes new for it that needs the group made first: a new macro calling one.
+    let new_after = needs_of(ts, b).iter().any(|n| !fs.objects.contains_key(n) && ts.objects.get(n).is_some_and(|o| o.deps.iter().chain(&o.binds).any(|d| ids.contains(d))));
+    members.contains(id) && a.def != b.def && !new_after && fields(b, "references").iter().all(|r| kept(r))
+}
+
 /// What a macro, type or sequence is made again around (`DuckdbAlterer::around_of`).
 #[derive(Default)]
 struct Around<'a> {
@@ -1816,9 +2084,9 @@ struct Around<'a> {
 }
 
 impl Around<'_> {
-    /// Whether the table `id` is among what this changes.
-    fn touches(&self, id: &str) -> bool {
-        self.members.iter().any(|m| m.id == id) || self.taken.iter().chain(&self.indexes).any(|o| o.owner.as_deref() == Some(id))
+    /// The tables this changes.
+    fn touched(&self) -> BTreeSet<String> {
+        self.members.iter().map(|m| m.id.clone()).chain(self.taken.iter().chain(&self.indexes).filter_map(|o| o.owner.clone())).collect()
     }
 }
 
@@ -1866,11 +2134,13 @@ fn reaches(schema: &Schema, text: &str, x: &Object) -> bool {
         forms.extend([bare.clone(), quoted(&bare)]);
     }
     let names_it = |t: &str| -> bool {
-        if x.kind == Some(Kind::Sequence) {
-            let lower = t.to_lowercase();
-            forms.iter().any(|f| lower.contains(&format!("'{f}'")))
-        } else {
-            mentions(t).contains(&bare)
+        match x.kind {
+            Some(Kind::Sequence) => {
+                let lower = t.to_lowercase();
+                forms.iter().any(|f| lower.contains(&format!("'{f}'")))
+            }
+            Some(Kind::Type) => cast_types(t).contains(&bare),
+            _ => calls(t).contains(&bare),
         }
     };
     let mut queue = vec![text.to_string()];
@@ -1879,7 +2149,7 @@ fn reaches(schema: &Schema, text: &str, x: &Object) -> bool {
         if names_it(&t) {
             return true;
         }
-        let named = mentions(&t);
+        let named = calls(&t);
         for m in schema.objects.values().filter(|m| m.kind == Some(Kind::Function) && !m.id.starts_with("macro table ")) {
             let name = super::last_written(m.id.trim_start_matches("macro ")).trim_matches('"').to_lowercase();
             if named.contains(&name) && seen.insert(m.id.clone()) {
@@ -2014,6 +2284,7 @@ fn cast_loss(a: &str, b: &str) -> Option<String> {
     match () {
         _ if zoned && y == "TIME" && !b.contains("WITH TIME ZONE") => Some("keeps the time of day, not its offset".into()),
         _ if number && y == "BOOLEAN" => Some("keeps only whether each number is zero (5 becomes true)".into()),
+        _ if x == "VARCHAR" && y == "BOOLEAN" => Some("stores text that reads as a boolean as that boolean ('yes' becomes true)".into()),
         _ if x == "VARCHAR" && y == "BLOB" => Some("reads each backslash escape as a byte ('\\x41' becomes A)".into()),
         _ => None,
     }
@@ -2141,7 +2412,8 @@ impl DuckdbAlterer {
 }
 
 /// The rows a rebuilt table takes back: the columns both have, by their new names from their old
-/// ones, but those the new table generates.
+/// ones, but those the new table generates. One the old table generated holds its values in the
+/// copy, which a column no longer generated takes.
 fn pairs_of(fs: &Schema, ts: &Schema, from: &Object, to: &Object, renamed: &BTreeMap<String, String>) -> Vec<(String, String)> {
     let (a, b) = (Table::of(fs, from), Table::of(ts, to));
     let old_of = |new: &str| renamed.get(new).cloned().unwrap_or_else(|| new.to_string());
@@ -2151,7 +2423,7 @@ fn pairs_of(fs: &Schema, ts: &Schema, from: &Object, to: &Object, renamed: &BTre
         .filter_map(|n| {
             let new = field(n, "name")?.to_string();
             let old = old_of(&new);
-            a.column(&old).filter(|c| !flag(c, 'g')).map(|_| (new, old))
+            a.column(&old).map(|_| (new, old))
         })
         .collect()
 }
@@ -2279,9 +2551,10 @@ fn foreign_key(sql: &str) -> Option<(Vec<String>, String, Vec<String>)> {
     Some((columns, table, referenced))
 }
 
-/// The table `o`'s `create table` statement, with the columns `retype` names of the types it gives.
+/// The table `o`'s `create table` statement as it is, each column's type written out, with the
+/// columns `retype` names of the types it gives.
 fn create_retyped(schema: &Schema, o: &Object, retype: &BTreeMap<String, String>) -> String {
-    let create = field(o, "create").unwrap_or_default().to_string();
+    let create = field(o, "plain").or(field(o, "create")).unwrap_or_default().to_string();
     if retype.is_empty() {
         return create;
     }
@@ -2289,11 +2562,14 @@ fn create_retyped(schema: &Schema, o: &Object, retype: &BTreeMap<String, String>
         .columns
         .iter()
         .map(|c| {
-            let written = field(c, "written").unwrap_or_default();
+            let written = field(c, "plain").or(field(c, "written")).unwrap_or_default();
             let name = field(c, "name").unwrap_or_default();
             match retype.get(name) {
                 Some(t) => {
-                    let rest = &written[(name.len() + 1 + written_type(c).len()).min(written.len())..];
+                    // What follows the type: its collation, nullability, default or generation.
+                    let after = written.strip_prefix(name).unwrap_or(written).trim_start();
+                    let end = [" collate ", " not null", " default ", " generated always as "].iter().filter_map(|e| after.find(e)).min().unwrap_or(after.len());
+                    let rest = &after[end..];
                     format!("{name} {t}{rest}")
                 }
                 None => written.to_string(),
@@ -2324,9 +2600,14 @@ pub fn rename_statements(current: &Schema, renamed: &[(String, String)]) -> Vec<
         let from = field(t, "name").unwrap_or_default().to_string();
         let new_name = super::last_written(new_id.strip_prefix("table ").unwrap_or(new_id));
         let old_bare = super::last_written(&from);
-        // In its own schema: `billing.invoices` renamed is `billing.<new name>`.
-        let tokens = tokenize(&from, Dialect::Duckdb);
-        let renamed_name = if tokens.len() == 3 && tokens[1].text == "." { format!("{}.{new_name}", tokens[0].text) } else { new_name.clone() };
+        // Its name as the target writes it: `billing.<new name>` in its own schema, or another's.
+        let renamed_name = new_id.strip_prefix("table ").unwrap_or(new_id).to_string();
+        let schema_of = |name: &str| -> String {
+            let tokens = tokenize(name, Dialect::Duckdb);
+            if tokens.len() == 3 && tokens[1].text == "." { unquote(&tokens[0]) } else { "main".to_string() }
+        };
+        // DuckDB moves no table to another schema: one that moves is made there, its rows copied.
+        let moved = schema_of(&from) != schema_of(&renamed_name);
         let on = |id: &str, kind: Kind| -> Vec<&Object> { current.objects.values().filter(|o| o.kind == Some(kind) && o.owner.as_deref() == Some(id)).collect() };
         let comments_of = |id: &str| -> Vec<&Object> {
             current.objects.values().filter(|o| o.kind == Some(Kind::Comment) && o.owner.as_deref().is_some_and(|owner| owner == id || current.objects.get(owner).is_some_and(|c| matches!(c.kind, Some(Kind::Column | Kind::Index)) && c.owner.as_deref() == Some(id)))).collect()
@@ -2334,7 +2615,10 @@ pub fn rename_statements(current: &Schema, renamed: &[(String, String)]) -> Vec<
         let children = children_of(current, current, old_id);
         // A table with a foreign key of its own: renamed, DuckDB keeps the old name in the table it
         // references, whose drop it then refuses for good.
-        if children.is_empty() && fields(t, "references").is_empty() {
+        if moved && (!children.is_empty() || !fields(t, "references").is_empty()) {
+            out.push(format!("-- DuckDB keeps no foreign key across schemas, so {from} moves to {renamed_name} only without the keys between it and other tables: drop those first"));
+        }
+        if !moved && children.is_empty() && fields(t, "references").is_empty() {
             let indexes = on(old_id, Kind::Index);
             out.extend(indexes.iter().map(|i| i.drop[0].clone()));
             out.push(format!("alter table {from} rename to {new_name}"));
@@ -2344,24 +2628,54 @@ pub fn rename_statements(current: &Schema, renamed: &[(String, String)]) -> Vec<
             }
             continue;
         }
-        let create = swap_references(&swap_created(field(t, "create").unwrap_or_default(), &new_name), &old_bare, &new_name);
+        let made = if moved { swap_whole_name(field(t, "create").unwrap_or_default(), "TABLE", &renamed_name) } else { swap_created(field(t, "create").unwrap_or_default(), &new_name) };
+        let create = swap_references(&made, &old_bare, &new_name);
         let mut members = vec![Member { from: t, create, name: renamed_name.clone(), pairs: copied(current, t) }];
         for x in &children {
             members.push(Member { from: x, create: swap_references(field(x, "create").unwrap_or_default(), &old_bare, &new_name), name: field(x, "name").unwrap_or_default().to_string(), pairs: copied(current, x) });
         }
         let mut after = Vec::new();
+        // An index is in its table's schema, and moves with it.
+        let index_name = |i: &Object| -> String {
+            let bare = super::last_written(i.id.trim_start_matches("index "));
+            if moved { qualified(&schema_of(&renamed_name), bare.trim_matches('"')) } else { i.id.trim_start_matches("index ").to_string() }
+        };
         for m in &members {
             let renaming = m.from.id == *old_id;
             for i in on(&m.from.id, Kind::Index) {
-                after.push(if renaming { swap_table(&i.create[0], &old_bare, &new_name) } else { i.create[0].clone() });
+                after.push(match (renaming, moved) {
+                    (true, true) => swap_whole_name(&i.create[0], "ON", &renamed_name),
+                    (true, false) => swap_table(&i.create[0], &old_bare, &new_name),
+                    _ => i.create[0].clone(),
+                });
             }
             for c in comments_of(&m.from.id) {
-                after.push(if renaming { c.create[0].replacen(&format!(" on table {from} is "), &format!(" on table {renamed_name} is "), 1).replacen(&format!(" on column {from}."), &format!(" on column {renamed_name}."), 1) } else { c.create[0].clone() });
+                let mut text = c.create[0].clone();
+                if renaming {
+                    text = text.replacen(&format!(" on table {from} is "), &format!(" on table {renamed_name} is "), 1).replacen(&format!(" on column {from}."), &format!(" on column {renamed_name}."), 1);
+                    if let Some(i) = c.owner.as_deref().and_then(|o| current.objects.get(o)).filter(|o| o.kind == Some(Kind::Index)) {
+                        text = text.replacen(&format!(" on index {} is ", i.id.trim_start_matches("index ")), &format!(" on index {} is ", index_name(i)), 1);
+                    }
+                }
+                after.push(text);
             }
         }
         out.extend(rebuild_family(&members, vec![], after));
     }
     out
+}
+
+/// A statement with the name after its keyword `after` (`TABLE` of a `create table`, `ON` of an
+/// index), its schema and all, written `new`.
+fn swap_whole_name(sql: &str, after: &str, new: &str) -> String {
+    let tokens = tokenize(sql, Dialect::Duckdb);
+    let Some(k) = tokens.iter().position(|t| t.upper() == after) else { return sql.to_string() };
+    let at = k + 1;
+    let end = if tokens.get(at + 1).is_some_and(|t| t.text == ".") { at + 2 } else { at };
+    match (tokens.get(at), tokens.get(end)) {
+        (Some(a), Some(b)) => format!("{}{new}{}", &sql[..a.start], &sql[b.end..]),
+        _ => sql.to_string(),
+    }
 }
 
 /// A `create table` statement of the plan's, making the table under the name `new`.
@@ -2482,7 +2796,8 @@ mod tests {
         // A name DuckDB writes bare that is no keyword keeps its case, as a type's name; a cast's
         // type and a column's type are written in lowercase, but for a struct's fields.
         assert_eq!(styled_named("CREATE INDEX i ON t(DATE, UUID)"), "create index i on t(DATE, UUID)");
-        assert_eq!(styled("CAST(DATE AS DOUBLE) + S"), "cast(DATE as double) + S");
+        assert_eq!(styled("CAST(DATE AS DOUBLE) + S"), "cast(DATE as DOUBLE) + S");
+        assert_eq!(styled("CAST(x AS STRUCT(A INTEGER)) + CAST(y AS date)"), "cast(x as STRUCT(A INTEGER)) + cast(y as date)");
         assert_eq!(styled_type("STRUCT(DATE DATE, n STRUCT(US UUID))[]"), "struct(DATE date, n struct(US uuid))[]");
         assert_eq!(styled_type("ENUM('A', 'b')"), "enum('A', 'b')");
     }
@@ -2540,14 +2855,37 @@ mod tests {
             if sql.trim().is_empty() || db.exec(&sql).await.is_err() {
                 continue;
             }
-            let read = read_catalog(&mut db).await.unwrap();
-            read_any += read.constraints.len();
-            let mut text = read.clone();
-            text.constraints = read.tables.iter().flat_map(|t| constraints_of(&t.schema, &t.name, &t.sql)).collect();
-            normalize_constraints(&mut text);
+            let text = read_catalog(&mut db).await.unwrap();
+            read_any += text.constraints.len();
+            let mut catalog = text.clone();
+            catalog.constraints = Vec::new();
+            // Where it fails, as on a check that reads a struct's field with a dot, there is nothing
+            // to hold the text to.
+            let Ok(rows) = db
+                .rows(&format!(
+                    "select schema_name as s, table_name as t, constraint_type as kind, expression as expr, to_json(constraint_column_names)::varchar as cols,
+                      referenced_table as ref, to_json(referenced_column_names)::varchar as refcols
+                    from duckdb_constraints() where {HERE} and constraint_type in ('PRIMARY KEY', 'UNIQUE', 'CHECK', 'FOREIGN KEY') and table_name <> '{HISTORY_TABLE}'"
+                ))
+                .await
+            else {
+                continue;
+            };
+            for r in rows {
+                let kind = r.text("kind").to_lowercase();
+                catalog.constraints.push(ConstraintRow {
+                    schema: r.text("s").into(),
+                    table: r.text("t").into(),
+                    references: (kind == "foreign key").then(|| (r.text("ref").to_string(), json_list(r.text("refcols")))),
+                    kind,
+                    columns: json_list(r.text("cols")),
+                    expression: r.text("expr").to_string(),
+                });
+            }
+            normalize_constraints(&mut catalog);
             let lines = |r: &Read| -> BTreeSet<String> { r.constraints.iter().map(constraint_line).collect() };
-            if lines(&read) != lines(&text) {
-                differ.push(format!("{}:\n  catalog {:?}\n  text    {:?}", file.display(), lines(&read), lines(&text)));
+            if lines(&catalog) != lines(&text) {
+                differ.push(format!("{}:\n  catalog {:?}\n  text    {:?}", file.display(), lines(&catalog), lines(&text)));
             }
         }
         assert!(read_any > 100, "read only {read_any} constraints");

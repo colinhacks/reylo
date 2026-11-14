@@ -3854,7 +3854,8 @@ mod on_duckdb {
         p.output();
         assert_eq!(new(&mut p, "bodies").await, 0, "{}", p.peek());
         let sql = written(&p, "bodies");
-        assert_has!(&sql, r"drop table lines;\ndrop table items;\ndrop macro positive;\ncreate macro positive");
+        // One rebuild, around all three: each macro's change reaches items.
+        assert_has!(&sql, r"drop table lines;\ndrop table items;\n(drop macro \w+;\n){3}(create macro [^\n]*\n){3}create table items");
         assert_eq!(p.dev().await, 0, "{}\n{sql}", p.peek());
         assert_eq!(p.rows("select count(*) as n from lines l join items i on i.id = l.item_id").await[0].text("n"), "1");
         p.exec("insert into items (id, qty) values (2, 0)").await;
@@ -4472,5 +4473,381 @@ comment on macro table app.recent is 'last n';
         assert_eq!(p.dev().await, 0, "{}", p.peek());
         assert_eq!(p.rows("select count(*) as n from persons").await[0].text("n"), "1");
         assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+
+    // A lambda's variable named like a table is no use of it.
+    const LAMBDA: &str = "create macro clean(xs) as list_filter(xs, lambda tag: tag <> ''); create table posts (id integer primary key, xs varchar[], n integer generated always as (len(clean(xs))) virtual); create table tag (id integer primary key, post_id integer references posts (id), name varchar);";
+
+    /// `init` on a copy of this database's schema, in a project of its own.
+    async fn init_elsewhere(p: &P) -> i32 {
+        let text = introspect(p).await.unwrap();
+        let mut q = P::sibling(p);
+        q.exec(&text).await;
+        let code = init(&mut q).await;
+        if code != 0 {
+            eprintln!("init elsewhere: {}", q.output());
+        }
+        code
+    }
+
+    // DuckDB's own commands, the adversarial round's: named macros and views across schemas, a
+    // struct's field read with a dot, comments on views' columns, and DuckDB's own renderings.
+
+    const SAME_MACROS: &str = "create schema app; create schema util; create macro util.clean(s) as trim(s); create macro app.clean(s) as util.clean(s); create table app.t (id integer, name varchar default app.clean(' x '));";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_a_new_child_of_a_table_whose_check_calls_a_changing_macro() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create macro valid(s) as s <> ''; create table parent (id integer primary key, code varchar check (valid(code)));");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into parent values (1, 'a')").await;
+        p.schema("create macro valid(s) as length(s) > 0; create table parent (id integer primary key, code varchar check (valid(code))); create table child (id integer primary key, parent_id integer references parent (id));");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from parent").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_an_outer_macro_following_its_inner_one_under_a_check() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create macro z_inner(x) as x > 0; create macro a_outer(x) as z_inner(x); create table t (id integer primary key, n integer, check (a_outer(n)));");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into t values (1, 5)").await;
+        p.schema("create macro z_inner(x, k) as x > k; create macro a_outer(x) as z_inner(x, 0); create table t (id integer primary key, n integer, check (a_outer(n)));");
+        new_and_dev(&mut p, "two").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_macro_change_deploys_on_a_tree_whose_column_is_named_like_it() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create macro slug(s) as lower(s); create table pages (id integer primary key, parent_id integer references pages (id), slug varchar check (slug <> ''));");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into pages values (1, null, 'home'); insert into pages values (2, 1, 'about');").await;
+        p.schema("create macro slug(s) as lower(trim(s)); create table pages (id integer primary key, parent_id integer references pages (id), slug varchar check (slug <> ''));");
+        let code = new(&mut p, "slug").await;
+        assert_eq!(code, 0, "{}", p.output());
+        let sql = written(&p, "slug");
+        let code = p.migrate().await;
+        assert_eq!(code, 0, "a change to the macro alone fails at deploy:\n{}\nwritten:\n{sql}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_a_schema_whose_macro_names_a_lambda_variable_as_a_table() {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec(LAMBDA).await;
+        let code = init(&mut p).await;
+        assert_eq!(code, 0, "{}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_a_schema_whose_macro_names_a_lambda_variable_as_a_table() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(LAMBDA);
+        new_and_dev(&mut p, "one").await;
+    }
+
+    // EXPORT DATABASE writes views in their schemas' order, and two objects of one name in two schemas
+    // are told apart by their schemas.
+    const SAME_NAMES: &str = "create schema staging; create schema reporting; create table staging.raw (id integer); create view staging.orders as select id from staging.raw; create view reporting.orders as select id from staging.orders;";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_reads_back_a_view_over_a_view_of_its_name_in_another_schema() {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec(SAME_NAMES).await;
+        let code = init(&mut p).await;
+        assert_eq!(code, 0, "{}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn introspect_replays_a_view_over_a_view_of_its_name_in_another_schema() {
+        let Some(p) = duckdb().await else { return };
+        p.exec(SAME_NAMES).await;
+        let text = introspect(&p).await.unwrap();
+        let q = P::sibling(&p);
+        let mut db = Db::connect(&q.url, &q.dir).await.unwrap();
+        let replayed = db.script(&text).await;
+        db.close().await;
+        assert!(replayed.is_ok(), "introspect's text fails on an empty database: {:?}\n{text}", replayed.err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_a_macro_calling_a_macro_of_its_name_in_another_schema() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(SAME_MACROS);
+        new_and_dev(&mut p, "one").await;
+    }
+
+    // The docs: `db wipe` "starts each sequence again at its first value".
+    #[tokio::test(flavor = "current_thread")]
+    async fn wipe_starts_a_sequence_again_at_its_lowest_value() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create sequence ids start 100; create table t (id bigint primary key default nextval('ids'), n integer);");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into t (n) values (1), (2)").await;
+        assert_eq!(one(&p, "select min(id) as v from t").await, "100");
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.output());
+        p.exec("insert into t (n) values (1)").await;
+        assert_eq!(one(&p, "select min(id) as v from t").await, "1", "DuckDB keeps no sequence's start once its file is reopened, so a wipe starts each at its lowest value");
+    }
+
+    // The docs: an update and then `set not null` is refused in one migration, so the backfill goes in a
+    // migration of its own.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_backfill_in_a_migration_of_its_own_deploys_and_checks() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261101100000_t.sql", "create table t (id integer primary key, n integer); insert into t values (1, null), (2, null);");
+        p.file("20261101110000_backfill.sql", "update t set n = 0 where n is null;");
+        p.file("20261101120000_required.sql", "alter table t alter column n set not null;");
+        p.schema("create table t (id integer primary key, n integer not null);");
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_set_not_null_after_a_backfill_migration() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261101100000_t.sql", "create table t (id integer primary key, n integer); insert into t values (1, null), (2, null);");
+        p.file("20261101110000_backfill.sql", "update t set n = 0 where n is null;");
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        p.schema("create table t (id integer primary key, n integer not null);");
+        new_and_dev(&mut p, "required").await;
+        assert_eq!(one(&p, "select count(*) as v from t").await, "2");
+    }
+
+    /// A database holding a check that reads a struct's field with a dot, on which DuckDB's
+    /// `duckdb_constraints()` fails: every command reads it from the tables' text.
+    const DOTTED: &str = "create macro twice(x) as x * 2; create sequence ids; create table users (id bigint primary key default nextval('ids'), email varchar unique, meta struct(age integer, nick varchar), check (meta.age >= 0)); create table posts (id integer primary key, user_id bigint references users (id), n integer check (n > 0), t integer generated always as (twice(n)) virtual); create index posts_n on posts (n); comment on table users is 'people'; create view adults as select * from users where meta.age >= 18;";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn every_command_on_a_database_with_a_dotted_check() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(DOTTED);
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into users (email, meta) values ('a', {'age': 30, 'nick': 'x'}); insert into posts values (1, 1, 2);").await;
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        assert_eq!(p.status().await, 0, "{}", p.output());
+        // A rebuild of the referenced table, and of its child.
+        p.schema(&DOTTED.replace("email varchar unique,", "email varchar unique check (email <> ''),"));
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from posts").await, "1");
+        assert_eq!(p.db_push().await, 0, "{}", p.output());
+        let before = lines_of(&p).await;
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.output());
+        let (a, b) = difference(&before, &lines_of(&p).await);
+        assert!(a.is_empty() && b.is_empty(), "wipe changed the schema:\n- {a:?}\n+ {b:?}");
+        assert_eq!(reset(&mut p).await, 0, "{}", p.output());
+        let text = introspect(&p).await.unwrap_or_else(|e| panic!("introspect: {e}"));
+        let mut q = P::sibling(&p);
+        q.exec(&text).await;
+        assert_eq!(init(&mut q).await, 0, "init: {}", q.output());
+        assert_eq!(q.migrate().await, 0, "{}", q.output());
+        assert_eq!(q.dry_run().await, 0, "{}", q.output());
+    }
+
+    // A dotted check made by hand is drift, which deploy sees.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dotted_check_made_by_hand_is_drift() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table t (id integer primary key, meta struct(a integer));");
+        new_and_dev(&mut p, "one").await;
+        p.exec("create table u (id integer, meta struct(a integer), check (meta.a > 0))").await;
+        assert_ne!(p.migrate().await, 0, "{}", p.output());
+        let out = p.output();
+        assert!(out.contains("table u"), "{out}");
+    }
+
+    const DOTTED_ONE: &str = "create table users (id integer primary key, meta struct(age integer), check (meta.age >= 0)); create table notes (id integer primary key, body varchar);";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_a_change_on_a_database_with_a_dotted_check() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(DOTTED_ONE);
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into users values (1, {'age': 3}); insert into notes values (1, 'n');").await;
+        p.schema(&DOTTED_ONE.replace("body varchar)", "body varchar, pinned boolean)"));
+        assert_eq!(p.db_push().await, 0, "{}", p.output());
+        assert_eq!(one(&p, "select count(*) as v from notes where pinned is null").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reset_a_database_with_a_dotted_check() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(DOTTED_ONE);
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into users values (1, {'age': 3});").await;
+        assert_eq!(reset(&mut p).await, 0, "{}", p.output());
+        assert_eq!(one(&p, "select count(*) as v from users").await, "0");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dev_rewinds_a_changed_migration_on_a_database_with_a_dotted_check() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261101100000_one.sql", DOTTED_ONE);
+        assert_eq!(p.dev().await, 0, "{}", p.output());
+        p.file("20261101110000_two.sql", "alter table notes add column pinned boolean;");
+        assert_eq!(p.dev().await, 0, "{}", p.output());
+        p.exec("insert into notes values (1, 'n', true);").await;
+        // Another branch's version of the second migration.
+        p.file("20261101110000_two.sql", "alter table notes add column starred boolean;");
+        assert_eq!(p.dev().await, 0, "{}", p.output());
+        assert_eq!(one(&p, "select count(*) as v from notes").await, "1");
+    }
+
+    // Comments on views' columns, in another schema, under names that need quotes.
+    const VIEW_COMMENTS: &str = "create schema rpt; create table rpt.sales (id integer, amount integer); create view rpt.\"Totals\" as select id, amount as \"Total Sum\" from rpt.sales; comment on column rpt.\"Totals\".\"Total Sum\" is 'all of it'; comment on view rpt.\"Totals\" is 'v'; create view plain as select 1 as \"select\"; comment on column plain.\"select\" is 'a keyword';";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_and_introspect_keep_the_comments_on_views_columns() {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec(VIEW_COMMENTS).await;
+        let text = introspect(&p).await.unwrap();
+        assert!(text.contains("all of it") && text.contains("a keyword"), "{text}");
+        assert_eq!(init(&mut p).await, 0, "{}", p.output());
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        let mut q = P::sibling(&p);
+        q.schema(&text);
+        new_and_dev(&mut q, "from_introspect").await;
+        let (a, b) = difference(&lines_of(&p).await, &lines_of(&q).await);
+        assert!(a.is_empty() && b.is_empty(), "- {a:?}\n+ {b:?}");
+        let mut x = lines_of(&p).await;
+        let mut y = lines_of(&q).await;
+        x.sort();
+        y.sort();
+        assert_eq!(x, y, "a comment differs");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wipe_and_reset_keep_the_comments_on_views_columns() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(VIEW_COMMENTS);
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into rpt.sales values (1, 2)").await;
+        let before = lines_of(&p).await;
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.output());
+        assert_eq!(lines_of(&p).await, before, "wipe");
+        assert_eq!(reset(&mut p).await, 0, "{}", p.output());
+        let mut x = lines_of(&p).await;
+        let mut y = before.clone();
+        x.sort();
+        y.sort();
+        assert_eq!(x, y, "reset");
+    }
+
+    // A table with a child, renamed while the macro its check calls changes: the rename makes it again
+    // under its new name with the old macro, then the macro is made again around it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_parent_renamed_while_the_macro_its_check_calls_changes() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create macro valid(s) as s <> ''; create table items (id integer primary key, code varchar check (valid(code)), qty integer); create table lines (id integer primary key, item_id integer references items (id)); create index lines_item on lines (item_id);");
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into items values (1, 'a', 1); insert into lines values (1, 1);").await;
+        p.schema("create macro valid(s) as length(s) > 0; create table products (id integer primary key, code varchar check (valid(code)), qty integer); create table lines (id integer primary key, item_id integer references products (id)); create index lines_item on lines (item_id);");
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from lines join products on products.id = lines.item_id").await, "1");
+    }
+
+    // Bodies DuckDB writes back in its own words (a list comprehension as a lambda, a JSON operator,
+    // QUALIFY, EXCLUDE, COLUMNS, UNION BY NAME, a window frame, named arguments): built by new, used,
+    // checkpointed and reopened, they are no drift and need no migration.
+    const ODD: &str = "create macro sq(xs) as [x * x for x in xs]; create macro first_word(s) as string_split(s, ' ')[1]; create macro j(d) as d->>'$.a'; create macro tm(n) as table from range(n) select range as i qualify row_number() over (order by range) <= 3; create macro cased(x) as case when x > 0 then 'p' when x < 0 then 'n' else 'z' end; create macro sp(x) as struct_pack(a := x, b := x * 2); create macro lt(xs) as list_transform(xs, lambda x: x + 1); create table users (id integer primary key, email varchar, secret varchar, age integer default (2 + 3), born date default (current_date + interval 1 day), tags varchar[] default ['a', 'b'], check (age between 0 and 200), check (email similar to '.*@.*')); create index users_first on users (first_word(email)); create view v as select * exclude (secret) from users; create view w as select columns('^a') from users; create view x as with a as (select id, sum(age) over (order by id rows between 1 preceding and current row) as s from users) select * from a; create view y as select id from users union by name select 2 as id; create view z as select sq([1, 2]) as q, j('{\"a\": 1}') as jj, cased(1) as c, sp(1) as s, lt([1]) as l, first_word('a b') as f; create view tv as from tm(5);";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bodies_duckdb_rewrites_are_no_drift_after_a_reopen() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(ODD);
+        new_and_dev(&mut p, "one").await;
+        p.exec("insert into users (id, email, secret) values (1, 'a b@c', 's'); checkpoint;").await;
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        assert_eq!(p.dry_run().await, 0, "{}", p.output());
+        assert_eq!(new(&mut p, "again").await, 0, "{}", p.output());
+        assert!(written(&p, "again").is_empty(), "{}", written(&p, "again"));
+        // And a rebuild of the table they read.
+        p.schema(&ODD.replace("secret varchar,", "secret varchar check (secret <> ''),"));
+        new_and_dev(&mut p, "two").await;
+        assert_eq!(one(&p, "select count(*) as v from users").await, "1");
+        assert_eq!(init_elsewhere(&p).await, 0);
+    }
+
+    // A named argument in a macro's body is no default of a parameter.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_named_argument_in_a_macros_body_is_no_parameter_default() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create macro sp(x) as struct_pack(a := x, b := x * 2);");
+        assert_eq!(new(&mut p, "one").await, 0, "{}", p.output());
+        let out = p.output();
+        assert!(!out.contains("its parameters' defaults are not read"), "a macro with no parameter default is said to have one:\n{out}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wipe_keeps_a_default_a_day_from_now() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261101100000_t.sql", "create table invites (id integer primary key, expires date default (current_date + interval 1 day)); create view recent as select * from invites where expires > current_date - interval 7 day;");
+        p.schema("create table invites (id integer primary key, expires date default (current_date + interval 1 day)); create view recent as select * from invites where expires > current_date - interval 7 day;");
+        assert_eq!(p.migrate().await, 0, "{}", p.output());
+        p.exec("insert into invites (id) values (1)").await;
+        let before = lines_of(&p).await;
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.output());
+        let (a, b) = difference(&before, &lines_of(&p).await);
+        assert!(a.is_empty() && b.is_empty(), "wipe changed the schema:\n- {a:?}\n+ {b:?}");
+        assert_eq!(p.migrate().await, 0, "after wipe: {}", p.output());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_writes_a_view_of_the_last_seven_days() {
+        let Some(mut p) = duckdb().await else { return };
+        p.schema("create table events (id integer, seen timestamp); create view recent as select * from events where seen > now()::timestamp - interval 7 day;");
+        new_and_dev(&mut p, "one").await;
+    }
+
+    // A project started from a database whose statements were written in capitals, as many are: init
+    // writes DuckDB's own text, and a later change to a view or a rebuild writes it in lowercase.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_initd_project_changes_a_view_and_rebuilds_a_table_written_in_capitals() {
+        let Some(mut p) = duckdb().await else { return };
+        p.exec("CREATE TABLE events (id INTEGER PRIMARY KEY, seen VARCHAR, kind VARCHAR CHECK (seen IS NULL OR seen::DATE IS NOT NULL)); CREATE VIEW daily AS SELECT seen::DATE AS day, count(*) AS n FROM events GROUP BY 1; INSERT INTO events VALUES (1, '2026-01-01', 'a');").await;
+        assert_eq!(init(&mut p).await, 0, "{}", p.output());
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        p.schema(&schema.replace("count_star() AS n", "count_star() AS n, min(id) AS first").replace("count(*) AS n", "count(*) AS n, min(id) AS first"));
+        new_and_dev(&mut p, "view").await;
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        p.schema(&schema.replace("kind VARCHAR", "kind VARCHAR CHECK (kind <> '')"));
+        new_and_dev(&mut p, "rebuild").await;
+        assert_eq!(one(&p, "select count(*) as v from events").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cycling_sequence_at_its_maximum_changes_from_the_live_database() {
+        let Some(mut p) = duckdb().await else { return };
+        // A plan from the live database goes on from the value the sequence gives next, which for one
+        // at its maximum is its minimum again.
+        let v1 = "create sequence s minvalue 1 maxvalue 3 cycle; create table t (id integer default nextval('s'), n integer);";
+        p.file("20261101000000_t.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into t (n) values (1), (2), (3)").await;
+        p.schema("create sequence s minvalue 1 maxvalue 3 increment by 2 cycle; create table t (id integer default nextval('s'), n integer);");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        p.exec("insert into t (n) values (4)").await;
+        assert_eq!(one(&p, "select id as v from t where n = 4").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_table_moves_to_another_schema_with_its_rows() {
+        let Some(mut p) = duckdb().await else { return };
+        // DuckDB moves no table between schemas: one renamed into another is made there, its rows copied.
+        let v1 = "create schema archive; create table notes (id integer primary key, body varchar); create index notes_body on notes (body); comment on table notes is 'old notes';";
+        p.file("20261101000000_t.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into notes values (1, 'a')").await;
+        p.schema("create schema archive; create table archive.notes (id integer primary key, body varchar); create index notes_body on archive.notes (body); comment on table archive.notes is 'old notes';");
+        assert_eq!(new_with(&mut p, "mv", &[], &[("notes", "archive.notes")]).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}\n{}", p.peek(), written(&p, "mv"));
+        assert_eq!(one(&p, "select count(*) as v from archive.notes").await, "1", "{}", written(&p, "mv"));
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 }

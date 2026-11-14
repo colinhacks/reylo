@@ -1,7 +1,8 @@
 //! The DuckDB diff engine's cases, `tests/diff/duckdb/<case>/`, as `tests/diff.rs` runs Postgres's:
 //! `v1.sql` with `seed.sql`'s rows in one database, `v2.sql` in another, the plan from the first to
 //! the second run on the first as `reylo migrate` runs a file (one transaction), the first's catalog
-//! then required to equal the second's and every table both have to keep its rows, and the plan
+//! then required to equal the second's, every table both have to keep its rows and every column
+//! both have of one type, not generated in the second, its values, and the plan
 //! compared with `plan.sql`, which `REYLO_BLESS=1` writes. Each case is planned back from v2 to v1
 //! too, which must reach v1 as well (that plan is not kept), and after a plan has run, planning again
 //! must find nothing to do. Then every DuckDB schema the oracle's cases set up is planned from an
@@ -55,6 +56,33 @@ async fn run(db: &mut Db, plan: &Plan) -> Option<String> {
     failed
 }
 
+/// The values of every column of `db` that `target` has too, of the same type and not generated
+/// there, each table's rows as text in order: what a plan to `target` must keep.
+async fn values(db: &mut Db, target: &mut Db) -> Vec<(String, Vec<String>)> {
+    let columns = "select schema_name as s, table_name as t, column_name as c, data_type as ty, is_generated as g from duckdb_columns() where database_name = current_database() and not internal order by 1, 2, column_index";
+    let (ours, theirs) = (db.rows(columns).await.unwrap(), target.rows(columns).await.unwrap());
+    let quote = |n: &str| format!("\"{}\"", n.replace('"', "\"\""));
+    let mut tables: Vec<(String, Vec<String>)> = Vec::new();
+    for c in &ours {
+        let kept = theirs.iter().any(|t| t.text("s") == c.text("s") && t.text("t") == c.text("t") && t.text("c") == c.text("c") && t.text("ty") == c.text("ty") && t.text("g") == "false");
+        if !kept {
+            continue;
+        }
+        let table = format!("{}.{}", quote(c.text("s")), quote(c.text("t")));
+        match tables.iter_mut().find(|(t, _)| *t == table) {
+            Some((_, cols)) => cols.push(quote(c.text("c"))),
+            None => tables.push((table, vec![quote(c.text("c"))])),
+        }
+    }
+    let mut out = Vec::new();
+    for (table, cols) in tables {
+        let list = cols.iter().map(|c| format!("coalesce({c}::varchar, 'NULL')")).collect::<Vec<_>>().join(", ");
+        let Ok(rows) = db.rows(&format!("select concat_ws('|', {list}) as r from {table} order by 1")).await else { continue };
+        out.push((format!("{table} ({})", cols.join(", ")), rows.iter().map(|r| r.text("r").to_string()).collect()));
+    }
+    out
+}
+
 async fn counts(db: &mut Db) -> Vec<(String, String)> {
     let tables = db.rows("select schema_name as s, table_name as t from duckdb_tables() where database_name = current_database() and not temporary order by 1, 2").await.unwrap();
     let mut out = Vec::new();
@@ -89,9 +117,11 @@ async fn duckdb() {
         }
         to.exec(&read(&case.join("v2.sql"))).await.unwrap_or_else(|e| panic!("{name}: v2.sql: {e}"));
         let before = counts(&mut from).await;
+        let kept = values(&mut from, &mut to).await;
         let plan = plan(&mut from, &mut to).await;
         let text = plan.sql();
         let failed = run(&mut from, &plan).await;
+        let failed_before = failed.clone();
         let (only_a, only_b) = difference(&catalog(&mut from).await.unwrap(), &catalog(&mut to).await.unwrap());
         let after = counts(&mut from).await;
         let lost: Vec<String> = before.iter().filter(|(t, n)| after.iter().any(|(u, m)| u == t && m != n)).map(|(t, n)| format!("{t}: {n} rows before")).collect();
@@ -108,6 +138,17 @@ async fn duckdb() {
         }
         if !lost.is_empty() {
             problems.push(format!("rows lost: {}", lost.join(", ")));
+        }
+        // Every column kept as it was keeps its values.
+        if failed_before.is_none() {
+            let now = values(&mut from, &mut to).await;
+            for (columns, rows) in &kept {
+                if let Some((_, after)) = now.iter().find(|(c, _)| c == columns) {
+                    if after != rows {
+                        problems.push(format!("values changed in {columns}:\n  before {rows:?}\n  after  {after:?}"));
+                    }
+                }
+            }
         }
         // Planned again, the database it reached needs nothing.
         let again = self::plan(&mut from, &mut to).await;

@@ -1,0 +1,10 @@
+create temporary table reylo_copy_t as select * from t;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table t;
+create table t (id integer, meta struct(a integer), n integer, primary key (id), check ((n > 0)), check ((meta.a > 0)));
+create table c (id integer, t_id integer, primary key (id), foreign key (t_id) references t (id));
+insert into t (id, meta) select id, meta from temp.main.reylo_copy_t;
+insert into c (id, t_id) select id, t_id from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_c;

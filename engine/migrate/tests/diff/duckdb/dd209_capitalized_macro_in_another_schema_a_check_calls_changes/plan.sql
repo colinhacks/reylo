@@ -1,0 +1,12 @@
+create temporary table reylo_copy_t as select * from t;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table t;
+drop macro Lib.Valid;
+create macro Lib."Valid" (s) as ((length(s) > 0));
+create table t (id integer, code varchar, primary key (id), check (Lib."valid"(code)));
+create table c (id integer, t_id integer, primary key (id), foreign key (t_id) references t (id));
+insert into t (id, code) select id, code from temp.main.reylo_copy_t;
+insert into c (id, t_id) select id, t_id from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_c;
