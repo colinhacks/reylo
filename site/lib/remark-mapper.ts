@@ -184,6 +184,8 @@ const where = (node: MdNode) => `line ${node.position?.start.line ?? '?'}`;
 
 /** A database's own page, whose every example is that database's. */
 const DIALECT_PAGE = /(^|\/)(postgres|mysql|sqlite|duckdb)\.mdx$/;
+/** A file of the main page's sections, which share its schema (lib/page-files.ts). */
+const MAIN_PAGE = /(^|\/)content\/sections\/[^/]+\.mdx$/;
 
 /** The main page's Postgres schema, its `schema.sql` blocks: what the playground's PGlite holds (lib/live/plugin.ts). */
 let postgresSchema: string | undefined;
@@ -489,15 +491,15 @@ const codeNode = (lang: string, value: string): MdNode => ({ type: 'code', lang,
  */
 function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, page: string) {
   const width = TYPE_WIDTH[INFERENCE_CARD_LAYOUT];
-  const cards: MdNode[] = [];
+  const cards: { card: MdNode; parent: MdNode }[] = [];
   const find = (node: MdNode) => {
     for (const child of node.children ?? []) {
-      if (child.type === 'mdxJsxFlowElement' && child.name === INFERENCE_CARD) cards.push(child);
+      if (child.type === 'mdxJsxFlowElement' && child.name === INFERENCE_CARD) cards.push({ card: child, parent: node });
       else find(child);
     }
   };
   find(tree);
-  for (const card of cards) {
+  for (const { card, parent } of cards) {
     const statements = blocks.filter((b) => b.parent === card && isStatement(b));
     if (!statements.length) throw new Error(`${page}:${where(card)}: an inference card shows no statement; give it a \`sql\` block with file="<name>.sql".`);
     const dialects = (Object.keys(DIALECT_NAME) as Dialect[]).filter((d) => statements.some((b) => b.dialect === d));
@@ -525,6 +527,14 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
       ...(DIALECT_PAGE.test(page) || same ? [{ type: 'mdxJsxAttribute', name: 'bare', value: null }] : []),
     ];
     card.children = same ? panels[0]!.children! : [jsx('DialectTabs', [['follow', null]], panels)];
+    // The playground runs the main page's Postgres schema alone, so a card there whose Postgres
+    // statement needs no schema of its own links that statement there, under the card, whichever
+    // dialect shows.
+    const postgres = statements.find((b) => b.dialect === 'postgres');
+    if (MAIN_PAGE.test(page) && postgres && postgres.schema === undefined) {
+      const link = jsx('InferenceCardPlay', [['href', `/play?q=${encodeURIComponent(postgres.node.value.replace(/\n$/, ''))}`]], []);
+      parent.children!.splice(parent.children!.indexOf(card) + 1, 0, link);
+    }
   }
 }
 

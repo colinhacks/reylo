@@ -27,8 +27,6 @@ select id, name, email from users where id = :id::int
 
 </InferenceCard>
 
-<PlaygroundLink />
-
 At run time, the [preload](/#setup-node) or a bundler [plugin](/#plugins) turns the same file into a module that runs the query through your driver.
 
 Reylo caches each answer in [`.reylo/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.

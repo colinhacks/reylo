@@ -36,6 +36,21 @@ export function InferenceCardRow({ label, children }: { label: string; children:
   );
 }
 
+/** A quiet link under the card, at its right, that opens its Postgres statement in the playground (/play). */
+export function InferenceCardPlay({ href }: { href: string }) {
+  // Inside `not-prose`, so the prose's link underline stays off it.
+  return (
+    <div className="reylo-inference-card-play not-prose">
+      <a href={href}>
+        <svg viewBox="0 0 10 12" aria-hidden="true">
+          <path d="M1 1.2v9.6a.6.6 0 0 0 .92.5l7.4-4.8a.6.6 0 0 0 0-1L1.92.7A.6.6 0 0 0 1 1.2Z" />
+        </svg>
+        Open in playground
+      </a>
+    </div>
+  );
+}
+
 /** The Params and Returns rows together: a column beside the query, or a band under it. */
 export function InferenceCardTypes({ children }: { children: ReactNode }) {
   return <div className="reylo-inference-card-types">{children}</div>;
