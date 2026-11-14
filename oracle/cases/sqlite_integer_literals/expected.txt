@@ -1,5 +1,5 @@
 coalesced.sql: many () -> { past: float(11,52), min: BIGINT, one: BIGINT }
 in_json.sql: one () -> { j: json { max: int64, past: float(11,52), far: float(11,52), min: int64, below: float(11,52), separated: float(11,52), hex: int64 } }
-literals.sql: one () -> { max: int64, past: float(11,52), far: float(11,52), min: int64, below: float(11,52), min_zeros: int64, zeros: int64, separated: float(11,52), hex: int64 }
+literals.sql: one () -> { max: int64(9223372036854775807), past: float(11,52), far: float(11,52), min: int64(-9223372036854775808), below: float(11,52), min_zeros: int64(-9223372036854775808), zeros: int64(1), separated: float(11,52), hex: int64 }
 union_arms.sql: many () -> { b: float(11,52)? }
-values_rows.sql: many () -> { column1: int64, column2: float(11,52) }
+values_rows.sql: many () -> { column1: int64(1 | 2), column2: float(11,52) }

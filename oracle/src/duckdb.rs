@@ -662,7 +662,7 @@ fn seed(db: &Db, scenario: Scenario) -> Result<Vec<String>, String> {
 fn parameter_pool(ty: &Value, nullable: bool, scenario: Scenario) -> Option<Vec<Option<String>>> {
     let ty: reylo_engine_core::types::Type = serde_json::from_value(ty.clone()).ok()?;
     let name = match &ty.kind {
-        reylo_engine_core::types::Kind::Text(text) if text.values.is_some() => return Some(text.values.iter().flatten().map(|l| Some(l.clone())).chain(nullable.then_some(None)).collect()),
+        reylo_engine_core::types::Kind::Enum(e) if matches!(e.ty.kind, reylo_engine_core::types::Kind::Text(_)) => return Some(e.values.iter().map(|l| Some(l.clone())).chain(nullable.then_some(None)).collect()),
         reylo_engine_core::types::Kind::Json(_) => "json".into(),
         _ => ty.label.clone()?,
     };

@@ -156,7 +156,7 @@ test("a range is an object of its bounds and their brackets, each bound in its s
 });
 
 test("a MySQL ENUM of known labels is refused the '' MySQL stores for any other value, unless it lists one", () => {
-  const labelled = (...labels: string[]) => ({ kind: "text", enum: labels, label: "enum" }) as EngineType;
+  const labelled = (...labels: string[]) => ({ kind: "enum", type: { kind: "text" }, values: labels, label: "enum" }) as EngineType;
   assert.equal(columnKind(labelled("a", "b"), "mysql"), "enum");
   assert.equal(renderType(labelled("a", "b"), false, "mysql"), '"a" | "b"');
   assert.equal(coerce("enum", "a", "kind"), "a");
@@ -165,7 +165,7 @@ test("a MySQL ENUM of known labels is refused the '' MySQL stores for any other 
   assert.equal(columnKind(labelled("", "a"), "mysql"), "text");
   assert.equal(columnKind({ kind: "text", label: "enum" }, "mysql"), "text");
   // Postgres enforces an enum's labels itself.
-  assert.equal(columnKind({ kind: "text", enum: ["a"], label: "enum" }, "postgres"), "text");
+  assert.equal(columnKind({ kind: "enum", type: { kind: "text" }, values: ["a"], label: "public.mood" }, "postgres"), "text");
 });
 
 test("a MySQL SET is a Set of its members, declared and decoded alike, and is its text inside JSON", () => {

@@ -8,7 +8,7 @@ aggregate_group_by_constant.sql: at_most_one () -> { n: bigint }
 aggregate_group_concat.sql: one () -> { names: text? }
 aggregate_having.sql: many () -> { n: bigint }
 aggregate_having_true.sql: many () -> { n: bigint }
-aggregate_in_case.sql: many () -> { verdict: varchar }
+aggregate_in_case.sql: many () -> { verdict: varchar('some' | 'none') }
 aggregate_in_function.sql: one () -> { oldest: bigint }
 aggregate_in_order_by.sql: many () -> { name: varchar(≤20) }
 aggregate_in_subquery_only.sql: many () -> { n: bigint }
@@ -71,5 +71,5 @@ no_from_where.sql: many (flag: int32) -> { one: bigint | int }
 sum_no_rows.sql: one () -> { total: decimal? }
 table_limit.sql: many () -> { post_id: int, tag: varchar(≤20) }
 table_statement.sql: many () -> { post_id: int, tag: varchar(≤20) }
-values_one.sql: one () -> { column_0: bigint | int, column_1: varchar }
-values_two.sql: many () -> { column_0: bigint | int, column_1: varchar }
+values_one.sql: one () -> { column_0: bigint | int, column_1: varchar('a') }
+values_two.sql: many () -> { column_0: bigint | int, column_1: varchar('a' | 'b') }

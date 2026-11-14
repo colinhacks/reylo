@@ -69,7 +69,7 @@
 //! changes nothing else; a problem found there says so.
 
 use reylo_engine_core::types::{BytesType, DateTimeType, DecimalType, DurationType, InstantType, JsonType, Kind, Size, SizeUnit, TextType, Type};
-use crate::seed::{decimal_contradiction, length_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
+use crate::seed::{decimal_contradiction, length_contradiction, literal_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Statement, Value as My};
 use reylo_engine::clients::mysql_async::{message, quote};
@@ -1172,7 +1172,7 @@ fn classes(ty: &Type) -> Option<Vec<&'static str>> {
     let mut out = Vec::new();
     for m in ty.members() {
         out.extend(match &m.kind {
-            Kind::Boolean => vec!["number", "int8", "bytea"],
+            Kind::Boolean(_) => vec!["number", "int8", "bytea"],
             Kind::Integer(i) if i.bits >= 64 => vec!["int8"],
             Kind::Integer(_) | Kind::Float(_) => vec!["number"],
             Kind::Decimal(_) => vec!["numeric"],
@@ -1182,7 +1182,8 @@ fn classes(ty: &Type) -> Option<Vec<&'static str>> {
             Kind::Json(_) => vec!["json"],
             Kind::Array(_) if m.label.as_deref() == Some("bit") => vec!["bytea"],
             Kind::Bytes(_) => vec!["bytea"],
-            Kind::Text(_) | Kind::Set(_) => vec!["text"],
+            Kind::Text(_) => vec!["text"],
+            Kind::Array(a) if a.distinct => vec!["text"],
             _ => return None,
         });
     }
@@ -1213,22 +1214,39 @@ fn type_contradiction(ty: &Value, code: u8, charset: u16) -> Option<String> {
     (!typed.contains(&returned)).then(|| format!("typed {} came back as {returned} (protocol type {code})", typed.join(" or ")))
 }
 
-/// Why a value a run returned contradicts the engine's type for its column, if it does: text or
-/// bytes of another length than the size says (text counted in the unit the size names, in the
-/// session's UTF-8), a DECIMAL of more digits than its precision or scale, or a time finer than
-/// its tick. The text protocol sends each value as its text, and the binary one a DATETIME, a
-/// TIMESTAMP or a TIME as its parts and anything else as bytes.
+/// Why a value a run returned contradicts the engine's type for its column, if it does: a value
+/// none of the labels or the literals its type lists, text or bytes of another length than the
+/// size says (text counted in the unit the size names, in the session's UTF-8), a DECIMAL of more
+/// digits than its precision or scale, or a time finer than its tick. The text protocol sends each
+/// value as its text, and the binary one a number as itself, a DATETIME, a TIMESTAMP or a TIME as
+/// its parts and anything else as bytes.
 fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
     let text = || match value {
         My::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
         _ => None,
     };
+    let number = match value {
+        My::Bytes(bytes) => std::str::from_utf8(bytes).ok().map(str::to_string),
+        My::Int(n) => Some(n.to_string()),
+        My::UInt(n) => Some(n.to_string()),
+        My::Float(f) => Some(f.to_string()),
+        My::Double(f) => Some(f.to_string()),
+        _ => None,
+    };
+    if let Some(shown) = &number {
+        let why = literal_contradiction(ty, shown);
+        if why.is_some() {
+            return why;
+        }
+    }
+    // An enum's values are of its type, whose size and precision hold them too.
+    let ty = ty.base();
     match (&ty.kind, value) {
         (Kind::Text(TextType { size: Some(size), .. }), My::Bytes(_)) => {
             let (n, unit) = text_length(size, text()?);
             length_contradiction(size, n, unit)
         }
-        (Kind::Bytes(BytesType { size: Some(size) }), My::Bytes(bytes)) => length_contradiction(size, bytes.len() as u64, "bytes"),
+        (Kind::Bytes(BytesType { size: Some(size), .. }), My::Bytes(bytes)) => length_contradiction(size, bytes.len() as u64, "bytes"),
         (Kind::Decimal(decimal), My::Bytes(_)) => decimal_contradiction(decimal, text()?),
         (Kind::DateTime(DateTimeType { tick, .. }) | Kind::Instant(InstantType { tick, .. }), My::Date(.., micros)) => micros_contradiction(tick, *micros),
         (Kind::Duration(DurationType { tick: Some(tick), .. }), My::Time(.., micros)) => micros_contradiction(tick, *micros),
@@ -1241,7 +1259,7 @@ fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
 fn text_length(size: &Size, text: &str) -> (u64, &'static str) {
     match size.unit {
         Some(SizeUnit::Byte) => (text.len() as u64, "bytes"),
-        Some(SizeUnit::Utf16Unit) => (text.encode_utf16().count() as u64, "UTF-16 units"),
+        Some(SizeUnit::CodeUnit) => (text.encode_utf16().count() as u64, "UTF-16 units"),
         None => (text.chars().count() as u64, "code points"),
     }
 }
@@ -1271,7 +1289,7 @@ fn scalar_contradiction(ty: &Type, json: &Value) -> Option<String> {
             let (n, unit) = text_length(size, text);
             length_contradiction(size, n, unit)
         }
-        (Kind::Bytes(BytesType { size: Some(size) }), Value::String(text)) => {
+        (Kind::Bytes(BytesType { size: Some(size), .. }), Value::String(text)) => {
             let encoded: String = text.strip_prefix("base64:")?.split_once(':')?.1.chars().filter(|c| !c.is_whitespace()).collect();
             let n = encoded.len() / 4 * 3 - encoded.chars().rev().take_while(|&c| c == '=').count();
             length_contradiction(size, n as u64, "bytes")
@@ -1315,7 +1333,7 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
         _ => "an object",
     };
     match &ty.kind {
-        Kind::Record(record) => {
+        Kind::Struct(record) => {
             let Some(object) = json.as_object() else { return Some(format!("holds {kind} at {at}, typed an object")) };
             for f in &record.fields {
                 let Some(value) = object.get(&f.name) else { return Some(format!("has no key {path}.{}", f.name)) };
@@ -1325,8 +1343,9 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
             }
             None
         }
-        // A BIT is written inside a document as its bytes, `"base64:type16:…"` (the spec's facts).
-        Kind::Array(array) if ty.label.as_deref() != Some("bit") => {
+        // A BIT is written inside a document as its bytes, `"base64:type16:…"`, and a SET as its
+        // members joined by commas (the spec's facts).
+        Kind::Array(array) if ty.label.as_deref() != Some("bit") && !array.distinct => {
             let Some(items) = json.as_array() else { return Some(format!("holds {kind} at {at}, typed a list")) };
             items.iter().enumerate().find_map(|(i, item)| document_contradiction(&array.element.ty, item, array.element.nullable, &format!("{path}[{i}]")))
         }
@@ -1336,9 +1355,10 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
             let mut wanted = Vec::new();
             for m in ty.members() {
                 wanted.push(match &m.kind {
-                    Kind::Boolean => "a boolean",
+                    Kind::Boolean(_) => "a boolean",
                     Kind::Integer(_) | Kind::Float(_) | Kind::Decimal(_) => "a number",
-                    Kind::Text(_) | Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Set(_) => "a string",
+                    Kind::Text(_) | Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) => "a string",
+                    Kind::Array(a) if a.distinct => "a string",
                     Kind::Array(_) if m.label.as_deref() == Some("bit") => "a string",
                     _ => return None,
                 });
@@ -1432,7 +1452,7 @@ mod tests {
         assert_eq!(type_contradiction(&bigint, 5, 63).as_deref(), Some("typed int8 came back as number (protocol type 5)"));
         assert_eq!(type_contradiction(&json!({ "kind": "text", "label": "varchar" }), 253, 63).as_deref(), Some("typed text came back as bytea (protocol type 253)"));
         assert_eq!(type_contradiction(&date, 12, 63).as_deref(), Some("typed date came back as timestamp (protocol type 12)"));
-        assert_eq!(type_contradiction(&json!({ "kind": "json", "content": { "type": { "kind": "record", "fields": [] } } }), 245, 63), None);
+        assert_eq!(type_contradiction(&json!({ "kind": "json", "content": { "type": { "kind": "struct", "fields": [] } } }), 245, 63), None);
         assert_eq!(type_contradiction(&json!({ "kind": "json" }), 251, 63).as_deref(), Some("typed json came back as bytea (protocol type 251)"));
         // Either of two types.
         assert_eq!(type_contradiction(&either(vec![bigint.clone(), double.clone()]), 5, 63), None);
@@ -1491,7 +1511,7 @@ mod tests {
 
     #[test]
     fn a_json_document_is_held_against_its_shape() {
-        let shape = json!({ "kind": "json", "label": "json", "content": { "type": { "kind": "record", "fields": [
+        let shape = json!({ "kind": "json", "label": "json", "content": { "type": { "kind": "struct", "fields": [
             { "name": "id", "type": { "kind": "integer", "bits": 32, "label": "int" } },
             { "name": "ok", "type": { "kind": "boolean" }, "nullable": true },
             { "name": "tags", "type": { "kind": "array", "element": { "type": { "kind": "text", "label": "varchar" } } } },

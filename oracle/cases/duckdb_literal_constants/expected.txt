@@ -1,0 +1,4 @@
+hugeint_double.sql: many () -> { v: double }
+nested_comment.sql: one () -> { v: varchar('b') }
+two_lines.sql: one () -> { 'ab': varchar? }
+union_case.sql: many () -> { kind: varchar('user' | 'org'), id: integer, sign: varchar('pos' | 'neg' | 'zero')? }

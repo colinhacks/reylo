@@ -40,6 +40,7 @@ export const pageGroups = [
       { title: 'Observability', href: '/observability' },
       { title: 'Schema changes', href: '/schema-changes' },
       { title: 'Comparison', href: '/compare' },
+      { title: 'CLI', href: '/cli' },
       { title: 'FAQ', href: '/faq' },
     ],
   },
@@ -53,13 +54,12 @@ export const pageGroups = [
       { title: 'PlanetScale', href: '/planetscale' },
       { title: 'Turso', href: '/turso' },
       { title: 'Deployment / CI', href: '/deployment' },
-      { title: 'Migrating from Prisma', href: '/prisma' },
     ],
   },
   {
     label: 'Reference',
     items: [
-      { title: '.reylo.yaml', href: '/configuration' },
+      { title: '.reylo.yaml', href: '/configuration', code: true },
       { title: 'Type Defs', href: '/typedefs' },
       { title: 'Postgres', href: '/postgres' },
       { title: 'MySQL', href: '/mysql' },

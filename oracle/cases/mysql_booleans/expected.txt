@@ -1,7 +1,7 @@
 aggregates.sql: one () -> { most: bigint | int?, total: decimal?, some: boolean }
 buffered_and_sorted.sql: many () -> { done: tinyint(1), eq: boolean? }
 columns.sql: many () -> { done: tinyint(1), maybe: tinyint(1)?, unsigned_flag: tinyint(1)?, small: tinyint?, four: tinyint?, bit_flag: bit(boolean[1])?, eight: bit(boolean[8])? }
-comparisons.sql: many () -> { eq: boolean?, ne: boolean?, lt: boolean?, nse: boolean, isnull: boolean, nottrue: boolean, inl: boolean?, btw: boolean?, lk: boolean?, re: boolean?, nota: boolean?, andab: boolean?, orab: boolean?, xorab: boolean?, t: boolean, f: boolean }
+comparisons.sql: many () -> { eq: boolean?, ne: boolean?, lt: boolean?, nse: boolean, isnull: boolean, nottrue: boolean, inl: boolean?, btw: boolean?, lk: boolean?, re: boolean?, nota: boolean?, andab: boolean?, orab: boolean?, xorab: boolean?, t: boolean(true), f: boolean(false) }
 expressions_over_flags.sql: many () -> { zero: bigint | int, most: tinyint, plus: bigint | int?, either: tinyint? }
 not_truth_values.sql: many () -> { one: bigint | int, five: bigint | int, cs: bigint | int, mixed: bigint | int?, plus: bigint | int? }
 passed_through.sql: many () -> { co: boolean, ifn: boolean?, iff: boolean?, cs: boolean?, ni: boolean?, sub: boolean?, ex: boolean }

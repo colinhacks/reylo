@@ -718,6 +718,18 @@ limit :limit::int
 
 </InferenceCard>
 
+So is a column the query fills with constants, each arm of a `union all` adding its own:
+
+<InferenceCard>
+
+```sql file="inferred_feed.sql" dialect="all"
+select 'user' as kind, id, name as label from users
+union all
+select 'post', id, title from posts
+```
+
+</InferenceCard>
+
 ## JSON aggregation [#json]
 
 Type information bubbles up through JSON aggregation:

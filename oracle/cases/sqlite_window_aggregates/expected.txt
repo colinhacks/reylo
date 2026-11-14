@@ -1,4 +1,4 @@
-aggregate_family.sql: many () -> { first_title: text(utf8), titles: text(utf8)?, joined: text(utf8)?, notes: text(utf8)?, note_list: json text(utf8)?[], by_title: json {"type":"object","additionalProperties":{"type":["string","null"]}} }
+aggregate_family.sql: many () -> { first_title: text(UTF-8, ill-formed), titles: text(UTF-8, ill-formed)?, joined: text(UTF-8, ill-formed)?, notes: text(UTF-8, ill-formed)?, note_list: json text(UTF-8, ill-formed)?[], by_title: json {"type":"object","additionalProperties":{"type":["string","null"]}} }
 around_current.sql: many () -> { rows_around: int64, groups_back: int64, rest: int64, running: int64 }
 chained_windows.sql: many () -> { top: int64 }
 copied_window.sql: many () -> { around: int64, before_row: int64? }
@@ -7,18 +7,18 @@ distinct_frame.sql: many () -> { m: int64? }
 exclusions.sql: many () -> { without_row: int64?, without_group: int64?, without_ties: int64, with_all: int64 }
 filtered.sql: many () -> { top: int64?, plain_top: int64? }
 following_frame.sql: many () -> { ahead: int64? }
-left_joined.sql: many () -> { name: TEXT(text(utf8) | bytes), top: int64? }
-monthly_running.sql: many () -> { month: text(utf8)?, busiest: int64, running: int64? }
-named_window.sql: many () -> { top: int64, titles: text(utf8)? }
+left_joined.sql: many () -> { name: TEXT(text(UTF-8, ill-formed) | bytes), top: int64? }
+monthly_running.sql: many () -> { month: text(UTF-8, ill-formed)?, busiest: int64, running: int64? }
+named_window.sql: many () -> { top: int64, titles: text(UTF-8, ill-formed)? }
 named_window_framed.sql: many () -> { ahead: int64? }
-nullable_argument.sql: many () -> { top: float(11,52)?, first_note: text(utf8)? }
+nullable_argument.sql: many () -> { top: float(11,52)?, first_note: text(UTF-8, ill-formed)? }
 param_offsets.sql: many (back: unknown, ahead: unknown) -> { around: int64 }
-partition_max.sql: many () -> { last_title: text(utf8) }
+partition_max.sql: many () -> { last_title: text(UTF-8, ill-formed) }
 plain_max.sql: one () -> { top: int64? }
 preceding_end.sql: many () -> { before_row: int64? }
 range_offsets.sql: many () -> { by_score: int64, by_rank: int64, by_text: int64 }
-running_max.sql: many () -> { running: text(utf8) }
-subquery_window.sql: many () -> { name: TEXT(text(utf8) | bytes), own: int64? }
+running_max.sql: many () -> { running: text(UTF-8, ill-formed) }
+subquery_window.sql: many () -> { name: TEXT(text(UTF-8, ill-formed) | bytes), own: int64? }
 sums.sql: many () -> { total: int64?, mean: float(11,52)? }
-where_tested.sql: many () -> { last_note: text(utf8) }
+where_tested.sql: many () -> { last_note: text(UTF-8, ill-formed) }
 whole_min.sql: many () -> { least: int64 }

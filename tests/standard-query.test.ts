@@ -424,7 +424,7 @@ test("postgres: a built import's columns decode the types the database created a
     const { text: twice, diagnostics } = (await transform(root, { "twice.sql": "select '{}'::jsonb as x, 1 as x" }))["twice.sql"]!;
     assert.deepEqual(diagnostics.map((d: { code: number }) => d.code), [14]);
     assert.ok(twice.startsWith(`import type { Json, Query } from "reylo";`), twice);
-    assert.ok(twice.includes(`readonly columns: readonly [{ readonly name: "x"; decode(value: string): Json }, { readonly name: "x"; decode(value: string): number }]`), twice);
+    assert.ok(twice.includes(`readonly columns: readonly [{ readonly name: "x"; decode(value: string): Json }, { readonly name: "x"; decode(value: string): 1 }]`), twice);
   } finally {
     await closeSessions();
     await pool.end();
