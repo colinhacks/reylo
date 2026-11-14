@@ -744,7 +744,7 @@ await tx.commit();
 
 An integer past 2^53 comes back exact with `intMode: "bigint"` or `"string"`; with the default `intMode`, libSQL itself throws a `RangeError`. With `intMode: "string"`, an integer in a column typed `unknown` comes back as a string of digits, since libSQL can't tell it from text.
 
-### Turso
+### Turso engine [#turso]
 
 Pass the database, or the transaction `.transactionAsync()` hands its callback. The `Database` of `@tursodatabase/database/compat` is synchronous, so `.runSync()` works on it, inside its `db.transaction(fn)` as well:
 
