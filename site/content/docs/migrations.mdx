@@ -479,7 +479,7 @@ update users set contact = email;
 Once that build runs everywhere, copy what the old build wrote in the meantime, and drop the old column:
 
 ```sql title="20261112120000_drop_email.sql"
-update users set contact = email where contact is distinct from email;
+update users set contact = email where contact is null or contact <> email;
 alter table users drop column email;
 ```
 
