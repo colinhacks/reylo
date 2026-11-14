@@ -779,17 +779,23 @@ fn copies_a_rebuild(statements: &[crate::sql::Statement], k: usize) -> bool {
     if words[0] != "INSERT" || !made_before(&target) {
         return false;
     }
+    // The columns the insert names.
+    let mut listed: &[Token] = &[];
     if t.get(at).is_some_and(|x| x.text == "(") {
-        at = t[at..].iter().position(|x| x.text == ")").map_or(t.len(), |p| at + p + 1);
+        let close = t[at..].iter().position(|x| x.text == ")").map_or(t.len(), |p| at + p);
+        listed = &t[at + 1..close];
+        at = close + 1;
     }
     if t.get(at).map(Token::upper).as_deref() != Some("SELECT") {
         return false;
     }
     let Some(from) = t[at..].iter().position(|x| x.upper() == "FROM").map(|p| at + p) else { return false };
     // Columns as they are, by name: a copy that computes a value (`lower(body)`, `current_timestamp`,
-    // `null`) writes rows. A word that is a value is no column's name, unless quoted.
-    const VALUES: [&str; 15] = ["NULL", "DEFAULT", "TRUE", "FALSE", "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME", "LOCALTIMESTAMP", "CURRENT_USER", "SESSION_USER", "USER", "CURRENT_ROLE", "CURRENT_CATALOG", "CURRENT_SCHEMA"];
-    let column = |x: &Token| x.kind == TokenKind::Quoted || (x.kind == TokenKind::Word && !VALUES.contains(&x.upper().as_str()));
+    // `null`) writes rows. A word that is a value is no column's name, unless quoted, or named bare in
+    // the insert's own list too, as SQLite's rebuild writes a column it reads as `true`.
+    const VALUES: [&str; 19] = ["NULL", "DEFAULT", "TRUE", "FALSE", "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME", "LOCALTIMESTAMP", "UTC_DATE", "UTC_TIME", "UTC_TIMESTAMP", "CURRENT_USER", "SESSION_USER", "SYSTEM_USER", "USER", "CURRENT_ROLE", "CURRENT_CATALOG", "CURRENT_SCHEMA"];
+    let in_list = |x: &Token| listed.iter().any(|l| l.kind == TokenKind::Word && l.text.eq_ignore_ascii_case(&x.text));
+    let column = |x: &Token| x.kind == TokenKind::Quoted || (x.kind == TokenKind::Word && (!VALUES.contains(&x.upper().as_str()) || in_list(x)));
     let picked = &t[at + 1..from];
     let bare = !picked.is_empty() && picked.iter().enumerate().all(|(k, x)| if k % 2 == 0 { column(x) } else { x.text == "," }) && picked.len() % 2 == 1;
     bare && matches!(name_at(t, from + 1), Some((source, end)) if end == t.len() && dropped_after(&source))
@@ -4705,6 +4711,10 @@ mod tests {
         assert_eq!(data_statements(&duckdb.replace("select id, body from", "select id, current_timestamp from"), Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements(&duckdb.replace("select id, body from", "select id, null from"), Dialect::Duckdb).len(), 1);
         assert!(data_statements(&duckdb.replace("select id, body from", "select id, \"null\" from"), Dialect::Duckdb).is_empty());
+        // SQLite reads `true` as the name of a column of that name, which its rebuild writes bare.
+        let sqlite_true = "create table \"new_t\" (id integer primary key, true integer);\ninsert into \"new_t\" (id, true) select id, true from t;\ndrop table t;\nalter table \"new_t\" rename to t;";
+        assert!(data_statements(sqlite_true, Dialect::Sqlite).is_empty());
+        assert_eq!(data_statements(&sqlite_true.replace("(id, true) select id, true", "(id, x) select id, true"), Dialect::Sqlite).len(), 1);
         assert_eq!(data_statements("create table archive (id integer); insert into archive (id) select id from posts;", Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("insert into posts (id) select id from old; drop table old;", Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("update posts set body = '';", Dialect::Sqlite).len(), 1);
