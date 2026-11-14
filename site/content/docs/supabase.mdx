@@ -1,0 +1,181 @@
+---
+title: Supabase
+description: How to use Reylo with Supabase. The connection the type check reads, postgres.js and pg through Supabase's poolers, local development and CI with the Supabase CLI, exact floats and Row Level Security.
+---
+
+<p className="dk-subheader">Reylo on Supabase's Postgres</p>
+
+Reylo works with Supabase.
+
+A Supabase project is a Postgres database, so everything on the [Postgres](/postgres) page holds for it. This page covers what's specific to Supabase: the connection the type check reads, and the client your app passes to `.run()`.
+
+| | |
+| --- | --- |
+| Dialect | Postgres |
+| The type check reads | The direct connection or the session pooler, and in development the database `supabase start` runs |
+| Drivers | postgres.js or `pg`, through any of Supabase's connections |
+| Migrations | The Supabase CLI's, in `supabase/migrations`, applied to the local database |
+| JavaScript client | Calls Supabase's REST API, so `.run()` doesn't take it ([Drivers](#drivers)) |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="postgres"
+create table notes (
+  id uuid primary key default gen_random_uuid(),
+  -- on supabase: references auth.users (id)
+  user_id uuid not null,
+  body text not null,
+  created_at timestamptz not null default now()
+);
+```
+
+</Details>
+
+## Connection
+
+The type check reads the direct connection or the session pooler, never the transaction pooler:
+
+```sh title=".env"
+# the transaction pooler, for your app
+DATABASE_URL=postgresql://postgres.<ref>:…@<pooler host>:6543/postgres
+# the session pooler, for the type check
+DIRECT_URL=postgresql://postgres.<ref>:…@<pooler host>:5432/postgres
+```
+
+```yaml title=".reylo.yaml"
+# the direct connection or the session pooler, never port 6543
+direct_url: ${DIRECT_URL:-${DATABASE_URL}}
+```
+
+- The type check prepares each query on its connection. The transaction pooler keeps nothing on a connection from one transaction to the next, so describing a query through it can fail.
+- Copy each connection string from the Connect panel of your project's dashboard.
+- The direct connection is IPv6 only, unless your project has Supabase's IPv4 add-on. From a network without IPv6, use the session pooler.
+- With no TLS setting in the URL, the connection is encrypted, since Supabase offers TLS. To check its certificate too, download it from your project's database settings and name it in the URL ([TLS](/configuration#tls)).
+
+## Drivers
+
+Run queries with postgres.js or `pg`. Through the transaction pooler, create a postgres.js client with `prepare: false`:
+
+```ts twoslash tab="postgres.js" dialect="postgres" tab-group="postgres-driver"
+declare const noteId: string;
+// ---cut---
+import postgres from "postgres";
+import getNote from "./get_note.sql";
+
+// the transaction pooler, on port 6543
+const db = postgres(process.env.DATABASE_URL, { prepare: false });
+const note = await getNote.run(db, { id: noteId });
+```
+
+```ts twoslash tab="pg" dialect="postgres"
+declare const noteId: string;
+// ---cut---
+import pg from "pg";
+import getNote from "./get_note.sql";
+
+// any of supabase's connections, with no setting
+const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const note = await getNote.run(db, { id: noteId });
+```
+
+```sql tab="get_note.sql" dialect="postgres"
+select id, body, created_at from notes where id = :id::uuid
+```
+
+- Reylo prepares its queries on postgres.js as postgres.js prepares its own, so with `prepare: false` they run unprepared too.
+- Reylo's queries on `pg` are unnamed statements, which the transaction pooler runs with no setting.
+- Supabase's [Postgres.js guide](https://supabase.com/docs/guides/database/postgres-js) notes that postgres.js pipelines queries, which the transaction pooler can answer out of order.
+- Supabase's JavaScript client, `@supabase/supabase-js`, isn't a client `.run()` takes: it calls Supabase's REST API, which takes no SQL. Create a postgres.js or `pg` client for your Reylo queries.
+
+## Local development
+
+Point the type check at the database `supabase start` runs:
+
+```sh title=".env"
+# supabase start's database
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres
+```
+
+Write each migration in `supabase/migrations`, and apply it to that database with the Supabase CLI:
+
+```sh
+# a new file in supabase/migrations
+supabase migration new add_notes
+# the migrations not applied yet
+supabase migration up
+# or the whole database again, from every migration and supabase/seed.sql
+supabase db reset
+```
+
+- The local database has Supabase's own schemas, such as `auth` and `storage`, so a query that reads `auth.users` or calls `auth.uid()` is typed as it is on your project.
+- The type check reads every `.sql` file that `tsconfig.json` takes in, and a migration of several statements is an error. If your `include` takes in `supabase/`, as `**/*` does, add `"exclude": ["supabase"]`.
+
+## CI
+
+Start the same database in CI with the Supabase CLI, which applies your migrations:
+
+```yaml title=".github/workflows/ci.yml"
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: supabase/setup-cli@v1
+      # postgres alone, with your migrations and seed applied
+      - run: supabase db start
+      - uses: actions/setup-node@v7
+        with: { node-version: 24 }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+```
+
+[Deployment](/deployment) covers the rest of the job.
+
+## Floats
+
+Supabase's Postgres prints floats rounded, so `0.1::float8 + 0.2` comes back `0.3`. To read exact values, set `extra_float_digits` on the role you connect as:
+
+```sql
+alter role postgres set extra_float_digits = 1;
+```
+
+- Connections that start after it read exact values.
+- The local database rounds floats the same way. Put the statement in a migration, so that it reaches your project, the local database and CI.
+
+## Row Level Security
+
+Reylo runs each query as the role your client connects as. Supabase's connection strings connect as `postgres`, which bypasses Row Level Security, so no policy filters those queries.
+
+To run a query as a signed-in user, as Supabase's REST API runs their requests, switch to the `authenticated` role in a transaction, with the user's claims:
+
+```ts twoslash tab="main.ts" dialect="postgres"
+declare const userId: string;
+// ---cut---
+import postgres from "postgres";
+import listNotes from "./list_notes.sql";
+
+const db = postgres(process.env.DATABASE_URL, { prepare: false });
+
+const notes = await db.begin(async (tx) => {
+  await tx`set local role authenticated`;
+  // auth.uid() reads the claims' sub
+  const claims = JSON.stringify({ sub: userId, role: "authenticated" });
+  await tx`select set_config('request.jwt.claims', ${claims}, true)`;
+  return listNotes.run(tx);
+});
+```
+
+```sql tab="list_notes.sql" dialect="postgres"
+select id, body from notes order by created_at desc
+```
+
+A policy for `authenticated` then filters the rows:
+
+```sql
+alter table notes enable row level security;
+create policy "own notes" on notes for select to authenticated
+  using (user_id = auth.uid());
+```

@@ -22,7 +22,7 @@ const jsx = (name: string, attributes: [string, string | null][], children: MdNo
   attributes: attributes.map(([name, value]) => ({ type: 'mdxJsxAttribute', name, value })),
   children,
 });
-const row = (label: string, children: MdNode[]) => jsx('InferredRow', [['label', label]], children);
+const row = (label: string, children: MdNode[]) => jsx('InferenceCardRow', [['label', label]], children);
 const span = (className: string, value: string): MdNode => ({ type: 'mdxJsxTextElement', name: 'span', attributes: [{ type: 'mdxJsxAttribute', name: 'className', value: className }], children: [{ type: 'text', value }] });
 const link = (url: string, className: string, value: string) => ({ type: 'mdxJsxTextElement', name: 'a', attributes: [{ type: 'mdxJsxAttribute', name: 'href', value: url }, { type: 'mdxJsxAttribute', name: 'className', value: className }], children: [{ type: 'text', value }] }) as MdNode;
 

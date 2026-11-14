@@ -1810,7 +1810,7 @@ mod tests {
     fn built_json_is_held_to_its_type_down_to_each_value() {
         let text = |s: &str| rusqlite::types::Value::Text(s.into());
         let utf8 = json!({"kind": "text", "ill_formed": "utf8"});
-        let ty = json!({"kind": "json", "content": {"type": {"kind": "record", "fields": [
+        let ty = json!({"kind": "json", "content": {"type": {"kind": "struct", "fields": [
             {"name": "id", "type": {"kind": "integer", "bits": 64}},
             {"name": "r", "type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true}, "nullable": true},
             {"name": "doc", "type": {"kind": "unknown"}},
@@ -1864,7 +1864,7 @@ mod tests {
         let int8 = json!({"kind": "integer", "bits": 64, "label": "int8"});
         let list = json!({"kind": "array", "element": {"type": int8}});
         let document = |content: &Value| json!({"kind": "json", "label": "jsonb", "content": {"type": content}});
-        let object = json!({"kind": "record", "fields": [{"name": "ids", "type": list.clone()}]});
+        let object = json!({"kind": "struct", "fields": [{"name": "ids", "type": list.clone()}]});
         assert_eq!(contradiction(&document(&list), "[1, 2]", false, ','), None);
         assert_eq!(contradiction(&document(&object), r#"{"ids": []}"#, false, ','), None);
         // `coalesce(jsonb_agg(…), '{}')` over no rows is `{}`, which no list type admits.

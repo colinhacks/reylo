@@ -55,6 +55,19 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from DuckDB's own analysis of it.
+
+DuckDB runs inside your app, so the type check [prepares](https://duckdb.org/docs/stable/sql/query_syntax/prepared_statements) the query on your project's own `@duckdb/node-api` and reads back DuckDB's own type information on its parameters and return type. Reylo reads the catalog for the rest.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the prepared statement's description |
+| Column types | the prepared statement's description |
+| Nullability | the table's `NOT NULL` and primary key columns, then what the query rules out |
+| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
+
 ## Data types
 
 DuckDB's prepared statement reports the exact type of every parameter and column, and `.run()` returns one value for each type:
@@ -87,14 +100,14 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 
 A `BIGINT` or wider integer is a `bigint`, so no value is ever rounded. A parameter of one takes a `number`, a `bigint` or a string of digits.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_types_integers.sql" dialect="duckdb"
 select id, github_id, count(*) over () as n
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Decimals**
 
@@ -108,14 +121,14 @@ A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, a
 
 A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`, except in an `array(select c from (…) c)` of a subquery's or a table's whole rows, whose elements are structs and whose fields are as their columns are. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is a tuple, an array of its values in order (`[number | null, string | null]`), and a parameter of one takes that array.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_types_nested.sql" dialect="duckdb"
 select tags, meta, meta.host as host
 from events
 ```
 
-</Inferred>
+</InferenceCard>
 
 **JSON**
 
@@ -171,20 +184,20 @@ Every column is typed `| null` unless Reylo can tell it never is null. DuckDB's 
 
 A table's column is non-null if it's declared `NOT NULL`, or is part of its primary key.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_columns.sql" dialect="duckdb"
 select id, name, email
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Outer joins**
 
 An outer join makes the joined table's columns nullable, and a test in the `where` that fails on `NULL` shows the row exists.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_left_join.sql" dialect="duckdb"
 select u.name, t.name as team
@@ -192,9 +205,9 @@ from users u
 left join teams t on t.id = u.team_id
 ```
 
-</Inferred>
+</InferenceCard>
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_where.sql" dialect="duckdb"
 select u.name, t.name as team
@@ -203,13 +216,13 @@ left join teams t on t.id = u.team_id
 where t.id is not null
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Expressions**
 
 Arithmetic, comparisons, `||`, `coalesce` and `case` are non-null over non-null values, and so are DuckDB's functions of one value such as `lower` and `length`. A division is nullable, since `SET error_on_division_by_zero = false` makes dividing by zero return `NULL`, and so is a part of a date, such as `year(…)`, which is `NULL` for an infinite date. A cast of a `JSON` value to anything but text or `JSON` is nullable too, since JSON's `null` casts to `NULL`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_expressions.sql" dialect="duckdb"
 select upper(email) as shout,
@@ -219,13 +232,13 @@ select upper(email) as shout,
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Aggregates**
 
 A `count` is never null, but `count_if` is null over no rows. Any other aggregate is null over no rows, and over a group's rows only where its argument is. Under `rollup`, `cube` or `grouping sets`, a key is null in the rows that total it, whether it is a column or an expression.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_null_aggregates.sql" dialect="duckdb"
 select team_id, count(*) as members, max(name) as last
@@ -233,13 +246,13 @@ from users
 group by team_id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Table macros**
 
 A table macro's body is read as the query it is, so its body decides which columns are null and how many rows it returns.
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema dialect="duckdb"
 create table comments (
@@ -259,7 +272,7 @@ select id, body
 from comments_for(:post_id::bigint)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -294,13 +307,13 @@ A fraction for an integer, such as `1.5` for an `INTEGER`, makes `.run()` throw 
 
 DuckDB types a parameter from where it stands: compared with a column, written to one, or cast. Anywhere else, such as a bare `select :x` or `id + :n`, DuckDB can't type the query at all, and Reylo shows an error at the parameter. Cast it:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_param_cast.sql" dialect="duckdb"
 select :limit::integer + 1 as next
 ```
 
-</Inferred>
+</InferenceCard>
 
 ### Parameters that may be null
 
@@ -312,7 +325,7 @@ A parameter accepts `null` where the query lets it be `NULL`. Such a parameter i
 
 A cast to `nullable(type)` makes the parameter that type or `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_param_nullable.sql" dialect="duckdb"
 select id, name
@@ -320,20 +333,20 @@ from users
 where name = coalesce(:name::nullable(varchar), name)
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Tested for `NULL`, or written to a nullable column**
 
 A parameter that the query tests for `NULL` or passes to `coalesce`, or writes directly into a column that accepts `NULL`, takes `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="duck_param_insert.sql" dialect="duckdb"
 insert into users (id, name, email)
 values (:id, :name, :email)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 

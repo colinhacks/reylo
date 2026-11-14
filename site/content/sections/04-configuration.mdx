@@ -61,8 +61,28 @@ A type check or a build reads this database, so in CI and on your host it needs 
 A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([Schema changes](/schema-changes)). To type it on the database it runs on:
 
 ```sh
-DATABASE_URL_UNPOOLED="$PRODUCTION_URL" node --import reylo/register report.ts
+DATABASE_URL="$PRODUCTION_URL" node --import reylo/register report.ts
 ```
+
+### TLS
+
+The type check reads TLS settings from the URL in `direct_url`:
+
+```sh title=".env"
+# postgres: encrypted, no certificate check
+DATABASE_URL=postgres://…/app?sslmode=require
+# postgres: the certificate and host checked
+DATABASE_URL=postgres://…/app?sslmode=verify-full
+# mysql: encrypted, no certificate check
+DATABASE_URL=mysql://…/app?ssl-mode=REQUIRED
+# mysql: the certificate and host checked
+DATABASE_URL=mysql://…/app?ssl-mode=VERIFY_IDENTITY
+```
+
+- With no setting, a Postgres connection is encrypted where the server offers it, and a MySQL connection isn't.
+- Postgres also reads `sslrootcert`, `sslcert`, `sslkey` and `channel_binding`, as libpq does, and node-postgres's `ssl=true`.
+- MySQL also reads mysql2's `ssl` setting, as JSON with `rejectUnauthorized`, `ca`, `cert` and `key`, and Prisma's `sslaccept=strict`.
+- A certificate is also checked against the certificates `NODE_EXTRA_CA_CERTS` names, as Node checks it.
 
 ## `env`
 

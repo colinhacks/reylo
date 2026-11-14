@@ -2,10 +2,10 @@ import { apiMarkdown, REYLO_API } from '@/lib/live/api-docs';
 import { markdownOf } from '@/lib/markdown';
 
 // Every page as Markdown, for a coding agent or a language model (https://llmstxt.org), in the
-// sidebar's order, then the guide to moving from Prisma, each as its own Markdown file holds it
+// sidebar's order, each as its own Markdown file holds it
 // (lib/markdown.ts), then the playground's API (/play/api.md). Written to build/client/llms.txt at
 // build time.
-const PAGES = ['', 'usage', 'inference', 'configuration', 'observability', 'schema-changes', 'analyze', 'typedefs', 'compare', 'faq', 'postgres', 'mysql', 'sqlite', 'duckdb', 'prisma'];
+const PAGES = ['', 'usage', 'inference', 'observability', 'schema-changes', 'compare', 'faq', 'cloudflare', 'nextjs', 'neon', 'supabase', 'planetscale', 'turso', 'deployment', 'prisma', 'configuration', 'analyze', 'typedefs', 'postgres', 'mysql', 'sqlite', 'duckdb'];
 
 export async function loader() {
   const { playData } = await import('@/lib/live/play-data');

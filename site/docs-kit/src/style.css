@@ -1636,8 +1636,9 @@ html #nd-page .prose table {
   opacity: 0.7;
 }
 
-/* The foot: a hairline, the links away from the docs, then the repository and the theme switch,
-   with `TocFooter`'s room under them for the note, clear of the address bubble Chrome shows. */
+/* The foot, after the last group and scrolling with it: a hairline, the links away from the docs,
+   then the repository and the theme switch, with `TocFooter`'s room under them for the note, clear
+   of the address bubble Chrome shows. */
 .dk-pages-foot {
   flex: none;
   margin-top: 1rem;

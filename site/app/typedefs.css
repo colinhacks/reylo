@@ -49,11 +49,11 @@
   background: var(--color-fd-accent);
 }
 
-#nd-page .typedef-card .reylo-inferred-row:nth-child(even) {
+#nd-page .typedef-card .reylo-inference-card-row:nth-child(even) {
   background: color-mix(in srgb, var(--color-fd-foreground) 4%, transparent);
 }
 
-#nd-page .reylo-inferred-body > .typedef-types {
+#nd-page .reylo-inference-card-body > .typedef-types {
   display: grid;
   gap: 0.25rem;
   padding: 0.125rem 1rem 0.875rem;
@@ -93,7 +93,7 @@
   color: var(--color-fd-headings);
 }
 
-#nd-page .reylo-inferred-body > .typedef-values {
+#nd-page .reylo-inference-card-body > .typedef-values {
   padding: 0.125rem 1rem 0.875rem;
   font-size: var(--dk-code-size, 13px);
   line-height: 1.7;

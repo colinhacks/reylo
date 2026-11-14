@@ -1,0 +1,5 @@
+compared.sql: the engine refused it: reylo20: MySQL takes the parameter :v as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :v::json.
+compared_document.sql: the engine refused it: reylo20: MySQL takes the parameter :doc as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :doc::json.
+member.sql: the engine refused it: reylo20: MySQL takes the parameter :tag as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :tag::json.
+set_value.sql: the engine refused it: reylo20: MySQL takes the parameter :name as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :name::json.
+value_after_base.sql: the engine refused it: reylo20: MySQL takes the parameter :tag as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :tag::json.

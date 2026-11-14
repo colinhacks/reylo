@@ -52,6 +52,20 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from SQLite's own analysis of it.
+
+Reylo reads the schema from the database file and [prepares](https://sqlite.org/c3ref/prepare.html) the query in its own copy of SQLite, which reports where each column and parameter comes from.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | where SQLite places the parameter: a comparison with a column, an element of a row value, an `insert` or `update` column, a `cast`, `limit` and `offset` |
+| Column types | the declared type's affinity |
+| Nullability | the table's `NOT NULL`, outer joins, Reylo's table of SQLite's built-in functions |
+| Cardinality | unique indexes and `integer primary key` |
+| Nested JSON | built with `json_object` and `json_group_array`, typed from their arguments |
+
 ## Data types
 
 SQLite doesn't enforce column types: a column's declared type only sets its affinity, except in a `STRICT` table ([Declared types and STRICT tables](#declared-types-and-strict-tables)). Reylo types each column by its declared type, and `.run()` returns the same value for it on every driver, or throws where a driver would round it ([Drivers](#drivers)):
@@ -95,33 +109,33 @@ select name, nick from users
 
 A `STRICT` table enforces its column types, so they're exact there. It can't declare `BOOLEAN`, `BIGINT`, `DATE` or `NUMERIC` columns, so a flag in one is an `INTEGER`, typed `number`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_types_strict.sql" dialect="sqlite"
 select id, total_cents, receipt
 from orders
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Values of another kind**
 
 Outside a `STRICT` table, a value of another kind, such as the text `'abc'` in an `INTEGER` column, makes `.run()` throw a `TypeError` that names the column. To read whatever the column holds, cast it:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_types_cast.sql" dialect="sqlite"
 select cast(nick as text) as nick
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **`CHECK` constraints**
 
 A `CHECK` constraint doesn't narrow a type, since `pragma ignore_check_constraints` lets any connection skip it.
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema dialect="sqlite"
 create table members (
@@ -135,7 +149,7 @@ select role
 from members
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -382,7 +396,7 @@ A function that can return `NULL` for non-null arguments is typed `| null`. That
 
 A value that is one of several, from `coalesce`, `ifnull`, `case`, `iif`, a `min` or `max` of several arguments, a `lag` or `lead` with a default, or a `union`'s column, is typed by the values it can be. It's `unknown` where one of them may be another kind, such as `json_extract(…)`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_fn_several.sql" dialect="sqlite"
 select coalesce(ships_on, placed_at) as day,
@@ -390,20 +404,20 @@ select coalesce(ships_on, placed_at) as day,
 from orders
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Functions missing from the table**
 
 A built-in function missing from Reylo's table, such as `unhex`, returns `unknown`. Cast its result to type it:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_fn_missing.sql" dialect="sqlite"
 select unhex('ff') as raw,
   cast(unhex('ff') as blob) as bytes
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -438,20 +452,20 @@ Every column is typed `| null` unless Reylo can tell it never is null. SQLite it
 
 A table's column is non-null if it's declared `NOT NULL`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_null_columns.sql" dialect="sqlite"
 select name, nick
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Outer joins**
 
 An outer join makes the joined table's columns nullable.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_null_left_join.sql" dialect="sqlite"
 select u.name, o.total_cents
@@ -459,13 +473,13 @@ from users u
 left join orders o on o.user_id = u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Tests that rule out `NULL`**
 
 A test that fails on `NULL` in the `where` makes its column non-null, and on a joined table shows the row exists.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_null_where.sql" dialect="sqlite"
 select u.name, o.total_cents, o.ships_on
@@ -474,13 +488,13 @@ left join orders o on o.user_id = u.id
 where o.ships_on is not null
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Expressions**
 
 Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Nor is a remainder by a fraction under 1, such as `x % 0.5`: SQLite casts both operands of `%` to `INTEGER`, which makes the divisor `0`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_null_expressions.sql" dialect="sqlite"
 select upper(nick) as shout,
@@ -490,26 +504,26 @@ select upper(nick) as shout,
 from users
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Aggregates**
 
 An aggregate other than `count` returns `NULL` over no rows. So does a column selected beside it with no `group by`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_null_aggregates.sql" dialect="sqlite"
 select count(*) as n, max(total_cents) as top
 from orders
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Window functions**
 
 A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. Over a window, `min` and `max` follow their argument, unless a `filter` or a frame that can leave out the current row keeps them nullable. A `sum` or `avg` is nullable, since SQLite returns `NaN` as `NULL`, and so is `group_concat`, which libSQL and Turso return as `NULL` over a frame of empty strings.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_null_window.sql" dialect="sqlite"
 select id,
@@ -519,7 +533,7 @@ select id,
 from orders
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 
@@ -604,7 +618,7 @@ A parameter accepts `null` in two places. Such a parameter is optional in `.run(
 
 A cast to `nullable(type)` makes the parameter that type or `null`.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_param_nullable.sql" dialect="sqlite"
 select id, name
@@ -612,20 +626,20 @@ from users
 where name = coalesce(:name::nullable(text), name)
 ```
 
-</Inferred>
+</InferenceCard>
 
 **Written to a nullable column**
 
 Written directly into a column that accepts `NULL`, with no cast. A column accepts it unless it's `NOT NULL` or a `check (… is not null)` covers it.
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lite_param_insert.sql" dialect="sqlite"
 insert into orders (user_id, total_cents, ships_on)
 values (:user_id, :total_cents, :ships_on)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Rules>
 

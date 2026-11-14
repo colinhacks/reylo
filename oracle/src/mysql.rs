@@ -1452,7 +1452,7 @@ mod tests {
         assert_eq!(type_contradiction(&bigint, 5, 63).as_deref(), Some("typed int8 came back as number (protocol type 5)"));
         assert_eq!(type_contradiction(&json!({ "kind": "text", "label": "varchar" }), 253, 63).as_deref(), Some("typed text came back as bytea (protocol type 253)"));
         assert_eq!(type_contradiction(&date, 12, 63).as_deref(), Some("typed date came back as timestamp (protocol type 12)"));
-        assert_eq!(type_contradiction(&json!({ "kind": "json", "content": { "type": { "kind": "record", "fields": [] } } }), 245, 63), None);
+        assert_eq!(type_contradiction(&json!({ "kind": "json", "content": { "type": { "kind": "struct", "fields": [] } } }), 245, 63), None);
         assert_eq!(type_contradiction(&json!({ "kind": "json" }), 251, 63).as_deref(), Some("typed json came back as bytea (protocol type 251)"));
         // Either of two types.
         assert_eq!(type_contradiction(&either(vec![bigint.clone(), double.clone()]), 5, 63), None);
@@ -1511,7 +1511,7 @@ mod tests {
 
     #[test]
     fn a_json_document_is_held_against_its_shape() {
-        let shape = json!({ "kind": "json", "label": "json", "content": { "type": { "kind": "record", "fields": [
+        let shape = json!({ "kind": "json", "label": "json", "content": { "type": { "kind": "struct", "fields": [
             { "name": "id", "type": { "kind": "integer", "bits": 32, "label": "int" } },
             { "name": "ok", "type": { "kind": "boolean" }, "nullable": true },
             { "name": "tags", "type": { "kind": "array", "element": { "type": { "kind": "text", "label": "varchar" } } } },

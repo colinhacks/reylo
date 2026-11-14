@@ -1,15 +1,15 @@
 import { toAgentMarkdown } from 'docs-kit/remark-sections';
-import { hashOf, INFERRED, readModules, type Dialect, type Modules } from './remark-mapper.ts';
+import { hashOf, INFERENCE_CARD, readModules, type Dialect, type Modules } from './remark-mapper.ts';
 import { DIALECTS } from './dialects.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
 
 // The page's Markdown (lib/markdown.ts: /index.md and /llms.txt) and each heading's copy button
-// read a section from its source, where an `<Inferred>` card is its schema and statement blocks
+// read a section from its source, where an inference card is its schema and statement blocks
 // alone: the types the card shows come from lib/sql-modules.json at build time
 // (lib/remark-mapper.ts). Here each card's source becomes Markdown that carries them: per group of
 // dialects that read the same, the schema, the query, and its params and result as TypeScript.
 
-const CARD = new RegExp(`<${INFERRED}>([\\s\\S]*?)</${INFERRED}>`, 'g');
+const CARD = new RegExp(`<${INFERENCE_CARD}>([\\s\\S]*?)</${INFERENCE_CARD}>`, 'g');
 const FENCE = /^```sql([^\n]*)\n([\s\S]*?)\n```$/gm;
 const metaOf = (meta: string, name: string) => new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(meta)?.[1];
 const ALL = DIALECTS.map((d) => d.toLowerCase() as Dialect);
@@ -40,7 +40,7 @@ function cardMarkdown(body: string, modules: Modules): string {
     if (module === undefined) return body;
     const params = /^export type Params = (.*);$/m.exec(module)?.[1];
     const row = /^export type Row = (.*);$/m.exec(module)?.[1] ?? 'never';
-    const cardinality = /, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)"> & \{/.exec(module)?.[1] ?? 'many';
+    const cardinality = /, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite|duckdb)", QueryError> & \{/.exec(module)?.[1] ?? 'many';
     const types = [
       `// Params\n${params && params !== 'Record<never, never>' ? formatType(params, 64) : 'void'}`,
       `// Returns\n${formatType(resultType(row, cardinality), 64)}`,
@@ -58,8 +58,8 @@ function cardMarkdown(body: string, modules: Modules): string {
   return [...schemaText, ...typed].join('\n\n');
 }
 
-/** The source with each `<Inferred>` card written out as Markdown with its types. */
-export function expandInferred(source: string, modules: Modules = readModules()): string {
+/** The source with each inference card written out as Markdown with its types. */
+export function expandInferenceCards(source: string, modules: Modules = readModules()): string {
   return source.replace(CARD, (_, body: string) => cardMarkdown(body, modules));
 }
 
@@ -69,12 +69,12 @@ type Element = { properties?: Record<string, unknown>; children?: Element[] };
  * After docs-kit's rehypeSections has put each heading's section Markdown on it (`data-section`),
  * each card's text there is replaced by the card with its types, as the page's Markdown has it.
  */
-export function rehypeInferredSections() {
+export function rehypeInferenceCardSections() {
   return (tree: Element, file: { value?: unknown }) => {
     const source = String(file.value ?? '');
-    if (!source.includes(`<${INFERRED}>`)) return;
+    if (!source.includes(`<${INFERENCE_CARD}>`)) return;
     const modules = readModules();
-    const swaps = [...source.matchAll(CARD)].map(([card]) => [toAgentMarkdown(card).trim(), toAgentMarkdown(expandInferred(card, modules)).trim()] as const);
+    const swaps = [...source.matchAll(CARD)].map(([card]) => [toAgentMarkdown(card).trim(), toAgentMarkdown(expandInferenceCards(card, modules)).trim()] as const);
     const visit = (node: Element) => {
       const section = node.properties?.['data-section'];
       if (typeof section === 'string') node.properties!['data-section'] = swaps.reduce((text, [raw, typed]) => text.replace(raw, typed), section);

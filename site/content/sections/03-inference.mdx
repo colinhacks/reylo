@@ -3,7 +3,7 @@ title: "Inference"
 ---
 
 
-Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
+Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL, SQLite and DuckDB are all supported.
 
 Reylo is a [content mapper](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/#content-mappers), the kind of plugin [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) introduced for files that aren't TypeScript. Whenever the type checker meets a `.sql` import, in `tsc` or in your editor, it hands Reylo the file and takes back the module's types.
 
@@ -17,11 +17,25 @@ To type a query, Reylo has your live database prepare it, without running it, an
 - **Cardinality** — from keys, aggregates, `limit 1` and `returning`
 - **Column comments** — on Postgres and MySQL, shown when you hover a field that reads the column
 
-<PlaygroundLink />
+For example, `id` is the primary key, so this query returns at most one row:
 
-<Details summary="The TypeScript type of each SQL type, in each dialect" id="data-types">
+<InferenceCard>
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
+```sql file="get_user.sql" dialect="all"
+select id, name, email from users where id = :id::int
+```
+
+</InferenceCard>
+
+At run time, the [preload](/#setup-node) or a bundler [plugin](/#plugins) turns the same file into a module that runs the query through your driver.
+
+Reylo caches each answer in [`.reylo/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
+
+## Primitives [#primitives]
+
+Each SQL type has one TypeScript type, the same on every driver.
+
+A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
 
 <DialectTabs>
 <Dialect value="Postgres">
@@ -94,68 +108,13 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 
 For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types), [SQLite](/sqlite#data-types) and [DuckDB](/duckdb#data-types).
 
-</Details>
-
-At run time, the [preload](/#setup-node) or a bundler [plugin](/#plugins) turns the same file into a module that runs the query through your driver.
-
-Reylo caches each answer in [`.reylo/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
-
-<Details summary="Where each type comes from, in each dialect" id="sources">
-
-<DialectTabs>
-<Dialect value="Postgres">
-
-Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type. This information is cross-referenced against the schema catalog, enabling high-fidelity type inference for any query.
-
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | the server's description of the prepared statement |
-| Column types | the server's description; an enum as its labels, a domain as its base type, a JSON column as what its JSON Schema `CHECK` admits |
-| Nullability | the catalog's `NOT NULL`, outer joins, the expressions |
-| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
-| Nested rows | an `array(select r from (…) r)` of a subquery's or a table's whole rows, typed field by field |
-| Nested JSON | built with `jsonb_build_object`, `jsonb_agg` or `to_jsonb` of a row, typed from their arguments |
-
-</Dialect>
-<Dialect value="MySQL">
-
-Reylo sends the query to the live database [prepared](https://dev.mysql.com/doc/refman/8.4/en/sql-prepared-statements.html) and reads back the database's own type information on its parameters and return type.
-
-Reylo adds which parameters may be null, the row count, and the shape of JSON the query builds.
-
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | the prepared statement's metadata; whether one may be null, from the statement, as on Postgres |
-| Column types | the prepared statement's metadata; a JSON column read from its table as what its JSON Schema `CHECK` admits |
-| Nullability | the server's `NOT NULL` flag, then what the `where` and `group by` rule out |
-| Cardinality | primary and unique keys, aggregates; a write is `void` |
-| Nested JSON | built with `json_object` and `json_arrayagg`, typed from their arguments |
-
-</Dialect>
-<Dialect value="SQLite">
-
-Reylo reads the schema from the database file and [prepares](https://sqlite.org/c3ref/prepare.html) the query in its own copy of SQLite, which reports where each column and parameter comes from.
-
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | where SQLite places the parameter: a comparison with a column, an element of a row value, an `insert` or `update` column, a `cast`, `limit` and `offset` |
-| Column types | the declared type's affinity |
-| Nullability | the table's `NOT NULL`, outer joins, Reylo's table of SQLite's built-in functions |
-| Cardinality | unique indexes and `integer primary key` |
-| Nested JSON | built with `json_object` and `json_group_array`, typed from their arguments |
-
-</Dialect>
-</DialectTabs>
-
-</Details>
-
 ## Named parameters [#naming]
 
 For convenience, there is some Reylo-specific syntax that can be used inside your `.sql` files. This syntax is transpiled into the idiomatic form for your database's dialect.
 
 Name a parameter with a colon, and Reylo infers its type from where it's used:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_rename_user.sql" dialect="all"
 update users
@@ -163,13 +122,13 @@ set name = :name
 where id = :id
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Casts [#casts]
 
 Where the query doesn't pin down a parameter's type, cast it. Reylo compiles the cast to each database's own:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_search_users.sql" dialect="all"
 select id, name
@@ -177,7 +136,7 @@ from users
 where name like concat('%', :q::text, '%')
 ```
 
-</Inferred>
+</InferenceCard>
 
 <Details summary="When a parameter's type cannot be inferred" id="a-parameter-nothing-types">
 
@@ -213,7 +172,7 @@ A call to a function your application registers fails the type check, cast or no
 
 Each column comes back with its type:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_users.sql" dialect="all"
 select id, name
@@ -221,13 +180,13 @@ from users
 where role = :role
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Left joins
 
 A left join makes the joined table's columns nullable:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_user_titles.sql" dialect="all"
 select u.name, p.title
@@ -236,11 +195,11 @@ left join posts p on p.user_id = u.id
 where u.id = :user_id::int
 ```
 
-</Inferred>
+</InferenceCard>
 
 A test in the `where` that fails on null, like a comparison, makes the whole joined row non-null:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_published_titles.sql" dialect="all"
 select u.name, p.title
@@ -249,13 +208,13 @@ left join posts p on p.user_id = u.id
 where p.published_at > :since
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Computed columns
 
 Reylo infers which computed columns can never be null:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_user_flags.sql" dialect="all"
 select u.name,
@@ -265,13 +224,13 @@ from users u
 where u.role = :role
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Nullable parameters
 
 To accept null, cast a parameter to `nullable(…)`. Leaving it out passes `null`:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_posts_by_user.sql" dialect="all"
 select id, title
@@ -279,7 +238,7 @@ from posts
 where user_id = coalesce(:user_id::nullable(int), user_id)
 ```
 
-</Inferred>
+</InferenceCard>
 
 A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds; cast it to `nullable(…)` to pass SQL's `NULL` instead.
 
@@ -287,7 +246,7 @@ A parameter written as it is to a column that may hold null, as in `insert into 
 
 To pick the sort order at run time, order by a `case` on a parameter:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="sort_users.sql" dialect="all"
 -- a parameter appears once, so one read twice comes from a with
@@ -300,17 +259,18 @@ order by
   u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Dynamic filtering
 
 To filter a list by a form's values, pass them as one [JSON parameter](#typed-json). Its schema says what each filter takes and what it defaults to, and Reylo checks it before the query runs:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="search_posts.sql" dialect="postgres"
 with input as (
-  select * from jsonb_to_record(:filters::jsonb('{
+  select f ->> 'q' as q, (f ->> 'author_id')::int as author_id, f ->> 'status' as status, f ->> 'sort' as sort
+  from (select :filters::jsonb('{
     "type": "object",
     "properties": {
       "q": { "type": "string", "maxLength": 100, "default": "" },
@@ -319,7 +279,7 @@ with input as (
       "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
     },
     "additionalProperties": false
-  }')) as f(q text, author_id int, status text, sort text)
+  }') as f)
 )
 select p.id, p.title, u.name as author
 from posts p
@@ -340,8 +300,8 @@ order by
 
 ```sql file="search_posts.sql" dialect="mysql"
 with input as (
-  select f.q, f.author_id, f.status, f.sort
-  from json_table(:filters::json('{
+  select f ->> '$.q' as q, f ->> '$.author_id' as author_id, f ->> '$.status' as status, f ->> '$.sort' as sort
+  from (select :filters::json('{
     "type": "object",
     "properties": {
       "q": { "type": "string", "maxLength": 100, "default": "" },
@@ -350,12 +310,7 @@ with input as (
       "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
     },
     "additionalProperties": false
-  }'), '$' columns (
-    q varchar(100) path '$.q',
-    author_id int path '$.author_id',
-    status varchar(9) path '$.status',
-    sort varchar(6) path '$.sort'
-  )) as f
+  }') as f) as f
 )
 select p.id, p.title, u.name as author
 from posts p
@@ -405,7 +360,7 @@ order by
   p.id desc
 ```
 
-</Inferred>
+</InferenceCard>
 
 A filter left out takes its default, and one with none, like the author, is null, which turns it off:
 
@@ -418,11 +373,21 @@ import searchPosts from "./search_posts.sql";
 const posts = await searchPosts.run(db, { filters: await request.json() });
 ```
 
+Read with `->>`, each filter is a value the database can plan with, so on Postgres and MySQL a filter left out drops out of the plan and one given, like the author, can use an index.
+
+<Details summary="Which filters use an index, in each dialect" id="filter-indexes">
+
+- **Postgres** plans each run with its values on pg and PGlite. On postgres.js and Bun.sql, which prepare each statement once per connection, it can switch to one plan for every value after five runs, which reads the whole table; create the client with `connection: { plan_cache_mode: "force_custom_plan" }` to keep planning each run with its values. The same filter read from `jsonb_to_record` reads the whole table under every plan.
+- **MySQL** plans each run with its values. The same filter read from `json_table` reads the whole table.
+- **SQLite** plans a statement before its values are bound, so a filter that may be left out reads every row.
+
+</Details>
+
 ## Unique keys
 
 Reylo infers each query's cardinality, how many rows it returns. A query that matches a unique key returns one row or null:
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema dialect="postgres"
 create table users (
@@ -454,7 +419,7 @@ from users
 where email = :email::text
 ```
 
-</Inferred>
+</InferenceCard>
 
 <Details summary="Which matches count as a key, in each dialect" id="key-matches">
 
@@ -501,7 +466,7 @@ At run time, `.run()` throws rather than return a row count its type rules out.
 
 An aggregate without a group by returns exactly one row:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_post_count.sql" dialect="postgres"
 select count(*)::int as posts
@@ -521,11 +486,11 @@ from posts
 where user_id = :user_id::int
 ```
 
-</Inferred>
+</InferenceCard>
 
 A rollup adds a row for the total, whose grouped column is null:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="rollups.sql" dialect="postgres" play="Rollups"
 select user_id, count(*)::int as posts
@@ -541,13 +506,13 @@ group by user_id with rollup
 order by user_id
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Single values [#values]
 
 A column with no name returns its values instead of rows:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="post_total.sql" dialect="postgres"
 select count(*)::int
@@ -567,7 +532,7 @@ from posts
 where user_id = :user_id::int
 ```
 
-</Inferred>
+</InferenceCard>
 
 An expression with no `as` has no name of its own, only what your database makes up for it, which can differ by driver. Add an `as` to get rows back, as in the [query above](#aggregates). A column read as it is, like `select id`, already has a name and keeps its rows.
 
@@ -579,7 +544,7 @@ Among several columns, a made-up name that isn't an identifier, like `count(*)` 
 
 Reylo types each window function: a row number is never null, while `lag()` is null on the first row:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="window_functions.sql" dialect="all"
 select id, title,
@@ -591,13 +556,13 @@ select id, title,
 from posts
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Subqueries
 
 Run unrelated subqueries side by side, in one query and one round trip. With no `from`, the query returns exactly one row, and `.run()` resolves to it:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="dashboard.sql" dialect="postgres"
 -- the latest posts
@@ -644,11 +609,11 @@ select
   ) as recent_posts
 ```
 
-</Inferred>
+</InferenceCard>
 
 A lateral join runs its subquery once per row, here each user's latest post, or null for a user with none:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="lateral_joins.sql" dialect="postgres" play="Lateral joins"
 select u.name, p.title, p.published_at
@@ -674,13 +639,13 @@ left join lateral (
 ) p on true
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Returning rows [#returning-inserts]
 
 An insert that returns its row resolves to exactly that row:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_create_user.sql" dialect="postgres"
 insert into users (name)
@@ -694,11 +659,11 @@ values (:name::text)
 returning id
 ```
 
-</Inferred>
+</InferenceCard>
 
 So does an upsert, whether it inserts the row or updates it:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="upserts.sql" dialect="postgres" play="Upserts"
 insert into users (name, email)
@@ -716,11 +681,11 @@ on conflict (email) do update
 returning id, name
 ```
 
-</Inferred>
+</InferenceCard>
 
 On Postgres 18, an update can return its values from before and after, as `old` and `new`:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="old_and_new_values.sql" dialect="postgres" play="Old and new values"
 update users
@@ -729,13 +694,13 @@ where id = :id
 returning old.name as old_name, new.name as new_name
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Enums [#unions]
 
 A text column whose check constraint lists its values is a union of them, as a Postgres enum is:
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema dialect="postgres"
 create table events (
@@ -751,13 +716,13 @@ order by id desc
 limit :limit::int
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## JSON aggregation [#json]
 
 Type information bubbles up through JSON aggregation:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="inferred_user_posts.sql" dialect="postgres"
 select u.name,
@@ -786,13 +751,13 @@ where p.published_at > :since
 group by u.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Nested fetching
 
 Fetch each row's related rows with a subquery. Postgres collects them into an array of rows, MySQL and SQLite into JSON, and Reylo types every field:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="users_with_posts.sql" dialect="postgres"
 select u.id, u.name,
@@ -861,11 +826,11 @@ from users u
 where u.id = :id::int
 ```
 
-</Inferred>
+</InferenceCard>
 
 On Postgres, each field of an array of rows is read as a column is, so a `bigint` stays exact. [Inside JSON, values can differ](/postgres#json). JSON is still the smaller result when rows nest three levels deep and hold JSON documents, since a row's text escapes the quotes of what it holds at each level:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="users_with_posts_json.sql" dialect="postgres"
 select u.id,
@@ -876,13 +841,13 @@ select u.id,
 from users u
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## JSON Schema [#json-schema]
 
 Declare a JSON Schema, and Reylo types the JSON it describes. A JSON column declares one in a check constraint:
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema dialect="postgres"
 create extension if not exists pg_jsonschema;
@@ -928,13 +893,13 @@ from events
 where id = :id::int
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## JSON parameters [#typed-json]
 
 A JSON parameter declares its schema in its cast to `json` or `jsonb`, and Reylo infers the parameter's type from it:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="record_click.sql" dialect="all"
 insert into events (kind, payload)
@@ -949,7 +914,7 @@ values ('click', :payload::json('{
 }'))
 ```
 
-</Inferred>
+</InferenceCard>
 
 Reylo also checks the value against the schema when you call `.run()`:
 
@@ -962,7 +927,7 @@ await recordClick.run(db, { payload: { x: 1.5, y: 20 } });
 
 A schema can nest objects and arrays, and check every value in them:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="record_order.sql" dialect="all"
 insert into events (kind, payload)
@@ -988,11 +953,11 @@ values ('order', :order::json('{
 }'))
 ```
 
-</Inferred>
+</InferenceCard>
 
 A JSON parameter written to a schema-checked column takes that schema as its type, with no cast:
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema dialect="postgres"
 create extension if not exists pg_jsonschema;
@@ -1016,13 +981,13 @@ insert into events (payload)
 values (:payload)
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Filtering by a list
 
 Pass the list as one parameter:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="users_by_ids.sql" dialect="postgres"
 select id, name from users where id = any(:ids::int[])
@@ -1056,13 +1021,13 @@ select id, name from users
 where id in (select j.value from input, json_each(input.ids) as j)
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Bulk inserts
 
 Pass the rows as one [JSON parameter](#typed-json): the schema in its cast types them, and Reylo checks every row before the statement runs:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="create_users.sql" dialect="postgres"
 with input as (
@@ -1129,7 +1094,7 @@ from input, json_each(input.users) as u
 returning id
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Nested inserts
 
@@ -1140,7 +1105,7 @@ Users with their posts, in one parameter. The posts find their user by `email`, 
 
 Postgres writes both tables in one statement: a `with` inserts the users, and the statement inserts the posts:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="create_users_with_posts.sql" dialect="postgres"
 with input as (
@@ -1178,7 +1143,7 @@ join new_users n on n.email = u.email
 cross join jsonb_to_recordset(u.posts) as p(title text)
 ```
 
-</Inferred>
+</InferenceCard>
 
 </Dialect>
 <Dialect value="MySQL">
@@ -1348,7 +1313,7 @@ join json_each(u.value -> 'posts') as p
 
 A `oneOf` in a schema is a [union](#unions). Give each member a key with one value, and it is a discriminated union, which TypeScript narrows on that key:
 
-<Inferred>
+<InferenceCard>
 
 ```sql schema dialect="postgres"
 create extension if not exists pg_jsonschema;
@@ -1415,11 +1380,11 @@ from events
 where id = :id::int
 ```
 
-</Inferred>
+</InferenceCard>
 
 A parameter's schema works the same way:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="record_events.sql" dialect="postgres"
 with input as (
@@ -1520,4 +1485,4 @@ select e.value ->> 'kind', e.value
 from input, json_each(input.events) as e
 ```
 
-</Inferred>
+</InferenceCard>

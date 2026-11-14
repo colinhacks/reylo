@@ -43,7 +43,7 @@ const URLS: Record<Exclude<Dialect, 'sqlite' | 'duckdb'>, string> = {
   postgres: process.env.REYLO_CAPTURE_POSTGRES ?? 'postgres://postgres@localhost:54329/reylo_capture',
   mysql: process.env.REYLO_CAPTURE_MYSQL ?? 'mysql://root@127.0.0.1:54336/reylo_capture',
 };
-/** The scratch database an `<Inferred>` card's own schema is built in, on the same server: made again for each card. */
+/** The scratch database an inference card's own schema is built in, on the same server: made again for each card. */
 const cardUrl = (url: string) => {
   const u = new URL(url);
   u.pathname = `/${decodeURIComponent(u.pathname.slice(1))}_card`;
@@ -281,8 +281,8 @@ try {
     try {
       blocks = collectFiles(page, site);
       needed = new Set(plan(blocks).flatMap((p) => p.variants.flatMap((v) => v.needs.map((n) => n.block))));
-      // An <Inferred> card shows its statement's types, so its module is kept whether or not a block imports it.
-      for (const block of blocks) if (block.inferred) needed.add(block);
+      // An inference card shows its statement's types, so its module is kept whether or not a block imports it.
+      for (const block of blocks) if (block.inferenceCard) needed.add(block);
     } catch (e) {
       errors.push(`${shown}: ${(e as Error).message}`);
       continue;
@@ -384,7 +384,7 @@ try {
           await mapper.close();
         }
       }
-      // A statement of an <Inferred> card that shows its own schema is analyzed against that schema,
+      // A statement of an inference card that shows its own schema is analyzed against that schema,
       // built for it alone: in a scratch database made again for each card, beside the page's, and
       // a project of its own, so no session or cache of the page's schema answers for it.
       for (const [i, block] of mine.filter((b) => b.schema !== undefined).entries()) {

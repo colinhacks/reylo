@@ -10,6 +10,7 @@ import type { EngineType, JsonSchema } from "../src/engine-type.ts";
 import { array, checked, lite as liteType, my as myType, oneOf, pg as pgType, record } from "./descriptors.ts";
 import { existsSync } from "node:fs";
 import { DRIVERS, driver, MYSQL, mysqlDatabase, mysqlLive, pgLive, plain, postgresDatabase, sqliteWasm } from "./helpers.ts";
+import { neonSql, pgPool, postgresJsSql } from "./stand-ins.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
 // driver behaviour each one copies was checked against the real package (lab/driver-matrix).
@@ -21,14 +22,14 @@ const row = { id: 1, name: "ada", again: 1 };
 
 test("postgres: query(text, values) → { rows }, as on pg, PGlite and Neon's Pool, with $n numbered once per name", async () => {
   const calls: Call[] = [];
-  const client = { query: async (...args: unknown[]) => (calls.push({ method: "query", args }), { rows: [row], rowCount: 1 }) };
+  const client = pgPool(async (...args: unknown[]) => (calls.push({ method: "query", args }), { rows: [row], rowCount: 1 }));
   assert.deepEqual(await execute(client, pg, { id: 1, name: "ada" }), [row]);
   assert.deepEqual(calls, [{ method: "query", args: ["select $1::int as id, $2 as name, $1 as again", [1, "ada"]] }]);
 });
 
 test("a parameter left out binds NULL whatever its name: what every object answers for constructor, toString or __proto__ is no value, and a class's getter is one", async () => {
   const calls: unknown[][] = [];
-  const client = { query: async (_text: string, values: unknown[]) => (calls.push(values), { rows: [], rowCount: 0 }) };
+  const client = pgPool(async (_text: string, values: unknown[]) => (calls.push(values), { rows: [], rowCount: 0 }));
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :driver, :constructor, :toString, :__proto__", params: ["driver", "constructor", "toString", "__proto__"] };
   await execute(client, q, { driver: "Senna" });
   class Entry {
@@ -42,7 +43,7 @@ test("a parameter left out binds NULL whatever its name: what every object answe
 });
 
 test("postgres: a query() that resolves to the rows, as Neon's neon() from 1.0 and pg-promise do", async () => {
-  const neon = Object.assign(() => Promise.reject(new Error("not a template")), {
+  const neon = neonSql(() => Promise.reject(new Error("not a template")), {
     query: async () => [row],
     // Neon's unsafe() builds a fragment for a template; it must never be taken for a query.
     unsafe: () => ({ sql: "fragment" }),
@@ -64,7 +65,7 @@ test("postgres: pg-promise gets a { text, values } object, so it binds instead o
 
 test("postgres: unsafe(text, values) → rows, as on postgres.js and Bun.sql and their transactions; postgres.js is asked to prepare the statement", async () => {
   const calls: Call[] = [];
-  const tx = { unsafe: (...args: unknown[]) => (calls.push({ method: "unsafe", args }), Promise.resolve([row])) };
+  const tx = postgresJsSql((...args: unknown[]) => (calls.push({ method: "unsafe", args }), [{ id: "1", name: "ada", again: "1" }]), { id: 23, again: 23 });
   assert.deepEqual(await execute(tx, pg, { id: 1, name: "ada" }), [row]);
   assert.deepEqual(calls, [{ method: "unsafe", args: ["select $1::int as id, $2 as name, $1 as again", [1, "ada"], { prepare: true }] }]);
   // Bun.sql prepares a statement itself, and takes no options.
@@ -90,8 +91,7 @@ test("postgres: every client gets an array for a SQL array parameter as its lite
   const unsafe = async (_: string, values?: unknown[]) => (seen.push(values!), []);
   const bun = { unsafe, commitDistributed: async () => {} };
   await execute(bun, typed, typedValues);
-  await execute({ unsafe }, typed, typedValues);
-  assert.equal(seen.length, 2);
+  assert.equal(seen.length, 1);
   for (const [ids, name, data] of seen) {
     assert.deepEqual([ids, name], ['{"1","3"}', "ada"]);
     // Not a string, which they would store as a JSON string, and not the array, whose type they would take from its first element.
@@ -100,8 +100,7 @@ test("postgres: every client gets an array for a SQL array parameter as its lite
     assert.equal(JSON.stringify(data), '[1,{"a":"b"}]');
   }
   // postgres.js (typed() beside unsafe()), whose JSON serializer Drizzle replaces with one that passes the value through.
-  const postgresJs = { unsafe, typed: (value: unknown, type: number) => ({ value, type }) };
-  await execute(postgresJs, typed, typedValues);
+  await execute(postgresJsSql((_, values) => void seen.push(values)), typed, typedValues);
   assert.deepEqual(seen.at(-1), ['{"1","3"}', "ada", { value: '[1,{"a":"b"}]', type: 705 }]);
 });
 
@@ -117,19 +116,17 @@ const jsonTexts = ['"abc"', "5", "true", '"{\\"a\\":1}"', null, '{"d":"2026-01-0
 
 test("postgres: a JSON parameter's value is a JavaScript value, which every driver gets as its JSON text, a string as a JSON string, null as NULL", async () => {
   const seen: unknown[][] = [];
-  await execute({ query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) }, jsonQuery, jsonValues);
+  await execute(pgPool(async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] })), jsonQuery, jsonValues);
   const pgp = { manyOrNone: async () => [], query: async (q: any): Promise<any> => (seen.push(q.values), []) };
   await execute(pgp, jsonQuery, jsonValues);
-  await execute((_: string, values?: unknown[]) => (seen.push(values!), Promise.resolve([])), jsonQuery, jsonValues);
+  await execute(neonSql((_: string, values?: unknown[]) => (seen.push(values!), Promise.resolve([]))), jsonQuery, jsonValues);
   const unsafe = async (_: string, values?: unknown[]) => (seen.push(values!.map((v) => (v !== null && typeof v === "object" ? JSON.stringify(v) : v))), []);
   const bun = { unsafe, commitDistributed: async () => {} };
-  await execute({ unsafe }, jsonQuery, jsonValues);
   await execute(bun, jsonQuery, jsonValues);
   // postgres.js gets each JSON value as its text declared unknown (705), and null as null.
   const unwrap = (v: unknown) => (v !== null && typeof v === "object" ? (assert.equal((v as { type: number }).type, 705), (v as { value: unknown }).value) : v);
-  const postgresJs = { unsafe: async (_: string, values?: unknown[]) => (seen.push(values!.map(unwrap)), []), typed: (value: unknown, type: number) => ({ value, type }) };
-  await execute(postgresJs, jsonQuery, jsonValues);
-  assert.equal(seen.length, 6);
+  await execute(postgresJsSql((_, values) => void seen.push(values.map(unwrap))), jsonQuery, jsonValues);
+  assert.equal(seen.length, 5);
   for (const values of seen) assert.deepEqual(values, jsonTexts);
 });
 
@@ -152,17 +149,17 @@ test("mysql and sqlite: every driver gets a JSON parameter as its JSON text, and
 
 test("postgres: pg's family, PGlite and Neon, which write any array as an array literal, get an array for a JSON parameter as its JSON text", async () => {
   const seen: unknown[][] = [];
-  await execute({ query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) }, typed, typedValues);
+  await execute(pgPool(async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] })), typed, typedValues);
   const pgp = { manyOrNone: async () => [], query: async (q: any): Promise<any> => (seen.push(q.values), []) };
   await execute(pgp, typed, typedValues);
-  await execute((_: string, values?: unknown[]) => (seen.push(values!), Promise.resolve([])), typed, typedValues);
+  await execute(neonSql((_: string, values?: unknown[]) => (seen.push(values!), Promise.resolve([]))), typed, typedValues);
   assert.equal(seen.length, 3);
   for (const values of seen) assert.deepEqual(values, ['{"1","3"}', "ada", '[1,{"a":"b"}]']);
 });
 
 test("a typed JSON, structured or cast parameter is checked with the checks its module passes, and refused without them", async () => {
   const refusal = (name: string) => ({ name: "TypeError", message: `Parameter "${name}" is a typed JSON, structured or cast parameter, which the run time checks with Reylo's checks; a query defined by hand passes them: defineQuery({ …, checks }) with checks from "reylo".` });
-  const client = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const client = pgPool(async () => ({ rows: [], rowCount: 0 }));
   const json: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type: { kind: "json" }, schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] } } } };
   await assert.rejects(async () => execute(client, json, { p: { n: 1 } }), refusal("p"));
   const db = new DatabaseSync(":memory:");
@@ -177,7 +174,7 @@ test("a typed JSON, structured or cast parameter is checked with the checks its 
 
 test("a parameter the statement takes no null for refuses null and refuses to be left out, before the statement runs, and a JSON one takes JSON's null", async () => {
   const seen: unknown[][] = [];
-  const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [], rowCount: 0 }) };
+  const client = pgPool(async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [], rowCount: 0 }));
   const int4 = pgType("int4");
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :x::int + 1 as y, :email as email", params: ["x", "email"], inputs: { x: { type: int4, nullable: false }, email: { type: pgType("text"), nullable: true } } };
   await assert.rejects(async () => execute(client, q, { x: null, email: "a" }), { name: "TypeError", message: `Parameter "x" is null, and the statement takes no null for it: pass a value.` });
@@ -219,13 +216,14 @@ test("a query without inputs, defined by hand or built before them, binds every 
   const unsafe = async (_: string, values?: unknown[]) => (seen.push(values!), []);
   const bun = { unsafe, commitDistributed: async () => {} };
   await execute(bun, bare, typedValues);
-  await execute({ unsafe }, bare, typedValues);
-  await execute({ query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) }, bare, typedValues);
+  const sql = postgresJsSql((_, values) => void seen.push(values));
+  await execute(sql, bare, typedValues);
+  await execute(pgPool(async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] })), bare, typedValues);
   for (const values of seen) assert.deepEqual(values, [[1, 3], "ada", [1, { a: "b" }]]);
   // Hand-written inputs work through the runtime's own lexer too, a repeated name included.
   const hand: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :ids::int[] = :ids::int[]", params: ["ids"], inputs: { ids: { type: array(pgType("int4")) } } };
   seen.length = 0;
-  await execute({ unsafe }, hand, { ids: [2] });
+  await execute(sql, hand, { ids: [2] });
   assert.deepEqual(seen, [['{"2"}']]);
 });
 
@@ -238,7 +236,7 @@ test("a Date for any date or time parameter, and a string without its zone for a
     inputs: { at: time("timestamp"), day: time("date"), tz: time("timestamptz"), tzs: { type: array(time("timestamptz").type) }, days: { type: array(time("date").type) } },
   };
   const seen: unknown[][] = [];
-  const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) };
+  const client = pgPool(async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }));
   const ok = { at: "2026-10-12 19:06:48.282", day: "2026-10-12", tz: "1970-01-01T00:00:00Z", tzs: ["2026-10-12T19:06:48.282Z", "2026-10-12 19:06:48+09", "2026-10-12 19:06:48.5-07:30", "2026-10-12 19:06 America/Los_Angeles", "2026-10-12 19:06:48 UTC", "infinity", "-infinity", "0001-01-01 00:00:00+00 BC", "+010000-01-01T00:00:00Z"], days: [["2026-10-12"]] };
   await execute(client, q, ok);
   assert.equal(seen.length, 1);
@@ -267,8 +265,7 @@ test("postgres: postgres.js, which binds a date or time string through new Date(
   const seen: unknown[][] = [];
   const unsafe = async (_: string, v?: unknown[]) => (seen.push(v!), []);
   const typed = (value: unknown, type: number) => ({ value, type });
-  const postgresJs = { unsafe, typed };
-  await execute(postgresJs, q, values);
+  await execute(postgresJsSql((_, v) => void seen.push(v)), q, values);
   const bun = { unsafe, typed, commitDistributed: async () => {} };
   await execute(bun, q, values);
   assert.deepEqual(seen, [
@@ -298,7 +295,7 @@ test("what run returns goes back in: a SQLite truth value as 1 or 0, a Postgres 
   };
   const values = { far: "+010000-01-01T00:00:00Z", bc: "-000001-06-01T12:00:00.5Z", zero: "0000-01-01", now: "2026-10-20T10:00:00Z", days: ["+010000-01-01", "2026-10-20"], old: "-000001-06-01T12:00:00", huge: "+5874897-12-31" };
   seen.length = 0;
-  await execute({ query: async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] }) }, pq, values);
+  await execute(pgPool(async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] })), pq, values);
   assert.deepEqual([...seen], [["10000-01-01T00:00:00Z", "0002-06-01T12:00:00.5Z BC", "0001-01-01 BC", "2026-10-20T10:00:00Z", '{"10000-01-01","2026-10-20"}', "0002-06-01T12:00:00 BC", "5874897-12-31"]]);
   // Postgres refuses a sign before an ISO 8601 duration's `P`, which run returns for a negative interval.
   const iq: QueryModule<"postgres"> = {
@@ -308,7 +305,7 @@ test("what run returns goes back in: a SQLite truth value as 1 or 0, a Postgres 
     inputs: { back: s("interval"), ahead: s("interval"), mixed: s("interval"), text: s("interval"), spans: { type: array(pgType("interval")) } },
   };
   seen.length = 0;
-  await execute({ query: async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] }) }, iq, { back: "-P1DT2H0.5S", ahead: "P1M", mixed: "P1M-1D", text: "-1 days", spans: ["-PT3S", "P1D"] });
+  await execute(pgPool(async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] })), iq, { back: "-P1DT2H0.5S", ahead: "P1M", mixed: "P1M-1D", text: "-1 days", spans: ["-PT3S", "P1D"] });
   assert.deepEqual([...seen], [["P-1DT-2H-0.5S", "P1M", "P1M-1D", "-1 days", '{"PT-3S","P1D"}']]);
   // Without inputs, as defined by hand, every value goes as it is.
   const { inputs: _, ...bare } = lq;
@@ -391,7 +388,7 @@ test("postgres: an array parameter is written with its element type's delimiter,
 
 test("postgres: Neon's neon() before 1.0 is called with (text, values)", async () => {
   const calls: Call[] = [];
-  const sql = (...args: unknown[]) => (calls.push({ method: "call", args }), Promise.resolve([row]));
+  const sql = neonSql((...args: unknown[]) => (calls.push({ method: "call", args }), Promise.resolve([row])));
   assert.deepEqual(await execute(sql, pg, { id: 1, name: "ada" }), [row]);
   assert.deepEqual(calls[0]!.args.slice(0, 2), ["select $1::int as id, $2 as name, $1 as again", [1, "ada"]]);
   // Its options take a decoder table, 0.9 too, and the fields with fullResults.
@@ -433,7 +430,7 @@ test("postgres.js: a statement with parameters is prepared on its connection and
 
 test("a parameter left out binds NULL, which postgres.js, mysql2, node:sqlite and libSQL would reject", async () => {
   const seen: unknown[][] = [];
-  const client = { unsafe: async (_: string, values?: unknown[]) => (seen.push(values!), []) };
+  const client = postgresJsSql((_, values) => void seen.push(values));
   await execute(client, pg, { id: 1 });
   await execute(client, { ...pg, text: "select $1, $2", order: ["name", "id"] }, { id: undefined });
   assert.deepEqual(seen, [[1, null], [null, null]]);
@@ -508,7 +505,7 @@ test("mysql: mariadb, which writes a value that is not a Buffer as JSON, gets a 
 test("postgres: Neon's neon() before 0.10, which sends a Buffer as JSON, gets a binary value in Postgres's hex form", async () => {
   const { plain, view } = binary();
   const seen: unknown[][] = [];
-  const sql = (_: string, values?: unknown[]) => (seen.push(values!), Promise.resolve([]));
+  const sql = neonSql((_: string, values?: unknown[]) => (seen.push(values!), Promise.resolve([])));
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :plain::bytea, :view::bytea, :buf::bytea, :empty::bytea, :n", params: ["plain", "view", "buf", "empty", "n"] };
   await execute(sql, q, { plain, view, buf: Buffer.from([0, 16, 171]), empty: new Uint8Array(0), n: 1 });
   assert.deepEqual(seen[0], ["\\x0102ff", "\\x0102ff", "\\x0010ab", "\\x", 1]);
@@ -521,8 +518,8 @@ test("every other driver gets a binary value as it is, pg-promise included, sinc
   const liteq: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select :b", params: ["b"] };
   const pgp = { manyOrNone: async () => [], query: async (q: any): Promise<any> => (seen.push(q.values[0]), []) };
   await execute(pgp, pgq, { b: plain });
-  await execute({ query: async (_: string, values?: unknown[]) => (seen.push(values![0]), { rows: [] }) }, pgq, { b: plain });
-  await execute({ unsafe: async (_: string, values?: unknown[]) => (seen.push(values![0]), []) }, pgq, { b: plain });
+  await execute(pgPool(async (_: string, values?: unknown[]) => (seen.push(values![0]), { rows: [] })), pgq, { b: plain });
+  await execute(postgresJsSql((_, values) => void seen.push(values[0])), pgq, { b: plain });
   await execute({ query: async () => [[], []] as [unknown, unknown], execute: async (_: unknown, values?: unknown[]) => (seen.push(values![0]), [[], []] as [unknown, unknown]) }, { ...bin, sql: "select hex(:b)", params: ["b"] }, { b: plain });
   await execute({ prepare: () => ({ all: (...values: unknown[]) => (seen.push(values[0]), []) }) }, liteq, { b: plain });
   assert.equal(seen.length, 5);
@@ -534,7 +531,7 @@ test("a binary parameter takes binary data alone, so base64 text is refused befo
   const bytes = (name: string) => ({ type: pgType(name) });
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :b::bytea, :bs::bytea[]", params: ["b", "bs"], inputs: { b: bytes("bytea"), bs: { type: array(bytes("bytea").type) } } };
   const seen: unknown[][] = [];
-  const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) };
+  const client = pgPool(async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }));
   await execute(client, q, { b: Buffer.from([1]), bs: [plain] });
   await execute(client, q, { b: null, bs: null });
   assert.equal(seen.length, 2);
@@ -763,7 +760,7 @@ test("sqlite: Bun.sql's SQLite adapter, which has unsafe() and no prepare()", as
 
 test("the driver's own error comes through unchanged", async () => {
   const duplicate = Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
-  await assert.rejects(() => execute({ query: async () => Promise.reject(duplicate) }, pg, { id: 1 }) as Promise<unknown>, (e) => e === duplicate);
+  await assert.rejects(() => execute(pgPool(async () => Promise.reject(duplicate)), pg, { id: 1 }) as Promise<unknown>, (e) => e === duplicate);
   const db = new DatabaseSync(":memory:");
   assert.throws(() => execute(db, { dialect: "sqlite", sql: "selec 1", params: [] }), /syntax error/);
 });
@@ -850,11 +847,34 @@ test("an unsupported client rejects, naming what it has and what reylo takes", a
   await assert.rejects(one.run(null as never), /reylo cannot run a sqlite statement on null\./);
 });
 
+test("postgres: a client that is none of the drivers' is refused before it runs anything, a wrapper around one included", async () => {
+  let ran = 0;
+  const rows = async () => (ran++, { rows: [{ id: "1" }] });
+  const refused = (seen: string) => (e: Error) => e instanceof TypeError && e.message.startsWith(`reylo cannot run a postgres statement on ${seen}. It takes a client with query(text, values) as on pg,`) && /It is none of those drivers' clients\. A wrapper around one hands back the values its driver already converted/.test(e.message);
+  // A wrapper with a pool's query(), which would hand back pg's Date and its string for an int8.
+  await assert.rejects(() => execute({ query: rows }, pg, { id: 1, name: "ada" }) as Promise<unknown>, refused("an object with query"));
+  // One with a query() and a transaction() of its own: Neon's neon() is a function.
+  await assert.rejects(() => execute({ query: rows, transaction: async () => [] } as never, pg, { id: 1, name: "ada" }) as Promise<unknown>, refused("an object with query, transaction"));
+  // A pool's connect() without its Client is no pool.
+  await assert.rejects(() => execute({ query: rows, connect: async () => ({}) } as never, pg, { id: 1, name: "ada" }) as Promise<unknown>, refused("an object with query, connect"));
+  // An unsafe() that is neither postgres.js's, which has typed(), nor Bun.sql's, which has commitDistributed().
+  await assert.rejects(() => execute({ unsafe: async () => (ran++, []) }, pg, { id: 1, name: "ada" }) as Promise<unknown>, refused("an object with unsafe"));
+  // A function that is not Neon's, which has transaction().
+  await assert.rejects(() => execute((async () => (ran++, [])) as never, pg, { id: 1, name: "ada" }) as Promise<unknown>, refused("an object with no methods"));
+  assert.equal(ran, 0);
+  // A wrapper that kept postgres.js's typed() is told by its query, which has no raw().
+  const kept = { typed: (value: unknown) => value, unsafe: async () => [] };
+  await assert.rejects(() => execute(kept, pg, { id: 1, name: "ada" }) as Promise<unknown>, /its unsafe\(\) returns no postgres\.js query/);
+  // Each driver's own client is told by what it has.
+  assert.deepEqual(await execute(pgPool(async () => ({ rows: [row] })), pg, { id: 1, name: "ada" }), [row]);
+  assert.deepEqual(await execute({ getTypeParser: () => String, query: async () => ({ rows: [row], fields: [] }) } as never, pg, { id: 1, name: "ada" }), [row]);
+});
+
 test("a Drizzle database or transaction runs on the driver client its session keeps", async () => {
   // Drizzle's database and transaction objects: select() beside a session holding the dialect and the client.
   const drizzle = <C>(client: C) => ({ $client: client, select() {}, execute() {}, session: { dialect: {}, client } });
   const seen: unknown[][] = [];
-  const pgClient = { query: async (_: string, values: unknown[]) => (seen.push(values), { rows: [row] }) };
+  const pgClient = pgPool(async (_: string, values: unknown[]) => (seen.push(values), { rows: [row] }));
   assert.deepEqual(await execute(drizzle(pgClient) as never, pg, { id: 1, name: "ada" }), [row]);
   const mysqlPool = { query: async () => [[], []], execute: async (_: unknown, values: unknown[]) => (seen.push(values), [[row], []]) };
   assert.deepEqual(await execute(drizzle(mysqlPool) as never, my, { id: 1, name: "ada" }), [row]);
@@ -984,7 +1004,7 @@ test("Knex: an instance or transaction over mysql2 or mariadb runs on its connec
 
 test("positional placeholders take an object keyed by number, bound by number on every dialect", async () => {
   const seen: [string, unknown[]][] = [];
-  const pgClient = { query: async (text: string, values: unknown[]) => (seen.push([text, values]), { rows: [] }) };
+  const pgClient = pgPool(async (text: string, values: unknown[]) => (seen.push([text, values]), { rows: [] }));
   const mysqlPool = { query: async () => [[], []] as [unknown, unknown], execute: async (options: { sql: string }, values: unknown[]) => (seen.push([options.sql, values]), [[], []] as [unknown, unknown]) };
   const d1 = { batch: async () => [], prepare: (text: string) => ({ first: async () => null, bind: (...values: unknown[]) => (seen.push([text, values]), { all: async () => ({ results: [] }) }) }) };
   const positional: Record<string, QueryModule> = {
@@ -1000,13 +1020,13 @@ test("positional placeholders take an object keyed by number, bound by number on
   ]);
   // The mapper's rewritten statement binds by `order`, which names params.
   const unsafe: unknown[][] = [];
-  await execute({ unsafe: async (_: string, values: unknown[]) => (unsafe.push(values), []) }, { ...pg, text: "select $1, $2, $1", order: ["name", "id", "name"] }, { id: 1, name: "ada" });
+  await execute(postgresJsSql((_, values) => void unsafe.push(values)), { ...pg, text: "select $1, $2, $1", order: ["name", "id", "name"] }, { id: 1, name: "ada" });
   assert.deepEqual(unsafe, [["ada", 1, "ada"]]);
 });
 
 test("an array of parameters is refused before anything runs, with a TypeError that says to pass an object", async () => {
   const calls: unknown[] = [];
-  const client = { unsafe: async (...args: unknown[]) => (calls.push(args), []) };
+  const client = postgresJsSql((...args: unknown[]) => void calls.push(args));
   const named = /^TypeError: The parameters must be an object keyed by parameter name, or by number for positional placeholders \(\{ 1: \.\.\., 2: \.\.\. \}\); got an array\. This statement takes \{ id: \.\.\., name: \.\.\. \}\.$/;
   const refused = (re: RegExp) => (e: Error) => e instanceof TypeError && re.test(String(e));
   // A freshness check would be a round trip: the array is refused before it too.
@@ -1086,12 +1106,12 @@ test("runSync: a client that answers through a promise, or a Postgres or MySQL s
 
 test("run: on an asynchronous client every failure is a rejection, never a throw", async () => {
   const q = defineQuery<{ id: number }, { id: number }, "maybeOne", "postgres">({ dialect: "postgres", sql: "select :id::int as id", params: ["id"], cardinality: "maybeOne" });
-  const two = { query: async () => ({ rows: [{ id: 1 }, { id: 2 }] }) };
+  const two = pgPool(async () => ({ rows: [{ id: 1 }, { id: 2 }] }));
   let returned: unknown;
   assert.doesNotThrow(() => void (returned = q.run(two, { id: 1 })));
   await assert.rejects(returned as Promise<unknown>, /Expected at most one row, got 2/);
   await assert.rejects(q.run({} as never, { id: 1 }), TypeError);
-  assert.deepEqual(await q.with({ query: async () => ({ rows: [] }) })({ id: 1 }), null);
+  assert.deepEqual(await q.with(pgPool(async () => ({ rows: [] })))({ id: 1 }), null);
 });
 
 test("a query's source names its file, and Reylo's own errors about the query start with it", async () => {
@@ -1103,11 +1123,11 @@ test("a query's source names its file, and Reylo's own errors about the query st
   await assert.rejects(one.run(db), { message: "queries/none.sql: Expected exactly one row, got 0" });
   // A parameter's value: thrown in runSync, rejected by run, the stack's first line named too.
   const at = defineQuery<{ at: string }, unknown, "many", "postgres">({ dialect: "postgres", sql: "select :at::timestamptz as at", params: ["at"], inputs: { at: { type: pgType("timestamptz") } }, source: "at.sql" });
-  const rejected = await at.run({ query: async () => ({ rows: [] }) }, { at: "2026-10-12 19:06:48" }).then(() => undefined, (e: Error) => e);
+  const rejected = await at.run(pgPool(async () => ({ rows: [] })), { at: "2026-10-12 19:06:48" }).then(() => undefined, (e: Error) => e);
   assert.ok(rejected instanceof TypeError);
   assert.match(rejected.message, /^at\.sql: Parameter "at" is a timestamptz/);
   assert.match(rejected.stack!, /^TypeError: at\.sql: Parameter "at"/);
-  const viaWith = await at.with({ query: async () => ({ rows: [] }) })({ at: new Date() as never }).then(() => undefined, (e: Error) => e);
+  const viaWith = await at.with(pgPool(async () => ({ rows: [] })))({ at: new Date() as never }).then(() => undefined, (e: Error) => e);
   assert.match(viaWith!.stack!, /^TypeError: at\.sql: Parameter "at" is a timestamptz, which takes the instant as a string/);
   // A column's value Reylo cannot give its kind.
   const truth = defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select 2 as b", params: [], columns: [["b", "bool"]], source: "truth.sql" });

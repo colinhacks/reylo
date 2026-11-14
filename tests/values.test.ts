@@ -8,6 +8,7 @@ import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant,
 import type { EngineType } from "../src/engine-type.ts";
 import { array, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
+import { pgPool } from "./stand-ins.ts";
 
 // The one table (src/values.ts): the kind of each SQL type, the TypeScript type the module declares
 // for it, the JSON Schema of its JSON form, and the value the run time gives it, which must agree.
@@ -352,9 +353,11 @@ test("timestamptz: the text read by position is the pattern's, for every server 
     const m = mp + (mp < 10 ? 3 : -9);
     return [era * 400 + yoe + (m <= 2 ? 1 : 0), m, d];
   };
+  // Text the pattern does not read is returned as it is where it starts as ISO's does, with the year, and refused otherwise, as another DateStyle's.
+  const refused = "refused";
   const byPattern = (x: string): string => {
     const m = TSTZ.exec(x);
-    if (m === null) return x;
+    if (m === null) return /^\d{4}/.test(x) || x === "infinity" || x === "-infinity" ? x : refused;
     const year = m[12] === undefined ? +m[1]! : 1 - +m[1]!;
     const offset = (m[8] === "-" ? -1 : 1) * (+m[9]! * 3600 + (m[10] === undefined ? 0 : +m[10] * 60) + (m[11] === undefined ? 0 : +m[11]));
     const seconds = daysFromCivil(year, +m[2]!, +m[3]!) * 86400 + +m[4]! * 3600 + +m[5]! * 60 + +m[6]! - offset;
@@ -392,7 +395,45 @@ test("timestamptz: the text read by position is the pattern's, for every server 
   const texts = ["infinity", "-infinity", "", "2026-10-20 10:00:00+00", "2026-10-20 10:00:00.1234567+00", "2026-10-20 10:00:00.+00", "2026-10-20 10:00:00+0", "2026-10-20 10:00:00+00:0", "2026-10-20 10:00:00+00:00:00:00"];
   for (let i = 0; i < 300_000; i++) texts.push(serverText());
   for (let i = 0; i < 100_000; i++) texts.push(mutated());
-  for (const text of texts) if (instant(text) !== byPattern(text)) assert.equal(instant(text), byPattern(text), JSON.stringify(text));
+  const read = (text: string): string => {
+    try {
+      return instant(text);
+    } catch (e) {
+      if (!(e instanceof DecodeError)) throw e;
+      return refused;
+    }
+  };
+  for (const text of texts) if (read(text) !== byPattern(text)) assert.equal(read(text), byPattern(text), JSON.stringify(text));
+});
+
+test("Postgres: a date, a timestamp and a timestamptz written under another DateStyle than ISO are refused, at every position", () => {
+  const iso: [string, string, string][] = [
+    ["date", "2026-03-04", "2026-03-04"],
+    ["date", "0044-03-15 BC", "-000043-03-15"],
+    ["date", "12345-01-01", "+012345-01-01"],
+    ["date", "infinity", "infinity"],
+    ["timestamp", "2026-03-04 10:00:00.5", "2026-03-04T10:00:00.500000"],
+    ["timestamp", "-infinity", "-infinity"],
+    ["timestamptz", "2026-10-12 12:06:48.5-07", "2026-10-12T19:06:48.500000Z"],
+    ["timestamptz", "0044-03-15 12:00:00+00 BC", "-000043-03-15T12:00:00.000000Z"],
+    ["timestamptz", "infinity", "infinity"],
+  ];
+  for (const [kind, text, value] of iso) assert.equal(textDecoder(kind)(text), value, `${kind} ${text}`);
+  // `SQL, DMY`, `German` and `Postgres`, as the server writes each.
+  const other: [string, string][] = [
+    ["date", "04/03/2026"],
+    ["date", "04.03.2026"],
+    ["date", "04-03-2026"],
+    ["timestamp", "04/03/2026 10:00:00.123456"],
+    ["timestamp", "Wed Mar 04 10:00:00.123456 2026"],
+    ["timestamptz", "12/10/2026 12:06:48.5 PDT"],
+    ["timestamptz", "12.10.2026 12:06:48.5 PDT"],
+    ["timestamptz", "Mon Oct 12 12:06:48.5 2026 PDT"],
+  ];
+  for (const [kind, text] of other) assert.throws(() => textDecoder(kind)(text), (e) => e instanceof DecodeError && /which is not ISO 8601: the connection's DateStyle/.test(e.message), `${kind} ${text}`);
+  assert.throws(() => textDecoder("date[]")("{04/03/2026}"), DecodeError);
+  assert.throws(() => textDecoder("timestamptz[]")(`{"12/10/2026 12:06:48.5 PDT"}`), DecodeError);
+  assert.throws(() => textDecoder("range:date")("[04/03/2026,05/03/2026)"), DecodeError);
 });
 
 test("Postgres: an array of polygons, segments, vectors or multiranges has one dimension, each element an array of its own", async () => {
@@ -412,7 +453,7 @@ test("Postgres: an array of polygons, segments, vectors or multiranges has one d
   }
   // As a parameter, each element is one value of its type: the text Postgres reads for it.
   const calls: unknown[][] = [];
-  const client = { query: async (_text: string, bound: unknown[]) => (calls.push(bound), { rows: [], rowCount: 0 }) };
+  const client = pgPool(async (_text: string, bound: unknown[]) => (calls.push(bound), { rows: [], rowCount: 0 }));
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :slots, :outlines", params: ["slots", "outlines"], inputs: { slots: { type: array(pg("int4multirange")), nullable: false }, outlines: { type: array(pg("polygon")), nullable: false } } };
   await execute(client, q, { slots: [[range, { lower: 5, upper: 7, bounds: "[)" }]], outlines: [[point, { x: 1, y: 1 }, { x: 2, y: 0 }]] });
   assert.deepEqual(calls, [[`{"{[\\"1\\",\\"3\\"),[\\"5\\",\\"7\\")}"}`, `{"((0,0),(1,1),(2,0))"}`]]);

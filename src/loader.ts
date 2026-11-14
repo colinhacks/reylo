@@ -24,6 +24,17 @@ export type SqlModule = {
   watched: string[];
 };
 
+/** What the build steps of this process have said already: a build says once that it reads `.reylo/` unchecked, however many modules it builds, by why it does. */
+const said = new Set<string>();
+
+/** One line on stderr, once a run, where a module is built from `.reylo/` with no database to hold it to: the first such module's line, with the day its entry was written. */
+function warnUnverified(line: string): void {
+  const why = line.slice(0, line.lastIndexOf("; building from"));
+  if (said.has(why)) return;
+  said.add(why);
+  console.warn(`reylo: ${line}`);
+}
+
 export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   const session = await Session.for(dirname(path));
   let outcome = await session.analyze(sql);
@@ -32,6 +43,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // replays it): it is analyzed again when the schema has changed since.
   if (outcome.ok && outcome.analysis.diagnostics.some((d) => d.code === 6) && (await session.recheck())) outcome = await session.analyze(sql);
   if (!outcome.ok) throw new Error(`${path}: ${outcome.message}`);
+  if (outcome.unverified) warnUnverified(outcome.unverified);
   // Each domain written as its base type, which the run time decodes its values by.
   const analysis = analysisWithBases(outcome.analysis);
   // A statement whose placeholders break a rule fails the build: one the engine could not read
