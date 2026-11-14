@@ -786,9 +786,12 @@ fn copies_a_rebuild(statements: &[crate::sql::Statement], k: usize) -> bool {
         return false;
     }
     let Some(from) = t[at..].iter().position(|x| x.upper() == "FROM").map(|p| at + p) else { return false };
-    // Columns as they are, by name: a copy that computes a value (`lower(body)`) writes rows.
+    // Columns as they are, by name: a copy that computes a value (`lower(body)`, `current_timestamp`,
+    // `null`) writes rows. A word that is a value is no column's name, unless quoted.
+    const VALUES: [&str; 15] = ["NULL", "DEFAULT", "TRUE", "FALSE", "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME", "LOCALTIMESTAMP", "CURRENT_USER", "SESSION_USER", "USER", "CURRENT_ROLE", "CURRENT_CATALOG", "CURRENT_SCHEMA"];
+    let column = |x: &Token| x.kind == TokenKind::Quoted || (x.kind == TokenKind::Word && !VALUES.contains(&x.upper().as_str()));
     let picked = &t[at + 1..from];
-    let bare = !picked.is_empty() && picked.iter().enumerate().all(|(k, x)| if k % 2 == 0 { matches!(x.kind, TokenKind::Word | TokenKind::Quoted) } else { x.text == "," }) && picked.len() % 2 == 1;
+    let bare = !picked.is_empty() && picked.iter().enumerate().all(|(k, x)| if k % 2 == 0 { column(x) } else { x.text == "," }) && picked.len() % 2 == 1;
     bare && matches!(name_at(t, from + 1), Some((source, end)) if end == t.len() && dropped_after(&source))
 }
 
@@ -4699,6 +4702,9 @@ mod tests {
         // Rows the file writes itself: a copy that keeps some rows, one into a table it doesn't make, or from one it keeps.
         assert_eq!(data_statements(&duckdb.replace("from temp.main.reylo_copy_posts;", "from temp.main.reylo_copy_posts where id > 1;"), Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements(&duckdb.replace("select id, body from", "select id, upper(body) from"), Dialect::Duckdb).len(), 1);
+        assert_eq!(data_statements(&duckdb.replace("select id, body from", "select id, current_timestamp from"), Dialect::Duckdb).len(), 1);
+        assert_eq!(data_statements(&duckdb.replace("select id, body from", "select id, null from"), Dialect::Duckdb).len(), 1);
+        assert!(data_statements(&duckdb.replace("select id, body from", "select id, \"null\" from"), Dialect::Duckdb).is_empty());
         assert_eq!(data_statements("create table archive (id integer); insert into archive (id) select id from posts;", Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("insert into posts (id) select id from old; drop table old;", Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("update posts set body = '';", Dialect::Sqlite).len(), 1);
