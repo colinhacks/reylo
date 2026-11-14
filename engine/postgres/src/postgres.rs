@@ -5456,7 +5456,7 @@ mod tests {
         assert_eq!(shown("UPDATE items SET name = :name, price = :price, tags = :tags WHERE id = :id", &[1043, 1700, 1015, 23]), format!("{modified}, id: int4"));
         // A cast one is its cast's type, and one only compared with a column is the server's.
         assert_eq!(shown("INSERT INTO items (name, price) VALUES (:name::text, :price::numeric)", &[25, 1700]), "name: text(¬NUL), price: numeric");
-        assert_eq!(shown("SELECT id FROM items WHERE name = :name AND price = :price", &[1043, 1700]), "name: varchar, price: numeric");
+        assert_eq!(shown("SELECT id FROM items WHERE name = :name AND price = :price", &[1043, 1700]), "name: varchar(¬NUL), price: numeric");
     }
 
     #[test]
