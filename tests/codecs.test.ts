@@ -74,6 +74,11 @@ test("a plan follows every part of a value Reylo decodes, and stops at JSON", ()
   assert.deepEqual(planOf(struct, "duckdb", every), { fields: { at: "instant", n: "decimal:number" } });
   assert.deepEqual(planOf({ kind: "map", key: { type: duck("date") }, value: { type: duck("varchar"), nullable: true } }, "duckdb", every), { entries: { key: "date" } });
   assert.deepEqual(planOf(tagged(["at", duck("timestamptz")], ["s", duck("varchar")]), "duckdb", every), { tags: { at: "instant" } });
+  // A tuple's values by their places, as DuckDB returns an unnamed struct.
+  const tuple: EngineType = { kind: "tuple", elements: [{ type: duck("date"), nullable: true }, { type: duck("varchar"), nullable: true }] };
+  assert.deepEqual(planOf(tuple, "duckdb", every), { items: ["date", null] });
+  assert.deepEqual(planOf(array(tuple, true, "list"), "duckdb", every), { array: { items: ["date", null] } });
+  assert.equal(planOf({ kind: "tuple", elements: [{ type: duck("varchar") }] }, "duckdb", every), undefined);
   assert.deepEqual(planOf(array(struct), "duckdb", every), { array: { fields: { at: "instant", n: "decimal:number" } } });
   // A structured parameter's members are fields too.
   assert.deepEqual(planOf(array(record([field("at", pg("timestamptz")), field("name", pg("text"))])), "postgres", every, true), { array: { fields: { at: "instant" } } });
@@ -179,7 +184,7 @@ test("a codec gives each value its type exactly, or refuses it naming the column
   }
 });
 
-test("a plan gives a codec's type inside a struct, a map and a tagged union, and leaves the rest", () => {
+test("a plan gives a codec's type inside a struct, a map, a tagged union and a tuple, and leaves the rest", () => {
   const value = { s: { at: "2026-10-20T08:00:00Z", name: "a" }, m: [{ key: "2026-10-20", value: "x" }], u: { tag: "at", value: "2026-10-20T08:00:00Z" }, v: { tag: "s", value: "y" } };
   const s = decodePlan({ fields: { at: "instant" } }, value.s, "s") as { at: unknown; name: string };
   assert.ok(s.at instanceof Temporal.Instant);
@@ -200,6 +205,14 @@ test("a plan gives a codec's type inside a struct, a map and a tagged union, and
   assert.equal(row.at, at);
   assert.deepEqual(encodePlan({ tags: { at: "instant" } }, { tag: "at", value: at }, "u", "duckdb"), { tag: "at", value: "2026-10-20T08:00:00Z" });
   assert.deepEqual(encodePlan({ entries: { value: "date" } }, [{ key: "k", value: Temporal.PlainDate.from("2026-10-20") }], "m", "duckdb"), [{ key: "k", value: "2026-10-20" }]);
+  // A DuckDB tuple's values by their places, its rest after them, and an array of tuples, each one value.
+  const pair = decodePlan({ items: ["date", null], rest: "decimal:number" }, ["2026-10-20", "x", "1.5"], "pair") as unknown[];
+  assert.ok(pair[0] instanceof Temporal.PlainDate);
+  assert.deepEqual(pair.slice(1), ["x", 1.5]);
+  const pairs = decodePlan({ array: { items: ["date", null] } }, [["2026-10-20", "x"], null], "pairs") as unknown[][];
+  assert.ok(pairs[0]![0] instanceof Temporal.PlainDate);
+  assert.deepEqual([pairs[0]![1], pairs[1]], ["x", null]);
+  assert.deepEqual(encodePlan({ items: ["date", null] }, [Temporal.PlainDate.from("2026-10-20"), "x"], "p", "duckdb"), ["2026-10-20", "x"]);
 });
 
 test("a codec parameter takes its codec's type alone, bound as the text or bytes its type reads", () => {
