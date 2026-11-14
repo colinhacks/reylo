@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { lexPlaceholders } from "../src/lex.ts";
 import { defineQuery } from "../src/index.ts";
 import { engine as load, type Dialect } from "../src/engine.ts";
+import { pgPool } from "./stand-ins.ts";
 
 const names = (sql: string, dialect: "postgres" | "mysql" | "sqlite" = "postgres") => lexPlaceholders(sql, dialect).params;
 
@@ -78,7 +79,7 @@ test("the runtime's lexer agrees with the engine's", async () => {
 // Without the engine's rewritten statement (a query defined by hand) the runtime rewrites it itself.
 const capture = () => {
   const calls: { text: string; values?: unknown[] | undefined }[] = [];
-  return { calls, client: { async query(text: string, values?: unknown[]) { calls.push({ text, values }); return { rows: [{}] }; } } };
+  return { calls, client: pgPool((text: string, values: unknown[]) => (calls.push({ text, values }), { rows: [{}] })) };
 };
 
 test("run binds positional parameters by number", async () => {

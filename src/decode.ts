@@ -268,10 +268,24 @@ async function pgFamily(key: object, run: (types: object) => Promise<PgResult>, 
 /** A decoder table that keeps every value its text: the catalog's rows, whatever the app registered. */
 const asText = { getTypeParser: () => (x: string) => x };
 
+/** Neon's neon(), a function in every version, with transaction(): an object with a query() and a transaction() is somebody's own. */
+const isNeonFunction = (c: AnyClient) => typeof c === "function" && typeof (c as AnyClient).transaction === "function";
+
+/**
+ * Whether a client with query() is one whose results Reylo decodes (`queryPostgres`). Any other,
+ * such as a wrapper that passes its calls on to a pool, hands back what its driver made of each
+ * value (a Date for a timestamp, a string for an int8), which no kind reads back, so it is
+ * refused before it runs anything.
+ */
+export function takesQuery(c: AnyClient): boolean {
+  return typeof c.manyOrNone === "function" || typeof c.getTypeParser === "function" || isPglite(c) || (typeof c.connect === "function" && typeof c.Client === "function") || isNeonFunction(c);
+}
+
 /**
  * Runs a Postgres statement on a client whose query() Reylo calls: pg's Client, PoolClient and
  * Pool, Neon's, @vercel/postgres's, pg-promise's database, tasks and transactions, PGlite and its
- * transactions, and Neon's neon(). Each is told apart by what it has.
+ * transactions, and Neon's neon(). Each is told apart by what it has, and a client that is none
+ * of them is refused (`takesQuery`).
  */
 export async function queryPostgres(c: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
   // pg-promise formats the values into the text itself (reading $1 inside a string literal
@@ -295,12 +309,11 @@ export async function queryPostgres(c: AnyClient, text: string, values: unknown[
   }
   // Neon's neon() from 1.0: query(text, params, options) replaces Neon's whole table with the
   // query's, and returns the fields with `fullResults`.
-  if (typeof c.transaction === "function") {
+  if (isNeonFunction(c)) {
     const load: Load = async (sql) => (await c.query(sql, [], { arrayMode: true, fullResults: true, types: asText })).rows;
     return pgFamily(c, (types) => c.query(text, values, { fullResults: true, arrayMode: false, types }), columns, load);
   }
-  const result = await c.query(text, values);
-  return Array.isArray(result) ? result : result.rows;
+  throw new TypeError("Reylo cannot read this client's results: its query() is none of pg's, Neon's, pg-promise's and PGlite's.");
 }
 
 // pg-promise sends a { text, values, types } object to pg as it is, on the database, a task or a
@@ -389,8 +402,8 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
   // where a statement prepared on the connection takes one. A client made with `prepare: false`,
   // as one behind a pooler in transaction mode is, still prepares nothing: its option wins.
   const pending = c.unsafe(text, params, { prepare: true });
-  // A client whose query has no raw() (a wrapper of postgres.js's shape): its values, given their kinds.
-  if (typeof pending?.raw !== "function") return bunRows(await pending, columns, true);
+  // postgres.js's own query has raw(). One without it comes from a wrapper, whose values the driver already converted.
+  if (typeof pending?.raw !== "function") throw new TypeError("Reylo cannot read this client's results: its unsafe() returns no postgres.js query, whose raw() hands over the server's text.");
   const raw = await pending.raw();
   const fields: Field[] = (raw.columns ?? []).map((f: { name: string; type: number }) => ({ name: f.name, oid: f.type }));
   if (!raw.length) return [];
@@ -641,9 +654,13 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
   // Slonik before every other query(): its query() takes only its sql tag's queries.
   if (isSlonik(c)) return await slonik(c, text, json().map(slonikParam), query.columns);
   // query() before unsafe(): Neon's neon() has both, and its unsafe() builds a fragment
-  // for a template instead of running anything. Reylo decodes every value itself.
-  if (typeof c.query === "function") return await queryPostgres(c, text, json(), query.columns);
+  // for a template instead of running anything. Reylo decodes every value itself, so a client
+  // that is none of the drivers' is refused before it runs anything (`takesQuery`).
+  if (typeof c.query === "function") return takesQuery(c) ? await queryPostgres(c, text, json(), query.columns) : undefined;
   if (typeof c.unsafe === "function") {
+    // Bun.sql's client, transactions, savepoints and reserved connections have commitDistributed(),
+    // and postgres.js's have typed(). Anything else with unsafe() is a wrapper around one of them.
+    if (typeof c.commitDistributed !== "function" && typeof c.typed !== "function") return undefined;
     // postgres.js reads a string for a date or time parameter through `new Date(x)` and binds
     // its toISOString(), so a timestamp's wall-clock time moved by the app's offset, and
     // `infinity` or a zone name failed with "Invalid time value". Declared `unknown` (705), it
@@ -658,7 +675,7 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
     const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i), query.dialect) ? c.typed(v, 705) : v));
     return bun ? bunRows(await c.unsafe(text, mapped), query.columns, true) : await postgresJs(c, text, mapped, query.columns, query.row);
   }
-  if (typeof c === "function") return await neonCallable(c, text, json().map(asByteaHex), query.columns);
+  if (isNeonFunction(c)) return await neonCallable(c, text, json().map(asByteaHex), query.columns);
   return undefined;
 }
 

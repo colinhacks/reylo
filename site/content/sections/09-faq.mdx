@@ -40,7 +40,15 @@ It holds your [migrations](/migrations), which you commit, and Reylo's cache of 
 </Accordion>
 <Accordion title="Can I build without a database?" id="faq-no-database">
 
-No, not yet: Reylo reads your types from a live database, so a type check or a build needs one. A host that builds before it migrates, such as Vercel, can build against a database of its own:
+Yes, where `reylo/.cache/` already holds each query's analysis. A type check or a build that can't reach the database reads its types from there, and says so: every build step prints one line, and a query's hover shows it.
+
+```txt
+reylo: cannot connect to the database at localhost:5432/app (DATABASE_URL in .env): connection refused; building from reylo/.cache/, analyzed 2026-11-07
+```
+
+The types are then as old as that analysis, so a migration since doesn't show. With a server's URL set, a build reads only what was analyzed on that database. With none, or where the database is a file, as on SQLite and DuckDB, it reads the newest analysis of any. A query that `reylo/.cache/` doesn't hold is an error.
+
+A host that builds before it migrates, such as Vercel, starts with no `reylo/.cache/`, so build against a database of its own there:
 
 1. Create an empty database.
 2. Run your migrations into it, which also tries each one before it reaches production.
