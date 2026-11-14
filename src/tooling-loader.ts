@@ -3,14 +3,15 @@
 // where a bundler has moved this file into a bundle of its own (Turbopack bundles the webpack
 // loader), from reylo's install as the project resolves it.
 //
-// The path is computed when it is needed and loaded with a `require` of it, which no bundler
-// follows. A bundler that reads this file (Turbopack bundles the webpack loader; webpack parses it
-// for its build dependencies) would otherwise bundle the whole build-time half with it, the
-// engine's child processes, the project's drivers and its DuckDB included; an `import()` of a
-// computed URL, which tsc wraps in a helper of its own, Turbopack reports as a module it cannot
-// resolve. A `require` loads an ES module that has no top-level await.
+// The path is computed when it is needed and loaded with a `require` from
+// `process.getBuiltinModule`, which no bundler follows. A bundler that reads this file (Turbopack
+// bundles the webpack loader; webpack parses it for its build dependencies) would otherwise bundle
+// the whole build-time half with it, the engine's child processes, the project's drivers and its
+// DuckDB included. Turbopack traces a `require` made by an imported `createRequire`, and an
+// `import()` of a computed URL, which tsc wraps in a helper of its own, and reports either as a
+// module it cannot resolve, which Next.js prints wherever reylo sits outside node_modules, as a
+// linked package does. A `require` loads an ES module that has no top-level await.
 import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuildTime } from "./build-time.ts";
@@ -26,6 +27,14 @@ export type Tooling = BuildTime & {
 };
 
 let loaded: Tooling | undefined;
+
+type NodeRequire = ((id: string) => unknown) & { resolve(id: string): string };
+
+/** Node's `createRequire`, reached where no bundler sees it. */
+function createRequire(from: string): NodeRequire {
+  const builtin = process.getBuiltinModule("node:module") as { createRequire(from: string): NodeRequire };
+  return builtin.createRequire(from);
+}
 
 /** The build-time half; `from` is the directory of the file being built, whose project resolves reylo where this file is in a bundle. */
 export async function tooling(from: string = process.cwd()): Promise<Tooling> {
