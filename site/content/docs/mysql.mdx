@@ -56,6 +56,20 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from MySQL's own analysis of it.
+
+Reylo sends the query to the live database [prepared](https://dev.mysql.com/doc/refman/8.4/en/sql-prepared-statements.html) and reads back the database's own type information on its parameters and return type. Reylo adds which parameters may be null, the row count, and the shape of JSON the query builds.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the prepared statement's metadata; whether one may be null, from the statement |
+| Column types | the prepared statement's metadata; a JSON column read from its table as what its JSON Schema `CHECK` admits |
+| Nullability | the server's `NOT NULL` flag, then what the `where` and `group by` rule out |
+| Cardinality | primary and unique keys, aggregates; a write is `void` |
+| Nested JSON | built with `json_object` and `json_arrayagg`, typed from their arguments |
+
 ## Data types
 
 Each MySQL type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from a `FLOAT`'s last digits ([Decimals](#decimals)) and what `Bun.sql` loses ([Drivers](#drivers)):

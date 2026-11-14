@@ -1,0 +1,192 @@
+---
+title: Cloudflare Workers
+description: How to use Reylo in a Cloudflare Worker. The Vite plugin, the schema the type check reads, D1, Durable Objects, tests, and the SQLite functions Cloudflare blocks.
+---
+
+<p className="dk-subheader">Reylo in Workers, on D1 and Durable Objects</p>
+
+Reylo runs in Cloudflare Workers.
+
+D1 and Durable Objects are SQLite, so everything on the [SQLite](/sqlite) page holds for them. This page covers what's specific to Cloudflare.
+
+| | |
+| --- | --- |
+| Databases | D1, and a Durable Object's own SQLite database |
+| Bundler | Vite, with Cloudflare's Vite plugin |
+| Tests | Vitest inside workerd, with Cloudflare's Vitest plugin |
+| Postgres and MySQL | Neon's serverless driver and PlanetScale's need nothing more. postgres.js, `pg` through Hyperdrive and `mysql2` need Node's APIs: a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag |
+| Example | [cloudflare-workers](https://github.com/colinhacks/reylo/tree/main/examples/cloudflare-workers), a Worker with D1 and a Durable Object that runs locally with no Cloudflare account |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="sqlite"
+create table users (
+  id integer primary key,
+  name text not null,
+  email text,
+  created_at text not null default current_timestamp
+) strict;
+```
+
+</Details>
+
+## Setup
+
+Add Reylo's Vite plugin beside Cloudflare's:
+
+```ts title="vite.config.ts"
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { defineConfig } from "vite";
+import reylo from "reylo/vite";
+
+export default defineConfig({
+  plugins: [reylo(), cloudflare()],
+});
+```
+
+- Import each `.sql` file by a relative path. A path through an alias, such as a tsconfig `paths` entry, reaches the Cloudflare plugin's text rule before Reylo.
+- A Worker that only uses D1 or Durable Objects needs no `nodejs_compat` flag.
+
+## Local database
+
+The type check reads your schema from the local D1 database that Wrangler keeps. Your migrations create it:
+
+```sh
+wrangler d1 migrations apply DB --local
+```
+
+Point [`direct_url`](/configuration#direct_url) at its file:
+
+```yaml title=".reylo.yaml"
+# named after the binding's database_id
+direct_url: file:./.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<name>.sqlite
+```
+
+- Set it in `.reylo.yaml`, not in `.env`: Wrangler loads `.env` into the Worker as secrets.
+- The file is the one `.sqlite` file beside `metadata.sqlite`, and its name changes only with the binding's `database_id`.
+- In CI, apply the migrations locally before the build. The type check needs no access to the remote database.
+
+## D1
+
+Pass the binding, or a session from `.withSession()`:
+
+```ts twoslash tab="worker.ts"
+import type { D1Database } from "@cloudflare/workers-types";
+import getUser from "./get_user.sql";
+
+export default {
+  async fetch(request: Request, env: { DB: D1Database }) {
+    const user = await getUser.run(env.DB, { id: 1 });
+    const sameUser = await getUser.run(env.DB.withSession(), { id: 1 });
+    return Response.json(user);
+  },
+};
+```
+
+```sql tab="get_user.sql" dialect="sqlite"
+select id, name, email from users where id = :id
+```
+
+- D1 has no transaction a query can join. Its `batch()` takes D1's own prepared statements.
+- D1 rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column.
+
+## Durable Objects
+
+Pass the object's `ctx.storage.sql`. It's synchronous, so `.runSync()` works on it, inside `ctx.storage.transactionSync(fn)` too:
+
+```ts twoslash tab="worker.ts"
+/// <reference types="@cloudflare/workers-types" />
+// ---cut---
+import { DurableObject } from "cloudflare:workers";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+export class Board extends DurableObject {
+  user(id: number) {
+    return getUser.runSync(this.ctx.storage.sql, { id });
+  }
+
+  // both inserts land, or neither
+  addPair() {
+    const sql = this.ctx.storage.sql;
+    this.ctx.storage.transactionSync(() => {
+      createUser.runSync(sql, { name: "Ada" });
+      createUser.runSync(sql, { name: "Grace" });
+    });
+  }
+}
+```
+
+```sql tab="create_user.sql" dialect="sqlite"
+insert into users (name) values (:name)
+```
+
+- The type check reads one database per package, the one its `.reylo.yaml` names. An object whose tables match D1's can run D1's migrations. An object with tables of its own goes in a package of its own, whose `.reylo.yaml` names a SQLite file made from that object's schema.
+- The [check against schema changes](/observability#when-the-schema-changes) runs in each object on its own, since each object is a database of its own. Before an object's tables exist, a query fails with the database's own error.
+- The storage rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
+
+## Blocked functions
+
+D1 and Durable Objects block some of SQLite's functions, such as `json_pretty` and `power`. The type check also runs each query on Cloudflare's SQLite, as Wrangler runs it locally, so a blocked function is a type error. It does so when your `package.json` has `wrangler` and its config has a D1 database or a SQLite-backed Durable Object:
+
+```jsonc title="wrangler.jsonc"
+{
+  // ...
+  "d1_databases": [{ "binding": "DB", "database_name": "app" }],
+  // a durable object class with a sqlite database
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Board"] }]
+}
+```
+
+## Tests
+
+Run the tests inside workerd with Cloudflare's Vitest plugin, and Reylo's beside it:
+
+```ts title="vitest.config.ts"
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
+import { defineConfig } from "vitest/config";
+import reylo from "reylo/vite";
+
+export default defineConfig({
+  plugins: [
+    reylo(),
+    cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } }),
+  ],
+});
+```
+
+Wrangler makes every imported `.sql` file a text module, and the Vitest plugin applies that rule before Vite runs any plugin. List Wrangler's other text types so that `.sql` is left to Reylo:
+
+```jsonc title="wrangler.jsonc"
+{
+  // ...
+  // wrangler's default text types, without .sql
+  "rules": [{ "type": "Text", "globs": ["**/*.txt", "**/*.html"] }]
+}
+```
+
+## Without Vite
+
+Wrangler's own bundler takes no plugins, but it runs a custom build first, on `wrangler dev` and `wrangler deploy`. Build with esbuild and Reylo's esbuild plugin:
+
+```jsonc title="wrangler.jsonc"
+{
+  // ...
+  "main": "dist/worker.js",
+  "build": { "command": "node build.ts", "watch_dir": ["src", "queries"] }
+}
+```
+
+```ts title="build.ts"
+import * as esbuild from "esbuild";
+import reylo from "reylo/esbuild";
+
+await esbuild.build({
+  entryPoints: ["src/worker.ts"],
+  bundle: true,
+  format: "esm",
+  platform: "neutral",
+  plugins: [reylo()],
+  outfile: "dist/worker.js",
+});
+```

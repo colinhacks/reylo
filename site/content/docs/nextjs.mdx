@@ -1,0 +1,299 @@
+---
+title: Next.js
+description: How to use Reylo in a Next.js app. The config wrapper, queries in server components, route handlers and server actions, client components, the edge runtime and the build's type check.
+---
+
+<p className="dk-subheader">Reylo in the Next.js App Router</p>
+
+Reylo runs in Next.js apps.
+
+Your server code imports `.sql` files, with Turbopack or webpack, and the build checks their types. This page covers what's specific to Next.js; [Usage](/usage) covers running a query.
+
+| | |
+| --- | --- |
+| Config | `withReylo` from `reylo/next`, around your Next.js config |
+| Bundlers | Turbopack, and webpack with `--webpack` |
+| Queries run in | Server components, route handlers and server actions |
+| Edge runtime | A driver that connects over HTTP or WebSockets, such as Neon's |
+| Example | [nextjs](https://github.com/colinhacks/reylo/tree/main/examples/nextjs), a Next.js 16.4 app on Postgres with a page, a server action and a route handler |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="postgres"
+create table users (
+  id serial primary key,
+  name text not null,
+  email text
+);
+
+create table posts (
+  id serial primary key,
+  user_id integer not null references users (id),
+  title text not null,
+  body text
+);
+```
+
+</Details>
+
+## Setup
+
+Wrap your Next.js config with `withReylo`, which loads `.sql` files in server code:
+
+```ts title="next.config.ts"
+import type { NextConfig } from "next";
+import { withReylo } from "reylo/next";
+
+const nextConfig: NextConfig = {
+  // ...
+};
+
+export default withReylo(nextConfig);
+```
+
+Add Reylo to `tsconfig.json` as a content mapper, as in [Setup](/#typescript):
+
+```jsonc title="tsconfig.json"
+{
+  "compilerOptions": { /* ... */ },
+  "contentMappers": [ // [!code ++]
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] } // [!code ++]
+  ] // [!code ++]
+}
+```
+
+To type-check without building, run `next typegen` first, which writes the route types:
+
+```json title="package.json"
+{
+  "scripts": {
+    "typecheck": "next typegen && tsc --noEmit --runExternalCode"
+  }
+}
+```
+
+## Database client
+
+Create one client for the app, in a module that only server code imports:
+
+```ts title="lib/db.ts"
+import "server-only";
+import postgres from "postgres";
+
+// one pool across the reloads of next dev
+const globalForDb = globalThis as typeof globalThis & { db?: postgres.Sql };
+
+export const db = (globalForDb.db ??= postgres(process.env.DATABASE_URL));
+```
+
+Next.js handles the `server-only` import itself, so the package needs no install. A client component that imports this module fails the build.
+
+## Server code
+
+Run a query wherever your code runs on the server. In `next dev`, an edit to a `.sql` file takes effect on the next request.
+
+### Server components
+
+Await a query in an async server component:
+
+```tsx twoslash tab="page.tsx"
+// @jsx: react-jsx
+// @filename: next.d.ts
+declare module "@/lib/db" {
+  import type { Sql } from "postgres";
+  export const db: Sql;
+}
+// @filename: page.tsx
+// ---cut---
+import { db } from "@/lib/db";
+import listPosts from "./list_posts.sql";
+
+export default async function Page() {
+  const posts = await listPosts.run(db);
+  //    ^?
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.id}>
+          {post.title} by {post.author}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+```sql tab="list_posts.sql" dialect="postgres"
+select p.id, p.title, u.name as author
+from posts p
+join users u on u.id = p.user_id
+order by p.id
+```
+
+With Cache Components, which `create-next-app` 16.4 turns on, a component that queries at request time goes inside `<Suspense>`, or is marked `"use cache"`.
+
+### Route handlers
+
+Return a query's result from a route handler:
+
+```ts twoslash tab="route.ts"
+// @filename: next.d.ts
+declare module "@/lib/db" {
+  import type { Sql } from "postgres";
+  export const db: Sql;
+}
+// @filename: route.ts
+// ---cut---
+import { db } from "@/lib/db";
+import getUser from "./get_user.sql";
+
+type Context = { params: Promise<{ id: string }> };
+
+export async function GET(request: Request, { params }: Context) {
+  const user = await getUser.run(db, { id: Number((await params).id) });
+  //    ^?
+  if (!user) return Response.json({ error: "not found" }, { status: 404 });
+  return Response.json(user);
+}
+```
+
+```sql tab="get_user.sql" dialect="postgres"
+select id, name, email
+from users
+where id = :id
+```
+
+A 64-bit integer comes back as a `bigint`, which `Response.json()` refuses, so convert it before you return it.
+
+### Server actions
+
+Run a write in a server action:
+
+```tsx twoslash tab="page.tsx"
+// @jsx: react-jsx
+// @filename: next.d.ts
+declare module "@/lib/db" {
+  import type { Sql } from "postgres";
+  export const db: Sql;
+}
+declare module "next/cache" {
+  export function revalidatePath(path: string): void;
+}
+// @filename: page.tsx
+// ---cut---
+import { revalidatePath } from "next/cache";
+import { db } from "@/lib/db";
+import createPost from "./create_post.sql";
+
+async function addPost(form: FormData) {
+  "use server";
+  await createPost.run(db, {
+    user_id: Number(form.get("user_id")),
+    title: String(form.get("title")),
+  });
+  revalidatePath("/");
+}
+
+export default function NewPost() {
+  return (
+    <form action={addPost}>
+      <input name="user_id" type="number" defaultValue={1} />
+      <input name="title" required />
+      <button>Post</button>
+    </form>
+  );
+}
+```
+
+```sql tab="create_post.sql" dialect="postgres"
+insert into posts (user_id, title)
+values (:user_id, :title)
+returning id
+```
+
+## Client components
+
+A client component can't import a query. Run it in a server component, and pass the rows as props:
+
+```tsx twoslash tab="page.tsx"
+// @jsx: react-jsx
+// @filename: next.d.ts
+declare module "@/lib/db" {
+  import type { Sql } from "postgres";
+  export const db: Sql;
+}
+// @filename: post-list.tsx
+import type listPosts from "./list_posts.sql";
+export function PostList({ posts }: { posts: Awaited<ReturnType<typeof listPosts.run>> }) {
+  return null;
+}
+// @filename: page.tsx
+// ---cut---
+import { db } from "@/lib/db";
+import listPosts from "./list_posts.sql";
+import { PostList } from "./post-list";
+
+export default async function Page() {
+  return <PostList posts={await listPosts.run(db)} />;
+}
+```
+
+```tsx twoslash tab="post-list.tsx"
+// @jsx: react-jsx
+// @filename: post-list.tsx
+// ---cut---
+"use client";
+import type listPosts from "./list_posts.sql";
+
+type Posts = Awaited<ReturnType<typeof listPosts.run>>;
+
+export function PostList({ posts }: { posts: Posts }) {
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.id}>{post.title}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+- A type-only import, as in `post-list.tsx`, leaves nothing for the bundler to load.
+- A client component that imports a query fails `next build`, and its page in `next dev`. Turbopack reports an "Unknown module type", and webpack that the file needs "an appropriate loader".
+- The type check doesn't catch it, since types don't know which side of the boundary a module runs on.
+
+## The edge runtime
+
+On the edge runtime, which has no TCP sockets, use a driver that connects over HTTP or WebSockets, such as Neon's:
+
+```ts twoslash tab="route.ts"
+import { neon } from "@neondatabase/serverless";
+import getUser from "./get_user.sql";
+
+export const runtime = "edge";
+
+const db = neon(process.env.DATABASE_URL);
+
+export async function GET(request: Request) {
+  const id = Number(new URL(request.url).searchParams.get("id"));
+  return Response.json(await getUser.run(db, { id }));
+}
+```
+
+Next.js 16.4 marks the edge runtime as deprecated, and refuses it with Cache Components on.
+
+## Building
+
+The build runs Reylo's type check after the compile, and a type error in a query or its caller stops it:
+
+```text title="Terminal"
+$ next build
+✓ Compiled successfully in 1760ms
+  Running next.config.js provided runAfterProductionCompile ...
+app/page.tsx(10,33): error TS2551: Property 'authr' does not exist on type '{ id: number; title: string; author: string; }'. Did you mean 'author'?
+⨯ Failed to run runAfterProductionCompile: Failed to type check (tsc --runExternalCode).
+```
+
+- Next.js's own check runs without `--runExternalCode`, so `withReylo` turns it off and runs Reylo's instead. The build still prints "Skipping validation of types" for Next.js's check.
+- Setting `typescript.ignoreBuildErrors` in your config turns Reylo's check off too.
+- The build needs your dev database, as the type check does. In CI, start it and apply your migrations first ([CI](/ci)). A host that builds before it migrates, such as Vercel, can [build against a database of its own](/faq#faq-no-database).

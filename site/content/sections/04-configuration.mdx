@@ -65,7 +65,7 @@ A type check or a build reads this database, so in CI and on your host it needs 
 A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([When the schema changes](/observability#when-the-schema-changes)). To type it on the database it runs on:
 
 ```sh
-DATABASE_URL_UNPOOLED="$PRODUCTION_URL" node --import reylo/register report.ts
+DATABASE_URL="$PRODUCTION_URL" node --import reylo/register report.ts
 ```
 
 ## `env`
