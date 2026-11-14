@@ -1,0 +1,1 @@
+create schema b; create type mood as enum ('m'); create type b.mood as enum ('b', 'c'); create macro b.cm() as 'b'::mood; create table b.pages (id integer primary key, parent_id integer references b.pages (id), k varchar default b.cm());

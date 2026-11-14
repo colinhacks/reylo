@@ -1,0 +1,1 @@
+create schema b; create type b.mood as enum ('a', 'b', 'c'); create type mood as enum ('a', 'b'); create table b.pages (id integer primary key, parent_id integer references b.pages (id), m varchar default 'a' check (m::main.mood <> 'b'));

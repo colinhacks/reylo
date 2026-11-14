@@ -1,0 +1,1 @@
+create schema b; create macro b.valid(s) as length(s) > 0; create macro valid(s) as s <> ''; create table b.t (id integer primary key, code varchar check (valid(code)), d boolean default valid('abc')); create table u (id integer primary key, code varchar check (b.valid(code)));

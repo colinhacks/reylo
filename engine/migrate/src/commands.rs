@@ -3220,7 +3220,15 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
     shadows.finish().await;
     server.close().await;
     // Whatever keeps the plan from being shown to make the dump's schema leaves the dump.
+    // The plan stands for an export DuckDB refused, but a macro's parameter defaults are in no
+    // catalog DuckDB gives but its export: the text says which macros it may have left them off.
+    let mut unread: Vec<String> = Vec::new();
+    if let (Ok(Some(_)), Some(e)) = (&styled, &unexported) {
+        let first = e.0.lines().next().unwrap_or_default().to_string();
+        unread = crate::diff::duckdb::unmodeled(db).await?.iter().map(|m| format!("-- {m} ({first}): add any it has by hand")).collect();
+    }
     match (styled, unexported) {
+        (Ok(Some(sql)), _) if !unread.is_empty() => Ok(format!("{}\n\n{}\n", unread.join("\n"), sql.trim_end())),
         (Ok(Some(sql)), _) => Ok(format!("{}\n", sql.trim_end())),
         (_, Some(e)) => Err(e),
         _ => Ok(dumped),
@@ -4091,7 +4099,10 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
         if let Err((_, e)) = shadows.open(k_lane).await? {
             return fail("The history fails when replayed in a shadow database", e, log);
         }
-        let k_target = read_target(shadows.db(k_lane), None).await?;
+        // On DuckDB, with the text the kept migrations made it from, where its catalog leaves out
+        // what only that text holds (a macro's parameters' defaults).
+        let k_text = kept.iter().map(|m| m.sql.as_str()).collect::<Vec<_>>().join(";\n");
+        let k_target = read_target(shadows.db(k_lane), (d == Dialect::Duckdb).then_some(k_text.as_str())).await?;
         // What the rewound migrations made, as this database recorded them, is undone, and nothing
         // else: the plan from their replay to the history kept, so that changes no migration made
         // stay, with their rows, and a table one renamed is renamed back.
@@ -4206,7 +4217,8 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
             if let Err((_, e)) = shadows.open(lane).await? {
                 return fail("The history fails when replayed in a shadow database", e, log);
             }
-            let target = read_target(shadows.db(lane), None).await?;
+            let text = kept.iter().chain(&records).map(|m| m.sql.as_str()).collect::<Vec<_>>().join(";\n");
+            let target = read_target(shadows.db(lane), (d == Dialect::Duckdb).then_some(text.as_str())).await?;
             match take_to(db, &target, &[], &expect).await {
                 Err(e) => return fail("Undoing changes no migration made failed", e.0, log),
                 Ok(Err(lines)) => return refused("Undoing changes no migration made wouldn't reach what the migrations make", lines, log),

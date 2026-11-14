@@ -1,0 +1,1 @@
+create sequence seq increment by 2; create macro m(x) as x > -1; create table p (id integer primary key, check (m(id))); create table c (id bigint default nextval('seq'), p integer references p (id));

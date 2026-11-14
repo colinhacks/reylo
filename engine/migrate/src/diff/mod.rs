@@ -163,6 +163,14 @@ pub trait Alterer {
         let _ = id;
         vec![]
     }
+    /// The statements that drop `from`, where its own drop isn't all it takes: DuckDB's default that
+    /// reads a macro by a bare name, kept as it is, which must let it go first. None at all where
+    /// another op's statements drop it, as DuckDB's rebuild around a macro made again does, and
+    /// then the drop waits for nothing.
+    fn drop(&self, from: &Object) -> Option<Vec<String>> {
+        let _ = from;
+        None
+    }
     /// Objects whose create or change the drop of `id` runs after, beyond what depends on it: the
     /// change that lets it go, where that is another object's statements.
     fn drop_waits_for(&self, id: &str) -> Vec<String> {
@@ -841,6 +849,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 }
             }
             Op::Drop(id) => {
+                // A drop another op's statements make waits for nothing.
+                if alterer.drop(&from.objects[id]).is_some_and(|s| s.is_empty()) {
+                    continue;
+                }
                 for d in alterer.drop_waits_for(id) {
                     if let Some(j) = create_of(&d) {
                         if j != k {
@@ -911,7 +923,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign {
                     plan.losses.push(id.clone());
                 }
-                plan.statements.extend(o.drop.iter().cloned());
+                plan.statements.extend(alterer.drop(o).unwrap_or_else(|| o.drop.clone()));
             }
             Op::Alter(id) => {
                 if let Some((old_id, _)) = renames.get(id).filter(|(old_id, _)| !stated.contains(old_id) && !followers.contains(id)) {

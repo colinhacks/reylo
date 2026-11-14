@@ -616,28 +616,43 @@ fn trimmed(sql: &str) -> String {
     sql.trim().trim_end_matches(';').trim_end().to_string()
 }
 
-/// DuckDB's own text of the database's schema, as `EXPORT DATABASE` writes it: of a copy of the
-/// schema without rows, made in a database of its own, on a connection of its own, so that the
-/// connection's transaction, if it has one, is left as it is. None where no copy could be made.
+/// DuckDB's own text of the database's schema, as `EXPORT DATABASE` writes it. A file's is that of a
+/// copy of its schema without rows, made in a DuckDB of its own that attaches the file read-only:
+/// DuckDB's copy of a schema fails inside DuckDB on some (a struct over a type of the database's
+/// own), and then refuses every statement of the DuckDB it ran in. A database in memory, a shadow,
+/// whose rows are a migration's few, is exported as it is, on a connection of its own, so that a
+/// transaction this one has open is left as it is. None on a database of another kind; an error, with
+/// DuckDB's, where DuckDB gives no such text.
 pub(crate) async fn exported(db: &mut Db) -> Result<Option<String>, Error> {
     let Db::Duckdb(conn) = db else { return Ok(None) };
     let catalog = conn.query("select current_database() as n")?.1.first().and_then(|r| r[0].clone()).unwrap_or_default();
-    let mut side = conn.sibling()?;
-    let copy = crate::db::random_name().replace(crate::db::SHADOW_PREFIX, "reylo_schema_");
-    let dir = std::env::temp_dir().join(format!("{copy}-{}", std::process::id()));
-    let made = (|| -> Result<String, Error> {
-        side.query(&format!("attach ':memory:' as {copy}"))?;
-        let written = (|| {
-            side.query(&format!("copy from database {} to {copy} (schema)", quote(&catalog)))?;
-            side.query(&format!("drop table if exists {copy}.main.{HISTORY_TABLE}"))?;
-            side.query(&format!("export database {copy} to {}", literal(&dir.to_string_lossy())))?;
-            std::fs::read_to_string(dir.join("schema.sql")).map_err(|e| Error(e.to_string()))
-        })();
-        let _ = side.query(&format!("detach {copy}"));
-        written
-    })();
+    let name = crate::db::random_name().replace(crate::db::SHADOW_PREFIX, "reylo_schema_");
+    let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+    let read = || std::fs::read_to_string(dir.join("schema.sql")).map_err(|e| Error(e.to_string()));
+    let made = match conn.file() {
+        Some(path) => (|| -> Result<String, Error> {
+            let mut side = crate::duckdb::Conn::open(":memory:", &std::env::temp_dir())?;
+            // The copy binds each default and check as it makes the table, and in the current
+            // database: the source, where the macros they call already are.
+            side.query(&format!("attach {} as {name}_src (read_only); attach ':memory:' as {name}; use {name}_src", literal(&path.to_string_lossy())))?;
+            side.query(&format!("copy from database {name}_src to {name} (schema)"))?;
+            side.query(&format!("drop table if exists {name}.main.{HISTORY_TABLE}"))?;
+            side.query(&format!("export database {name} to {}", literal(&dir.to_string_lossy())))?;
+            read()
+        })(),
+        None => (|| -> Result<String, Error> {
+            let mut side = conn.sibling()?;
+            side.query(&format!("export database {} to {}", quote(&catalog), literal(&dir.to_string_lossy())))?;
+            // Without the history, which is no schema's.
+            let text = read()?;
+            Ok(crate::sql::split_statements(&text, Dialect::Duckdb).into_iter().filter(|st| !mentions(&st.text).contains(&HISTORY_TABLE.to_lowercase())).map(|st| format!("{};", st.text.trim())).collect::<Vec<_>>().join("\n"))
+        })(),
+    };
     let _ = std::fs::remove_dir_all(&dir);
-    Ok(made.ok())
+    // DuckDB's copy of a schema, which a file's export goes through, fails where a column's default
+    // calls a macro of another schema than `main`.
+    let why = if conn.file().is_some() { "; DuckDB can't copy the schema of a database where a column's default calls a macro of another schema than main" } else { "" };
+    made.map(Some).map_err(|e| Error(format!("DuckDB could not export this database's schema: {}{why}", e.0.lines().next().unwrap_or_default())))
 }
 
 /// The statements of an export, each after those that make what it names: `EXPORT DATABASE` writes
@@ -702,6 +717,8 @@ pub(crate) fn in_order(text: &str) -> Vec<String> {
                     1 => {}
                     n => {
                         out.insert(format!("{}.{}", parts[n - 2], parts[n - 1]));
+                        // Or a method's call, `x.m()` for `m(x)`, of `main`'s.
+                        out.insert(format!("main.{}", parts[n - 1]));
                     }
                 }
                 k += 1;
@@ -1037,8 +1054,9 @@ fn cast_types(sql: &str) -> BTreeSet<String> {
     let tokens = tokenize(sql, Dialect::Duckdb);
     let word = |t: &Token| matches!(t.kind, TokenKind::Word | TokenKind::Quoted);
     let mut out = BTreeSet::new();
-    for (k, t) in tokens.iter().enumerate() {
-        if (t.text != "::" && t.upper() != "AS") || !tokens.get(k + 1).is_some_and(word) {
+    let casts = casting(&tokens);
+    for k in 0..tokens.len() {
+        if !casts[k] || !tokens.get(k + 1).is_some_and(word) {
             continue;
         }
         // A type written with its schema, `main.mood`, by its last name.
@@ -1154,21 +1172,13 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         // Where it starts again: its first value, since the start it was made with isn't kept.
         let first = if q.increment.starts_with('-') { &q.max } else { &q.min };
         let restart = format!("create sequence {name} start with {first} increment by {} minvalue {} maxvalue {}{}", q.increment, q.min, q.max, if q.cycle { " cycle" } else { "" });
-        // The value it gives next, where a plan made from this database starts it again.
-        let next = match (q.last.as_deref().and_then(|l| l.parse::<i128>().ok()), q.increment.parse::<i128>().ok(), q.min.parse::<i128>().ok(), q.max.parse::<i128>().ok()) {
-            // Past its last value, it goes round where it cycles, and else stays at its bound.
-            (Some(last), Some(inc), Some(min), Some(max)) => {
-                let next = last + inc;
-                match (next > max, next < min, q.cycle) {
-                    (true, _, true) => min.to_string(),
-                    (_, true, true) => max.to_string(),
-                    (true, _, false) => max.to_string(),
-                    (_, true, false) => min.to_string(),
-                    _ => next.to_string(),
-                }
-            }
-            _ => q.start.clone(),
+        // The value it gave last, from which a plan made from this database goes on; where it gave
+        // none since its file was opened, its start is the value it gives next.
+        let given = match q.last.as_deref() {
+            Some(last) => format!("last{SEP}{last}"),
+            None => format!("first{SEP}{}", q.start),
         };
+        let bounds = format!("bounds{SEP}{}{SEP}{}{SEP}{}{SEP}{}", q.increment, q.min, q.max, q.cycle);
         s.add(Object {
             id: id.clone(),
             kind: Some(Kind::Sequence),
@@ -1176,7 +1186,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
             create: vec![create],
             drop: vec![format!("drop sequence {name}")],
             deps: schema_dep(&q.schema),
-            extra: vec![format!("restart{SEP}{restart}"), format!("start{SEP}{}", q.start), format!("next{SEP}{next}")],
+            extra: vec![format!("restart{SEP}{restart}"), format!("start{SEP}{}", q.start), given, bounds],
             change: Change::Alter { blocks: false },
             ..Object::default()
         });
@@ -1482,6 +1492,8 @@ struct Group {
     ids: Vec<String>,
     members: BTreeSet<String>,
     touched: BTreeSet<String>,
+    /// What the target drops that the group drops itself (`Around::gone`).
+    gone: BTreeSet<String>,
 }
 
 /// A table's facts, from its object and its columns'.
@@ -1784,9 +1796,49 @@ impl Alterer for DuckdbAlterer {
         out
     }
 
+    fn drop(&self, from: &Object) -> Option<Vec<String>> {
+        let schemas = self.schemas();
+        let (fs, ts) = schemas.as_ref()?;
+        // What a group drops itself, between its tables' drops and its creates.
+        if self.groups(fs, ts).iter().any(|g| g.gone.contains(&from.id)) {
+            return Some(vec![]);
+        }
+        // (See `drop_taken`.)
+        // A macro, type or sequence the plan drops that a default it keeps as it is names bare, where
+        // DuckDB reads it as this one and the target as another of its name in `main`: the default
+        // is taken off around the drop and set back after, as the target reads it.
+        if !matches!(from.kind, Some(Kind::Function | Kind::Type | Kind::Sequence)) {
+            return None;
+        }
+        if ts.objects.contains_key(&from.id) {
+            return None;
+        }
+        let taken = self.drop_taken(fs, ts, from);
+        if taken.is_empty() {
+            return None;
+        }
+        // By the names the target gives them: the drop runs after the tables' own statements.
+        let targets: Vec<&Object> = taken.iter().filter_map(|c| self.target_column(ts, c)).collect();
+        let mut out: Vec<String> = targets.iter().map(|t| format!("alter table {} alter column {} drop default", table_name(ts, t), field(t, "name").unwrap_or_default())).collect();
+        out.extend(from.drop.iter().cloned());
+        out.extend(targets.iter().map(|t| format!("alter table {} alter column {} set default {}", table_name(ts, t), field(t, "name").unwrap_or_default(), written_default(t))));
+        Some(out)
+    }
+
     fn drop_waits_for(&self, id: &str) -> Vec<String> {
         let schemas = self.schemas();
         let Some((fs, ts)) = schemas.as_ref() else { return vec![] };
+        // The defaults its drop takes off and sets back read, by the same name, what the plan makes
+        // in its place: that first.
+        if let Some(x) = fs.objects.get(id).filter(|_| !ts.objects.contains_key(id)) {
+            // And they bind it as it will be: after its change, as after its create. Each after the
+            // table's own statements too, which may rename the column (`drop` names it as the target
+            // does).
+            let taken = self.drop_taken(fs, ts, x);
+            let mut out: Vec<String> = taken.iter().filter_map(|c| self.target_column(ts, c)).flat_map(|t| t.deps.iter().cloned().chain([t.id.clone()]).chain(t.owner.clone())).collect();
+            out.extend(self.groups(fs, ts).iter().filter(|g| g.touched.iter().any(|t| fs.objects.get(t).is_some_and(|o| fields(o, "recorded").contains(&id)))).map(|g| g.ids[0].clone()));
+            return out;
+        }
         // A macro, type or sequence the plan drops, after the groups that make again the tables
         // DuckDB records as using it, which let it go; anything else the plan drops goes first.
         if ts.objects.contains_key(id) || !fs.objects.get(id).is_some_and(|x| matches!(x.kind, Some(Kind::Function | Kind::Type | Kind::Sequence))) {
@@ -1837,7 +1889,7 @@ impl Alterer for DuckdbAlterer {
                 // Each made after what it depends on, as DuckDB records it or as its body reaches it
                 // (DuckDB binds a macro's body as it makes it), and dropped before it.
                 let needs = |o: &Object, x: &Object| -> bool {
-                    fields(o, "recorded").contains(&x.id.as_str()) || ts.objects.get(&o.id).is_some_and(|t| t.id != x.id && reaches(ts, &t.def, x, &schema_of_id(&t.id)))
+                    fields(o, "recorded").contains(&x.id.as_str()) || ts.objects.get(&o.id).is_some_and(|t| t.id != x.id && (t.binds.contains(&x.id) || t.deps.contains(&x.id) || reaches(ts, &t.def, x, &schema_of_id(&t.id), Reading::Expression)))
                 };
                 let mut ordered: Vec<&Object> = Vec::new();
                 let mut left: Vec<&Object> = group.ids.iter().filter_map(|id| fs.objects.get(id)).collect();
@@ -1853,8 +1905,12 @@ impl Alterer for DuckdbAlterer {
                         // On the database a plan is made from, a sequence goes on from the value it
                         // gives next; in a migration, which runs on databases whose values no plan can
                         // know, it starts where the target's starts, which the file says.
-                        let (start, next) = (field(t, "start").unwrap_or_default(), field(x, "next").unwrap_or_default());
+                        let start = field(t, "start").unwrap_or_default();
                         if fs.live {
+                            let (next, past) = next_value(x, t);
+                            if let Some(why) = past {
+                                comments.push(format!("-- {} {why}", x.id.trim_start_matches("sequence ")));
+                            }
                             create = vec![t.create[0].replacen(&format!(" start with {start} "), &format!(" start with {next} "), 1)];
                         } else {
                             comments.push(format!("-- DuckDB makes {} again, so it starts again at {start}: where rows hold its values, start it past them", x.id.trim_start_matches("sequence ")));
@@ -1881,6 +1937,25 @@ impl DuckdbAlterer {
         let new = self.renames_of(table, ts).into_iter().find(|(_, old)| old == name).map(|(new, _)| new).unwrap_or_else(|| name.to_string());
         let table_name = table.strip_prefix("table ").unwrap_or(table);
         ts.objects.get(&format!("column {table_name}.{new}"))
+    }
+
+    /// The columns of tables the plan keeps whose defaults use the macro, type or sequence `x` the
+    /// plan drops, as DuckDB reads them or as it recorded them, and that the target keeps as they are:
+    /// taken off around its drop and set back after, as the target reads them.
+    fn drop_taken<'a>(&self, fs: &'a Schema, ts: &Schema, x: &Object) -> Vec<&'a Object> {
+        if !matches!(x.kind, Some(Kind::Function | Kind::Type | Kind::Sequence)) || ts.objects.contains_key(&x.id) {
+            return vec![];
+        }
+        fs.objects
+            .values()
+            .filter(|c| c.kind == Some(Kind::Column) && c.owner.as_ref().is_some_and(|t| ts.objects.contains_key(t)))
+            .filter(|c| {
+                let Some(d) = column_change(&c.def).default else { return false };
+                let table = c.owner.as_deref().unwrap_or_default();
+                reaches(fs, &d, x, &schema_of_id(table), Reading::Default) || (fs.objects.get(table).is_some_and(|t| fields(t, "recorded").contains(&x.id.as_str())) && names_bare(&d, x))
+            })
+            .filter(|c| self.target_column(ts, c).is_some_and(|t| column_change(&t.def).default == column_change(&c.def).default))
+            .collect()
     }
 
     /// The defaults `taken` off their columns set back as the target has them, by the columns' names
@@ -1911,7 +1986,7 @@ impl DuckdbAlterer {
         let ids: Vec<String> = xs.iter().map(|x| x.id.clone()).collect();
         let ids = &ids[..];
         // An expression of a table, read in the table's schema.
-        let reaches_from = |text: &str, owner: &str| xs.iter().any(|x| reaches(fs, text, x, &schema_of_id(owner)));
+        let reaches_from = |text: &str, owner: &str, reading: Reading| xs.iter().any(|x| reaches(fs, text, x, &schema_of_id(owner), reading));
         let recorded = |o: &Object| fields(o, "recorded").iter().any(|r| ids.iter().any(|id| id == r));
         let columns_of = |t: &str| -> Vec<&'a Object> { fs.objects.values().filter(|c| c.kind == Some(Kind::Column) && c.owner.as_deref() == Some(t)).collect() };
         let mut members: Vec<&Object> = fs
@@ -1920,10 +1995,15 @@ impl DuckdbAlterer {
             .filter(|t| t.kind == Some(Kind::Table))
             .filter(in_both)
             .filter(|t| {
-                let reaches = |text: &str| reaches_from(text, &t.id);
-                let checked = fields(t, "constraint").iter().any(|k| k.starts_with("check ") && reaches(k)) || columns_of(&t.id).iter().any(|c| column_change(&c.def).generated.is_some_and(|g| reaches(&g)));
-                let defaulted = columns_of(&t.id).iter().any(|c| column_change(&c.def).default.is_some_and(|d| reaches(&d)));
-                checked || (recorded(t) && !defaulted)
+                let reaches = |text: &str, reading: Reading| reaches_from(text, &t.id, reading);
+                let checked = fields(t, "constraint").iter().any(|k| k.starts_with("check ") && reaches(k, Reading::Expression)) || columns_of(&t.id).iter().any(|c| column_change(&c.def).generated.is_some_and(|g| reaches(&g, Reading::Expression)));
+                // DuckDB records what a default named when it was set, so one that names it bare and
+                // now reads another schema's accounts for the record too: taken off and set back.
+                let defaulted = columns_of(&t.id).iter().any(|c| column_change(&c.def).default.is_some_and(|d| reaches(&d, Reading::Default) || xs.iter().any(|x| names_bare(&d, x))));
+                // A table that drops its key on one the target drops, which DuckDB records as using
+                // one: that one goes inside the group (`gone`), after this one's drop.
+                let releases = fields(t, "references").iter().filter_map(|r| fs.objects.get(*r)).any(|x| x.kind == Some(Kind::Table) && !ts.objects.contains_key(&x.id) && recorded(x) && ts.objects.get(&t.id).is_some_and(|b| !fields(b, "references").contains(&x.id.as_str())));
+                checked || (recorded(t) && !defaulted) || releases
             })
             .collect();
         // With every table that references one, those whose keys on it the plan drops or moves too
@@ -1955,13 +2035,26 @@ impl DuckdbAlterer {
             .objects
             .values()
             .filter(|c| c.kind == Some(Kind::Column) && c.owner.as_deref().is_some_and(|t| ts.objects.contains_key(t) && !member(t)))
-            .filter(|c| column_change(&c.def).default.is_some_and(|d| reaches_from(&d, c.owner.as_deref().unwrap_or_default())))
+            .filter(|c| column_change(&c.def).default.is_some_and(|d| reaches_from(&d, c.owner.as_deref().unwrap_or_default(), Reading::Default) || (c.owner.as_deref().and_then(|t| fs.objects.get(t)).is_some_and(|t| recorded(t)) && xs.iter().any(|x| names_bare(&d, x)))))
             .collect();
         out.indexes = fs
             .objects
             .values()
-            .filter(|i| i.kind == Some(Kind::Index) && (recorded(i) || reaches_from(&i.def, i.owner.as_deref().unwrap_or_default())) && !member(i.owner.as_deref().unwrap_or_default()) && ts.objects.get(&i.id).is_some_and(|t| t.def == i.def))
+            .filter(|i| i.kind == Some(Kind::Index) && (recorded(i) || reaches_from(&i.def, i.owner.as_deref().unwrap_or_default(), Reading::Expression)) && !member(i.owner.as_deref().unwrap_or_default()) && ts.objects.get(&i.id).is_some_and(|t| t.def == i.def))
             .collect();
+        let member_ids: BTreeSet<String> = members.iter().map(|m| m.id.clone()).collect();
+        let tables = || fs.objects.values().filter(|o| o.kind == Some(Kind::Table));
+        out.gone = tables()
+            .filter(|x| !ts.objects.contains_key(&x.id) && recorded(x) && !fields(x, "references").iter().any(|r| member(r)))
+            .filter(|x| {
+                let children: Vec<&Object> = tables().filter(|o| o.id != x.id && fields(o, "references").contains(&x.id.as_str())).collect();
+                !children.is_empty() && children.iter().all(|c| member(&c.id) && targeted(fs, ts, &member_ids, ids, &c.id) && ts.objects.get(&c.id).is_some_and(|t| !fields(t, "references").contains(&x.id.as_str())))
+            })
+            .collect();
+        let gone_tables: Vec<String> = out.gone.iter().map(|g| g.id.clone()).collect();
+        out.gone.extend(fs.objects.values().filter(|t| {
+            t.kind == Some(Kind::Type) && !ts.objects.contains_key(&t.id) && !ids.contains(&t.id) && recorded(t) && tables().filter(|o| fields(o, "recorded").contains(&t.id.as_str())).all(|o| member(&o.id) || gone_tables.contains(&o.id))
+        }));
 
         // Each after the tables it references, as it is and as it will be.
         let mut left = members;
@@ -2022,7 +2115,7 @@ impl DuckdbAlterer {
             .map(|(mut ids, _)| {
                 ids.sort();
                 let a = self.around_of(fs, ts, &ids);
-                Group { members: a.members.iter().map(|m| m.id.clone()).collect(), touched: a.touched(), ids }
+                Group { members: a.members.iter().map(|m| m.id.clone()).collect(), touched: a.touched(), gone: a.gone.iter().map(|g| g.id.clone()).collect(), ids }
             })
             .collect();
         *self.groups.borrow_mut() = Some(out.clone());
@@ -2031,7 +2124,7 @@ impl DuckdbAlterer {
 
     /// The group the macro, type or sequence `id` is made again in.
     fn group_of(&self, fs: &Schema, ts: &Schema, id: &str) -> Group {
-        self.groups(fs, ts).into_iter().find(|g| g.ids.iter().any(|x| x == id)).unwrap_or(Group { ids: vec![id.to_string()], members: BTreeSet::new(), touched: BTreeSet::new() })
+        self.groups(fs, ts).into_iter().find(|g| g.ids.iter().any(|x| x == id)).unwrap_or(Group { ids: vec![id.to_string()], members: BTreeSet::new(), touched: BTreeSet::new(), gone: BTreeSet::new() })
     }
 
     /// The statements that make the macro, type or sequence `id` again, `between`, around what
@@ -2043,7 +2136,8 @@ impl DuckdbAlterer {
         let a = self.around_of(fs, ts, ids);
         let mut out: Vec<String> = a.taken.iter().map(|c| format!("alter table {} alter column {} drop default", table_name(fs, c), field(c, "name").unwrap_or_default())).collect();
         out.extend(a.indexes.iter().map(|i| i.drop[0].clone()));
-        let mut between_all: Vec<String> = a.types.iter().map(|t| t.drop[0].clone()).collect();
+        let mut between_all: Vec<String> = a.gone.iter().map(|g| g.drop[0].clone()).collect();
+        between_all.extend(a.types.iter().map(|t| t.drop[0].clone()));
         between_all.extend(between);
         for t in &a.types {
             between_all.extend(ts.objects.get(&t.id).map(|x| x.create[0].clone()));
@@ -2128,6 +2222,44 @@ fn targeted(fs: &Schema, ts: &Schema, members: &BTreeSet<String>, ids: &[String]
     members.contains(id) && a.def != b.def && !new_after && fields(b, "references").iter().all(|r| kept(r))
 }
 
+/// The value a sequence `from` gives next, made again as `to`: past the last it gave by the target's
+/// increment, round to its other end where the target cycles; and where it runs past the target's
+/// bounds, why, which DuckDB then refuses.
+fn next_value(from: &Object, to: &Object) -> (String, Option<String>) {
+    // The value it gives next is the last and its own increment; the target's bounds take it, or not.
+    let inc = o_bounds(from).first().and_then(|v| v.parse::<i128>().ok()).unwrap_or(1);
+    let bounds: Vec<&str> = o_bounds(to);
+    let (min, max, cycle) = (bounds.get(1).and_then(|v| v.parse::<i128>().ok()), bounds.get(2).and_then(|v| v.parse::<i128>().ok()), bounds.get(3) == Some(&"true"));
+    let target_inc = bounds.first().and_then(|v| v.parse::<i128>().ok()).unwrap_or(inc);
+    let mut next = match (field(from, "last").and_then(|l| l.parse::<i128>().ok()), field(from, "first").and_then(|f| f.parse::<i128>().ok())) {
+        (Some(last), _) => last + inc,
+        (None, Some(first)) => first,
+        _ => return (field(to, "start").unwrap_or_default().to_string(), None),
+    };
+    // Where the target starts it further on, or bounds it further on, it starts there: no value it
+    // gave lies past that.
+    let start = field(to, "start").and_then(|v| v.parse::<i128>().ok());
+    if target_inc > 0 {
+        next = next.max(start.unwrap_or(next)).max(min.unwrap_or(next));
+    } else {
+        next = next.min(start.unwrap_or(next)).min(max.unwrap_or(next));
+    }
+    match (min, max) {
+        (Some(min), Some(max)) if next > max || next < min => {
+            if cycle {
+                ((if target_inc > 0 { min } else { max }).to_string(), None)
+            } else {
+                (next.to_string(), Some(format!("would give {next} next, past the bounds schema.sql gives it ({min} to {max}), which DuckDB refuses: widen them, or let it cycle")))
+            }
+        }
+        _ => (next.to_string(), None),
+    }
+}
+
+fn o_bounds(o: &Object) -> Vec<&str> {
+    o.extra.iter().find_map(|l| l.strip_prefix("bounds").and_then(|r| r.strip_prefix(SEP))).map(|r| r.split(SEP).collect()).unwrap_or_default()
+}
+
 /// What a macro, type or sequence is made again around (`DuckdbAlterer::around_of`).
 #[derive(Default)]
 struct Around<'a> {
@@ -2135,6 +2267,11 @@ struct Around<'a> {
     taken: Vec<&'a Object>,
     indexes: Vec<&'a Object>,
     types: Vec<&'a Object>,
+    /// What the target drops that has to go between its tables' drops and its creates, so that the
+    /// group drops it there: a table DuckDB records as using one, which members made as the target
+    /// has them reference (their keys on it go with their drops); and a type written with one, used
+    /// by no table but the members.
+    gone: Vec<&'a Object>,
 }
 
 impl Around<'_> {
@@ -2195,43 +2332,174 @@ fn qualified_calls(sql: &str) -> BTreeSet<(Option<String>, String)> {
     out
 }
 
-/// Whether an expression of an object in the schema `home` reaches the macro, type or sequence `x`:
-/// names it, or calls a macro whose body reaches it, as DuckDB records a table's dependencies. A
-/// name written with its schema is that schema's; one written bare, the expression's own schema's
-/// or `main`'s, where DuckDB looks for it.
-fn reaches(schema: &Schema, text: &str, x: &Object, home: &str) -> bool {
-    let qualified_name = x.id.trim_start_matches("macro ").trim_start_matches("type ").trim_start_matches("sequence ");
-    let bare = super::last_written(qualified_name).trim_matches('"').replace("\"\"", "\"").to_lowercase();
-    let in_schema = schema_of_id(&x.id);
-    let quoted = |n: &str| format!("\"{}\"", n.replace('"', "\"\""));
-    let names_it = |t: &str, home: &str| -> bool {
-        let bare_here = in_schema == "main" || in_schema == home;
-        match x.kind {
-            // A sequence by the text that names it, `nextval('s')`, in any of the ways it may be written.
-            Some(Kind::Sequence) => {
-                let mut forms = vec![format!("{in_schema}.{bare}"), format!("{in_schema}.{}", quoted(&bare)), format!("{}.{}", quoted(&in_schema), quoted(&bare))];
-                if bare_here {
-                    forms.extend([bare.clone(), quoted(&bare)]);
+/// How DuckDB reads a bare name in an expression: in a default (or a column's type), in the
+/// table's own schema first, then `main`'s; in a check, a generated column, an index or a macro's
+/// body, in `main`'s alone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    Default,
+    Expression,
+}
+
+/// The names of a struct's or a union's parts, and of what a text casts to, apart: each cast's
+/// type, with the schema written before it, and the types inside it, but not its fields' names.
+fn qualified_casts(sql: &str) -> BTreeSet<(Option<String>, String)> {
+    let tokens = tokenize(sql, Dialect::Duckdb);
+    let word = |t: &Token| matches!(t.kind, TokenKind::Word | TokenKind::Quoted);
+    let mut out = BTreeSet::new();
+    // The type at `k`, and its parts': the index after it.
+    fn read_type(tokens: &[Token], k: usize, out: &mut BTreeSet<(Option<String>, String)>) -> usize {
+        let word = |t: &Token| matches!(t.kind, TokenKind::Word | TokenKind::Quoted);
+        if !tokens.get(k).is_some_and(word) {
+            return k + 1;
+        }
+        let (schema, mut at) = if tokens.get(k + 1).is_some_and(|d| d.text == ".") && tokens.get(k + 2).is_some_and(word) { (Some(unquote(&tokens[k]).to_lowercase()), k + 2) } else { (None, k) };
+        let name = unquote(&tokens[at]).to_lowercase();
+        out.insert((schema, name.clone()));
+        at += 1;
+        if tokens.get(at).is_some_and(|t| t.text == "(") {
+            // A struct's and a union's parts open with their names; a map's and the rest's are types.
+            let named = matches!(name.as_str(), "struct" | "union" | "row");
+            let mut j = at + 1;
+            while j < tokens.len() && tokens[j].text != ")" {
+                if named && tokens.get(j).is_some_and(word) {
+                    j += 1;
                 }
-                let lower = t.to_lowercase();
-                forms.iter().any(|f| lower.contains(&format!("'{f}'")))
+                j = read_type(tokens, j, out);
+                // To the end of the part: past a size or a nested list.
+                let mut depth = 0;
+                while j < tokens.len() && !(depth == 0 && (tokens[j].text == "," || tokens[j].text == ")")) {
+                    match tokens[j].text.as_str() {
+                        "(" | "[" => depth += 1,
+                        ")" | "]" => depth -= 1,
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if tokens.get(j).is_some_and(|t| t.text == ",") {
+                    j += 1;
+                }
             }
-            Some(Kind::Type) => bare_here && cast_types(t).contains(&bare),
-            _ => qualified_calls(t).iter().any(|(s, n)| *n == bare && s.as_ref().map_or(bare_here, |s| *s == in_schema)),
+            at = j + 1;
+        }
+        at
+    }
+    let casts = casting(&tokens);
+    for k in 0..tokens.len() {
+        if casts[k] && tokens.get(k + 1).is_some_and(word) {
+            read_type(&tokens, k + 1, &mut out);
+        }
+    }
+    out
+}
+
+/// Which of `tokens` a type follows: each `::`, and each `AS` of a `CAST(…)` or `TRY_CAST(…)`, not a
+/// macro's own `AS` before its body, or an alias's.
+fn casting(tokens: &[Token]) -> Vec<bool> {
+    let mut open: Vec<bool> = Vec::new();
+    let mut out = vec![false; tokens.len()];
+    for (k, t) in tokens.iter().enumerate() {
+        match t.text.as_str() {
+            "(" => open.push(k > 0 && matches!(tokens[k - 1].upper().as_str(), "CAST" | "TRY_CAST")),
+            ")" => {
+                open.pop();
+            }
+            "::" => out[k] = true,
+            _ => out[k] = t.upper() == "AS" && open.last() == Some(&true),
+        }
+    }
+    out
+}
+
+/// The sequences a text gives values of, `nextval('s')` and `currval('s')`, each with the schema
+/// written before it.
+fn sequence_refs(sql: &str) -> BTreeSet<(Option<String>, String)> {
+    let tokens = tokenize(sql, Dialect::Duckdb);
+    let mut out = BTreeSet::new();
+    for k in 0..tokens.len().saturating_sub(2) {
+        if matches!(tokens[k].upper().as_str(), "NEXTVAL" | "CURRVAL") && tokens[k + 1].text == "(" && tokens[k + 2].kind == TokenKind::Str {
+            let text = tokens[k + 2].text.trim_matches('\'').replace("''", "'");
+            let parts: Vec<Token> = tokenize(&text, Dialect::Duckdb).into_iter().filter(|t| t.text != ".").collect();
+            match &parts[..] {
+                [name] => out.insert((None, unquote(name).to_lowercase())),
+                [.., schema, name] => out.insert((Some(unquote(schema).to_lowercase()), unquote(name).to_lowercase())),
+                [] => false,
+            };
+        }
+    }
+    out
+}
+
+/// Whether a text names `x` by its bare name, wherever DuckDB would read that now: where DuckDB
+/// recorded a default as using `x`, the default goes on using it in DuckDB's record after a name it
+/// reads elsewhere first is made.
+fn names_bare(text: &str, x: &Object) -> bool {
+    if x.id.starts_with("macro table ") {
+        return false;
+    }
+    let prefix = match x.kind {
+        Some(Kind::Sequence) => "sequence ",
+        Some(Kind::Type) => "type ",
+        _ => "macro ",
+    };
+    let bare = super::last_written(x.id.trim_start_matches(prefix)).trim_matches('"').replace("\"\"", "\"").to_lowercase();
+    let refs = match x.kind {
+        Some(Kind::Sequence) => sequence_refs(text),
+        Some(Kind::Type) => qualified_casts(text),
+        _ => qualified_calls(text),
+    };
+    refs.iter().any(|(s, n)| s.is_none() && *n == bare)
+}
+
+/// Whether an expression of an object in the schema `home`, read as `reading` says, reaches the
+/// macro, type or sequence `x`: names it, or calls a macro whose body reaches it, as DuckDB records a
+/// table's dependencies. A name written with its schema is that schema's; one written bare is where
+/// DuckDB reads it.
+fn reaches(schema: &Schema, text: &str, x: &Object, home: &str, reading: Reading) -> bool {
+    // No expression calls a table macro.
+    if x.id.starts_with("macro table ") {
+        return false;
+    }
+    let prefix = match x.kind {
+        Some(Kind::Sequence) => "sequence ",
+        Some(Kind::Type) => "type ",
+        _ => "macro ",
+    };
+    let bare = super::last_written(x.id.trim_start_matches(prefix)).trim_matches('"').replace("\"\"", "\"").to_lowercase();
+    let in_schema = schema_of_id(&x.id);
+    // The schema a bare name of the kind of `x` is read in.
+    let resolve = |name: &str, home: &str, reading: Reading| -> String {
+        let here = reading == Reading::Default && home != "main" && schema.objects.values().any(|o| o.id.starts_with(prefix) && !o.id.starts_with("macro table ") && schema_of_id(&o.id) == home && super::last_written(o.id.trim_start_matches(prefix)).trim_matches('"').eq_ignore_ascii_case(name));
+        if here { home.to_string() } else { "main".to_string() }
+    };
+    // A name written after one that is no schema of the database is a method's call, `b.m()` for
+    // `m(b)`, or a catalog's, `dev.m()`: bare, as DuckDB reads it.
+    let a_schema = |q: &str| q == "main" || schema.objects.values().any(|o| o.kind == Some(Kind::Schema) && o.def.eq_ignore_ascii_case(q));
+    let written = |s: &Option<String>| s.clone().filter(|q| a_schema(q));
+    let is_x = |(s, n): &(Option<String>, String), home: &str, reading: Reading| -> bool { *n == bare && written(s).unwrap_or_else(|| resolve(n, home, reading)) == in_schema };
+    let names_it = |t: &str, home: &str, reading: Reading| -> bool {
+        match x.kind {
+            Some(Kind::Sequence) => sequence_refs(t).iter().any(|r| is_x(r, home, reading)),
+            Some(Kind::Type) => qualified_casts(t).iter().any(|r| is_x(r, home, reading)),
+            _ => qualified_calls(t).iter().any(|r| is_x(r, home, reading)),
         }
     };
-    let mut queue = vec![(text.to_string(), home.to_string())];
+    let mut queue = vec![(text.to_string(), home.to_string(), reading)];
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    while let Some((t, home)) = queue.pop() {
-        if names_it(&t, &home) {
+    while let Some((t, home, reading)) = queue.pop() {
+        if names_it(&t, &home, reading) {
             return true;
         }
-        let called = qualified_calls(&t);
-        for m in schema.objects.values().filter(|m| m.kind == Some(Kind::Function) && !m.id.starts_with("macro table ")) {
-            let (name, own) = (super::last_written(m.id.trim_start_matches("macro ")).trim_matches('"').to_lowercase(), schema_of_id(&m.id));
-            let is_called = called.iter().any(|(s, n)| *n == name && s.as_ref().map_or(own == "main" || own == home, |s| *s == own));
-            if is_called && seen.insert(m.id.clone()) {
-                queue.push((m.def.clone(), own));
+        for (s, n) in qualified_calls(&t) {
+            let own = written(&s).unwrap_or_else(|| {
+                let here = reading == Reading::Default && home != "main" && schema.objects.values().any(|o| o.kind == Some(Kind::Function) && schema_of_id(&o.id) == home && super::last_written(o.id.trim_start_matches("macro ")).trim_matches('"').eq_ignore_ascii_case(&n));
+                if here { home.clone() } else { "main".to_string() }
+            });
+            // DuckDB reads a macro's body where it is called, as the call reads its own names.
+            for m in schema.objects.values().filter(|m| m.kind == Some(Kind::Function) && !m.id.starts_with("macro table ") && schema_of_id(&m.id) == own && super::last_written(m.id.trim_start_matches("macro ")).trim_matches('"').eq_ignore_ascii_case(&n)) {
+                if seen.insert(m.id.clone()) {
+                    queue.push((m.def.clone(), home.clone(), reading));
+                }
             }
         }
     }

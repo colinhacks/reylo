@@ -1,0 +1,1 @@
+create schema b; create macro helper() as 1; create macro b.helper() as 20; create macro b.outer() as helper(); create table b.pages (id integer primary key, parent_id integer references b.pages (id), n integer, g integer as (n + b.outer())); create index ix on b.pages ((n + b.outer()));

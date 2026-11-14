@@ -166,6 +166,8 @@ pub fn version(root: &Path) -> Result<String, Error> {
 /// One open database: a file, or an empty one in memory.
 struct Instance {
     db: Database,
+    /// The file it is of, by its canonical path; none for a database in memory.
+    path: Option<PathBuf>,
 }
 
 // SAFETY: a DuckDB database handle may be used from any thread, by connections each of one thread.
@@ -253,7 +255,7 @@ impl Conn {
                     }
                     return Err(Error(said));
                 }
-                let instance = Arc::new(Instance { db });
+                let instance = Arc::new(Instance { db, path: key.clone() });
                 if let Some(k) = key {
                     open.get_or_insert_with(HashMap::new).insert(k, Arc::downgrade(&instance));
                 }
@@ -267,6 +269,11 @@ impl Conn {
             return Err(Error("DuckDB could not connect to the database".into()));
         }
         Ok(Conn { conn, instance })
+    }
+
+    /// The file the database is, where it is one.
+    pub fn file(&self) -> Option<&Path> {
+        self.instance.path.as_deref()
     }
 
     /// Another connection to the same database, with a session and a transaction of its own.
