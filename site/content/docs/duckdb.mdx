@@ -385,6 +385,8 @@ DuckDB's catalog holds no macro parameter's default (the `5` of `b := 5`), so Re
 
 DuckDB 2.0 writes a comment on a column so that the file no longer opens, where the column's table calls a macro (in a check, a default or a generated column) and another table's key references it. Reylo Migrate follows such a comment with an `alter table` that changes nothing, which writes the table again whole. Do the same in a migration you write by hand.
 
+Each command opens the database in a DuckDB of its own, which loads no extension a migration loaded before. A migration that uses an extension's functions, types or indexes (spatial's `st_` functions, an R-tree index) starts with `load spatial;`, which Reylo Migrate doesn't write: add it by hand. Its check can't see the line is missing, since the shadow replays every migration in one DuckDB. Reylo's `db push` and `db wipe` load no extension either, so they fail on a database that needs one.
+
 ## Limits
 
 What Reylo can't type on DuckDB, and what to do instead:
