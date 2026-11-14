@@ -12,8 +12,9 @@ Your types are inferred from your development database when you build. A migrati
 reylo: users.email has changed since get_user.sql was built (it was text not null, and is now text), so its types may be out of date until the next build.
 ```
 
-The query runs as before, and the database itself refuses one that names a dropped column. Once your development database has the change, the next build types the query to match.
+A query that warns still runs, and the database itself refuses one that names a dropped column. Once your development database has the change, the next build types the query to match.
 
 - **What warns:** a column the query reads that was dropped, retyped or made nullable, and a function it calls whose body changed.
-- **What doesn't:** a change that only adds, such as a new column, table, index, default or `not null`.
+- **What fails the call:** an insert of `rows(…)` whose column's default changed, since it would write the old one.
+- **What doesn't:** a change that only adds, such as a new column, table, index or `not null`.
 - **When it checks:** on a query's first run in a process, then once a minute, with one catalog query on your client. A role that can't read the catalog skips it.
