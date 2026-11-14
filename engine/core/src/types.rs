@@ -36,7 +36,7 @@ pub struct Type {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Kind {
-    Boolean,
+    Boolean(BooleanType),
     Integer(IntegerType),
     Float(FloatType),
     Decimal(DecimalType),
@@ -53,7 +53,6 @@ pub enum Kind {
     Instant(InstantType),
     Duration(DurationType),
     Union(UnionType),
-    Set(SetType),
     Map(MapType),
     Range(RangeType),
     Multirange(RangeType),
@@ -66,8 +65,22 @@ pub enum Kind {
     /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
     /// Appended, as a new kind is, so the order of the kinds never changes.
     TaggedUnion(TaggedUnionType),
-    /// Rows of columns: what a statement returns, and a relation nested in a value.
-    Rows(RowsType),
+    /// A fixed number of values in order, each of its own type, with no names.
+    Tuple(TupleType),
+}
+
+/// A truth value; `enum` lists the only values where they are fewer than both.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BooleanType {
+    /// The only values, `"true"` or `"false"`: one is a literal.
+    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+}
+
+/// A fixed number of values in order, each of its own type, with no names.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TupleType {
+    pub elements: Vec<Position>,
 }
 
 /// Bounds on an ordered kind's finite values, each a value in its kind's canonical text. A side
@@ -161,6 +174,9 @@ pub struct FloatType {
     pub infinity: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub nan: bool,
+    /// The only values, in canonical text: one is a literal.
+    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
 }
 
 /// An exact decimal: a coefficient of at most `precision` digits times 10^-scale, the scale from
@@ -253,20 +269,43 @@ pub struct UuidType {
     pub version: Option<u8>,
 }
 
-/// A sequence of `element`s; `any_depth` where an element may itself be an array of them.
+/// A sequence of `element`s; `any_depth` where an element may itself be an array of them. An
+/// array of records is rows: its size how many, `unique` the keys no two share, and `order` the
+/// fields they are sorted on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArrayType {
-    pub element: Box<Position>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<Size>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub any_depth: bool,
+    /// No two elements are equal: MySQL's `SET`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub distinct: bool,
+    /// For an array of records: each set of fields no two elements agree on all of, a null equal
+    /// to another null, and a table's primary key first where the rows hold it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique: Vec<Vec<String>>,
+    /// For an array of records: the fields the elements are sorted on, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<OrderField>,
+    /// Last, so that what an array says of itself reads before its elements.
+    pub element: Box<Position>,
 }
 
-/// Fields, in order.
+impl ArrayType {
+    /// An array of `element`, of any size and in any order.
+    pub fn of(element: Position) -> ArrayType {
+        ArrayType { element: Box::new(element), size: None, any_depth: false, distinct: false, unique: Vec::new(), order: Vec::new() }
+    }
+}
+
+/// Fields, in order, and with `extra`, any other key holding a value of its type.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecordType {
     pub fields: Vec<Field>,
+    /// Keys beyond the fields: an open object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<Box<Position>>,
 }
 
 /// A JSON value: what the statement built (`content`), a JSON Schema every value satisfies
@@ -369,15 +408,6 @@ impl Alternative {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SetType {
-    pub element: Box<Position>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub size: Option<Size>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub duplicates: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapType {
     pub key: Box<Type>,
     pub value: Box<Position>,
@@ -467,21 +497,7 @@ impl Position {
     }
 }
 
-/// A result's column: a row always has every column, and a statement whose result repeats a name
-/// has a diagnostic at each later column of it ([`crate::analysis::clashes`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Column {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub ty: Type,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub nullable: bool,
-    /// `COMMENT ON COLUMN`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comment: Option<String>,
-}
-
-/// A record's field.
+/// A record's field: a column of a row, a key of an object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
@@ -492,11 +508,17 @@ pub struct Field {
     /// The key may be absent: a structured parameter's `?` member, a JSON object's key.
     #[serde(default, skip_serializing_if = "is_false")]
     pub optional: bool,
+    /// The value an optional field takes where its key is absent, in its type's canonical text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// What the field is, as its source documents it: `COMMENT ON COLUMN`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 impl Field {
     pub fn new(name: impl Into<String>, ty: Type, nullable: bool) -> Field {
-        Field { name: name.into(), ty, nullable, optional: false }
+        Field { name: name.into(), ty, nullable, optional: false, default: None, comment: None }
     }
 
     pub fn position(&self) -> Position {
@@ -530,26 +552,10 @@ pub struct Param {
 /// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
 pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0.json";
 
-/// Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's
-/// `MULTISET` or an Oracle nested table.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RowsType {
-    pub cardinality: Cardinality,
-    pub columns: Vec<Column>,
-    /// Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, and
-    /// a table's primary key first where the rows hold it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unique: Vec<Vec<String>>,
-    /// The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the
-    /// result.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub order: Vec<OrderColumn>,
-}
-
-/// A column rows are sorted on.
+/// A field an array of records is sorted on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OrderColumn {
-    pub column: String,
+pub struct OrderField {
+    pub field: String,
     /// Sorted from the highest value down.
     #[serde(default, skip_serializing_if = "is_false")]
     pub desc: bool,
@@ -557,7 +563,7 @@ pub struct OrderColumn {
     pub nulls: NullsOrder,
 }
 
-/// Where NULLs sort among a column's values.
+/// Where NULLs sort among a field's values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NullsOrder {
@@ -565,18 +571,39 @@ pub enum NullsOrder {
     Last,
 }
 
-/// What a statement returns: a [`RowsType`], with what every type may carry. It reads and writes as a [`Type`] of kind `rows`, and refuses any other kind, as the format does.
+/// What a statement returns: an array of records, a record per row, its size how many rows. It
+/// reads and writes as a [`Type`], and refuses any but an array of records, as the format does.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "Type", into = "Type")]
-pub struct ResultRows {
-    pub rows: RowsType,
-    pub label: Option<String>,
-    pub comment: Option<String>,
-}
+pub struct ResultRows(Type);
 
-impl From<RowsType> for ResultRows {
-    fn from(rows: RowsType) -> Self {
-        ResultRows { rows, label: None, comment: None }
+impl ResultRows {
+    /// The rows of `columns`, as many as `cardinality` says, unique on `unique` and sorted on `order`.
+    pub fn new(cardinality: Cardinality, columns: Vec<Field>, unique: Vec<Vec<String>>, order: Vec<OrderField>) -> ResultRows {
+        let size = match cardinality {
+            Cardinality::One => Some(Size::exact(1)),
+            Cardinality::AtMostOne => Some(Size::at_most(1)),
+            Cardinality::None => Some(Size::exact(0)),
+            Cardinality::Many => None,
+        };
+        let element = Position::non_null(Kind::Record(RecordType { fields: columns, extra: None }).into());
+        ResultRows(Kind::Array(ArrayType { size, unique, order, ..ArrayType::of(element) }).into())
+    }
+
+    /// The array the rows are.
+    pub fn array(&self) -> &ArrayType {
+        match &self.0.kind {
+            Kind::Array(array) => array,
+            _ => unreachable!("a result is an array"),
+        }
+    }
+
+    /// The columns, each a field of the rows' record.
+    pub fn columns(&self) -> &[Field] {
+        match &self.array().element.ty.kind {
+            Kind::Record(record) => &record.fields,
+            _ => unreachable!("a result's element is a record"),
+        }
     }
 }
 
@@ -584,16 +611,16 @@ impl TryFrom<Type> for ResultRows {
     type Error = String;
 
     fn try_from(ty: Type) -> Result<Self, String> {
-        match ty.kind {
-            Kind::Rows(rows) => Ok(ResultRows { rows, label: ty.label, comment: ty.comment }),
-            other => Err(format!("a statement's result is of kind rows, not {}", other.name())),
+        match &ty.kind {
+            Kind::Array(ArrayType { element, .. }) if matches!(element.ty.kind, Kind::Record(_)) => Ok(ResultRows(ty)),
+            other => Err(format!("a statement's result is an array of records, not {}", other.name())),
         }
     }
 }
 
 impl From<ResultRows> for Type {
     fn from(result: ResultRows) -> Self {
-        Type { kind: Kind::Rows(result.rows), label: result.label, comment: result.comment }
+        result.0
     }
 }
 
@@ -716,7 +743,7 @@ impl Kind {
     /// Where the kind stands in the spec's list of kinds, which orders a union's members.
     pub fn rank(&self) -> usize {
         match self {
-            Kind::Boolean => 0,
+            Kind::Boolean(_) => 0,
             Kind::Integer(_) => 1,
             Kind::Float(_) => 2,
             Kind::Decimal(_) => 3,
@@ -732,7 +759,6 @@ impl Kind {
             Kind::Instant(_) => 13,
             Kind::Duration(_) => 14,
             Kind::Union(_) => 15,
-            Kind::Set(_) => 16,
             Kind::Map(_) => 17,
             Kind::Range(_) => 18,
             Kind::Multirange(_) => 19,
@@ -741,14 +767,14 @@ impl Kind {
             Kind::Opaque => 22,
             Kind::Unknown => 23,
             Kind::TaggedUnion(_) => 24,
-            Kind::Rows(_) => 25,
+            Kind::Tuple(_) => 25,
         }
     }
 
     /// The kind's name as the format writes it.
     pub fn name(&self) -> &'static str {
         match self {
-            Kind::Boolean => "boolean",
+            Kind::Boolean(_) => "boolean",
             Kind::Integer(_) => "integer",
             Kind::Float(_) => "float",
             Kind::Decimal(_) => "decimal",
@@ -764,7 +790,6 @@ impl Kind {
             Kind::Instant(_) => "instant",
             Kind::Duration(_) => "duration",
             Kind::Union(_) => "union",
-            Kind::Set(_) => "set",
             Kind::Map(_) => "map",
             Kind::Range(_) => "range",
             Kind::Multirange(_) => "multirange",
@@ -773,7 +798,7 @@ impl Kind {
             Kind::Opaque => "opaque",
             Kind::Unknown => "unknown",
             Kind::TaggedUnion(_) => "tagged_union",
-            Kind::Rows(_) => "rows",
+            Kind::Tuple(_) => "tuple",
         }
     }
 }
@@ -796,7 +821,7 @@ impl Type {
     }
 
     pub fn boolean() -> Type {
-        Kind::Boolean.into()
+        Kind::Boolean(BooleanType::default()).into()
     }
 
     /// A two's complement integer of `bits`.
@@ -846,11 +871,11 @@ impl Type {
     }
 
     pub fn array(element: Position) -> Type {
-        Kind::Array(ArrayType { element: Box::new(element), size: None, any_depth: false }).into()
+        Kind::Array(ArrayType::of(element)).into()
     }
 
     pub fn record(fields: Vec<Field>) -> Type {
-        Kind::Record(RecordType { fields }).into()
+        Kind::Record(RecordType { fields, extra: None }).into()
     }
 
     /// Any JSON.
@@ -951,12 +976,16 @@ impl Type {
         }
         match &self.kind {
             Kind::Array(a) => a.element.ty.collect_names(out),
-            Kind::Set(s) => s.element.ty.collect_names(out),
-            Kind::Record(r) => r.fields.iter().for_each(|f| f.ty.collect_names(out)),
+            Kind::Record(r) => {
+                r.fields.iter().for_each(|f| f.ty.collect_names(out));
+                if let Some(extra) = &r.extra {
+                    extra.ty.collect_names(out);
+                }
+            }
+            Kind::Tuple(t) => t.elements.iter().for_each(|e| e.ty.collect_names(out)),
             Kind::Json(JsonType { content: Some(c), .. }) => c.ty.collect_names(out),
             Kind::Union(u) => u.members.iter().for_each(|m| m.collect_names(out)),
             Kind::TaggedUnion(t) => t.alternatives.iter().for_each(|a| a.ty.collect_names(out)),
-            Kind::Rows(r) => r.columns.iter().for_each(|c| c.ty.collect_names(out)),
             Kind::Map(m) => {
                 m.key.collect_names(out);
                 m.value.ty.collect_names(out);
@@ -975,12 +1004,11 @@ impl Type {
         let position = |p: Position| Position { ty: p.ty.renamed(rename), ..p };
         self.kind = match self.kind {
             Kind::Array(a) => Kind::Array(ArrayType { element: Box::new(position(*a.element)), ..a }),
-            Kind::Set(s) => Kind::Set(SetType { element: Box::new(position(*s.element)), ..s }),
-            Kind::Record(r) => Kind::Record(RecordType { fields: r.fields.into_iter().map(|f| Field { ty: f.ty.renamed(rename), ..f }).collect(), ..r }),
+            Kind::Record(r) => Kind::Record(RecordType { fields: r.fields.into_iter().map(|f| Field { ty: f.ty.renamed(rename), ..f }).collect(), extra: r.extra.map(|e| Box::new(position(*e))) }),
+            Kind::Tuple(t) => Kind::Tuple(TupleType { elements: t.elements.into_iter().map(position).collect() }),
             Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(position(*c))), schema }),
             Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect() }),
             Kind::TaggedUnion(t) => Kind::TaggedUnion(TaggedUnionType { alternatives: t.alternatives.into_iter().map(|a| Alternative { ty: a.ty.renamed(rename), ..a }).collect() }),
-            Kind::Rows(r) => Kind::Rows(RowsType { columns: r.columns.into_iter().map(|c| Column { ty: c.ty.renamed(rename), ..c }).collect(), ..r }),
             Kind::Map(m) => Kind::Map(MapType { key: Box::new(m.key.renamed(rename)), value: Box::new(position(*m.value)), ..m }),
             Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
             Kind::Multirange(r) => Kind::Multirange(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
@@ -1055,6 +1083,8 @@ impl Type {
             }
             Kind::Bytes(b) => with(size(&b.size)),
             Kind::Uuid(u) => with(u.version.map(|v| format!("v{v}")).into_iter().collect()),
+            Kind::Array(a) if a.distinct => format!("{}{{{}}}", label(), position_short(&a.element)),
+            Kind::Boolean(BooleanType { values: Some(values) }) => format!("{}({})", label(), values.join(" | ")),
             Kind::Array(a) => {
                 let element = position_short(&a.element);
                 let sized = match &a.size {
@@ -1089,16 +1119,47 @@ impl Type {
                 let alternatives: Vec<String> = t.alternatives.iter().map(|a| format!("{}: {}", a.tag, position_short(&a.position()))).collect();
                 format!("{}<{}>", self.label.as_deref().unwrap_or("tagged"), alternatives.join(" | "))
             }
-            Kind::Rows(r) => {
-                let columns: Vec<String> = r.columns.iter().map(|c| format!("{}: {}", c.name, position_short(&Position::new(c.ty.clone(), c.nullable)))).collect();
-                format!("{}<{}>{{ {} }}", self.kind.name(), r.cardinality.as_str(), columns.join(", "))
-            }
-            Kind::Set(set) => format!("{}{{{}}}", label(), position_short(&set.element)),
+            Kind::Tuple(t) => format!("({})", t.elements.iter().map(position_short).collect::<Vec<_>>().join(", ")),
             Kind::Map(m) => format!("{}({} => {})", label(), m.key.short(), position_short(&m.value)),
             Kind::Range(r) | Kind::Multirange(r) if self.label.is_none() => format!("{}({})", self.kind.name(), r.subtype.short()),
             _ => label(),
         }
     }
+}
+
+/// Rule 7 on an array's keys and order: only on an array of records that can hold more than one
+/// element, each naming its fields, an order naming each once, and `distinct` never beside
+/// `unique`, which implies it.
+fn check_rows(a: &ArrayType) -> Result<(), String> {
+    if a.unique.is_empty() && a.order.is_empty() {
+        return Ok(());
+    }
+    let Kind::Record(record) = &a.element.ty.kind else {
+        return Err("unique and order are only for an array of records".into());
+    };
+    let fits = |name: &str| record.fields.iter().any(|f| f.name == name);
+    let more_than_one = a.size.as_ref().is_none_or(|s| s.exact.or(s.max).is_none_or(|n| n > 1));
+    if !more_than_one {
+        return Err("unique and order are only for an array that can hold more than one element".into());
+    }
+    if a.distinct && !a.unique.is_empty() {
+        return Err("distinct beside unique, which implies it".into());
+    }
+    for key in &a.unique {
+        if key.is_empty() {
+            return Err("a set of unique fields holds at least one".into());
+        }
+        if let Some(k) = key.iter().find(|k| !fits(k)) {
+            return Err(format!("unique field {k:?} is not a field"));
+        }
+    }
+    if let Some(o) = a.order.iter().find(|o| !fits(&o.field)) {
+        return Err(format!("order field {:?} is not a field", o.field));
+    }
+    if let Some((at, o)) = a.order.iter().enumerate().find(|(at, o)| a.order[..*at].iter().any(|p| p.field == o.field)) {
+        return Err(format!("order names field {:?} twice, at {at}", o.field));
+    }
+    Ok(())
 }
 
 fn position_short(p: &Position) -> String {
@@ -1180,16 +1241,30 @@ impl Type {
                     check_size(size, false).or_else(fail)?;
                 }
                 position(&a.element, "[]")?;
-            }
-            Kind::Set(s) => {
-                if let Some(size) = &s.size {
-                    check_size(size, false).or_else(fail)?;
-                }
-                position(&s.element, "[]")?;
+                check_rows(a).or_else(fail)?;
             }
             Kind::Record(r) => {
                 for f in &r.fields {
                     f.ty.check_at(&format!("{at}.{}", f.name))?;
+                    if f.default.is_some() && !f.optional {
+                        return fail(format!("field {:?} has a default but is not optional", f.name));
+                    }
+                }
+                if let Some(extra) = &r.extra {
+                    position(extra, ".*")?;
+                }
+            }
+            Kind::Tuple(t) => {
+                if t.elements.is_empty() {
+                    return fail("a tuple holds at least one element".into());
+                }
+                for (i, e) in t.elements.iter().enumerate() {
+                    position(e, &format!(".{i}"))?;
+                }
+            }
+            Kind::Boolean(BooleanType { values: Some(values) }) => {
+                if values.is_empty() || values.iter().any(|v| v != "true" && v != "false") {
+                    return fail(format!("a boolean's enum lists true or false, not {values:?}"));
                 }
             }
             Kind::Json(j) => {
@@ -1218,31 +1293,6 @@ impl Type {
             Kind::Union(u) => {
                 for (i, m) in u.members.iter().enumerate() {
                     m.check_at(&format!("{at}|{i}"))?;
-                }
-            }
-            Kind::Rows(r) => {
-                for c in &r.columns {
-                    c.ty.check_at(&format!("{at}.{}", c.name))?;
-                }
-                if !r.unique.is_empty() && r.cardinality != Cardinality::Many {
-                    return fail("unique is only for rows that can be more than one".into());
-                }
-                if !r.order.is_empty() && r.cardinality != Cardinality::Many {
-                    return fail("order is only for rows that can be more than one".into());
-                }
-                if let Some(o) = r.order.iter().find(|o| !r.columns.iter().any(|c| c.name == o.column)) {
-                    return fail(format!("order column {:?} is not a column", o.column));
-                }
-                if let Some((at, o)) = r.order.iter().enumerate().find(|(at, o)| r.order[..*at].iter().any(|p| p.column == o.column)) {
-                    return fail(format!("order names column {:?} twice, at {at}", o.column));
-                }
-                for key in &r.unique {
-                    if key.is_empty() {
-                        return fail("a set of unique columns holds at least one".into());
-                    }
-                    if let Some(k) = key.iter().find(|k| !r.columns.iter().any(|c| &c.name == *k)) {
-                        return fail(format!("unique column {k:?} is not a column"));
-                    }
                 }
             }
             Kind::TaggedUnion(t) => {
@@ -1410,13 +1460,13 @@ mod tests {
                 param.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", param.name));
                 types += 1;
             }
-            for value in descriptor["result"]["columns"].as_array().into_iter().flatten() {
-                let column: Column = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
+            for value in descriptor["result"]["element"]["type"]["fields"].as_array().into_iter().flatten() {
+                let column: Field = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
                 assert_eq!(serde_json::to_value(&column).unwrap(), *value, "{name}");
                 column.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", column.name));
                 types += 1;
             }
-            // The rows themselves, whose `unique` sets rule 7 holds to their columns.
+            // The rows themselves, whose `unique` sets and `order` rule 7 holds to their fields.
             if let Some(result) = descriptor.get("result") {
                 round_trip(result.clone());
             }
@@ -1441,7 +1491,11 @@ mod tests {
         round_trip(json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/1000000", "label": "time"}));
         round_trip(json!({"kind": "duration", "max": "P1199M"}));
         round_trip(json!({"kind": "duration", "max": "PT0.5S", "tick": "1/1000"}));
-        round_trip(json!({"kind": "set", "size": {"max": 2}, "label": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
+        round_trip(json!({"kind": "array", "size": {"max": 2}, "label": "set", "distinct": true, "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
+        round_trip(json!({"kind": "tuple", "elements": [{"type": {"kind": "integer", "bits": 32}}, {"nullable": true, "type": {"kind": "text"}}]}));
+        round_trip(json!({"kind": "record", "fields": [{"name": "id", "type": {"kind": "integer", "bits": 32}}, {"name": "tag", "optional": true, "default": "none", "comment": "What it is", "type": {"kind": "text"}}], "extra": {"type": {"kind": "text"}}}));
+        round_trip(json!({"kind": "boolean", "enum": ["true"]}));
+        round_trip(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "enum": ["0.5"]}));
         round_trip(json!({"kind": "map", "label": "hstore", "key": {"kind": "text"}, "value": {"nullable": true, "type": {"kind": "text"}}}));
         round_trip(json!({"kind": "geometry", "model": "geodetic", "srid": 4326, "subtype": "point", "coordinates": "xy", "label": "geography"}));
         round_trip(json!({"kind": "xml", "fragment": true, "label": "xml"}));
@@ -1496,25 +1550,41 @@ mod tests {
         refused(json!({"kind": "opaque"}));
         refused(json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 0, "mantissa_bits": 3}}}));
         let id = json!({"name": "id", "type": {"kind": "integer", "bits": 32}});
-        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["missing"]]}));
-        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [[]]}));
-        refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "unique": [["id"]]}));
-        refused(json!({"kind": "rows", "cardinality": "one", "columns": [id], "unique": [["id"]]}));
-        serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["id"]]})).unwrap().check().unwrap();
-        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "missing", "nulls": "last"}]}));
-        refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "order": [{"column": "id", "nulls": "last"}]}));
-        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "id", "nulls": "last"}, {"column": "id", "desc": true, "nulls": "first"}]}));
-        serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "id", "desc": true, "nulls": "first"}]})).unwrap().check().unwrap();
+        let rows = |extra: Value| {
+            let mut array = json!({"kind": "array", "element": {"type": {"kind": "record", "fields": [id]}}});
+            array.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            array
+        };
+        let passes = |value: Value| serde_json::from_value::<Type>(value).unwrap().check().unwrap();
+        refused(rows(json!({"unique": [["missing"]]})));
+        refused(rows(json!({"unique": [[]]})));
+        refused(rows(json!({"size": {"max": 1}, "unique": [["id"]]})));
+        refused(rows(json!({"size": {"exact": 1}, "unique": [["id"]]})));
+        refused(rows(json!({"unique": [["id"]], "distinct": true})));
+        passes(rows(json!({"unique": [["id"]]})));
+        refused(rows(json!({"order": [{"field": "missing", "nulls": "last"}]})));
+        refused(rows(json!({"size": {"max": 1}, "order": [{"field": "id", "nulls": "last"}]})));
+        refused(rows(json!({"order": [{"field": "id", "nulls": "last"}, {"field": "id", "desc": true, "nulls": "first"}]})));
+        passes(rows(json!({"order": [{"field": "id", "desc": true, "nulls": "first"}]})));
+        // Keys and an order are for records alone.
+        refused(json!({"kind": "array", "unique": [["id"]], "element": {"type": {"kind": "integer", "bits": 32}}}));
+        refused(json!({"kind": "tuple", "elements": []}));
+        refused(json!({"kind": "record", "fields": [{"name": "a", "default": "1", "type": {"kind": "integer", "bits": 32}}]}));
+        refused(json!({"kind": "boolean", "enum": ["yes"]}));
     }
 
     #[test]
-    fn a_statements_result_is_rows_and_nothing_else() {
+    fn a_statements_result_is_an_array_of_records_and_nothing_else() {
         let result = |result: Value| serde_json::from_value::<StatementDescriptor>(json!({"$schema": SCHEMA, "dialect": {"name": "postgres", "version": "18"}, "sql": "select 1", "params": [], "result": result, "diagnostics": []}));
         assert!(result(json!({"kind": "integer", "bits": 32})).is_err());
-        let rows = json!({"kind": "rows", "cardinality": "one", "columns": []});
+        assert!(result(json!({"kind": "array", "element": {"type": {"kind": "integer", "bits": 32}}})).is_err());
+        let rows = json!({"kind": "array", "size": {"exact": 1}, "element": {"type": {"kind": "record", "fields": []}}});
         let read = result(rows.clone()).unwrap();
-        assert_eq!(read.result.rows.cardinality, Cardinality::One);
+        assert_eq!(read.result.array().size, Some(Size::exact(1)));
         assert_eq!(serde_json::to_value(&read).unwrap()["result"], rows);
+        // Each cardinality is the array's size.
+        let sized = |c: Cardinality| serde_json::to_value(ResultRows::new(c, Vec::new(), Vec::new(), Vec::new())).unwrap().get("size").cloned();
+        assert_eq!([sized(Cardinality::One), sized(Cardinality::AtMostOne), sized(Cardinality::Many), sized(Cardinality::None)], [Some(json!({"exact": 1})), Some(json!({"max": 1})), None, Some(json!({"exact": 0}))]);
     }
 
     #[test]

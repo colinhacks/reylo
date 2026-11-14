@@ -7,7 +7,7 @@
 // serializer that writes a BigInt exactly writes, `JSON.rawJSON(String(v))`; JSON.stringify itself
 // refuses a BigInt), a decimal its text, a timestamptz its ISO text in UTC, a date and a timestamp
 // the wall-clock text the server wrote. The input is the parameters the caller passes.
-import { bareName, nestsAnyDeep, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
+import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
 import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
 import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
@@ -115,12 +115,13 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     if (kind === "timestamp") return { type: "string", format: "date-time" };
   }
   // A SET inside a document is its text, its members joined by commas.
-  if (inJson && t.kind === "set") return { type: "string" };
+  if (inJson && isMysqlSet(t)) return { type: "string" };
   if (kind.includes("|")) return { anyOf: kind.split("|").map((k) => kindSchema(k as ScalarKind, t, dialect)) };
   const schema = kindSchema(kind as ScalarKind, t, dialect);
   if (kind !== "text") return schema;
+  if (isMysqlSet(t)) return { type: "string" };
   switch (t.kind) {
-    case "text": case "set": return { type: "string" };
+    case "text": return { type: "string" };
     // RFC 9562's text form, its version digit and its variant fixed where every value has a version.
     case "uuid": return t.version === undefined ? { type: "string", format: "uuid" } : { type: "string", format: "uuid", pattern: `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${t.version.toString(16)}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$` };
     // RFC 3339's time, which JSON Schema's `time` format names, needs an offset and stops at 23:59:60.
@@ -260,7 +261,7 @@ function described(schema: Schema | JsonSchema, comment: string | undefined, wri
 function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: boolean, inRow: boolean, members: readonly { written: string; schema?: JsonSchema }[] | undefined, codecs: Codecs): Schema | JsonSchema {
   // A family the project file's `js.codecs` gives another type is that type's JSON form, outside JSON.
   const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
-  if (codec === "set:array" && t.kind === "set") return { ...CODEC_SCHEMA[codec], items: typeSchema(t.element.type, dialect, input) };
+  if (codec === "set:array" && t.kind === "array" && isMysqlSet(t)) return { ...CODEC_SCHEMA[codec], items: typeSchema(t.element.type, dialect, input) };
   if (codec !== undefined) return CODEC_SCHEMA[codec];
   const name = bareName(t);
   const kind = columnKind(t, dialect);
@@ -277,7 +278,24 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
     case "text":
       if (t.enum !== undefined) return { type: "string", enum: t.enum };
       break;
+    // A literal truth value or float, or a few of them.
+    case "boolean":
+      if (t.enum !== undefined) return { type: "boolean", enum: t.enum.map((v) => v === "true") };
+      break;
+    case "float":
+      if (t.enum !== undefined && !inJson) return { type: "number", enum: t.enum.map(Number) };
+      break;
+    case "tuple": {
+      const items = t.elements.map((e) => (e.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(e.type, dialect, input, inJson, false, undefined, codecs)));
+      return { type: "array", prefixItems: items, items: false, minItems: items.length };
+    }
     case "array": {
+      // A MySQL SET's members, each one of its labels where the column declares them; inside a
+      // document it is its text.
+      if (isMysqlSet(t)) {
+        if (inJson || dialect !== "mysql") break;
+        return { type: "array", items: typeSchema(t.element.type, dialect, input), uniqueItems: true };
+      }
       // A type Postgres writes as its text inside a document, or a client gets as its own (a
       // bit string, a vector), is no array here.
       // A segment and a polygon are arrays of their points outside JSON.
@@ -299,11 +317,6 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
       // A row value is an object of its fields, and so is a geometric type outside a document.
       return object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, inJson, false, undefined, codecs)));
     }
-    case "set":
-      // A MySQL SET's members, each one of its labels where the column declares them; inside a
-      // document it is its text.
-      if (inJson || dialect !== "mysql") break;
-      return { type: "array", items: typeSchema(t.element.type, dialect, input), uniqueItems: true };
     case "range":
     case "multirange": {
       // A Postgres range is an object of its bounds outside a document, where it is its text.

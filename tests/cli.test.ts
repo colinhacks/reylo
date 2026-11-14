@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { rowsOf } from "./helpers.ts";
 
 const CLI = join(import.meta.dirname, "..", "src", "cli.ts");
 const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as { version: string }).version;
@@ -36,8 +37,8 @@ test("the reylo command runs the binary with its arguments, standard input and e
   assert.deepEqual(version, { status: 0, out: `reylo ${VERSION}\n`, err: "" });
   const typed = reylo(root, ["analyze", "-", "--format", "json"], { input: "select name from users where id = :id" });
   assert.equal(typed.status, 0, typed.err);
-  const [line] = typed.out.trim().split("\n").map((l) => JSON.parse(l) as { result: { columns: { name: string }[]; cardinality: string } });
-  assert.deepEqual([line!.result.columns.map((c) => c.name), line!.result.cardinality], [["name"], "at_most_one"]);
+  const [line] = typed.out.trim().split("\n").map((l) => JSON.parse(l) as { result: { kind: string; element: { type: unknown } } });
+  assert.deepEqual([rowsOf(line!.result).columns.map((c) => c.name), rowsOf(line!.result).cardinality], [["name"], "at_most_one"]);
   // A statement with a diagnostic exits with 1, as the binary does.
   assert.equal(reylo(root, ["analyze", "--sql", "select nope from users"]).status, 1);
   const unknown = reylo(root, ["frobnicate"]);

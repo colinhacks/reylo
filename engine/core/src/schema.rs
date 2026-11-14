@@ -95,7 +95,10 @@ impl Type {
     /// The JSON Schema of a value of this type, standing where `opts` says.
     pub fn json_schema(&self, opts: SchemaOptions) -> Value {
         match &self.kind {
-            Kind::Boolean => json!({"type": "boolean"}),
+            Kind::Boolean(b) => match &b.values {
+                Some(values) => json!({"type": "boolean", "enum": values.iter().map(|v| v == "true").collect::<Vec<_>>()}),
+                None => json!({"type": "boolean"}),
+            },
             // An oid is not one of the numbers JSON has a number for: Postgres writes its text.
             Kind::Integer(_) if bare_name(self) == "oid" => text_of(self),
             Kind::Integer(i) if i.bits <= 32 && !(i.bits == 32 && i.unsigned) => json!({"type": "integer", "format": "int32"}),
@@ -175,8 +178,14 @@ impl Type {
                 let entry = json!({"type": "object", "properties": {"key": m.key.json_schema(opts), "value": if m.value.nullable { nullable(value) } else { value }}, "required": ["key", "value"]});
                 json!({"type": "array", "items": entry})
             }
-            // A relation nested in a value, as a list of its rows.
-            Kind::Rows(_) => json!({"type": "array", "items": {"type": "object"}}),
+            // A tuple as a list of its values, each of its own type.
+            Kind::Tuple(t) => {
+                let items: Vec<Value> = t.elements.iter().map(|e| {
+                    let schema = e.ty.json_schema(opts);
+                    if e.nullable { nullable(schema) } else { schema }
+                }).collect();
+                json!({"type": "array", "prefixItems": items, "items": false, "minItems": t.elements.len()})
+            }
             // A tagged union as a client returns one: its tag and its value, `{ tag, value }`.
             Kind::TaggedUnion(t) => json!({"anyOf": t.alternatives.iter().map(|a| {
                 let value = a.ty.json_schema(opts);

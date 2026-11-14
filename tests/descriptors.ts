@@ -77,7 +77,7 @@ export function my(name: string, length?: number): EngineType {
     timestamp: { kind: "instant", tick: "1/1000000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999999Z" },
     time: { kind: "duration", max: "PT838H59M59S", tick: "1/1000000" },
     json: { kind: "json" },
-    set: { kind: "set", element: { type: { kind: "text" } } },
+    set: { kind: "array", distinct: true, element: { type: { kind: "text" } } },
   };
   return { ...known[name]!, label: name } as EngineType;
 }

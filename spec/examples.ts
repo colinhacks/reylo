@@ -33,13 +33,13 @@ export const first_example: Example = {
     comment: "One user, by id.",
     params: [{ name: "id", type: int8 }],
     result: {
-      kind: "rows",
-      cardinality: "at_most_one",
-      columns: [
+      kind: "array",
+      size: { max: 1 },
+      element: { type: { kind: "record", fields: [
         { name: "id", type: int8 },
         { name: "email", type: { kind: "text", size: { max: 255 }, label: "varchar" } },
         { name: "bio", nullable: true, type: { kind: "text", label: "text" }, comment: "Shown on the profile page" },
-      ],
+      ] } },
     },
     diagnostics: [],
   },
@@ -58,16 +58,15 @@ export const sorted_rows: Example = {
   statement: "select id, at from events order by at desc, id",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [
+      kind: "array",
+      element: { type: { kind: "record", fields: [
         { name: "id", type: int8 },
         { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, label: "timestamptz" } },
-      ],
+      ] } },
       unique: [["id"]],
       order: [
-        { column: "at", desc: true, nulls: "first" },
-        { column: "id", nulls: "last" },
+        { field: "at", desc: true, nulls: "first" },
+        { field: "id", nulls: "last" },
       ],
     },
   },
@@ -80,13 +79,12 @@ export const unique_columns: Example = {
   statement: "select id, email, handle from accounts",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [
+      kind: "array",
+      element: { type: { kind: "record", fields: [
         { name: "id", type: int8 },
         { name: "email", type: { kind: "text", label: "text" } },
         { name: "handle", nullable: true, type: { kind: "text", label: "text" } },
-      ],
+      ] } },
       unique: [["id"], ["email"]],
     },
   },
@@ -99,9 +97,8 @@ export const postgres_columns: Example = {
   statement: "select * from t",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [
+      kind: "array",
+      element: { type: { kind: "record", fields: [
         { name: "price", nullable: true, type: { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, label: "numeric" } },
         { name: "total", nullable: true, type: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true, label: "numeric" } },
         { name: "at", nullable: true, type: timestamptz },
@@ -128,7 +125,7 @@ export const postgres_columns: Example = {
           },
         },
         { name: "tod", nullable: true, type: { kind: "time", tick: "1/1000000", max: "24:00:00", label: "time" } },
-      ],
+      ] } },
     },
   },
 };
@@ -140,9 +137,8 @@ export const pgvector_column: Example = {
   statement: "select emb from items",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [{ name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, label: "public.vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } } } }],
+      kind: "array",
+      element: { type: { kind: "record", fields: [{ name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, label: "public.vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } } } }] } },
     },
   },
 };
@@ -154,9 +150,8 @@ export const json_column: Example = {
   statement: "select json_agg(p.title) filter (where p.id is not null) as titles from users u left join posts p on p.author_id = u.id group by u.id",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [{ name: "titles", nullable: true, type: { kind: "json", label: "json", content: { type: { kind: "array", element: { type: { kind: "text", label: "text" } } } } } }],
+      kind: "array",
+      element: { type: { kind: "record", fields: [{ name: "titles", nullable: true, type: { kind: "json", label: "json", content: { type: { kind: "array", element: { type: { kind: "text", label: "text" } } } } } }] } },
     },
   },
 };
@@ -168,13 +163,12 @@ export const uuid_versions: Example = {
   statement: "select id, source, gen_random_uuid() as request from events",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [
+      kind: "array",
+      element: { type: { kind: "record", fields: [
         { name: "id", type: { kind: "uuid", version: 7, label: "uuid" } },
         { name: "source", nullable: true, type: { kind: "uuid", label: "uuid" } },
         { name: "request", type: { kind: "uuid", version: 4, label: "uuid" } },
-      ],
+      ] } },
       unique: [["id"]],
     },
   },
@@ -187,9 +181,8 @@ export const mysql_columns: Example = {
   statement: "select id, flag, at, status, born, name, body, tags, :n + 1 next from m",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [
+      kind: "array",
+      element: { type: { kind: "record", fields: [
         { name: "id", type: { kind: "integer", bits: 64, unsigned: true, label: "bigint" } },
         { name: "flag", type: { kind: "integer", bits: 8, label: "tinyint(1)" } },
         { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", label: "timestamp" } },
@@ -197,9 +190,9 @@ export const mysql_columns: Example = {
         { name: "born", nullable: true, type: { kind: "date", label: "date" } },
         { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, label: "varchar" } },
         { name: "body", nullable: true, type: { kind: "text", size: { unit: "byte", encoding: "UTF-8", max: 65535 }, label: "text" } },
-        { name: "tags", nullable: true, type: { kind: "set", label: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
+        { name: "tags", nullable: true, type: { kind: "array", label: "set", distinct: true, element: { type: { kind: "text", enum: ["a", "b"] } } } },
         { name: "next", nullable: true, type: { kind: "union", members: [{ ...int64, label: "bigint" }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "double" }, { kind: "decimal", label: "decimal" }] } },
-      ],
+      ] } },
     },
   },
 };
@@ -211,12 +204,11 @@ export const sqlserver_columns: Example = {
   statement: "select at, label from s",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [
+      kind: "array",
+      element: { type: { kind: "record", fields: [
         { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", zone: "offset", label: "datetimeoffset" } },
         { name: "label", nullable: true, type: { kind: "text", ill_formed: "utf16", size: { max: 10 }, label: "nvarchar" } },
-      ],
+      ] } },
     },
   },
 };
@@ -228,9 +220,8 @@ export const range_over_array: Example = {
   statement: "select r from t",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [{ name: "r", nullable: true, type: { kind: "range", label: "public.arrayrange", subtype: { kind: "array", any_depth: true, label: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, label: "int4" } } } } }],
+      kind: "array",
+      element: { type: { kind: "record", fields: [{ name: "r", nullable: true, type: { kind: "range", label: "public.arrayrange", subtype: { kind: "array", any_depth: true, label: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, label: "int4" } } } } }] } },
     },
   },
 };
@@ -244,14 +235,13 @@ export const sqlite_columns: Example = {
   statement: "select price, name, x, n from s, t",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [
+      kind: "array",
+      element: { type: { kind: "record", fields: [
         { name: "price", nullable: true, type: { kind: "union", label: "numeric", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
         { name: "name", nullable: true, type: { kind: "union", label: "TEXT", members: [sqlite_text, { kind: "bytes" }] } },
         { name: "x", nullable: true, type: { kind: "unknown" } },
         { name: "n", nullable: true, type: { ...int64, label: "INTEGER" } },
-      ],
+      ] } },
     },
   },
 };
@@ -263,9 +253,8 @@ export const oracle_column: Example = {
   statement: "select s from shapes",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "many",
-      columns: [
+      kind: "array",
+      element: { type: { kind: "record", fields: [
         {
           name: "S",
           nullable: true,
@@ -285,7 +274,7 @@ export const oracle_column: Example = {
             ],
           },
         },
-      ],
+      ] } },
     },
   },
 };
@@ -296,9 +285,9 @@ export const duckdb_column: Example = {
   statement: "select union_value(num := 1)::union(num integer, str varchar) as u",
   descriptor: {
     result: {
-      kind: "rows",
-      cardinality: "one",
-      columns: [
+      kind: "array",
+      size: { exact: 1 },
+      element: { type: { kind: "record", fields: [
         {
           name: "u",
           nullable: true,
@@ -311,7 +300,7 @@ export const duckdb_column: Example = {
             ],
           },
         },
-      ],
+      ] } },
     },
   },
 };

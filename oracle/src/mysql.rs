@@ -1172,7 +1172,7 @@ fn classes(ty: &Type) -> Option<Vec<&'static str>> {
     let mut out = Vec::new();
     for m in ty.members() {
         out.extend(match &m.kind {
-            Kind::Boolean => vec!["number", "int8", "bytea"],
+            Kind::Boolean(_) => vec!["number", "int8", "bytea"],
             Kind::Integer(i) if i.bits >= 64 => vec!["int8"],
             Kind::Integer(_) | Kind::Float(_) => vec!["number"],
             Kind::Decimal(_) => vec!["numeric"],
@@ -1182,7 +1182,8 @@ fn classes(ty: &Type) -> Option<Vec<&'static str>> {
             Kind::Json(_) => vec!["json"],
             Kind::Array(_) if m.label.as_deref() == Some("bit") => vec!["bytea"],
             Kind::Bytes(_) => vec!["bytea"],
-            Kind::Text(_) | Kind::Set(_) => vec!["text"],
+            Kind::Text(_) => vec!["text"],
+            Kind::Array(a) if a.distinct => vec!["text"],
             _ => return None,
         });
     }
@@ -1325,8 +1326,9 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
             }
             None
         }
-        // A BIT is written inside a document as its bytes, `"base64:type16:…"` (the spec's facts).
-        Kind::Array(array) if ty.label.as_deref() != Some("bit") => {
+        // A BIT is written inside a document as its bytes, `"base64:type16:…"`, and a SET as its
+        // members joined by commas (the spec's facts).
+        Kind::Array(array) if ty.label.as_deref() != Some("bit") && !array.distinct => {
             let Some(items) = json.as_array() else { return Some(format!("holds {kind} at {at}, typed a list")) };
             items.iter().enumerate().find_map(|(i, item)| document_contradiction(&array.element.ty, item, array.element.nullable, &format!("{path}[{i}]")))
         }
@@ -1336,9 +1338,10 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
             let mut wanted = Vec::new();
             for m in ty.members() {
                 wanted.push(match &m.kind {
-                    Kind::Boolean => "a boolean",
+                    Kind::Boolean(_) => "a boolean",
                     Kind::Integer(_) | Kind::Float(_) | Kind::Decimal(_) => "a number",
-                    Kind::Text(_) | Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Set(_) => "a string",
+                    Kind::Text(_) | Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) => "a string",
+                    Kind::Array(a) if a.distinct => "a string",
                     Kind::Array(_) if m.label.as_deref() == Some("bit") => "a string",
                     _ => return None,
                 });

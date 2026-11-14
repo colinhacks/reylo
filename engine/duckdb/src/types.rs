@@ -92,7 +92,7 @@ pub fn of(t: &LogicalType) -> Type {
             None => return Type::unknown(),
         },
         "ARRAY" => match &t.child {
-            Some(child) => return Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(of(child))), size: t.size.map(|n| Size::exact(n.into())), any_depth: false })),
+            Some(child) => return Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(of(child))), size: t.size.map(|n| Size::exact(n.into())), any_depth: false, distinct: false, unique: Vec::new(), order: Vec::new() })),
             None => return Type::unknown(),
         },
         "STRUCT" if t.fields.iter().any(|f| f.name.is_empty()) => return Type::unknown(),

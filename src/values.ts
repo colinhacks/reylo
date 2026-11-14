@@ -28,7 +28,7 @@
 //
 // This module runs in every generated module's process, so it names no Node type: a Buffer is
 // reached through `globalThis` where one exists.
-import { bareName, type EngineType } from "./engine-type.ts";
+import { bareName, isMysqlSet, type EngineType } from "./engine-type.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 
@@ -265,6 +265,8 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "bytes":
       return dialect === "postgres" && (name === "macaddr" || name === "macaddr8") ? "text" : "bytes";
     case "array": {
+      // A MySQL SET is a Set of its members; a distinct array elsewhere is its text.
+      if (isMysqlSet(t)) return dialect === "mysql" ? "set" : "text";
       if (dialect === "postgres") {
         if (name === "vector" || name === "halfvec") return "vector";
         if (name === "bit" || name === "varbit" || name === "sparsevec") return "text";
@@ -316,9 +318,6 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "text":
       // A MySQL ENUM of known labels holds one of them or `''`, which the run time refuses.
       return dialect === "mysql" && name === "enum" && t.enum !== undefined && !t.enum.includes("") ? "enum" : "text";
-    case "set":
-      // A MySQL SET is a Set of its members.
-      return dialect === "mysql" ? "set" : "text";
     case "range":
     case "multirange":
       // A Postgres range is an object of its bounds, each decoded from its text as its subtype is.
@@ -329,7 +328,7 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "opaque":
       return dialect === "postgres" ? "text" : "unknown";
     case "unknown":
-    case "rows":
+    case "tuple":
       return "unknown";
     default:
       return "text";

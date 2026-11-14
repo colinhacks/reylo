@@ -12,7 +12,7 @@
 import type { DuckdbClient } from "./decode-duckdb.ts";
 import type { QueryError } from "./query-error.ts";
 import { columnKind, describe, given, hstoreText, isArrayValued, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers, type Kind } from "./values.ts";
-import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
+import { bareName, isMysqlSet, schemaOf, type EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import type { JsonSchema } from "./engine-type.ts";
@@ -704,7 +704,7 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   if (dialect === "mysql") {
     // A SET goes as its members joined by commas, in the order its column declares them: MySQL
     // stores a SET in that order, and compares one with a parameter's text as it is written.
-    if (type.kind === "set" && v instanceof Set) {
+    if (type.kind === "array" && isMysqlSet(type) && v instanceof Set) {
       const labels = type.element.type.kind === "text" ? type.element.type.enum : undefined;
       return (labels === undefined ? [...v] : [...v].sort((a, b) => labels.indexOf(a as string) - labels.indexOf(b as string))).join(",");
     }

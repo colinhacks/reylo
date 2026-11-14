@@ -539,7 +539,7 @@ fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u
         // planner inlines the function, and under the declared one where it does not.
         let columns = &analysis.columns;
         let plain = |column: &str| columns.iter().find(|c| c.name == column).is_some_and(|c| uncollated(&c.ty));
-        let order: Vec<_> = read.order.into_iter().enumerate().take_while(|(i, o)| analysis.order.get(*i) == Some(o) || plain(&o.column)).map(|(_, o)| o).collect();
+        let order: Vec<_> = read.order.into_iter().enumerate().take_while(|(i, o)| analysis.order.get(*i) == Some(o) || plain(&o.field)).map(|(_, o)| o).collect();
         if order.len() > analysis.order.len() {
             analysis.order = order;
             changed = true;
@@ -2583,7 +2583,7 @@ impl<'a> Engine<'a> {
             fields.extend(listed.iter().zip(&found).map(|(name, c)| crate::types::Field::new(name.clone(), registry.render(c.type_oid), c.nullable)));
             let row = Type::record(fields).named("record");
             out.push(Some(match array {
-                true => Type::new(TyKind::Array(crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(row)), size: None, any_depth: true })).named("_record"),
+                true => Type::new(TyKind::Array(crate::types::ArrayType { any_depth: true, ..crate::types::ArrayType::of(crate::types::Position::non_null(row)) })).named("_record"),
                 false => row,
             }));
         }
@@ -4145,7 +4145,7 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
 /// it shows. The column's type modifier is its elements', which the arrays it collects share,
 /// since Postgres reports one only where every element has it.
 pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
-    let level = |element: Type| crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(element)), size: None, any_depth: false };
+    let level = |element: Type| crate::types::ArrayType::of(crate::types::Position::non_null(element));
     let Type { kind, label, comment } = registry.render_typmod(col.type_oid, col.typmod);
     let named = |kind| Type { kind, label: label.clone(), comment: comment.clone() };
     match (col.nested, kind) {
@@ -4762,7 +4762,7 @@ fn identifies(ty: &Type) -> bool {
 
 /// The columns of a statement's result its ORDER BY sorts on ([`Analysis::order`]), for a SELECT
 /// that can return more than one row, as [`cardinality::result_order`] reads them.
-fn result_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<crate::types::OrderColumn> {
+fn result_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<crate::types::OrderField> {
     if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
         return Vec::new();
     }
@@ -4787,7 +4787,7 @@ fn total_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, co
 
 /// Whether values of `ty` have no collation: a number, a truth value, bytes, a UUID or a time.
 fn uncollated(ty: &Type) -> bool {
-    matches!(ty.kind, TyKind::Boolean | TyKind::Integer(_) | TyKind::Float(_) | TyKind::Decimal(_) | TyKind::Bytes(_) | TyKind::Uuid(_) | TyKind::Date(_) | TyKind::Time(_) | TyKind::DateTime(_) | TyKind::Instant(_) | TyKind::Duration(_))
+    matches!(ty.kind, TyKind::Boolean(_) | TyKind::Integer(_) | TyKind::Float(_) | TyKind::Decimal(_) | TyKind::Bytes(_) | TyKind::Uuid(_) | TyKind::Date(_) | TyKind::Time(_) | TyKind::DateTime(_) | TyKind::Instant(_) | TyKind::Duration(_))
 }
 
 #[cfg(test)]

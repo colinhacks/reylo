@@ -13,7 +13,7 @@
 use crate::database::Database;
 use crate::dialect::Dialect;
 use crate::lex;
-use crate::types::{self, Cardinality, DialectVersion, RowsType, StatementDescriptor, StatementKind, Type};
+use crate::types::{self, Cardinality, DialectVersion, ResultRows, StatementDescriptor, StatementKind, Type};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -167,7 +167,7 @@ impl Param {
     }
 }
 
-/// A result column: the format's ([`types::Column`]) and what Reylo's run time reads beside it.
+/// A result column: the format's field of a row ([`types::Field`]) and what Reylo's run time reads beside it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
@@ -192,9 +192,9 @@ impl Column {
         Column { name: name.into(), ty, nullable, comment: None, delimiter: None }
     }
 
-    /// The column as the format writes it.
-    pub fn descriptor(&self) -> types::Column {
-        types::Column { name: self.name.clone(), ty: self.ty.clone(), nullable: self.nullable, comment: self.comment.clone() }
+    /// The column as the format writes it: a field of the result's record.
+    pub fn descriptor(&self) -> types::Field {
+        types::Field { comment: self.comment.clone(), ..types::Field::new(self.name.clone(), self.ty.clone(), self.nullable) }
     }
 }
 
@@ -226,7 +226,7 @@ pub struct Analysis {
     pub unique: Vec<Vec<String>>,
     /// The columns of the result its ORDER BY sorts on, as far as its keys are such columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub order: Vec<types::OrderColumn>,
+    pub order: Vec<types::OrderField>,
     /// Whether the statement's ORDER BY orders its rows totally: no two rows of any result tie on
     /// every sort key, so the order is the same on every run. Only for a result that can hold more
     /// than one row, as `key` is.
@@ -292,7 +292,7 @@ impl Analysis {
             kind: self.kind,
             comment: self.comment.clone(),
             params: self.params.iter().map(Param::descriptor).collect(),
-            result: RowsType { cardinality: self.cardinality, columns: self.columns.iter().map(Column::descriptor).collect(), unique: self.unique.clone(), order: self.order.clone() }.into(),
+            result: ResultRows::new(self.cardinality, self.columns.iter().map(Column::descriptor).collect(), self.unique.clone(), self.order.clone()),
             diagnostics: self.diagnostics.iter().map(|d| {
                 let start = utf16_offset(sql, d.start);
                 types::Diagnostic { message: d.message.clone(), start, end: utf16_offset(sql, d.start + d.length).max(start), code: d.server_code.clone() }

@@ -10,7 +10,7 @@ import { engine, reason, Unreachable } from "../src/engine.ts";
 import { hostUrl } from "../src/host-url.ts";
 import { nativeBinary } from "../src/native.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
-import { PG, MYSQL } from "./helpers.ts";
+import { MYSQL, PG, rowsOf } from "./helpers.ts";
 
 const noPg = !PG && "REYLO_TEST_PG names no server";
 const noMysql = !MYSQL && "REYLO_TEST_MYSQL names no server";
@@ -125,7 +125,7 @@ test("reylo analyze opens a Postgres Unix socket itself, without TLS, and reads 
       child.on("close", (code) => done({ code, stdout, stderr }));
     });
     assert.equal(run.code, 0, run.stderr + run.stdout);
-    assert.deepEqual(JSON.parse(run.stdout).result.columns.map((col: { name: string }) => col.name), ["x"]);
+    assert.deepEqual(rowsOf(JSON.parse(run.stdout).result).columns.map((col: { name: string }) => col.name), ["x"]);
   } finally {
     pg.server.close();
   }

@@ -1,0 +1,130 @@
+---
+title: Analyze
+description: Read what Reylo infers for each statement, as data.
+---
+
+Read what Reylo infers for a statement, as data.
+
+Reylo writes each statement's parameters, columns, cardinality and diagnostics as a descriptor, its types in [Reylo Type Defs](/typedefs). It reads the database your project names, as the type check does.
+
+## CLI
+
+Run it on a file, a directory, or `-` for standard input:
+
+<Analyzed file="queries/get_user.sql">
+
+```sql schema
+create table users (
+  id int8 primary key,
+  email varchar(255) not null,
+  bio text
+);
+comment on column users.bio is 'Shown on the profile page';
+```
+
+```sql
+-- One user, by id.
+select id, email, bio from users where id = :id
+```
+
+</Analyzed>
+
+Pass `--format json` for one line of JSON per statement, which a program reads one line at a time:
+
+<Analyzed file="queries/get_user.sql" format="json">
+
+```sql schema
+create table users (
+  id int8 primary key,
+  email varchar(255) not null,
+  bio text
+);
+comment on column users.bio is 'Shown on the profile page';
+```
+
+```sql
+-- One user, by id.
+select id, email, bio from users where id = :id
+```
+
+</Analyzed>
+
+Each diagnostic is also written to standard error, with its file, line and column and a caret under its place. The command exits with 1 when any statement has a diagnostic, and with 2 when it can't reach the database or read the statements.
+
+```sh
+npx reylo analyze --help
+```
+
+## JavaScript
+
+Analyze a statement from a script with `analyze()`, which returns the same descriptor:
+
+```ts
+import { analyze } from "reylo";
+
+const descriptor = await analyze({
+  sql: "select email from users where id = :id::int8",
+  url: "postgres://localhost/app",
+});
+```
+
+Leave out `url` to read the database your project names.
+
+## The descriptor
+
+One per statement.
+
+| Field | What it holds |
+| --- | --- |
+| `$schema` | The format's version, as the URL of its [JSON Schema](/typedefs/0.1.0.json) |
+| `dialect` | The database's `name` and its server's `version` |
+| `sql` | The statement as the database runs it, with its own placeholders |
+| `kind` | What the statement does |
+| `comment` | The prose in comments before the statement |
+| `params` | Each parameter, in order: its `name`, its [`type`](/typedefs#types), and `nullable` and `optional` where they hold |
+| `result` | The rows, an [array](/typedefs#array) of records, its size how many |
+| `diagnostics` | What the database reports, each with a `message` and its `start` and `end` |
+
+The CLI adds `file`, the path the statement was read from.
+
+### `kind`
+
+What the statement does.
+
+| Value | For |
+| --- | --- |
+| `select` | Any query, a `VALUES` list and a set operation among them |
+| `insert` | An `INSERT` |
+| `update` | An `UPDATE` |
+| `delete` | A `DELETE` |
+| `merge` | A `MERGE` |
+| `other` | Anything else: a `CALL`, an `EXPLAIN`, a `SHOW`, a SQLite `PRAGMA`, DDL |
+
+A statement that doesn't parse has no `kind`.
+
+### `result`
+
+The rows, as an array of records.
+
+Each field of the record is a column, and the array's `size` is how many rows the statement returns:
+
+| Size | Rows |
+| --- | --- |
+| `{ "exact": 1 }` | Exactly one |
+| `{ "max": 1 }` | At most one |
+| None | Any number |
+| `{ "exact": 0 }` | None: a write without `RETURNING` |
+
+Where rows can be more than one, the array's [`unique`](/typedefs#array) lists the columns no two rows share, and its `order` the columns the rows are sorted on.
+
+### `diagnostics`
+
+Each at its place.
+
+A diagnostic's `start` and `end` count UTF-16 units of the statement as written, so an editor can underline it. Its `code` is the database's own error code, where it has one. A statement the database refuses has no columns.
+
+### Running the statement
+
+The descriptor holds what a driver needs.
+
+Pass `sql` to any driver as it is, and bind each parameter's value at its placeholder: the first of `params` at `$1` on Postgres, or the first `?` on MySQL and SQLite. Each parameter stands at exactly one placeholder, since Reylo reports a statement that writes one twice and reads a value twice through a `with` instead.

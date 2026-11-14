@@ -1,156 +1,89 @@
 ---
 title: Reylo Type Defs
-description: A JSON format for the types of SQL queries, the same for every database.
+description: A format for types, which says what values a column, a parameter or a field can hold.
 ---
 
 <TypeDefsVersion />
 
-Reylo writes one descriptor per query, the same for every database:
+A format for types.
 
-<TypeDef id="first" notes={{"$schema": "the format, and its version", "dialect": "every label below is this dialect's", "sql": "as the database runs it", "comment": "the comment before the statement", "result.cardinality": "one, at_most_one, many or none", "diagnostics": "errors, each at its place"}}>
+Reylo writes the type of every parameter and column it [analyzes](/analyze) in it. A type says which values a position can hold, precisely enough to pick a representation in any language that holds them all.
 
-```sql schema
-create table users (
-  id int8 primary key,
-  email varchar(255) not null
-)
+## Types
+
+Each type is an object with a `kind`.
+
+The other fields narrow the kind: a size, bounds, a pattern, the values it may take. A program reads `kind` and the fields it needs, and ignores the rest, since a field it doesn't know can only narrow. A few fields widen a type instead, each named under its kind below.
+
+```jsonc
+// A 32-bit integer from 0 to 150, which Postgres calls int4
+{ "kind": "integer", "bits": 32, "min": "0", "max": "150", "label": "int4" }
 ```
 
-```sql
--- One user's email
-select email from users where id = :id::int8
+- **Values inside a type are strings**, in the kind's canonical text, so a 64-bit bound or a date survives any encoding. Counts, such as `bits`, are numbers.
+- **A flag appears only when it's true.** Its absence means false.
+- **A label is the database's name** for the type, where it has one. It never changes what the type means.
+- **A comment** is the documentation the source keeps on a named type.
+
+### Positions
+
+Where a value stands, with whether it may be null.
+
+A column, a parameter, a record's field, an array's element and a map's value are each a position: a `type`, and `nullable` where the value may be null. Nullability is on the position and never in the type, since an outer join makes any column nullable.
+
+```jsonc
+// Text that may be null
+{ "type": { "kind": "text" }, "nullable": true }
 ```
 
-</TypeDef>
+### Literals
 
-## Usage
+A type of one value.
 
-Analyze a statement to read its descriptor:
+A kind that lists its values in `enum` holds only those, and one value makes a literal. Every value is in the kind's canonical text, so a literal keeps its type: the integer 1 and the text `"1"` are two literals.
 
-```ts
-import { analyze } from "reylo";
+```jsonc
+// The integer 1
+{ "kind": "integer", "bits": 32, "enum": ["1"] }
 
-const defs = await analyze({
-  sql: "select email from users where id = :id::int8",
-  url: "postgres://localhost/app",
-});
+// The literal true
+{ "kind": "boolean", "enum": ["true"] }
+
+// One of two strings
+{ "kind": "text", "enum": ["admin", "member"] }
 ```
-
-Or analyze a file from the command line, which prints each statement's descriptor as YAML, or as one line of JSON with `--format json`:
-
-```sh
-npx reylo analyze queries/get_user.sql
-npx reylo analyze queries/get_user.sql --format json
-```
-
-### `$schema`
-
-The format's version, as the URL of its JSON Schema.
-
-An editor or a validator reads the schema at that URL. Versions are [semantic](https://semver.org), and until 1.0.0 a new minor version may change anything.
-
-<TypeDefPart of="first" show="$schema" />
-
-### `dialect`
-
-The database, and its server's version. SQLite has no server, so its version is that of Reylo's own SQLite, which checks the statement.
-
-Every `label` in the descriptor is this database's name for a type.
-
-<TypeDefPart of="first" show="dialect" />
-
-### `sql`
-
-The statement as the database runs it.
-
-It has the database's own placeholders, `$1` on Postgres and `?` on MySQL and SQLite, in the order `params` lists them.
-
-<TypeDefPart of="first" show="sql" />
-
-### `kind`
-
-What the statement does.
-
-It is `select`, `insert`, `update`, `delete`, `merge`, or `other` for a `CALL`, an `EXPLAIN`, a `SHOW` or DDL, and absent when the statement does not parse.
-
-<TypeDefPart of="first" show="kind" />
-
-### `comment`
-
-The prose in comments before the statement.
-
-<TypeDefPart of="first" show="comment" />
-
-### `params`
-
-What the statement takes, in order.
-
-Each has a `name` and a `type`, with `nullable` where it accepts null and `optional` where it may be left out.
-
-<TypeDefPart of="first" show="params" />
-
-### `result`
-
-What the statement returns, as a [`rows`](#rows) type.
-
-Each column has a `name` and a `type`, with `nullable` where it may be null. Nullability is on the column and never in its type, since an outer join makes any column nullable.
-
-<TypeDefPart of="first" show="result" />
-
-### `diagnostics`
-
-What the database reports against the statement, each at its place.
-
-Offsets count UTF-16 units of the statement as written, so an editor can underline it. A statement the database refuses has no columns.
-
-<TypeDef show="diagnostics" errors>
-
-```sql schema
-create table users (
-  id int8 primary key
-)
-```
-
-```sql
-select emial from users
-```
-
-</TypeDef>
 
 ## Kinds
 
-Every type has a `kind`:
+Every type has one of these kinds:
 
-| Kind | What it holds | For example |
-| --- | --- | --- |
-| [`boolean`](#boolean) | A truth value | `boolean`, a comparison |
-| [`integer`](#integer) | A whole number of a fixed width | `int4`, `BIGINT UNSIGNED` |
-| [`float`](#float) | An IEEE 754 binary float | `float8`, `REAL` |
-| [`decimal`](#decimal) | An exact decimal | `numeric(10,2)`, `DECIMAL` |
-| [`text`](#text) | Text, with its size and values | `varchar(255)`, an enum |
-| [`bytes`](#bytes) | Bytes | `bytea`, `BLOB` |
-| [`uuid`](#uuid) | A 128-bit identifier | `uuid` |
-| [`array`](#array) | A sequence of elements | `int4[]`, `vector(3)` |
-| [`record`](#record) | Fields, in order | `point`, a composite |
-| [`json`](#json) | A JSON value, and what it holds | `jsonb`, `JSON` |
-| [`date`](#date) | A calendar date | `date` |
-| [`time`](#time) | A time of day | `time(3)`, `timetz` |
-| [`datetime`](#datetime) | A wall-clock date and time | `timestamp`, `DATETIME` |
-| [`instant`](#instant) | A point on the timeline | `timestamptz` |
-| [`duration`](#duration) | A length of time | `interval` |
-| [`union`](#union) | One of several types | SQLite `NUMERIC` |
-| [`set`](#set) | Elements in no order | MySQL `SET` |
-| [`map`](#map) | Keys to values | `hstore` |
-| [`range`](#range) | A range of an ordered type | `tstzrange` |
-| [`multirange`](#multirange) | Non-overlapping ranges | `int4multirange` |
-| [`geometry`](#geometry) | An OGC simple feature | PostGIS `geometry` |
-| [`xml`](#xml) | XML | `xml` |
-| [`opaque`](#opaque) | A type the format does not structure | `ltree`, `money` |
-| [`unknown`](#unknown) | Nothing is known | an untyped parameter |
-| [`tagged_union`](#tagged_union) | Alternatives named by a tag | DuckDB `UNION` |
-| [`rows`](#rows) | Rows of columns | a statement's result |
-
-A type is its `kind` and the fields that narrow it, so a program can read `kind` and ignore the fields it has no use for. Its `label` is the database's name for it, where it has one. A few fields widen a type instead, each named on its kind below, and a flag appears only when it is true. Bounds are strings in the kind's canonical text, so a 64-bit bound survives JSON.
+| Kind | What it holds |
+| --- | --- |
+| [`boolean`](#boolean) | A truth value |
+| [`integer`](#integer) | A whole number of a fixed width |
+| [`float`](#float) | An IEEE 754 binary float |
+| [`decimal`](#decimal) | An exact decimal |
+| [`text`](#text) | Text |
+| [`bytes`](#bytes) | Bytes |
+| [`uuid`](#uuid) | A 128-bit identifier |
+| [`array`](#array) | Elements in order, rows among them |
+| [`record`](#record) | Named fields |
+| [`tuple`](#tuple) | Values in order, with no names |
+| [`json`](#json) | A JSON value |
+| [`date`](#date) | A calendar date |
+| [`time`](#time) | A time of day |
+| [`datetime`](#datetime) | A date and time as a wall clock reads it |
+| [`instant`](#instant) | A point on the timeline |
+| [`duration`](#duration) | A length of time |
+| [`union`](#union) | One of several types |
+| [`tagged_union`](#tagged_union) | One of several alternatives, named by a tag |
+| [`map`](#map) | Keys to values |
+| [`range`](#range) | A range of an ordered type |
+| [`multirange`](#multirange) | Non-overlapping ranges |
+| [`geometry`](#geometry) | An OGC simple feature |
+| [`xml`](#xml) | XML |
+| [`opaque`](#opaque) | A type the format doesn't structure |
+| [`unknown`](#unknown) | Nothing is known |
 
 ### `boolean`
 
@@ -158,17 +91,14 @@ A truth value.
 
 A comparison's result is one on every database, though MySQL and SQLite deliver it as 1 or 0.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["boolean"], "DuckDB": ["BOOLEAN"]}} notes={{"type.kind": "true or false", "type.label": "Postgres's name for boolean"}} holds={["true", "false"]}>
+<TypeDef holds={["true", "false"]} types={{"postgres": ["boolean"], "duckdb": ["boolean"]}}>
 
-```sql schema
-create table users (
-  id int8 primary key,
-  active boolean not null
-)
-```
+```jsonc
+// Any truth value
+{ "kind": "boolean" }
 
-```sql
-select active from users where id = :id::int8
+// The literal true
+{ "kind": "boolean", "enum": ["true"] }
 ```
 
 </TypeDef>
@@ -177,19 +107,19 @@ select active from users where id = :id::int8
 
 A whole number of a fixed width.
 
-Its range follows from the width, two's complement unless `unsigned`. A bound on one is always inclusive, since `x > 0` is `x >= 1`. MySQL's `BOOLEAN` is an integer, since it can hold 5.
+Its range follows from `bits`, two's complement unless `unsigned`. A bound is always inclusive, since `x > 0` is `x >= 1`.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["smallint", "integer", "bigint", "oid"], "MySQL": ["TINYINT", "SMALLINT", "MEDIUMINT", "INT", "BIGINT", "YEAR", "BOOLEAN"], "SQLite": ["INTEGER"], "DuckDB": ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"]}} notes={{"type.bits": "from -2147483648 to 2147483647"}} holds={["-2147483648", "0", "2147483647"]}>
+<TypeDef holds={["-2147483648", "0", "2147483647"]} types={{"postgres": ["smallint", "integer", "bigint", "oid"], "mysql": ["tinyint", "smallint", "mediumint", "int", "bigint", "year", "boolean"], "sqlite": ["integer"], "duckdb": ["tinyint", "smallint", "integer", "bigint", "hugeint", "utinyint", "usmallint", "uinteger", "ubigint", "uhugeint"]}}>
 
-```sql schema
-create table products (
-  id int4 primary key,
-  stock int4 not null
-)
-```
+```jsonc
+// A 32-bit integer
+{ "kind": "integer", "bits": 32 }
 
-```sql
-select stock from products where id = :id::int4
+// A 64-bit unsigned integer
+{ "kind": "integer", "bits": 64, "unsigned": true }
+
+// From 0 to 150, and a multiple of 5
+{ "kind": "integer", "bits": 32, "min": "0", "max": "150", "multiple_of": "5" }
 ```
 
 </TypeDef>
@@ -198,19 +128,19 @@ select stock from products where id = :id::int4
 
 An [IEEE 754](https://en.wikipedia.org/wiki/IEEE_754) binary float.
 
-Its exponent and mantissa widths fix its range and precision.
+Its exponent and mantissa widths fix its range and precision, so a program picks the smallest float it has that holds both. It holds the infinities and NaN only where `infinity` and `nan` say so.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["real", "double precision"], "MySQL": ["FLOAT", "DOUBLE"], "SQLite": ["REAL"], "DuckDB": ["FLOAT", "DOUBLE"]}} notes={{"type.exponent_bits": "a double", "type.mantissa_bits": "52, not counting the implicit bit", "type.infinity": "also holds Infinity and -Infinity", "type.nan": "and NaN", "nullable": "rate may be NULL"}} holds={["1.5", "'Infinity'", "'NaN'"]}>
+<TypeDef holds={["1.5", "-0", "Infinity", "NaN"]} types={{"postgres": ["real", "double precision"], "mysql": ["float", "double"], "sqlite": ["real"], "duckdb": ["float", "double"]}}>
 
-```sql schema
-create table products (
-  id int4 primary key,
-  rate float8
-)
-```
+```jsonc
+// A double
+{ "kind": "float", "exponent_bits": 11, "mantissa_bits": 52 }
 
-```sql
-select rate from products where id = :id::int4
+// A double that also holds Infinity, -Infinity and NaN
+{ "kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true, "nan": true }
+
+// A single-precision float above 0
+{ "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "exclusive_min": "0" }
 ```
 
 </TypeDef>
@@ -219,19 +149,16 @@ select rate from products where id = :id::int4
 
 An exact decimal.
 
-Its precision counts its digits, and its scale the digits after the point. A decimal is a number, so `1.5` and `1.50` are one value.
+Its `precision` counts its digits, and its scale the digits after the point. A decimal is a number, so `1.5` and `1.50` are one value.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["numeric"], "MySQL": ["DECIMAL"], "DuckDB": ["DECIMAL", "BIGNUM"]}} notes={{"type.precision": "at most 10 digits", "type.min_scale": "2 after the point", "type.max_scale": "exactly", "type.nan": "NaN, but no infinity: numeric(10,2) refuses one"}} holds={["1.50", "99999999.99", "'NaN'"]}>
+<TypeDef holds={["1.50", "99999999.99", "NaN"]} types={{"postgres": ["numeric"], "mysql": ["decimal"], "duckdb": ["decimal", "bignum"]}}>
 
-```sql schema
-create table orders (
-  id int4 primary key,
-  total numeric(10,2) not null
-)
-```
+```jsonc
+// Up to 10 digits, 2 after the point
+{ "kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2 }
 
-```sql
-select total from orders where id = :id::int4
+// Any decimal below 10^131072, NaN and the infinities too
+{ "kind": "decimal", "min_scale": 0, "max_scale": 16383, "exclusive_min": "-1e131072", "exclusive_max": "1e131072", "infinity": true, "nan": true }
 ```
 
 </TypeDef>
@@ -240,21 +167,25 @@ select total from orders where id = :id::int4
 
 Text.
 
-Its size counts code points unless its `unit` says otherwise, and an enum is text with its values.
+Its size counts code points unless its `unit` says otherwise. A `pattern` is one every value matches, in the dialect it names.
 
-<TypeDef show="result.columns" types={{"Postgres": ["text", "varchar", "char", "name", "an enum"], "MySQL": ["CHAR", "VARCHAR", "TINYTEXT", "TEXT", "MEDIUMTEXT", "LONGTEXT", "ENUM"], "SQLite": ["TEXT"], "DuckDB": ["VARCHAR", "ENUM"]}} notes={{"columns": "two columns: a varchar(255) and an enum"}} holds={["'ada@example.com'", "'happy'"]}>
+<TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name", "an enum"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum"], "sqlite": ["text"], "duckdb": ["varchar", "enum"]}}>
 
-```sql schema
-create type mood as enum ('sad', 'ok', 'happy');
-create table users (
-  id int8 primary key,
-  email varchar(255) not null,
-  mood mood
-)
-```
+```jsonc
+// At most 255 code points
+{ "kind": "text", "size": { "max": 255 } }
 
-```sql
-select email, mood from users where id = :id::int8
+// One of two values
+{ "kind": "text", "enum": ["happy", "sad"] }
+
+// Text that matches a LIKE pattern
+{ "kind": "text", "pattern": { "dialect": "like", "source": "%@%" } }
+
+// At most 65,535 bytes of UTF-8
+{ "kind": "text", "size": { "unit": "byte", "encoding": "UTF-8", "max": 65535 } }
+
+// Bytes meant as UTF-8 that nothing checked, which may not be valid Unicode
+{ "kind": "text", "ill_formed": "utf8" }
 ```
 
 </TypeDef>
@@ -263,19 +194,16 @@ select email, mood from users where id = :id::int8
 
 Bytes.
 
-The type states their length where it fixes one, as `binary(16)` does.
+The type states their length where it fixes one.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["bytea", "macaddr", "macaddr8"], "MySQL": ["BINARY", "VARBINARY", "TINYBLOB", "BLOB", "MEDIUMBLOB", "LONGBLOB"], "SQLite": ["BLOB"], "DuckDB": ["BLOB"]}} notes={{"type.kind": "any number of bytes"}} holds={["'\\x0102'", "''"]}>
+<TypeDef holds={["0x0102", "0x"]} types={{"postgres": ["bytea", "macaddr", "macaddr8"], "mysql": ["binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob"], "sqlite": ["blob"], "duckdb": ["blob"]}}>
 
-```sql schema
-create table users (
-  id int8 primary key,
-  avatar bytea
-)
-```
+```jsonc
+// Any number of bytes
+{ "kind": "bytes" }
 
-```sql
-select avatar from users where id = :id::int8
+// Exactly 16 bytes
+{ "kind": "bytes", "size": { "exact": 16 } }
 ```
 
 </TypeDef>
@@ -286,60 +214,104 @@ A 128-bit identifier.
 
 It holds any 128 bits, written in [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)'s text form. A `version` says every value has that RFC 9562 version: a UUID that `uuidv7()` or `gen_random_uuid()` makes, or a column whose `CHECK`s hold `uuid_extract_version` to one and keep it non-null. A column with a `default uuidv7()` has none, since an insert may write any UUID.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["uuid"], "DuckDB": ["UUID"]}} holds={["'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'"]}>
+<TypeDef holds={["019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"]} types={{"postgres": ["uuid"], "duckdb": ["uuid"]}}>
 
-```sql schema
-create table sessions (
-  id uuid primary key,
-  user_id int8 not null
-)
-```
+```jsonc
+// Any 128 bits
+{ "kind": "uuid" }
 
-```sql
-select id from sessions where user_id = :user_id::int8
+// A version 7 UUID
+{ "kind": "uuid", "version": 7 }
 ```
 
 </TypeDef>
 
 ### `array`
 
-A sequence of elements.
+Elements, in order.
 
-Each element has its own nullability, and a [pgvector](https://github.com/pgvector/pgvector) vector is an array of floats. An array column takes `any_depth`, since Postgres doesn't enforce its dimensions; an array a statement builds has the depth it shows.
+Each element is a position of its own, so it says whether it may be null. A [pgvector](https://github.com/pgvector/pgvector) vector is an array of floats, and a Postgres array column takes `any_depth`, since Postgres doesn't enforce its dimensions.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["T[]", "bit", "varbit", "lseg", "polygon", "vector", "halfvec"], "MySQL": ["BIT"], "DuckDB": ["LIST", "ARRAY", "BIT"]}} notes={{"type.element": "each element, which may be NULL", "type.any_depth": "Postgres ignores declared dimensions", "type.label": "the array type's own name"}} holds={["'{a,b}'", "'{NULL}'", "'{}'"]}>
+- **A set** is an array whose elements never repeat, `distinct`, as MySQL's `SET` is.
+- **Rows** are an array of records. Its `size` is how many rows, `unique` the sets of fields no two rows share, a table's primary key first, and `order` the fields the rows are sorted on.
 
-```sql schema
-create table posts (
-  id int4 primary key,
-  tags varchar(20)[] not null default '{}'
-)
-```
+<TypeDef holds={["[1, null, 3]", "[]"]} types={{"postgres": ["any array", "bit", "varbit", "lseg", "polygon", "vector", "halfvec"], "mysql": ["set", "bit"], "duckdb": ["list", "array", "bit"]}}>
 
-```sql
-select tags from posts where id = :id::int4
+```jsonc
+// Integers, each of which may be null
+{ "kind": "array", "element": { "type": { "kind": "integer", "bits": 32 }, "nullable": true } }
+
+// Exactly 3 floats
+{ "kind": "array", "size": { "exact": 3 }, "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23 } } }
+
+// Members that never repeat
+{ "kind": "array", "distinct": true, "element": { "type": { "kind": "text", "enum": ["a", "b", "c"] } } }
+
+// Rows, unique by id, newest first
+{
+  "kind": "array",
+  "unique": [["id"]],
+  "order": [{ "field": "created_at", "desc": true, "nulls": "last" }],
+  "element": {
+    "type": {
+      "kind": "record",
+      "fields": [
+        { "name": "id", "type": { "kind": "integer", "bits": 64 } },
+        { "name": "created_at", "type": { "kind": "instant", "tick": "1/1000000" } }
+      ]
+    }
+  }
+}
 ```
 
 </TypeDef>
 
 ### `record`
 
-Fields, in order.
+Named fields, in order.
 
-A composite type, a row value, or an object a statement builds, each field with its own nullability.
+Each field is a position with a `name`. It may be `optional`, its key left out, with a `default` the key takes when it is. A record holds exactly its fields, unless `extra` lets it hold other keys too.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["a composite type", "point", "line", "box", "path", "circle"], "DuckDB": ["STRUCT"]}} notes={{"type.fields": "a composite's fields may each be NULL"}} holds={["('1 Main St', '02134')", "(,)"]}>
+<TypeDef holds={["{ \"x\": 1, \"y\": 2 }"]} types={{"postgres": ["a composite type", "point", "line", "box", "path", "circle"], "duckdb": ["struct"]}}>
 
-```sql schema
-create type address as (street text, zip varchar(10));
-create table customers (
-  id int4 primary key,
-  home address
-)
+```jsonc
+// A point
+{
+  "kind": "record",
+  "fields": [
+    { "name": "x", "type": { "kind": "float", "exponent_bits": 11, "mantissa_bits": 52 } },
+    { "name": "y", "type": { "kind": "float", "exponent_bits": 11, "mantissa_bits": 52 } }
+  ]
+}
+
+// An optional field, with its default and its comment
+{
+  "kind": "record",
+  "fields": [
+    { "name": "id", "type": { "kind": "integer", "bits": 64 } },
+    { "name": "role", "optional": true, "default": "member", "comment": "What the user may do", "type": { "kind": "text", "enum": ["admin", "member"] } }
+  ]
+}
+
+// An open object, whose other keys hold text
+{
+  "kind": "record",
+  "fields": [{ "name": "id", "type": { "kind": "integer", "bits": 64 } }],
+  "extra": { "type": { "kind": "text" } }
+}
 ```
 
-```sql
-select home from customers where id = :id::int4
+</TypeDef>
+
+### `tuple`
+
+Values in order, each of its own type, with no names.
+
+<TypeDef holds={["[1, \"a\"]", "[2, null]"]}>
+
+```jsonc
+// An integer, then text that may be null
+{ "kind": "tuple", "elements": [{ "type": { "kind": "integer", "bits": 32 } }, { "type": { "kind": "text" }, "nullable": true }] }
 ```
 
 </TypeDef>
@@ -348,21 +320,30 @@ select home from customers where id = :id::int4
 
 A [JSON](https://www.rfc-editor.org/rfc/rfc8259) value.
 
-Its `content` is what the statement built, in these same types, and its `schema` a [JSON Schema](https://json-schema.org) every value satisfies.
+Its `content` is what a statement built, in these same types, and its `schema` a [JSON Schema](https://json-schema.org) every value satisfies. With neither, it's any JSON.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["json", "jsonb"], "MySQL": ["JSON"], "DuckDB": ["JSON"]}} notes={{"type.content": "what json_build_object built"}} holds={["'{\"id\": 1, \"title\": \"Hello\"}'"]}>
+<TypeDef holds={["{ \"id\": 1, \"title\": \"Hello\" }", "null"]} types={{"postgres": ["json", "jsonb"], "mysql": ["json"], "duckdb": ["json"]}}>
 
-```sql schema
-create table posts (
-  id int4 primary key,
-  title text not null
-)
-```
+```jsonc
+// Any JSON value
+{ "kind": "json" }
 
-```sql
-select json_build_object('id', p.id, 'title', p.title) as post
-from posts p
-where p.id = :id::int4
+// An object of an id and a title
+{
+  "kind": "json",
+  "content": {
+    "type": {
+      "kind": "record",
+      "fields": [
+        { "name": "id", "type": { "kind": "integer", "bits": 64 } },
+        { "name": "title", "type": { "kind": "text" } }
+      ]
+    }
+  }
+}
+
+// What a JSON Schema admits
+{ "kind": "json", "schema": { "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "required": ["x"] } }
 ```
 
 </TypeDef>
@@ -371,19 +352,16 @@ where p.id = :id::int4
 
 A calendar date.
 
-Its bounds are [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) text, with a sign and more than four digits where a year needs them.
+Its bounds are [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) text, with a sign and more than four digits where a year needs them. With no bounds, it runs from 0001-01-01 to 9999-12-31.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["date"], "MySQL": ["DATE"], "DuckDB": ["DATE"]}} notes={{"type.min": "Postgres's earliest date", "type.max": "and latest", "type.infinity": "also holds infinity and -infinity"}} holds={["'2026-11-04'", "'-infinity'"]}>
+<TypeDef holds={["2026-11-04", "-infinity"]} types={{"postgres": ["date"], "mysql": ["date"], "duckdb": ["date"]}}>
 
-```sql schema
-create table users (
-  id int8 primary key,
-  born date
-)
-```
+```jsonc
+// Any date from 0001 to 9999
+{ "kind": "date" }
 
-```sql
-select born from users where id = :id::int8
+// From 4714 BC to the year 5874897, and infinity and -infinity too
+{ "kind": "date", "min": "-4713-11-24", "max": "+5874897-12-31", "infinity": true }
 ```
 
 </TypeDef>
@@ -392,19 +370,16 @@ select born from users where id = :id::int8
 
 A time of day.
 
-Its `tick` is its smallest step in seconds, and it holds 24:00:00 only where its bounds say so.
+Its `tick` is its smallest step, in seconds. It holds 24:00:00 only where its bounds say so, and keeps a UTC offset where `zone` says so.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["time", "timetz"], "DuckDB": ["TIME", "TIMETZ", "TIME_NS"]}} notes={{"type.tick": "time(0): whole seconds", "type.max": "Postgres's time holds 24:00:00"}} holds={["'09:30:00'", "'24:00:00'"]}>
+<TypeDef holds={["09:30:00", "24:00:00"]} types={{"postgres": ["time", "timetz"], "duckdb": ["time", "timetz", "time_ns"]}}>
 
-```sql schema
-create table shops (
-  id int4 primary key,
-  opens time(0) not null
-)
-```
+```jsonc
+// To the microsecond, up to 24:00:00
+{ "kind": "time", "tick": "1/1000000", "max": "24:00:00" }
 
-```sql
-select opens from shops where id = :id::int4
+// To the second, with its UTC offset
+{ "kind": "time", "tick": "1", "zone": "offset" }
 ```
 
 </TypeDef>
@@ -415,17 +390,11 @@ A date and time as a wall clock reads it.
 
 With no zone, it can't be read as an instant.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["timestamp"], "MySQL": ["DATETIME"], "DuckDB": ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"]}} notes={{"type.tick": "timestamp(3): milliseconds", "type.max": "the latest value, at that tick"}} holds={["'2026-11-04 09:30:00.123'"]}>
+<TypeDef holds={["2026-11-04T09:30:00.123"]} types={{"postgres": ["timestamp"], "mysql": ["datetime"], "duckdb": ["timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns"]}}>
 
-```sql schema
-create table events (
-  id int4 primary key,
-  at timestamp(3) not null
-)
-```
-
-```sql
-select at from events where id = :id::int4
+```jsonc
+// To the millisecond
+{ "kind": "datetime", "tick": "1/1000" }
 ```
 
 </TypeDef>
@@ -434,19 +403,16 @@ select at from events where id = :id::int4
 
 A point on the timeline.
 
-A `timestamptz` is one instant however a session prints it.
+It's one moment however a session prints it. Its bounds are in UTC, and `zone` says what each value keeps besides the moment.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["timestamptz"], "MySQL": ["TIMESTAMP"], "DuckDB": ["TIMESTAMPTZ"]}} notes={{"type.tick": "microseconds", "type.min": "bounds in UTC"}} holds={["'2026-11-04 17:30:00.123456+00'"]}>
+<TypeDef holds={["2026-11-04T17:30:00.123456Z"]} types={{"postgres": ["timestamptz"], "mysql": ["timestamp"], "duckdb": ["timestamptz"]}}>
 
-```sql schema
-create table users (
-  id int8 primary key,
-  created_at timestamptz not null default now()
-)
-```
+```jsonc
+// To the microsecond, and infinity and -infinity too
+{ "kind": "instant", "tick": "1/1000000", "infinity": true }
 
-```sql
-select created_at from users where id = :id::int8
+// One that keeps its UTC offset
+{ "kind": "instant", "tick": "1/10000000", "zone": "offset" }
 ```
 
 </TypeDef>
@@ -455,59 +421,64 @@ select created_at from users where id = :id::int8
 
 A length of time.
 
-Its parts are months, days and a time, each signed on its own, so `1 mon` and `30 days` are two values though Postgres finds them equal. Its bounds are [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) durations.
+Its parts are months, days and a time, each signed on its own, so 1 month and 30 days are two values. Its `max` is an [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) duration of the parts it has, each at the largest magnitude it reaches.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["interval"], "MySQL": ["TIME"], "DuckDB": ["INTERVAL"]}} notes={{"type.months": "interval day keeps months and days", "type.days": "and drops the time"}} holds={["'1 mon 3 days'", "'-2 days'"]}>
+<TypeDef holds={["P1M3D", "PT1H30M", "P-2D"]} types={{"postgres": ["interval"], "mysql": ["time"], "duckdb": ["interval"]}}>
 
-```sql schema
-create table plans (
-  id int4 primary key,
-  trial interval day not null
-)
-```
+```jsonc
+// Months, days and a time to the microsecond
+{ "kind": "duration", "max": "P2147483648M2147483648DT2562047788H54.775808S", "tick": "1/1000000" }
 
-```sql
-select trial from plans where id = :id::int4
+// A time alone, up to 838 hours, to the second
+{ "kind": "duration", "max": "PT838H59M59S", "tick": "1" }
 ```
 
 </TypeDef>
 
 ### `union`
 
-One of several types. <span className="typedef-dialect">SQLite</span>
+One of several types.
 
-A SQLite column outside a `STRICT` table is the union of what its affinity stores. A union is flat, and lists its members in the order of the kinds.
+A union is flat, and lists its members in the order of the kinds. A union of records that each give one field a different literal is a discriminated union, as OpenAPI's discriminator and TypeScript describe one: each value says which member it is by that field.
 
-<TypeDef dialect="sqlite" show="result.columns.0" types={{"Postgres": ["inet", "cidr"], "SQLite": ["every column outside a STRICT table"]}} notes={{"type.members": "what NUMERIC affinity stores outside a STRICT table", "type.label": "the declared type"}} holds={["12", "1.5", "'abc'", "x'00'"]}>
+<TypeDef holds={["12", "\"abc\""]} types={{"postgres": ["inet", "cidr"], "sqlite": ["any column outside a strict table"]}}>
 
-```sql schema
-create table items (
-  id integer primary key,
-  price numeric
-)
-```
+```jsonc
+// An integer or text
+{ "kind": "union", "members": [{ "kind": "integer", "bits": 64 }, { "kind": "text" }] }
 
-```sql
-select price from items where id = :id
+// A cat or a dog, which its type field names
+{
+  "kind": "union",
+  "members": [
+    { "kind": "record", "fields": [{ "name": "type", "type": { "kind": "text", "enum": ["cat"] } }, { "name": "meows", "type": { "kind": "boolean" } }] },
+    { "kind": "record", "fields": [{ "name": "type", "type": { "kind": "text", "enum": ["dog"] } }, { "name": "barks", "type": { "kind": "boolean" } }] }
+  ]
+}
+
+// No value at all: at a nullable position, always null
+{ "kind": "union", "members": [] }
 ```
 
 </TypeDef>
 
-### `set`
+### `tagged_union`
 
-Elements in no order, each at most once. <span className="typedef-dialect">MySQL</span>
+One of several alternatives, each named by a tag.
 
-<TypeDef dialect="mysql" show="result.columns.0" types={{"MySQL": ["SET"]}} holds={["''", "'a'", "'a,b'"]}>
+Every value carries its tag beside the value, even where the value is null. Unlike a union's members, two alternatives may hold one type.
 
-```sql schema
-create table m (
-  id bigint unsigned primary key,
-  tags set('a', 'b')
-)
-```
+<TypeDef holds={["{ \"tag\": \"num\", \"value\": 1 }"]} types={{"duckdb": ["union"]}}>
 
-```sql
-select tags from m where id = :id
+```jsonc
+// A number or text, each tagged
+{
+  "kind": "tagged_union",
+  "alternatives": [
+    { "tag": "num", "type": { "kind": "integer", "bits": 32 }, "nullable": true },
+    { "tag": "str", "type": { "kind": "text" }, "nullable": true }
+  ]
+}
 ```
 
 </TypeDef>
@@ -516,20 +487,13 @@ select tags from m where id = :id
 
 Keys to values, each key once.
 
-On Postgres, this is [`hstore`](https://www.postgresql.org/docs/current/hstore.html).
+A key is never null. A map whose keys may repeat is an array of `{ key, value }` records.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["hstore"], "DuckDB": ["MAP"]}} notes={{"type.key": "a key is never NULL", "type.value": "a value may be"}} holds={["'color=>red, size=>NULL'"]}>
+<TypeDef holds={["{ \"color\": \"red\", \"size\": null }"]} types={{"postgres": ["hstore"], "duckdb": ["map"]}}>
 
-```sql schema
-create extension hstore;
-create table products (
-  id int4 primary key,
-  attrs hstore
-)
-```
-
-```sql
-select attrs from products where id = :id::int4
+```jsonc
+// Text keys to text that may be null
+{ "kind": "map", "key": { "kind": "text" }, "value": { "type": { "kind": "text" }, "nullable": true } }
 ```
 
 </TypeDef>
@@ -540,17 +504,11 @@ A range of an ordered type.
 
 It may be empty, and either end may be unbounded.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange"]}} notes={{"type.subtype": "a range of timestamptz"}} holds={["'[2026-11-04 09:00+00, 2026-11-04 10:00+00)'", "'empty'"]}>
+<TypeDef holds={["[2026-11-04T09:00Z, 2026-11-04T10:00Z)", "empty"]} types={{"postgres": ["int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange"]}}>
 
-```sql schema
-create table bookings (
-  id int4 primary key,
-  during tstzrange not null
-)
-```
-
-```sql
-select during from bookings where id = :id::int4
+```jsonc
+// A range of instants
+{ "kind": "range", "subtype": { "kind": "instant", "tick": "1/1000000" } }
 ```
 
 </TypeDef>
@@ -559,17 +517,11 @@ select during from bookings where id = :id::int4
 
 Non-overlapping ranges, in order.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["int4multirange", "int8multirange", "nummultirange", "tsmultirange", "tstzmultirange", "datemultirange"]}} holds={["'{[1,3), [5,8)}'", "'{}'"]}>
+<TypeDef holds={["{[1,3), [5,8)}", "{}"]} types={{"postgres": ["int4multirange", "int8multirange", "nummultirange", "tsmultirange", "tstzmultirange", "datemultirange"]}}>
 
-```sql schema
-create table rooms (
-  id int4 primary key,
-  free int4multirange not null
-)
-```
-
-```sql
-select free from rooms where id = :id::int4
+```jsonc
+// Ranges of integers
+{ "kind": "multirange", "subtype": { "kind": "integer", "bits": 32 } }
 ```
 
 </TypeDef>
@@ -578,20 +530,16 @@ select free from rooms where id = :id::int4
 
 An [OGC simple feature](https://www.ogc.org/standards/sfa/).
 
-It has a model, an SRID, a subtype and its coordinates. On Postgres, it comes from [PostGIS](https://postgis.net).
+It may name its model, its spatial reference, its subtype and its coordinates.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["geometry", "geography"], "MySQL": ["GEOMETRY", "POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION"]}} notes={{"type.srid": "geometry(Point, 4326)", "type.coordinates": "neither Z nor M"}} holds={["'SRID=4326;POINT(-71.06 42.36)'"]}>
+<TypeDef holds={["SRID=4326;POINT(-71.06 42.36)"]} types={{"postgres": ["geometry", "geography"], "mysql": ["geometry", "point", "linestring", "polygon", "multipoint", "multilinestring", "multipolygon", "geometrycollection"]}}>
 
-```sql schema
-create extension postgis;
-create table places (
-  id int4 primary key,
-  geom geometry(Point, 4326) not null
-)
-```
+```jsonc
+// A point in WGS 84, with X and Y
+{ "kind": "geometry", "srid": 4326, "subtype": "point", "coordinates": "xy" }
 
-```sql
-select geom from places where id = :id::int4
+// Any shape on the sphere
+{ "kind": "geometry", "model": "geodetic" }
 ```
 
 </TypeDef>
@@ -602,17 +550,14 @@ select geom from places where id = :id::int4
 
 A document with one root, or with `fragment` several.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["xml"]}} notes={{"type.fragment": "Postgres's xml may have several roots"}} holds={["'<a/>'", "'<a/><b/>'"]}>
+<TypeDef holds={["<a/>", "<a/><b/>"]} types={{"postgres": ["xml"]}}>
 
-```sql schema
-create table feeds (
-  id int4 primary key,
-  body xml
-)
-```
+```jsonc
+// A document
+{ "kind": "xml" }
 
-```sql
-select body from feeds where id = :id::int4
+// A fragment, which may have several roots
+{ "kind": "xml", "fragment": true }
 ```
 
 </TypeDef>
@@ -623,72 +568,26 @@ A type the format doesn't structure.
 
 Its `label` is all the format says. A program that meets a kind it doesn't know reads it as this one.
 
-<TypeDef show="result.columns.0" types={{"Postgres": ["money", "tsvector", "tsquery", "pg_lsn", "an extension's type"], "SQL Server": ["sql_variant"], "Oracle": ["ANYDATA"]}} notes={{"type.label": "an extension's type, by its name"}} holds={["'top.science.physics'"]}>
+<TypeDef holds={["top.science.physics"]} types={{"postgres": ["money", "tsvector", "tsquery", "pg_lsn", "an extension's type"]}}>
 
-```sql schema
-create extension ltree;
-create table tree (
-  id int4 primary key,
-  path ltree not null
-)
-```
-
-```sql
-select path from tree where id = :id::int4
+```jsonc
+// A Postgres extension's type, known by its name
+{ "kind": "opaque", "label": "ltree" }
 ```
 
 </TypeDef>
 
 ### `unknown`
 
-Nothing is known about the values. <span className="typedef-dialect">SQLite</span>
+Nothing is known about the values.
 
 A parameter nothing in the statement types is one, where [`allow_untyped_params`](/configuration#allow_untyped_params) lets it through.
 
-<TypeDef dialect="sqlite" show="result.columns.0" types={{"SQLite": ["every ANY column in a STRICT table"]}} notes={{"type.kind": "allow_untyped_params lets it through"}}>
+<TypeDef types={{"sqlite": ["any column in a strict table"]}}>
 
-```sql
-select :x as x
-```
-
-</TypeDef>
-
-### `tagged_union`
-
-One of several alternatives, each named by a tag. <span className="typedef-dialect">DuckDB</span>
-
-Every value carries its tag.
-
-<TypeDef example="duckdb_column" show="result.columns.0" types={{"DuckDB": ["UNION"]}} notes={{"type.alternatives": "in the order the type declares them"}} holds={["union_value(num := 1)", "union_value(str := 'x')"]}>
-
-```sql
-select union_value(num := 1)::union(num integer, str varchar) as u
-```
-
-</TypeDef>
-
-### `rows`
-
-Rows of columns.
-
-It is what every statement returns as its [`result`](#result), and a relation nested in a value is the same kind, as SQL's `MULTISET` and Oracle's nested tables are. Its `cardinality` is `one`, `at_most_one`, `many`, or `none` for a write without `returning`.
-
-On rows that can be more than one, Postgres also writes:
-
-- `unique`: each set of columns no two rows agree on, a table's primary key first where the rows hold it. A NULL counts as equal to another NULL.
-- `order`: the columns the rows are sorted on, each with its direction and where its NULLs sort. It ends at the first `ORDER BY` key that isn't a column of the result, since a later key sorts only among rows that tie on that one.
-
-<TypeDef show="result" notes={{"result.unique": "no two rows agree on any of these sets", "result.order": "email, highest first, then id"}}>
-
-```sql schema
-create table users (
-  id int8 primary key,
-  email varchar(255) not null unique
-)
-```
-
-```sql
-select id, email from users order by email desc, id
+```jsonc
+// Any value
+{ "kind": "unknown" }
 ```
 
 </TypeDef>
