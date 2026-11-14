@@ -1,0 +1,16 @@
+create schema api;
+comment on schema api is 'What the API serves';
+create type api.status as enum ('on', 'off');
+comment on type api.status is 'Whether a user is active';
+create domain api.handle as text check (value ~ '^[a-z]+$');
+comment on domain api.handle is 'A lowercase handle';
+create table api.users (id integer primary key, handle api.handle not null, status api.status not null default 'on', constraint handle_short check (length(handle) < 30));
+comment on constraint handle_short on api.users is 'Handles fit in a URL';
+create index users_status on api.users (status);
+comment on index api.users_status is 'For the status filter';
+create function api.touch() returns trigger language plpgsql as $$ begin return new; end $$;
+create trigger users_touch before update on api.users for each row execute function api.touch();
+comment on trigger users_touch on api.users is 'Runs on every update';
+alter table api.users enable row level security;
+create policy users_all on api.users using (true);
+comment on policy users_all on api.users is 'Everyone sees everything';

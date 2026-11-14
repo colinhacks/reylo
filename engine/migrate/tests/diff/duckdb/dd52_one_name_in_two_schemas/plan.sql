@@ -1,0 +1,13 @@
+create temporary table reylo_copy_t as select * from s.t;
+create temporary table reylo_copy_kid as select * from s.kid;
+drop table s.kid;
+drop table s.t;
+create table s.t (id bigint, y varchar, primary key (id), check ((y != '')));
+create table s.kid (t_id bigint, foreign key (t_id) references t (id));
+insert into s.t (id, y) select id, y from temp.main.reylo_copy_t;
+insert into s.kid (t_id) select t_id from temp.main.reylo_copy_kid;
+drop table temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_kid;
+create index st_y on s.t(y);
+create view s.v as select id, y from s.t;
+create view v as select a from t;

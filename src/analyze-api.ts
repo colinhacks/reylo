@@ -3,7 +3,7 @@
 // database by the engine, as plain data that serializes to JSON. `reylo analyze` prints the same
 // descriptors on the command line (engine/cli/src/analyze.rs), and both read the project as the type
 // check does: the database it names, unless the caller names another, and its `allow_untyped_params`. It
-// reads no `.reylo/` cache, and every call reads the database afresh.
+// reads no `reylo/.cache/` cache, and every call reads the database afresh.
 import { basename } from "node:path";
 import type { StatementDescriptor } from "../spec/index.ts";
 import type { AnalyzeInput } from "./build-time.ts";

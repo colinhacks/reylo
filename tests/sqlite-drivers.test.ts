@@ -66,7 +66,7 @@ test("drivers whose SQLite has the function prepare it, and a project that lists
   }
 });
 
-test("an analysis read from .reylo/ is checked on the drivers too", { skip }, async () => {
+test("an analysis read from reylo/.cache/ is checked on the drivers too", { skip }, async () => {
   const { root, env } = project([]);
   const first = await analyze(root, env, PRETTY);
   assert.deepEqual([first.source, first.analysis.diagnostics], ["database", []]);
@@ -78,7 +78,7 @@ test("an analysis read from .reylo/ is checked on the drivers too", { skip }, as
   assert.match(second.analysis.diagnostics[0]?.message ?? "", /^@libsql\/client runs SQLite 3\.45\.1, which refuses this statement: no such function: json_pretty$/);
 });
 
-test("a session whose connection was released checks a statement it reads from .reylo/ all the same", { skip }, async () => {
+test("a session whose connection was released checks a statement it reads from reylo/.cache/ all the same", { skip }, async () => {
   const { root, env } = project(["@libsql/client"]);
   const session = await Session.open(root, env);
   try {

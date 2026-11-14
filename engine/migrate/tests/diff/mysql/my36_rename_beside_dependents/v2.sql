@@ -1,0 +1,1 @@
+create table tags (id int primary key); create table users (id int primary key, alpha int not null, b int, tag_id int, key (tag_id), constraint users_tag foreign key (tag_id) references tags (id)); create view tagged as select id, alpha, tag_id from users;

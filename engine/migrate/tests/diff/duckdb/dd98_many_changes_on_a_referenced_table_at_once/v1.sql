@@ -1,0 +1,1 @@
+create table p (id integer primary key, name varchar, n integer, note varchar); create index p_name on p (name); comment on table p is 'p'; comment on column p.note is 'n'; create table c (id integer, p_id integer references p (id));

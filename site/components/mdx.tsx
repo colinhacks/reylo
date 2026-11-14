@@ -3,8 +3,11 @@ import type { MDXComponents } from 'mdx/types';
 import type { ReactNode } from 'react';
 import { CompareTable } from './compare-table';
 import { Dialect, DialectSwitch, DialectTabs } from './dialect-tabs';
+import { Choice, Feature, Features, Way } from './feature-cards';
+import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
+import { MigrationsDiagram } from './migrations-diagram';
 import { Inferred, InferredRow, InferredTypes } from './inferred';
 import { PlaygroundLink } from './playground-link';
 import { Pairs, Rules } from './value-pairs';
@@ -19,6 +22,8 @@ export function getMDXComponents(components?: MDXComponents) {
     AgentPrompt: ({ children }: { children: ReactNode }) => <AgentPrompt title="Set up Reylo with an agent">{children}</AgentPrompt>,
     // The figure under How it works (components/how-it-works-diagram.tsx).
     HowItWorksDiagram,
+    // The records and commands of Reylo Migrate, at the top of the Migrations page (components/migrations-diagram.tsx).
+    MigrationsDiagram,
     // The badges and "Copy agent prompt" under the main page's subheader (components/hero.tsx).
     HeroActions,
     // The looping editor recording under them (components/hero.tsx).
@@ -35,6 +40,14 @@ export function getMDXComponents(components?: MDXComponents) {
     Inferred,
     InferredRow,
     InferredTypes,
+    // The cards under /migrations' title (components/feature-cards.tsx).
+    Features,
+    Feature,
+    Choice,
+    Way,
+    // The vertical stepper on /migrations (components/steps.tsx).
+    Steps,
+    Step,
     // The marks on /compare (components/compare-table.tsx).
     CompareTable,
     // A type descriptor format card, the same card's rows: Types, Schema, Query, Descriptor and Holds

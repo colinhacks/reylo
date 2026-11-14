@@ -1,6 +1,6 @@
 // The content mapper, in reylo's build-time half (src/tooling.ts), which src/mapper.ts starts:
 // the type check's view of a `.sql` file. The analysis itself (the
-// database, the engine, the `.reylo/` cache shared with the bundler plugins)
+// database, the engine, the cache in `reylo/.cache/`, shared with the bundler plugins)
 // is `src/analyze.ts`; this file renders it as types and places its diagnostics in the file.
 import { createHash } from "node:crypto";
 import { dirname, relative, sep } from "node:path";
@@ -72,7 +72,7 @@ export function mapperHandlers(): MapperHandlers {
       const projectFile = resolved.file ? relative(projectDir, resolved.file).split(sep).join("/") || resolved.file : PROJECT_FILE;
       const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
       projects.set(p.projectHandle, { strictParams: resolved.strictParams, allowNestedArrays: resolved.allowNestedArrays, codecs: resolved.codecs, projectFile, session: Session.open(projectDir) });
-      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.allowNestedArrays, resolved.codecs, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
+      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.allowNestedArrays, resolved.codecs, resolved.cache, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
       return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };
     },
     async transform(params) {

@@ -15,7 +15,11 @@ allow_untyped_params: false
 allow_nested_arrays: false
 # a comment naming each query's file, for your database's monitoring (the default)
 sqlcommenter: true
+# the directory of Reylo's files: schema.sql, the migrations and its cache (the default)
+dir: reylo
 ```
+
+The `package.json` it sits beside is the nearest one at or above the directory Reylo runs in, short of your home directory: one in the home directory itself is passed over, and `reylo migrate init` starts no project there.
 
 ## `direct_url`
 
@@ -58,7 +62,7 @@ direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
 
 A type check or a build reads this database, so in CI and on your host it needs your migrations applied. The database a query runs on is the client you pass to `.run()`, so the two can differ.
 
-A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([Schema changes](/schema-changes)). To type it on the database it runs on:
+A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([When the schema changes](/observability#when-the-schema-changes)). To type it on the database it runs on:
 
 ```sh
 DATABASE_URL="$PRODUCTION_URL" node --import reylo/register report.ts
@@ -112,4 +116,22 @@ sqlcommenter: false
 
 ```sql title="What Postgres receives for queries/get_user.sql, by default"
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
+```
+
+## `dir`
+
+The directory beside `.reylo.yaml` that holds Reylo's files: the `schema.sql`, `migrations/` and `reylo-lock.yaml` of [migrations](/migrations), which you commit, and its cache in `.cache/`, which keeps itself out of git.
+
+```yaml title=".reylo.yaml"
+# the default is reylo
+dir: db
+```
+
+## `shadow_url`
+
+The server where [migrations](/migrations) build their shadow databases, for a database whose own server refuses `create database`:
+
+```yaml title=".reylo.yaml"
+# the default is the database's own server
+shadow_url: ${SHADOW_URL}
 ```

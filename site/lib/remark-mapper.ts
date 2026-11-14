@@ -23,7 +23,8 @@ export { pageFiles };
 // The conventions (the contract between the page and this file):
 // - A `sql` block's file name is its `title`, else its `file` meta attribute, which names the file
 //   without showing it and which this plugin removes, else its `tab` when that is not a dialect
-//   name; a block whose name ends in `.sql` is a statement, except `schema.sql`, the page's schema.
+//   name; a block whose name ends in `.sql` is a statement, except `schema.sql`, the page's schema,
+//   and a migration's file (`20261104140347_add_bio.sql`, `init.sql`).
 // - A `sql` block with `dialect="all"` is the same statement in every dialect: it is shown once,
 //   analyzed in each, and a `ts twoslash` block that imports it follows the page's dialect choice,
 //   as under a code-tab group of dialects.
@@ -90,6 +91,8 @@ const dialectOf = (value: unknown): Dialect | undefined => (typeof value === 'st
 
 /** The file whose blocks hold each dialect's schema, in the accordion near the top of a page. */
 export const SCHEMA_FILE = 'schema.sql';
+/** A migration's file name, as `reylo migrate new` writes it: a file the page shows, never a statement. */
+export const MIGRATION_FILE = /^(\d{14}_[a-z0-9_]+|init)\.sql$/;
 
 export type Block = {
   /** The page file the block is in, relative to the site, when the page is several files. */
@@ -208,7 +211,7 @@ function cardSchema(card: MdNode, dialect: Dialect): string | undefined {
 }
 
 /** A `.sql` block that a page analyzes: every SQL block named `*.sql` but the schema and the error examples (a TypeScript tab named Bun.sql is not one). */
-export const isStatement = (block: Block) => (block.node.lang ?? 'sql') === 'sql' && !!block.name?.endsWith('.sql') && block.name !== SCHEMA_FILE && !isErrorExample(block.node);
+export const isStatement = (block: Block) => (block.node.lang ?? 'sql') === 'sql' && !!block.name?.endsWith('.sql') && block.name !== SCHEMA_FILE && !MIGRATION_FILE.test(block.name) && !isErrorExample(block.node);
 
 /** `import getUser from "./get_user.sql"`. */
 const IMPORT = /\b(?:from|import)\s+["']\.\/([^"']+\.sql)["']/g;

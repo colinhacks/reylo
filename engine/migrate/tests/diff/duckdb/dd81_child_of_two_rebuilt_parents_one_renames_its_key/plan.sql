@@ -1,0 +1,26 @@
+create temporary table reylo_copy_aa as select * from aa;
+create temporary table reylo_copy_cc as select * from cc;
+drop table cc;
+drop table aa;
+create table aa (id integer, n integer, primary key (id), check ((n > 0)));
+create table cc (id integer, aa_id integer, bb_id integer, foreign key (aa_id) references aa (id), foreign key (bb_id) references bb (id));
+insert into aa (id, n) select id, n from temp.main.reylo_copy_aa;
+insert into cc (id, aa_id, bb_id) select id, aa_id, bb_id from temp.main.reylo_copy_cc;
+drop table temp.main.reylo_copy_aa;
+drop table temp.main.reylo_copy_cc;
+create temporary table reylo_copy_bb as select * from bb;
+create temporary table reylo_copy_cc as select * from cc;
+drop table cc;
+drop table bb;
+create table bb (bid integer, primary key (bid));
+create table cc (id integer, aa_id integer, bb_id integer, foreign key (aa_id) references aa (id), foreign key (bb_id) references bb (bid));
+insert into bb (bid) select id from temp.main.reylo_copy_bb;
+insert into cc (id, aa_id, bb_id) select id, aa_id, bb_id from temp.main.reylo_copy_cc;
+drop table temp.main.reylo_copy_bb;
+drop table temp.main.reylo_copy_cc;
+create temporary table reylo_copy_cc as select * from cc;
+drop table cc;
+create table cc (id integer, aa_id integer, bb_id integer, foreign key (aa_id) references aa (id), foreign key (bb_id) references bb (bid));
+insert into cc (id, aa_id, bb_id) select id, aa_id, bb_id from temp.main.reylo_copy_cc;
+drop table temp.main.reylo_copy_cc;
+-- bb.id is renamed bid, keeping its rows. If they are two columns, drop the one and add the other instead.

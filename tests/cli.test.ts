@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,10 +45,104 @@ test("the reylo command runs the binary with its arguments, standard input and e
   assert.match(unknown.err, /^reylo: unknown command frobnicate\n\nUsage: reylo <command>/);
 });
 
-test("reylo generate is gone, and says what fills .reylo/ instead", () => {
+test("the migration commands and reylo run are the binary's, with their output and exit codes", () => {
+  const root = project();
+  const help = reylo(root, ["--help"]);
+  assert.equal(help.status, 0, help.err);
+  for (const usage of ["  migrate <command>", "  db <command>", "  run \"<sql>\""]) assert.ok(help.out.includes(usage), usage);
+  const migrate = reylo(root, ["migrate", "--help"]);
+  assert.equal(migrate.status, 0, migrate.err);
+  assert.match(migrate.out, /^Usage: reylo <group> <command> \[flags\]\n/);
+  assert.equal(reylo(root, ["db", "--help"]).out, migrate.out);
+  // The docs show the help as it is.
+  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrations.mdx"), "utf8").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
+  const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
+  assert.equal(run.status, 0, run.err);
+  const db = new DatabaseSync(join(root, "app.db"));
+  assert.deepEqual({ ...db.prepare("select count(*) as n from users").get() }, { n: 2 });
+  db.close();
+  // A flag's value after an `=` is its value, so that this runs on the database it names.
+  const other = join(root, "other.db");
+  assert.equal(reylo(root, ["run", `--url=sqlite:${other}`, "create table here (id integer)"]).status, 0);
+  const elsewhere = new DatabaseSync(other);
+  assert.deepEqual({ ...elsewhere.prepare("select count(*) as n from sqlite_schema where name = 'here'").get() }, { n: 1 });
+  elsewhere.close();
+  const missing = reylo(root, ["run", "--file", "nope.sql"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.err, /^reylo run: no file nope\.sql\n/);
+  assert.notEqual(reylo(root, ["migrate", "sideways"]).status, 0);
+  // A flag a command doesn't take is refused, never passed over: this must not run deploy.
+  const flag = reylo(root, ["migrate", "deploy", "--dev"]);
+  assert.equal(flag.status, 2);
+  assert.match(flag.err, /^reylo migrate deploy doesn't take --dev/);
+  // A command of another group is named, the words being so near each other.
+  const slip = reylo(root, ["migrate", "create", "add_bio"]);
+  assert.equal(slip.status, 2);
+  assert.match(slip.err, /^reylo migrate has no create: it's reylo migrate new\n/);
+  assert.match(reylo(root, ["migrate", "push"]).err, /^reylo migrate has no push: it's reylo migrate history push, or reylo db push\n/);
+  assert.match(reylo(root, ["db", "dev"]).err, /^reylo db has no dev: it's reylo migrate dev\n/);
+  // With --json, a command that isn't one is the one JSON object too.
+  for (const args of [["migrate", "create", "add_bio", "--json"], ["db", "deploy", "--json"]]) {
+    const r = reylo(root, args);
+    assert.equal(r.status, 2, args.join(" "));
+    const out = JSON.parse(r.out);
+    assert.equal(out.ok, false);
+    assert.equal(out.exit, 2);
+    assert.match(out.error, /^reylo (migrate|db)/);
+  }
+  for (const [args, said] of [[["db", "push", "--rename", "users.a=b"], /push doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "deploy", "--schema", "x"], /deploy doesn't take --schema/], [["migrate", "deploy", "-f", "x.sql"], /deploy doesn't take --file/], [["migrate", "deploy", "dev"], /deploy doesn't take dev/], [["migrate", "new", "a", "b"], /new doesn't take b/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/], [["migrate", "dev", "--dir", "db"], /dev doesn't take --dir/], [["migrate", "status", "--offline"], /status doesn't take --offline/], [["migrate", "dev", "--dry-run"], /dev doesn't take --dry-run/], [["migrate", "history", "push", "--watch"], /history push doesn't take --watch/]] as const) {
+    const r = reylo(root, [...args]);
+    assert.equal(r.status, 2, args.join(" "));
+    assert.match(r.err, said);
+  }
+  assert.match(reylo(root, ["migrate", "deploy", "--help"]).out, /^Usage: reylo <group> <command> \[flags\]\n/);
+});
+
+test("reylo migrate init starts a project, and needs nothing in the project file", () => {
+  const root = project();
+  const refused = reylo(root, ["migrate", "deploy"]);
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /no reylo\/ directory here: start one with reylo migrate init, or set dir in \.reylo\.yaml/);
+  const init = reylo(root, ["migrate", "init"]);
+  assert.equal(init.status, 0, init.err + init.out);
+  assert.match(init.out, /^✓ Started reylo\/ from \S+\n  reylo\/\n  ├── schema\.sql +this database's schema\n  ├── migrations\/\n  │   └── init\.sql +the same, recorded as run here\n  └── reylo-lock\.yaml +the order the migrations run in\n$/);
+  assert.equal(existsSync(join(root, ".reylo.yaml")), false);
+  // With no more than that, every command runs on it.
+  for (const args of [["migrate", "status"], ["migrate", "deploy", "--dry-run"], ["migrate", "deploy"], ["migrate", "history", "push"], ["migrate", "history", "pull"], ["db", "introspect"]]) {
+    const r = reylo(root, args);
+    assert.equal(r.status, 0, `${args.join(" ")}: ${r.err}${r.out}`);
+  }
+  // What db introspect prints is the schema init wrote, and it writes nothing.
+  assert.equal(reylo(root, ["db", "introspect"]).out, readFileSync(join(root, "reylo", "schema.sql"), "utf8"));
+  // A key that has gone is refused, as any key the file can't have.
+  writeFileSync(join(root, ".reylo.yaml"), "migrate:\n  lock: true\n");
+  assert.notEqual(reylo(root, ["migrate", "status"]).status, 0);
+  // Started once, it isn't started again.
+  rmSync(join(root, ".reylo.yaml"));
+  const again = reylo(root, ["migrate", "init"]);
+  assert.equal(again.status, 1);
+  assert.match(again.out, /^✗ This project has started already \(reylo\/schema\.sql exists\)\n/);
+});
+
+test("reylo migrate init starts no project in the home directory, and passes over a package.json there", () => {
+  const home = project();
+  const refused = reylo(home, ["migrate", "init"], { env: { HOME: home, USERPROFILE: home } });
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /^reylo migrate: init won't write into your home directory: run it in your project's directory\n/);
+  assert.equal(existsSync(join(home, "reylo")), false);
+  // Below it, with no package.json of its own, a directory is its own project.
+  const scratch = join(home, "scratch");
+  mkdirSync(scratch);
+  const init = reylo(scratch, ["migrate", "init", `--url=sqlite:${join(scratch, "dev.db")}`], { env: { HOME: home, USERPROFILE: home } });
+  assert.equal(init.status, 0, init.err + init.out);
+  assert.equal(existsSync(join(scratch, "reylo", "schema.sql")), true);
+  assert.equal(existsSync(join(home, "reylo")), false);
+});
+
+test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {
   const gone = reylo(project(), ["generate"]);
   assert.equal(gone.status, 2);
-  assert.equal(gone.err, "reylo generate was removed in 0.8.0: the type check and the build steps fill .reylo/ where the database can be reached, and reylo analyze prints each statement's types.\n");
+  assert.equal(gone.err, "reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.\n");
 });
 
 test("reylo play is the playground's server, in JavaScript", () => {

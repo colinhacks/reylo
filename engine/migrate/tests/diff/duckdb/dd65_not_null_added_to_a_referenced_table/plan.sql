@@ -1,0 +1,10 @@
+create temporary table reylo_copy_users as select * from users;
+create temporary table reylo_copy_posts as select * from posts;
+drop table posts;
+drop table users;
+create table users (id bigint, active boolean not null default true, primary key (id));
+create table posts (user_id bigint, foreign key (user_id) references users (id));
+insert into users (id) select id from temp.main.reylo_copy_users;
+insert into posts (user_id) select user_id from temp.main.reylo_copy_posts;
+drop table temp.main.reylo_copy_users;
+drop table temp.main.reylo_copy_posts;

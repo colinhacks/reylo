@@ -1,4 +1,4 @@
-// Reylo: `reylo generate` analyzes each .sql file into .reylo/, whose entries hold the analysis the type check reads.
+// Reylo: `reylo generate` analyzes each .sql file into reylo/.cache/, whose entries hold the analysis the type check reads.
 import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Kind } from "../probes.ts";

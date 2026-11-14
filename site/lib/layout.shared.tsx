@@ -38,7 +38,7 @@ export const pageGroups = [
       { title: 'Usage', href: '/usage' },
       { title: 'Inference', href: '/inference' },
       { title: 'Observability', href: '/observability' },
-      { title: 'Schema changes', href: '/schema-changes' },
+      { title: 'Migrations', href: '/migrations' },
       { title: 'Comparison', href: '/compare' },
       { title: 'FAQ', href: '/faq' },
     ],

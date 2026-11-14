@@ -807,6 +807,260 @@ a.reylo-compare-name:hover {
   color: var(--color-fd-foreground);
 }
 
+/* A diff's lines say what they do, as a diff does: a `+` or `-` in a gutter of their own, and a
+   space beside the lines that stay, so the code lines up. Generated content, so a copy of the
+   block holds the code alone. */
+#nd-page figure.has-diff pre .line::before {
+  content: ' ';
+  position: static;
+  display: inline-block;
+  width: 2ch;
+  margin: 0;
+  text-indent: 0;
+  user-select: none;
+}
+#nd-page figure.has-diff pre .line.diff.add::before {
+  content: '+';
+  color: var(--color-fd-success, #3fb950);
+}
+#nd-page figure.has-diff pre .line.diff.remove::before {
+  content: '-';
+  color: var(--color-fd-error, #f85149);
+}
+
+/* The feature cards under a page's title (components/feature-cards.tsx). */
+.reylo-features {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin: 1.5rem 0;
+}
+
+.reylo-feature {
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.75rem;
+  background: var(--color-fd-card);
+  padding: 1rem 1.1rem 1.1rem;
+}
+
+.reylo-feature-wide {
+  grid-column: 1 / -1;
+}
+
+.reylo-feature svg,
+.reylo-choice svg {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--color-fd-primary);
+}
+
+.reylo-feature-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 -1.1rem 0.7rem;
+  padding: 0 1.1rem 0.75rem;
+  border-bottom: 1px solid var(--color-fd-border);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-fd-foreground);
+}
+
+#nd-page .prose .reylo-feature p,
+#nd-page .prose .reylo-choice p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .prose .reylo-feature code,
+#nd-page .prose .reylo-choice code {
+  white-space: nowrap;
+}
+
+/* A figure's caption (components/migrations-diagram.tsx): one line under it, centred. */
+#nd-page .prose .reylo-figure-caption {
+  margin-top: 0.75rem;
+  text-align: center;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* A choice between two ways (components/feature-cards.tsx): a card two columns wide, its name
+   over the two ways, and an "or" on the seam between them, which lies across it on a phone. */
+.reylo-choice {
+  grid-column: 1 / -1;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.75rem;
+  background: var(--color-fd-card);
+}
+
+.reylo-choice > .reylo-feature-title {
+  margin: 0;
+  padding: 1rem 1.1rem 0.75rem;
+}
+
+.reylo-choice-ways {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.reylo-choice-way {
+  position: relative;
+  padding: 0.85rem 1.1rem 1.1rem;
+}
+
+/* The two ways keep clear of the "or" on the seam between them. */
+.reylo-choice-way:first-child {
+  padding-right: 1.6rem;
+}
+
+.reylo-choice-way + .reylo-choice-way {
+  padding-left: 1.6rem;
+}
+
+.reylo-choice-way + .reylo-choice-way {
+  border-left: 1px solid var(--color-fd-border);
+}
+
+.reylo-choice-way-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-fd-foreground);
+}
+
+.reylo-choice-or {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 999px;
+  background: var(--color-fd-card);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--color-fd-muted-foreground);
+}
+
+@media (max-width: 639px) {
+  .reylo-features {
+    grid-template-columns: 1fr;
+  }
+
+  .reylo-choice-ways {
+    grid-template-columns: 1fr;
+  }
+
+  .reylo-choice-way:first-child {
+    padding-right: 1.1rem;
+    padding-bottom: 1.4rem;
+  }
+
+  .reylo-choice-way + .reylo-choice-way {
+    border-left: 0;
+    border-top: 1px solid var(--color-fd-border);
+    padding-top: 1.5rem;
+    padding-left: 1.1rem;
+  }
+
+  .reylo-choice-or {
+    top: 0;
+    left: 50%;
+  }
+}
+
+/* The vertical stepper (components/steps.tsx): a numbered dot per step, joined by a line. */
+#nd-page .prose ol.reylo-steps {
+  list-style: none;
+  counter-reset: reylo-step;
+  margin: 1.5rem 0;
+  padding: 0;
+}
+
+#nd-page .prose li.reylo-step {
+  counter-increment: reylo-step;
+  position: relative;
+  margin: 0;
+  padding: 0 0 1.25rem 2.75rem;
+}
+
+#nd-page .prose li.reylo-step::before {
+  content: counter(reylo-step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-fd-border);
+  background: var(--color-fd-card);
+  color: var(--color-fd-foreground);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.7rem;
+  text-align: center;
+}
+
+#nd-page .prose li.reylo-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: calc(0.875rem - 0.5px);
+  top: 1.95rem;
+  bottom: 0.2rem;
+  width: 1px;
+  background: var(--color-fd-border);
+}
+
+.reylo-step-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  min-height: 1.75rem;
+}
+
+.reylo-step-title {
+  font-weight: 600;
+  color: var(--color-fd-foreground);
+}
+
+.reylo-step-where {
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-fd-border);
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .prose .reylo-step-body p {
+  margin: 0.2rem 0 0;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* Inline code is one piece, never broken across two lines: a command, a path or a name reads whole,
+   in the column and in the table of contents. */
+html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [class~='not-prose'] *)),
+#nd-toc code,
+[data-toc-popover] code {
+  white-space: nowrap;
+}
+
 /* A query a tool got wrong: the docs' Inference card (.reylo-inferred), which is scoped to #nd-page, where a popup, rendered at the end of the body, is not. The popup is the card's one frame. */
 .fd-twoslash-popover.reylo-compare-pop-card {
   width: 480px;

@@ -1,0 +1,1 @@
+create macro clean(xs) as list_filter(xs, lambda tag: tag <> ''); create table posts (id integer primary key, xs varchar[], n integer generated always as (len(clean(xs))) virtual); create table tag (id integer primary key, post_id integer references posts (id), name varchar);

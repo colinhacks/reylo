@@ -44,16 +44,16 @@ const SELECT = "select id, name from users where id = :id";
 // A project file's command runs in the system's shell, cmd.exe on Windows, and these tests write theirs for a POSIX shell.
 const posixShell = process.platform === "win32" && "its command is written for a POSIX shell, and Windows runs it in cmd.exe";
 
-test("a statement is analyzed against the database once, and read from .reylo/ by every process after", async () => {
+test("a statement is analyzed against the database once, and read from reylo/.cache/ by every process after", async () => {
   const { root, env } = project();
   const first = await analyze(root, env, SELECT);
   assert.ok(first.ok);
   assert.equal(first.source, "database");
   assert.equal(first.analysis.cardinality, "at_most_one");
-  assert.ok(first.entry.startsWith(join(root, ".reylo", "queries")));
+  assert.ok(first.entry.startsWith(join(root, "reylo", ".cache", "queries")));
   assert.ok(existsSync(first.entry));
   // The directory keeps itself out of git.
-  assert.match(readFileSync(join(root, ".reylo", ".gitignore"), "utf8"), /^\*$/m);
+  assert.match(readFileSync(join(root, "reylo", ".cache", ".gitignore"), "utf8"), /^\*$/m);
   const second = await analyze(root, env, SELECT);
   assert.ok(second.ok);
   assert.deepEqual([second.source, second.entry, second.analysis], ["cache", first.entry, first.analysis]);
@@ -106,7 +106,7 @@ test("a statement keeps the entries of a few databases, and the newest of them",
     assert.equal(built.source, "database");
     assert.ok(existsSync(built.entry));
   }
-  assert.equal(readdirSync(join(root, ".reylo", "queries")).length, 4);
+  assert.equal(readdirSync(join(root, "reylo", ".cache", "queries")).length, 4);
 });
 
 test("a session that still trusts its fingerprint takes another process's newer entry, and never writes the old schema back", async () => {
@@ -134,7 +134,7 @@ test("a session that still trusts its fingerprint takes another process's newer 
   }
 });
 
-test("without the database, .reylo/ answers as it is, and a statement it lacks is an error that says where to fill it", async () => {
+test("without the database, reylo/.cache/ answers as it is, and a statement it lacks is an error that says where to fill it", async () => {
   const { root, env } = project();
   assert.ok((await analyze(root, env, SELECT)).ok);
   renameSync(join(root, "app.db"), join(root, "gone.db"));
@@ -142,12 +142,12 @@ test("without the database, .reylo/ answers as it is, and a statement it lacks i
   assert.ok(cached.ok);
   assert.equal(cached.source, "cache");
   // Nothing held the entry to the database, which the outcome says, with why and the entry's day.
-  assert.match(cached.unverified ?? "", /^cannot open the database .*app\.db \(DATABASE_URL in the environment\).*; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+  assert.match(cached.unverified ?? "", /^cannot open the database .*app\.db \(DATABASE_URL in the environment\).*; building from reylo\/\.cache\/, analyzed \d{4}-\d\d-\d\d$/);
   const missing = await analyze(root, env, "select name from users");
   assert.ok(!missing.ok);
   assert.equal(missing.code, 5);
-  assert.match(missing.message, /^Cannot open the database .*app\.db .*\.reylo has no analysis of this statement, so run the type check or a build where the database can be reached first\.$/);
-  // --force asks the database even for a statement .reylo/ holds.
+  assert.match(missing.message, /^Cannot open the database .*app\.db .*reylo\/\.cache has no analysis of this statement, so run the type check or a build where the database can be reached first\.$/);
+  // --force asks the database even for a statement reylo/.cache/ holds.
   const forced = await analyze(root, env, SELECT, { force: true });
   assert.ok(!forced.ok);
 });
@@ -168,7 +168,7 @@ test("two databases the project uses in turn keep an entry each, so neither anal
   // Where neither can be reached, a URL with no entry of its own reads the one written last, by
   // the time it records, which a copy that resets the files' times (cp -r, fs.cpSync) keeps.
   for (const f of ["app.db", "test.db"]) renameSync(join(root, f), join(root, `${f}.gone`));
-  const queries = join(root, ".reylo", "queries");
+  const queries = join(root, "reylo", ".cache", "queries");
   const [older, newer] = readdirSync(queries).map((n) => join(queries, n)).sort((a, b) => JSON.parse(readFileSync(a, "utf8")).at - JSON.parse(readFileSync(b, "utf8")).at);
   utimesSync(newer!, new Date(2000, 0, 1), new Date(2000, 0, 1));
   utimesSync(older!, new Date(), new Date());
@@ -177,7 +177,7 @@ test("two databases the project uses in turn keep an entry each, so neither anal
   assert.deepEqual([offline.source, offline.entry, offline.analysis.columns.length], ["cache", newer, 3]);
 });
 
-test("a build that cannot reach the database reads .reylo/ with another URL, with none, and in a copy of the project elsewhere", async () => {
+test("a build that cannot reach the database reads reylo/.cache/ with another URL, with none, and in a copy of the project elsewhere", async () => {
   const { root, env } = project();
   // The entries record their dialect, which names the database where no URL does.
   const typed = await analyze(root, env, SELECT);
@@ -187,7 +187,7 @@ test("a build that cannot reach the database reads .reylo/ with another URL, wit
   const bare = await analyze(root, {}, SELECT);
   assert.ok(bare.ok);
   assert.deepEqual([bare.source, bare.entry], ["cache", typed.entry]);
-  assert.match(bare.unverified ?? "", /^no database URL is set; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+  assert.match(bare.unverified ?? "", /^no database URL is set; building from reylo\/\.cache\/, analyzed \d{4}-\d\d-\d\d$/);
   assert.equal(typed.unverified, undefined);
   const lacking = await analyze(root, {}, "select name from users");
   assert.ok(!lacking.ok);
@@ -204,10 +204,10 @@ test("a build that cannot reach the database reads .reylo/ with another URL, wit
   const moved = await analyze(copy, env, SELECT);
   assert.ok(moved.ok);
   assert.equal(moved.source, "cache");
-  assert.ok(moved.entry.startsWith(join(copy, ".reylo")));
+  assert.ok(moved.entry.startsWith(join(copy, "reylo", ".cache")));
 });
 
-test("on a server, a URL that fails reads that server's own entry and no other's, and a build says once that it reads .reylo/ unchecked", { skip: live }, async (t) => {
+test("on a server, a URL that fails reads that server's own entry and no other's, and a build says once that it reads reylo/.cache/ unchecked", { skip: live }, async (t) => {
   const { url, sql, drop } = await postgresDatabase("reylo_offline", "create table users (id int primary key, email text not null)");
   const root = mkdtempSync(join(tmpdir(), "reylo-offline-"));
   writeFileSync(join(root, "package.json"), "{}");
@@ -235,18 +235,18 @@ test("on a server, a URL that fails reads that server's own entry and no other's
     const stale = await analyze(root, env, statement);
     assert.ok(stale.ok);
     assert.deepEqual([stale.source, stale.entry], ["cache", typed.entry]);
-    assert.match(stale.unverified ?? "", /^cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in the environment\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+    assert.match(stale.unverified ?? "", /^cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in the environment\): .+; building from reylo\/\.cache\/, analyzed \d{4}-\d\d-\d\d$/);
     // A server nothing was analyzed on reads no other's entry: a mistyped host is not the database last analyzed.
     const elsewhere = new URL(url);
     elsewhere.port = "1";
     const other = await analyze(root, { DATABASE_URL: elsewhere.href }, statement);
     assert.ok(!other.ok);
-    assert.match(other.message, /^Cannot connect to the database at .*:1\/reylo_offline_\d+ .*; \.reylo has this statement's analysis from another database only, which a build reads where no database URL is set: run the type check or a build where this database can be reached, or build with no URL\.$/);
+    assert.match(other.message, /^Cannot connect to the database at .*:1\/reylo_offline_\d+ .*; reylo\/\.cache has this statement's analysis from another database only, which a build reads where no database URL is set: run the type check or a build where this database can be reached, or build with no URL\.$/);
     // With no URL, the newest entry of any server answers, and says that nothing checked it.
     const bare = await analyze(root, {}, statement);
     assert.ok(bare.ok);
     assert.deepEqual([bare.source, bare.entry], ["cache", typed.entry]);
-    assert.match(bare.unverified ?? "", /^no database URL is set; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+    assert.match(bare.unverified ?? "", /^no database URL is set; building from reylo\/\.cache\/, analyzed \d{4}-\d\d-\d\d$/);
     // A build step prints the line once a run, however many modules it builds, and the type check's hover carries it.
     const warned: string[] = [];
     t.mock.method(console, "warn", (line: string) => void warned.push(line));
@@ -260,13 +260,13 @@ test("on a server, a URL that fails reads that server's own entry and no other's
       await sqlModule(join(root, "b.sql"), statement);
       const declared = (await mapper.transform!({ fileName: join(root, "a.sql"), content: statement, projectHandle })) as { text: string; diagnostics: unknown[] };
       assert.deepEqual(declared.diagnostics, []);
-      assert.match(declared.text, /\n \* reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d\n \*\/\ndeclare const query: /);
+      assert.match(declared.text, /\n \* reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from reylo\/\.cache\/, analyzed \d{4}-\d\d-\d\d\n \*\/\ndeclare const query: /);
     } finally {
       await mapper.closeProject!({ projectHandle });
       for (const session of Session.opened()) await session.close();
     }
     assert.equal(warned.length, 1);
-    assert.match(warned[0]!, /^reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from \.reylo\/, analyzed \d{4}-\d\d-\d\d$/);
+    assert.match(warned[0]!, /^reylo: cannot connect to the database at 127\.0\.0\.1:\d+\/reylo_offline_\d+ \(DATABASE_URL in \.env\): .+; building from reylo\/\.cache\/, analyzed \d{4}-\d\d-\d\d$/);
   } finally {
     proxy.close();
     await drop();
@@ -780,7 +780,7 @@ test("the type check names the dialect of the project a kept session recovers to
   await mapper.openProject!({ projectHandle, configFileName: join(root, ".reylo.yaml") });
   const transform = async () => (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string; diagnostics: { code: number }[] };
   try {
-    // With no URL, and no entry in .reylo/ to name one, the dialect is Postgres's.
+    // With no URL, and no entry in reylo/.cache/ to name one, the dialect is Postgres's.
     const before = await transform();
     assert.deepEqual(before.diagnostics.map((d) => d.code), [11]);
     assert.match(before.text, /QueryError<"postgres">/);

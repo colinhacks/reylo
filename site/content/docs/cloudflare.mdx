@@ -122,7 +122,7 @@ insert into users (name) values (:name)
 ```
 
 - The type check reads one database per package, the one its `.reylo.yaml` names. An object whose tables match D1's can run D1's migrations. An object with tables of its own goes in a package of its own, whose `.reylo.yaml` names a SQLite file made from that object's schema.
-- The [check against schema changes](/schema-changes) runs in each object on its own, since each object is a database of its own. Before an object's tables exist, a query fails with the database's own error.
+- The [check against schema changes](/observability#when-the-schema-changes) runs in each object on its own, since each object is a database of its own. Before an object's tables exist, a query fails with the database's own error.
 - The storage rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
 
 ## Blocked functions

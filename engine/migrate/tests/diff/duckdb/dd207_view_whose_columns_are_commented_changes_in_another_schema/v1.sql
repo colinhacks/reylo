@@ -1,0 +1,1 @@
+create schema rpt; create table rpt.sales (id integer, amount integer); create view rpt."Totals" as select id, amount as "Total Sum" from rpt.sales; comment on column rpt."Totals"."Total Sum" is 'all of it'; comment on view rpt."Totals" is 'v'; create view plain as select 1 as "select"; comment on column plain."select" is 'a keyword';

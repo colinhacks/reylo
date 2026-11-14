@@ -1,0 +1,1 @@
+create table aa (id integer primary key, n integer check (n > 0)); create table bb (id bigint primary key); create table cc (id integer, aa_id integer references aa (id), bb_id bigint references bb (id));

@@ -1,0 +1,11 @@
+create table accounts (id bigint, primary key (id));
+create temporary table reylo_copy_orders as select * from orders;
+drop table orders;
+create table orders (id bigint, user_id bigint, foreign key (user_id) references accounts (id));
+insert into orders (id, user_id) select id, user_id from temp.main.reylo_copy_orders;
+drop table temp.main.reylo_copy_orders;
+create temporary table reylo_copy_users as select * from users;
+drop table users;
+create table users (id bigint, n integer, primary key (id), check ((n > 0)));
+insert into users (id, n) select id, n from temp.main.reylo_copy_users;
+drop table temp.main.reylo_copy_users;

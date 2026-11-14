@@ -116,7 +116,7 @@ try {
   const ran = run(process.execPath, ["--import", "reylo/register", "main.ts"], { cwd: project, env }).trim();
   console.log(ran);
   if (ran !== `{"id":1,"name":"ada"}`) throw new Error(`the preload's run printed ${ran}`);
-  if (!existsSync(join(project, ".reylo"))) throw new Error("the preload's build step wrote no .reylo/");
+  if (!existsSync(join(project, "reylo", ".cache"))) throw new Error("the preload's build step wrote no reylo/.cache/");
 
   step("Postgres statements nested to the engine's bound");
   const { engine } = (await import(pathToFileURL(join(project, "node_modules", "reylo", "src", "engine.js")).href)) as typeof import("../../src/engine.ts");

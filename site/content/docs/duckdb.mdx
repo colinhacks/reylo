@@ -18,6 +18,7 @@ DuckDB support is a preview: the types Reylo infers on DuckDB, and the values `.
 | DuckDB versions | 2.0, through `@duckdb/node-api` |
 | Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
 | Drivers | `@duckdb/node-api` ([Drivers](#drivers)) |
+| Migrations | [Reylo Migrate](/migrations) runs on the same `@duckdb/node-api`, with its shadow databases in memory |
 | Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after, and while your app has the file open, it reads a copy of it. On Windows no other process can read a file DuckDB has open for writing, so the type check needs your app stopped |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -146,7 +147,7 @@ from read_parquet('logs/*.parquet')
 group by all
 ```
 
-Reylo keeps each query's analysis in [`.reylo/`](/faq#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `.reylo/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
+Reylo keeps each query's analysis in [`reylo/.cache/`](/faq#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `reylo/.cache/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
 
 ## Nullability
 
@@ -350,6 +351,33 @@ const db = await instance.connect();
 
 const user = await getUser.run(db, { id: 1 });
 ```
+
+## Migrations
+
+[Reylo Migrate](/migrations) runs on DuckDB with the same commands.
+
+DuckDB's `alter table` adds no check or foreign key, changes no column an index covers, and changes little of a table another table's key references. So `reylo migrate new` writes such a change as a rebuild: the table's rows go to a temporary table, the table is made again, and the rows come back, with those of every table whose keys reference it. A check added to `authors`:
+
+```sql title="reylo/migrations/20261114120000_named.sql"
+create temporary table reylo_copy_authors as select * from authors;
+create temporary table reylo_copy_books as select * from books;
+drop table books;
+drop table authors;
+create table authors (id bigint, name varchar, primary key (id), check (("name" != '')));
+create table books (id bigint, author_id bigint, pages integer, primary key (id), foreign key (author_id) references authors (id));
+insert into authors (id, name) select id, name from temp.main.reylo_copy_authors;
+insert into books (id, author_id, pages) select id, author_id, pages from temp.main.reylo_copy_books;
+drop table temp.main.reylo_copy_authors;
+drop table temp.main.reylo_copy_books;
+```
+
+A table whose check or generated column calls a macro, or casts to an enum, is rebuilt the same way when that macro or enum changes.
+
+DuckDB refuses a few things a migration may need, on your rows rather than in the check:
+
+- A table whose key references the table itself can't take its rows back in a rebuild where a row references another, so that migration fails and changes nothing. The migration says so above the rebuild.
+- DuckDB has no `alter sequence`, so a changed sequence is made again, and in a migration it starts again where `schema.sql` starts it. Start it past the values your rows hold.
+- An `update` of a table, then `set not null` or a new index on it, is refused in one migration. Put the backfill in a migration of its own.
 
 ## Limits
 

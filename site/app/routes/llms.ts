@@ -5,7 +5,7 @@ import { markdownOf } from '@/lib/markdown';
 // sidebar's order, each as its own Markdown file holds it
 // (lib/markdown.ts), then the playground's API (/play/api.md). Written to build/client/llms.txt at
 // build time.
-const PAGES = ['', 'usage', 'inference', 'observability', 'schema-changes', 'compare', 'faq', 'postgres', 'mysql', 'sqlite', 'duckdb', 'cloudflare', 'nextjs', 'hosted', 'ci', 'prisma', 'configuration', 'typedefs'];
+const PAGES = ['', 'usage', 'inference', 'observability', 'migrations', 'compare', 'faq', 'postgres', 'mysql', 'sqlite', 'duckdb', 'cloudflare', 'nextjs', 'hosted', 'ci', 'prisma', 'configuration', 'typedefs'];
 
 export async function loader() {
   const { playData } = await import('@/lib/live/play-data');
