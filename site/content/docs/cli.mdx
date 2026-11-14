@@ -18,7 +18,7 @@ Commands:
   migrate <command>        Write, check and run your migrations
   db <command>             Push, reset, wipe or print a development database
   run <sql>                Run SQL on the database as written, recording nothing
-    --file <path>          Run a file's SQL, in place of the text
+    --file <path>          Run a file's SQL too, after the text
     --url <url>            The database, in place of the project's
   play                     Serve the playground on this machine
     --port <n>             The port, 4983 by default
@@ -165,7 +165,7 @@ Its commands are on the [Migrations](/migrations#reylo-db) page, beside `reylo m
 
 Runs SQL on the database as written, outside any migration's history.
 
-It takes the statement's text, or a file with `--file`, in the order given:
+It takes statements as text and files with `--file`, and runs the text first, then each file, each in the order given:
 
 ```terminal
 $ reylo run 'alter table users add column bio text'
