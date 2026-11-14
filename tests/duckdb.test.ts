@@ -462,6 +462,32 @@ test("DuckDB: the schema's fingerprint moves with a macro's parameters and an en
   }
 });
 
+test("DuckDB: a check that reads a struct's field with a dot leaves the keys read, and the schema fingerprinted", { skip }, async () => {
+  // DuckDB refuses duckdb_constraints() for the whole database once a check reads `meta.a`.
+  const schema = "create table t (id integer primary key, code varchar unique, x integer, y integer, meta struct(a integer), unique (x, y)";
+  const root = await project(`${schema}, check (meta.a > 0))`);
+  const card = async (sql: string) => (await analyze(root, sql)).cardinality;
+  assert.equal(await card("select code from t where id = :id"), "at_most_one");
+  assert.equal(await card("select id from t where code = :code"), "at_most_one");
+  assert.equal(await card("select id from t where x = :x and y = :y"), "at_most_one");
+  assert.equal(await card("select id from t where x = :x"), "many");
+  const fingerprint = async (root: string) => {
+    const session = await Session.open(root, { DATABASE_URL: "duckdb:./app.duckdb" });
+    try {
+      return (await session.schema()).value;
+    } finally {
+      await session.close();
+    }
+  };
+  const value = await fingerprint(root);
+  assert.match(value ?? "", /^[0-9a-f]{16}$/);
+  assert.equal(await fingerprint(root), value);
+  // The same tables with a check DuckDB reads (`meta['a']`) are another schema, fingerprinted alike.
+  const other = await fingerprint(await project(`${schema}, check (meta['a'] > 0))`));
+  assert.match(other ?? "", /^[0-9a-f]{16}$/);
+  assert.notEqual(other, value);
+});
+
 test("DuckDB: .run() refuses a fraction for an integer, and .try() reads DuckDB's error", { skip }, async () => {
   const root = await project();
   const get = await built(root, "get", "select id, msg from logs where id = :id");
