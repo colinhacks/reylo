@@ -40,7 +40,7 @@ function cardMarkdown(body: string, modules: Modules): string {
     if (module === undefined) return body;
     const params = /^export type Params = (.*);$/m.exec(module)?.[1];
     const row = /^export type Row = (.*);$/m.exec(module)?.[1] ?? 'never';
-    const cardinality = /, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)"> & \{/.exec(module)?.[1] ?? 'many';
+    const cardinality = /, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite|duckdb)", QueryError> & \{/.exec(module)?.[1] ?? 'many';
     const types = [
       `// Params\n${params && params !== 'Record<never, never>' ? formatType(params, 64) : 'void'}`,
       `// Returns\n${formatType(resultType(row, cardinality), 64)}`,

@@ -63,6 +63,21 @@ create table events (
 
 </Details>
 
+## Where types come from [#sources]
+
+Reylo types each query from Postgres's own analysis of it.
+
+Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type. This information is cross-referenced against the schema catalog, enabling high-fidelity type inference for any query.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the server's description of the prepared statement |
+| Column types | the server's description; an enum as its labels, a domain as its base type, a JSON column as what its JSON Schema `CHECK` admits |
+| Nullability | the catalog's `NOT NULL`, outer joins, the expressions |
+| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
+| Nested rows | an `array(select r from (…) r)` of a subquery's or a table's whole rows, typed field by field |
+| Nested JSON | built with `jsonb_build_object`, `jsonb_agg` or `to_jsonb` of a row, typed from their arguments |
+
 ## Data types
 
 Each Postgres type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from what `Bun.sql` loses ([Drivers](#drivers)):

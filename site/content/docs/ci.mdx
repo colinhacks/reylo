@@ -1,0 +1,196 @@
+---
+title: CI
+description: How to run Reylo's type check and build in CI. A GitHub Actions workflow for Postgres, and what changes for MySQL, SQLite, DuckDB and Cloudflare D1.
+---
+
+<p className="dk-subheader">Type-check and build your queries in CI</p>
+
+Reylo's type check runs in CI as it does on your machine.
+
+It reads your schema from a live database, as your build does. A CI job starts a database, applies your schema to it, then runs the type check and the build.
+
+| | |
+| --- | --- |
+| Database | A throwaway one the job starts: a service container, or a file for SQLite and DuckDB |
+| Schema | Your migrations or a schema file, applied before the type check |
+| Connection | `DATABASE_URL` in the job's environment, or [`direct_url`](/configuration#direct_url) |
+| Commands | The type check, then your build and your tests |
+| Builds on a host | A database of its own, as [Can I build without a database?](/faq#faq-no-database) describes |
+
+## GitHub Actions
+
+Start Postgres as a service container, and point `DATABASE_URL` at it:
+
+```yaml title=".github/workflows/ci.yml"
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        # wait until postgres accepts connections
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+```
+
+Then apply your schema, and run the type check, the build and your tests:
+
+```yaml title=".github/workflows/ci.yml"
+jobs:
+  check:
+    # ...
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24 }
+      - run: npm ci
+      # your migrations, or a schema file
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql
+      # tsc --noEmit --runExternalCode
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+```
+
+- The build reads the database too. Reylo's plugins read each query's types from it as they bundle the query, and `next build` runs the type check itself.
+- A `DATABASE_URL` in the environment wins over your `.env` files. A `direct_url` in `.reylo.yaml` wins over both, so if yours names a database, point it at a variable the job sets.
+- Reylo's engine is an optional dependency, installed for the runner's platform, so don't install with `--omit=optional`.
+- Reylo keeps a cache of each query's analysis in `.reylo/`, which git ignores. A fresh checkout has none, so the type check analyzes every query on the database.
+
+## Schema
+
+Apply your schema with the tool you already use, before the type check:
+
+```yaml title=".github/workflows/ci.yml" tab="Prisma"
+steps:
+  # ...
+  - run: npx prisma migrate deploy
+  - run: npm run typecheck
+```
+
+```yaml title=".github/workflows/ci.yml" tab="Drizzle Kit"
+steps:
+  # ...
+  - run: npx drizzle-kit migrate
+  - run: npm run typecheck
+```
+
+```yaml title=".github/workflows/ci.yml" tab="SQL files"
+steps:
+  # ...
+  - run: |
+      for file in migrations/*.sql; do
+        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+      done
+  - run: npm run typecheck
+```
+
+A job that skips this step fails on the first table a query reads:
+
+```text
+queries/get_user.sql(1,29): error reylo6: relation "users" does not exist (42P01)
+```
+
+## MySQL
+
+Start MySQL in place of Postgres, and apply the schema with its client:
+
+```yaml title=".github/workflows/ci.yml"
+jobs:
+  check:
+    # ...
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: app
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 2s
+          --health-retries 60
+    env:
+      DATABASE_URL: mysql://root@127.0.0.1:3306/app
+    steps:
+      # ...
+      # tcp, not localhost's socket
+      - run: mysql -h 127.0.0.1 -u root app < schema.sql
+      - run: npm run typecheck
+```
+
+## SQLite
+
+SQLite needs no service: build the database file in a step.
+
+```yaml title=".github/workflows/ci.yml"
+jobs:
+  check:
+    # ...
+    env:
+      # the path starts at package.json
+      DATABASE_URL: file:./app.db
+    steps:
+      # ...
+      # or your migrations
+      - run: sqlite3 app.db < schema.sql
+      - run: npm run typecheck
+```
+
+## DuckDB
+
+DuckDB is a file too, and the type check opens it with your project's `@duckdb/node-api`. Build it with a script:
+
+```ts title="setup.ts"
+import { readFileSync } from "node:fs";
+import { DuckDBInstance } from "@duckdb/node-api";
+
+const db = await DuckDBInstance.create("app.duckdb");
+const connection = await db.connect();
+await connection.run(readFileSync("schema.sql", "utf8"));
+connection.closeSync();
+```
+
+```yaml title=".github/workflows/ci.yml"
+jobs:
+  check:
+    # ...
+    env:
+      DATABASE_URL: duckdb:./app.duckdb
+    steps:
+      # ...
+      - run: node setup.ts
+      - run: npm run typecheck
+```
+
+## Cloudflare D1
+
+Apply your D1 migrations to the local database before the type check:
+
+```yaml title=".github/workflows/ci.yml"
+steps:
+  # ...
+  - run: npx wrangler d1 migrations apply DB --local
+  - run: npm run typecheck
+  - run: npm run build
+```
+
+The type check reads the local file that [`direct_url`](/cloudflare#local-database) names, so the job needs no Cloudflare account. [Cloudflare Workers](/cloudflare) covers the rest.
+
+## Errors
+
+A query that doesn't match the schema fails the job, at its line and column:
+
+```text
+queries/get_user.sql(1,18): error reylo6: column "emial" does not exist (42703)
+```
+
+The build fails on the same error. A caller that reads a column the query no longer returns fails the type check too.

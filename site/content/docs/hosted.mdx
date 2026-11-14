@@ -1,0 +1,194 @@
+---
+title: Hosted databases
+description: How to use Reylo with Neon, Supabase, PlanetScale, Turso and Cloudflare D1. The connection the type check reads, and the driver that runs your queries.
+---
+
+<p className="dk-subheader">Reylo on Neon, Supabase, PlanetScale and Turso</p>
+
+Reylo works with hosted databases.
+
+The type check reads your schema through [`direct_url`](/configuration#direct_url), which must be a direct connection, not a pooler in transaction mode. Your app runs its queries through the client you pass to `.run()`, which can go through the pooler.
+
+| Host | Dialect | The type check reads | Queries run on |
+| --- | --- | --- | --- |
+| [Neon](#neon) | Postgres | The direct connection string | `@neondatabase/serverless`, `pg` or postgres.js |
+| [Supabase](#supabase) | Postgres | The direct connection, or the session pooler | postgres.js or `pg` |
+| [PlanetScale](#planetscale) | MySQL | A MySQL server with your schema | `@planetscale/database` 1.x or `mysql2` |
+| [Turso](#turso) | SQLite | A local SQLite file with your schema | `@libsql/client` |
+| [Cloudflare D1](#cloudflare-d1) | SQLite | The local D1 file Wrangler keeps | The D1 binding |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" tab="Postgres" tab-group="dialect"
+create table users (
+  id serial primary key,
+  name text not null,
+  email text
+);
+```
+
+```sql file="schema.sql" tab="MySQL" tab-group="dialect"
+create table users (
+  id int auto_increment primary key,
+  name text not null,
+  email varchar(255)
+);
+```
+
+```sql file="schema.sql" tab="SQLite" tab-group="dialect"
+create table users (
+  id integer primary key,
+  name text not null,
+  email text
+) strict;
+```
+
+</Details>
+
+## Neon
+
+Neon gives each database two connection strings, a pooled one and a direct one. The type check reads the direct one, whose host name has no `-pooler`:
+
+```sh title=".env"
+# the pooled connection string, for your app
+DATABASE_URL=postgres://…@ep-name-pooler.us-east-2.aws.neon.tech/neondb
+# the direct one, for the type check
+DATABASE_URL_UNPOOLED=postgres://…@ep-name.us-east-2.aws.neon.tech/neondb
+```
+
+```yaml title=".reylo.yaml"
+direct_url: ${DATABASE_URL_UNPOOLED}
+```
+
+Run queries with Neon's serverless driver: `neon()` sends each one over HTTP, and a `Pool` holds a WebSocket for [transactions](/postgres#neon).
+
+```ts twoslash tab="main.ts" dialect="postgres"
+import { neon } from "@neondatabase/serverless";
+import findUser from "./find_user.sql";
+
+const sql = neon(process.env.DATABASE_URL);
+const user = await findUser.run(sql, { id: 1 });
+```
+
+```sql tab="find_user.sql" dialect="postgres"
+select id, name, email from users where id = :id::int
+```
+
+To type against a branch rather than your main database, use that branch's direct connection string.
+
+## Supabase
+
+Supabase's pooler takes connections on two ports: 5432 in session mode, and 6543 in transaction mode. The type check reads the direct connection, or the session pooler:
+
+```yaml title=".reylo.yaml"
+# the direct connection, or the pooler on port 5432; never port 6543
+direct_url: ${DIRECT_URL}
+```
+
+Run queries with postgres.js or `pg`. Through the transaction pooler, create a postgres.js client with `prepare: false`:
+
+```ts twoslash tab="main.ts" dialect="postgres"
+import postgres from "postgres";
+import findUser from "./find_user.sql";
+
+// the transaction pooler, on port 6543
+const db = postgres(process.env.DATABASE_URL, { prepare: false });
+const user = await findUser.run(db, { id: 1 });
+```
+
+```sql tab="find_user.sql" dialect="postgres"
+select id, name, email from users where id = :id::int
+```
+
+- The direct connection is IPv6 only unless your project has Supabase's IPv4 add-on. Over IPv4, use the session pooler.
+- With the Supabase CLI, the type check can read the local database `supabase start` runs, at `postgresql://postgres:postgres@127.0.0.1:54322/postgres`.
+- Supabase's Postgres prints floats rounded. Run `alter role postgres set extra_float_digits = 1` once to read exact values ([Limits](/postgres#limits)).
+
+## PlanetScale
+
+Run queries on PlanetScale's MySQL databases with `@planetscale/database` 1.x. Version 2.0 isn't supported, since it can't bind parameters.
+
+```ts twoslash tab="main.ts" dialect="mysql"
+// @planetscale/database 1.x: a 2.0 client is a type error
+import { connect } from "@planetscale/database";
+import findUser from "./find_user.sql";
+
+const db = connect({ url: process.env.DATABASE_URL });
+const user = await findUser.run(db, { id: 1 });
+```
+
+```sql tab="find_user.sql" dialect="mysql"
+select id, name, email from users where id = :id::int
+```
+
+PlanetScale serves MySQL through Vitess, which Reylo's type check isn't tested on. Type your queries against a MySQL 8.0.22 or later server with the same schema, such as a local one:
+
+```sh
+docker run -d -p 3306:3306 -e MYSQL_DATABASE=app \
+  -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.4
+```
+
+```yaml title=".reylo.yaml"
+# local mysql, migrations applied
+direct_url: mysql://root@127.0.0.1:3306/app
+```
+
+A PlanetScale Postgres database is Postgres. Point `direct_url` at its direct connection string, not a pooled one, and run queries with any [Postgres driver](/postgres#drivers).
+
+## Turso
+
+Run queries on a Turso database with `@libsql/client`:
+
+```ts twoslash tab="main.ts" dialect="sqlite"
+import { createClient } from "@libsql/client";
+import findUser from "./find_user.sql";
+
+const db = createClient({
+  url: process.env.DATABASE_URL, // libsql://…
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+const user = await findUser.run(db, { id: 1 });
+```
+
+```sql tab="find_user.sql" dialect="sqlite"
+select id, name, email from users where id = :id::int
+```
+
+The type check reads a local SQLite file, not a `libsql://` URL. Make one from a dump of your database, or by running your migrations on it:
+
+```sh
+turso db shell app .dump | sqlite3 dev.db
+```
+
+Set it as `direct_url` in `.reylo.yaml`, so that `DATABASE_URL` stays your app's:
+
+```yaml title=".reylo.yaml"
+# the path starts at package.json
+direct_url: file:./dev.db
+```
+
+With `@libsql/client` in your `package.json`, the type check also runs each query on libSQL's own SQLite, which is older than Reylo's. A function it lacks, such as `json_pretty`, is a type error ([Functions](/sqlite#functions)).
+
+## Cloudflare D1
+
+D1 and Durable Objects have a guide of their own: [Cloudflare Workers](/cloudflare).
+
+## TLS
+
+The type check reads TLS settings from the URL:
+
+```sh title=".env"
+# postgres: encrypted, no certificate check
+DATABASE_URL=postgres://…/app?sslmode=require
+# postgres: the certificate and host checked
+DATABASE_URL=postgres://…/app?sslmode=verify-full
+# mysql: encrypted, no certificate check
+DATABASE_URL=mysql://…/app?ssl-mode=REQUIRED
+# mysql: the certificate and host checked
+DATABASE_URL=mysql://…/app?ssl-mode=VERIFY_IDENTITY
+```
+
+- With no setting, a Postgres connection is encrypted where the server offers it, and a MySQL connection isn't.
+- Postgres also reads `sslrootcert`, `sslcert`, `sslkey` and `channel_binding`, as libpq does, and node-postgres's `ssl=true`.
+- MySQL also reads mysql2's `ssl` setting, as JSON with `rejectUnauthorized`, `ca`, `cert` and `key`, and Prisma's `sslaccept=strict`.
+- A certificate is also checked against the certificates `NODE_EXTRA_CA_CERTS` names, as Node checks it.
