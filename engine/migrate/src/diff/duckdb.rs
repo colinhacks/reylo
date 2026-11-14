@@ -1466,8 +1466,37 @@ pub fn declare(schema: &mut Schema, sql: &str) {
         }
         let (schema_name, name) = name_at(&statement.tokens, k + 1);
         let id = macro_id(&schema_name, &name, makes_table_macro(&statement.tokens));
+        // The text names its parameters' types where DuckDB's catalog spells them out (`m mood`), so
+        // the macro is made after each: a type of the macro's schema, or of `main`, by that name.
+        let t = &statement.tokens;
+        let open = t.iter().skip(k + 1).position(|x| x.text == "(").map(|p| k + 1 + p);
+        let mut named: Vec<String> = Vec::new();
+        if let Some(open) = open {
+            let mut depth = 0;
+            for x in &t[open..] {
+                match x.text.as_str() {
+                    "(" => depth += 1,
+                    ")" => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ if matches!(x.kind, TokenKind::Word | TokenKind::Quoted) => named.push(unquote(x).to_lowercase()),
+                    _ => {}
+                }
+            }
+        }
+        let types: Vec<String> = schema
+            .objects
+            .values()
+            .filter(|o| o.kind == Some(Kind::Type) && (schema_of_id(&o.id) == schema_name || schema_of_id(&o.id) == "main"))
+            .filter(|o| named.iter().any(|n| super::last_written(o.id.trim_start_matches("type ")).trim_matches('"').eq_ignore_ascii_case(n)))
+            .map(|o| o.id.clone())
+            .collect();
         if let Some(o) = schema.objects.get_mut(&id) {
             o.create = vec![statement.text.clone()];
+            o.binds.extend(types);
         }
     }
 }
@@ -1795,6 +1824,17 @@ impl Alterer for DuckdbAlterer {
                     for o in fs.objects.values().filter(|o| o.kind == Some(Kind::Table) && o.id != id && fields(o, "references").contains(&id)) {
                         if ts.objects.get(&o.id).is_some_and(|t| !fields(t, "references").contains(&id)) {
                             out.push(o.id.clone());
+                        }
+                    }
+                    // After each rebuild that makes it again as it is, with the table it rebuilds (a
+                    // child two rebuilds take, at any depth): its own change follows, which the
+                    // rebuild would otherwise undo.
+                    if !self.absorbed(id) {
+                        for p in fs.objects.values().filter(|p| p.kind == Some(Kind::Table) && p.id != id) {
+                            let Some(q) = ts.objects.get(&p.id).filter(|q| q.def != p.def) else { continue };
+                            if self.mode(p, q) == Mode::Rebuild && children_of(fs, ts, &p.id).iter().any(|c| c.id == id) && !out.contains(&p.id) {
+                                out.push(p.id.clone());
+                            }
                         }
                     }
                     // A rebuild after what the tables it makes as the target has them need.

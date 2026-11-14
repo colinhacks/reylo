@@ -6472,4 +6472,28 @@ comment on macro table app.recent is 'last n';
         assert_eq!(code, 1, "the undo fails on the row the check refuses: {}", p.peek());
         assert_eq!(one(&p, "select count(*)::varchar as v from items").await, "3");
     }
+
+    // A macro taking a parameter of a user type that changes: the commands take the macro's text from
+    // schema.sql, which names the type (`m mood`), so the macro is made after the type.
+    const TYPED_PARAM_V1: &str = "create type mood as enum ('a', 'b'); create macro is_a(m mood) as m = 'a'; create table t (id integer primary key, m mood check (is_a(m) or m = 'b'));";
+    const TYPED_PARAM_V2: &str = "create type mood as enum ('a', 'b', 'c'); create macro is_a(m mood) as m = 'a'; create table t (id integer primary key, m mood check (is_a(m) or m <> 'a'));";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_takes_an_enum_label_under_a_macro_that_takes_the_enum() {
+        let Some(mut p) = at(TYPED_PARAM_V1, "insert into t values (1, 'a')").await else { return };
+        evolve(&mut p, TYPED_PARAM_V2, &[], &[]).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_takes_a_struct_field_under_a_macro_that_takes_the_struct() {
+        let v1 = "create type rec as struct(n integer); create macro positive(r rec) as r.n > 0; create table t (id integer primary key, r rec check (positive(r)));";
+        let Some(mut p) = at(v1, "insert into t values (1, {'n': 1})").await else { return };
+        evolve(&mut p, &v1.replace("struct(n integer)", "struct(n integer, m integer)"), &[], &[]).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_takes_an_enum_label_under_a_macro_that_takes_the_enum() {
+        let Some(mut p) = at(TYPED_PARAM_V1, "insert into t values (1, 'a')").await else { return };
+        push(&mut p, TYPED_PARAM_V2).await;
+    }
 }
