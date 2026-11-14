@@ -469,16 +469,17 @@ $ reylo migrate deploy --dry-run
 
 A migration that fails rolls back, and your database records nothing of it. Fix the file, run `reylo migrate dev`, which locks it again as it now reads, and deploy the fix. A database that already ran the old version refuses the edited one, so where one did, write a new migration instead.
 
-Your migration and your new build go live at different moments, so a change the live build depends on takes steps. While that build runs, its queries fail on a column a migration renamed or dropped, and [warn](/observability#when-the-schema-changes) on one it retyped or made nullable. To rename `users.email` to `contact`, deploy each step before the next. First, add the new column and copy its values, then deploy code that reads and writes `contact`:
+Your migration and your new build go live at different moments, so a change the live build depends on takes steps. While that build runs, its queries fail on a column a migration renamed or dropped, and [warn](/observability#when-the-schema-changes) on one it retyped or made nullable. To rename `users.email` to `contact`, deploy each step before the next. First, add the new column and copy its values, then deploy code that reads `contact` and writes both columns:
 
 ```sql title="20261110120000_add_contact.sql"
 alter table users add column contact text;
 update users set contact = email;
 ```
 
-Once that build runs everywhere, drop the old column:
+Once that build runs everywhere, copy what the old build wrote in the meantime, and drop the old column:
 
 ```sql title="20261112120000_drop_email.sql"
+update users set contact = email where contact is distinct from email;
 alter table users drop column email;
 ```
 
