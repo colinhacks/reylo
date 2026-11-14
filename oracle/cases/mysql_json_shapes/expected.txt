@@ -12,7 +12,7 @@ array_agg_guarded_null_document.sql: one () -> { ids: json? }
 array_agg_guarded_null_then_array.sql: one () -> { ids: json? }
 array_agg_guarded_number.sql: one () -> { ids: text }
 array_agg_guarded_object.sql: one () -> { ids: json? }
-array_agg_guarded_param.sql: one (fallback: json) -> { ids: unknown? }
+array_agg_guarded_param.sql: one (fallback: json) -> { ids: unknown? } !! reylo20: MySQL takes the parameter :fallback as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :fallback::json.
 array_agg_guarded_string.sql: one () -> { ids: text }
 array_agg_guarded_two.sql: one () -> { ids: json int[] }
 array_agg_literal.sql: many () -> { l: json boolean[] }

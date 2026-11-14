@@ -1,0 +1,17 @@
+append_cast.sql: none (tag: json, id: int32) -> {  }
+compared.sql: many (v: json) -> { id: int } !! reylo20: MySQL takes the parameter :v as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :v::json.
+compared_cast.sql: many (v: json) -> { id: int }
+compared_document.sql: many (doc: json) -> { id: int } !! reylo20: MySQL takes the parameter :doc as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :doc::json.
+document_argument.sql: none (patch: json, id: int32) -> {  }
+document_argument_cast.sql: none (patch: json, id: int32) -> {  }
+document_base.sql: one (base: json, list: json) -> { d: json?, l: json? }
+document_first.sql: one (doc: json, other: json, third: json) -> { a: json?, n: bigint?, t: varchar? }
+document_overlaps.sql: many (other: json, target: json) -> { id: int }
+member.sql: many (tag: json) -> { id: int } !! reylo20: MySQL takes the parameter :tag as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :tag::json.
+member_array.sql: many (names: json) -> { id: int }
+member_cast.sql: many (tag: json) -> { id: int }
+set_value.sql: none (name: json, id: int32) -> {  } !! reylo20: MySQL takes the parameter :name as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :name::json.
+set_value_cast.sql: none (name: json, id: int32) -> {  }
+value_after_base.sql: one (base: json, tag: json) -> { l: json? } !! reylo20: MySQL takes the parameter :tag as a value here, not as a JSON document, so the JSON text bound for it would be stored or compared as a string: cast it, as in :tag::json.
+whole_insert.sql: none (id: int, doc: json, again: json) -> {  }
+whole_update.sql: none (doc: json, id: int32) -> {  }

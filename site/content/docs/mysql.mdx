@@ -570,6 +570,8 @@ A `BINARY`, `VARBINARY` or `BLOB` parameter takes only a `Uint8Array`, and rejec
 
 A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`.
 
+MySQL reads that JSON as a document where the parameter is written whole to a column, as in `set doc = :doc`, where it is the document a JSON function reads, as in `json_extract(:doc, '$.a')`, and where it is cast. Anywhere else, as in `json_set(doc, '$.name', :name)`, `:tag member of (…)` or a comparison, it would take the text for a string and store `"\"Ada\""`, so the query is a type error until you cast the parameter: `:name::json`.
+
 Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `NOT NULL` `JSON` column can hold. A `coalesce` or a null test doesn't make a parameter take null, so write `coalesce(:doc::nullable(json), doc)` to keep `doc` for `null`.
 
 ### Parameters that may be null

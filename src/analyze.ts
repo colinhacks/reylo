@@ -24,7 +24,19 @@ export type Entry = {
 };
 
 export type Outcome =
-  | { ok: true; analysis: Analysis; source: "cache" | "database"; entry: string }
+  | {
+      ok: true;
+      analysis: Analysis;
+      source: "cache" | "database";
+      entry: string;
+      /**
+       * Where the analysis is `.reylo/`'s and nothing held it to the database's schema, why, and
+       * when it was made: `cannot connect to the database at localhost:5432/app (DATABASE_URL in
+       * .env): connection refused; building from .reylo/, analyzed 2026-11-07`. The types are then
+       * as old as the entry, so a build step prints the line and a hover shows it.
+       */
+      unverified?: string;
+    }
   | { ok: false; message: string; code: number };
 
 /**
@@ -144,8 +156,8 @@ export class Session {
    * Where this session's entry for a statement lives, whether or not it exists yet: named by the
    * statement, then by the server. Two databases keep an entry each, and one whose schema matches
    * reads the other's (`#sameSchema`), so a fresh database built by the same migrations analyzes
-   * nothing again. A session that cannot reach its database, or has no URL, reads another server's
-   * entry for the statement where it has none of its own (`#offlineEntry`).
+   * nothing again. A session that cannot reach its database reads its own entry all the same, and
+   * one with no URL the newest of any server's (`#offlineEntry`), each saying so (`#unverified`).
    */
   entryFile(sql: string): string {
     return join(this.root, ".reylo", "queries", `${this.#statementKey(sql)}-${sha256(this.#server()).slice(0, 16)}.json`);
@@ -155,11 +167,19 @@ export class Session {
     return sha256(JSON.stringify([ENTRY_VERSION, this.#engineFingerprint, this.project.dialect, sql])).slice(0, 32);
   }
 
-  /** The statement's entry from this session's server, else the newest from any other: for a session that cannot reach its database, or has no URL. */
-  #offlineEntry(sql: string): { file: string; entry: Entry } | undefined {
+  /**
+   * The statement's entry for a session that cannot reach its database, or has no URL: its own
+   * server's, else the newest from any other where `others` allows. A URL that names a server and
+   * fails reads that server's entry alone, since another's says nothing of the database the URL
+   * asks for, and a mistyped host would otherwise build from whichever database was analyzed
+   * last. A database that is a file has no server to mistake: its project built elsewhere, as in
+   * a container, names the same file at another path.
+   */
+  #offlineEntry(sql: string, others = !this.project.url || this.project.dialect === "sqlite" || this.project.dialect === "duckdb"): { file: string; entry: Entry } | undefined {
     const own = this.entryFile(sql);
     const entry = readEntry(own);
     if (entry) return { file: own, entry };
+    if (!others) return undefined;
     const dir = join(this.root, ".reylo", "queries");
     const prefix = `${this.#statementKey(sql)}-`;
     let names: string[];
@@ -260,7 +280,7 @@ export class Session {
     // is the one its entries record, src/project.ts), and a statement it lacks needs a URL.
     if (!this.project.url) {
       const hit = this.#engine instanceof MissingEngine || options.force ? undefined : this.#offlineEntry(sql);
-      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file } : { ok: false, message: this.project.missingUrl, code: 4 };
+      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry) } : { ok: false, message: this.project.missingUrl, code: 4 };
     }
     // The URL names the database, whose engine reylo has to be able to run.
     const engine = this.#engine;
@@ -270,8 +290,11 @@ export class Session {
     if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
     if (schema.value === null) {
       const hit = options.force ? undefined : this.#offlineEntry(sql);
-      if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file };
-      return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run the type check or a build where the database can be reached first.`, code: 5 };
+      if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry, schema.error) };
+      // Another database's analysis is no answer for the one the URL names.
+      const elsewhere = !options.force && this.#offlineEntry(sql, true) !== undefined;
+      const next = elsewhere ? ".reylo has this statement's analysis from another database only, which a build reads where no database URL is set: run the type check or a build where this database can be reached, or build with no URL" : ".reylo has no analysis of this statement, so run the type check or a build where the database can be reached first";
+      return { ok: false, message: `${this.cannotConnect(schema.error)}; ${next}.`, code: 5 };
     }
     const entry = options.force || options.store === false ? undefined : readEntry(file);
     // An entry for another fingerprint, written since this session read its own, is another
@@ -282,7 +305,7 @@ export class Session {
       await this.recheck();
       schema = await this.schema();
       if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
-      if (schema.value === null) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
+      if (schema.value === null) return { ok: true, analysis: entry.analysis, source: "cache", entry: file, unverified: this.#unverified(entry, schema.error) };
     }
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     // A database with this schema, at another URL: a fresh one built by the same migrations.
@@ -355,6 +378,16 @@ export class Session {
     const before = this.#schema?.value;
     if (this.#schema) this.#schema = { ...this.#schema, at: -Infinity };
     return (await this.schema()).value !== before;
+  }
+
+  /**
+   * What an analysis read from `.reylo/` with no schema to hold it to says of itself
+   * (`Outcome.unverified`): why the database was not asked, and the day the entry was written.
+   */
+  #unverified(entry: Entry, why?: string): string {
+    const found = this.project.url ? this.cannotConnect(why) : "no database URL is set";
+    const day = Number.isFinite(entry.at) ? `, analyzed ${new Date(entry.at).toISOString().slice(0, 10)}` : "";
+    return `${found[0]!.toLowerCase()}${found.slice(1)}; building from .reylo/${day}`;
   }
 
   /** Where the database was looked for, and where that came from; never the credentials. */
@@ -604,8 +637,11 @@ const eq = (a: string, b: string) => `${a} operator(pg_catalog.=) ${b}`;
 const rel = (alias: string, column: string) => `join pg_catalog.pg_class c on ${eq("c.oid", `${alias}.${column}`)} join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")}`;
 const PG_CLASS = "'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid";
 const USER = "'16384'::pg_catalog.oid";
+// Its first line holds what the session itself adds to an analysis: the server's version, the
+// search path that resolves each name, and the style the session writes dates in (the first part
+// of DateStyle, `ISO` or another), which the engine's host reports an error for (engine/native).
 const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_agg(t.x, E'\\n'::pg_catalog.text order by t.x), ''::pg_catalog.text)) from (
-    select ${line("v", "pg_catalog.current_setting('server_version_num'::pg_catalog.text)", "pg_catalog.current_setting('search_path'::pg_catalog.text)")} as x
+    select ${line("v", "pg_catalog.current_setting('server_version_num'::pg_catalog.text)", "pg_catalog.current_setting('search_path'::pg_catalog.text)", "pg_catalog.split_part(pg_catalog.current_setting('DateStyle'::pg_catalog.text), ','::pg_catalog.text, 1)")} as x
     union all select ${line("r", cat(txt("n.nspname"), lit("."), txt("c.relname")), txt("c.relkind"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where ${NS}
     union all select ${line("a", relation("a.attrelid"), out("int2", "a.attnum"), txt("a.attname"), type("a.atttypid"), out("int4", "a.atttypmod"), txt("a.attnotnull"), named("regcollation", "a.attcollation"), txt("a.attidentity"), txt("a.attgenerated"))} from pg_catalog.pg_attribute a ${rel("a", "attrelid")} where a.attnum operator(pg_catalog.>) 0 and not a.attisdropped and ${NS}
     union all select ${line("h", relation("h.inhrelid"), relation("h.inhparent"), out("int4", "h.inhseqno"))} from pg_catalog.pg_inherits h ${rel("h", "inhrelid")} where ${NS}

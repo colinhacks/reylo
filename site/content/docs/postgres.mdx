@@ -196,7 +196,7 @@ A `date`, `timestamp` or `timestamptz` uses ISO 8601's extended year, a sign and
 
 **Times**
 
-A `time` or `timetz` is the text Postgres writes in its default `DateStyle`. If your session changes it, the text changes too.
+A `time` or `timetz` is the text Postgres writes in its default `DateStyle`. If your session changes it, the text changes too. A `date`, `timestamp` or `timestamptz` is read in the ISO style only: under another `DateStyle`, set on the session, the role or the database, `.run()` throws rather than return a date in another format. Where the role or the database the type check connects to sets one, a query that returns such a column is a type error too.
 
 <Pairs>
 
@@ -1214,7 +1214,7 @@ await client.query("commit");
 client.release();
 ```
 
-A client created with `binary: true` isn't supported, and neither is pg's native client, `pg.native`, which ignores the type parsers a query passes. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy, since Reylo tells one by its shape.
+A client created with `binary: true` isn't supported, and neither is pg's native client, `pg.native`, which ignores the type parsers a query passes. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy. Reylo tells a client by its shape, and `.run()` throws on an object that is none of these drivers' clients before it runs the query, since a wrapper returns the values `pg` already converted.
 
 ### postgres.js
 
