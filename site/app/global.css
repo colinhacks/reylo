@@ -262,6 +262,7 @@
   display: grid;
 }
 
+/* A row's label sits on a line of its own, above its code, at any width. */
 #nd-page .reylo-inference-card-label {
   padding: 0.75rem 1rem 0;
   font-family: var(--font-text);
@@ -318,49 +319,6 @@
 
 #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types {
   border-top: 1px solid var(--color-fd-border);
-}
-
-/* Every row's label sits in one place: above its code where the card is narrow, and in one column
-   to the left of it where the card is wide. */
-@container (min-width: 34rem) {
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-row {
-    display: grid;
-    grid-template-columns: 5.5rem minmax(0, 1fr);
-    align-items: baseline;
-    padding-inline-start: 1rem;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-label {
-    padding: 0;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-row figure.shiki pre {
-    padding-inline-start: 0;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='schema'],
-  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='query'] {
-    padding-block: 0.625rem;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='schema'] figure.shiki pre,
-  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='query'] figure.shiki pre {
-    padding-block: 0.125rem;
-  }
-
-  /* The dialect switch takes a strip of its own over the first row, which the code would run under. */
-  #nd-page .reylo-inference-card[data-layout='rows']:has(> .reylo-inference-card-switch) .dk-variant-panel > :first-child {
-    padding-top: 2.25rem;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types {
-    padding-block: 0.625rem;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types figure.shiki pre,
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types .reylo-inference-card-row:last-child figure.shiki pre {
-    padding-block: 0.125rem;
-  }
 }
 
 @media (min-width: 640px) {

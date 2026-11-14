@@ -1,8 +1,8 @@
-// The type format's page (content/docs/typedefs.mdx) and the analyze page (content/docs/analyze.mdx):
+// The type format's page (content/docs/typedefs.mdx), the CLI page (content/docs/cli.mdx) and the dialect pages:
 // each `<TypeDef>` card (lib/typedefs.ts) becomes the docs' card of labelled rows (`TypeDefCard`,
 // components/mdx.tsx), Types, Holds and Databases, its example types first held to the format's
 // JSON Schema, so that the build fails on one the format refuses; each `<Analyzed>` card the command
-// and the output `nub run capture-typedefs` captured for it, or, for `format="types"`, a table of
+// and the output `nub run capture-typedefs` captured for it, or, for `format="types"`, a card of
 // each result column's type; `<TypeDefsVersion />` the badge under the
 // title, the format's stage and version from its JSON Schema, and the button to that schema; and
 // `<TypeDefsSpec />` its TypeScript, spec/index.ts, without its prose, so that the page restates
@@ -77,16 +77,12 @@ function oneLine(value: unknown): string {
   return typeof value === 'string' && PLAIN.test(value) && !CLAIMED.test(value) ? value : JSON.stringify(value);
 }
 
-/** A table of a statement's result columns, each by its name, the SQL type the card names it for, and its type. */
+/** A card of a statement's result columns, a row each: its name, the SQL type the card names it for, over its type. */
 function renderTypes(card: AnalyzedCard, json: string) {
   const columns = (JSON.parse(json) as { result: { columns: { name: string; type: unknown }[] } }).result.columns;
-  const cell = (children: MdNode[]): MdNode => ({ type: 'tableCell', children });
-  const text = (value: string): MdNode => ({ type: 'text', value });
-  const header: MdNode = { type: 'tableRow', children: [cell([text('Type')]), cell([text('Reylo Type Defs')])] };
-  const rows = columns.map((c): MdNode => ({ type: 'tableRow', children: [cell([{ type: 'inlineCode', value: c.name }]), cell([{ type: 'inlineCode', value: oneLine(c.type) }])] }));
-  card.node.name = 'div';
-  card.node.attributes = [{ type: 'mdxJsxAttribute', name: 'className', value: 'typedef-types-table' }];
-  card.node.children = [{ type: 'table', align: [null, null], children: [header, ...rows] } as MdNode];
+  card.node.name = 'TypeListCard';
+  card.node.attributes = [];
+  card.node.children = columns.map((c) => row(c.name, [code('yaml', oneLine(c.type))]));
 }
 
 function renderAnalyzed(card: AnalyzedCard, output: string) {

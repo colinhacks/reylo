@@ -127,12 +127,16 @@
   max-height: none;
 }
 
-/* A dialect page's table of each type and its descriptor: the type takes a third of the width, and
-   the descriptor wraps within the rest. */
-#nd-page .typedef-types-table th:first-child {
-  width: 32%;
+/* A dialect page's types: each row's label is a type's name, written as code, and its descriptor
+   wraps within the card. */
+#nd-page .typedef-type-list .reylo-inference-card-label {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-fd-foreground);
 }
-#nd-page .typedef-types-table td:last-child code {
-  white-space: normal;
+#nd-page .typedef-type-list figure.shiki pre {
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

@@ -1,5 +1,5 @@
-// The cards of the type format's page (content/docs/typedefs.mdx) and of the analyze page
-// (content/docs/analyze.mdx).
+// The cards of the type format's page (content/docs/typedefs.mdx), of the CLI page
+// (content/docs/cli.mdx), and of the dialect pages' type lists.
 //
 // A `<TypeDef>` card is one kind: its examples, written by hand as one jsonc block of types, each
 // under a comment of its own, which the build holds to the format's JSON Schema; the values the kind
@@ -9,7 +9,7 @@
 // An `<Analyzed>` card is a `.sql` file and the schema it reads: `nub run capture-typedefs` runs
 // `reylo analyze` on it, as YAML and as JSON, and writes both outputs to lib/typedefs.json, which the
 // build renders the card from, so the page shows the command's real output. A card of
-// `format="types"` shows a table instead, of each result column's name and its type, as a dialect's
+// `format="types"` shows a card instead, of each result column's name over its type, as a dialect's
 // page lists the type of each of its SQL types; a DuckDB card is one of those, analyzed through
 // `analyze()` and the project's @duckdb/node-api, since `reylo analyze` opens no DuckDB database.
 import { createHash } from 'node:crypto';
@@ -48,7 +48,7 @@ export type AnalyzedCard = {
   /** The schema the statement reads, built before it is analyzed. */
   schema?: string;
   query: string;
-  /** Which output the card shows: the command's, or a table of the result's columns and their types. */
+  /** Which output the card shows: the command's, or a card of the result's columns and their types. */
   format: 'yaml' | 'json' | 'types';
   /** How many lines of the output to show, a `# …` after them: all where absent. */
   lines?: number;

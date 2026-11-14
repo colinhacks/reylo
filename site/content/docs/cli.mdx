@@ -1,15 +1,34 @@
 ---
-title: Analyze
-description: Read what Reylo infers for each statement, as data.
+title: CLI
+description: The reylo command, which prints what Reylo infers for each statement and serves the playground on your machine.
 ---
 
-Read what Reylo infers for a statement, as data.
+The `reylo` command.
 
-Reylo writes each statement's parameters, columns, cardinality and diagnostics as a descriptor, its types in [Reylo Type Defs](/typedefs). It reads the database your project names, as the type check does.
+Run it in your project with `npx reylo`. It reads the database your project names, as the type check does.
 
-## CLI
+```text
+Usage: reylo <command> [flags]
 
-Run it on a file, a directory, or `-` for standard input:
+Commands:
+  analyze <paths>          Print what Reylo infers for each statement
+    --sql <statement>      Read this statement, in place of files
+    --url <url>            The database, in place of the project's
+    --format yaml|json     YAML, the default, or a line of JSON per statement
+  play                     Serve the playground on this machine
+    --port <n>             The port, 4983 by default
+    --no-open              Leave the browser closed
+
+Flags:
+  -h, --help               Print this help
+  --version                Print the version
+```
+
+## `reylo analyze`
+
+Prints what Reylo infers for each statement, as data.
+
+Each statement's parameters, columns, cardinality and diagnostics come as a descriptor, its types in [Reylo Type Defs](/typedefs). Run it on a file, a directory, or `-` for standard input:
 
 <Analyzed file="queries/get_user.sql">
 
@@ -51,11 +70,7 @@ select id, email, bio from users where id = :id
 
 Each diagnostic is also written to standard error, with its file, line and column and a caret under its place. The command exits with 1 when any statement has a diagnostic, and with 2 when it can't reach the database or read the statements.
 
-```sh
-npx reylo analyze --help
-```
-
-## JavaScript
+### From JavaScript
 
 Analyze a statement from a script with `analyze()`, which returns the same descriptor:
 
@@ -70,7 +85,7 @@ const descriptor = await analyze({
 
 Leave out `url` to read the database your project names.
 
-## The descriptor
+### The descriptor
 
 One per statement.
 
@@ -85,9 +100,9 @@ One per statement.
 | `result` | The rows, a [table](/typedefs#table) of columns, and its cardinality |
 | `diagnostics` | What the database reports, each with a `message` and its `start` and `end` |
 
-The CLI adds `file`, the path the statement was read from.
+The command adds `file`, the path the statement was read from.
 
-### `kind`
+#### `kind`
 
 What the statement does.
 
@@ -102,7 +117,7 @@ What the statement does.
 
 A statement that doesn't parse has no `kind`.
 
-### `result`
+#### `result`
 
 The rows, as a table.
 
@@ -117,14 +132,40 @@ Its `columns` are the statement's, in order, and its `cardinality` is how many r
 
 Where rows can be more than one, the table's [`unique`](/typedefs#table) lists the columns no two rows share, and its `order` the columns the rows are sorted on.
 
-### `diagnostics`
+#### `diagnostics`
 
 Each at its place.
 
 A diagnostic's `start` and `end` count UTF-16 units of the statement as written, so an editor can underline it. Its `code` is the database's own error code, where it has one. A statement the database refuses has no columns.
 
-### Running the statement
+#### Running the statement
 
 The descriptor holds what a driver needs.
 
 Pass `sql` to any driver as it is, and bind each parameter's value at its placeholder: the first of `params` at `$1` on Postgres, or the first `?` on MySQL and SQLite. Each parameter stands at exactly one placeholder, since Reylo reports a statement that writes one twice and reads a value twice through a `with` instead.
+
+## `reylo play`
+
+Serves the playground on this machine.
+
+The page is a query editor whose Params, Returns and errors are Reylo's analysis of the query against your project's database, at every keystroke. Nothing is run. It opens in your browser, or stays closed with `--no-open`, for a script or an agent, which reads the same analysis as JSON:
+
+```text
+http://127.0.0.1:4983/?q=<sql>         the page, with a query in it
+GET  /api/analyze?q=<sql>               a query's Params, Returns and diagnostics
+POST /api/analyze  {"sql": "<sql>"}     the same
+GET  /api/schema                        the tables, their columns, functions and types
+```
+
+## Examples
+
+```sh
+# what Reylo infers for every statement under queries/
+npx reylo analyze queries
+
+# one statement, against another database, as JSON
+npx reylo analyze --sql "select 1 as one" --url postgres://localhost/app --format json
+
+# the playground, for an agent: no browser
+npx reylo play --no-open
+```
