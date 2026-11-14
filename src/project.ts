@@ -13,6 +13,7 @@
 // is the one the project's `.reylo/` entries record.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
@@ -514,19 +515,38 @@ export function sqlitePath(url: string, baseDir: string): string {
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
 
-/** The `package.json` of `name` as a file in `dir` imports it, from the nearest `node_modules` up; undefined where none holds it. */
+/**
+ * The `package.json` of `name` as a file in `dir` imports it, from the nearest `node_modules` up, or
+ * where Yarn's Plug'n'Play runs, which keeps no `node_modules`, as its resolver finds it; undefined
+ * where none holds it. Node's own resolver is not asked elsewhere: it also searches `NODE_PATH` and
+ * the global folders, which an `import` never reads.
+ */
 function installed(name: string, dir: string): { types?: unknown; typings?: unknown; exports?: unknown } | undefined {
+  const read = (file: string) => {
+    try {
+      return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return {};
+    }
+  };
   for (let at = resolve(dir); ; at = dirname(at)) {
     const file = join(at, "node_modules", name, "package.json");
-    if (existsSync(file)) {
-      try {
-        return JSON.parse(readFileSync(file, "utf8"));
-      } catch {
-        return {};
-      }
-    }
-    if (dirname(at) === at) return undefined;
+    if (existsSync(file)) return read(file);
+    if (dirname(at) === at) break;
   }
+  if (!process.versions.pnp) return undefined;
+  const require = createRequire(join(resolve(dir), "_"));
+  try {
+    return read(require.resolve(`${name}/package.json`));
+  } catch {}
+  // A package whose `exports` hides its `package.json`: walk up from its entry point to the manifest that names it.
+  try {
+    for (let at = dirname(require.resolve(name)); dirname(at) !== at; at = dirname(at)) {
+      const file = join(at, "package.json");
+      if (existsSync(file) && read(file).name === name) return read(file);
+    }
+  } catch {}
+  return undefined;
 }
 
 /**
