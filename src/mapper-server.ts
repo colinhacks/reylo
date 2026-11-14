@@ -74,10 +74,11 @@ export function mapperHandlers(): MapperHandlers {
       const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
       const session = Session.open(projectDir);
       projects.set(p.projectHandle, { strictParams: resolved.strictParams, allowNestedArrays: resolved.allowNestedArrays, codecs: resolved.codecs, projectFile, session });
-      // What every file's module is a function of besides its own text: the settings, the engine
-      // and the database's schema. An incremental `tsc` keeps a file's type errors, and those of the
-      // files that import it, while its text and this identity stay the same, so a migration that
-      // changes a column's type is checked again.
+      // What every file's module is a function of besides its own text: the settings, and what
+      // `Session.identity` names (reylo's version, the engine, the database's schema, the app's
+      // SQLite drivers). An incremental `tsc` keeps a file's type errors, and those of the files that
+      // import it, while its text and this identity stay the same, so a migration that changes a
+      // column's type is checked again.
       const analyzes = await session.then((s) => s.identity()).catch((e: unknown) => `unopened ${(e as Error).message}`);
       const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.allowNestedArrays, resolved.codecs, resolved.url ?? null, resolved.error ?? null, p.options ?? null, analyzes])).digest("hex");
       return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };

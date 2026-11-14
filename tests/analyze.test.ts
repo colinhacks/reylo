@@ -75,6 +75,39 @@ test("a change to the schema makes the entry stale, and the statement is analyze
   assert.equal(after.entry, before.entry);
 });
 
+test("a session's identity, which the type check gives TypeScript, moves with the schema and the app's SQLite drivers, and is its own with no URL", async () => {
+  const { root, env } = project();
+  writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { "better-sqlite3": "*" } }));
+  // A driver that resolves and cannot open the database: it is left out of the analysis, and its version is still part of what the statements were checked with.
+  const driver = join(root, "node_modules", "better-sqlite3");
+  mkdirSync(driver, { recursive: true });
+  writeFileSync(join(driver, "index.js"), "throw new Error('no native module');\n");
+  const installed = (version: string) => writeFileSync(join(driver, "package.json"), JSON.stringify({ name: "better-sqlite3", version, main: "index.js" }));
+  const identity = async (at: Record<string, string> = env) => {
+    const session = await Session.open(root, at);
+    try {
+      return await session.identity();
+    } finally {
+      await session.close();
+    }
+  };
+  installed("12.0.0");
+  const first = await identity();
+  assert.equal(await identity(), first);
+  installed("12.1.0");
+  const upgraded = await identity();
+  assert.notEqual(upgraded, first);
+  const db = new DatabaseSync(join(root, "app.db"));
+  db.exec("alter table users add column email text");
+  db.close();
+  assert.notEqual(await identity(), upgraded);
+  // With no URL, the analyses come from .reylo/, and no two sessions share an identity.
+  const unset = await identity({});
+  assert.match(unset, /"offline \d+ \d+"/);
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.notEqual(await identity({}), unset);
+});
+
 test("a database with the same schema at another URL reads the entry, and one with another schema writes its own", async () => {
   const { root, env } = project();
   const first = await analyze(root, env, SELECT);

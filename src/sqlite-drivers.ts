@@ -287,13 +287,30 @@ async function startD1(entry: string, dir: string, ended: () => void): Promise<D
 
 /** The installed wrangler's version, from the package.json above its entry point. */
 function wranglerVersion(entry: string): string {
+  return installedVersion("wrangler", entry);
+}
+
+/** The version of the package `name` whose entry point is `entry`, from the package.json above it. */
+function installedVersion(name: string, entry: string): string {
   for (let dir = dirname(entry); dirname(dir) !== dir; dir = dirname(dir)) {
     const file = join(dir, "package.json");
     if (!existsSync(file)) continue;
     const pkg = JSON.parse(readFileSync(file, "utf8")) as { name?: string; version?: string };
-    if (pkg.name === "wrangler") return pkg.version ?? "";
+    if (pkg.name === name) return pkg.version ?? "";
   }
   return "";
+}
+
+/** Each of the project's drivers with its installed version, or `null` where it does not resolve: what the statements are prepared on too. */
+export function projectDriverVersions(root: string): [string, string | null][] {
+  const require = createRequire(join(packageDir(root), "package.json"));
+  return projectDrivers(root).map((name) => {
+    try {
+      return [name, installedVersion(name, require.resolve(name))];
+    } catch {
+      return [name, null];
+    }
+  });
 }
 
 /** The SQLite drivers the project's package.json lists, by package name. */
