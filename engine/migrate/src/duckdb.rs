@@ -87,6 +87,11 @@ fn library_path(root: &Path) -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("REYLO_DUCKDB_LIBRARY").filter(|p| !p.is_empty()) {
         return Ok(PathBuf::from(path));
     }
+    search(root)
+}
+
+/// The platform package's library in a `node_modules` of `root` or above it.
+fn search(root: &Path) -> Result<PathBuf, String> {
     let (package, file) = platform();
     let mut dir = Some(root);
     while let Some(at) = dir {
@@ -98,14 +103,16 @@ fn library_path(root: &Path) -> Result<PathBuf, String> {
         for store in [".pnpm", ".store"] {
             let Ok(entries) = std::fs::read_dir(modules.join(store)) else { continue };
             let prefix = format!("@duckdb+node-bindings-{package}@");
-            let mut found: Vec<PathBuf> = entries
+            // The newest version the store holds, by its numbers (1.10.0 after 1.9.0).
+            let version = |name: &str| -> Vec<u64> { name[prefix.len()..].split(|c: char| !c.is_ascii_digit()).filter_map(|n| n.parse().ok()).collect() };
+            let mut found: Vec<(Vec<u64>, PathBuf)> = entries
                 .filter_map(|e| e.ok())
                 .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
-                .map(|e| e.path().join("node_modules").join("@duckdb").join(format!("node-bindings-{package}")).join(file))
-                .filter(|p| p.is_file())
+                .map(|e| (version(&e.file_name().to_string_lossy()), e.path().join("node_modules").join("@duckdb").join(format!("node-bindings-{package}")).join(file)))
+                .filter(|(_, p)| p.is_file())
                 .collect();
             found.sort();
-            if let Some(last) = found.pop() {
+            if let Some((_, last)) = found.pop() {
                 return Ok(last);
             }
         }
@@ -394,6 +401,20 @@ pub fn path_of(url: &str, base: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pnpm_store_gives_its_newest_duckdb_by_number() {
+        let root = std::env::temp_dir().join(format!("reylo-duckdb-store-{}", std::process::id()));
+        let (package, file) = platform();
+        for version in ["1.9.0", "1.10.0", "1.2.0"] {
+            let dir = root.join("node_modules/.pnpm").join(format!("@duckdb+node-bindings-{package}@{version}")).join("node_modules/@duckdb").join(format!("node-bindings-{package}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(file), b"").unwrap();
+        }
+        let found = search(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(found.as_ref().is_ok_and(|p| p.to_string_lossy().contains("@1.10.0/")), "{found:?}");
+    }
 
     #[test]
     fn reads_the_path_as_the_type_check_does() {

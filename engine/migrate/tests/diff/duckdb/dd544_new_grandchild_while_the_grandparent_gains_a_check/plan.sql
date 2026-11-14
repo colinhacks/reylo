@@ -1,0 +1,16 @@
+create temporary table reylo_copy_users as select * from users;
+create temporary table reylo_copy_posts as select * from posts;
+create temporary table reylo_copy_tags as select * from tags;
+drop table tags;
+drop table posts;
+drop table users;
+create table users (id integer, email varchar, primary key (id), check ((email != '')));
+create table posts (id integer, user_id integer, primary key (id), foreign key (user_id) references users (id));
+create table tags (id integer, post_id integer, primary key (id), foreign key (post_id) references posts (id));
+insert into users (id, email) select id, email from temp.main.reylo_copy_users;
+insert into posts (id, user_id) select id, user_id from temp.main.reylo_copy_posts;
+insert into tags (id, post_id) select id, post_id from temp.main.reylo_copy_tags;
+drop table temp.main.reylo_copy_users;
+drop table temp.main.reylo_copy_posts;
+drop table temp.main.reylo_copy_tags;
+create table tag_votes (tag_id integer, n integer, foreign key (tag_id) references tags (id));

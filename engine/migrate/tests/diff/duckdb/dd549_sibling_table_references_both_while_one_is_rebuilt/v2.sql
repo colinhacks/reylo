@@ -1,0 +1,1 @@
+create table users (id integer primary key, email varchar check (email <> '')); create table posts (id integer primary key, user_id integer references users (id)); create table likes (user_id integer references users (id), post_id integer references posts (id));

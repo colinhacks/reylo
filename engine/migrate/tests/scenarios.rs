@@ -336,6 +336,7 @@ for_each_dialect!(
     dev_that_fails_on_a_locked_migration_keeps_the_lock,
     dev_that_fails_on_a_draft_locks_the_drafts_that_ran,
     the_undo_of_a_change_by_hand_leaves_what_db_push_made,
+    dev_records_what_db_push_made_keeping_what_was_written_since,
     migrate_lock_refuses_a_lock_that_exists,
     status_refuses_a_lock_with_no_checksum_of_schema_sql,
     dev_relocks_an_edited_locked_migration_where_every_pair_agreed,
@@ -443,6 +444,28 @@ async fn the_undo_of_a_change_by_hand_leaves_what_db_push_made(mut p: P) {
     p.exec(&undo).await;
     assert_eq!(p.dev().await, 0, "{}", p.peek());
     assert_eq!(p.rows("select bio from users").await[0].text("bio"), "pushed");
+}
+
+// db push, then the migration written for what it made: dev records the migration rather than
+// running it again, and what was written into the database since stays. A check is made in place on
+// Postgres and MySQL and by rebuilding the table on SQLite and DuckDB, whose own copy of the table's
+// rows is no data statement of the migration.
+async fn dev_records_what_db_push_made_keeping_what_was_written_since(mut p: P) {
+    let (id, text) = (p.t.id, p.t.text);
+    let v1 = format!("create table posts (id {id}, body {text});");
+    p.schema(&v1);
+    p.file("20261027100000_posts.sql", &v1);
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.exec(if p.d == Dialect::Duckdb { "insert into posts (id, body) values (1, 'a'), (2, 'b')" } else { "insert into posts (body) values ('a'), ('b')" }).await;
+    p.schema(&format!("create table posts (id {id}, body {text} check (body <> ''), slug {text});"));
+    assert_eq!(p.db_push().await, 0, "{}", p.peek());
+    p.exec("update posts set slug = 'kept'").await;
+    p.output();
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "slug", &Default::default(), log).await).await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"_slug\.sql\s+recorded: already in place");
+    assert_eq!(p.rows("select count(*) as n from posts where slug = 'kept'").await[0].text("n"), "2");
 }
 
 async fn migrate_lock_refuses_a_lock_that_exists(mut p: P) {
@@ -987,6 +1010,8 @@ async fn history_pull_writes_the_lock_and_keeps_what_is_still_to_deploy(mut p: P
 
 async fn db_introspect_prints_the_schema(p: P) {
     let int = p.t.int;
+    // A SQLite or DuckDB file is made by opening it: introspect refuses one that isn't there.
+    p.exec("select 1").await;
     assert_eq!(reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap(), "", "an empty database has no schema");
     p.exec(&format!("create table hand_made (id {int});")).await;
     let text = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
@@ -6208,5 +6233,225 @@ comment on macro table app.recent is 'last n';
         let Some(mut p) = at(v1, "insert into t (n) values (1), (2), (3)").await else { return };
         push(&mut p, "create sequence s increment by -1 minvalue -1000 maxvalue -100 start with -100; create table t (id bigint primary key default nextval('s'), n integer);").await;
         assert_eq!(one_value(&p, "insert into t (n) values (4) returning id::varchar as v").await, "-100");
+    }
+
+    // A table made, or given a key, that references a child of a table rebuilt in the same plan: after
+    // the rebuild, which drops and makes the child again.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_new_table_referencing_a_rebuilt_tables_child_is_made_after_the_rebuild() {
+        let v1 = "create table users (id integer primary key, email varchar); create table posts (id integer primary key, user_id integer references users (id));";
+        let Some(mut p) = at(v1, "insert into users values (1, 'a');; insert into posts values (1, 1)").await else { return };
+        let v2 = "create table users (id integer primary key, email varchar check (email <> '')); create table posts (id integer primary key, user_id integer references users (id)); create table tags (post_id integer references posts (id), tag varchar);";
+        let sql = evolve(&mut p, v2, &[], &[]).await;
+        let (rebuilt, made) = (sql.find("drop table posts"), sql.find("create table tags"));
+        assert!(rebuilt.is_some() && made.is_some() && rebuilt < made, "{sql}");
+        p.exec("insert into tags values (1, 'x')").await;
+        assert_eq!(one(&p, "select count(*)::varchar as v from posts").await, "1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_push_makes_a_table_referencing_a_rebuilt_tables_child() {
+        let v1 = "create type mood as enum ('a', 'b'); create table users (id integer primary key, feeling mood); create table posts (id integer primary key, user_id integer references users (id));";
+        let Some(mut p) = at(v1, "insert into users values (1, 'a');; insert into posts values (1, 1)").await else { return };
+        push(&mut p, &v1.replace("('a', 'b')", "('a', 'b', 'c')").replace("references users (id));", "references users (id)); create table tags (post_id integer references posts (id), tag varchar);")).await;
+        assert_eq!(one(&p, "select count(*)::varchar as v from posts").await, "1");
+    }
+
+    // With no schema.sql, new writes what the database has; where DuckDB can't export it, new names
+    // each macro whose parameters' defaults it couldn't read.
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_without_schema_sql_names_the_macros_whose_defaults_the_export_leaves_off() {
+        let Some(mut p) = duckdb().await else { return };
+        p.file("20261101000000_base.sql", "create table t (id integer primary key);");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("create schema app; create macro app.slug(s) as s; create table app.items (id integer primary key, slug varchar default app.slug('x')); create macro add_to(a, b := 5) as a + b;").await;
+        p.output();
+        assert_eq!(new(&mut p, "by_hand").await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"macro add_to: its parameters' defaults are not read \(DuckDB could not export[^\n]*\): add any it has by hand");
+    }
+
+    // A rebuild's own copy of a table's rows is no row the migration wrote: its rewind says nothing of
+    // rows it leaves.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_rewound_rebuild_says_nothing_of_rows_it_wrote() {
+        let v1 = "create table posts (id integer primary key, body varchar);";
+        let Some(mut p) = at(v1, "insert into posts values (1, 'a')").await else { return };
+        evolve(&mut p, "create table posts (id integer primary key, body varchar check (body <> ''));", &[], &[]).await;
+        let name = p.files().into_iter().find(|f| f.ends_with("_v2.sql")).unwrap();
+        std::fs::remove_file(p.dir.join("migrations").join(&name)).unwrap();
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        let out = p.output();
+        assert_has!(&out, r"_v2\.sql\s+rewound");
+        assert!(!out.contains("What it wrote stays"), "{out}");
+        assert_eq!(one(&p, "select count(*)::varchar as v from posts").await, "1");
+    }
+
+    // A file the URL names that isn't there: what only reads it, or changes what it holds, refuses,
+    // and a dry run checks it as the empty database a first deploy makes, leaving no file.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_missing_file_is_refused_or_checked_as_empty_and_never_made() {
+        let Some(mut p) = duckdb().await else { return };
+        let missing = p.dir.join("typo.duckdb");
+        p.url = format!("duckdb:{}", missing.display());
+        p.file("20261101000000_v1.sql", "create table t (id integer primary key);");
+        let r = introspect(&p).await;
+        assert!(r.as_ref().is_err_and(|e| e.0.contains("no DuckDB database at")), "{r:?}");
+        assert_eq!(wipe(&mut p).await, 1);
+        assert_has!(p.output(), r"✗ No DuckDB database at[^\n]*\n\nNothing was changed\.");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"1 pending");
+        assert!(!missing.exists() && !p.dir.join("typo.duckdb.wal").exists(), "a file was made");
+    }
+
+    // A column's comment on a table that calls a macro and that another table references: DuckDB writes
+    // it into a checkpointed file so that the file no longer opens, so the plan alters the table after
+    // it, changing nothing, which writes the table's entry whole. Each deploys to a production file that
+    // ran the first migration and has rows, which must open after.
+    const EMAIL_V1: &str = "create macro is_email(s) as s like '%@%'; create table users (id bigint primary key, email varchar check (is_email(email))); create table posts (id bigint primary key, author_id bigint references users (id));";
+
+    /// What a command answers, or why it refused to start, without a panic.
+    async fn answer<F>(p: &mut P, f: F) -> Result<i32, String>
+    where
+        F: AsyncFnOnce(&Options, &mut dyn FnMut(&str)) -> Result<i32, reylo_migrate::Error>,
+    {
+        p.relock();
+        let opts = p.opts();
+        let mut lines = vec![];
+        let r = f(&opts, &mut |l: &str| lines.push(l.to_string())).await;
+        p.lines = lines;
+        r.map_err(|e| e.to_string().lines().next().unwrap_or_default().to_string())
+    }
+
+    /// `new` from `v1` to `v2` on a development project, and the file deployed to a production database
+    /// that ran v1 and has rows: what production answers after.
+    async fn deployed_to_production(v1: &str, v2: &str, seed: &str) -> Vec<String> {
+        let mut problems = vec![];
+        let Some(mut p) = duckdb().await else { return problems };
+        p.file("20261101000000_v1.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev().await, 0, "{}", p.output());
+        p.schema(v2);
+        assert_eq!(new(&mut p, "v2").await, 0, "{}", p.output());
+        let sql = written(&p, "v2");
+        let mut q = P::sibling(&p);
+        q.schema(v2);
+        std::fs::copy(p.dir.join("migrations/20261101000000_v1.sql"), q.dir.join("migrations/20261101000000_v1.sql")).unwrap();
+        assert_eq!(q.migrate().await, 0, "{}", q.output());
+        if !seed.is_empty() {
+            q.exec(seed).await;
+        }
+        for f in p.files().into_iter().filter(|f| f.ends_with("_v2.sql")) {
+            std::fs::copy(p.dir.join("migrations").join(&f), q.dir.join("migrations").join(&f)).unwrap();
+        }
+        let code = q.migrate().await;
+        let out = q.output();
+        if code != 0 {
+            problems.push(format!("deploy exited {code}:\n{out}"));
+        }
+        match answer(&mut q, async |o, log| reylo_migrate::status(o, log).await).await {
+            // Its exit code is the lock's business here, which this project keeps loosely.
+            Ok(_) => {}
+            Err(e) => problems.push(format!("after deploy printed:\n{out}\nstatus refuses: {e}")),
+        }
+        if let Err(e) = reopens(&q).await {
+            problems.push(format!("the production file no longer opens: {e}"));
+        }
+        if !problems.is_empty() {
+            problems.push(format!("the migration:\n{sql}"));
+        }
+        problems
+    }
+
+    async fn reopens(p: &P) -> Result<(), String> {
+        match Db::connect(&p.url, &p.dir).await {
+            Ok(db) => {
+                db.close().await;
+                Ok(())
+            }
+            Err(e) => Err(e.to_string().lines().next().unwrap_or_default().to_string()),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_column_comment_deployed_on_a_referenced_table_whose_check_calls_a_macro_keeps_the_file_opening() {
+        if !available() {
+            return;
+        }
+        let v2 = format!("{EMAIL_V1} comment on column users.email is 'Login';");
+        let problems = deployed_to_production(EMAIL_V1, &v2, "insert into users values (1, 'a@x'); insert into posts values (1, 1)").await;
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_column_comment_changed_on_a_referenced_table_whose_default_calls_a_macro_keeps_the_file_opening() {
+        if !available() {
+            return;
+        }
+        let base = "create macro today_s() as strftime(current_date, '%Y-%m-%d'); create table accounts (id bigint primary key, name varchar, opened varchar default today_s()); create table invoices (id bigint primary key, account_id bigint references accounts (id));";
+        let v1 = format!("{base} comment on column accounts.name is 'Shown on invoices';");
+        let v2 = format!("{base} comment on column accounts.name is 'Shown on every invoice';");
+        let problems = deployed_to_production(&v1, &v2, "insert into accounts (id, name) values (1, 'a'); insert into invoices values (1, 1)").await;
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_column_comment_on_a_referenced_table_with_a_generated_column_calling_a_macro_by_db_push_keeps_the_file_opening() {
+        if !available() {
+            return;
+        }
+        let v1 = "create macro slugify(s) as lower(replace(s, ' ', '-')); create table posts (id integer primary key, title varchar not null, slug varchar generated always as (slugify(title)) virtual); create table post_tags (post_id integer references posts (id), tag varchar);";
+        let Some(mut p) = duckdb().await else { return };
+        p.schema(v1);
+        assert_eq!(p.db_push().await, 0, "{}", p.output());
+        p.exec("insert into posts (id, title) values (1, 'Hello World'); insert into post_tags values (1, 'x')").await;
+        p.output();
+        p.schema(&format!("{v1} comment on column posts.title is 'Headline';"));
+        let code = p.db_push().await;
+        let out = p.output();
+        assert_eq!(code, 0, "{out}");
+        let status = answer(&mut p, async |o, log| reylo_migrate::db_push(o, false, log).await).await;
+        assert!(status.is_ok(), "db push printed:\n{out}\nthen db push again refuses: {}", status.unwrap_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_column_comment_dropped_on_a_referenced_table_whose_check_calls_a_macro_keeps_the_file_opening() {
+        if !available() {
+            return;
+        }
+        let v1 = format!("{EMAIL_V1} comment on column users.email is 'Login';");
+        let problems = deployed_to_production(&v1, EMAIL_V1, "insert into users values (1, 'a@x'); insert into posts values (1, 1)").await;
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// The same comment on a table no other table references, or on one whose check calls no macro:
+    /// the file opens, which bounds the finding.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_column_comment_on_a_table_unreferenced_or_without_a_macro_keeps_the_file_opening() {
+        if !available() {
+            return;
+        }
+        let unreferenced = "create macro is_email(s) as s like '%@%'; create table users (id bigint primary key, email varchar check (is_email(email))); create table posts (id bigint primary key, author_id bigint);";
+        let problems = deployed_to_production(unreferenced, &format!("{unreferenced} comment on column users.email is 'Login';"), "insert into users values (1, 'a@x')").await;
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+        let no_macro = "create table users (id bigint primary key, email varchar check (email like '%@%')); create table posts (id bigint primary key, author_id bigint references users (id));";
+        let problems = deployed_to_production(no_macro, &format!("{no_macro} comment on column users.email is 'Login';"), "insert into users values (1, 'a@x')").await;
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_column_comment_followed_by_a_no_op_alter_keeps_the_file_opening() {
+        if !available() {
+            return;
+        }
+        let Some(mut q) = duckdb().await else { return };
+        q.file("20261101000000_v1.sql", EMAIL_V1);
+        assert_eq!(q.migrate().await, 0, "{}", q.output());
+        q.exec("insert into users values (1, 'a@x'); insert into posts values (1, 1)").await;
+        q.file("20261102000000_v2.sql", "comment on column users.email is 'Login'; alter table users alter column email drop default;");
+        assert_eq!(q.migrate().await, 0, "{}", q.output());
+        assert_eq!(reopens(&q).await, Ok(()));
+        let comment = q.rows("select comment as v from duckdb_columns() where table_name = 'users' and column_name = 'email'").await;
+        assert_eq!(comment[0].text("v"), "Login");
     }
 }

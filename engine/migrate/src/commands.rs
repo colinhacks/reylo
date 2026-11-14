@@ -730,7 +730,63 @@ fn same_statements(a: &str, b: &str, d: Dialect) -> bool {
 /// The statements of a migration that change data, as their first words: such a migration always
 /// runs, since no comparison of schemas can see whether its rows were written.
 fn data_statements(sql: &str, d: Dialect) -> Vec<String> {
-    split_statements(sql, d).iter().filter(|s| changes_data(s)).map(|s| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
+    let statements = split_statements(sql, d);
+    statements.iter().enumerate().filter(|(k, s)| changes_data(s) && !copies_a_rebuild(&statements, *k)).map(|(_, s)| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
+}
+
+/// Whether statement `k` of a file is a rebuild's own copy of a table's rows, which a database the
+/// change is already in needs no more: `insert into t (…) select … from s`, nothing after, where the
+/// file makes `t` before it and drops `s` after it (SQLite's copy into the table that takes the old
+/// one's name, DuckDB's copy back from the temporary table), and SQLite's AUTOINCREMENT counter of a
+/// table the file makes.
+fn copies_a_rebuild(statements: &[crate::sql::Statement], k: usize) -> bool {
+    use crate::sql::{Token, TokenKind};
+    let part = |t: &Token| match t.kind {
+        TokenKind::Quoted => t.text[1..t.text.len() - 1].replace("\"\"", "\"").replace("``", "`"),
+        _ => t.text.to_lowercase(),
+    };
+    // The dotted name at `at`, and the index after it.
+    let name_at = |tokens: &[Token], mut at: usize| -> Option<(String, usize)> {
+        let mut parts = vec![part(tokens.get(at).filter(|t| matches!(t.kind, TokenKind::Word | TokenKind::Quoted))?)];
+        while tokens.get(at + 1).is_some_and(|t| t.text == ".") && tokens.get(at + 2).is_some_and(|t| matches!(t.kind, TokenKind::Word | TokenKind::Quoted)) {
+            parts.push(part(&tokens[at + 2]));
+            at += 2;
+        }
+        Some((parts.join("."), at + 1))
+    };
+    // The table a statement makes or drops: `create [temp[orary]] table [if not exists] <name>`, `drop table [if exists] <name>`.
+    let table_of = |s: &crate::sql::Statement, verb: &str| -> Option<String> {
+        let t = &s.tokens;
+        if t.first().map(Token::upper).as_deref() != Some(verb) {
+            return None;
+        }
+        let at = t.iter().take(4).position(|x| x.upper() == "TABLE")? + 1;
+        let at = if t.get(at).map(Token::upper).as_deref() == Some("IF") { at + if verb == "CREATE" { 3 } else { 2 } } else { at };
+        name_at(t, at).map(|(n, _)| n)
+    };
+    let made_before = |name: &str| statements[..k].iter().any(|s| table_of(s, "CREATE").as_deref() == Some(name));
+    let dropped_after = |name: &str| statements[k + 1..].iter().any(|s| table_of(s, "DROP").as_deref() == Some(name));
+    let t = &statements[k].tokens;
+    let words: Vec<String> = t.iter().take(3).map(|x| x.upper()).collect();
+    if words.len() < 2 || (words[0] != "INSERT" && words[0] != "DELETE") {
+        return false;
+    }
+    let Some((target, mut at)) = name_at(t, 2) else { return false };
+    if target == "sqlite_sequence" {
+        // The counter of the table the file makes, named as a string.
+        return t.iter().filter(|x| x.kind == TokenKind::Str).any(|x| made_before(&x.text[1..x.text.len() - 1].replace("''", "'")));
+    }
+    if words[0] != "INSERT" || !made_before(&target) {
+        return false;
+    }
+    if t.get(at).is_some_and(|x| x.text == "(") {
+        at = t[at..].iter().position(|x| x.text == ")").map_or(t.len(), |p| at + p + 1);
+    }
+    if t.get(at).map(Token::upper).as_deref() != Some("SELECT") {
+        return false;
+    }
+    let Some(from) = t[at..].iter().position(|x| x.upper() == "FROM").map(|p| at + p + 1) else { return false };
+    matches!(name_at(t, from), Some((source, end)) if end == t.len() && dropped_after(&source))
 }
 
 /// The lines of `old` and `new` as a unified diff without its hunk headers: unchanged lines more
@@ -1494,6 +1550,9 @@ fn schema_line(opts: &Options) -> String {
 }
 
 /// What Reylo reads by name alone or not at all, listed under `heading` where there is any.
+/// How the schema as SQL ends each line naming a macro whose parameters' defaults it couldn't read.
+const UNREAD_BY_HAND: &str = ": add any it has by hand";
+
 fn unmodeled_note(heading: &str, objects: &[String], log: Log<'_>) {
     if objects.is_empty() {
         return;
@@ -1593,6 +1652,20 @@ fn uncompared_line() -> String {
 /// history, what is pending tried in a shadow, and the migrations against schema.sql; runs nothing,
 /// and writes nothing to the database.
 pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    // A SQLite or DuckDB file that isn't there yet is a database a first deploy makes: checked as the
+    // empty one opening it makes, which is removed after, with what its engine wrote beside it.
+    let made: Vec<PathBuf> = match missing_file(opts)? {
+        Some((path, _)) => ["", ".wal", "-wal", "-shm", "-journal"].iter().map(|x| PathBuf::from(format!("{}{x}", path.display()))).filter(|p| !p.exists()).collect(),
+        None => vec![],
+    };
+    let result = dry_run_on(opts, log).await;
+    for path in &made {
+        let _ = std::fs::remove_file(path);
+    }
+    result
+}
+
+async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
     let unmodeled = crate::catalog::unmodeled(&mut db).await;
@@ -1650,6 +1723,9 @@ pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 pub async fn db_wipe(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
     if in_ci {
         return Ok(refused_in_ci("reylo db wipe", log));
+    }
+    if let Some(m) = missing(opts)? {
+        return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let had = table_rows(&mut db).await.map(|counts| counts.values().filter(|n| **n > 0).count());
@@ -1770,6 +1846,9 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
 /// with data statements at its end, which a schema can't show ran. For a database changed by hand
 /// (a hotfix, then written as a migration), and one whose history was lost or kept by another tool.
 pub async fn history_push(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(m) = missing(opts)? {
+        return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
+    }
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
     let result = history_push_on(&mut db, &mut server, opts, log).await;
@@ -1966,6 +2045,9 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
 /// is written again, and a deploy still to reach this database stays locked. Changes no database, and
 /// refuses one whose tables aren't what its history makes, whose files would not make it either.
 pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(m) = missing(opts)? {
+        return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
+    }
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
     let result = history_as_it_stands(&mut db, &mut server, opts).await;
@@ -2018,28 +2100,38 @@ pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     Ok(0)
 }
 
+/// A SQLite or DuckDB file that isn't there, which a command that only reads the database, or
+/// changes what it already holds, refuses: that is no database to read, and opening it would make
+/// one. What it says, where the file is missing.
+fn missing(opts: &Options) -> Result<Option<String>, Error> {
+    Ok(missing_file(opts)?.map(|(path, which)| format!("no {which} database at {}", path.display())))
+}
+
+/// The file a SQLite or DuckDB URL names, where it isn't there, and which of the two it is.
+fn missing_file(opts: &Options) -> Result<Option<(PathBuf, &'static str)>, Error> {
+    let (path, which) = match Dialect::of_url(&opts.url)? {
+        Dialect::Sqlite => (crate::db::sqlite_path(&opts.url, &opts.root), "SQLite"),
+        Dialect::Duckdb => (crate::duckdb::path_of(&opts.url, &opts.root), "DuckDB"),
+        _ => return Ok(None),
+    };
+    Ok((path != ":memory:" && !Path::new(&path).exists()).then(|| (PathBuf::from(path), which)))
+}
+
+/// The same for a command that only reads: its error.
+fn there(opts: &Options) -> Result<(), Error> {
+    match missing(opts)? {
+        Some(m) => Err(Error(m)),
+        None => Ok(()),
+    }
+}
+
 /// `reylo migrate status`: what this database ran, what's pending and what changed, and every check
 /// the files can answer: their names, git's conflict markers, whether each runs atomically and
 /// replays in a shadow, the lock against them, and schema.sql against the checksum the lock holds. It
 /// reads, writes nothing and needs no shadow. It exits 1 where the database and the files aren't in
 /// step: a migration pending, cut off, edited or deleted, a change made by hand, or a check that fails.
 pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    // A SQLite or DuckDB file that isn't there is no database to read, and opening it would make one.
-    match Dialect::of_url(&opts.url)? {
-        Dialect::Sqlite => {
-            let path = crate::db::sqlite_path(&opts.url, &opts.root);
-            if path != ":memory:" && !Path::new(&path).exists() {
-                return Err(Error(format!("no SQLite database at {path}")));
-            }
-        }
-        Dialect::Duckdb => {
-            let path = crate::duckdb::path_of(&opts.url, &opts.root);
-            if path != ":memory:" && !Path::new(&path).exists() {
-                return Err(Error(format!("no DuckDB database at {path}")));
-            }
-        }
-        _ => {}
-    }
+    there(opts)?;
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = status_on(&mut db, opts, log).await;
     db.close().await;
@@ -2237,6 +2329,9 @@ fn lock_line(opts: &Options) -> String {
 /// migration it ran must be in the migrations as it ran it. This is how a project that deleted its
 /// lock takes linear history back.
 pub async fn lock_from_history(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(m) = missing(opts)? {
+        return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
+    }
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
     let result = lock_from_history_on(&mut db, &mut server, opts, log).await;
@@ -2970,7 +3065,11 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             return Ok(Err(vec![Problem::new("replay-fails", format!("{m} fails when replayed in a shadow database")).note(e)]));
         }
         shadows.taint(c);
-        unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a migration can leave a change to it out: check those by hand", &crate::catalog::unmodeled(shadows.db(a)).await?, log);
+        // And what the target's own text says went unread: the database's schema as SQL, where
+        // DuckDB's export of it fails, names each macro whose defaults it couldn't read.
+        let mut unread = crate::catalog::unmodeled(shadows.db(a)).await?;
+        unread.extend(schema_sql.lines().filter_map(|l| l.strip_prefix("-- ").filter(|l| l.starts_with("macro ") && l.ends_with(UNREAD_BY_HAND)).map(str::to_string)));
+        unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a migration can leave a change to it out: check those by hand", &unread, log);
         let mut target = match crate::diff::read(shadows.db(a)).await {
             Ok(schema) => schema,
             Err(e) => {
@@ -3225,7 +3324,7 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
     let mut unread: Vec<String> = Vec::new();
     if let (Ok(Some(_)), Some(e)) = (&styled, &unexported) {
         let first = e.0.lines().next().unwrap_or_default().to_string();
-        unread = crate::diff::duckdb::unmodeled(db).await?.iter().map(|m| format!("-- {m} ({first}): add any it has by hand")).collect();
+        unread = crate::diff::duckdb::unmodeled(db).await?.iter().map(|m| format!("-- {m} ({first}){UNREAD_BY_HAND}")).collect();
     }
     match (styled, unexported) {
         (Ok(Some(sql)), _) if !unread.is_empty() => Ok(format!("{}\n\n{}\n", unread.join("\n"), sql.trim_end())),
@@ -3449,6 +3548,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 /// nothing for an empty database. Writes no file and changes no database: saving it over schema.sql,
 /// whose comments and layout it doesn't keep, is a redirect.
 pub async fn db_introspect(opts: &Options, schemas: &[String]) -> Result<String, Error> {
+    there(opts)?;
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let lines = catalog(&mut db).await;
     db.close().await;
@@ -4413,6 +4513,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
     }
     let wanted = catalog(shadows.db(s_lane)).await?;
     let now = crate::catalog::without_extra_children(&catalog(db).await?, &wanted);
+    unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a push can leave a change to it out: check those by hand", &crate::catalog::unmodeled(shadows.db(s_lane)).await?, log);
     if now != wanted {
         let target = read_target(shadows.db(s_lane), Some(schema_sql)).await?;
         let counts = table_rows(db).await?;
@@ -4585,6 +4686,19 @@ pub async fn run_sql(url: &str, root: &Path, items: &[(String, String)], log: Lo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rebuilds_own_copy_of_rows_is_no_data_statement() {
+        let duckdb = "create temporary table reylo_copy_posts as select * from posts;\ndrop table posts;\ncreate table posts (id integer, body varchar, primary key (id));\ninsert into posts (id, body) select id, body from temp.main.reylo_copy_posts;\ndrop table temp.main.reylo_copy_posts;";
+        assert!(data_statements(duckdb, Dialect::Duckdb).is_empty());
+        let sqlite = "create table \"new_posts\" (id integer primary key autoincrement, body text);\ninsert into \"new_posts\" (id, body) select id, body from posts;\ndelete from sqlite_sequence where name = 'new_posts';\ninsert into sqlite_sequence (name, seq) select 'new_posts', seq from sqlite_sequence where name = 'posts';\ndrop table posts;\nalter table \"new_posts\" rename to posts;";
+        assert!(data_statements(sqlite, Dialect::Sqlite).is_empty());
+        // Rows the file writes itself: a copy that keeps some rows, one into a table it doesn't make, or from one it keeps.
+        assert_eq!(data_statements(&duckdb.replace("from temp.main.reylo_copy_posts;", "from temp.main.reylo_copy_posts where id > 1;"), Dialect::Duckdb).len(), 1);
+        assert_eq!(data_statements("create table archive (id integer); insert into archive (id) select id from posts;", Dialect::Duckdb).len(), 1);
+        assert_eq!(data_statements("insert into posts (id) select id from old; drop table old;", Dialect::Duckdb).len(), 1);
+        assert_eq!(data_statements("update posts set body = '';", Dialect::Sqlite).len(), 1);
+    }
 
     #[test]
     fn a_refusal_gives_json_its_code_and_each_part() {

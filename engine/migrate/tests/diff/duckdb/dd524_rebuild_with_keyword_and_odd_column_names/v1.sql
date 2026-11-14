@@ -1,0 +1,1 @@
+create table "order" (id integer primary key, "from" varchar, "Weird Name" integer, "a""b" varchar, "select" integer); create index o_from on "order" ("from"); create table line (id integer primary key, "order" integer references "order" (id), "group" varchar);

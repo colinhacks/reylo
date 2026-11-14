@@ -14,6 +14,7 @@ use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::Db;
 use reylo_migrate::diff::{self, Plan};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
@@ -533,4 +534,214 @@ async fn a_parent_dropped_while_what_it_and_its_child_use_changes() {
         println!("{f}");
     }
     assert!(failures.is_empty());
+}
+
+/// An everyday schema: an enum, users and the posts that reference them, two indexes, a view over a
+/// view, a table macro and two comments.
+const EVERYDAY: &str = "create type mood as enum ('happy', 'sad');
+create table users (id integer primary key, email varchar not null unique, name varchar, feeling mood, score integer default 0);
+create table posts (id integer primary key, user_id integer references users (id), title varchar, body varchar, created date default current_date);
+create index posts_title on posts (title);
+create index users_name on users (lower(name));
+create view recent as select p.id, p.title, u.name from posts p join users u on u.id = p.user_id;
+create view recent_titles as select title from recent;
+create macro posts_of(uid) as table select * from posts where user_id = uid;
+comment on view recent is 'latest';
+comment on column users.email is 'login';";
+const EVERYDAY_ROWS: &str = "insert into users values (1, 'a@x', 'A', 'happy', 3), (2, 'b@x', null, null, 4); insert into posts values (1, 1, 'T', 'b', '2026-01-01'), (2, 2, null, null, null);";
+
+/// Everyday changes to it: what each finds, and what it puts there.
+const EVERYDAY_CHANGES: &[(&str, &str, &str)] = &[
+    ("add_bio", "score integer default 0)", "score integer default 0, bio varchar)"),
+    ("enum_label", "('happy', 'sad')", "('happy', 'sad', 'meh')"),
+    ("check_body", "body varchar,", "body varchar check (length(body) < 1000),"),
+    ("unique_pair", "created date default current_date)", "created date default current_date, unique (id, title))"),
+    ("name_default", "name varchar,", "name varchar default 'anon',"),
+    ("index_score", "create index users_name on users (lower(name));", "create index users_name on users (lower(name));\ncreate index users_score on users (score);"),
+    ("drop_index", "create index posts_title on posts (title);\n", ""),
+    ("view_cols", "p.id, p.title, u.name", "p.id, p.title, u.name, u.email"),
+    ("macro_body", "where user_id = uid", "where user_id = uid and title is not null"),
+    ("view_comment", "'latest'", "'newest'"),
+    ("drop_col_comment", "comment on column users.email is 'login';", ""),
+    ("score_default", "score integer default 0", "score integer default 1"),
+    ("created_ts", "created date", "created timestamp"),
+    ("drop_body", "title varchar, body varchar,", "title varchar,"),
+    ("new_child", "create view recent as", "create table tags (post_id integer references posts (id), tag varchar);\ncreate view recent as"),
+    ("drop_unique", "email varchar not null unique", "email varchar not null"),
+    ("feeling_default", "feeling mood,", "feeling mood default 'happy',"),
+];
+
+/// Every pair of everyday changes, and each alone, from the everyday schema with its rows.
+#[tokio::test(flavor = "current_thread")]
+async fn pairs_of_everyday_changes() {
+    if !available() {
+        return;
+    }
+    let mut failures = vec![];
+    let mut n = 0;
+    for i in 0..EVERYDAY_CHANGES.len() {
+        for j in i..EVERYDAY_CHANGES.len() {
+            let picked = if i == j { vec![i] } else { vec![i, j] };
+            let mut v2 = EVERYDAY.to_string();
+            if !picked.iter().all(|k| {
+                let (_, from, to) = EVERYDAY_CHANGES[*k];
+                let found = v2.contains(from);
+                v2 = v2.replacen(from, to, 1);
+                found
+            }) {
+                continue;
+            }
+            let name = picked.iter().map(|k| EVERYDAY_CHANGES[*k].0).collect::<Vec<_>>().join("+");
+            n += 1;
+            let (problems, text) = problems_of(EVERYDAY, EVERYDAY_ROWS, &v2).await;
+            if !problems.is_empty() {
+                failures.push(format!("#### {name}\nv2: {v2}\n{}\nplan:\n{text}", problems.first().cloned().unwrap_or_default()));
+            }
+        }
+    }
+    println!("sweep everyday pairs: {n} cases, {} failed", failures.len());
+    for f in &failures {
+        println!("{}", f.lines().next().unwrap_or_default());
+    }
+    for f in failures.iter().take(3) {
+        println!("{f}");
+    }
+    assert!(failures.is_empty());
+}
+
+// Plans on files closed and opened again: DuckDB checkpoints what a plan did into the file, which must
+// open after.
+
+static FILES: AtomicUsize = AtomicUsize::new(0);
+
+/// The problem, where the file a plan from v1 (with its rows, checkpointed) to v2 ran on can't be
+/// opened again; None where it opens, or where v1 itself doesn't reopen (`Some("v1: …")` then).
+async fn reopen_problem(v1: &str, seed: &str, v2: &str) -> Option<String> {
+    let dir = std::env::temp_dir().join(format!("reylo-diff-reopen-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("f{}.duckdb", FILES.fetch_add(1, Ordering::Relaxed)));
+    let url = format!("duckdb:{}", file.display());
+    {
+        let mut db = Db::connect(&url, &dir).await.unwrap();
+        if db.exec(v1).await.is_err() {
+            return None;
+        }
+        for part in seed.split(";;").filter(|x| !x.trim().is_empty()) {
+            if db.exec(part).await.is_err() {
+                return None;
+            }
+        }
+        db.close().await;
+    }
+    let mut db = match Db::connect(&url, &dir).await {
+        Ok(db) => db,
+        Err(e) => return Some(format!("v1 alone doesn't reopen: {}", e.to_string().lines().next().unwrap_or_default())),
+    };
+    let mut to = memory().await;
+    if to.exec(v2).await.is_err() {
+        return None;
+    }
+    let plan = plan(&mut db, &mut to).await;
+    let failed = run(&mut db, &plan).await;
+    db.close().await;
+    let out = match Db::connect(&url, &dir).await {
+        Ok(db) => {
+            db.close().await;
+            None
+        }
+        Err(e) => Some(format!("after the plan{} the file doesn't open: {}\nplan:\n{}", if failed.is_some() { " (which failed)" } else { "" }, e.to_string().lines().next().unwrap_or_default(), plan.sql())),
+    };
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_file(file.with_extension("duckdb.wal"));
+    out
+}
+
+async fn reopen_sweep(name: &str, cases: Vec<(String, String, String, String)>) {
+    let mut failures = vec![];
+    for (label, v1, seed, v2) in &cases {
+        if let Some(p) = reopen_problem(v1, seed, v2).await {
+            failures.push(format!("#### {label}\nv1: {v1}\nv2: {v2}\n{p}"));
+        }
+    }
+    println!("reopen sweep {name}: {} cases, {} failed", cases.len(), failures.len());
+    for f in &failures {
+        println!("{} :: {}", f.lines().next().unwrap_or_default(), f.lines().nth(3).unwrap_or_default());
+    }
+    assert!(failures.is_empty());
+}
+
+/// Each change a plan makes to a table in place (or by a rebuild), on a table that calls a macro one
+/// way or another, with or without a child referencing it, an index or a view: the file opens after.
+#[tokio::test(flavor = "current_thread")]
+async fn every_change_to_a_table_that_calls_a_macro_on_a_file_opened_again() {
+    if !available() {
+        return;
+    }
+    let uses = ["check (m(n))", "d integer default m2(1)", "g integer generated always as (m2(n)) virtual", "e mood default 'a'", "q bigint default nextval('seq')", ""];
+    // (v1's extra part, v2's extra part, extra statements of v1, extra statements of v2)
+    let changes: &[(&str, &str, &str, &str, &str)] = &[
+        ("add column", "", ", z integer", "", ""),
+        ("add column with a macro default", "", ", z integer default m2(5)", "", ""),
+        ("add not null column", "", ", z integer not null default 0", "", ""),
+        ("drop column", ", z integer", "", "", ""),
+        ("set default", ", z integer", ", z integer default 3", "", ""),
+        ("set a macro default", ", z integer", ", z integer default m2(3)", "", ""),
+        ("drop default", ", z integer default 3", ", z integer", "", ""),
+        ("set not null", ", z integer", ", z integer not null", "", ""),
+        ("drop not null", ", z integer not null", ", z integer", "", ""),
+        ("retype", ", z integer", ", z bigint", "", ""),
+        ("rename column", ", z integer", ", z2 integer", "", ""),
+        ("comment on the table", "", "", "", "comment on table p is 't';"),
+        ("comment on a column", "", "", "", "comment on column p.v is 'c';"),
+        ("comment dropped", "", "", "comment on column p.v is 'c';", ""),
+        ("comment changed", "", "", "comment on column p.v is 'c';", "comment on column p.v is 'c2';"),
+        ("index added", "", "", "", "create index p_v on p (v);"),
+        ("index dropped", "", "", "create index p_v on p (v);", ""),
+        ("index commented", "", "", "create index p_v on p (v);", "create index p_v on p (v); comment on index p_v is 'i';"),
+        ("check added", "", ", check (n < 100)", "", ""),
+        ("view added", "", "", "", "create view pv as select * from p;"),
+        ("view commented", "", "", "create view pv as select * from p;", "create view pv as select * from p; comment on view pv is 'v';"),
+        ("view column commented", "", "", "create view pv as select * from p;", "create view pv as select * from p; comment on column pv.v is 'v';"),
+        ("macro commented", "", "", "", "comment on macro m is 'm';"),
+        ("table renamed", "", "", "", ""),
+    ];
+    let mut cases = vec![];
+    for (ui, u) in uses.iter().enumerate() {
+        for child in [true, false] {
+            for (name, a, b, s1, s2) in changes {
+                let make = |extra: &str, stmts: &str, table: &str| -> String {
+                    let u = if u.is_empty() { String::new() } else { format!(", {u}") };
+                    let fk = if child { format!(" references {table} (id)") } else { String::new() };
+                    format!("create type mood as enum ('a', 'b'); create sequence seq; create macro m(x) as x > 0; create macro m2(x) as x + 1; create table {table} (id integer primary key, n integer, v varchar{u}{extra}); create table c (id integer primary key, pid integer{fk}, k integer); {}", stmts.replace(" p ", &format!(" {table} ")).replace(" p.", &format!(" {table}.")))
+                };
+                let v1 = make(a, s1, "p");
+                let v2 = make(b, s2, if *name == "table renamed" { "p2" } else { "p" });
+                let zcol = if a.contains(" z ") { ", z" } else { "" };
+                let zval = if a.contains(" z ") { ", 1" } else { "" };
+                let seed = format!("insert into p (id, n, v{zcol}) values (1, 1, 'a'{zval}); insert into c (id, pid, k) values (1, 1, 1);");
+                cases.push((format!("use={ui} child={child} {name}"), v1, seed, v2));
+            }
+        }
+    }
+    reopen_sweep("every-change", cases).await;
+}
+
+/// Every case of the corpus (tests/diff/duckdb), its plan run on a file closed and opened again.
+#[tokio::test(flavor = "current_thread")]
+async fn the_corpus_on_files_opened_again() {
+    if !available() {
+        return;
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/diff/duckdb");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir() && !p.join("mid.sql").exists()).collect();
+    dirs.sort();
+    let read = |p: PathBuf| std::fs::read_to_string(p).unwrap_or_default();
+    let mut cases = vec![];
+    for d in dirs {
+        let name = d.file_name().unwrap().to_string_lossy().into_owned();
+        let (v1, seed, v2) = (read(d.join("v1.sql")), read(d.join("seed.sql")), read(d.join("v2.sql")));
+        cases.push((name.clone(), v1.clone(), seed.clone(), v2.clone()));
+        cases.push((format!("{name} (back)"), v2, String::new(), v1));
+    }
+    reopen_sweep("corpus", cases).await;
 }

@@ -1773,6 +1773,21 @@ impl Alterer for DuckdbAlterer {
             }
         }
         if id == table {
+            // A table made, or given a key, that references one a rebuild makes again with the table
+            // it rebuilds (a child of it, at any depth), after that rebuild, which drops it: the
+            // child has no op of its own to wait for.
+            if let Some(b) = ts.objects.get(id) {
+                let had = |r: &str| fs.objects.get(id).is_some_and(|a| fields(a, "references").contains(&r));
+                for r in fields(b, "references").into_iter().filter(|r| *r != id && !had(r)) {
+                    for p in fs.objects.values().filter(|p| p.kind == Some(Kind::Table) && p.id != id && p.id != r) {
+                        let Some(q) = ts.objects.get(&p.id).filter(|q| q.def != p.def) else { continue };
+                        let family = children_of(fs, ts, &p.id);
+                        if family.iter().any(|c| c.id == r) && !family.iter().any(|c| c.id == id) && self.mode(p, q) == Mode::Rebuild && !out.contains(&p.id) {
+                            out.push(p.id.clone());
+                        }
+                    }
+                }
+            }
             if let (Some(a), Some(b)) = (fs.objects.get(id), ts.objects.get(id)) {
                 if a.def != b.def {
                     // After the tables whose keys on it the plan drops, or moves to another table: their
@@ -1837,6 +1852,26 @@ impl Alterer for DuckdbAlterer {
         // After the groups that make again the tables DuckDB records as using it, which let it go.
         out.extend(self.groups(fs, ts).iter().filter(|g| g.touched.iter().any(|t| fs.objects.get(t).is_some_and(|o| fields(o, "recorded").contains(&id)))).map(|g| g.ids[0].clone()));
         out
+    }
+
+    /// After a column's comment set or dropped on a table that calls a macro and that another table
+    /// references, an alter of the table that changes nothing: DuckDB (v2.0.0) writes such a comment
+    /// into a checkpointed file so that the next open fails ("Couldn't locate entry" of the macro),
+    /// and an alter of the table writes its entry again whole.
+    fn finish(&self, statements: &mut Vec<String>) {
+        let schemas = self.schemas();
+        let Some((fs, ts)) = schemas.as_ref() else { return };
+        let mut out = Vec::with_capacity(statements.len());
+        for statement in statements.drain(..) {
+            // Not where the plan made the table before: DuckDB writes a table it makes whole.
+            let after = comment_rewrite(fs, ts, &statement).filter(|(name, _)| !out.iter().any(|s: &String| s.strip_prefix("create table ").and_then(|rest| rest.strip_prefix(name.as_str())).is_some_and(|rest| rest.starts_with(' ') || rest.starts_with('('))));
+            out.push(statement);
+            if let Some((_, alter)) = after {
+                out.push("-- DuckDB writes a column's comment on a table that calls a macro and that another table references so that the file no longer opens; this alter changes nothing, and writes the table again whole".to_string());
+                out.push(alter);
+            }
+        }
+        *statements = out;
     }
 
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
@@ -2776,6 +2811,30 @@ fn written_type(c: &Object) -> String {
     let ends = [" collate ", " not null", " default ", " generated always as "];
     let end = ends.iter().filter_map(|e| rest.find(e)).min().unwrap_or(rest.len());
     rest[..end].to_string()
+}
+
+/// The table's name and the alter that changes nothing written after `statement` where it sets or
+/// drops a column's comment on a table that calls a macro (in a check, a default or a generated
+/// column) and that another table references (see `DuckdbAlterer::finish`): a default dropped from a
+/// column that has none on either side, else set again on one whose default is the same on both;
+/// none where no column is either.
+fn comment_rewrite(fs: &Schema, ts: &Schema, statement: &str) -> Option<(String, String)> {
+    // The comment's column, named as the side whose text the statement is: a set comment is the
+    // target's, a dropped one the database's.
+    let (schema, column) = ts.objects.values().filter(|c| c.kind == Some(Kind::Comment) && c.create.first().is_some_and(|x| x == statement)).map(|c| (ts, c)).chain(fs.objects.values().filter(|c| c.kind == Some(Kind::Comment) && c.drop.first().is_some_and(|x| x == statement)).map(|c| (fs, c))).find_map(|(schema, c)| schema.objects.get(c.owner.as_deref()?).filter(|o| o.kind == Some(Kind::Column)).map(|o| (schema, o)))?;
+    let table = column.owner.as_deref()?;
+    let calls_a_macro = [fs, ts].iter().filter_map(|x| x.objects.get(table)).any(|t| fields(t, "recorded").into_iter().chain(t.deps.iter().map(String::as_str)).any(|d| d.starts_with("macro ") && !d.starts_with("macro table ")));
+    let referenced = [fs, ts].iter().any(|x| x.objects.values().any(|o| o.kind == Some(Kind::Table) && o.id != table && fields(o, "references").contains(&table)));
+    if !calls_a_macro || !referenced {
+        return None;
+    }
+    let name = field(schema.objects.get(table)?, "name")?;
+    let columns: Vec<(&Object, &Object)> = schema.objects.values().filter(|c| c.kind == Some(Kind::Column) && c.owner.as_deref() == Some(table)).filter_map(|c| Some((fs.objects.get(&c.id)?, ts.objects.get(&c.id)?))).filter(|(a, b)| column_change(&a.def).generated.is_none() && column_change(&b.def).generated.is_none()).collect();
+    if let Some((a, _)) = columns.iter().find(|(a, b)| column_change(&a.def).default.is_none() && column_change(&b.def).default.is_none()) {
+        return Some((name.to_string(), format!("alter table {name} alter column {} drop default", field(a, "name")?)));
+    }
+    let (_, b) = columns.iter().find(|(a, b)| column_change(&a.def).default.is_some() && column_change(&a.def).default == column_change(&b.def).default)?;
+    Some((name.to_string(), format!("alter table {name} alter column {} set default {}", field(b, "name")?, written_default(b))))
 }
 
 fn written_default(c: &Object) -> String {
