@@ -49,7 +49,7 @@ const author = await prisma.user.findUnique({
 
 As SQL, the posts are a subquery that builds them as JSON, in the same statement:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="author_with_posts.sql" dialect="postgres"
 select
@@ -67,7 +67,7 @@ from users u
 where u.id = :id
 ```
 
-</Inferred>
+</InferenceCard>
 
 - **A page's numbers in one row.** A dozen `count` and `aggregate` calls are a dozen round trips; as scalar subqueries, they are one statement ([Counts](#counts)).
 - **Writes that read back.** An insert, an update or an upsert returns the rows it wrote, and a `with` query runs several writes in one statement.
@@ -230,7 +230,7 @@ Each Prisma Client call, as SQL:
 
 To read a page's counts in one round trip, select each as a scalar subquery, with no `from` around them:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="dashboard_counts.sql" dialect="postgres"
 with input as (
@@ -244,13 +244,13 @@ select
   (select count(*)::int from posts where not published) as drafts
 ```
 
-</Inferred>
+</InferenceCard>
 
 ### Partial updates
 
 To update only the fields a request sends, read the row's new values from a JSON patch, in which a missing key keeps its value and `null` clears it:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="update_user.sql" dialect="postgres"
 update users u
@@ -269,7 +269,7 @@ where u.id = :id
 returning u.id, u.name, u.email
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Cardinality
 
@@ -290,7 +290,7 @@ Reylo infers each statement's cardinality, which decides what `.run()` returns:
 
 A write can read a `with` query of one row and keep its key's cardinality, which is how to use a parameter twice:
 
-<Inferred>
+<InferenceCard>
 
 ```sql file="rename_post.sql" dialect="postgres"
 with input as (
@@ -303,7 +303,7 @@ where p.id = input.id and p.title <> input.title
 returning p.id
 ```
 
-</Inferred>
+</InferenceCard>
 
 ## Before you finish
 

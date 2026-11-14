@@ -1,0 +1,167 @@
+---
+title: PlanetScale
+description: How to use Reylo with PlanetScale. The drivers that run your queries, the local MySQL server the type check reads, keeping its schema in step, Insights, and PlanetScale Postgres.
+---
+
+<p className="dk-subheader">Reylo on PlanetScale's MySQL and Postgres databases</p>
+
+Reylo works with PlanetScale.
+
+A PlanetScale MySQL database is MySQL, so everything on the [MySQL](/mysql) page holds for it. This page covers what's specific to PlanetScale.
+
+| | |
+| --- | --- |
+| Dialect | MySQL, served through Vitess; a [PlanetScale Postgres](#planetscale-postgres) database is Postgres |
+| What the type check reads | A MySQL 8.0.22 or later server with your schema, such as a local one |
+| Drivers | `@planetscale/database` 1.x, `mysql2` and Drizzle |
+| Schema | The migrations you deploy to PlanetScale, applied to that server too |
+| Monitoring | Insights shows the `.sql` file each query came from |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="mysql"
+create table users (
+  id int auto_increment primary key,
+  name varchar(100) not null,
+  email varchar(255)
+);
+```
+
+</Details>
+
+## Drivers
+
+Run your queries with PlanetScale's serverless driver, `@planetscale/database` 1.x, or with `mysql2`.
+
+### `@planetscale/database`
+
+Pass a connection from `connect()`, a `Client`, or the transaction that `.transaction()` hands its callback:
+
+```ts twoslash tab="main.ts"
+// @planetscale/database 1.x: a 2.0 client is a type error
+import { connect } from "@planetscale/database";
+import getUser from "./get_user.sql";
+
+const db = connect({ url: process.env.DATABASE_URL });
+const user = await getUser.run(db, { id: 1 });
+//    ^?
+
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
+```sql tab="get_user.sql" dialect="mysql"
+select id, name, email
+from users
+where id = :id
+```
+
+- Version 2.0 isn't supported, since it can't bind parameters.
+- The driver sends each query over HTTP, so it runs where there are no TCP sockets, as in [Cloudflare Workers](/cloudflare).
+- It rounds a `FLOAT` to its shorter text, `1.1`, where `mysql2` returns its exact value ([Decimals](/mysql#decimals)).
+
+### `mysql2`
+
+Pass a pool, or a connection taken from one, which can run a transaction:
+
+```ts twoslash tab="main.ts"
+import mysql from "mysql2/promise";
+import getUser from "./get_user.sql";
+
+const db = mysql.createPool(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+const conn = await db.getConnection();
+await conn.beginTransaction();
+await getUser.run(conn, { id: 1 });
+await conn.commit();
+conn.release();
+```
+
+```sql tab="get_user.sql" dialect="mysql"
+select id, name, email
+from users
+where id = :id
+```
+
+PlanetScale's connection string for Node ends with an `ssl` setting, which `mysql2` reads to check the server's certificate:
+
+```sh title=".env"
+DATABASE_URL=mysql://…/app?ssl={"rejectUnauthorized":true}
+```
+
+### Drizzle
+
+Pass a Drizzle database over a `Client` from `@planetscale/database`:
+
+```ts twoslash tab="main.ts"
+import { Client } from "@planetscale/database";
+import { drizzle } from "drizzle-orm/planetscale-serverless";
+import getUser from "./get_user.sql";
+
+const db = drizzle(new Client({ url: process.env.DATABASE_URL }));
+const user = await getUser.run(db, { id: 1 });
+```
+
+```sql tab="get_user.sql" dialect="mysql"
+select id, name, email
+from users
+where id = :id
+```
+
+## Local database
+
+The type check reads a MySQL server with your schema. PlanetScale serves MySQL through Vitess, which the type check isn't tested on, so run MySQL 8.0.22 or later locally:
+
+```sh title="Terminal"
+docker run -d -p 3306:3306 -e MYSQL_DATABASE=app \
+  -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.4
+```
+
+Point [`direct_url`](/configuration#direct_url) at it:
+
+```yaml title=".reylo.yaml"
+# local mysql, migrations applied
+direct_url: mysql://root@127.0.0.1:3306/app
+```
+
+- Set it in `.reylo.yaml`, so that `DATABASE_URL` stays your app's PlanetScale connection string. Without it, the type check reads `DATABASE_URL`.
+- Your queries still run on PlanetScale, through the client you pass to `.run()`.
+
+## Schema
+
+Apply each migration you deploy to PlanetScale to the local server too, with the same tool:
+
+```sh title="Terminal"
+for file in migrations/*.sql; do
+  mysql -h 127.0.0.1 -u root app < "$file"
+done
+```
+
+- With Prisma or Drizzle Kit, run its migrate command against the local server ([Schema](/deployment#schema)).
+- In CI, start MySQL as a service and apply the same migrations before the type check ([Deployment / CI](/deployment#mysql)).
+- A host that builds before it migrates, such as Vercel, needs a MySQL server of its own for the build ([Deployment / CI](/deployment#build-before-migrate)).
+
+## Insights
+
+Each query Reylo sends ends with a [sqlcommenter](/configuration#sqlcommenter) comment that names its file, which PlanetScale's Insights reads as the query's `file` tag:
+
+```sql title="What Reylo sends for queries/get_user.sql, by default"
+select id, name, email from users where id = ? /*file='queries%2Fget_user.sql'*/
+```
+
+## PlanetScale Postgres
+
+A PlanetScale Postgres database is Postgres. Point `direct_url` at its direct connection on port 5432, not at PgBouncer on port 6432, whose transaction mode can fail to describe a query:
+
+```sh title=".env"
+# pgbouncer, for your app
+DATABASE_URL=postgres://…:6432/…
+# the direct connection, for the type check
+DIRECT_DATABASE_URL=postgres://…:5432/…
+```
+
+```yaml title=".reylo.yaml"
+direct_url: ${DIRECT_DATABASE_URL}
+```
+
+Run your queries with any [Postgres driver](/postgres#drivers).

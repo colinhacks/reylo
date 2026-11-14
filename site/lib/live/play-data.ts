@@ -49,7 +49,7 @@ async function compute(): Promise<PlayData> {
       params: result.params === undefined ? undefined : tokens(h, result.params, 'ts'),
       returns: tokens(h, result.returns, 'ts'),
     });
-    const cards = collectFiles(pageFiles(site), site).filter((b) => b.inferred && b.dialect === 'postgres');
+    const cards = collectFiles(pageFiles(site), site).filter((b) => b.inferenceCard && b.dialect === 'postgres');
     const modules = readModules(site);
     for (const { title, slug, sql } of inferenceStatements(readFileSync(path.join(site, 'content', 'sections', '03-inference.mdx'), 'utf8'))) {
       const result = await analyzeStatement(engine, io, new AnswerCache(), sql);

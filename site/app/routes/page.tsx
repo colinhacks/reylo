@@ -15,20 +15,10 @@ import { ogAlt, ogSize } from '@/lib/og';
 import { source } from '@/lib/source';
 
 /**
- * The h2s whose h3s stay out of each page's table of contents, so that the whole table fits
- * on one screen (a window 900px tall, at Fumadocs' spacing); the headings stay on the page,
- * with their anchors. On each dialect page (content/docs/<dialect>.mdx, one skeleton
- * for all four): the h3s of Parameters and of Drivers, one per driver, which leaves Data types'
- * h3s, the reason a reader lands there, in the table.
+ * The h2s whose h3s stay out of a page's table of contents, by page; none today, since every page's
+ * table shows its h3s and scrolls where it is taller than the window.
  */
-const FOLD: Record<string, readonly string[]> = {
-  // Usage: `.run()`'s one example per database, a level under it.
-  usage: ['#run'],
-  postgres: ['#parameters', '#drivers'],
-  mysql: ['#parameters', '#drivers'],
-  sqlite: ['#parameters', '#drivers'],
-  duckdb: ['#parameters', '#drivers'],
-};
+const FOLD: Record<string, readonly string[]> = {};
 
 const DIALECT_PAGES = new Set(['postgres', 'mysql', 'sqlite', 'duckdb']);
 

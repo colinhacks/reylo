@@ -296,4 +296,4 @@ app/page.tsx(10,33): error TS2551: Property 'authr' does not exist on type '{ id
 
 - Next.js's own check runs without `--runExternalCode`, so `withReylo` turns it off and runs Reylo's instead. The build still prints "Skipping validation of types" for Next.js's check.
 - Setting `typescript.ignoreBuildErrors` in your config turns Reylo's check off too.
-- The build needs your dev database, as the type check does. In CI, start it and apply your migrations first ([CI](/ci)). A host that builds before it migrates, such as Vercel, can [build against a database of its own](/faq#faq-no-database).
+- The build needs your dev database, as the type check does. In CI, start it and apply your migrations first ([Deployment / CI](/deployment)). A host that builds before it migrates, such as Vercel, can [build against a database of its own](/deployment#build-before-migrate).

@@ -5,7 +5,7 @@ import { CompareTable } from './compare-table';
 import { Dialect, DialectSwitch, DialectTabs } from './dialect-tabs';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
-import { Inferred, InferredRow, InferredTypes } from './inferred';
+import { InferenceCard, InferenceCardRow, InferenceCardTypes } from './inference-card';
 import { PlaygroundLink } from './playground-link';
 import { Pairs, Rules } from './value-pairs';
 
@@ -30,20 +30,20 @@ export function getMDXComponents(components?: MDXComponents) {
     Dialect,
     // The switch at the right end of an example's strip (lib/remark-mapper.ts writes it).
     DialectSwitch,
-    // The Inference section's cards: a statement and the types Reylo infers for it, in labelled
-    // rows (components/inferred.tsx; lib/remark-mapper.ts fills them).
-    Inferred,
-    InferredRow,
-    InferredTypes,
+    // The inference cards: a statement and the types Reylo infers for it, in labelled
+    // rows (components/inference-card.tsx; lib/remark-mapper.ts fills them).
+    InferenceCard,
+    InferenceCardRow,
+    InferenceCardTypes,
     // The marks on /compare (components/compare-table.tsx).
     CompareTable,
     // A type descriptor format card, the same card's rows: Types, Schema, Query, Descriptor and Holds
     // (lib/remark-typedefs.ts fills them).
     TypeDefCard: ({ children }: { children: ReactNode }) => (
       <div className="typedef-card">
-        <Inferred layout="rows" bare>
+        <InferenceCard layout="rows" bare>
           {children}
-        </Inferred>
+        </InferenceCard>
       </div>
     ),
     // The card that links the playground, /play (components/playground-link.tsx).

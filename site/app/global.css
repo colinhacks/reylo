@@ -217,15 +217,16 @@
   }
 }
 
-/* ── The Inference section's cards (components/inferred.tsx) ──────────────────
+/* ── The inference cards (components/inference-card.tsx) ──────────────────
    A statement and the types Reylo infers for it, in one card of labelled rows:
    Schema (where the example needs one) as a band across the top, then the
    Query, and Params and Returns beside it (`side`) or under it (`rows`), all
    visible at once. The rows' code blocks lose their own frames, so the card is
    the one frame; only the query keeps its copy button. The dialect switch sits
    at the top right of the query's column, or of the schema band. */
-#nd-page .reylo-inferred {
+#nd-page .reylo-inference-card {
   --reylo-side: 16rem;
+  container-type: inline-size;
   position: relative;
   margin-block: 1rem;
   border: 1px solid var(--color-fd-border);
@@ -234,7 +235,7 @@
   overflow: hidden;
 }
 
-#nd-page .reylo-inferred-switch {
+#nd-page .reylo-inference-card-switch {
   position: absolute;
   top: 0.375rem;
   right: 0.5rem;
@@ -242,26 +243,26 @@
   display: flex;
 }
 
-#nd-page .reylo-inferred[data-layout='side']:not(:has([data-row='schema'])) .reylo-inferred-switch {
+#nd-page .reylo-inference-card[data-layout='side']:not(:has([data-row='schema'])) .reylo-inference-card-switch {
   right: calc(var(--reylo-side) + 0.5rem);
 }
 
-#nd-page .reylo-inferred .dk-variant-follow {
+#nd-page .reylo-inference-card .dk-variant-follow {
   margin: 0;
 }
 
 /* A panel is a grid where it shows: the chosen dialect's, or the first where the card has none of
    the page's choice (docs-kit hides the others). */
-#nd-page .reylo-inferred .dk-variant-panel {
+#nd-page .reylo-inference-card .dk-variant-panel {
   grid-template-columns: minmax(0, 1fr);
 }
 
-#nd-page .reylo-inferred .dk-variant-panel[data-state='active'],
-#nd-page .reylo-inferred .dk-variant-follow:not(:has(> [role='tabpanel'][data-state='active'])) > .dk-variant-panel:first-of-type {
+#nd-page .reylo-inference-card .dk-variant-panel[data-state='active'],
+#nd-page .reylo-inference-card .dk-variant-follow:not(:has(> [role='tabpanel'][data-state='active'])) > .dk-variant-panel:first-of-type {
   display: grid;
 }
 
-#nd-page .reylo-inferred-label {
+#nd-page .reylo-inference-card-label {
   padding: 0.75rem 1rem 0;
   font-family: var(--font-text);
   font-size: 0.6875rem;
@@ -272,7 +273,7 @@
   color: var(--color-fd-muted-foreground);
 }
 
-#nd-page .reylo-inferred-body figure.shiki {
+#nd-page .reylo-inference-card-body figure.shiki {
   margin: 0;
   border: 0;
   border-radius: 0;
@@ -281,83 +282,107 @@
 }
 
 /* Fumadocs pads a block's scrolling region; in a card the rows set the spacing. */
-#nd-page .reylo-inferred-body figure.shiki > [role='region'] {
+#nd-page .reylo-inference-card-body figure.shiki > [role='region'] {
   padding-block: 0;
 }
 
-#nd-page .reylo-inferred-body figure.shiki pre {
+#nd-page .reylo-inference-card-body figure.shiki pre {
   padding-block: 0.375rem 0.875rem;
 }
 
-#nd-page .reylo-inferred-types figure.shiki pre {
+#nd-page .reylo-inference-card-types figure.shiki pre {
   padding-bottom: 0.25rem;
 }
 
-#nd-page .reylo-inferred-types .reylo-inferred-row:last-child figure.shiki pre {
+#nd-page .reylo-inference-card-types .reylo-inference-card-row:last-child figure.shiki pre {
   padding-bottom: 0.875rem;
 }
 
-#nd-page .reylo-inferred-row:not([data-row='query']) .dk-code-copy {
+#nd-page .reylo-inference-card-row:not([data-row='query']) .dk-code-copy {
   display: none;
 }
 
-#nd-page .reylo-inferred [data-row='query'] figure.shiki > div:has(> .dk-code-copy) {
+#nd-page .reylo-inference-card [data-row='query'] figure.shiki > div:has(> .dk-code-copy) {
   top: auto;
   bottom: 0.5rem;
 }
 
-#nd-page .reylo-inferred [data-row='schema'] {
+#nd-page .reylo-inference-card [data-row='schema'] {
   border-bottom: 1px solid var(--color-fd-border);
   background: var(--color-fd-muted);
 }
 
-#nd-page .reylo-inferred-types {
+#nd-page .reylo-inference-card-types {
   background: var(--color-fd-muted);
 }
 
-#nd-page .reylo-inferred[data-layout='rows'] .reylo-inferred-types {
+#nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types {
   border-top: 1px solid var(--color-fd-border);
 }
 
-#nd-page .reylo-inferred[data-layout='rows'] .reylo-inferred-types .reylo-inferred-row {
-  display: grid;
-  grid-template-columns: 5.5rem minmax(0, 1fr);
-  align-items: baseline;
-}
+/* Every row's label sits in one place: above its code where the card is narrow, and in one column
+   to the left of it where the card is wide. */
+@container (min-width: 34rem) {
+  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-row {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    align-items: baseline;
+    padding-inline-start: 1rem;
+  }
 
-#nd-page .reylo-inferred[data-layout='rows'] .reylo-inferred-types .reylo-inferred-label {
-  padding-top: 0;
-}
+  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-label {
+    padding: 0;
+  }
 
-#nd-page .reylo-inferred[data-layout='rows'] .reylo-inferred-types {
-  padding-block: 0.625rem;
-}
+  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-row figure.shiki pre {
+    padding-inline-start: 0;
+  }
 
-#nd-page .reylo-inferred[data-layout='rows'] .reylo-inferred-types figure.shiki pre {
-  padding-block: 0.125rem;
-  padding-inline-start: 0;
+  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='schema'],
+  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='query'] {
+    padding-block: 0.625rem;
+  }
+
+  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='schema'] figure.shiki pre,
+  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='query'] figure.shiki pre {
+    padding-block: 0.125rem;
+  }
+
+  /* The dialect switch takes a strip of its own over the first row, which the code would run under. */
+  #nd-page .reylo-inference-card[data-layout='rows']:has(> .reylo-inference-card-switch) .dk-variant-panel > :first-child {
+    padding-top: 2.25rem;
+  }
+
+  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types {
+    padding-block: 0.625rem;
+  }
+
+  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types figure.shiki pre,
+  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types .reylo-inference-card-row:last-child figure.shiki pre {
+    padding-block: 0.125rem;
+  }
 }
 
 @media (min-width: 640px) {
-  #nd-page .reylo-inferred[data-layout='side'] .dk-variant-panel {
+  #nd-page .reylo-inference-card[data-layout='side'] .dk-variant-panel {
     grid-template-columns: minmax(0, 1fr) var(--reylo-side);
   }
 
-  #nd-page .reylo-inferred[data-layout='side'] [data-row='schema'] {
+  #nd-page .reylo-inference-card[data-layout='side'] [data-row='schema'] {
     grid-column: 1 / -1;
   }
 
-  #nd-page .reylo-inferred[data-layout='side'] .reylo-inferred-types {
+  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-types {
     border-left: 1px solid var(--color-fd-border);
   }
 }
 
 @media (max-width: 639px) {
-  #nd-page .reylo-inferred[data-layout='side'] .reylo-inferred-types {
+  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-types {
     border-top: 1px solid var(--color-fd-border);
   }
 
-  #nd-page .reylo-inferred[data-layout='side'] .reylo-inferred-switch {
+  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-switch {
     right: 0.5rem;
   }
 }
@@ -807,7 +832,7 @@ a.reylo-compare-name:hover {
   color: var(--color-fd-foreground);
 }
 
-/* A query a tool got wrong: the docs' Inference card (.reylo-inferred), which is scoped to #nd-page, where a popup, rendered at the end of the body, is not. The popup is the card's one frame. */
+/* A query a tool got wrong: the docs' inference card (.reylo-inference-card), which is scoped to #nd-page, where a popup, rendered at the end of the body, is not. The popup is the card's one frame. */
 .fd-twoslash-popover.reylo-compare-pop-card {
   width: 480px;
   max-width: min(480px, calc(100vw - 16px));

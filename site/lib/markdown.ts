@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pageMarkdown } from 'docs-kit/remark-sections';
 import { expandCompare } from '@/lib/compare';
 import { siteUrl } from '@/lib/layout.shared';
-import { expandInferred } from '@/lib/inferred-markdown';
+import { expandInferenceCards } from '@/lib/inference-card-markdown';
 import { PAGE_SECTIONS } from '@/lib/page-sections';
 import { expandErrors } from '@/lib/sql-errors';
 
@@ -18,8 +18,8 @@ import { expandErrors } from '@/lib/sql-errors';
 export async function markdownOf(slug: string): Promise<string> {
   const own = `${slug || 'index'}.mdx`;
   const files = [path.resolve('content/docs', own), ...(PAGE_SECTIONS[own] ?? []).map((name) => path.resolve('content/sections', name))];
-  // Each `<Inferred>` card with the types the page shows for it (lib/inferred-markdown.ts), and each
+  // Each inference card with the types the page shows for it (lib/inference-card-markdown.ts), and each
   // error example with its errors (lib/sql-errors.ts), and the comparison's marks as a table (lib/compare.ts).
-  const sources = (await Promise.all(files.map((file) => readFile(file, 'utf8')))).map((text) => expandCompare(expandErrors(expandInferred(text))));
+  const sources = (await Promise.all(files.map((file) => readFile(file, 'utf8')))).map((text) => expandCompare(expandErrors(expandInferenceCards(text))));
   return pageMarkdown(sources, { site: siteUrl, page: slug ? `/${slug}` : '/' });
 }

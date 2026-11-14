@@ -1,0 +1,143 @@
+---
+title: Turso
+description: How to use Reylo with Turso. Queries on Turso Cloud through the libSQL client, the local file the type check reads, libSQL's older SQLite, and Turso's own engine.
+---
+
+<p className="dk-subheader">Reylo on Turso Cloud and Turso's own engine</p>
+
+Reylo runs queries on Turso.
+
+Turso Cloud runs libSQL, a fork of SQLite, so everything on the [SQLite](/sqlite) page holds for it. This page covers what's specific to Turso.
+
+| | |
+| --- | --- |
+| Dialect | SQLite |
+| The type check reads | A local SQLite file with your schema, never a `libsql://` URL |
+| Turso Cloud | `@libsql/client`, with `.run()` |
+| Turso's own engine | `@tursodatabase/database`, with `.run()`, and `.runSync()` on its compat `Database` |
+| SQLite versions | Reylo's 3.53, and the SQLite of each driver your `package.json` lists: 3.45.1 for `@libsql/client` |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="sqlite"
+create table users (
+  id integer primary key,
+  name text not null,
+  email text,
+  settings text not null default '{}'
+) strict;
+```
+
+</Details>
+
+## Turso Cloud
+
+Pass an `@libsql/client` client, made with your database's URL and an auth token, or a transaction taken from it:
+
+```ts twoslash tab="main.ts"
+import { createClient } from "@libsql/client";
+import addUser from "./add_user.sql";
+import findUser from "./find_user.sql";
+
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL!, // libsql://…
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+
+const user = await findUser.run(db, { id: 1 });
+
+// both inserts land, or neither
+const tx = await db.transaction("write");
+await addUser.run(tx, { name: "Ada" });
+await addUser.run(tx, { name: "Grace" });
+await tx.commit();
+```
+
+```sql tab="find_user.sql" dialect="sqlite"
+select id, name, email from users where id = :id
+```
+
+```sql tab="add_user.sql" dialect="sqlite"
+insert into users (name) values (:name)
+```
+
+- The client answers through a promise, so use `.run()`, not `.runSync()`.
+- With the default `intMode`, libSQL throws a `RangeError` on an integer past 2^53. Set `intMode: "bigint"` to get it exact.
+- A Drizzle database over `@libsql/client` works too ([Drizzle](/sqlite#drizzle)).
+
+## Local database
+
+The type check reads a local SQLite file, never a `libsql://` URL. Make one from a dump of your Turso database:
+
+```sh
+turso db shell app .dump > dump.sql
+sqlite3 dev.db < dump.sql
+```
+
+Or run your migrations into a new file:
+
+```sh
+for file in migrations/*.sql; do sqlite3 dev.db < "$file"; done
+```
+
+Point [`direct_url`](/configuration#direct_url) at it:
+
+```yaml title=".reylo.yaml"
+# the path starts at package.json
+direct_url: file:./dev.db
+```
+
+- A `DATABASE_URL` that holds your `libsql://` URL fails the type check, which reads only `file:` and `sqlite:` URLs for SQLite. A `direct_url` wins over it.
+- In development, your app can open the same file: `createClient({ url: "file:dev.db" })` needs no auth token.
+- In CI, run your migrations into the file before the type check ([Deployment](/deployment#sqlite)). The job needs no Turso token.
+- Before a query runs, `.run()` reads the schema again through your client and warns if a column the query names has changed on Turso Cloud since the build ([Schema changes](/schema-changes)).
+
+## SQLite version
+
+The SQLite in `@libsql/client` is 3.45.1, older than Reylo's 3.53. With `@libsql/client` in your `package.json`, the type check also runs each query on it:
+
+```json title="package.json"
+{
+  "dependencies": {
+    "@libsql/client": "^0.18.0"
+  }
+}
+```
+
+A query it refuses is a type error, with its own message:
+
+```text
+queries/user_settings.sql(1,12): error reylo6: @libsql/client runs SQLite 3.45.1, which refuses this statement: no such function: json_pretty
+```
+
+It refuses `json_pretty`, which came in SQLite 3.46, and `iif` with two arguments, which came in 3.48. [Functions](/sqlite#functions) has the rest.
+
+## Turso's own engine [#turso-engine]
+
+Turso's own engine, `@tursodatabase/database`, runs in your process on a database file. Pass the database `connect()` resolves to, or the transaction `.transactionAsync()` hands its callback:
+
+```ts twoslash tab="main.ts"
+import { connect } from "@tursodatabase/database";
+import { Database } from "@tursodatabase/database/compat";
+import addUser from "./add_user.sql";
+import findUser from "./find_user.sql";
+
+const db = await connect("dev.db");
+const user = await findUser.run(db, { id: 1 });
+
+// both inserts land, or neither
+await db.transactionAsync(async (tx) => {
+  await addUser.run(tx, { name: "Ada" });
+  await addUser.run(tx, { name: "Grace" });
+})();
+
+// synchronous
+const compat = new Database("dev.db");
+const sameUser = findUser.runSync(compat, { id: 1 });
+```
+
+- The `Database` of `@tursodatabase/database/compat` is synchronous, so `.runSync()` works on it, inside its `db.transaction(fn)` as well.
+- The type check reads the same file, through `direct_url` as above.
+- With `@tursodatabase/database` in your `package.json`, the type check also runs each query on Turso's engine, unless your schema has an FTS5 table, which the engine can't open.
+- From 0.8 on, its errors carry no code. With [`.try()`](/usage#try), `code` is `undefined` and only `message` names the failure.
+- An integer past 2^53 comes back exact.

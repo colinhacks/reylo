@@ -46,14 +46,13 @@ export const pageGroups = [
   {
     label: 'Guides',
     items: [
-      { title: 'Postgres', href: '/postgres' },
-      { title: 'MySQL', href: '/mysql' },
-      { title: 'SQLite', href: '/sqlite' },
-      { title: 'DuckDB', href: '/duckdb' },
       { title: 'Cloudflare Workers', href: '/cloudflare' },
       { title: 'Next.js', href: '/nextjs' },
-      { title: 'Hosted databases', href: '/hosted' },
-      { title: 'CI', href: '/ci' },
+      { title: 'Neon', href: '/neon' },
+      { title: 'Supabase', href: '/supabase' },
+      { title: 'PlanetScale', href: '/planetscale' },
+      { title: 'Turso', href: '/turso' },
+      { title: 'Deployment / CI', href: '/deployment' },
       { title: 'Migrating from Prisma', href: '/prisma' },
     ],
   },
@@ -62,6 +61,10 @@ export const pageGroups = [
     items: [
       { title: '.reylo.yaml', href: '/configuration' },
       { title: 'Type Defs', href: '/typedefs' },
+      { title: 'Postgres', href: '/postgres' },
+      { title: 'MySQL', href: '/mysql' },
+      { title: 'SQLite', href: '/sqlite' },
+      { title: 'DuckDB', href: '/duckdb' },
     ],
   },
 ];
