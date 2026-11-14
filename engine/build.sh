@@ -138,7 +138,7 @@ export BINDGEN_EXTRA_CLANG_ARGS_wasm32_wasip2="--sysroot=$SYSROOT --target=wasm3
 export LIBCLANG_PATH="$WASI_SDK_PATH/lib" CLANG_PATH="$WASI_SDK_PATH/bin/clang"
 # tokio's wasip2 sockets are behind `tokio_unstable` (tokio 1.51). The shadow stack, where C and the
 # Rust frames that spill keep their locals, is 8 MiB: the analysis of a statement as deep as
-# libpg_query hands over (core/src/stack.rs) needs about 0.5 MiB of it.
+# the engine reads (core/src/stack.rs) needs about 0.5 MiB of it.
 export CARGO_TARGET_WASM32_WASIP2_RUSTFLAGS="--cfg tokio_unstable -C link-arg=-L$SYSROOT/lib/wasm32-wasip2 -C link-arg=-lwasi-emulated-signal -C link-arg=-lwasi-emulated-process-clocks -C link-arg=-lwasi-emulated-mman -C link-arg=-lwasi-emulated-getpid -C link-arg=-lsetjmp -C link-arg=-zstack-size=8388608 --remap-path-prefix=$REPO_ROOT=/reylo --remap-path-prefix=$CARGO_HOME_DIR=/cargo"
 # The component crate is a workspace of its own, so that its tokio-postgres patch reaches no native
 # build. It is built without LTO: the depth a statement may nest was measured on that code, and

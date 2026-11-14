@@ -1,11 +1,11 @@
 //! libpg_query on the engine's stack ([`reylo_engine_core::stack`]), and how deeply a statement it
-//! hands over may nest.
+//! parses may nest for the engine to read it.
 
 pub use crate::raw::Parsed;
 pub use reylo_engine_core::stack::{host, nested, run, MAX_DEPTH, STACK_BYTES};
 
-/// Whether a parse error is libpg_query's refusal of a tree deeper than [`MAX_DEPTH`], or of one
-/// its stack check stopped (which the engine's stack leaves to a host that could not start a
+/// Whether a parse error is the refusal of a tree deeper than [`MAX_DEPTH`] (`crate::raw`), or
+/// of one libpg_query's stack check stopped (which the engine's stack leaves to a host that could not start a
 /// thread for it).
 pub fn too_deep(error: &str) -> bool {
     error.contains("nested too deeply") || error.contains("stack depth limit exceeded")
@@ -88,8 +88,7 @@ mod tests {
                 assert_eq!(analyze(&nested(shape, n + 1)).err(), Some(AnalyzeError::TooDeep), "{shape} at {}", n + 1);
             }
         });
-        // Far past it libpg_query's stack check stops the parse before the bound does, as the same
-        // refusal; and what does not nest is no deeper for being long.
+        // Far past it the refusal is the same; and what does not nest is no deeper for being long.
         assert_eq!(analyze(&nested("sum", 100_000)).err(), Some(AnalyzeError::TooDeep));
         assert!(analyze(&nested("or", 10_000)).is_ok());
         assert!(analyze(&nested("parens", 5_000)).is_ok());
