@@ -1523,7 +1523,8 @@ impl Analyzer<'_> {
         let arg = |x: &Option<Box<Node>>| x.as_deref().map(|x| self.type_of(x, scope)).unwrap_or_else(Fact::unknown);
         match n.op.as_str() {
             "column" => self.column_ref(n, scope),
-            "integer" | "truefalse" => Fact::new("integer", true),
+            "integer" => Fact::new(if integer_literal_fits(n) { "integer" } else { "real" }, true),
+            "truefalse" => Fact::new("integer", true),
             "float" => Fact::new("real", true),
             "string" => Fact::new("text", true),
             "blob" => Fact::new("blob", true),
@@ -1561,6 +1562,9 @@ impl Analyzer<'_> {
                 let l = arg(&n.left);
                 Fact::new("integer", l.non_null)
             }
+            // SQLite reads the literal 2^63 under a minus as its smallest INTEGER, -2^63, though
+            // alone it is a REAL.
+            "neg" if n.left.as_deref().is_some_and(is_two_to_the_63) => Fact::new("integer", true),
             "neg" => {
                 let l = arg(&n.left);
                 Fact { ty: if is_numeric(&l.ty) { computed(l.ty) } else { Ty::Scalar { name: "real".into() } }, non_null: l.non_null }
@@ -3188,6 +3192,18 @@ const KNOWN_FUNCTIONS: &[&str] = &[
 /// An integer literal's value.
 fn integer(n: &Node) -> Option<i64> {
     if n.op == "integer" { n.value.as_deref().and_then(|v| v.parse().ok()) } else { None }
+}
+
+/// Whether SQLite reads an integer literal as an INTEGER: a decimal one that fits in 64 bits, or
+/// any hexadecimal one, since one past 64 bits is an error. A decimal one past 2^63 - 1 is a REAL.
+/// Its digit separators are gone from its text, and leading zeros do not count.
+fn integer_literal_fits(n: &Node) -> bool {
+    n.value.as_deref().is_none_or(|v| v.starts_with("0x") || v.starts_with("0X") || v.parse::<i64>().is_ok())
+}
+
+/// Whether a node is the decimal integer literal 2^63.
+fn is_two_to_the_63(n: &Node) -> bool {
+    n.op == "integer" && n.value.as_deref().and_then(|v| v.parse::<u64>().ok()) == Some(1 << 63)
 }
 
 /// The terms of a condition's top-level `AND`.
