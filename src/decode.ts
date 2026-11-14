@@ -682,7 +682,7 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
 /** A Postgres column's text as its kind, with the non-finite numbers inside its JSON as numbers and an array held to its dimensions, as `.run()` gives them (src/execute.ts). */
 function postgresDecoder(name: string, kind: Kind, delim: string | undefined, nonFinite: JsonNumbers | undefined, nestedArrays: boolean | undefined): (v: string) => unknown {
   const decode = textDecoder(kind, delim);
-  const numbers = nonFinite === undefined ? decode : (v: string) => numbersInJson(decode(v), nonFinite);
+  const numbers = nonFinite === undefined ? decode : (v: string) => numbersInJson(decode(v), nonFinite, name);
   return kind.endsWith("[]") && !nestedArrays ? (v) => withinDimensions(numbers(v), kind, name) : numbers;
 }
 

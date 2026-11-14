@@ -32,8 +32,8 @@
   },
   "devDependencies": {
     "@bytecodealliance/preview2-shim": "0.30.0",
-    "@duckdb/node-api": "2.0.0-r.1",
     "@cloudflare/workers-types": "5.20260929.1",
+    "@duckdb/node-api": "2.0.0-r.1",
     "@electric-sql/pglite": "0.5.11",
     "@libsql/client": "0.18.0",
     "@mdx-js/mdx": "3.1.1",
@@ -53,6 +53,7 @@
     "@types/react-dom": "^19.2.0",
     "@vercel/og": "0.11.1",
     "@vercel/postgres": "0.10.0",
+    "ajv": "8.20.0",
     "better-sqlite3": "12.11.1",
     "drizzle-orm": "0.45.4",
     "knex": "3.3.0",

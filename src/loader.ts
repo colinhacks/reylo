@@ -93,9 +93,10 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     return c.delimiter === undefined ? [c.name, kind] : [c.name, kind, c.delimiter];
   });
   // Where each Postgres JSON column holds a float or a decimal that may be NaN or an infinity,
-  // which the run time gives as that number (src/render.ts, `jsonNumbers`), by position beside
-  // `columns`: two columns may share a name, each with its own type.
-  const nonFinite = session.project.dialect === "postgres" ? analysis.columns.map((c) => jsonNumbers(c.type) ?? null) : [];
+  // which the run time gives as that number, or a Postgres array it holds to one level (src/render.ts,
+  // `jsonNumbers`), by position beside `columns`: two columns may share a name, each with its own
+  // type. Under `allow_nested_arrays: true` a Postgres array nests there too, held to no depth.
+  const nonFinite = session.project.dialect === "postgres" ? (session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis).columns.map((c) => jsonNumbers(c.type) ?? null) : [];
   // The columns that hold a family a codec gives another type, by name, as a row is keyed, each with
   // where in its value the codecs stand.
   const codecs = Object.fromEntries(analysis.columns.flatMap((c) => {

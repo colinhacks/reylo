@@ -1620,6 +1620,26 @@ html #nd-page .prose table {
   color: var(--color-fd-headings);
 }
 
+/* A page named for a file (`code` in its entry) is a chip, as a code token in the table of contents
+   is: the entry's colour on a faint wash, a stronger one where it is hovered or the page is read. */
+.dk-pages-item code {
+  border-radius: 0.3125rem;
+  padding: 0.0625rem 0.3125rem;
+  font-size: 0.9em;
+  line-height: 1;
+  color: inherit;
+  background-color: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc), transparent);
+  transition: background-color 120ms;
+}
+
+.dk-pages-item:hover code {
+  background-color: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc-hover), transparent);
+}
+
+.dk-pages-item[aria-current='page'] code {
+  background-color: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc-active), transparent);
+}
+
 .dk-pages-item[aria-current='page']::before {
   content: '';
   position: absolute;

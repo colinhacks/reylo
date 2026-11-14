@@ -1,4 +1,4 @@
-aggregate_family.sql: many () -> { mean: numeric, first_title: text, all_positive: bool, bits: int4, titles: text, title_list: text[], note_list: text?[], notes: jsonb text?[], by_title: json }
+aggregate_family.sql: many () -> { mean: numeric, first_title: text(¬NUL), all_positive: bool, bits: int4, titles: text(¬NUL), title_list: text(¬NUL)[], note_list: text(¬NUL)?[], notes: jsonb text(¬NUL)?[], by_title: json }
 around_current.sql: many () -> { rows_around: int8, groups_back: int8, rest: int8, running: int8 }
 chained_windows.sql: many () -> { total: int8 }
 copied_window.sql: many () -> { around: int8, before: int8? }
@@ -7,14 +7,14 @@ exclusions.sql: many () -> { without_row: int8?, without_group: int8?, without_t
 filtered.sql: many () -> { total: int8? }
 following_frame.sql: many () -> { ahead: int8? }
 monthly_running.sql: many () -> { month: timestamptz?, running: numeric }
-named_window.sql: many () -> { total: int8, last_title: text }
+named_window.sql: many () -> { total: int8, last_title: text(¬NUL) }
 named_window_framed.sql: many () -> { ahead: int8? }
-nullable_argument.sql: many () -> { total: float8?, last_note: text? }
-partition_max.sql: many () -> { last_title: text }
+nullable_argument.sql: many () -> { total: float8?, last_note: text(¬NUL)? }
+partition_max.sql: many () -> { last_title: text(¬NUL) }
 partition_sum.sql: many () -> { total: int8 }
 plain_sum.sql: one () -> { total: int8? }
 preceding_end.sql: many () -> { before: int8? }
 range_offsets.sql: many () -> { by_score: int8, by_weight: int8, by_day: int8 }
 running_sum.sql: many () -> { running: int8 }
-subquery_window.sql: many () -> { name: text, own: int8? }
+subquery_window.sql: many () -> { name: text(¬NUL), own: int8? }
 whole_sum.sql: many () -> { total: int8 }

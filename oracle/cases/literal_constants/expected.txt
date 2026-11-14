@@ -1,0 +1,6 @@
+char_union.sql: many () -> { v: char(¬NUL)? }
+float_int.sql: one () -> { v: int8 }
+float_numeric.sql: one () -> { v: numeric }
+long_double.sql: one () -> { v: float8 }
+name_union.sql: many () -> { v: name(¬NUL)? }
+union_case.sql: many () -> { kind: text(¬NUL, 'user' | 'org'), id: int4, sign: text(¬NUL, 'pos' | 'neg' | 'zero')? }

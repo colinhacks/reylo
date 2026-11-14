@@ -1,7 +1,7 @@
 alias_column_list.sql: at_most_one (id: bigint) -> { pid: bigint, t: text(≤65535) }
 alias_column_list_swapped.sql: many (t: text) -> { title: bigint, id: text(≤65535) }
 bare_name.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
-comma_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+comma_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes, UTF-8), name: varchar(≤200) }
 compared_as_number.sql: many () -> { email: varchar(≤200) }
 cross_join.sql: many (id: bigint) -> { id: bigint }
 distinct.sql: at_most_one (a: bigint) -> { author_id: bigint }
@@ -16,10 +16,10 @@ group_key_hidden.sql: many (n: int32) -> { author_id: bigint, n: bigint }
 intersect_left_keys.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
 join_double_column.sql: many (id: bigint) -> { name: varchar(≤200) }
 join_many.sql: many (id: bigint) -> { id: bigint, tag: varchar(≤100) }
-join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes, UTF-8), name: varchar(≤200) }
 join_pinned.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535), name: varchar(≤200) }
-join_text_column.sql: many (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
-join_unpinned.sql: many (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+join_text_column.sql: many (id: bigint) -> { title: text(≤65535 bytes, UTF-8), name: varchar(≤200) }
+join_unpinned.sql: many (id: bigint) -> { title: text(≤65535 bytes, UTF-8), name: varchar(≤200) }
 joined_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535), name: varchar(≤200) }
 key_double_arithmetic.sql: many (x: double) -> { id: bigint }
 key_double_cast.sql: many (x: double) -> { id: bigint }
@@ -34,7 +34,7 @@ key_not_fixed_inside.sql: many (p: bigint, t: varchar) -> { tag: varchar(≤100)
 lateral_pinned.sql: at_most_one (u: bigint, p: int32) -> { name: varchar(≤200), title: text(≤65535) }
 lateral_source.sql: many (id: int32) -> { id: bigint }
 left_join_many.sql: many (id: bigint) -> { id: bigint }
-left_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200)? }
+left_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes, UTF-8), name: varchar(≤200)? }
 left_join_pinned.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535), name: varchar(≤200)? }
 limit_inside.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
 nested.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
@@ -42,12 +42,12 @@ not_a_key.sql: many (e: varchar) -> { id: bigint, email: varchar(≤200) }
 null_extended_side.sql: many (id: bigint) -> { id: bigint?, name: varchar(≤200) }
 recursive.sql: many (id: int32) -> { id: bigint }
 renamed.sql: at_most_one (id: bigint) -> { post_id: bigint, title: text(≤65535) }
-right_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200)? }
+right_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes, UTF-8), name: varchar(≤200)? }
 rollup.sql: many (a: bigint) -> { author_id: bigint?, n: bigint }
 second_key.sql: at_most_one (e: varchar) -> { id: bigint, email: varchar(≤200) }
 self_join_nonkey.sql: many (id: bigint) -> { id: bigint }
 star.sql: at_most_one (id: bigint) -> { id: bigint, author_id: bigint, title: text(≤65535) }
-straight_join.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+straight_join.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes, UTF-8), name: varchar(≤200) }
 subquery.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
 two_subqueries.sql: at_most_one (id: bigint) -> { title: text(≤65535), name: varchar(≤200) }
 two_withs.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }

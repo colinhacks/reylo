@@ -115,13 +115,13 @@ fn writes_dates(ty: &reylo_engine_core::types::Type) -> bool {
     use reylo_engine_core::types::Kind;
     match &ty.kind {
         Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) => true,
+        Kind::Enum(e) => writes_dates(&e.ty),
         Kind::Array(a) => writes_dates(&a.element.ty),
-        Kind::Set(s) => writes_dates(&s.element.ty),
         Kind::Range(r) | Kind::Multirange(r) => writes_dates(&r.subtype),
-        Kind::Record(r) => r.fields.iter().any(|f| writes_dates(&f.ty)),
-        Kind::Union(u) => u.members.iter().any(writes_dates),
-        Kind::Map(m) => writes_dates(&m.key) || writes_dates(&m.value.ty),
-        Kind::Rows(r) => r.columns.iter().any(|c| writes_dates(&c.ty)),
+        Kind::Struct(s) => s.fields.iter().any(|f| writes_dates(&f.ty)),
+        Kind::Union(u) | Kind::Intersection(u) => u.members.iter().any(writes_dates),
+        Kind::Map(m) => writes_dates(&m.key.ty) || writes_dates(&m.value.ty),
+        Kind::Table(t) => t.columns.iter().any(|c| writes_dates(&c.ty)),
         _ => false,
     }
 }
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn a_statement_whose_dates_the_session_writes_in_another_style_is_an_error() {
         use reylo_engine_core::api::Column;
-        use reylo_engine_core::types::{DateTimeType, DateType, Field, InstantType, Kind, Position, RangeType, Type};
+        use reylo_engine_core::types::{DateTimeType, DateType, Field, InstantType, Kind, RangeType, Slot, Type};
         let date = || Type::new(Kind::Date(DateType::default()));
         let analysis = |columns: Vec<Type>, style: &str| {
             let sql = "select placed_at, n from orders";
@@ -558,15 +558,15 @@ mod tests {
         let inside: Vec<Type> = vec![
             Type::new(Kind::DateTime(DateTimeType::default())),
             Type::new(Kind::Instant(InstantType::default())),
-            Type::array(Position::non_null(date())),
+            Type::array(Slot::non_null(date())),
             Type::new(Kind::Range(RangeType { subtype: Box::new(date()) })),
-            Type::record(vec![Field::new("d", date(), true)]),
+            Type::structure(vec![Field::new("d", date(), true)]),
         ];
         for ty in inside {
             assert_eq!(analysis(vec![ty.clone()], "German, DMY").len(), 1, "{ty:?}");
         }
         // JSON is ISO's text under every style, and a statement with no date has nothing to say.
-        assert!(analysis(vec![Type::json(), Type::json_of(Position::non_null(date())), Type::text(), Type::integer(64)], "Postgres, MDY").is_empty());
+        assert!(analysis(vec![Type::json(), Type::json_of(Slot::non_null(date())), Type::text(), Type::integer(64)], "Postgres, MDY").is_empty());
     }
 
     #[test]

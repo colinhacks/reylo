@@ -41,17 +41,17 @@ row_update.sql: at_most_one () -> { name: varchar }
 row_with_query.sql: many () -> { c: bigint }
 value_aggregate.sql: one () -> { count_star(): bigint } value
 value_call.sql: many () -> { lower("name"): varchar } value
-value_case.sql: many () -> { CASE  WHEN ((id > 1)) THEN ('a') ELSE 'b' END: varchar } value
+value_case.sql: many () -> { CASE  WHEN ((id > 1)) THEN ('a') ELSE 'b' END: varchar('a' | 'b') } value
 value_cast.sql: many () -> { CAST(id AS BIGINT): bigint } value
 value_delete.sql: at_most_one () -> { (id + 1): integer } value
 value_expression.sql: many () -> { (id + 1): integer } value
 value_first_arm.sql: many () -> { 1: integer } value
 value_from_first.sql: one () -> { count_star(): bigint } value
 value_insert.sql: one () -> { (id + 1): integer } value
-value_literal.sql: one () -> { 1: integer } value
+value_literal.sql: one () -> { 1: integer(1) } value
 value_merge.sql: many () -> { (x + 1): integer? } value
 value_nullable_at_most_one.sql: at_most_one () -> { lower(email): varchar? } value
 value_subquery.sql: one () -> { (SELECT count_star() FROM users): bigint? } value
 value_update.sql: at_most_one () -> { lower(name): varchar } value
-value_values.sql: many () -> { col0: integer } value
+value_values.sql: many () -> { col0: integer(1 | 2) } value
 value_with_query.sql: many () -> { (c + 1): bigint } value

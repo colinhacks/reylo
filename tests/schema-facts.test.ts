@@ -16,19 +16,19 @@ const int4 = (facts: object): EngineType => ({ kind: "integer", bits: 32, label:
 const varchar = (facts: object): EngineType => ({ kind: "text", label: "varchar", ...facts }) as EngineType;
 const output = (t: EngineType, inJson = false) => typeSchema(t, "postgres", false, inJson);
 
-test("a text's size in code points and a LIKE pattern are written, and nothing else of a string", () => {
+test("a text's size in code points and its pattern are written, and nothing else of a string", () => {
   assert.deepEqual(output(varchar({ size: { max: 20 } })), { type: "string", maxLength: 20 });
   assert.deepEqual(output(varchar({ size: { exact: 5 } })), { type: "string", minLength: 5, maxLength: 5 });
   assert.deepEqual(typeSchema(varchar({ size: { exact: 5 } }), "postgres", true), { type: "string", maxLength: 5 });
-  assert.deepEqual(output(varchar({ size: { unit: "byte", encoding: "UTF-8", max: 63 } })), { type: "string" });
-  assert.deepEqual(output(varchar({ pattern: { dialect: "postgres", source: "^a" } })), { type: "string" });
-  assert.deepEqual(output(varchar({ pattern: { dialect: "ilike", source: "a%" } })), { type: "string" });
+  assert.deepEqual(output(varchar({ encoding: "UTF-8", size: { unit: "byte", max: 63 } })), { type: "string" });
+  assert.deepEqual(output(varchar({ code_points: [[1, 1114111]], encoding: "UTF-8", ill_formed: true })), { type: "string" });
+  assert.deepEqual(output(varchar({ pattern: "[^@]+@[^@]+" })), { type: "string", pattern: "^(?:[^@]+@[^@]+)$" });
 });
 
 test("a UUID's version fixes its version digit and its variant, and one with none is any UUID", () => {
   const uuid = (facts: object): EngineType => ({ kind: "uuid", label: "uuid", ...facts }) as EngineType;
   assert.deepEqual(output(uuid({})), { type: "string", format: "uuid" });
-  const regex = new RegExp((output(uuid({ version: 7 })) as { pattern: string }).pattern);
+  const regex = new RegExp((output(uuid({ versions: [7] })) as { pattern: string }).pattern);
   assert.ok(regex.test("019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"));
   assert.ok(regex.test("019A6B2C-3D4E-7F80-BA1B-2C3D4E5F6071"));
   // Version 4, and a 7 where the version stands in a UUID of no RFC 9562 variant.
@@ -36,24 +36,31 @@ test("a UUID's version fixes its version digit and its variant, and one with non
   assert.ok(!regex.test("00000000-0000-7000-0000-000000000003"));
 });
 
-test("a LIKE pattern reads as the regular expression matching the same whole values", () => {
-  const regex = (source: string) => new RegExp((output(varchar({ pattern: { dialect: "like", source } })) as { pattern: string }).pattern, "u");
-  assert.equal(regex("a%").source, "^a[\\s\\S]*$");
-  assert.ok(regex("%@%").test("a\n@b"));
-  assert.ok(!regex("%@%").test("ab"));
-  assert.ok(regex("a_c").test("a🙂c"));
-  assert.ok(!regex("a_c").test("ac"));
-  assert.ok(regex("50\\%").test("50%"));
-  assert.ok(!regex("50\\%").test("500"));
-  assert.ok(regex("a.c").test("a.c"));
-  assert.ok(!regex("a.c").test("abc"));
-  assert.ok(regex("(x)[y]").test("(x)[y]"));
+test("a pattern, an I-Regexp, reads as the ECMAScript expression matching the same whole values", () => {
+  const regex = (source: string) => new RegExp((output(varchar({ pattern: source })) as { pattern: string }).pattern, "u");
+  // What a LIKE pattern's `%` and `_` become: any characters, a newline and a carriage return among them.
+  assert.ok(regex("(.|\\n|\\r)*@(.|\\n|\\r)*").test("a\n@b"));
+  assert.ok(!regex("(.|\\n|\\r)*@(.|\\n|\\r)*").test("ab"));
+  assert.ok(regex("a(.|\\n|\\r)c").test("a🙂c"));
+  // A whole value, where `.` is neither a newline nor a carriage return, and `^` and `$` are themselves.
+  assert.ok(!regex("ab").test("xaby"));
+  assert.ok(regex("a.c").test("abc"));
+  assert.ok(!regex("a.c").test("a\nc"));
+  assert.ok(!regex("a.c").test("a\rc"));
+  assert.ok(regex("a^b$").test("a^b$"));
+  assert.ok(regex("[^a]").test("b"));
+  assert.ok(regex("50%").test("50%"));
+  assert.ok(regex("\\(x\\)\\[y\\]").test("(x)[y]"));
 });
 
 test("a number's facts are written where its form here is a JSON number and they fit one exactly", () => {
   assert.deepEqual(output(int4({ min: "0", max: "150" })), { type: "integer", format: "int32", minimum: 0, maximum: 150 });
   assert.deepEqual(output(int4({ multiple_of: "5" })), { type: "integer", format: "int32", multipleOf: 5 });
-  assert.deepEqual(output(int4({ enum: ["1", "2"] })), { type: "integer", format: "int32", enum: [1, 2] });
+  // An enum's values as its base's form writes them: numbers JSON writes exactly, a truth value, text, and a decimal's text as no value at all.
+  assert.deepEqual(output({ kind: "enum", type: int4({}), values: ["1", "2"] }), { type: "integer", format: "int32", enum: [1, 2] });
+  assert.deepEqual(output({ kind: "enum", type: { kind: "boolean", label: "bool" }, values: ["true"] }), { type: "boolean", enum: [true] });
+  assert.deepEqual(output({ kind: "enum", type: varchar({}), values: ["a", "b"] }), { type: "string", enum: ["a", "b"] });
+  assert.deepEqual(output({ kind: "enum", type: { kind: "decimal", label: "numeric" }, values: ["1.50"] }), { type: "string", format: "decimal" });
   const int8 = { kind: "integer", bits: 64, label: "int8" };
   assert.deepEqual(output({ ...int8, min: "1", max: "9223372036854775806" } as EngineType), { type: "integer", format: "int64", minimum: 1 });
   const float8 = { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "float8" };

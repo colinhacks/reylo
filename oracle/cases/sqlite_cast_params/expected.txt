@@ -1,6 +1,6 @@
-coalesced.sql: many (n: int64?, doc: json?, guard: json?, id: int64) -> { n: INTEGER?, doc: TEXT(utf8)? }
-update_row_value.sql: at_most_one (name: text(utf8), email: text(utf8), id: int64) -> { name: TEXT(utf8), email: TEXT(utf8)? }
-update_set.sql: at_most_one (email: text(utf8), name: text(utf8), n: int64, doc: text(utf8), id: int64) -> { email: TEXT(utf8)?, n: INTEGER?, doc: TEXT(utf8)? }
-upsert.sql: one (name: text(utf8), email: text(utf8)) -> { id: INTEGER }
-upsert_set.sql: one (email: text(utf8), n: int64, name: text(utf8)) -> { email: TEXT(utf8)?, n: INTEGER? }
-values_rows.sql: many (name: text(utf8), email: text(utf8), score: float(11,52), n: int64, name2: text(utf8), email2: text(utf8), score2: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), n2: int64) -> { id: INTEGER, email: TEXT(utf8)?, n: INTEGER? }
+coalesced.sql: many (n: int64?, doc: json?, guard: json?, id: int64) -> { n: INTEGER?, doc: TEXT(UTF-8, ill-formed)? }
+update_row_value.sql: at_most_one (name: text(UTF-8, ill-formed), email: text(UTF-8, ill-formed), id: int64) -> { name: TEXT(UTF-8, ill-formed), email: TEXT(UTF-8, ill-formed)? }
+update_set.sql: at_most_one (email: text(UTF-8, ill-formed), name: text(UTF-8, ill-formed), n: int64, doc: text(UTF-8, ill-formed), id: int64) -> { email: TEXT(UTF-8, ill-formed)?, n: INTEGER?, doc: TEXT(UTF-8, ill-formed)? }
+upsert.sql: one (name: text(UTF-8, ill-formed), email: text(UTF-8, ill-formed)) -> { id: INTEGER }
+upsert_set.sql: one (email: text(UTF-8, ill-formed), n: int64, name: text(UTF-8, ill-formed)) -> { email: TEXT(UTF-8, ill-formed)?, n: INTEGER? }
+values_rows.sql: many (name: text(UTF-8, ill-formed), email: text(UTF-8, ill-formed), score: float(11,52), n: int64, name2: text(UTF-8, ill-formed), email2: text(UTF-8, ill-formed), score2: NUMERIC(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes), n2: int64) -> { id: INTEGER, email: TEXT(UTF-8, ill-formed)?, n: INTEGER? }

@@ -58,7 +58,7 @@ use crate::api::{Analysis, Describe, Diagnostic, Scope};
 use crate::dialect::Dialect;
 use crate::host::{as_bool, as_str, Host, Lazy};
 use crate::lex;
-use crate::types::{Field, Kind, Position, Type};
+use crate::types::{Field, Kind, Slot, Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -1777,6 +1777,8 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
                 },
                 nullable: !m.not_null,
                 optional: m.omittable(),
+                default: None,
+                comment: None,
             })
             .collect();
         // The column list against the table: only once the database took every type.
@@ -1785,8 +1787,8 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
         }
         if let Some(p) = analysis.params.iter_mut().find(|p| p.name == f.name) {
             p.members = f.members.iter().map(|m| crate::api::Member { written: m.ty.clone(), schema: m.schema.clone() }).collect();
-            let row = Type::record(fields);
-            p.ty = if f.one { row } else { Type::array(Position::non_null(row)) };
+            let row = Type::structure(fields);
+            p.ty = if f.one { row } else { Type::array(Slot::non_null(row)) };
             p.nullable = false;
         }
     }
@@ -2232,7 +2234,7 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
             // unquoted, a domain's by its base type, as the column's base is.
             let base = match (&field.ty.kind, &field.ty.label) {
                 (Kind::Json(_), _) => m.ty.clone(),
-                (Kind::Record(_) | Kind::Unknown, _) | (_, None) => return None,
+                (Kind::Struct(_) | Kind::Unknown, _) | (_, None) => return None,
                 (_, Some(name)) => split_name(domains.get(name).unwrap_or(name)).1,
             };
             (base != c.base || modifiers(&m.ty) != modifiers(&c.written)).then(|| advice.to_string())
@@ -2839,7 +2841,7 @@ mod tests {
             .iter()
             .map(|r| TableColumn { name: r[0].as_str().unwrap().into(), base: "text".into(), written: "text".into(), not_null: r[3] == true, has_default: false, generated: false, always: false, default: None, inherited: r[9] == true })
             .collect();
-        let fields: Vec<Field> = found[0].members.iter().map(|m| Field { name: m.name.clone(), ty: Type::text().named("text"), nullable: !m.not_null, optional: m.omittable() }).collect();
+        let fields: Vec<Field> = found[0].members.iter().map(|m| Field { optional: m.omittable(), ..Field::new(m.name.clone(), Type::text().named("text"), !m.not_null) }).collect();
         let d = check_table(&found[0], sql, &fields, &columns, &Default::default(), Dialect::Postgres);
         assert_eq!(d.len(), 1, "{d:?}");
         assert!(d[0].message.starts_with("v.note is a column of a view with no default of its own"), "{}", d[0].message);
@@ -2853,8 +2855,8 @@ mod tests {
         let columns = vec![column("d", "text", "text"), column("s", "Status", "\"Status\"")];
         let named = |name: &str| Type::text().named(name);
         let fields: Vec<Field> = vec![
-            Field { name: "d".into(), ty: named("public.dom_t"), nullable: false, optional: false },
-            Field { name: "s".into(), ty: named("public.\"Status\""), nullable: false, optional: false },
+            Field::new("d", named("public.dom_t"), false),
+            Field::new("s", named("public.\"Status\""), false),
         ];
         let domains = std::collections::BTreeMap::from([("public.dom_t".to_string(), "text".to_string())]);
         let d = check_table(&found[0], sql, &fields, &columns, &domains, Dialect::Postgres);

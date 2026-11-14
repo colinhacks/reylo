@@ -1,33 +1,33 @@
 alias.sql: one () -> { t: timestamptz }
 alias_column.sql: one () -> { at: timestamptz }
-beside_key.sql: at_most_one (id: int8) -> { email: text, t: timestamptz }
-column_list.sql: one () -> { a: int4?, b: text? }
+beside_key.sql: at_most_one (id: int8) -> { email: text(¬NUL), t: timestamptz }
+column_list.sql: one () -> { a: int4?, b: text(¬NUL)? }
 current_date.sql: one () -> { current_date: date }
 distinct.sql: many () -> { v: int8? } key (v)
 full_join.sql: many () -> { a: timestamptz?, b: timestamptz? }
-lateral.sql: at_most_one (id: int8) -> { id: int8, l: text? }
-lateral_many.sql: many () -> { id: int8, l: text? } key (id)
+lateral.sql: at_most_one (id: int8) -> { id: int8, l: text(¬NUL)? }
+lateral_many.sql: many () -> { id: int8, l: text(¬NUL)? } key (id)
 left_join_nulled.sql: at_most_one (id: int8) -> { id: int8, t: timestamptz? }
 limit_zero.sql: at_most_one () -> { now: timestamptz }
-lower_cast.sql: one (s: text) -> { lower: text }
-nested_join_nulled.sql: at_most_one (s: text, id: int8) -> { id: int8, a: timestamptz?, b: text? }
+lower_cast.sql: one (s: text(¬NUL)) -> { lower: text(¬NUL) }
+nested_join_nulled.sql: at_most_one (s: text(¬NUL), id: int8) -> { id: int8, a: timestamptz?, b: text(¬NUL)? }
 now.sql: one () -> { now: timestamptz }
 null_composite.sql: one () -> { a: int4? }
 null_or_raise.sql: one (p: int4) -> { null_or_raise: int4? }
-null_scalar.sql: one () -> { lower: text? }
-one_text.sql: one (p: text) -> { one_text: text }
-ordinality.sql: one (p: text) -> { v: text?, n: int8 }
-out_params.sql: one (p: int4) -> { a: int4, b: text }
+null_scalar.sql: one () -> { lower: text(¬NUL)? }
+one_text.sql: one (p: text(¬NUL)) -> { one_text: text(¬NUL) }
+ordinality.sql: one (p: text(¬NUL)) -> { v: text(¬NUL)?, n: int8 }
+out_params.sql: one (p: int4) -> { a: int4, b: text(¬NUL) }
 overloaded.sql: many (p: int4) -> { either: int4? }
-pins_nothing.sql: at_most_one (p: text) -> { id: int8 }
-preserved.sql: one (id: int8) -> { t: timestamptz, email: text? }
-returns_table.sql: at_most_one (p: int4) -> { a: int4, b: text }
-right_join_nulled.sql: many (s: text) -> { t: text?, id: int8 } key (id)
-rows_from.sql: one (p: text) -> { at: timestamptz?, t: text? }
+pins_nothing.sql: at_most_one (p: text(¬NUL)) -> { id: int8 }
+preserved.sql: one (id: int8) -> { t: timestamptz, email: text(¬NUL)? }
+returns_table.sql: at_most_one (p: int4) -> { a: int4, b: text(¬NUL) }
+right_join_nulled.sql: many (s: text(¬NUL)) -> { t: text(¬NUL)?, id: int8 } key (id)
+rows_from.sql: one (p: text(¬NUL)) -> { at: timestamptz?, t: text(¬NUL)? }
 rows_from_set.sql: many () -> { at: timestamptz?, n: int4? }
 set_ordinality.sql: many () -> { v: int4, n: int8 }
-setof.sql: many (p: text) -> { many_text: text }
-strict_null.sql: one () -> { a: int4?, b: text? }
-two.sql: one (p: text) -> { a: timestamptz, b: text }
-volatile_pins_nothing.sql: many () -> { name: text? }
+setof.sql: many (p: text(¬NUL)) -> { many_text: text(¬NUL) }
+strict_null.sql: one () -> { a: int4?, b: text(¬NUL)? }
+two.sql: one (p: text(¬NUL)) -> { a: timestamptz, b: text(¬NUL) }
+volatile_pins_nothing.sql: many () -> { name: text(¬NUL)? }
 where.sql: at_most_one (flag: bool) -> { t: timestamptz }

@@ -109,7 +109,8 @@ try {
   const command = join(project, "node_modules", ".bin", windows ? "reylo.cmd" : "reylo");
   const analyzed = run(command, ["analyze", "user.sql", "--format", "json"], { cwd: project, env }).trim();
   console.log(analyzed);
-  const descriptor = JSON.parse(analyzed) as { file?: string; result?: { columns: { name: string }[]; cardinality: string } };
+  // The result is a table, of at most one row where the key is pinned.
+  const descriptor = JSON.parse(analyzed) as { file?: string; result?: { cardinality?: string; columns: { name: string }[] } };
   if (descriptor.file !== "user.sql" || descriptor.result?.columns.map((c) => c.name).join() !== "id,name" || descriptor.result?.cardinality !== "at_most_one") throw new Error("reylo analyze did not type user.sql");
   // The playground's server, which the launcher runs in JavaScript.
   if (!run(command, ["play", "--help"], { cwd: project }).startsWith("Usage: reylo play")) throw new Error("reylo play --help printed no usage");

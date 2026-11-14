@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sqlModule } from "../src/loader.ts";
 import { defineQuery } from "../src/index.ts";
-import { declarations, DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase } from "./helpers.ts";
+import { declarations, DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase, ROOT } from "./helpers.ts";
 
 // A query's `sql` is the statement as Reylo sends it to the database, the engine's compiled text,
 // and `raw` the file as written. Both are the module's exports too,
@@ -302,4 +303,54 @@ test("the comment naming the file is sent and left out of sql, sqlcommenter: fal
     db.close();
     await closeSessions();
   }
+});
+
+// `tsc` as a project runs it, with runExternalCode, over a SQLite project whose files are `files`:
+// what it prints, a line per error, sorted. TypeScript's own launcher, run by this Node:
+// node_modules/.bin holds a shell script, which Windows cannot start.
+function tscProject(setup: string, files: Record<string, string>) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-tsc-")));
+  writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
+  writeFileSync(join(root, ".env"), "DATABASE_URL=file:./app.db\n");
+  mkdirSync(join(root, "node_modules"));
+  symlinkSync(ROOT, join(root, "node_modules", "reylo"));
+  const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true };
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo", extensions: [".sql"] }], include: Object.keys(files).filter((name) => name.endsWith(".ts")) }));
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(root, name), text);
+  const db = (sql: string) => {
+    const handle = new DatabaseSync(join(root, "app.db"));
+    handle.exec(sql);
+    handle.close();
+  };
+  db(setup);
+  const tsc = (...flags: string[]) => {
+    const r = spawnSync(process.execPath, [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.json", "--runExternalCode", "--pretty", "false", ...flags], { cwd: root, encoding: "utf8" });
+    return (r.stdout + r.stderr).trim().split("\n").filter(Boolean).sort();
+  };
+  return { db, tsc };
+}
+
+test("SQLite: an error in a .sql file leaves the project's type errors in tsc's output", () => {
+  const files = {
+    "get_user.sql": "select id, nope from users where id = :id\n",
+    "main.ts": `import getUser from "./get_user.sql";\nexport const query = getUser;\n`,
+    "other.ts": `export const n: number = "a";\n`,
+  };
+  const { tsc } = tscProject("create table users (id integer primary key, name text not null)", files);
+  // A transform's own diagnostics are syntax errors of the file, which `tsc` reports alone.
+  assert.deepEqual(tsc(), ["get_user.sql(1,12): error reylo6: no such column: nope", "other.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'."]);
+});
+
+test("SQLite: an incremental tsc checks a query and the files that import it again once the schema changes", () => {
+  const files = {
+    "get_user.sql": "select id, name from users where id = :id\n",
+    "missing.sql": "select id, nope from users\n",
+    "main.ts": `import getUser, { type Row } from "./get_user.sql";\nimport missing from "./missing.sql";\ndeclare const row: Row;\nexport const name: string = row.name;\nexport const queries = [getUser, missing];\n`,
+  };
+  const { db, tsc } = tscProject("create table users (id integer primary key, name text not null)", files);
+  const incremental = () => tsc("--incremental", "--tsBuildInfoFile", "app.tsbuildinfo");
+  assert.deepEqual(incremental(), ["missing.sql(1,12): error reylo6: no such column: nope"]);
+  // Neither file's text changes: the schema does, which TypeScript keeps no record of but the identity the mapper gives it.
+  db("alter table users drop column name; alter table users add column name integer not null default 0; alter table users add column nope text");
+  assert.deepEqual(incremental(), ["main.ts(4,14): error TS2322: Type 'number' is not assignable to type 'string'."]);
 });

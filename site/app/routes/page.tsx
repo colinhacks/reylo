@@ -114,6 +114,8 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
   const files = use(loadPage(path));
   const components = getMDXComponents(slug === '' ? { HeroActions: () => <HeroActions agentPrompt={agentPrompt} /> } : undefined);
   const main = slug === '';
+  // A page named for a file (`.reylo.yaml`) is titled in code, as the list writes it.
+  const code = pageGroups.some((g) => g.items.some((item) => 'code' in item && item.code && item.href === url));
 
   // docs-kit's page (docs-kit/src/components/shell.tsx): the pages on the left, under the brand (a
   // link to the main page), with the links away from the docs, the repository and the theme switch
@@ -129,7 +131,7 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       // The tree's names are the pages' titles, plain strings, so it reaches the browser as it is
       // (Fumadocs' serializer would wrap each name in a span of its own).
       tree={tree as Root}
-      title={main ? <HeroTitle>{title}</HeroTitle> : title}
+      title={main ? <HeroTitle>{title}</HeroTitle> : code ? <code>{title}</code> : title}
       // An h4 (Usage's database under `.run()`) stays on the page but out of the table.
       toc={files.flatMap((file) => file.toc).filter((item) => item.depth <= 3)}
       fold={FOLD[slug] ?? []}

@@ -1,6 +1,5 @@
 // The hash of this crate's sources, which its fingerprint combines with core's (`src/lib.rs`).
-// `vendor/` is the patch to libpg_query, which sets how deeply a statement may nest, and `csrc/`
-// the C that runs its deparser.
+// `vendor/` is the patch to libpg_query, and `csrc/` the C that runs its deparser.
 //
 // And the reader of libpg_query's parse tree (`src/raw.rs`): bindings to the C node structs, and
 // a converter from each to the `pg_query::protobuf` struct libpg_query would have encoded it as,
@@ -70,7 +69,7 @@ fn bindings(root: &Path, lib: &Path, defs: &Defs, path: &Path) {
         .derive_debug(false)
         .generate_comments(false)
         .allowlist_type("Node|NodeTag|List|ListCell|Bitmapset|bitmapword|PgQueryInternalParsetreeAndError|PgQueryError|PgQueryDeparseResult|MemoryContext")
-        .allowlist_var("PG_VERSION_NUM|PG_QUERY_PROTOBUF_MAX_DEPTH");
+        .allowlist_var("PG_VERSION_NUM");
     for c in defs.c_types() {
         builder = builder.allowlist_type(c);
     }
@@ -383,7 +382,7 @@ impl Defs {
             }
             writeln!(s, "        ..Default::default()\n    }};\n    d.leave();\n    Ok(message)\n}}\n").unwrap();
         }
-        writeln!(s, "/// One node, by its tag, as `_outNodeAt` writes it; a tag it does not know is no node.\nunsafe fn node_at(p: *const b::Node, d: &mut Depth) -> Result<Option<pb::node::Node>, Deep> {{\n    if p.is_null() {{\n        return Ok(None);\n    }}\n    Ok(Some(match (*p).type_ {{").unwrap();
+        writeln!(s, "/// One node, by its tag, as `_outNode` writes it; a tag it does not know is no node.\nunsafe fn node_at(p: *const b::Node, d: &mut Depth) -> Result<Option<pb::node::Node>, Deep> {{\n    if p.is_null() {{\n        return Ok(None);\n    }}\n    Ok(Some(match (*p).type_ {{").unwrap();
         for (tag, message, function, c_type) in &self.conds {
             let rust = self.rust(message);
             let (variant, boxed) = self.variants.get(rust).unwrap_or_else(|| panic!("no Node variant holds {rust}"));

@@ -875,8 +875,8 @@ char *reylo_sqlite_analyze(
   installHooks(1);
   /* The statement's expressions nest at most REYLO_SQLITE_EXPR_DEPTH deep, 350 where SQLite's own
   ** bound is 1,000: the analysis of a tree that deep is what the WebAssembly engine can afford on
-  ** the JavaScript engine's stack beside a host that holds 45% of it, as libpg_query's bound is
-  ** for Postgres (core/src/stack.rs). At 500, a nested CASE or function call needed 55% of Node's
+  ** the JavaScript engine's stack beside a host that holds 45% of it, as the bound on libpg_query's
+  ** tree is for Postgres (core/src/stack.rs). At 500, a nested CASE or function call needed 55% of Node's
   ** stack before V8 optimized the engine and 62% after on Node 24; at 350 the deepest statement
   ** of every shape needs at most 42% (measured on Node 24 and 26, 2026-10-21). The schema's own
   ** statements keep SQLite's bound. */

@@ -26,10 +26,9 @@ extern "C" {
     fn free(ptr: *mut c_void);
 }
 
-/// How deeply the reading has recursed, counted as libpg_query's protobuf counts it, so the same
-/// trees are refused: past half of `PG_QUERY_PROTOBUF_MAX_DEPTH` generic nodes (`_outNode`,
-/// `vendor/`), or a message that deep below the parse's (upb's encoder, where a generic node is
-/// two messages, the `Node` and the node in it).
+/// How deeply the reading has recursed, in the protobuf messages of the tree it builds (a generic
+/// node is two, the `Node` and the node in it): a tree is refused past half of [`MAX_MESSAGES`]
+/// generic nodes, or a message that deep below the parse's.
 struct Depth {
     nodes: u32,
     messages: u32,
@@ -39,7 +38,7 @@ impl Depth {
     /// Into one message.
     fn enter(&mut self) -> Result<(), Deep> {
         self.messages += 1;
-        if self.messages >= b::PG_QUERY_PROTOBUF_MAX_DEPTH {
+        if self.messages >= MAX_MESSAGES {
             return Err(Deep);
         }
         Ok(())
@@ -49,6 +48,11 @@ impl Depth {
         self.messages -= 1;
     }
 }
+
+/// How deep in messages a tree the engine reads: its own bound ([`crate::stack::MAX_DEPTH`]), not
+/// libpg_query's `PG_QUERY_PROTOBUF_MAX_DEPTH`, which is ten times as deep and bounds libpg_query's
+/// own protobuf encoding and decoding, which the engine does not use.
+const MAX_MESSAGES: u32 = crate::stack::MAX_DEPTH as u32;
 
 /// The tree was deeper than that.
 struct Deep;
@@ -114,7 +118,7 @@ unsafe fn cells<'a>(list: *const b::List) -> &'a [b::ListCell] {
 /// A generic node, as `_outNode` writes it: counted against the bound.
 unsafe fn node(p: *const b::Node, d: &mut Depth) -> Result<Option<pb::node::Node>, Deep> {
     d.nodes += 1;
-    if d.nodes > b::PG_QUERY_PROTOBUF_MAX_DEPTH / 2 {
+    if d.nodes > MAX_MESSAGES / 2 {
         return Err(Deep);
     }
     d.enter()?;
@@ -407,6 +411,10 @@ mod tests {
                 (x, y) => Err(format!("deparsed {x:?} against {y:?}: {sql}")),
             },
             (Ok(_), Ok(_)) => Err(format!("a different tree: {sql}")),
+            // libpg_query's own encoder has bounds of its own: ten times the engine's in messages, and
+            // its stack check, which an unoptimized build can reach before the engine's bound.
+            (Ok(_), Err(b)) if crate::stack::too_deep(&b.to_string()) => Ok(()),
+            (Err(a), Ok(_)) if crate::stack::too_deep(&a.to_string()) => Ok(()),
             (Err(a), Err(b)) if a.to_string() == b.to_string() || (crate::stack::too_deep(&a.to_string()) && crate::stack::too_deep(&b.to_string())) => Ok(()),
             (a, b) => Err(format!("{:?} against {:?}: {sql}", a.map(|_| ()), b.map(|_| ()))),
         }

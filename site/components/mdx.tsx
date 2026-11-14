@@ -59,6 +59,15 @@ export function getMDXComponents(components?: MDXComponents) {
         </InferenceCard>
       </div>
     ),
+    // A dialect page's types, a row each: the type's name over the type descriptor the engine
+    // writes for a column of it (lib/remark-typedefs.ts fills them).
+    TypeListCard: ({ children }: { children: ReactNode }) => (
+      <div className="typedef-card typedef-type-list">
+        <InferenceCard layout="rows" bare>
+          {children}
+        </InferenceCard>
+      </div>
+    ),
     // A rule list whose rules show SQL values and what `.run()` returns for each, the dialect
     // pages' (components/value-pairs.tsx).
     Rules,
