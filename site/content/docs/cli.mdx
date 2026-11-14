@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: The reylo command, which prints what Reylo infers for each statement and serves the playground on your machine.
+description: The reylo command, which prints what Reylo infers for each statement, runs your migrations and serves the playground on your machine.
 ---
 
 The `reylo` command.
@@ -15,6 +15,11 @@ Commands:
     --sql <statement>      Read this statement, in place of files
     --url <url>            The database, in place of the project's
     --format yaml|json     YAML, the default, or a line of JSON per statement
+  migrate <command>        Write, check and run your migrations
+  db <command>             Push, reset, wipe or print a development database
+  run <sql>                Run SQL on the database as written, recording nothing
+    --file <path>          Run a file's SQL too, after the text
+    --url <url>            The database, in place of the project's
   play                     Serve the playground on this machine
     --port <n>             The port, 4983 by default
     --no-open              Leave the browser closed
@@ -143,6 +148,29 @@ A diagnostic's `start` and `end` count UTF-16 units of the statement as written,
 The descriptor holds what a driver needs.
 
 Pass `sql` to any driver as it is, and bind each parameter's value at its placeholder: the first of `params` at `$1` on Postgres, or the first `?` on MySQL and SQLite. Each parameter stands at exactly one placeholder, since Reylo reports a statement that writes one twice and reads a value twice through a `with` instead.
+
+## `reylo migrate`
+
+Writes, checks and runs your migrations.
+
+Its commands, from `reylo migrate init` to `reylo migrate history pull`, are on the [Migrations](/migrations#reylo-migrate) page, and `reylo migrate --help` lists them.
+
+## `reylo db`
+
+Pushes `schema.sql` to a development database, rebuilds it, empties it or prints its schema.
+
+Its commands are on the [Migrations](/migrations#reylo-db) page, beside `reylo migrate`'s.
+
+## `reylo run`
+
+Runs SQL on the database as written, outside any migration's history.
+
+It takes statements as text and files with `--file`, and runs the text first, then each file, each in the order given:
+
+```terminal
+$ reylo run 'alter table users add column bio text'
+✓ alter table users add column bio text
+```
 
 ## `reylo play`
 

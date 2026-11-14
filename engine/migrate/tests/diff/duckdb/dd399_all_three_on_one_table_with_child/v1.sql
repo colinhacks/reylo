@@ -1,0 +1,1 @@
+create type mood as enum ('a', 'b'); create sequence seq; create macro m(x) as x > 0; create table p (id bigint primary key default nextval('seq'), md mood, check (m(id))); create table c (p bigint references p (id), md mood);

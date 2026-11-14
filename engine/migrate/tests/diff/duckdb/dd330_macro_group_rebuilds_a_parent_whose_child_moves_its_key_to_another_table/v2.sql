@@ -1,0 +1,1 @@
+create macro valid(s) as length(s) > 0; create table p (id integer primary key, code varchar check (valid(code))); create table q (id integer primary key); create table c (id integer primary key, p_id integer references q (id));

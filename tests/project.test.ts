@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { engine } from "../src/engine.ts";
-import { findProjectFile, readEnvFile, resolveProject } from "../src/project.ts";
+import { findProjectFile, packageDir, readEnvFile, resolveProject } from "../src/project.ts";
 import { Session } from "../src/analyze.ts";
 
 // The engine's core reads the project file, whichever database's engine is asked.
@@ -82,6 +82,20 @@ test("the project file sits beside package.json, and its direct_url, env files a
   // REYLO_CONFIG names the file instead.
   const other = tree({ "elsewhere.yaml": "direct_url: file:./dev.db\n" });
   assert.equal(resolveProject(e, join(root, "src/db"), { REYLO_CONFIG: join(other, "elsewhere.yaml") }).dialect, "sqlite");
+});
+
+test("the package is looked for below the home directory, never in it", () => {
+  // A stray package.json in the home directory makes no project of it.
+  const home = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./home.db\n", "scratch/app/a.sql": "select 1" });
+  const app = join(home, "scratch/app");
+  const env = process.platform === "win32" ? { USERPROFILE: home } : { HOME: home };
+  assert.equal(packageDir(app, env), app);
+  assert.equal(findProjectFile(app, env), undefined);
+  // Without one, the nearest package at or above.
+  assert.equal(packageDir(app, {}), home);
+  // A package below it is found from any depth.
+  writeFileSync(join(home, "scratch/package.json"), "{}");
+  assert.equal(packageDir(app, env), join(home, "scratch"));
 });
 
 test("the project file may be named .reylo.yml, and both names beside one package.json are an error", async () => {
@@ -257,7 +271,7 @@ test("url is never the type check's connection: alone, it draws a notice and DAT
   assert.equal(resolveProject(e, tree({ "package.json": "{}" }), {}).missingUrl, 'No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in .reylo.yaml.');
 });
 
-test(".reylo/ names an entry by its statement, then its server: never by url or a password", async () => {
+test("reylo/.cache/ names an entry by its statement, then its server: never by url or a password", async () => {
   const entry = async (yaml: string, env: Record<string, string>) => {
     const session = await Session.open(tree({ "package.json": "{}", ".reylo.yaml": yaml }), env);
     await session.close();

@@ -1,0 +1,10 @@
+create type mood as enum ('happy', 'sad');
+create table users (id integer primary key, email varchar not null unique, name varchar, feeling mood, score integer default 0);
+create table posts (id integer primary key, user_id integer references users (id), title varchar, body varchar, created date default current_date, views integer not null default 0);
+create index posts_title on posts (title);
+create index users_name on users (lower(name));
+create view recent as select p.id, p.title, u.name from posts p join users u on u.id = p.user_id;
+create view recent_titles as select title from recent;
+create macro posts_of(uid) as table select * from posts where user_id = uid;
+comment on view recent is 'latest';
+comment on column users.email is 'login';

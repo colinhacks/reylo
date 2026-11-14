@@ -29,6 +29,10 @@ pub struct Project {
     /// pooler can fail. The importer's alone: a host that serves the queries runs them through `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_url: Option<String>,
+    /// A server to make the migrations' shadow databases on, where the database's own refuses
+    /// `create database`; the database's own server when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_url: Option<String>,
     /// The `.env` files the importer and every other host read, relative to the project file
     /// (`.env.local`, then `.env`, when absent); the first that sets a variable wins, and the
     /// process environment wins over all of them.
@@ -47,6 +51,11 @@ pub struct Project {
     /// the statement's tags. On when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlcommenter: Option<bool>,
+    /// The directory of the project's own files, beside the project file (`reylo` when absent):
+    /// `schema.sql`, the migrations in `migrations/`, the lock `reylo-lock.yaml`, and the cache in
+    /// `.cache/`, which the type check and the migrations keep there, out of git.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     /// How the importer represents values in JavaScript and TypeScript.
     #[serde(default, skip_serializing_if = "Js::is_empty")]
     pub js: Js,
@@ -218,6 +227,8 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
     if masked != text {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
+        project.dir = project.dir.as_deref().map(unmask_placeholders);
+        project.shadow_url = project.shadow_url.as_deref().map(unmask_placeholders);
         for item in project.env.iter_mut().flatten() {
             *item = unmask_placeholders(item);
         }
@@ -282,6 +293,14 @@ mod tests {
         assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "allow_untyped_params": true, "allow_nested_arrays": true, "sqlcommenter": false }));
         assert_eq!(parse("").unwrap(), Project::default());
         assert_eq!(parse("# nothing yet\n").unwrap(), Project::default());
+    }
+
+    #[test]
+    fn reads_the_migrations_keys() {
+        let p = parse("dir: db\nshadow_url: ${SHADOW_URL}\n").unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "shadow_url": "${SHADOW_URL}" }));
+        assert!(parse("migrate:\n  lock: true\n").is_err(), "the lock is always kept, and needs no setting");
+        assert_eq!(parse("shadow_url: null\n").unwrap().shadow_url, None, "null is the default the docs show");
     }
 
     #[test]

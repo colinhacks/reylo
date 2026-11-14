@@ -1,6 +1,6 @@
 // The content mapper, in reylo's build-time half (src/tooling.ts), which src/mapper.ts starts:
 // the type check's view of a `.sql` file. The analysis itself (the
-// database, the engine, the `.reylo/` cache shared with the bundler plugins)
+// database, the engine, the cache in `reylo/.cache/`, shared with the bundler plugins)
 // is `src/analyze.ts`; this file renders it as types and places its diagnostics in the file.
 import { createHash } from "node:crypto";
 import { dirname, relative, sep } from "node:path";
@@ -80,7 +80,7 @@ export function mapperHandlers(): MapperHandlers {
       // import it, while its text and this identity stay the same, so a migration that changes a
       // column's type is checked again.
       const analyzes = await session.then((s) => s.identity()).catch((e: unknown) => `unopened ${(e as Error).message}`);
-      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.allowNestedArrays, resolved.codecs, resolved.url ?? null, resolved.error ?? null, p.options ?? null, analyzes])).digest("hex");
+      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.allowNestedArrays, resolved.codecs, resolved.cache, resolved.url ?? null, resolved.error ?? null, p.options ?? null, analyzes])).digest("hex");
       return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };
     },
     async transform(params) {

@@ -1,0 +1,1 @@
+create schema b; create sequence s increment by 2; create sequence b.s; create table b.pages (id integer primary key, parent_id integer references b.pages (id), k bigint default nextval('memory.b.s'), j bigint default nextval('memory.s'));

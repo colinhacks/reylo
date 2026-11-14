@@ -1,0 +1,1 @@
+create schema s; create type s.mood as enum ('a', 'b', 'c'); create macro m(x) as x + 2; create table t (a integer default m(1), b varchar default ('a'::s.mood)::varchar); create table u (c s.mood, d integer default m(2));

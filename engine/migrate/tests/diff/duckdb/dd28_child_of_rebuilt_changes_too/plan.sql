@@ -1,0 +1,10 @@
+create temporary table reylo_copy_a as select * from a;
+create temporary table reylo_copy_b as select * from b;
+drop table b;
+drop table a;
+create table a (id bigint, n integer, primary key (id), check ((n >= 0)));
+create table b (id bigint, a_id bigint, note varchar, extra integer, primary key (id), foreign key (a_id) references a (id), check ((extra > 0)));
+insert into a (id, n) select id, n from temp.main.reylo_copy_a;
+insert into b (id, a_id, note) select id, a_id, note from temp.main.reylo_copy_b;
+drop table temp.main.reylo_copy_a;
+drop table temp.main.reylo_copy_b;

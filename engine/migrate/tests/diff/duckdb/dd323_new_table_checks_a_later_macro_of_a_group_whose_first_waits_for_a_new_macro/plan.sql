@@ -1,0 +1,11 @@
+create macro zz_new (s) as ((s is not null));
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+drop macro valid;
+drop macro a_lead;
+create macro a_lead (s) as ((s != '-'));
+create macro "valid" (s, n) as ((length(s) > n));
+create table t (id integer, code varchar, primary key (id), check ((a_lead(code) and "valid"(code, 0) and zz_new(code))));
+insert into t (id, code) select id, code from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;
+create table u (id integer, s varchar, primary key (id), check ("valid"(s, 1)));

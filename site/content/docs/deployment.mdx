@@ -63,11 +63,18 @@ jobs:
 - The build reads the database too. Reylo's plugins read each query's types from it as they bundle the query, and `next build` runs the type check itself.
 - A `DATABASE_URL` in the environment wins over your `.env` files. A `direct_url` in `.reylo.yaml` wins over both, so if yours names a database, point it at a variable the job sets.
 - Reylo's engine is an optional dependency, installed for the runner's platform, so don't install with `--omit=optional`.
-- Reylo keeps a cache of each query's analysis in `.reylo/`, which git ignores. A fresh checkout has none, so the type check analyzes every query on the database.
+- Reylo keeps a cache of each query's analysis in `reylo/.cache/`, which git ignores. A fresh checkout has none, so the type check analyzes every query on the database.
 
 ## Schema
 
 Apply your schema with the tool you already use, before the type check:
+
+```yaml title=".github/workflows/ci.yml" tab="Reylo Migrate"
+steps:
+  # ...
+  - run: npx reylo migrate deploy
+  - run: npm run typecheck
+```
 
 ```yaml title=".github/workflows/ci.yml" tab="Prisma"
 steps:

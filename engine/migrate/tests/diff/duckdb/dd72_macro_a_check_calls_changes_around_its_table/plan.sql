@@ -1,0 +1,14 @@
+create temporary table reylo_copy_t as select * from t;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table t;
+drop macro positive;
+create macro positive (x) as ((x >= 0));
+create table t (id integer, n integer, primary key (id), check (positive(n)));
+create table c (t_id integer, foreign key (t_id) references t (id));
+insert into t (id, n) select id, n from temp.main.reylo_copy_t;
+insert into c (t_id) select t_id from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_c;
+create index t_n on t(n);
+comment on table t is 'tee';

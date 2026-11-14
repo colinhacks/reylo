@@ -1,0 +1,1 @@
+create macro valid(s) as length(s) > 0; create table a (id integer primary key, x varchar check (valid(x))); create table b (id integer primary key, a_id integer references a (id), y varchar check (valid(y)));

@@ -16,6 +16,7 @@ on:
     paths:
       - engine/cli/**
       - engine/native/**
+      - engine/migrate/**
       - npm/**
       - scripts/build.ts
       - src/cli.ts

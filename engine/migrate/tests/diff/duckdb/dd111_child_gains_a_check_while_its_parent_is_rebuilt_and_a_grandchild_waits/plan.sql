@@ -1,0 +1,15 @@
+create temporary table reylo_copy_users as select * from users;
+create temporary table reylo_copy_posts as select * from posts;
+create temporary table reylo_copy_comments as select * from comments;
+drop table comments;
+drop table posts;
+drop table users;
+create table users (id integer, name varchar, primary key (id), check (("name" != '')));
+create table posts (id integer, user_id integer, title varchar, primary key (id), foreign key (user_id) references users (id), check ((title != '')));
+create table comments (id integer, post_id integer, primary key (id), foreign key (post_id) references posts (id));
+insert into users (id, name) select id, name from temp.main.reylo_copy_users;
+insert into posts (id, user_id, title) select id, user_id, title from temp.main.reylo_copy_posts;
+insert into comments (id, post_id) select id, post_id from temp.main.reylo_copy_comments;
+drop table temp.main.reylo_copy_users;
+drop table temp.main.reylo_copy_posts;
+drop table temp.main.reylo_copy_comments;

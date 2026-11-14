@@ -1,0 +1,14 @@
+create temporary table reylo_copy_p as select * from p;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table p;
+drop macro y;
+drop macro x;
+create macro x () as (2);
+create macro y () as (2);
+create table p (id integer, v integer, primary key (id), check ((v >= x())));
+create table c (id integer, p_id integer, w integer, primary key (id), foreign key (p_id) references p (id), check ((w >= y())));
+insert into p (id, v) select id, v from temp.main.reylo_copy_p;
+insert into c (id, p_id, w) select id, p_id, w from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_p;
+drop table temp.main.reylo_copy_c;

@@ -87,7 +87,7 @@ test("Postgres: a field that reads a column as it is carries the column's commen
       row: "{\n  /** Age (in years) */\n  age: number | null;\n}",
     });
 
-    // The schema's fingerprint takes in the comments, so the entry `.reylo/` keeps is analyzed again.
+    // The schema's fingerprint takes in the comments, so the entry `reylo/.cache/` keeps is analyzed again.
     await db.sql.unsafe("comment on column users.age is 'Age, in whole years'");
     const again = await declarations(root, { "user.sql": files["user.sql"] });
     assert.match(types(again["user.sql"]!).row, /\/\*\* Age, in whole years \*\/\n  age: number \| null;\n  \/\*\* Age, in whole years \*\/\n  years/);

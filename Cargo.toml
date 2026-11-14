@@ -19,6 +19,7 @@ members = [
   "engine/core",
   "engine/facade",
   "engine/native",
+  "engine/migrate",
   "engine/cli",
   "engine/postgres",
   "engine/sqlite",

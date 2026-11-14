@@ -1,0 +1,1 @@
+create type kind as enum ('a', 'b'); create table things (id integer primary key, k kind); create table nodes (id integer primary key, parent_id integer references nodes (id), kind varchar check (kind <> ''));

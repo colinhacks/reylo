@@ -1,0 +1,31 @@
+[package]
+name = "reylo-migrate"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Reylo's migrations: hand-written SQL migrations checked against the declared schema in shadow databases before they run: on Postgres, MySQL and SQLite over the connections of the native engine, and on DuckDB through the project's own DuckDB library."
+
+[dependencies]
+reylo-engine-native = { path = "../native", default-features = false, features = ["postgres", "mysql", "sqlite"] }
+# Postgres 18's parser, patched in by the workspace, which reads `schema.sql` for the text each
+# object was declared with; prost's recursion limit lifted, as the Postgres engine lifts it, so a
+# deeply nested declaration decodes.
+pg_query = "18.0"
+prost = { version = "0.13", features = ["no-recursion-limit"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
+tokio = { version = "1", features = ["rt", "time"] }
+tokio-postgres = "0.7"
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"] }
+# DuckDB's C API, from the library the project's @duckdb/node-api installs, loaded at run time.
+libloading = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+# The user id, which names the directory of a user's SQLite run locks.
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time"] }

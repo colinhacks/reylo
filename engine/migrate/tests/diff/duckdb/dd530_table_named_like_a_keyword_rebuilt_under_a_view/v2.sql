@@ -1,0 +1,1 @@
+create table "user" (id integer primary key, name varchar not null); create table "group" (id integer primary key, owner integer references "user" (id)); create view v as select g.id, u.name from "group" g join "user" u on u.id = g.owner;

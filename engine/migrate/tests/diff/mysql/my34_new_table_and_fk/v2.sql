@@ -1,0 +1,1 @@
+create table users (id int primary key); create table posts (id int primary key, user_id int not null, title varchar(20) not null, key (title), foreign key (user_id) references users (id) on delete cascade); create view titles as select p.id, p.title, u.id as uid from posts p join users u on u.id = p.user_id;

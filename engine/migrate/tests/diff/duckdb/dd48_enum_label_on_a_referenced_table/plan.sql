@@ -1,0 +1,12 @@
+drop type mood;
+create type mood as enum('sad', 'ok', 'glad');
+create temporary table reylo_copy_users as select * from users;
+create temporary table reylo_copy_posts as select * from posts;
+drop table posts;
+drop table users;
+create table users (id bigint, m mood, primary key (id));
+create table posts (id bigint, user_id bigint, foreign key (user_id) references users (id));
+insert into users (id, m) select id, m from temp.main.reylo_copy_users;
+insert into posts (id, user_id) select id, user_id from temp.main.reylo_copy_posts;
+drop table temp.main.reylo_copy_users;
+drop table temp.main.reylo_copy_posts;

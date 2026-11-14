@@ -1,0 +1,1 @@
+create schema s; create type s.mood as enum ('a', 'b', 'c'); create macro s.m2(x) as x + 2; create table p (id integer primary key, v varchar, n2 integer default s.m2(1), check (cast(v as s.mood) is not null));

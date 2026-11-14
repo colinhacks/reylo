@@ -10,9 +10,9 @@
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
 // `reylo analyze` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
-// is the one the project's `.reylo/` entries record.
+// is the one the entries of the project's cache (`reylo/.cache/`) record.
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
@@ -29,6 +29,8 @@ export type ProjectFile = {
   allow_untyped_params?: boolean;
   allow_nested_arrays?: boolean;
   sqlcommenter?: boolean;
+  /** The directory of the project's own files, `reylo` beside the project file when absent. */
+  dir?: string;
   js?: { codecs?: Codecs };
 };
 
@@ -37,6 +39,8 @@ export type ResolvedProject = {
   file: string | undefined;
   /** The directory a relative path in the project resolves against: the package's. */
   root: string;
+  /** The cache the type check and the build steps share: `.cache/` in the project's `reylo/` directory. */
+  cache: string;
   dialect: Dialect;
   /** Whether a parameter the statement does not type is an error rather than `unknown`: true unless the file says `allow_untyped_params: true`. */
   strictParams: boolean;
@@ -72,11 +76,23 @@ export const PROJECT_FILE = ".reylo.yaml";
 export const PROJECT_FILES = [PROJECT_FILE, ".reylo.yml"] as const;
 const DEFAULT_ENV_FILES = [".env.local", ".env"];
 
-/** The package directory: the nearest one at or above `from` that holds a `package.json`, else `from`. */
-export function packageDir(from: string): string {
-  for (let dir = resolve(from); ; dir = dirname(dir)) {
+/** The package directory: the nearest one at or above `from`, below the home directory (`HOME`, or `USERPROFILE` on Windows, in `env`), that holds a `package.json`, else `from`. A home directory is no project's, though a stray `package.json` can sit there, and taking it would make every directory below it one project (engine/cli/src/project.rs). */
+export function packageDir(from: string, env: Record<string, string | undefined> = process.env): string {
+  const home = process.platform === "win32" ? env.USERPROFILE : env.HOME;
+  // As written, or with its links resolved, as a working directory has them.
+  const stops = home ? [resolve(home), realOr(home)] : [];
+  for (let dir = resolve(from); !stops.includes(dir); dir = dirname(dir)) {
     if (existsSync(join(dir, "package.json"))) return dir;
-    if (dirname(dir) === dir) return resolve(from);
+    if (dirname(dir) === dir) break;
+  }
+  return resolve(from);
+}
+
+function realOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
   }
 }
 
@@ -87,26 +103,26 @@ export function packageDir(from: string): string {
 export function sourceName(path: string, env: Record<string, string | undefined> = process.env): string {
   const dir = dirname(path);
   const file = findProjectFile(dir, env);
-  return relative(file ? dirname(file) : packageDir(dir), path).split(sep).join("/");
+  return relative(file ? dirname(file) : packageDir(dir, env), path).split(sep).join("/");
 }
 
 /** The project file for a project directory: `REYLO_CONFIG`, or `.reylo.yaml` (else `.reylo.yml`) beside the package's `package.json`. */
 export function findProjectFile(from: string, env: Record<string, string | undefined> = process.env): string | undefined {
   if (env.REYLO_CONFIG) return resolve(env.REYLO_CONFIG);
-  const dir = packageDir(from);
+  const dir = packageDir(from, env);
   return PROJECT_FILES.map((name) => join(dir, name)).find((path) => existsSync(path));
 }
 
-/** How many of `.reylo/`'s entries are read for the dialect where no URL names one. */
+/** How many of the cache's entries are read for the dialect where no URL names one. */
 const CACHED_READ = 32;
 
 /**
- * The dialects the entries in the project's `.reylo/` record (src/analyze.ts), which name the
+ * The dialects the entries in the project's cache record (src/analyze.ts), which name the
  * database where no URL does: a build with no URL reads them. A few entries are read, which a
  * project's are all of one dialect unless its database changed.
  */
-function cachedDialects(root: string): Dialect[] {
-  const dir = join(root, ".reylo", "queries");
+function cachedDialects(cache: string): Dialect[] {
+  const dir = join(cache, "queries");
   let names: string[];
   try {
     names = readdirSync(dir).filter((n) => n.endsWith(".json"));
@@ -356,7 +372,7 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
  */
 export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env, options: { urlGiven?: boolean } = {}): ResolvedProject {
   const file = findProjectFile(projectDir, env);
-  const root = file ? dirname(file) : packageDir(projectDir);
+  const root = file ? dirname(file) : packageDir(projectDir, env);
   const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path).split(sep).join("/") || path : path);
   let config: ProjectFile = {};
   let error: string | undefined;
@@ -472,11 +488,12 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   if (unusable) error ??= `Cannot read the SQLite URL ${url} (${urlSource}): ${unusable}.`;
   // Either name, created or removed, changes the project.
   const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
-  // No URL names the database: the entries of `.reylo/`, which a build with no URL reads
+  // No URL names the database: the entries of the cache, which a build with no URL reads
   // (src/analyze.ts), do where they are all of one dialect.
-  const cached = url ? [] : cachedDialects(root);
+  const cache = join(resolve(root, config.dir ?? "reylo"), ".cache");
+  const cached = url ? [] : cachedDialects(cache);
   if (cached.length === 1) dialect = cached[0];
-  return { file, root, dialect: dialect ?? "postgres", strictParams: !(config.allow_untyped_params ?? false), allowNestedArrays: config.allow_nested_arrays ?? false, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
+  return { file, root, cache, dialect: dialect ?? "postgres", strictParams: !(config.allow_untyped_params ?? false), allowNestedArrays: config.allow_nested_arrays ?? false, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 
 /** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */

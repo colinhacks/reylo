@@ -1,0 +1,1 @@
+create type mood as enum ('a', 'b', 'c'); create macro x() as 2; create table t (id integer primary key, m varchar, v integer, check (v >= x() and m::mood <> 'b')); create table n (id integer primary key, w varchar, check (w::mood <> 'c'));

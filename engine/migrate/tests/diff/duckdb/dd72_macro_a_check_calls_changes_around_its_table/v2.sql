@@ -1,0 +1,1 @@
+create macro positive(x) as x >= 0; create table t (id integer primary key, n integer check (positive(n))); create table c (t_id integer references t (id)); create index t_n on t (n); comment on table t is 'tee';

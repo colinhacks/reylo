@@ -1,0 +1,10 @@
+create temporary table reylo_copy_authors as select * from authors;
+create temporary table reylo_copy_books as select * from books;
+drop table books;
+drop table authors;
+create table authors (id bigint, name varchar, primary key (id), check (("name" != '')));
+create table books (id bigint, author_id bigint, pages integer, primary key (id), foreign key (author_id) references authors (id));
+insert into authors (id, name) select id, name from temp.main.reylo_copy_authors;
+insert into books (id, author_id, pages) select id, author_id, pages from temp.main.reylo_copy_books;
+drop table temp.main.reylo_copy_authors;
+drop table temp.main.reylo_copy_books;
