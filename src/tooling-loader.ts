@@ -28,12 +28,9 @@ export type Tooling = BuildTime & {
 
 let loaded: Tooling | undefined;
 
-type NodeRequire = ((id: string) => unknown) & { resolve(id: string): string };
-
 /** Node's `createRequire`, reached where no bundler sees it. */
-function createRequire(from: string): NodeRequire {
-  const builtin = process.getBuiltinModule("node:module") as { createRequire(from: string): NodeRequire };
-  return builtin.createRequire(from);
+function createRequire(from: string): NodeJS.Require {
+  return process.getBuiltinModule("node:module").createRequire(from);
 }
 
 /** The build-time half; `from` is the directory of the file being built, whose project resolves reylo where this file is in a bundle. */
