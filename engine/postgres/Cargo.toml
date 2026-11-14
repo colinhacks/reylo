@@ -21,8 +21,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 
 # `pg_query` 18.0 is not on crates.io yet: `../build.sh --prepare` fetches upstream's `pg-18` branch
-# at a pinned commit and applies the patch in `vendor/` (WebAssembly, and how deeply a statement may
-# nest) into `.patched/pg_query`; the `[patch]` that points cargo at the copy, and the release
+# at a pinned commit and applies the patch in `vendor/` (WebAssembly, and fixes no release carries
+# yet) into `.patched/pg_query`; the `[patch]` that points cargo at the copy, and the release
 # profile, are the workspace's (`../../Cargo.toml`). The engine reads libpg_query's tree from its C
 # nodes (`src/raw.rs`, with bindings and converters `build.rs` generates); `pg_query::parse`, whose
 # prost decoding has its recursion limit lifted here, is only the tests' reference for that tree.
