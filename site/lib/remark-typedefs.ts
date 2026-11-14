@@ -63,14 +63,18 @@ function renderType(card: TypeCard, valid: (value: unknown) => string | undefine
   card.node.children = rows;
 }
 
-/** A type as one line of JSON, spaced as the page's jsonc examples are: `{ "kind": "integer", "bits": 32 }`. */
+/** A string YAML reads as itself unquoted in a flow collection: a word, a name or a number's text that no YAML type claims. */
+const PLAIN = /^[A-Za-z_][A-Za-z0-9_.()/+-]*$/;
+const CLAIMED = /^(?:true|false|yes|no|on|off|null|~|y|n)$/i;
+
+/** A type on one line, as `reylo analyze` prints a type that fits one: YAML's flow style, `{ kind: integer, bits: 32 }`. */
 function oneLine(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(oneLine).join(', ')}]`;
   if (value !== null && typeof value === 'object') {
     const entries = Object.entries(value);
-    return entries.length ? `{ ${entries.map(([k, v]) => `${JSON.stringify(k)}: ${oneLine(v)}`).join(', ')} }` : '{}';
+    return entries.length ? `{ ${entries.map(([k, v]) => `${k}: ${oneLine(v)}`).join(', ')} }` : '{}';
   }
-  return JSON.stringify(value);
+  return typeof value === 'string' && PLAIN.test(value) && !CLAIMED.test(value) ? value : JSON.stringify(value);
 }
 
 /** A table of a statement's result columns, each by its name, the SQL type the card names it for, and its type. */
