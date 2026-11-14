@@ -379,7 +379,9 @@ DuckDB refuses a few things a migration may need, on your rows rather than in th
 - DuckDB has no `alter sequence`, so a changed sequence is made again, and in a migration it starts again where `schema.sql` starts it. Start it past the values your rows hold.
 - An `update` of a table, then `set not null` or a new index on it, is refused in one migration. Put the backfill in a migration of its own.
 
-DuckDB's catalog holds no macro parameter's default (the `5` of `b := 5`), so Reylo Migrate reads those from `schema.sql`, the migrations and DuckDB's export of the database. DuckDB can't export a database where a column's default calls a macro of a schema other than `main`. There, `reylo migrate init` and `reylo db introspect` start their SQL with a comment for each macro that has parameters, saying to add its defaults by hand.
+DuckDB's catalog holds no macro parameter's default (the `5` of `b := 5`), so Reylo Migrate takes those from `schema.sql`, the migrations and DuckDB's export of the database, and never compares them: write a change to a default alone by hand, as `create or replace macro`. DuckDB can't export a database where a column's default calls a macro of a schema other than `main`. There, `reylo migrate init` and `reylo db introspect` start their SQL with a comment for each macro that has parameters, saying to add its defaults by hand.
+
+DuckDB 2.0 writes a comment on a column so that the file no longer opens, where the column's table calls a macro (in a check, a default or a generated column) and another table's key references it. Reylo Migrate follows such a comment with an `alter table` that changes nothing, which writes the table again whole. Do the same in a migration you write by hand.
 
 ## Limits
 
