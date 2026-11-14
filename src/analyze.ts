@@ -675,13 +675,15 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   ) t`,
   sqlite: `select type, name, tbl_name, coalesce(sql, '') from sqlite_schema
     union all select 'function', name, type, narg from pragma_function_list order by 1, 2, 3, 4`,
-  // The columns, keys, views, types with an enum's labels, and macros with their parameters, of
-  // every attached database, and the version, whose functions and binder an analysis reads.
+  // The columns, the tables' text, views, types with an enum's labels, and macros with their
+  // parameters, of every attached database, and the version, whose functions and binder an
+  // analysis reads. DuckDB writes a table's text from its catalog, every key and check in it, so
+  // no line reads duckdb_constraints(), which DuckDB refuses for the whole database where one
+  // check reads a struct's field with a dot (`meta.a > 0`).
   duckdb: `select md5(coalesce(string_agg(x, chr(10) order by x), '')) from (
     select concat_ws(' ', 'v', version()) as x
     union all select concat_ws(' ', 'c', database_name, schema_name, table_name, column_index, column_name, data_type, is_nullable, coalesce(column_default, ''), md5(coalesce(comment, ''))) from duckdb_columns() where not internal
     union all select concat_ws(' ', 'b', database_name, schema_name, table_name, md5(coalesce(sql, ''))) from duckdb_tables() where not internal
-    union all select concat_ws(' ', 'k', database_name, schema_name, table_name, constraint_type, constraint_text) from duckdb_constraints()
     union all select concat_ws(' ', 'w', database_name, schema_name, view_name, md5(coalesce(sql, ''))) from duckdb_views() where not internal
     union all select concat_ws(' ', 't', database_name, schema_name, type_name, logical_type, md5(coalesce(cast(labels as varchar), ''))) from duckdb_types() where not internal
     union all select concat_ws(' ', 'f', database_name, schema_name, function_name, function_type, md5(coalesce(macro_definition, '')), md5(coalesce(cast(parameters as varchar), '')), md5(coalesce(cast(parameter_types as varchar), ''))) from duckdb_functions() where not internal

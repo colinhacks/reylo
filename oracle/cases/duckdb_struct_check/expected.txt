@@ -1,0 +1,7 @@
+by_composite.sql: at_most_one (region: varchar, tier: varchar) -> { id: integer }
+by_composite_key.sql: at_most_one (item_id: integer, label: varchar) -> { label: varchar }
+by_key.sql: at_most_one (id: integer) -> { code: varchar, meta: { a: integer?, b: varchar? }? }
+by_part.sql: many (region: varchar) -> { id: integer }
+by_unique.sql: at_most_one (code: varchar) -> { id: integer }
+joined.sql: many (item_id: integer) -> { label: varchar, code: varchar }
+update_by_key.sql: at_most_one (tier: varchar?, id: integer) -> { id: integer, tier: varchar? }
