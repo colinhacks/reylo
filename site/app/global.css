@@ -434,6 +434,16 @@
   text-shadow: 0 0 10px rgb(255 184 0 / 0.55);
 }
 
+/* The wordmark in the chrome (components/brand.tsx) is the yellow, as the hero's mark is, and by
+   night it gives off the same tight gold light as the callout's bulb and the star note. */
+.reylo-brand {
+  color: var(--dk-accent);
+}
+
+.dark .reylo-brand svg {
+  filter: drop-shadow(0 0 4px rgb(255 200 31 / 0.55));
+}
+
 /* The card that links the playground (components/playground-link.tsx): one quiet line in the page's
    greys, the size of a collapsible's summary, so the reading goes on past it. */
 #nd-page .reylo-play-link {
