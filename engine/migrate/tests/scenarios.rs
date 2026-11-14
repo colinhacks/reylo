@@ -6454,4 +6454,22 @@ comment on macro table app.recent is 'last n';
         let comment = q.rows("select comment as v from duckdb_columns() where table_name = 'users' and column_name = 'email'").await;
         assert_eq!(comment[0].text("v"), "Login");
     }
+
+    // A check taken off by hand, then a row the old table refuses: the undo dev prints rebuilds the
+    // table, and fails on that row. DuckDB commits each statement of a script as it runs, so the undo
+    // runs in one transaction, which fails and keeps every row.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_undo_of_a_hand_change_that_fails_keeps_the_rows() {
+        let v1 = "create table items (id integer primary key, qty integer check (qty > 0));";
+        let Some(mut p) = at(v1, "insert into items values (1, 5), (2, 7)").await else { return };
+        p.exec("begin; create temporary table c as select * from items; drop table items; create table items (id integer primary key, qty integer); insert into items select * from temp.main.c; drop table temp.main.c; commit; insert into items values (3, -1);").await;
+        p.output();
+        assert_eq!(p.dev().await, 1);
+        let undo = undo_in(&p.output());
+        assert!(undo.starts_with("begin; ") && undo.ends_with(" commit;"), "{undo}");
+        let items = [("undo".to_string(), undo)];
+        let code = p.run(async |o, log| reylo_migrate::run_sql(&o.url, &o.root, &items, log).await).await;
+        assert_eq!(code, 1, "the undo fails on the row the check refuses: {}", p.peek());
+        assert_eq!(one(&p, "select count(*)::varchar as v from items").await, "3");
+    }
 }

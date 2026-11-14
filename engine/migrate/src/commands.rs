@@ -4100,6 +4100,9 @@ async fn unexplained(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, kep
         problem = problem.fix("To keep it, write it as a migration", &["reylo migrate new <name>"]);
     }
     problem = match undo {
+        // DuckDB commits each statement of a script as it runs, so an undo that rebuilds a table, and
+        // fails on a row, would leave the table empty: in one transaction, it changes nothing.
+        Some(statements) if d == Dialect::Duckdb => problem.fix("To undo it", &[&format!("reylo run {}", shell_word(&format!("begin; {} commit;", statements.join(" "))))]),
         Some(statements) => problem.fix("To undo it", &[&format!("reylo run {}", shell_word(&statements.join(" ")))]),
         None => problem.note("To undo it, change it back by hand."),
     };

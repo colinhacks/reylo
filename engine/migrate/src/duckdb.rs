@@ -82,7 +82,7 @@ fn platform() -> (&'static str, &'static str) {
 }
 
 /// The DuckDB library: `REYLO_DUCKDB_LIBRARY`, else the platform package in a `node_modules` of the
-/// project or above it, as npm, Yarn and Bun hoist it, or as pnpm keeps it in its store.
+/// project or above it, as npm, Yarn and Bun hoist it, or as pnpm and Bun keep it in their stores.
 fn library_path(root: &Path) -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("REYLO_DUCKDB_LIBRARY").filter(|p| !p.is_empty()) {
         return Ok(PathBuf::from(path));
@@ -100,7 +100,8 @@ fn search(root: &Path) -> Result<PathBuf, String> {
         if hoisted.is_file() {
             return Ok(hoisted);
         }
-        for store in [".pnpm", ".store"] {
+        // pnpm's store, and Bun's for an isolated install, which name each package `<name>@<version>`.
+        for store in [".pnpm", ".store", ".bun"] {
             let Ok(entries) = std::fs::read_dir(modules.join(store)) else { continue };
             let prefix = format!("@duckdb+node-bindings-{package}@");
             // The newest version the store holds, by its numbers (1.10.0 after 1.9.0).
@@ -154,7 +155,20 @@ fn load(root: &Path) -> Result<Api, String> {
             library_version: symbol!("duckdb_library_version"),
             _library: library,
         })
+        .and_then(supported)
     }
+}
+
+/// The library, where its DuckDB is one the migrations read: not one before 2.0, whose catalog
+/// functions lack columns they read (1.4's `duckdb_columns()` has no `is_generated`).
+fn supported(api: Api) -> Result<Api, String> {
+    // SAFETY: the version is a static string of the library's.
+    let version = unsafe { CStr::from_ptr((api.library_version)()) }.to_string_lossy().into_owned();
+    let major = version.trim_start_matches('v').split('.').next().and_then(|m| m.parse::<u32>().ok());
+    if major.is_some_and(|m| m < 2) {
+        return Err(format!("Reylo Migrate runs on DuckDB 2.0, and this project's @duckdb/node-api has DuckDB {version}: npm install @duckdb/node-api@2"));
+    }
+    Ok(api)
 }
 
 fn api() -> Result<&'static Api, Error> {
@@ -414,6 +428,18 @@ mod tests {
         let found = search(&root);
         let _ = std::fs::remove_dir_all(&root);
         assert!(found.as_ref().is_ok_and(|p| p.to_string_lossy().contains("@1.10.0/")), "{found:?}");
+    }
+
+    #[test]
+    fn a_bun_store_gives_its_duckdb() {
+        let root = std::env::temp_dir().join(format!("reylo-duckdb-bun-{}", std::process::id()));
+        let (package, file) = platform();
+        let dir = root.join("node_modules/.bun").join(format!("@duckdb+node-bindings-{package}@2.0.0-r.1")).join("node_modules/@duckdb").join(format!("node-bindings-{package}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file), b"").unwrap();
+        let found = search(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(found.as_ref().is_ok_and(|p| p.to_string_lossy().contains(".bun")), "{found:?}");
     }
 
     #[test]
