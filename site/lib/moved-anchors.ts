@@ -44,7 +44,7 @@ const MOVED: Record<string, string> = {
   "delete": "/usage#run",
   "delete-rows": "/usage#run",
   "deploy-build": "/faq#faq-no-database",
-  "deploy-migrations": "/migrations#changing-a-column",
+  "deploy-migrations": "/migrations#deploy",
   "deploy-other-database": "/configuration#direct_url",
   "deploying": "/configuration#direct_url",
   "dialects": "/postgres",

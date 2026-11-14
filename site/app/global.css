@@ -871,6 +871,15 @@ a.reylo-compare-name:hover {
   white-space: nowrap;
 }
 
+/* A figure's caption (components/migrations-diagram.tsx): one line under it, centred. */
+#nd-page .prose .reylo-figure-caption {
+  margin-top: 0.75rem;
+  text-align: center;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-fd-muted-foreground);
+}
+
 /* A choice between two ways (components/feature-cards.tsx): a card two columns wide, its name
    over the two ways, and an "or" on the seam between them, which lies across it on a phone. */
 .reylo-choice {
@@ -893,6 +902,15 @@ a.reylo-compare-name:hover {
 .reylo-choice-way {
   position: relative;
   padding: 0.85rem 1.1rem 1.1rem;
+}
+
+/* The two ways keep clear of the "or" on the seam between them. */
+.reylo-choice-way:first-child {
+  padding-right: 1.6rem;
+}
+
+.reylo-choice-way + .reylo-choice-way {
+  padding-left: 1.6rem;
 }
 
 .reylo-choice-way + .reylo-choice-way {
@@ -938,10 +956,16 @@ a.reylo-compare-name:hover {
     grid-template-columns: 1fr;
   }
 
+  .reylo-choice-way:first-child {
+    padding-right: 1.1rem;
+    padding-bottom: 1.4rem;
+  }
+
   .reylo-choice-way + .reylo-choice-way {
     border-left: 0;
     border-top: 1px solid var(--color-fd-border);
-    padding-top: 1.1rem;
+    padding-top: 1.5rem;
+    padding-left: 1.1rem;
   }
 
   .reylo-choice-or {
