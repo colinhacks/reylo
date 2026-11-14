@@ -1254,6 +1254,8 @@ reserved.release();
 
 Reylo prepares its queries on each connection, as postgres.js prepares its own. Behind a pooler in transaction mode, such as PgBouncer's, create the client with `prepare: false`, and Reylo's queries run unprepared too. A client created with `transform.row` isn't supported.
 
+After five runs of a prepared statement, Postgres can switch to one plan for every value, so a query whose [filters may be left out](/inference#filter-indexes) reads the whole table where it used an index. Create the client with `connection: { plan_cache_mode: "force_custom_plan" }` to plan each run with its values.
+
 ### `pg-promise`
 
 Pass the database object, or the context a task or transaction hands its callback:
@@ -1315,6 +1317,8 @@ const reserved = await db.reserve();
 await getUser.run(reserved, { id: 1 });
 reserved.release();
 ```
+
+Bun.sql prepares each statement once per connection, so a query whose [filters may be left out](/inference#filter-indexes) needs `connection: { plan_cache_mode: "force_custom_plan" }` to keep using an index after five runs.
 
 Bun loses the microseconds of a `timestamp` or `timestamptz` before Reylo sees them, and a date before 1 AD, which Reylo rejects. Queries with parameters are read in binary and others as text, so a `real` comes back exact (`1.100000023841858`) only with a parameter. Bun itself fails with "Failed to read data" on a `NULL` in an `int4[]` or `float4[]`, a two-dimensional `int[]` in a query with a parameter, and an array with explicit bounds in one without.
 

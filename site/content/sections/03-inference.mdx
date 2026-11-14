@@ -269,7 +269,8 @@ To filter a list by a form's values, pass them as one [JSON parameter](#typed-js
 
 ```sql file="search_posts.sql" dialect="postgres"
 with input as (
-  select * from jsonb_to_record(:filters::jsonb('{
+  select f ->> 'q' as q, (f ->> 'author_id')::int as author_id, f ->> 'status' as status, f ->> 'sort' as sort
+  from (select :filters::jsonb('{
     "type": "object",
     "properties": {
       "q": { "type": "string", "maxLength": 100, "default": "" },
@@ -278,7 +279,7 @@ with input as (
       "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
     },
     "additionalProperties": false
-  }')) as f(q text, author_id int, status text, sort text)
+  }') as f)
 )
 select p.id, p.title, u.name as author
 from posts p
@@ -299,8 +300,8 @@ order by
 
 ```sql file="search_posts.sql" dialect="mysql"
 with input as (
-  select f.q, f.author_id, f.status, f.sort
-  from json_table(:filters::json('{
+  select f ->> '$.q' as q, f ->> '$.author_id' as author_id, f ->> '$.status' as status, f ->> '$.sort' as sort
+  from (select :filters::json('{
     "type": "object",
     "properties": {
       "q": { "type": "string", "maxLength": 100, "default": "" },
@@ -309,12 +310,7 @@ with input as (
       "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
     },
     "additionalProperties": false
-  }'), '$' columns (
-    q varchar(100) path '$.q',
-    author_id int path '$.author_id',
-    status varchar(9) path '$.status',
-    sort varchar(6) path '$.sort'
-  )) as f
+  }') as f) as f
 )
 select p.id, p.title, u.name as author
 from posts p
@@ -376,6 +372,16 @@ import searchPosts from "./search_posts.sql";
 // POST /posts/search with { "q": "sql", "status": "draft" }
 const posts = await searchPosts.run(db, { filters: await request.json() });
 ```
+
+Read with `->>`, each filter is a value the database can plan with, so on Postgres and MySQL a filter left out drops out of the plan and one given, like the author, can use an index.
+
+<Details summary="Which filters use an index, in each dialect" id="filter-indexes">
+
+- **Postgres** plans each run with its values on pg and PGlite. On postgres.js and Bun.sql, which prepare each statement once per connection, it can switch to one plan for every value after five runs, which reads the whole table; create the client with `connection: { plan_cache_mode: "force_custom_plan" }` to keep planning each run with its values. The same filter read from `jsonb_to_record` reads the whole table under every plan.
+- **MySQL** plans each run with its values. The same filter read from `json_table` reads the whole table.
+- **SQLite** plans a statement before its values are bound, so a filter that may be left out reads every row.
+
+</Details>
 
 ## Unique keys
 
