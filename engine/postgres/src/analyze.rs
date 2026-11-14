@@ -102,7 +102,7 @@ pub struct Analysis {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnalyzeError {
     Parse(String),
-    /// The statement nests deeper than libpg_query hands over ([`crate::stack::MAX_DEPTH`]).
+    /// The statement nests deeper than the engine reads ([`crate::stack::MAX_DEPTH`]).
     TooDeep,
     NotOneStatement(usize),
     UnsupportedStatement,
