@@ -1,0 +1,15 @@
+-- loses data: p.k
+alter table p alter column k drop default;
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+drop macro x;
+create macro x () as (2);
+create table t (id integer, p_id integer, v integer, primary key (id), check ((v >= x())));
+insert into t (id, p_id, v) select id, p_id, v from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;
+alter table p drop column k;
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+create table t (id integer, p_id integer, v integer, primary key (id), foreign key (p_id) references p (id), check ((v >= x())));
+insert into t (id, p_id, v) select id, p_id, v from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;

@@ -1,0 +1,1 @@
+create table a (id integer primary key, n integer check (n > 0)); create table b (id integer primary key, a_id integer references a (id)); create table c (id integer primary key, a_id integer references a (id)); create table d (id integer, b_id integer references b (id), c_id integer references c (id));

@@ -29,7 +29,7 @@ const get = async (url: string, headers: Record<string, string> = {}): Promise<{
   return { status: res.status, body: res.headers.get("content-type")?.startsWith("application/json") ? await res.json() : await res.text() };
 };
 
-test("reylo play analyzes each statement against the project's database, without running it or writing .reylo/", async () => {
+test("reylo play analyzes each statement against the project's database, without running it or writing reylo/.cache/", async () => {
   const root = project({ ".reylo.yaml": 'direct_url: "file:./app.db"\n' });
   const db = new DatabaseSync(join(root, "app.db"));
   db.exec("create table users (id integer primary key, name text not null, email text)");
@@ -66,7 +66,7 @@ test("reylo play analyzes each statement against the project's database, without
     assert.equal((await get(`${play.url}somewhere/else`)).body, "<!doctype html><title>the page</title>");
     assert.equal((await get(q("select 1"), {})).status, 200);
     assert.equal((await get(`${play.url}api/analyze`)).status, 400);
-    assert.equal(existsSync(join(root, ".reylo")), false);
+    assert.equal(existsSync(join(root, "reylo", ".cache")), false);
   } finally {
     await play.close();
   }

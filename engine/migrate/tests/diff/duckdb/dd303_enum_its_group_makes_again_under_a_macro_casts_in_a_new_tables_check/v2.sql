@@ -1,0 +1,1 @@
+create type mood as enum ('a', 'b', 'c'); create macro a_lead(s) as s <> '-'; create table t (id integer primary key, m mood, code varchar check (a_lead(code))); create table u (id integer primary key, s varchar check (s::mood <> 'c'));

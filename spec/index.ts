@@ -1,7 +1,7 @@
 // Generated from typedefs.schema.json, the format's source of truth, by `nub run typedefs`: edit the
 // schema, not this file. The rules every descriptor follows are in README.md beside it.
 
-/** A type descriptor: which values a position can hold. Every kind, from everyday to advanced; a union lists its members in this order, and a new kind is appended, so the order never changes. */
+/** A type: which values a slot can hold. A union or an intersection lists its members in this order, and a new kind is appended, so the order never changes. */
 export type Type =
   | BooleanType
   | IntegerType
@@ -10,301 +10,357 @@ export type Type =
   | TextType
   | BytesType
   | UuidType
-  | ArrayType
-  | RecordType
-  | JsonType
+  | EnumType
   | DateType
   | TimeType
   | DateTimeType
   | InstantType
+  | ZonedDateTimeType
   | DurationType
-  | UnionType
-  | SetType
+  | ArrayType
+  | TupleType
+  | StructType
   | MapType
+  | TableType
+  | JsonType
+  | UnionType
+  | IntersectionType
+  | TaggedUnionType
   | RangeType
   | MultirangeType
   | GeometryType
   | XmlType
+  | NullType
   | OpaqueType
-  | UnknownType
-  | TaggedUnionType
-  | RowsType;
+  | UnknownType;
 
 /** What every type may carry. */
 export interface Base {
-  /**
-   * The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, it is qualified, and it is the type's identity.
-   *   - Postgres: `int4`, `varchar`, `timestamptz`, `public.mood` (an enum), `public.email` (a domain), `public.vector` (an extension's type).
-   *   - MySQL: `bigint`, `enum`, `json`.
-   *   - SQLite: the declared type the value traces to, through `max`, `coalesce` and union arms too.
-   *   - Oracle: `VARCHAR2`, `R.SHAPE_T`.
-   *
-   * Absent on a type the statement builds, such as the record inside a `json_build_object`. It never changes what the type means. Generators and drivers key their conventions on it, such as MySQL's `tinyint(1)` as a boolean.
-   */
+  /** The source's own name for the type, less the modifiers its fields state: `numeric` for `numeric(10,2)`, `varchar` for `varchar(255)`. A database's name is in the dialect the document states at its top, and a type a schema defines is qualified (`public.mood`), which makes the label its identity. Absent on a type the source builds, such as the struct of a `json_build_object`. It never changes what the type means; generators and drivers may key conventions on it. */
   label?: string;
-  /** The comment the database keeps on a named type: `COMMENT ON TYPE` or `COMMENT ON DOMAIN`. A column's own comment is on the column. */
+  /** The comment the source keeps on a named type, such as `COMMENT ON TYPE`. A field's own comment is on the field. */
   comment?: string;
 }
 
-/** Inclusive bounds on an integer's values, in its canonical text, as JSON Schema's `minimum` and `maximum` are. Every bound on a whole number has an inclusive spelling, `x > 0` being `min: "1"`, so an integer takes no exclusive bound. Its bounds constrain its values only beyond what its width implies. */
-export interface InclusiveBounds {
+/** Inclusive bounds on an integer's values, in its canonical text, as JSON Schema's `minimum` and `maximum` are. Every bound on a whole number has an inclusive spelling (`x > 0` is `min: "1"`), so an integer takes no exclusive bound. Bounds narrow its values only beyond what its width implies. */
+export interface InclusivelyBounded {
   min?: string;
   max?: string;
 }
 
-/** Bounds on an ordered kind's values, in its canonical text (`"-1.50"`, `"2026-10-23"`, and for a decimal an exponent where it is shorter, `"1e126"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: "0"`. A side takes one of its two fields. A bound is written as the constraint states it, so `x > 0` on a `numeric(10,2)` is `exclusive_min: "0"`, never `min: "0.01"`; an integer takes only `min` and `max` (`InclusiveBounds`). Bounds constrain the finite values only: whether infinity, -infinity and NaN also occur is said by the `infinity` and `nan` flags alone, whatever the bounds. */
-export interface Bounds extends InclusiveBounds {
+/** Bounds on an ordered kind's finite values, in its canonical text (`"-1.50"`, `"2026-10-23"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are. A side takes one of its two fields. A bound is written as the constraint states it, so `x > 0` on a decimal of scale 2 is `exclusive_min: "0"`, never `min: "0.01"`. Whether infinity, -infinity and NaN occur is said by the `infinity` and `nan` flags alone, whatever the bounds. */
+export interface Bounded extends InclusivelyBounded {
   exclusive_min?: string;
   exclusive_max?: string;
 }
 
-/** How long a value is, in whole numbers of its kind's unit (bytes, elements, or a text's own `unit`): `exact`, or `min`, `max` or both, never `exact` beside either. `char(8)` is `size: { exact: 8 }`, `varchar(255)` is `size: { max: 255 }`, and Oracle's `VARCHAR2(20 CHAR)`, which stores `''` as null, is `size: { min: 1, max: 20 }`. A length is never exclusive, since a whole number has an inclusive spelling. */
+/** How long a value is, in whole numbers of its kind's unit (bytes, elements, or a text's `unit`): `exact`, or `min`, `max` or both. A length is never exclusive, since a whole number has an inclusive spelling. */
 export interface Size {
   exact?: number;
   min?: number;
   max?: number;
 }
 
-export interface Lengths {
+export interface Sized {
   size?: Size;
 }
 
-/** A truth value: Postgres `boolean`, SQL Server `bit`, Oracle `BOOLEAN`, and a comparison's result on any database, which MySQL and SQLite deliver as 1 or 0. A MySQL `BOOLEAN` column is an `integer`, since it can hold 5. */
+/** A truth value. */
 export interface BooleanType extends Base {
   kind: "boolean";
 }
 
-/** A whole number of a fixed width, two's complement unless `unsigned`: `int4` is 32 bits, MySQL `BIGINT UNSIGNED` 64 bits unsigned, SQL Server `tinyint` 8 bits unsigned, MySQL `MEDIUMINT` 24 bits, DuckDB `HUGEINT` 128 bits, SQLite `INTEGER` 64 bits, and Vertica's `TINYINT`, despite its name, 64 bits. Its range follows from the width; bounds narrow it further, from a CHECK or for a type narrower than any width, as MySQL `YEAR` (0 and 1901 to 2155, 16 bits bounded at 0 and 2155). A whole-number bound is always written inclusive, since `x > 0` is `x >= 1`. An integer of no fixed width is a `decimal` whose scale is at most 0. */
-export interface IntegerType extends Base, InclusiveBounds {
+/** A whole number of a fixed width, two's complement unless `unsigned`: 32 bits for a typical `int`, 128 for a `hugeint`. Its range follows from the width, and bounds narrow it further, as for a year held in 16 bits and kept to 1901 to 2155. An integer of no fixed width is a `decimal` whose scale is at most 0. */
+export interface IntegerType extends Base, InclusivelyBounded {
   kind: "integer";
   bits: number;
-  /** From 0 to 2^bits − 1: MySQL `UNSIGNED`, SQL Server `tinyint`, Postgres `oid`. */
+  /** From 0 to 2^bits − 1. */
   unsigned?: true;
   multiple_of?: string;
-  /** The only values, as JSON Schema's `enum`: a `CHECK (x IN (…))`, or a constant the statement writes (`select 1 as one`). */
-  enum?: string[];
 }
 
-/** An IEEE 754 binary float, given by its exponent and mantissa widths, which fix its range and precision: `float8`, SQLite `REAL` and SQL Server `float` are 11 and 52, `float4` 8 and 23, the half float in pgvector's `halfvec` 5 and 10, and ClickHouse's `BFloat16` 8 and 7. A width alone would not do, since those last two are both 16 bits. A generator picks the smallest native float whose widths are both at least these. -0 is a float like any other, and equal to 0. */
-export interface FloatType extends Base, Bounds {
+/** An IEEE 754 binary float, given by its exponent and mantissa widths, which fix its range and precision: a double is 11 and 52, a single 8 and 23, a half 5 and 10, and a bfloat16 8 and 7. A width alone would not do, since those last two are both 16 bits. A generator picks the smallest native float whose widths are both at least these. -0 is a float like any other, and equal to 0. */
+export interface FloatType extends Base, Bounded {
   kind: "float";
   exponent_bits: number;
   /** Not counting the implicit leading bit. */
   mantissa_bits: number;
-  /** Also holds infinity and -infinity: Postgres's floats, SQLite's `REAL`. MySQL's `FLOAT` and `DOUBLE` refuse them. */
+  /** Also holds infinity and -infinity. */
   infinity?: true;
-  /** Also holds NaN: Postgres's floats. SQLite stores a NaN as NULL, and MySQL refuses it. */
+  /** Also holds NaN. */
   nan?: true;
 }
 
-/**
- * An exact decimal: `numeric`, MySQL `DECIMAL`, Oracle `NUMBER`, `DECFLOAT`. It is a kind of its own, so that a generator switching on the kind never turns money into `int64` or `double`.
- *
- * A decimal is a coefficient, a whole number, times a power of ten: 1.25 is 125 × 10^-2. IEEE 754 and the General Decimal Arithmetic specification call the coefficient's digits the precision and the power the exponent; SQL and Java's `BigDecimal` count the exponent negated, as the scale, the digits after the point. A type bounds both:
- *   - `numeric(10,2)`: precision 10, scale 2, so up to 99,999,999.99. MySQL `DECIMAL(M,D)`, SQL Server `decimal(p,s)` and Oracle `NUMBER(p,s)` alike, and SQL Server `money` is (19,4) with bounds at -922,337,203,685,477.5808 and 922,337,203,685,477.5807. Oracle's `NUMBER(5,-2)` has scale -2, rounding to hundreds.
- *   - Postgres `numeric` with no size: scale 0 to 16,383, below 10^131072 in magnitude.
- *   - `DECFLOAT(34)`, IEEE's decimal128: precision 34, scale -6111 to 6176.
- *   - Oracle `NUMBER`: precision 40, below 10^126 in magnitude; Oracle `INTEGER` adds a scale of at most 0.
- *
- * A decimal is a number, so 1.5 and 1.50 are one value however the database prints them. Postgres `money` is `opaque`: its scale follows the session's locale, and the client receives `$1,234.57`.
- */
-export interface DecimalType extends Base, Bounds {
+/** An exact decimal: a coefficient, a whole number, times a power of ten (1.25 is 125 × 10^-2). It is a kind of its own, so that a generator switching on the kind never turns money into a float. SQL counts the power negated, as the scale, the digits after the point, and a type bounds both: `numeric(10,2)` has precision 10 and scale 2, so it holds up to 99,999,999.99. A decimal is a number, so 1.5 and 1.50 are one value however a source prints them. */
+export interface DecimalType extends Base, Bounded {
   kind: "decimal";
   /** The most digits in the coefficient. */
   precision?: number;
-  /** A value is in the type when it can be written as a coefficient of at most `precision` digits times 10^-scale, with a scale from `min_scale` to `max_scale`: so `numeric(5,2)`, precision 5 and scale 2 to 2, holds 1.5, written 150 × 10^-2. Equal bounds make a fixed scale. */
+  /** A value is in the type when it can be written as a coefficient of at most `precision` digits times 10^-scale, with a scale from `min_scale` to `max_scale`: precision 5 and scale 2 to 2 hold 1.5, written 150 × 10^-2. Equal bounds make a fixed scale; a negative scale rounds to tens, hundreds and so on. */
   min_scale?: number;
   max_scale?: number;
-  /** Also holds infinity and -infinity: Postgres `numeric` with no size, `DECFLOAT`. Java's `BigDecimal`, Rust's `rust_decimal` and C#'s `decimal` hold neither, nor NaN. */
+  /** Also holds infinity and -infinity. */
   infinity?: true;
-  /** Also holds NaN: Postgres `numeric`, sized or not, `DECFLOAT`. */
+  /** Also holds NaN. */
   nan?: true;
   multiple_of?: string;
-  enum?: string[];
 }
 
-/** Text is one kind in three shapes, by whether every value is valid Unicode (well-formed, in the Unicode Standard's word, which JavaScript's `isWellFormed()` uses too). A length counts in a unit, since languages disagree on what a string's length is: four code points take 4 to 16 bytes in UTF-8, and a JavaScript string's `length` counts UTF-16 units. A shape takes only the units that mean something for its values. How text compares, under a collation, is not part of its type, since a collation adds and removes no value. */
-export type TextType = UnicodeText | IllFormedUtf8Text | IllFormedUtf16Text;
-
-/** Valid Unicode: Postgres, MySQL and Oracle text. Its lengths count code points (`varchar(255)` is `size: { max: 255 }`), UTF-16 units (Oracle `NVARCHAR2`), or bytes in the encoding the database stores it in (MySQL `TEXT` is `size: { unit: "byte", encoding: "UTF-8", max: 65535 }`). `char(8)` is `size: { exact: 8 }`, since Postgres pads it with spaces. */
-export interface UnicodeText extends Base, TextFacts {
+/** Text. With no `encoding`, its values are any valid Unicode text: sequences of Unicode scalar values. An `encoding` names the character set its values are held in, so every character is one that set can encode, and, with `ill_formed`, its values may be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. How text compares, under a collation, is not part of its type, since how a source compares text changes no value. */
+export interface TextType extends Base {
   kind: "text";
-  ill_formed?: false;
+  /** The character set the values are held in, by its IANA name, pinned to one mapping table (spec/README.md): every character is one it encodes. A Unicode encoding (UTF-8, UTF-16, UTF-32, CESU-8, GB18030) encodes every character, so it is written only beside `ill_formed`, or where a size counts its code units or bytes. */
+  encoding?: Charset;
+  /** Values may be any sequence of the encoding's code units, not only valid text: bytes for UTF-8 or a single-byte set, 16-bit units for UTF-16 (a lone surrogate), 32-bit units up to 0x10FFFF for UTF-32. Written only beside `encoding`. */
+  ill_formed?: true;
+  /** Inclusive ranges of code points every character falls in, beside what `encoding` allows: `[[1, 1114111]]` holds no NUL, `[[0, 65535]]` nothing past the Basic Multilingual Plane. Sorted, disjoint and never adjacent. In ill-formed text, a lone surrogate or a 32-bit unit is held to them by its value. */
+  code_points?: [number, number][];
   size?: TextSize;
+  /** An I-Regexp (RFC 9485) every value matches whole: `[^@]+@[^@]+`. Matched against ill-formed text as decoded, each ill-formed sequence read as U+FFFD. */
+  pattern?: string;
+  /** What the text is, as a media type (`text/html`): JSON Schema's `contentMediaType`. */
+  media_type?: string;
 }
 
-/** A valid text's size, which says what it counts: code points when `unit` is absent, UTF-16 units, or bytes in `encoding`. */
+/** A text's length: in code points where `unit` is absent, in the encoding's code units (UTF-16 units, as a JavaScript string's `length` counts), or in bytes in the encoding. A unit other than code points is written only where the text names its `encoding`. */
 export interface TextSize extends Size {
-  unit?: "utf16_unit" | "byte";
-  /** The encoding bytes are counted in, written only with `unit: "byte"`. */
-  encoding?: string;
+  unit?: "code_unit" | "byte";
 }
 
-/** Bytes meant as UTF-8 but never validated, so a value may not be valid Unicode: SQLite `TEXT` (`CAST(x'ff' AS TEXT)`), ClickHouse `String`, a Postgres `SQL_ASCII` database, Firebird `NONE`. A JavaScript string cannot hold every value. Its lengths count bytes, and its patterns are `like` and `ilike`, since a regular expression matches characters. */
-export interface IllFormedUtf8Text extends Base, Lengths {
-  kind: "text";
-  ill_formed: "utf8";
-  pattern?: { dialect: "like" | "ilike"; source: string; };
-  enum?: string[];
-}
+/** A character set, by its IANA name, matched without regard to case: the Unicode encodings; US-ASCII and ISO 8859, pinned to Unicode's mapping tables; the Windows code pages, pinned to the WHATWG Encoding Standard's indexes; and the sets databases and languages still store. */
+export type Charset =
+  | "UTF-8"
+  | "UTF-16"
+  | "UTF-32"
+  | "CESU-8"
+  | "GB18030"
+  | "US-ASCII"
+  | "ISO-8859-1"
+  | "ISO-8859-2"
+  | "ISO-8859-3"
+  | "ISO-8859-4"
+  | "ISO-8859-5"
+  | "ISO-8859-6"
+  | "ISO-8859-7"
+  | "ISO-8859-8"
+  | "ISO-8859-9"
+  | "ISO-8859-10"
+  | "ISO-8859-13"
+  | "ISO-8859-14"
+  | "ISO-8859-15"
+  | "ISO-8859-16"
+  | "windows-874"
+  | "windows-1250"
+  | "windows-1251"
+  | "windows-1252"
+  | "windows-1253"
+  | "windows-1254"
+  | "windows-1255"
+  | "windows-1256"
+  | "windows-1257"
+  | "windows-1258"
+  | "IBM437"
+  | "IBM850"
+  | "IBM852"
+  | "IBM866"
+  | "KOI8-R"
+  | "KOI8-U"
+  | "macintosh"
+  | "TIS-620"
+  | "DEC-MCS"
+  | "hp-roman8"
+  | "SEN_850200_B"
+  | "Shift_JIS"
+  | "Windows-31J"
+  | "EUC-JP"
+  | "ISO-2022-JP"
+  | "EUC-KR"
+  | "GB2312"
+  | "GBK"
+  | "Big5"
+  | "Big5-HKSCS";
 
-/** UTF-16 units that may hold a lone surrogate: SQL Server `nvarchar`, `nchar` and `ntext`. A Rust `String` cannot hold every value. Its lengths count UTF-16 units. */
-export interface IllFormedUtf16Text extends Base, TextFacts, Lengths {
-  kind: "text";
-  ill_formed: "utf16";
-}
-
-export interface TextFacts {
-  /** A pattern every value matches, in its own dialect and matched as that dialect matches: `like` and `ilike` against the whole value, a regular expression anywhere in it unless anchored. A case-insensitive match (`~*`, or `REGEXP` under a case-insensitive collation) begins its source with `(?i)`. Postgres's and ECMA's regular expressions disagree on `.` and newlines. */
-  pattern?: { dialect: "postgres" | "mysql" | "posix" | "ecma" | "like" | "ilike"; source: string; };
-  /** The only values, as JSON Schema's `enum`: a database's enum type (Postgres `create type mood as enum (…)`, MySQL `ENUM(…)`), a `CHECK (x IN (…))`, or a constant the statement writes (`select 'user' as kind`). An enum type's declared order concerns only how its values sort, so it is not part of the type. */
-  enum?: string[];
-}
-
-/** Bytes: `bytea`, `binary(n)` (exactly n), `varbinary(n)`, `BLOB`, `RAW(n)`, SQL Server `rowversion` (8), Postgres `macaddr` (6) and `macaddr8` (8). */
-export interface BytesType extends Base, Lengths {
+/** Bytes: any sequence of octets, of the size it states. Its canonical text is base64 (RFC 4648, padded). */
+export interface BytesType extends Base, Sized {
   kind: "bytes";
+  /** What the bytes are, as a media type (`image/png`): JSON Schema's `contentMediaType`. */
+  media_type?: string;
 }
 
-/** A 128-bit identifier, in RFC 9562's text form: Postgres `uuid`, SQL Server `uniqueidentifier`, MariaDB and DuckDB `UUID`. It holds any 128 bits unless `version` says otherwise: none of these types keeps to a version or a variant, so a column holds the nil UUID and bits no RFC version describes, and a `default uuidv7()` does not stop an insert writing any other. */
+/** A 128-bit identifier, in RFC 9562's text form. It holds any 128 bits, the nil UUID and bits no RFC version describes among them, unless `versions` says otherwise. */
 export interface UuidType extends Base {
   kind: "uuid";
-  /** Every value is of RFC 9562's variant, with this version. Written only where the database guarantees it: a value the function that made it names (`gen_random_uuid()` and `uuidv4()` make version 4, `uuidv7()` version 7), a column whose CHECKs hold `uuid_extract_version` to it and non-null (the function is NULL for a UUID of another variant, which a CHECK lets through), or a type that keeps to one, as Cassandra's `timeuuid` does to version 1. */
-  version?: number;
+  /** Every value is of RFC 9562's variant, with one of these versions: `[7]`, or all eight for any RFC UUID. Written only where the source guarantees it. */
+  versions?: number[];
 }
 
-/**
- * A sequence of `element`s, in order. Where its index starts is not part of the type.
- *   - **Nesting:** a two-dimensional array is an array of arrays. A Postgres array column takes `any_depth`, since Postgres ignores declared dimensions: one `int[]` column holds `{1,2}` and `{{1,2},{3,4}}`. Every array a statement builds (`array_agg`, `ARRAY[…]`, a JSON array) has the depth its nesting shows.
- *   - **Its size** counts the outermost array's elements. A fixed shape, such as DuckDB's `INTEGER[3]` or a 3×3 matrix, is arrays of exact sizes, nested.
- *   - **A vector** is an array of floats: pgvector's `vector(3)` is exactly 3 elements, and MySQL's `VECTOR(n)` at most n.
- *   - **A bit string** is an array of booleans: Postgres `bit(7)` and MySQL `BIT(7)` are exactly 7, and Postgres `varbit(n)` at most n. That is its value, not its representation: a client may hold one as a string of 0s and 1s, a number or a buffer.
- */
-export interface ArrayType extends Base, Lengths {
-  kind: "array";
-  element: Position;
-  /** An element may itself be an array of `element`, to any depth, each value rectangular. */
-  any_depth?: true;
+/** One of a fixed list of values of `type`, in that type's canonical text: an enum's labels, a `CHECK (x IN (…))`, or a constant a statement writes. An enum of one value is a literal: `select 'user' as kind` is `{ kind: "enum", type: { kind: "text" }, values: ["user"] }`. The list's order is the source's, and how its values sort is not part of the type. */
+export interface EnumType extends Base {
+  kind: "enum";
+  /** A kind whose values the format writes as text: a boolean (`"true"`), a number, text, bytes, a UUID, a date, a time or a duration. Never itself an enum. */
+  type: Type;
+  values: string[];
 }
 
-/**
- * Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `label`:
- *   - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;
- *   - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;
- *   - an Oracle `BFILE` is `{ directory, file }`.
- *
- * A record holds exactly its fields. A column whose object type has subtypes is a union of their records.
- */
-export interface RecordType extends Base {
-  kind: "record";
-  fields: Field[];
-}
-
-/**
- * A JSON value: `json`, `jsonb`, MySQL `JSON`.
- *   - `content`: what the statement built (`json_build_object`, `json_agg`), described with the same types. Each leaf is typed by the SQL value the database wrote it from: inside a `json_build_object`, an `int8` may pass 2^53, which a JSON Schema could not say.
- *   - `schema`: a JSON Schema every value satisfies, from a CHECK or a parameter's typed cast, whose `$schema` names the draft it is read by: MySQL's `JSON_SCHEMA_VALID` reads draft 4, and Postgres's validator extensions differ.
- *   - Neither: any JSON, whose numbers may have any length (`jsonb` keeps them as `numeric`), never only doubles.
- *
- * What each database writes for each type is in "Facts about each database".
- */
-export interface JsonType extends Base {
-  kind: "json";
-  content?: Position;
-  schema?: { $schema: string; [keyword: string]: unknown; };
-}
-
-/** A calendar date. Postgres's runs from `-4713-11-24` to `+5874897-12-31`, in astronomical years. */
-export interface DateType extends Base, Bounds {
+/** A calendar date. */
+export interface DateType extends Base, Bounded {
   kind: "date";
-  /** Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values. */
+  /** Also holds infinity and -infinity, which sort after and before every other value. Bounds constrain only the finite values. */
   infinity?: true;
 }
 
-/** A time of day: `time(p)`. Postgres's holds `24:00:00` itself, its `max`, which Java's `LocalTime`, Python's `time` and Temporal refuse. With `zone`, each value keeps an offset too: Postgres `timetz`. */
-export interface TimeType extends Base, Bounds {
+/** A time of day. Its `max` may be `24:00:00`, which some languages' time types refuse. */
+export interface TimeType extends Base, Bounded {
   kind: "time";
   tick: string;
-  zone?: Zone;
+  /** Each value keeps a UTC offset beside the time. */
+  offset?: true;
 }
 
-/** A date and time of day as a wall clock reads, with no zone: Postgres `timestamp`, MySQL `DATETIME`, SQL Server `datetime2`, Oracle `DATE`. */
-export interface DateTimeType extends Base, Bounds {
+/** A date and a time of day as a wall clock reads them, with no zone: no moment until a zone is given. */
+export interface DateTimeType extends Base, Bounded {
   kind: "datetime";
   tick: string;
-  /** Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values. */
+  /** Also holds infinity and -infinity, which sort after and before every other value. Bounds constrain only the finite values. */
   infinity?: true;
 }
 
-/** A point on the timeline: Postgres `timestamptz`, MySQL `TIMESTAMP`, Oracle `TIMESTAMP WITH LOCAL TIME ZONE`. Each stores the moment and shows it in the session's zone. Bounds are in UTC. */
-export interface InstantType extends Base, Bounds {
+/** A point on the timeline and nothing else, as Temporal's `Instant`: written in UTC (`2026-11-14T18:14:00Z`). A source that prints one with an offset adds the offset as it prints. Bounds are in UTC. */
+export interface InstantType extends Base, Bounded {
   kind: "instant";
   tick: string;
-  /** Absent: only the moment, with no claim about any offset, as Postgres `timestamptz`, which takes `12:00+05:30` and gives back that moment in the session's zone. */
-  zone?: Zone;
-  /** Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values. */
+  /** Also holds infinity and -infinity, which sort after and before every other value. Bounds constrain only the finite values. */
   infinity?: true;
 }
 
-/** What each value keeps besides the moment: a UTC offset (SQL Server `datetimeoffset`, Postgres `timetz`), a region such as `America/Los_Angeles`, or either, per value (Oracle `TIMESTAMP WITH TIME ZONE`, Firebird's `WITH TIME ZONE` types). No database keeps regions alone today. */
-export type Zone = "offset" | "region" | "region_or_offset";
+/** A point on the timeline and the time zone it was written in, a region or a UTC offset, as Temporal's `ZonedDateTime`: written as RFC 9557 does, `2026-11-14T10:14:00-08:00[America/Los_Angeles]`, or `2026-11-14T10:14:00-08:00[-08:00]` for an offset. Bounds compare the moments. */
+export interface ZonedDateTimeType extends Base, Bounded {
+  kind: "zoned_datetime";
+  tick: string;
+  /** Every value's zone is a UTC offset, never a region, as Java's `OffsetDateTime`. */
+  offset_only?: true;
+  /** Also holds infinity and -infinity, which sort after and before every other value. Bounds constrain only the finite values. */
+  infinity?: true;
+}
 
-/**
- * A length of time, in the parts it has (months, days and time), each signed on its own. A month and a day have no fixed length (a month is 28 to 31 days, and a day 23 to 25 hours across a clock change), so a duration that counts them keeps them apart from its time: Postgres adds `1 month` to January 31 as February 28, and `1 day` across a clock change as 23 or 25 hours.
- *   - Postgres `interval` has all three (`1 mon -1 day`, which `Temporal.Duration` refuses): `P2147483648M2147483648DT2562047788H54.775808S`.
- *   - Oracle's `INTERVAL YEAR TO MONTH` has months alone (`P1199M`), and its `INTERVAL DAY TO SECOND` time alone (`PT2399H59M59.999999S`), since it holds a day as 24 hours.
- *   - MySQL `TIME` is time alone: `PT838H59M59S`.
- *
- * SQL calls this kind an interval; ISO 8601's intervals are a start and an end, which is a `range` here.
- */
+/** A length of time, in the parts it has (months, days and time), each signed on its own. A month and a day have no fixed length (a month is 28 to 31 days, and a day 23 to 25 hours across a clock change), so a duration that counts them keeps them apart from its time. ISO 8601's intervals, a start and an end, are a `range` here. */
 export interface DurationType extends Base {
   kind: "duration";
-  /** The parts its values have, each at the largest magnitude it reaches, of either sign, as one ISO 8601 duration: months in `M`, days in `D`, then time in `H`, `M` and `S`, its minutes and seconds below 60. A part the type lacks is left out, and a part it has is never 0. A two's complement part reaches one unit further below zero than above it, so it is written at the negative side's magnitude: Postgres's months reach -2147483648 and +2147483647, and are `2147483648M`. */
+  /** The parts its values have, each at the largest magnitude it reaches, of either sign, as one ISO 8601 duration: months in `M`, days in `D`, then time in `H`, `M` and `S`, its minutes and seconds below 60. A part the type lacks is left out, and a part it has is never 0. A two's complement part reaches one unit further below zero than above it, so it is written at the negative side's magnitude: 32-bit months are `2147483648M`. */
   max: string;
   /** The time part's smallest step, written exactly when `max` has a time part. */
   tick?: string;
-  /** Also holds infinity and -infinity: Postgres's, from version 17. */
+  /** Also holds infinity and -infinity. */
   infinity?: true;
 }
 
+/** A sequence of elements, in order, each in the one `element` slot. An array is flat: a two-dimensional array is an array of arrays, each level of its own. Where its index starts is not part of it. Its size counts its elements, so a vector of 3 floats is `size: { exact: 3 }`, and a bit string an array of booleans of its length. */
+export interface ArrayType extends Base, Sized {
+  kind: "array";
+  element: Slot;
+  /** No two elements are equal, by the source's own equality, and so no two are the same value: a set, as JSON Schema's `uniqueItems` says. */
+  distinct?: true;
+}
+
+/** A sequence of values, each of its own type, with no names: `[1, "a"]`. `elements` come first and are always there, `optional_elements` follow, each present only where the one before it is, and `rest` takes any number after them. JSON Schema writes the same with `prefixItems`, `minItems` and `items`. */
+export interface TupleType extends Base {
+  kind: "tuple";
+  /** The elements every value has, in order. */
+  elements: Slot[];
+  /** Elements that may be missing from the end, in order: a value with the second of them has the first. */
+  optional_elements?: Slot[];
+  /** Any number of further elements, each in this slot. */
+  rest?: Slot;
+}
+
+/** Named fields, in order: a row, a composite type, an object. A struct holds exactly its fields, unless `extra` lets it hold other keys too. A source's sugar over simpler values is a struct carrying its `label`, as a point is `{ x, y }`. */
+export interface StructType extends Base {
+  kind: "struct";
+  fields: Field[];
+  /** Keys beyond its fields, any number, each holding a value in this slot, as JSON Schema's `additionalProperties`: it says nothing of the named fields. A key is text, and none is a field's name. */
+  extra?: Slot;
+}
+
+/** Keys to values, each key once and in no order: a dictionary. A map whose keys may repeat is an array of `{ key, value }` structs. */
+export interface MapType extends Base {
+  kind: "map";
+  /** Inside JSON content, a key is text and never null. */
+  key: Slot;
+  value: Slot;
+}
+
+/** Rows of columns: what a statement returns, and a table nested in a value, such as SQL's `MULTISET`. A row of a table is a struct of its columns; a language may hold a table as an array of objects, a list of tuples, or columns. */
+export interface TableType extends Base {
+  kind: "table";
+  /** How many rows: exactly one, at most one, any number, or none (a write that returns nothing). */
+  cardinality: "one" | "at_most_one" | "many" | "none";
+  /** In order; empty where there are no rows. */
+  columns: Field[];
+  /** Each set of columns, by name, no two rows agree on all of: no two equal under the source's own equality, a null equal to another null, and so no two the same values. None inside another: `[["id"], ["email"]]`. A column of a unique index counts only where its nulls cannot repeat. Only where the cardinality is `many`. */
+  unique?: string[][];
+  /** The columns the rows are sorted on, in order, by the source's own sort, as far as the sort names columns of the table: `order by at desc, lower(name), id` gives only `at`, since its next key is no column, and `id` then sorts only rows that tie. A key under another collation than its column's ends the list. Rows that tie on all of them come in any order. Only where the cardinality is `many`. */
+  order?: SortKey[];
+}
+
+/** A column a table's rows are sorted on. */
+export interface SortKey {
+  /** The column's name. */
+  column: string;
+  /** Sorted from the highest value down. */
+  desc?: true;
+  /** Where nulls sort. */
+  nulls: "first" | "last";
+}
+
 /**
- * One of several types: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, an object column with subtypes holds any subtype's record, and MySQL's `:n + 1` is a BIGINT, a DOUBLE or a DECIMAL by what is bound and how the driver sends it. A union whose members a database names, and whose values say which member they are, is a `tagged_union`.
- *
- * A union of no members holds no value, so a position typed so with `nullable` is always null: the field of a `json_build_object('a', null)`.
+ * A JSON value.
+ *   - `content`: what a statement built, described with the same types, each leaf typed by the value it was written from, so a 64-bit integer may pass 2^53.
+ *   - `schema`: a JSON Schema every value satisfies, whose `$schema` names the draft it is read by.
+ *   - Neither: any JSON, whose numbers may have any length.
  */
+export interface JsonType extends Base {
+  kind: "json";
+  /** Where it may be null, the document may be JSON null. */
+  content?: Slot;
+  schema?: { $schema: string; [keyword: string]: unknown; };
+}
+
+/** One of several types: each value is one of them. A union whose values say which member they are is a `tagged_union`. */
 export interface UnionType extends Base {
   kind: "union";
   members: Type[];
 }
 
-/** Elements in no order, each at most once by the element type's equality: MySQL `SET`, a set of the values it declares, at most 64. A client may receive the elements in any order. Not an array, since it has no rank and no index. */
-export interface SetType extends Base, Lengths {
-  kind: "set";
-  element: Position;
-  /** An element may appear more than once, making a multiset: the SQL standard's `MULTISET`, Oracle's nested tables. */
-  duplicates?: true;
+/** Values of every member at once: JSON Schema's `allOf`, TypeScript's `&`. An intersection one struct can write, of structs whose fields agree or of a struct and a map with text keys, is written as that struct. */
+export interface IntersectionType extends Base {
+  kind: "intersection";
+  members: Type[];
 }
 
-/** Keys to values, each key once by the key type's equality, in no order: `hstore` (text to nullable text). A key is never null. A map whose keys may repeat, such as ClickHouse's `Map`, is an array of `{ key, value }` records. */
-export interface MapType extends Base {
-  kind: "map";
-  key: Type;
-  value: Position;
+/** One of several alternatives, each named by the tag every value carries, in the order the type declares them, as a Rust enum. Unlike a union's members, two alternatives may hold one type, and a value says which alternative it is even where it holds null. */
+export interface TaggedUnionType extends Base {
+  kind: "tagged_union";
+  alternatives: Alternative[];
 }
 
-/** A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Its subtype is any type the database orders, which on Postgres takes in an array, a composite and a `boolean`. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not. */
+/** An alternative of a tagged union: its tag, unique in the type, and the slot of the value it holds. */
+export interface Alternative extends Slot {
+  tag: string;
+}
+
+/** A range of `subtype`, with an empty range and unbounded ends: a start and an end. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not. */
 export interface RangeType extends Base {
   kind: "range";
   subtype: Type;
 }
 
-/** An ordered set of non-overlapping ranges: Postgres multiranges. */
+/** An ordered set of non-overlapping ranges. */
 export interface MultirangeType extends Base {
   kind: "multirange";
   subtype: Type;
 }
 
-/** An OGC simple feature: PostGIS `geometry` and `geography` (`geodetic`), and the spatial types of MySQL, SQL Server and Oracle. */
+/** An OGC simple feature, planar or on a spheroid (`geodetic`). */
 export interface GeometryType extends Base {
   kind: "geometry";
   model?: "planar" | "geodetic";
@@ -313,7 +369,7 @@ export interface GeometryType extends Base {
   coordinates?: "xy" | "xyz" | "xym" | "xyzm";
 }
 
-/** XML: a document with one root, valid against any `schemas` given, or a fragment, which may have several roots (`<a/><b/>`), as Postgres's `xml` may. An XML Schema validates documents only, so a fragment names none. */
+/** XML: a document with one root, valid against any `schemas` given, or a fragment, which may have several roots (`<a/><b/>`). An XML Schema validates documents only, so a fragment names none. */
 export type XmlType = XmlDocument | XmlFragment;
 
 export interface XmlDocument extends Base {
@@ -327,49 +383,20 @@ export interface XmlFragment extends Base {
   fragment: true;
 }
 
-/** A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `label` is all the format says; what a value looks like is the driver's to decide. */
+/** The value that is always null, in a slot marked `nullable`: the field of a `json_build_object('a', null)`. */
+export interface NullType {
+  kind: "null";
+}
+
+/** A type the source knows and the format does not structure: an extension's own type, or one that holds a value of any type, each carrying its own. Its `label` is all the format says; what a value looks like is the driver's to decide. */
 export interface OpaqueType extends Base {
   kind: "opaque";
   label: string;
 }
 
-/** Nothing is known about the values. */
+/** Nothing is known about the values, but whether one may be null, which its slot says. */
 export interface UnknownType {
   kind: "unknown";
-}
-
-/** One of several alternatives, each named by the tag every value carries, in the order the type declares them: DuckDB's `UNION(num INTEGER, str VARCHAR)`, a Rust enum. Unlike a union's members, two alternatives may hold one type, and a value says which alternative it is, even where it holds NULL (DuckDB's `union_value(num := NULL)` is no NULL union). */
-export interface TaggedUnionType extends Base {
-  kind: "tagged_union";
-  alternatives: Alternative[];
-}
-
-/** An alternative of a tagged union: its tag, unique in the type, and the value it holds. */
-export interface Alternative extends Position {
-  tag: string;
-}
-
-/** A column rows are sorted on. */
-export interface OrderColumn {
-  /** The column's name. */
-  column: string;
-  /** Sorted from the highest value down. */
-  desc?: true;
-  /** Where NULLs sort, which a database's default decides unless the statement says. */
-  nulls: "first" | "last";
-}
-
-/** Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name. */
-export interface RowsType extends Base {
-  kind: "rows";
-  /** How many rows: exactly one, at most one, any number, or none (a write without `RETURNING`). */
-  cardinality: "one" | "at_most_one" | "many" | "none";
-  /** In order; empty where there are no rows. */
-  columns: Column[];
-  /** Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, none inside another: `[["id"], ["email"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only for rows that can be more than one, and absent where none is known. */
-  unique?: string[][];
-  /** The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the column's own, unless the key names another, which ends the list. Rows that tie on all of them come back in any order. Only for rows that can be more than one, and absent where the rows aren't sorted on a column of the result. */
-  order?: OrderColumn[];
 }
 
 /** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
@@ -384,8 +411,8 @@ export interface StatementDescriptor {
   /** The prose written in comments before the statement: its summary, as an editor's hover shows it. */
   comment?: string;
   params: Param[];
-  /** What the statement returns. */
-  result: RowsType;
+  /** What the statement returns, a table: a row of columns per row, and its cardinality. A statement that returns one value is still a row of one column, which keeps the column's name. A row is an object keyed by its columns' names, which keeps only the last of two with one name, so a statement whose result repeats a name (`select a.id, b.id`) has a diagnostic at each later column of it, asking for another name with `as`. The name the database gives a column stands: Postgres calls `select 1`'s `?column?`. */
+  result: TableType;
   /** What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns. */
   diagnostics: Diagnostic[];
 }
@@ -398,30 +425,26 @@ export interface Diagnostic {
   code?: string;
 }
 
-/** Where a value stands: a column, a parameter, a record's field, an array's element, a map's value, or JSON content. Nullability lives here, never in a type, since an outer join makes any position nullable whatever its type. */
-export interface Position {
+/** Where a type is used: a column, a parameter, a struct's field, an array's element, a tuple's element, a map's key or value, a tagged union's alternative, JSON content. Whether a value may be null is the slot's to say, never the type's, so one type reads the same at every use. A union's members, an intersection's, an enum's type and a range's subtype are bare types, since a value stands at none of them. */
+export interface Slot {
   type: Type;
-  /** The value may be null; absent, it never is. On a parameter, the statement accepts null; inside JSON content, the value may be JSON null. */
+  /** The value may be null, whatever the type's values, bounds or label say. On a parameter, the statement accepts null; inside JSON content, the value may be JSON null. */
   nullable?: true;
 }
 
-/** A result's column. A row always has every column, so none is optional. A row is an object keyed by its columns' names, which keeps only the last of two with one name, so a statement whose result repeats a name (`select a.id, b.id`) has a diagnostic at each later column of it, asking for another name with `as`. */
-export interface Column extends Position {
-  /** The name the database gives the column: Postgres calls `select 1`'s `?column?`, and SQL Server leaves it empty. */
+/** A struct's field or a table's column: a key of an object, a column of a row. */
+export interface Field extends Slot {
   name: string;
-  /** The comment the database keeps on the column (`COMMENT ON COLUMN`). */
+  /** The key may be absent, apart from whether its value may be null; `default` names the value it takes where it is absent. */
+  optional?: true;
+  /** The value an optional field takes where its key is absent, in its type's canonical text: only beside `optional`. */
+  default?: string;
+  /** What the field is, as its source documents it, such as the comment a database keeps on a column. */
   comment?: string;
 }
 
-/** A record's field. */
-export interface Field extends Position {
-  name: string;
-  /** The key may be absent: a structured parameter's `?` member, a JSON object's key (as `jsonb_strip_nulls` drops). Apart from `nullable`, and never a default value. */
-  optional?: true;
-}
-
-/** A statement's parameter. Where the statement writes it whole into a column, its type is that column's: `insert into t (price) values (:price)`, into a `numeric(10,2)` column, gives `price` precision 10 and scale 2, though Postgres describes the parameter as plain `numeric` and would round 1.234. That is stricter than the server, never looser. */
-export interface Param extends Position {
+/** A statement's parameter. Where the statement writes it whole into a column, its type is that column's: `insert into t (price) values (:price)` into a decimal of scale 2 gives `price` that scale, though the database describes the parameter with none and would round 1.234. That is stricter than the server, never looser. */
+export interface Param extends Slot {
   name: string;
   /** The caller may leave the parameter out. */
   optional?: true;
@@ -429,7 +452,7 @@ export interface Param extends Position {
   comment?: string;
 }
 
-/** The database a document of descriptors describes, stated once at the document's top: every `label` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `oracle` or `sqlserver`, and `version` its server version. */
+/** The database a document of descriptors describes, stated once at the document's top: every `label` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `duckdb`, `oracle` or `sqlserver`, and `version` its server version. */
 export interface Dialect {
   name: string;
   version: string;

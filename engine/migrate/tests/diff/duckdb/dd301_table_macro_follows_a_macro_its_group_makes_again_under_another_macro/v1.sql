@@ -1,0 +1,1 @@
+create macro a_lead(s) as s <> ''; create macro valid(s) as length(s) > 0; create table t (id integer primary key, code varchar check (a_lead(code) and valid(code))); create macro tm() as table select valid('x') as ok;

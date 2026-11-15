@@ -1,0 +1,3 @@
+-- A list a DISTINCT aggregate or list_distinct makes holds no two equal elements, by DuckDB's own equality, list_distinct no NULL either, through a derived table and a UNION of such lists; a float's, whose -0 and 0 the format reads as one value, and a list anything else makes say nothing.
+create table tags (id integer primary key, post_id integer, name varchar, score decimal(10, 2), f double, labels varchar[]);
+insert into tags values (1, 1, 'x', 1.0, 0.0, ['a', 'a', null, null]), (2, 1, 'x', 1.00, -0.0, ['b']), (3, 1, null, null, 'NaN', []), (4, 1, null, null, 'NaN', null), (5, 2, 'X', 2, 1.5, ['c', 'C']);

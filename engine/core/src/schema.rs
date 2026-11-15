@@ -9,7 +9,7 @@
 //! field of an `Object` or item of a `List`) takes the database's: `int8` and `numeric` as JSON
 //! numbers, `bytea` as its own `\x…` hex.
 
-use crate::types::{Field, JsonType, Kind, RecordType, Type, UuidType};
+use crate::types::{Field, JsonType, Kind, Slot, StructType, Type, UuidType};
 use serde_json::{json, Map, Value};
 
 /// Where a value stands and how the caller encodes what it decodes itself.
@@ -79,6 +79,48 @@ fn text_of(ty: &Type) -> Value {
     json!({"type": "string", "description": format!("pg type {}", ty.label.as_deref().unwrap_or(ty.kind.name()))})
 }
 
+/// An I-Regexp (RFC 9485), which matches a whole value, as the ECMAScript expression JSON Schema's
+/// `pattern` reads: anchored at both ends, each `.` outside a class the `[^\n\r]` I-Regexp means by
+/// it (RFC 9485 §5.3), and a `^` or a `$`, which I-Regexp reads as itself, escaped.
+pub fn ecma_pattern(source: &str) -> String {
+    let mut out = String::with_capacity(source.len() + 8);
+    let (mut escaped, mut class) = (false, false);
+    for c in source.chars() {
+        match c {
+            _ if escaped => {
+                out.push(c);
+                escaped = false;
+            }
+            '\\' => {
+                out.push(c);
+                escaped = true;
+            }
+            '[' if !class => {
+                out.push(c);
+                class = true;
+            }
+            ']' if class => {
+                out.push(c);
+                class = false;
+            }
+            '.' if !class => out.push_str("[^\\n\\r]"),
+            // Plain characters in I-Regexp, which has no anchors, and anchors in ECMAScript.
+            '^' | '$' if !class => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    format!("^(?:{out})$")
+}
+
+/// A slot's schema: its type's, admitting null where the slot may hold it.
+fn slot_schema(s: &Slot, opts: SchemaOptions) -> Value {
+    let schema = s.ty.json_schema(opts);
+    if s.nullable { nullable(schema) } else { schema }
+}
+
 /// The values JSON writes as text when a float or a decimal holds them.
 fn non_finite(infinity: bool, nan: bool) -> Vec<&'static str> {
     let mut out = Vec::new();
@@ -95,7 +137,26 @@ impl Type {
     /// The JSON Schema of a value of this type, standing where `opts` says.
     pub fn json_schema(&self, opts: SchemaOptions) -> Value {
         match &self.kind {
-            Kind::Boolean => json!({"type": "boolean"}),
+            Kind::Boolean(_) => json!({"type": "boolean"}),
+            // An enum's values as its base writes them: a boolean or a number as itself where its
+            // schema is a JSON number or boolean, else as its text.
+            Kind::Enum(e) => {
+                let mut base = e.ty.json_schema(opts);
+                let as_json = |v: &str| -> Value {
+                    match base.get("type").and_then(Value::as_str) {
+                        Some("boolean") => Value::Bool(v == "true"),
+                        Some("integer" | "number") => serde_json::from_str::<serde_json::Number>(v).map(Value::Number).unwrap_or_else(|_| Value::String(v.into())),
+                        _ => Value::String(v.into()),
+                    }
+                };
+                let values: Vec<Value> = e.values.iter().map(|v| as_json(v)).collect();
+                if let Value::Object(map) = &mut base {
+                    map.insert("enum".into(), Value::Array(values));
+                    base
+                } else {
+                    json!({"enum": values})
+                }
+            }
             // An oid is not one of the numbers JSON has a number for: Postgres writes its text.
             Kind::Integer(_) if bare_name(self) == "oid" => text_of(self),
             Kind::Integer(i) if i.bits <= 32 && !(i.bits == 32 && i.unsigned) => json!({"type": "integer", "format": "int32"}),
@@ -114,14 +175,18 @@ impl Type {
                 if text.is_empty() { number } else { json!({"anyOf": [number, {"enum": text}]}) }
             }
             Kind::Decimal(_) => json!({"type": "string", "format": "decimal"}),
-            Kind::Text(t) => match &t.values {
-                Some(values) => json!({"type": "string", "enum": values}),
+            Kind::Text(t) => match &t.pattern {
+                Some(pattern) => json!({"type": "string", "pattern": ecma_pattern(pattern)}),
                 None => json!({"type": "string"}),
             },
-            Kind::Uuid(UuidType { version: None }) => json!({"type": "string", "format": "uuid"}),
-            // RFC 9562's text form, its version digit and its variant fixed.
-            Kind::Uuid(UuidType { version: Some(v) }) => json!({"type": "string", "format": "uuid", "pattern": format!("^[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-{v:x}[0-9a-fA-F]{{3}}-[89abAB][0-9a-fA-F]{{3}}-[0-9a-fA-F]{{12}}$")}),
-            Kind::DateTime(_) | Kind::Instant(_) => json!({"type": "string", "format": "date-time"}),
+            Kind::Uuid(UuidType { versions: None }) => json!({"type": "string", "format": "uuid"}),
+            // RFC 9562's text form, its version digit one of its versions and its variant fixed.
+            Kind::Uuid(UuidType { versions: Some(versions) }) => {
+                let digits: String = versions.iter().map(|v| format!("{v:x}")).collect();
+                let digit = if digits.len() == 1 { digits } else { format!("[{digits}]") };
+                json!({"type": "string", "format": "uuid", "pattern": format!("^[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-{digit}[0-9a-fA-F]{{3}}-[89abAB][0-9a-fA-F]{{3}}-[0-9a-fA-F]{{12}}$")})
+            }
+            Kind::DateTime(_) | Kind::Instant(_) | Kind::ZonedDateTime(_) => json!({"type": "string", "format": "date-time"}),
             Kind::Date(_) => json!({"type": "string", "format": "date"}),
             Kind::Time(_) => json!({"type": "string", "format": "time"}),
             Kind::Bytes(_) if matches!(bare_name(self), "macaddr" | "macaddr8") => text_of(self),
@@ -133,7 +198,7 @@ impl Type {
             // A bit string and pgvector's vectors are their text to a client.
             Kind::Array(_) if matches!(bare_name(self), "bit" | "varbit" | "vector" | "halfvec" | "sparsevec") => text_of(self),
             // Postgres has no cast of a geometric type to JSON, so a document holds its text.
-            Kind::Array(_) | Kind::Record(_) if opts.in_json && matches!(bare_name(self), "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle") => text_of(self),
+            Kind::Array(_) | Kind::Struct(_) if opts.in_json && matches!(bare_name(self), "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle") => text_of(self),
             Kind::Array(a) => {
                 let items = a.element.ty.json_schema(opts);
                 // A parameter's elements are strict; a result's may be NULL unless the statement
@@ -141,22 +206,26 @@ impl Type {
                 let nulls = a.element.nullable && !opts.input;
                 json!({"type": "array", "items": if nulls { nullable(items) } else { items }})
             }
-            // A row whose fields have no names, DuckDB's tuple, as its values in order.
-            Kind::Record(r) if !r.fields.is_empty() && r.fields.iter().all(|f| f.name.is_empty()) => {
-                json!({"type": "array", "prefixItems": r.fields.iter().map(|f| nullable(f.ty.json_schema(opts))).collect::<Vec<_>>(), "items": false, "minItems": r.fields.len()})
-            }
             // A row's fields stand where the row does. A field that may be null is spelled as an
             // `anyOf` with null in a record with a name (a composite, an anonymous `record`), and is
             // widened as `nullable` widens any value in one without (an object a statement built, a
             // DuckDB struct).
-            Kind::Record(r) => object(&r.fields, |f| {
-                let schema = f.ty.json_schema(opts);
-                match (f.nullable, self.label.is_some()) {
-                    (false, _) => schema,
-                    (true, true) => json!({"anyOf": [schema, {"type": "null"}]}),
-                    (true, false) => nullable(schema),
+            Kind::Struct(r) => {
+                let mut schema = object(&r.fields, |f| {
+                    let schema = f.ty.json_schema(opts);
+                    match (f.nullable, self.label.is_some()) {
+                        (false, _) => schema,
+                        (true, true) => json!({"anyOf": [schema, {"type": "null"}]}),
+                        (true, false) => nullable(schema),
+                    }
+                });
+                if let (Some(extra), Value::Object(map)) = (&r.extra, &mut schema) {
+                    map.insert("additionalProperties".into(), slot_schema(extra, opts));
                 }
-            }),
+                schema
+            }
+            // A table nested in a value as an array of objects, a row each.
+            Kind::Table(t) => json!({"type": "array", "items": object(&t.columns, |c| slot_schema(&c.slot(), opts))}),
             // What a statement built: its keys and items are inside the document.
             Kind::Json(JsonType { content: Some(content), .. }) => {
                 let schema = content.ty.json_schema(opts.inside_json());
@@ -166,17 +235,26 @@ impl Type {
             // null included.
             Kind::Json(JsonType { schema: Some(_), .. }) => self.schema().unwrap_or(Value::Bool(true)),
             Kind::Json(_) | Kind::Unknown => json!({}),
+            Kind::Null => json!({"type": "null"}),
             // An hstore is an object of its keys inside a document, each value text or null.
             Kind::Map(_) if bare_name(self) == "hstore" && opts.in_json => json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}),
             Kind::Map(_) if bare_name(self) == "hstore" => text_of(self),
             // A DuckDB map as its entries, each a key and its value, in order.
             Kind::Map(m) => {
-                let value = m.value.ty.json_schema(opts);
-                let entry = json!({"type": "object", "properties": {"key": m.key.json_schema(opts), "value": if m.value.nullable { nullable(value) } else { value }}, "required": ["key", "value"]});
+                let entry = json!({"type": "object", "properties": {"key": slot_schema(&m.key, opts), "value": slot_schema(&m.value, opts)}, "required": ["key", "value"]});
                 json!({"type": "array", "items": entry})
             }
-            // A relation nested in a value, as a list of its rows.
-            Kind::Rows(_) => json!({"type": "array", "items": {"type": "object"}}),
+            // A tuple as a list of its values, each of its own type: its elements, then its
+            // optional ones, then any number of its rest.
+            Kind::Tuple(t) => {
+                let items: Vec<Value> = t.elements.iter().chain(&t.optional_elements).map(|e| slot_schema(e, opts)).collect();
+                let rest = t.rest.as_ref().map_or(Value::Bool(false), |r| slot_schema(r, opts));
+                let mut schema = json!({"type": "array", "prefixItems": items, "items": rest, "minItems": t.elements.len()});
+                if t.rest.is_none() {
+                    schema["maxItems"] = json!(t.elements.len() + t.optional_elements.len());
+                }
+                schema
+            }
             // A tagged union as a client returns one: its tag and its value, `{ tag, value }`.
             Kind::TaggedUnion(t) => json!({"anyOf": t.alternatives.iter().map(|a| {
                 let value = a.ty.json_schema(opts);
@@ -185,6 +263,7 @@ impl Type {
             Kind::Union(_) if matches!(bare_name(self), "inet" | "cidr") => text_of(self),
             // One of several types, the execution's or each value's.
             Kind::Union(u) => json!({"anyOf": u.members.iter().map(|m| m.json_schema(opts)).collect::<Vec<_>>()}),
+            Kind::Intersection(u) => json!({"allOf": u.members.iter().map(|m| m.json_schema(opts)).collect::<Vec<_>>()}),
             // A row whose columns were not read (a subquery's) is an object of them inside a document.
             Kind::Opaque if bare_name(self) == "record" && opts.in_json => json!({"type": "object"}),
             // PostGIS writes a geometry inside a document through its cast to JSON, as GeoJSON.
@@ -200,7 +279,7 @@ impl Type {
     /// The JSON Schema of what the caller passes for a structured parameter of this type (a
     /// record, or an array of them): each key's value as it passes a parameter of that type.
     pub fn rows_schema(&self, opts: SchemaOptions) -> Value {
-        let row = |r: &RecordType| {
+        let row = |r: &StructType| {
             let mut properties = Map::new();
             let mut required = Vec::new();
             for f in &r.fields {
@@ -213,9 +292,9 @@ impl Type {
             json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
         };
         match &self.kind {
-            Kind::Record(r) => row(r),
+            Kind::Struct(r) => row(r),
             Kind::Array(a) => match &a.element.ty.kind {
-                Kind::Record(r) => json!({"type": "array", "items": row(r)}),
+                Kind::Struct(r) => json!({"type": "array", "items": row(r)}),
                 _ => self.json_schema(opts),
             },
             _ => self.json_schema(opts),
@@ -237,7 +316,7 @@ fn object(fields: &[Field], field: impl Fn(&Field) -> Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{DecimalType, FloatType, Position};
+    use crate::types::{DecimalType, FloatType, Slot};
 
     const WIRE: SchemaOptions = SchemaOptions { int8_as_number: false, in_json: false, input: false };
     const INT8N: SchemaOptions = SchemaOptions { int8_as_number: true, in_json: false, input: false };
@@ -267,7 +346,9 @@ mod tests {
             (numeric(), json!({"type": "string", "format": "decimal"})),
             (Type::text().named("varchar"), json!({"type": "string"})),
             (Type::uuid(), json!({"type": "string", "format": "uuid"})),
-            (Kind::Uuid(UuidType { version: Some(7) }).into(), json!({"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"})),
+            (Kind::Uuid(UuidType { versions: Some(vec![7]) }).into(), json!({"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"})),
+            (Kind::Uuid(UuidType { versions: Some(vec![4, 7]) }).into(), json!({"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[47][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"})),
+            (Type::null(), json!({"type": "null"})),
             (Type::bytes().named("bytea"), json!({"type": "string", "format": "byte", "contentEncoding": "base64"})),
             (Type::unknown(), json!({})),
             (Type::opaque("ltree"), json!({"type": "string", "description": "pg type ltree"})),
@@ -300,7 +381,7 @@ mod tests {
 
     #[test]
     fn inside_json_an_hstore_is_an_object_of_nullable_text() {
-        let hstore = Type::new(Kind::Map(crate::types::MapType { key: Box::new(Type::text()), value: Box::new(Position::nullable(Type::text())) })).named("public.hstore");
+        let hstore = Type::new(Kind::Map(crate::types::MapType { key: Box::new(Slot::non_null(Type::text())), value: Box::new(Slot::nullable(Type::text())) })).named("public.hstore");
         assert_eq!(hstore.json_schema(IN_JSON), json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}));
         assert_eq!(hstore.json_schema(WIRE), json!({"type": "string", "description": "pg type public.hstore"}));
     }
@@ -309,17 +390,21 @@ mod tests {
     fn arrays_json_and_unknown() {
         let mood = Type::text_of(vec!["ok".into(), "sad".into()]).named("public.mood");
         assert_eq!(mood.json_schema(WIRE), json!({"type": "string", "enum": ["ok", "sad"]}));
+        // A literal of a number or a truth value as JSON writes it, an int8's as its text where the caller decodes it.
+        assert_eq!(Type::one_of(Type::integer(32), vec!["1".into()]).json_schema(WIRE), json!({"type": "integer", "format": "int32", "enum": [1]}));
+        assert_eq!(Type::one_of(Type::integer(64), vec!["1".into()]).json_schema(WIRE), json!({"type": "string", "format": "int64", "enum": ["1"]}));
+        assert_eq!(Type::one_of(Type::boolean(), vec!["true".into()]).json_schema(WIRE), json!({"type": "boolean", "enum": [true]}));
         // A result's elements may be NULL, as any Postgres array's may, unless the statement shows
         // they are not; a parameter's are strict.
-        let ints = Type::array(Position::nullable(Type::integer(32)));
+        let ints = Type::array(Slot::nullable(Type::integer(32)));
         assert_eq!(ints.json_schema(WIRE), json!({"type": "array", "items": {"anyOf": [{"type": "integer", "format": "int32"}, {"type": "null"}]}}));
         assert_eq!(ints.json_schema(WIRE.as_input()), json!({"type": "array", "items": {"type": "integer", "format": "int32"}}));
-        let strict = Type::array(Position::non_null(Type::integer(64)));
+        let strict = Type::array(Slot::non_null(Type::integer(64)));
         assert_eq!(strict.json_schema(IN_JSON)["items"], json!({"type": "integer", "format": "int64"}));
         assert_eq!(strict.json_schema(WIRE)["items"], json!({"type": "string", "format": "int64"}));
         // A structured parameter's member keeps its array's NULL elements, which the run time binds.
-        let texts = Type::array(Position::nullable(Type::text()));
-        let member = Type::record(vec![field("tags", texts, false)]);
+        let texts = Type::array(Slot::nullable(Type::text()));
+        let member = Type::structure(vec![field("tags", texts, false)]);
         assert_eq!(member.rows_schema(WIRE.as_input())["properties"]["tags"], json!({"type": "array", "items": {"type": ["string", "null"]}}));
         assert_eq!(Type::json().json_schema(WIRE), json!({}));
         let checked = json!({"type": "object", "properties": {"a": {"type": "string"}}, "additionalProperties": true});
@@ -329,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_rows_fields_stand_where_the_row_does() {
-        let users = Type::record(vec![field("id", Type::integer(64), false), field("name", Type::text(), true), field("meta", Type::json(), true)]).named("public.users");
+        let users = Type::structure(vec![field("id", Type::integer(64), false), field("name", Type::text(), true), field("meta", Type::json(), true)]).named("public.users");
         assert_eq!(
             users.json_schema(WIRE),
             json!({
@@ -344,14 +429,14 @@ mod tests {
         );
         assert_eq!(users.json_schema(IN_JSON)["properties"]["id"], json!({"type": "integer", "format": "int64"}));
         assert_eq!(users.json_schema(INT8N)["properties"]["id"], json!({"type": "integer", "format": "int64"}));
-        let many = Type::array(Position::nullable(users.clone()));
+        let many = Type::array(Slot::nullable(users.clone()));
         assert_eq!(many.json_schema(WIRE), json!({"type": "array", "items": nullable(users.json_schema(WIRE))}));
         assert_eq!(many.json_schema(WIRE.as_input()), json!({"type": "array", "items": users.json_schema(WIRE)}));
     }
 
     #[test]
     fn a_constructors_keys_and_items_are_inside_the_document() {
-        let post = Type::record(vec![field("id", Type::integer(64), false), field("title", Type::text(), true), field("body", Type::unknown(), true), field("blob", Type::bytes(), false)]);
+        let post = Type::structure(vec![field("id", Type::integer(64), false), field("title", Type::text(), true), field("body", Type::unknown(), true), field("blob", Type::bytes(), false)]);
         let expected = json!({
             "type": "object",
             "properties": {
@@ -363,13 +448,23 @@ mod tests {
             "required": ["id", "title", "body", "blob"],
         });
         // The same whatever `int8_as_number` says.
-        let built = Type::json_of(Position::non_null(post.clone()));
+        let built = Type::json_of(Slot::non_null(post.clone()));
         assert_eq!(built.json_schema(WIRE), expected);
         assert_eq!(built.json_schema(INT8N), expected);
-        let list = Type::json_of(Position::non_null(Type::array(Position::nullable(numeric()))));
+        let list = Type::json_of(Slot::non_null(Type::array(Slot::nullable(numeric()))));
         assert_eq!(list.json_schema(WIRE), json!({"type": "array", "items": {"anyOf": [{"anyOf": [{"type": "number", "format": "decimal"}, {"enum": ["NaN", "Infinity", "-Infinity"]}]}, {"type": "null"}]}}));
-        let posts = Type::json_of(Position::non_null(Type::array(Position::non_null(post))));
+        let posts = Type::json_of(Slot::non_null(Type::array(Slot::non_null(post))));
         assert_eq!(posts.json_schema(WIRE), json!({"type": "array", "items": expected}));
+    }
+
+    #[test]
+    fn a_tuple_struct_extra_and_pattern_read_as_json_schema_writes_them() {
+        let tuple = Type::new(Kind::Tuple(crate::types::TupleType { elements: vec![Slot::non_null(Type::text())], optional_elements: vec![Slot::nullable(Type::integer(32))], rest: None }));
+        assert_eq!(tuple.json_schema(WIRE), json!({"type": "array", "prefixItems": [{"type": "string"}, {"anyOf": [{"type": "integer", "format": "int32"}, {"type": "null"}]}], "items": false, "minItems": 1, "maxItems": 2}));
+        let open = Type::new(Kind::Struct(StructType { fields: vec![field("a", Type::integer(32), false)], extra: Some(Box::new(Slot::non_null(Type::text()))) }));
+        assert_eq!(open.json_schema(WIRE)["additionalProperties"], json!({"type": "string"}));
+        assert_eq!(ecma_pattern("a.b[.]\\."), "^(?:a[^\\n\\r]b[.]\\.)$");
+        assert_eq!(ecma_pattern("$5[^a]"), "^(?:\\$5[^a])$");
     }
 
     #[test]

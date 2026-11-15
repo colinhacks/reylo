@@ -11,7 +11,7 @@ ok_composite_star_default.sql: none () -> {  }
 ok_domain_default.sql: none () -> {  }
 ok_generated.sql: none () -> {  }
 ok_identity.sql: none () -> {  }
-ok_params.sql: none (name: text, email: text) -> {  }
+ok_params.sql: none (name: text(¬NUL), email: text(¬NUL)) -> {  }
 ok_select_star.sql: none () -> {  }
 ok_trigger.sql: none () -> {  }
 ok_values_composite_star.sql: none () -> {  }

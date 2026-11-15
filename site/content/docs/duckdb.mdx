@@ -18,6 +18,7 @@ DuckDB support is a preview: the types Reylo infers on DuckDB, and the values `.
 | DuckDB versions | 2.0, through `@duckdb/node-api` |
 | Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
 | Drivers | `@duckdb/node-api` ([Drivers](#drivers)) |
+| Migrations | [Reylo Migrate](/migrations) runs on the same `@duckdb/node-api`, at 2.0, with its shadow databases in memory |
 | Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after, and while your app has the file open, it reads a copy of it. On Windows no other process can read a file DuckDB has open for writing, so the type check needs your app stopped |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -119,7 +120,7 @@ A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, a
 
 **Nested types**
 
-A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`, except in an `array(select c from (…) c)` of a subquery's or a table's whole rows, whose elements are structs and whose fields are as their columns are. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is an error: name its fields, as in `{'a': 1, 'b': 'x'}` or `struct_pack(a := 1, b := 'x')`.
+A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`, except in an `array(select c from (…) c)` of a subquery's or a table's whole rows, whose elements are structs and whose fields are as their columns are. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is a tuple, an array of its values in order (`[number | null, string | null]`), and a parameter of one takes that array.
 
 <InferenceCard>
 
@@ -146,7 +147,35 @@ from read_parquet('logs/*.parquet')
 group by all
 ```
 
-Reylo keeps each query's analysis in [`.reylo/`](/faq#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `.reylo/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
+Reylo keeps each query's analysis in [`reylo/.cache/`](/faq#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `reylo/.cache/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
+
+### Type descriptors
+
+How the engine writes each type.
+
+The engine gives every column its type in [Reylo Type Defs](/typedefs), as [`reylo analyze`](/cli#reylo-analyze) prints it. A column of each DuckDB type:
+
+<Analyzed file="types.sql" dialect="duckdb" format="types">
+
+```sql schema
+create type mood as enum ('sad', 'ok', 'happy')
+```
+
+```sql
+select
+  null::boolean as "BOOLEAN", null::tinyint as "TINYINT", null::integer as "INTEGER", null::bigint as "BIGINT",
+  null::hugeint as "HUGEINT", null::ubigint as "UBIGINT", null::float as "FLOAT", null::double as "DOUBLE",
+  null::decimal(10, 2) as "DECIMAL(10, 2)", null::varchar as "VARCHAR", null::blob as "BLOB", null::uuid as "UUID",
+  null::mood as "ENUM", null::date as "DATE", null::time as "TIME", null::timetz as "TIMETZ",
+  null::timestamp as "TIMESTAMP", null::timestamptz as "TIMESTAMPTZ", null::interval as "INTERVAL",
+  null::integer[] as "INTEGER[]", null::integer[3] as "INTEGER[3]", null::struct(a integer, b varchar) as "STRUCT(a INTEGER, b VARCHAR)",
+  row(1, 'a') as "STRUCT(INTEGER, VARCHAR)", null::map(varchar, integer) as "MAP(VARCHAR, INTEGER)",
+  null::union(num integer, str varchar) as "UNION(num INTEGER, str VARCHAR)", null::bit as "BIT", null::json as "JSON"
+```
+
+</Analyzed>
+
+A list that `list(distinct …)` or `array_agg(distinct …)` builds is `distinct`, and so is one from `list_distinct`, whose elements are never null either. A list of text, durations, floats or JSON isn't, since DuckDB may keep apart two of them that are one value or that it finds equal (`'a'` and `'A'` under `NOCASE`, `interval 1 day` and `interval 24 hours`), and neither is a list a `union` makes, which casts both sides to one type.
 
 ## Nullability
 
@@ -350,6 +379,41 @@ const db = await instance.connect();
 
 const user = await getUser.run(db, { id: 1 });
 ```
+
+## Migrations
+
+[Reylo Migrate](/migrations) runs on DuckDB with the same commands.
+
+It runs on your project's own `@duckdb/node-api`, which it needs at 2.0, and refuses an older one. DuckDB lets one process at a time open a file to write, so stop your app, its dev server included, before you run a command that writes: each refuses while another process holds the database, and changes nothing. The commands that only read (`status`, `deploy --dry-run` and `db introspect`) open the file read-only, so they run beside other processes that only read it.
+
+DuckDB's `alter table` adds no check or foreign key, changes no column an index covers, and changes little of a table another table's key references. So `reylo migrate new` writes such a change as a rebuild: the table's rows go to a temporary table, the table is made again, and the rows come back, with those of every table whose keys reference it. A check added to `authors`:
+
+```sql title="20261114120000_check_author_names.sql"
+create temporary table reylo_copy_authors as select * from authors;
+create temporary table reylo_copy_books as select * from books;
+drop table books;
+drop table authors;
+create table authors (id bigint, name varchar, primary key (id), check (("name" != '')));
+create table books (id bigint, author_id bigint, pages integer, primary key (id), foreign key (author_id) references authors (id));
+insert into authors (id, name) select id, name from temp.main.reylo_copy_authors;
+insert into books (id, author_id, pages) select id, author_id, pages from temp.main.reylo_copy_books;
+drop table temp.main.reylo_copy_authors;
+drop table temp.main.reylo_copy_books;
+```
+
+A table whose check or generated column calls a macro, or casts to an enum, is rebuilt the same way when that macro or enum changes.
+
+DuckDB refuses a few things a migration may need, on your rows rather than in the check:
+
+- A table whose key references the table itself can't take its rows back in a rebuild where a row references another, so that migration fails and changes nothing. The migration says so above the rebuild.
+- DuckDB has no `alter sequence`, so a changed sequence is made again, and in a migration it starts again where `schema.sql` starts it. Start it past the values your rows hold.
+- An `update` of a table, then `set not null` or a new index on it, is refused in one migration. Put the backfill in a migration of its own.
+
+DuckDB's catalog holds no macro parameter's default (the `5` of `b := 5`), so Reylo Migrate takes those from `schema.sql`, the migrations and DuckDB's export of the database, and never compares them: write a change to a default alone by hand, as `create or replace macro`. DuckDB can't export a database where a column's default calls a macro of a schema other than `main`. There, `reylo migrate init` and `reylo db introspect` start their SQL with a comment for each macro that has parameters, saying to add its defaults by hand.
+
+DuckDB 2.0 writes a comment on a column so that the file no longer opens, where the column's table calls a macro (in a check, a default or a generated column) and another table's key references it. Reylo Migrate follows such a comment with an `alter table` that changes nothing, which writes the table again whole. Do the same in a migration you write by hand.
+
+An extension is loaded once, in `schema.sql` or the migration that first needs it, as `create extension` is on Postgres: write `install spatial;` and `load spatial;` there. Every database Reylo Migrate opens for the project loads it before anything else, its shadows included, so a migration that uses the extension's types, functions or indexes (spatial's `st_` functions, an R-tree index) needs no `load` of its own.
 
 ## Limits
 

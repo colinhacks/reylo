@@ -1,0 +1,1 @@
+create table t (id integer primary key, s varchar default 'NULL AND SELECT', k varchar default 'INTEGER', j json default '{"A": "B"}', n integer check (n > 0), check (s <> 'DROP TABLE t'), check (k in ('VARCHAR', 'INTEGER', 'Integer')), check (json_extract_string(j, '$.A') <> 'X'));

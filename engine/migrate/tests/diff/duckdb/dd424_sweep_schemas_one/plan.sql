@@ -1,0 +1,16 @@
+create temporary table reylo_copy_p as select * from p;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table p;
+drop type s.mood;
+drop macro s.m2;
+drop macro s.m;
+create macro s.m (x) as ((x > -1));
+create macro s.m2 (x) as ((x + 2));
+create type s.mood as enum('a', 'b', 'c');
+create table p (id integer, n integer, v varchar, n2 integer default s.m2(1), primary key (id), check ((cast(v as s.mood) is not null)));
+create table c (id integer, pid integer, k integer, primary key (id), foreign key (pid) references p (id), check (s.m(k)));
+insert into p (id, n, v, n2) select id, n, v, n2 from temp.main.reylo_copy_p;
+insert into c (id, pid, k) select id, pid, k from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_p;
+drop table temp.main.reylo_copy_c;

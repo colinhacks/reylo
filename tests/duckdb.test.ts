@@ -57,11 +57,12 @@ async function analyze(root: string, sql: string): Promise<Extract<Outcome, { ok
   }
 }
 
-/** A type as DuckDB names it, lowercased: an array its element's and `[]`, a struct its fields, an enum its labels. */
+/** A type as DuckDB names it, lowercased: an array its element's and `[]`, a struct its fields, a tuple its elements, an enum its labels. */
 function shown(t: EngineType): string {
   if (t.kind === "array") return `${shown(t.element.type)}[]`;
-  if (t.kind === "record") return `struct(${t.fields.map((f) => `${f.name} ${shown(f.type)}`).join(", ")})`;
-  if (t.kind === "text" && t.enum !== undefined) return `enum(${t.enum.join(", ")})`;
+  if (t.kind === "struct") return `struct(${t.fields.map((f) => `${f.name} ${shown(f.type)}`).join(", ")})`;
+  if (t.kind === "tuple") return `struct(${t.elements.map((e) => shown(e.type)).join(", ")})`;
+  if (t.kind === "enum") return `enum(${t.values.join(", ")})`;
   return "label" in t && t.label !== undefined ? t.label : t.kind;
 }
 
@@ -75,8 +76,8 @@ test("DuckDB: each column is typed by the prepared statement, and may be NULL un
   assert.equal(one.cardinality, "at_most_one");
   assert.equal(one.kind, "select");
   assert.equal(one.columns[1]!.comment, "What happened");
-  assert.deepEqual(one.columns[4]!.type, { kind: "record", fields: [{ name: "host", type: { kind: "text", label: "varchar" }, nullable: true }, { name: "pid", type: { kind: "integer", bits: 32, label: "integer" }, nullable: true }] });
-  assert.deepEqual(one.columns[5]!.type, { kind: "text", enum: ["happy", "sad"], label: "enum" });
+  assert.deepEqual(one.columns[4]!.type, { kind: "struct", fields: [{ name: "host", type: { kind: "text", label: "varchar" }, nullable: true }, { name: "pid", type: { kind: "integer", bits: 32, label: "integer" }, nullable: true }] });
+  assert.deepEqual(one.columns[5]!.type, { kind: "enum", type: { kind: "text" }, values: ["happy", "sad"], label: "enum" });
   // An outer join pads its other side with NULL, unless a filter shows the row was matched.
   assert.deepEqual(columns(await analyze(root, "select l.id, t.name from logs l left join teams t on t.id = l.team_id")), ["id: integer", "name: varchar?"]);
   assert.deepEqual(columns(await analyze(root, "select l.id, t.name from logs l left join teams t on t.id = l.team_id where t.id is not null")), ["id: integer", "name: varchar"]);
@@ -106,7 +107,7 @@ test("DuckDB: a UUID a call makes has its version, and a user's macro of a built
   const root = await project(`create table events (id uuid primary key default uuidv7());
 create macro now() as null;`);
   const made = await analyze(root, "select uuid() as a, gen_random_uuid() as b, uuidv4() as c, uuidv7() as d, id, now() as at from events");
-  assert.deepEqual(made.columns.slice(0, 5).map((c) => (c.type.kind === "uuid" ? (c.type.version ?? null) : c.type.kind)), [4, 4, 4, 7, null]);
+  assert.deepEqual(made.columns.slice(0, 5).map((c) => (c.type.kind === "uuid" ? (c.type.versions ?? null) : c.type.kind)), [[4], [4], [4], [7], null]);
   // `now()` is the macro, NULL, where the built-in never is.
   assert.equal(made.columns[5]!.nullable, true);
   const shadowed = await project("create macro uuidv7() as '00000000-0000-0000-0000-000000000000'::uuid;");
@@ -116,7 +117,7 @@ create macro now() as null;`);
 
 test("DuckDB: an array of a subquery's whole rows is never NULL, nor is its element, and each field is as its column is", { skip }, async () => {
   const root = await project("create table posts (id integer primary key); create table comments (id integer primary key, post_id integer not null, body varchar); create table replies (id integer primary key, comment_id integer not null, note varchar not null)");
-  const fields = (t: EngineType): unknown => (t.kind === "array" && t.element.type.kind === "record" ? { element_nullable: t.element.nullable ?? false, fields: t.element.type.fields.map((f) => [f.name, f.nullable ?? false, fields(f.type)]) } : undefined);
+  const fields = (t: EngineType): unknown => (t.kind === "array" && t.element.type.kind === "struct" ? { element_nullable: t.element.nullable ?? false, fields: t.element.type.fields.map((f) => [f.name, f.nullable ?? false, fields(f.type)]) } : undefined);
   const column = async (sql: string) => {
     const [, c] = (await analyze(root, sql)).columns;
     return { nullable: c!.nullable ?? false, ...(fields(c!.type) as object) };
@@ -198,13 +199,13 @@ test("DuckDB: each parameter is typed where it stands, and may be NULL where the
   }
   // A rows(…) parameter is Postgres's, SQLite's and MySQL's for now.
   assert.match((await analyze(root, "insert into teams :rows::rows(id integer not null, name varchar not null)")).diagnostics[0]!.message, /DuckDB statements take no rows\(…\) or row\(…\) parameter yet/);
-  // A struct whose fields have no names, as (1, 'a') and row(…) build, is refused where a column
-  // or a parameter holds one, inside a list too: a value's fields are read by their names.
+  // A struct whose fields have no names, as (1, 'a') and row(…) build, is a tuple, its elements
+  // each NULL or not as a struct's fields are, inside a list too.
   const tuples = await analyze(root, "select (id, msg) as pair, [row(id)] as singles, {'id': id} as named from logs where (id, msg) = :p");
-  assert.deepEqual(tuples.diagnostics.map((d) => d.code), [22, 22, 22]);
-  assert.equal(tuples.diagnostics[0]!.message, `Column "pair" holds a struct whose fields have no names, as (1, 'a') and row(…) build, and a value's fields are read by their names: name them, as in {'a': 1, 'b': 'x'} or struct_pack(a := 1, b := 'x')`);
-  assert.equal(tuples.diagnostics[2]!.message, ":p takes a struct whose fields have no names, and a value's fields are read by their names: cast it to a struct that names them, as in :p::struct(a integer, b varchar)");
-  assert.deepEqual(columns(tuples), ["pair: unknown", "singles: unknown[]", "named: struct(id integer)"]);
+  assert.deepEqual(tuples.diagnostics, []);
+  assert.deepEqual(columns(tuples), ["pair: struct(integer, varchar)", "singles: struct(integer)[]", "named: struct(id integer)"]);
+  assert.deepEqual(tuples.columns[0]!.type, { kind: "tuple", elements: [{ type: { kind: "integer", bits: 32, label: "integer" }, nullable: true }, { type: { kind: "text", label: "varchar" }, nullable: true }] });
+  assert.deepEqual(params(tuples), ["p: struct(integer, varchar)"]);
 });
 
 test("DuckDB: an error DuckDB raises is placed where its caret points", { skip }, async () => {
@@ -382,8 +383,7 @@ test("DuckDB: every type's least, greatest and NULL value round-trips through .r
   // DuckDB's own test_all_types(): each type's extremes, which .run() decodes and a parameter
   // writes back, each column into a table of its own; DuckDB then compares each with the original.
   // An array that holds NULL is not written: an array parameter takes no NULL element.
-  // A struct whose fields have no names, the `tuple` column, is refused (tested above).
-  const root = await project("create table t as select row_number() over () as k, * exclude (\"tuple\") from test_all_types()");
+  const root = await project("create table t as select row_number() over () as k, * from test_all_types()");
   const db0 = await api().DuckDBInstance.create(join(root, "app.duckdb"));
   const c0 = await db0.connect();
   const names = ((await c0.runAndReadAll("select column_name from duckdb_columns() where table_name = 't' and column_name <> 'k' order by column_index")) as { getRowsJson(): string[][] }).getRowsJson().map((r) => r[0]!);
@@ -503,6 +503,24 @@ test("DuckDB: .run() refuses a fraction for an integer, and .try() reads DuckDB'
     assert.equal(tried.error.name, "QueryError");
     assert.equal(tried.error.code, "CONSTRAINT");
     assert.match(tried.error.message, /^Constraint Error: Duplicate key "id: 1" violates primary key constraint/);
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
+test("DuckDB: a tuple is returned as an array of its values in order, and binds from one of as many", { skip }, async () => {
+  const root = await project();
+  const pair = await built(root, "pair", "select (:id::integer, :msg::nullable(varchar)) as pair, [row(2)] as singles");
+  const matched = await built(root, "matched", "select 1 as one where (1, 'a') = :p");
+  await closeSessions();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    assert.deepEqual(await pair.run(c, { id: 1, msg: null }), { pair: [1, null], singles: [[2]] });
+    assert.deepEqual(await matched.run(c, { p: [1, "a"] }), { one: 1 });
+    assert.equal(await matched.run(c, { p: [2, "a"] }), null);
+    await assert.rejects(matched.run(c, { p: [1] }), /Parameter "p" is a tuple of 2, so it takes an array of 2 values; got 1/);
   } finally {
     c.closeSync();
     db.closeSync();
@@ -634,8 +652,8 @@ test("DuckDB: an ISO 8601 duration is bound as DuckDB's own interval text", () =
 
 test("DuckDB: the module declares the types .run() returns", { skip }, async () => {
   const root = await project(`${SCHEMA}\n${VALUES}`);
-  const sql = "select id, tags, meta, h, d, ts, b, j, m, u, m2 from vals where id = :id\n";
+  const sql = "select id, tags, meta, h, d, ts, b, j, m, u, m2, (id, d) as pair from vals where id = :id\n";
   const declared = (await declarations(root, { "get.sql": sql }))["get.sql"]!;
   const line = declared.split("\n").find((l) => l.startsWith("declare const query:"))!;
-  assert.match(line, /^declare const query: Query<\{ id: number \}, \{ id: number; tags: \(string \| null\)\[\] \| null; meta: \{ host: string \| null; pid: number \| null \} \| null; h: bigint \| null; d: string \| null; ts: string \| null; b: Uint8Array \| null; j: Json; m: \{ key: string; value: number \| null \}\[\] \| null; u: \{ tag: "num"; value: number \| null \} \| \{ tag: "str"; value: string \| null \} \| null; m2: "happy" \| "sad" \| null \}, "maybeOne", "duckdb", QueryError> & /, line);
+  assert.match(line, /^declare const query: Query<\{ id: number \}, \{ id: number; tags: \(string \| null\)\[\] \| null; meta: \{ host: string \| null; pid: number \| null \} \| null; h: bigint \| null; d: string \| null; ts: string \| null; b: Uint8Array \| null; j: Json; m: \{ key: string; value: number \| null \}\[\] \| null; u: \{ tag: "num"; value: number \| null \} \| \{ tag: "str"; value: string \| null \} \| null; m2: "happy" \| "sad" \| null; pair: \[number \| null, string \| null\] \}, "maybeOne", "duckdb", QueryError> & /, line);
 });

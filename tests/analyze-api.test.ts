@@ -53,7 +53,7 @@ test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as rey
     params: [{ name: "id", type: { kind: "integer", bits: 64 } }],
     diagnostics: [],
   });
-  assert.equal(result.kind, "rows");
+  assert.equal(result.kind, "table");
   assert.equal(result.cardinality, "at_most_one");
   assert.deepEqual(result.columns.map((c) => [c.name, c.nullable ?? false]), [["id", false], ["name", false], ["email", true]]);
   assert.match(user!.dialect.version, /^3\.\d+\.\d+$/);

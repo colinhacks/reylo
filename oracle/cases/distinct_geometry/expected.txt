@@ -1,0 +1,1 @@
+geometry.sql: one () -> { docs: jsonb public.geometry?[]?, shapes: public.geometry?[]? }

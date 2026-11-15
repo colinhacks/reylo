@@ -800,16 +800,20 @@ fn one_key_repeats<'r>(key: &[Value], columns: &[Value], rows: impl Iterator<Ite
 /// `delimiter`, or a null where JSON a statement built typed a value. A JSON `null` at the top is
 /// the column's null to the run time, so it contradicts a column typed non-null.
 fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
-    let ty: Type = serde_json::from_value(ty.clone()).ok()?;
+    let whole: Type = serde_json::from_value(ty.clone()).ok()?;
+    // An enum's values, from an enum type, a CHECK list or a literal: the value is one of them,
+    // and of the type they are of.
+    if let Some(why) = literal_contradiction(&whole, text) {
+        return Some(why);
+    }
+    let ty = whole.base().clone();
     if let Some(why) = fact_contradiction(&ty, text) {
         return Some(why);
     }
     match &ty.kind {
-        // A union of literals, from an enum or a CHECK list: the value is one of them.
-        Kind::Text(TextType { values: Some(values), .. }) => (!values.is_empty() && !values.iter().any(|v| v == text)).then(|| format!("typed as one of {values:?} holds {text:?}")),
         // A type modifier's length, in code points: `varchar(20)` at most, `char(5)` exactly, as
         // it pads what it stores.
-        Kind::Text(TextType { size: Some(size), ill_formed: None, .. }) if size.unit.is_none() => {
+        Kind::Text(TextType { size: Some(size), ill_formed: false, .. }) if size.unit.is_none() => {
             let size = if ty.label.as_deref() == Some("bpchar") { size.clone() } else { Size { exact: None, ..size.clone() } };
             length_contradiction(&size, text.chars().count() as u64, "code points")
         }
@@ -841,7 +845,9 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
                 }
                 innermost = inner;
             }
-            depth_contradiction(&ty, text).or_else(|| (!innermost.element.nullable && array_has_null(text, delimiter)).then(|| "typed with non-null elements holds a NULL element".to_string()))
+            depth_contradiction(&ty, text)
+                .or_else(|| (!innermost.element.nullable && array_has_null(text, delimiter)).then(|| "typed with non-null elements holds a NULL element".to_string()))
+                .or_else(|| array.distinct.then(|| repeated(&array_elements(text, delimiter)?)).flatten())
         }
         Kind::Json(JsonType { content: Some(content), .. }) => {
             let json: Value = serde_json::from_str(text).ok()?;
@@ -855,6 +861,31 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
             json_contradiction(&ty, &json, "")
         }
         _ => None,
+    }
+}
+
+/// Why a value is none of the values an enum lists, if it is not, as a value of the enum's type
+/// compares (`1.50` is the decimal 1.5) and Postgres prints it (`t`, `1e+21`): a string as it is,
+/// and any other value of a kind written as text by its text.
+pub(crate) fn literal_contradiction(ty: &Type, text: &str) -> Option<String> {
+    let Kind::Enum(e) = &ty.kind else { return None };
+    let values = &e.values;
+    let none_of = || format!("typed as one of {values:?} holds {text:?}");
+    match &e.ty.kind {
+        Kind::Integer(_) | Kind::Decimal(_) => (!values.iter().any(|v| decimal_cmp(text, v) == Some(std::cmp::Ordering::Equal))).then(none_of),
+        Kind::Float(_) => {
+            let value = text.parse::<f64>().ok();
+            (!values.iter().any(|v| v.parse::<f64>().ok() == value && value.is_some())).then(none_of)
+        }
+        Kind::Boolean(_) => {
+            let value = match text {
+                "t" | "true" | "1" => "true",
+                "f" | "false" | "0" => "false",
+                _ => return Some(format!("typed as a boolean holds {text}")),
+            };
+            (!values.iter().any(|v| v == value)).then(none_of)
+        }
+        _ => (!values.iter().any(|v| v == text)).then(none_of),
     }
 }
 
@@ -894,18 +925,15 @@ fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
         Kind::Decimal(d) => breaks(&d.bounds).or_else(|| divides(&d.multiple_of)),
         // RFC 9562's text form: the version is the 13th hex digit, and the variant the 17th, from
         // 8 to b.
-        Kind::Uuid(reylo_engine_core::types::UuidType { version: Some(version) }) => {
+        Kind::Uuid(reylo_engine_core::types::UuidType { versions: Some(versions) }) => {
             let digits: Vec<u32> = text.chars().filter(|c| *c != '-').filter_map(|c| c.to_digit(16)).collect();
-            let holds = digits.len() == 32 && digits[12] == u32::from(*version) && (8..=11).contains(&digits[16]);
-            (!holds).then(|| format!("typed as a version {version} UUID holds {text}"))
+            let holds = digits.len() == 32 && versions.iter().any(|v| digits[12] == u32::from(*v)) && (8..=11).contains(&digits[16]);
+            (!holds).then(|| format!("typed as a UUID of version {versions:?} holds {text}"))
         }
+        // An I-Regexp, which matches the whole value, as the expression it maps to.
         Kind::Text(TextType { pattern: Some(pattern), .. }) => {
-            let insensitive = match pattern.dialect {
-                reylo_engine_core::types::PatternDialect::Like => false,
-                reylo_engine_core::types::PatternDialect::Ilike => true,
-                _ => return None,
-            };
-            (!like_matches(text, &pattern.source, insensitive)).then(|| format!("typed as {:?} holds {text:?}", pattern.source))
+            let compiled = regex::Regex::new(&reylo_engine_core::schema::ecma_pattern(pattern)).ok()?;
+            (!compiled.is_match(text)).then(|| format!("typed as /{pattern}/ holds {text:?}"))
         }
         _ => None,
     }
@@ -951,23 +979,6 @@ fn is_multiple(value: &str, divisor: &str) -> Option<bool> {
     let trimmed = |text: &str| if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text.to_string() };
     let (value, divisor) = (scaled(&trimmed(value), digits)?, scaled(&trimmed(divisor), digits)?);
     (divisor != 0).then(|| value % divisor == 0)
-}
-
-/// Whether a text matches a `LIKE` pattern, whole: `%` any run, `_` one character, `\\` the next
-/// character as it is. `ILIKE` folds case as far as Unicode's lower case does.
-fn like_matches(text: &str, pattern: &str, insensitive: bool) -> bool {
-    let fold = |s: &str| if insensitive { s.to_lowercase() } else { s.to_string() };
-    let (text, pattern): (Vec<char>, Vec<char>) = (fold(text).chars().collect(), fold(pattern).chars().collect());
-    fn at(text: &[char], pattern: &[char]) -> bool {
-        match pattern.split_first() {
-            None => text.is_empty(),
-            Some(('%', rest)) => (0..=text.len()).any(|i| at(&text[i..], rest)),
-            Some(('_', rest)) => !text.is_empty() && at(&text[1..], rest),
-            Some(('\\', rest)) if !rest.is_empty() => text.first() == rest.first() && at(&text[1..], &rest[1..]),
-            Some((c, rest)) => text.first() == Some(c) && at(&text[1..], rest),
-        }
-    }
-    at(&text, &pattern)
 }
 
 /// Why a length breaks a size, if it does.
@@ -1058,29 +1069,88 @@ fn postgres_array(ty: &Type) -> bool {
     ty.label.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_'))
 }
 
-/// Why a Postgres array's text nests deeper or shallower than its type, if it does: a type fixes
-/// one dimension per level of arrays it nests, and an `any_depth` level allows any number more.
-/// An empty array has no dimensions, and fits any.
+/// Whether `.run()` holds an array inside a document to one level (src/render.ts, `jsonNumbers`):
+/// a Postgres array type's (`_int4`), whose elements are never JSON arrays themselves.
+fn flat_in_json(ty: &Type) -> bool {
+    let Kind::Array(array) = &ty.kind else { return false };
+    let named = ty.label.as_deref().is_some_and(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_'));
+    named
+        && matches!(
+            array.element.ty.kind,
+            Kind::Boolean(_) | Kind::Integer(_) | Kind::Float(_) | Kind::Decimal(_) | Kind::Text(_) | Kind::Bytes(_) | Kind::Uuid(_) | Kind::Enum(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::ZonedDateTime(_) | Kind::Duration(_) | Kind::Struct(_) | Kind::Map(_)
+        )
+}
+
+/// Why a Postgres array's text nests shallower than its type, if it does: a type fixes one
+/// dimension per level of arrays it nests. A column's array is typed flat, as the project file
+/// assumes, and a value of more dimensions is one `.run()` refuses rather than one the type
+/// claims, so a deeper text says nothing. An empty array has no dimensions, and fits any.
 fn depth_contradiction(ty: &Type, text: &str) -> Option<String> {
     let body = if text.starts_with('[') { &text[text.find('=')? + 1..] } else { text };
     if body.trim() == "{}" {
         return None;
     }
     let depth = body.chars().take_while(|c| *c == '{').count();
-    let (mut levels, mut open, mut at) = (0, false, ty);
+    let (mut levels, mut at) = (0, ty);
     while let Kind::Array(array) = &at.kind {
         // A type written otherwise in Postgres's text (`vector`) adds no braces.
         if !postgres_array(at) {
             break;
         }
         levels += 1;
-        if array.any_depth {
-            open = true;
-            break;
-        }
         at = &array.element.ty;
     }
-    (depth < levels || (!open && depth > levels)).then(|| format!("typed with {levels}{} dimensions holds {depth}", if open { " or more" } else { "" }))
+    (depth < levels).then(|| format!("typed with {levels} dimensions holds {depth}"))
+}
+
+/// Why the elements of an array typed distinct are not, if they are not: two of them the same value,
+/// as the same text, a NULL as another NULL.
+pub(crate) fn repeated(elements: &[String]) -> Option<String> {
+    let mut seen = HashSet::new();
+    elements.iter().find(|e| !seen.insert(e.as_str())).map(|e| format!("typed with distinct elements holds {e} twice"))
+}
+
+/// Whether a JSON value is or holds a number.
+fn holds_number(v: &Value) -> bool {
+    match v {
+        Value::Number(_) => true,
+        Value::Array(items) => items.iter().any(holds_number),
+        Value::Object(fields) => fields.values().any(holds_number),
+        _ => false,
+    }
+}
+
+/// The elements of a one-dimensional Postgres array as its text writes them, each as written, quotes
+/// and escapes included, so that one value is one text; an unquoted NULL is `NULL`. `None` for an
+/// array of more dimensions.
+fn array_elements(text: &str, delimiter: char) -> Option<Vec<String>> {
+    let body = if text.starts_with('[') { &text[text.find('=')? + 1..] } else { text };
+    let inner = body.trim().strip_prefix('{')?.strip_suffix('}')?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let (mut out, mut token, mut quoted, mut escaped) = (Vec::new(), String::new(), false, false);
+    for c in inner.chars() {
+        match c {
+            _ if escaped => {
+                token.push(c);
+                escaped = false;
+            }
+            '\\' => {
+                token.push(c);
+                escaped = true;
+            }
+            '"' => {
+                token.push(c);
+                quoted = !quoted;
+            }
+            '{' | '}' if !quoted => return None,
+            _ if c == delimiter && !quoted => out.push(std::mem::take(&mut token).trim().to_string()),
+            _ => token.push(c),
+        }
+    }
+    out.push(token.trim().to_string());
+    Some(out)
 }
 
 fn array_has_null(text: &str, delimiter: char) -> bool {
@@ -1122,8 +1192,20 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
             let schema = ty.schema().unwrap_or(Value::Bool(true));
             (!reylo_engine_core::schema_type::admits(&schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"))
         }
+        // An enum's value inside a document: of its type, and one of its values, a number as
+        // its kind compares and a truth value as its text.
+        Kind::Enum(e) => {
+            if let Some(why) = json_contradiction(&e.ty, json, path) {
+                return Some(why);
+            }
+            let shown = match json {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            literal_contradiction(ty, &shown).map(|why| format!("{why} at {at}"))
+        }
         // A row value inside a document is an object of its fields, each key there.
-        Kind::Record(record) if !written_as_text(ty) => {
+        Kind::Struct(record) if !written_as_text(ty) => {
             let Some(obj) = json.as_object() else { return Some(format!("holds {json} at {at}, typed an object")) };
             for f in &record.fields {
                 let Some(v) = obj.get(&f.name) else { return Some(format!("has no key {path}.{}", f.name)) };
@@ -1143,6 +1225,19 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
         // An array inside a document is a JSON array of its elements, each of the element type.
         Kind::Array(array) if !written_as_text(ty) => {
             let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed an array")) };
+            // A Postgres array is written there with as many levels as its value has, which `.run()`
+            // refuses past the one its type has (src/values.ts, `numbersInJson`), as it refuses a
+            // column's, so a deeper one says nothing.
+            if flat_in_json(ty) && items.iter().any(Value::is_array) {
+                return None;
+            }
+            // A number is read as a double, which can make two of them one, so an element holding
+            // one is left to the database's own DISTINCT.
+            if array.distinct {
+                if let Some(why) = repeated(&items.iter().filter(|i| !holds_number(i)).map(Value::to_string).collect::<Vec<_>>()) {
+                    return Some(format!("{why} at {at}"));
+                }
+            }
             for (i, item) in items.iter().enumerate() {
                 if item.is_null() && !array.element.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, item)) {
                     if !array.element.nullable {
@@ -1150,9 +1245,7 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
                     }
                     continue;
                 }
-                // An `any_depth` array holds arrays of itself, where its element is no array itself.
-                let nested = array.any_depth && item.is_array() && !matches!(array.element.ty.kind, Kind::Array(_) | Kind::Json(_));
-                if let Some(why) = json_contradiction(if nested { ty } else { &array.element.ty }, item, &format!("{path}[{i}]")) {
+                if let Some(why) = json_contradiction(&array.element.ty, item, &format!("{path}[{i}]")) {
                     return Some(why);
                 }
             }
@@ -1180,7 +1273,7 @@ fn json_admits(ty: &Type, json: &Value) -> bool {
     let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
     match &ty.kind {
         _ if written_as_text(ty) => json.is_string(),
-        Kind::Boolean => json.is_boolean(),
+        Kind::Boolean(_) => json.is_boolean(),
         Kind::Integer(_) if name == "oid" => json.is_string(),
         Kind::Integer(_) => json.is_number(),
         Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => {
@@ -1409,6 +1502,21 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
+                                // A number a literal or a list of literals types, as its text.
+                                Some(value @ (rusqlite::types::Value::Integer(_) | rusqlite::types::Value::Real(_))) => {
+                                    let number = match value {
+                                        rusqlite::types::Value::Integer(n) => n.to_string(),
+                                        rusqlite::types::Value::Real(f) => f.to_string(),
+                                        _ => unreachable!(),
+                                    };
+                                    let why = serde_json::from_value::<Type>(col["type"].clone()).ok().and_then(|ty| match &ty.kind {
+                                        Kind::Enum(e) if matches!(e.ty.kind, Kind::Text(_)) => Some(format!("typed as one of {:?} holds the number {number}", e.values)),
+                                        _ => literal_contradiction(&ty, &number),
+                                    });
+                                    if let Some(why) = why {
+                                        found.push(format!("{file}: column {name} {why} with ({shown})"));
+                                    }
+                                }
                                 Some(rusqlite::types::Value::Text(text)) => {
                                     if let Some(why) = contradiction(&col["type"], text, col["nullable"].as_bool().unwrap_or(false), ',') {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
@@ -1519,7 +1627,7 @@ fn sqlite_declared(ty: &Value) -> String {
         (Kind::Float(_), _) => "real",
         (Kind::Text(_), _) => "text",
         (Kind::Bytes(_), _) => "blob",
-        (Kind::Boolean, _) => "bool",
+        (Kind::Boolean(_), _) => "bool",
         (Kind::Union(_), Some(name)) => return name.to_string(),
         _ => "",
     }
@@ -1561,7 +1669,7 @@ fn built_value(ty: &Type, json: &Value, path: &str) -> Option<String> {
             });
             (!fits).then(|| format!("holds {json} at {at}, typed {}", ty.short()))
         }
-        Kind::Record(record) => {
+        Kind::Struct(record) => {
             let Some(obj) = json.as_object() else { return Some(format!("holds {json} at {at}, typed an object")) };
             if let Some(extra) = obj.keys().find(|k| !record.fields.iter().any(|f| &f.name == *k)) {
                 return Some(format!("has the key {extra:?} at {at}, which its type lacks"));
@@ -1580,6 +1688,8 @@ fn built_value(ty: &Type, json: &Value, path: &str) -> Option<String> {
             }
             None
         }
+        // MySQL writes a SET inside a document as its members joined by commas.
+        Kind::Array(array) if array.distinct => (!json.is_string()).then(|| format!("holds {json} at {at}, typed a SET, which MySQL writes as its text")),
         Kind::Array(array) => {
             let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed a list")) };
             for (i, item) in items.iter().enumerate() {
@@ -1776,8 +1886,8 @@ mod tests {
     #[test]
     fn built_json_is_held_to_its_type_down_to_each_value() {
         let text = |s: &str| rusqlite::types::Value::Text(s.into());
-        let utf8 = json!({"kind": "text", "ill_formed": "utf8"});
-        let ty = json!({"kind": "json", "content": {"type": {"kind": "record", "fields": [
+        let utf8 = json!({"kind": "text", "encoding": "UTF-8", "ill_formed": true});
+        let ty = json!({"kind": "json", "content": {"type": {"kind": "struct", "fields": [
             {"name": "id", "type": {"kind": "integer", "bits": 64}},
             {"name": "r", "type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true}, "nullable": true},
             {"name": "doc", "type": {"kind": "unknown"}},
@@ -1806,22 +1916,18 @@ mod tests {
     #[test]
     fn a_postgres_array_nests_as_deep_as_its_type_says() {
         let int4 = json!({"kind": "integer", "bits": 32, "label": "int4"});
-        let column = json!({"kind": "array", "any_depth": true, "label": "_int4", "element": {"nullable": true, "type": int4}});
         let flat = json!({"kind": "array", "label": "_int4", "element": {"nullable": true, "type": int4}});
         let rows = json!({"kind": "array", "label": "_int4", "element": {"type": {"kind": "array", "label": "_int4", "element": {"type": int4}}}});
-        let stacked = json!({"kind": "array", "label": "_int4", "element": {"type": column}});
-        // A column's array holds any depth; one a statement builds holds the depth it shows.
-        assert_eq!(contradiction(&column, "{{1,2},{3,4}}", false, ','), None);
+        // An array holds at least the depth its type shows. A column's array is typed flat, and a
+        // value of more dimensions is one `.run()` refuses, which the type does not claim.
         assert_eq!(contradiction(&flat, "{1,NULL}", false, ','), None);
-        assert_eq!(contradiction(&flat, "{{1,2}}", false, ',').as_deref(), Some("typed with 1 dimensions holds 2"));
+        assert_eq!(contradiction(&flat, "{{1,2},{3,4}}", false, ','), None);
         assert_eq!(contradiction(&rows, "{{1,2},{3,4}}", false, ','), None);
         assert_eq!(contradiction(&rows, "{1,2}", false, ',').as_deref(), Some("typed with 2 dimensions holds 1"));
-        assert_eq!(contradiction(&stacked, "[0:1]={{{1}},{{2}}}", false, ','), None);
-        assert_eq!(contradiction(&stacked, "{1}", false, ',').as_deref(), Some("typed with 2 or more dimensions holds 1"));
+        assert_eq!(contradiction(&rows, "[0:1]={{1},{2}}", false, ','), None);
         // An empty array fits any depth, and a NULL is an element of the innermost level.
         assert_eq!(contradiction(&rows, "{}", false, ','), None);
         assert_eq!(contradiction(&rows, "{{1,NULL}}", false, ',').as_deref(), Some("typed with non-null elements holds a NULL element"));
-        assert_eq!(contradiction(&stacked, "{{1,NULL}}", false, ','), None);
         // A vector is an array in the type but no braces in Postgres's text, so it adds no dimension.
         let float4 = json!({"kind": "float", "exponent_bits": 8, "mantissa_bits": 23});
         let vector = json!({"kind": "array", "label": "public.vector", "element": {"type": float4}});
@@ -1835,7 +1941,7 @@ mod tests {
         let int8 = json!({"kind": "integer", "bits": 64, "label": "int8"});
         let list = json!({"kind": "array", "element": {"type": int8}});
         let document = |content: &Value| json!({"kind": "json", "label": "jsonb", "content": {"type": content}});
-        let object = json!({"kind": "record", "fields": [{"name": "ids", "type": list.clone()}]});
+        let object = json!({"kind": "struct", "fields": [{"name": "ids", "type": list.clone()}]});
         assert_eq!(contradiction(&document(&list), "[1, 2]", false, ','), None);
         assert_eq!(contradiction(&document(&object), r#"{"ids": []}"#, false, ','), None);
         // `coalesce(jsonb_agg(…), '{}')` over no rows is `{}`, which no list type admits.

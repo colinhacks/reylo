@@ -17,7 +17,7 @@ type LoaderContext = {
 export default function reyloSqlLoader(this: LoaderContext, source: string): void {
   // The module changes with the database's schema, which is no file a bundler can watch: a cached
   // result, webpack's on disk above all, would outlive a migration. So the loader runs in every
-  // build, and `.reylo/` answers it while the schema is unchanged.
+  // build, and `reylo/.cache/` answers it while the schema is unchanged.
   this.cacheable?.(false);
   const done = this.async();
   tooling(dirname(this.resourcePath)).then((t) => t.sqlModule(this.resourcePath, source)).then(

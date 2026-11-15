@@ -1,0 +1,18 @@
+drop type status;
+create type status as enum('a', 'b', 'c');
+create temporary table reylo_copy_orgs as select * from orgs;
+create temporary table reylo_copy_members as select * from members;
+create temporary table reylo_copy_assignments as select * from assignments;
+drop table assignments;
+drop table members;
+drop table orgs;
+create table orgs (id integer, st status default 'a', primary key (id));
+create table members (id integer, org_id integer, st status default 'a', primary key (id), foreign key (org_id) references orgs (id));
+create table assignments (id integer, member_id integer, st enum('a', 'c') default 'a', primary key (id), foreign key (member_id) references members (id));
+insert into orgs (id, st) select id, st from temp.main.reylo_copy_orgs;
+insert into members (id, org_id, st) select id, org_id, st from temp.main.reylo_copy_members;
+insert into assignments (id, member_id, st) select id, member_id, st from temp.main.reylo_copy_assignments;
+drop table temp.main.reylo_copy_orgs;
+drop table temp.main.reylo_copy_members;
+drop table temp.main.reylo_copy_assignments;
+alter table assignments alter column st set data type status;

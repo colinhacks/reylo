@@ -1,6 +1,6 @@
 ---
 title: Cloudflare Workers
-description: How to use Reylo in a Cloudflare Worker. The Vite plugin, the schema the type check reads, D1, Durable Objects, tests, and the SQLite functions Cloudflare blocks.
+description: How to use Reylo in a Cloudflare Worker. The Vite plugin, the schema the type check reads, D1, Durable Objects, migrations, tests, and the SQLite functions Cloudflare blocks.
 ---
 
 <p className="dk-subheader">Reylo in Workers, on D1 and Durable Objects</p>
@@ -49,22 +49,22 @@ export default defineConfig({
 
 ## Local database
 
-The type check reads your schema from the local D1 database that Wrangler keeps. Your migrations create it:
-
-```sh
-wrangler d1 migrations apply DB --local
-```
-
-Point [`direct_url`](/configuration#direct_url) at its file:
+The type check reads your schema from a local SQLite file. Point [`direct_url`](/configuration#direct_url) at it:
 
 ```yaml title=".reylo.yaml"
-# named after the binding's database_id
-direct_url: file:./.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<name>.sqlite
+direct_url: file:./dev.sqlite
+```
+
+Your [migrations](#migrations) create it:
+
+```sh
+reylo migrate dev
 ```
 
 - Set it in `.reylo.yaml`, not in `.env`: Wrangler loads `.env` into the Worker as secrets.
-- The file is the one `.sqlite` file beside `metadata.sqlite`, and its name changes only with the binding's `database_id`.
-- In CI, apply the migrations locally before the build. The type check needs no access to the remote database.
+- Keep it apart from the local D1 database that Wrangler keeps, which Wrangler migrates itself.
+- In CI, run `reylo migrate deploy` before the build. The type check needs no access to the remote database.
+- With migrations written for Wrangler alone, point `direct_url` at Wrangler's local D1 file instead: `.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<name>.sqlite`, named after the binding's `database_id`.
 
 ## D1
 
@@ -122,8 +122,46 @@ insert into users (name) values (:name)
 ```
 
 - The type check reads one database per package, the one its `.reylo.yaml` names. An object whose tables match D1's can run D1's migrations. An object with tables of its own goes in a package of its own, whose `.reylo.yaml` names a SQLite file made from that object's schema.
-- The [check against schema changes](/schema-changes) runs in each object on its own, since each object is a database of its own. Before an object's tables exist, a query fails with the database's own error.
+- The [check against schema changes](/observability#when-the-schema-changes) runs in each object on its own, since each object is a database of its own. Before an object's tables exist, a query fails with the database's own error.
 - The storage rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
+
+## Migrations
+
+Write your migrations with [`reylo migrate`](/migrations), and let Wrangler run them on D1:
+
+```jsonc title="wrangler.jsonc"
+{
+  // ...
+  "d1_databases": [
+    { "binding": "DB", "database_name": "app", "migrations_dir": "reylo/migrations" }
+  ]
+}
+```
+
+```sh
+wrangler d1 migrations apply DB --remote
+```
+
+A Durable Object runs them on itself. Pass its storage to `migrate` in its constructor:
+
+```ts twoslash title="board.ts"
+/// <reference types="@cloudflare/workers-types" />
+// the type `wrangler types` writes for the bindings
+interface Env {}
+// ---cut---
+import { DurableObject } from "cloudflare:workers";
+import { migrate } from "reylo";
+
+export class Board extends DurableObject {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    migrate(ctx.storage);
+  }
+}
+```
+
+- Reylo's Vite or esbuild plugin puts your locked migrations in the bundle. Each object runs the ones it hasn't run when it starts, so a deploy reaches every object the next time it runs.
+- An object that ran a migration the bundle lacks, or one edited since, throws and runs nothing.
 
 ## Blocked functions
 

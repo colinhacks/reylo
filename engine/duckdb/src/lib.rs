@@ -12,6 +12,7 @@ pub mod api;
 pub mod catalog;
 pub mod duckdb;
 pub mod host;
+pub mod literals;
 pub mod nulls;
 pub mod types;
 

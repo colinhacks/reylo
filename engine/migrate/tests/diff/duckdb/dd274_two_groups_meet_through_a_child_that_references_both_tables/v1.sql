@@ -1,0 +1,1 @@
+create macro v1(s) as s <> ''; create macro v2(s) as s <> ''; create table a (id integer primary key, x varchar check (v1(x))); create table b (id integer primary key, y varchar check (v2(y))); create table c (id integer primary key, a_id integer references a (id), b_id integer references b (id));

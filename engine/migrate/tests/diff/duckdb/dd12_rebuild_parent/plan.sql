@@ -1,0 +1,15 @@
+create temporary table reylo_copy_a as select * from a;
+create temporary table reylo_copy_b as select * from b;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table b;
+drop table a;
+create table a (id bigint, name varchar, primary key (id), check (("name" != '')));
+create table b (id bigint, a_id bigint, primary key (id), foreign key (a_id) references a (id));
+create table c (id bigint, b_id bigint, foreign key (b_id) references b (id));
+insert into a (id, name) select id, name from temp.main.reylo_copy_a;
+insert into b (id, a_id) select id, a_id from temp.main.reylo_copy_b;
+insert into c (id, b_id) select id, b_id from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_a;
+drop table temp.main.reylo_copy_b;
+drop table temp.main.reylo_copy_c;

@@ -1,0 +1,1 @@
+create sequence s increment by 2; create macro valid(c) as length(c) > 0; create macro next10() as nextval('s') * 10; create table t (id bigint primary key default nextval('s'), code varchar check (valid(code)), k bigint default next10());

@@ -251,7 +251,7 @@ export default defineConfig({
 });
 ```
 
-Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](/configuration#direct_url) in `.reylo.yaml` to the local D1 file that `wrangler d1 migrations apply --local` creates. Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
+Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](/configuration#direct_url) in `.reylo.yaml` to a local SQLite file your migrations create ([Cloudflare Workers](/cloudflare#local-database)). Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
 
 </Tab>
 <Tab value="Jest" id="setup-jest">

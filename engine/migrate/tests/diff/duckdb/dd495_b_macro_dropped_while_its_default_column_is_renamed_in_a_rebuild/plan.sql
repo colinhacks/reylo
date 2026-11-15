@@ -1,0 +1,9 @@
+create temporary table reylo_copy_p2 as select * from b.p2;
+drop table b.p2;
+create table b.p2 (id integer, e integer default "valid"(), check ((id > 0)));
+insert into b.p2 (id, e) select id, d from temp.main.reylo_copy_p2;
+drop table temp.main.reylo_copy_p2;
+-- b.p2.d is renamed e, keeping its rows. If they are two columns, drop the one and add the other instead.
+alter table b.p2 alter column e drop default;
+drop macro b.valid;
+alter table b.p2 alter column e set default "valid"();

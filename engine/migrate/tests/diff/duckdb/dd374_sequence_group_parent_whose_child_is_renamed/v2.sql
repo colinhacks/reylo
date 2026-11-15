@@ -1,0 +1,1 @@
+create sequence s increment by 2; create table p (id bigint primary key, n bigint check (n > 0), k bigint default nextval('s')); create table c2 (id integer primary key, p_id bigint references p (id), q bigint check (q < 100));

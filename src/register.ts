@@ -1,6 +1,6 @@
 // One preload for every runtime: `node --import reylo/register`, `nub --import reylo/register`,
 // `bun --preload reylo/register` (or bunfig.toml). It is the build step for code that runs
-// unbundled: each `.sql` file becomes its module (`src/loader.ts`) as it loads, from `.reylo/` or
+// unbundled: each `.sql` file becomes its module (`src/loader.ts`) as it loads, from `reylo/.cache/` or
 // the database. Node's load hook (module.registerHooks) and Bun's plugin under `require()` must
 // answer synchronously, while the analysis waits on the database, so they ask `src/bridge.ts`,
 // which blocks on a worker thread.

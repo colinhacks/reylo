@@ -1,0 +1,1 @@
+create schema b; create sequence s; create sequence b.s start 500 increment by 2; create macro b.nx() as nextval('s'); create table b.pages (id integer primary key, parent_id integer references b.pages (id), k bigint default b.nx());

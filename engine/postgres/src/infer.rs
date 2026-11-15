@@ -2884,6 +2884,43 @@ pub fn array_subqueries(sql: &str) -> Option<Vec<Option<String>>> {
     })
 }
 
+/// Per target of the statement's select list, whether it is an array of distinct elements:
+/// `array_agg(DISTINCT x)` of the built-in, which keeps one of each set of values `x`'s equality
+/// finds equal, one NULL among them, bare or under `coalesce(…, '{}')` with no cast on the `'{}'`. A FILTER or an ORDER BY
+/// keeps the elements distinct. `None` where the list is not one the rules read: a set operation,
+/// a `VALUES` list, a `*` among it.
+pub fn distinct_arrays(sql: &str, trust: &Trust) -> Option<Vec<bool>> {
+    fn distinct(node: &Node, trust: &Trust) -> bool {
+        match node.node.as_ref() {
+            Some(NodeEnum::FuncCall(f)) => {
+                f.agg_distinct && f.args.len() == 1 && f.over.is_none() && !f.agg_star && !f.func_variadic && !f.agg_within_group && builtin_name(&f.funcname).as_deref() == Some("array_agg") && trust.builtin("array_agg")
+            }
+            // A bare `'{}'` takes the aggregate's type; a typed one is the type both take, and a cast
+            // to it may make two elements one (`int8` to `float8`).
+            Some(NodeEnum::CoalesceExpr(c)) => matches!(c.args.as_slice(), [first, rest @ ..] if !rest.is_empty() && distinct(first, trust) && rest.iter().all(|r| matches!(r.node.as_ref(), Some(NodeEnum::AConst(_))) && crate::jsonshape::is_empty_sql_array(r))),
+            _ => false,
+        }
+    }
+    let parsed = crate::stack::parse(sql).ok()?;
+    let NodeEnum::SelectStmt(select) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref()? else { return None };
+    if set_kind(select).is_some() || !select.values_lists.is_empty() {
+        return None;
+    }
+    select
+        .target_list
+        .iter()
+        .map(|target| {
+            let Some(NodeEnum::ResTarget(target)) = target.node.as_ref() else { return None };
+            let val = target.val.as_deref()?;
+            match val.node.as_ref()? {
+                NodeEnum::ColumnRef(c) if c.fields.iter().any(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => None,
+                _ if expands(val) => None,
+                _ => Some(distinct(val, trust)),
+            }
+        })
+        .collect()
+}
+
 /// Per target of the statement's select list or RETURNING list, the RFC 9562 version of each UUID
 /// a target makes whole: 4 for `gen_random_uuid()` and `uuidv4()`, and 7 for `uuidv7()`, with or
 /// without its shift, each where only the built-in can answer the call. A UUID a statement reads, or
@@ -3857,7 +3894,7 @@ mod tests {
     }
 
     fn col(nullable: bool, type_oid: u32) -> DescribedColumn {
-        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
+        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
     }
 
     #[test]
@@ -4737,8 +4774,8 @@ mod tests {
         assert_eq!(p.head[1], None);
         assert_eq!(p.leaves.as_deref(), Some("SELECT u AS a0 FROM users u WHERE u.id = NULL"));
         // The probe says whether it was the row after all: a column named like the alias is not.
-        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
-        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
+        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
+        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
         assert!(resolve(p.head[0].as_ref().unwrap(), Some(&[row])).non_null);
         assert!(!resolve(p.head[0].as_ref().unwrap(), Some(&[column])).non_null);
         assert_eq!(pg("SELECT p FROM users u LEFT JOIN posts p ON p.user_id = u.id").head[0], None);

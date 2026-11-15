@@ -1,0 +1,10 @@
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+drop type mood;
+drop macro x;
+create macro x () as (2);
+create type mood as enum('a', 'b', 'c');
+create table t (id integer, m varchar, v integer, primary key (id), check (((v >= x()) and (cast(m as mood) != 'b'))));
+insert into t (id, m, v) select id, m, v from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;
+create table n (id integer, w varchar, primary key (id), check ((cast(w as mood) != 'c')));

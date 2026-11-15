@@ -1,0 +1,1 @@
+insert into org values (1, 'o'); insert into team values (1, 1, 't'); insert into person values (1, 1, 'e'); insert into project values (1, 1, 1); insert into task values (1, 1, 1, 'x'); insert into tag values (1, 1);

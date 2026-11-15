@@ -18,7 +18,7 @@
 
 use crate::catalog::{body_relations, Catalog, Table, TableMacro, MAX_MACRO_LEVELS};
 use sqlparser::ast::{
-    BinaryOperator, CastKind, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, LimitClause, ObjectName, ObjectNamePart, Query, Select, SelectItem, SetExpr, SetOperator,
+    BinaryOperator, CastKind, DuplicateTreatment, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, LimitClause, ObjectName, ObjectNamePart, Query, Select, SelectItem, SetExpr, SetOperator,
     TableAlias, TableFactor, TableWithJoins, UnaryOperator, Value,
 };
 use std::collections::{HashMap, HashSet};
@@ -184,6 +184,9 @@ pub struct Out {
     /// The RFC 9562 version of every UUID it holds, where the call that made each says so
     /// ([`made_version`]).
     pub version: Option<u8>,
+    /// Whether its list holds no two equal elements, where a call makes it so ([`made_distinct`]),
+    /// and then whether no element is NULL either.
+    pub distinct: Option<bool>,
 }
 
 /// The WITH queries in scope, innermost last: each one's name, lowercased, and its columns.
@@ -277,7 +280,7 @@ impl Scope {
 
     fn column(&self, (i, j): (usize, usize)) -> Out {
         let rel = &self.rels[i];
-        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None, rows: None, plain: false, version: None });
+        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None, rows: None, plain: false, version: None, distinct: None });
         let not_null = !self.grouping_sets && (self.rejected.contains(&(i, j)) || (!rel.padded && c.not_null));
         Out { not_null, ..c }
     }
@@ -296,7 +299,7 @@ pub fn query(q: &Query, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                     SetExpr::SetOperation { left, .. } => set_expr(left, ctx, &ctes),
                     _ => query(&cte.query, ctx, &ctes),
                 };
-                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, rows: None, version: None, ..c }).collect())
+                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, rows: None, version: None, distinct: None, ..c }).collect())
             } else {
                 query(&cte.query, ctx, &ctes)
             };
@@ -347,6 +350,9 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                             SetOperator::Intersect => a.version.or(b.version),
                             SetOperator::Except | SetOperator::Minus => a.version,
                         },
+                        // DuckDB casts both arms to one type first, which may make two elements one
+                        // (`DECIMAL(38,10)` to `DECIMAL(38,0)`).
+                        distinct: None,
                     })
                     .collect(),
             )
@@ -358,7 +364,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                 return None;
             }
             // DuckDB names a VALUES list's columns col0, col1, …
-            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None, rows: None, plain: values.rows.iter().all(|row| plain(&row[k], &scope, ctx)), version: None }).collect())
+            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None, rows: None, plain: values.rows.iter().all(|row| plain(&row[k], &scope, ctx)), version: None, distinct: None }).collect())
         }
         _ => None,
     }
@@ -392,7 +398,7 @@ fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
 /// called `alias` in the statement: its NOT NULL columns are not NULL.
 pub fn returning(items: &[SelectItem], name: &[String], alias: Option<String>, ctx: &Ctx) -> Option<Vec<Out>> {
     let table = ctx.catalog.table(name)?;
-    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty), version: None }).collect();
+    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty), version: None, distinct: None }).collect();
     let scope = Scope { rels: vec![Rel { name: alias.or_else(|| name.last().cloned()), columns: Some(columns), padded: false }], ..Scope::default() };
     projection(items, &scope, ctx)
 }
@@ -450,7 +456,7 @@ fn expand(scope: &Scope, i: usize, options: &sqlparser::ast::WildcardAdditionalO
         }
         let replaced = options.opt_replace.as_ref().and_then(|r| r.items.iter().find(|item| item.column_name.value.eq_ignore_ascii_case(&name)));
         match replaced {
-            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None, rows: None, plain: plain(&item.expr, scope, ctx), version: made_version(&item.expr, ctx) }),
+            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None, rows: None, plain: plain(&item.expr, scope, ctx), version: made_version(&item.expr, ctx), distinct: made_distinct(&item.expr, ctx) }),
             None => out.push(Out { name: Some(name), ..scope.column((i, j)) }),
         }
     }
@@ -476,8 +482,8 @@ fn column_of(e: &Expr, alias: Option<&str>, scope: &Scope, ctx: &Ctx) -> Out {
         // Under grouping sets with a key that is no column, the item may be that key, NULL in
         // the rows that total it: `case … end as bucket … group by rollup (bucket)`. A count
         // is no key, and neither is `grouping`.
-        None if scope.expression_keys => Out { name, not_null: counts(e, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx), version: made_version(e, ctx) },
-        None => Out { name, not_null: not_null(e, scope, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx), version: made_version(e, ctx) },
+        None if scope.expression_keys => Out { name, not_null: counts(e, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx), version: made_version(e, ctx), distinct: made_distinct(e, ctx) },
+        None => Out { name, not_null: not_null(e, scope, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx), version: made_version(e, ctx), distinct: made_distinct(e, ctx) },
     }
 }
 
@@ -500,6 +506,25 @@ fn made_version(e: &Expr, ctx: &Ctx) -> Option<u8> {
             "uuidv7" => Some(7),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// Whether the expression is, whole, a list of distinct elements, by DuckDB's own equality, and then
+/// whether no element is NULL either: `list(DISTINCT x)` and `array_agg(DISTINCT x)` keep one of each
+/// set of equal values, one NULL among them, and `list_distinct(l)` drops the NULLs too.
+fn made_distinct(e: &Expr, ctx: &Ctx) -> Option<bool> {
+    match e {
+        Expr::Nested(inner) => made_distinct(inner, ctx),
+        Expr::Function(f) if f.over.is_none() => {
+            let FunctionArguments::List(list) = &f.args else { return None };
+            let one = args(f).is_some_and(|a| a.len() == 1);
+            match ctx.builtin(f)?.as_str() {
+                "list" | "array_agg" if one && matches!(list.duplicate_treatment, Some(DuplicateTreatment::Distinct)) => Some(false),
+                "list_distinct" | "array_distinct" if one && list.duplicate_treatment.is_none() && f.filter.is_none() => Some(true),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -729,7 +754,7 @@ fn factor(f: &TableFactor, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Rel>> {
             };
             let columns = match cte {
                 Some(columns) => Some(columns),
-                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty), version: None }).collect()),
+                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty), version: None, distinct: None }).collect()),
             };
             let columns = match (columns, alias) {
                 (Some(cs), Some(alias)) => Some(renamed(cs, alias)),

@@ -23,7 +23,7 @@ use std::ops::ControlFlow;
 /// A type under what the statement shows of an array of rows ([`Out::rows`]): its elements are structs, and each field is NULL only where its column may be.
 fn with_rows(mut ty: Type, out: &Out) -> Type {
     if let (Some(rows), Kind::Array(array)) = (&out.rows, &mut ty.kind) {
-        if let Kind::Record(record) = &mut array.element.ty.kind {
+        if let Kind::Struct(record) = &mut array.element.ty.kind {
             if record.fields.len() == rows.len() {
                 array.element.nullable = false;
                 for (field, row) in record.fields.iter_mut().zip(rows) {
@@ -39,9 +39,41 @@ fn with_rows(mut ty: Type, out: &Out) -> Type {
 /// A UUID type under the version of every UUID the column holds ([`Out::version`]).
 fn with_version(mut ty: Type, out: &Out) -> Type {
     if let Kind::Uuid(uuid) = &mut ty.kind {
-        uuid.version = out.version.or(uuid.version);
+        uuid.versions = out.version.map(|v| vec![v]).or(uuid.versions.take());
     }
     ty
+}
+
+/// A list type under what the statement shows of its elements ([`Out::distinct`]): no two equal,
+/// and none NULL where the call drops NULL. Only where DuckDB's equality finds two values equal
+/// whenever the format reads them as one value ([`same_value_is_equal`]).
+fn with_distinct(mut ty: Type, out: &Out) -> Type {
+    if let (Some(non_null), Kind::Array(array)) = (out.distinct, &mut ty.kind) {
+        if non_null {
+            array.element.nullable = false;
+        }
+        if same_value_is_equal(&array.element.ty) {
+            array.distinct = true;
+        }
+    }
+    ty
+}
+
+/// Whether DuckDB's equality on values of `ty` finds two equal whenever the format reads them as
+/// one value, so that a list it keeps distinct holds no two such values. Not text: `list(DISTINCT
+/// s)` and `list_distinct` compare text as its bytes, while the column's collation or
+/// `default_collation` (`NOCASE`) may find two of them equal. Not a duration: `list_distinct` keeps
+/// `INTERVAL 1 DAY` and `INTERVAL 24 HOURS`, which DuckDB finds equal. Not a float, whose -0 and 0
+/// the format reads as one value, nor JSON, whose text may differ for one document (`{"a":1}` and
+/// `{"a": 1}`), nor a geometry, nor a type the engine does not structure, nor anything holding one.
+fn same_value_is_equal(ty: &Type) -> bool {
+    match &ty.kind {
+        Kind::Float(_) | Kind::Text(_) | Kind::Duration(_) | Kind::Geometry(_) | Kind::Json(_) | Kind::Opaque | Kind::Unknown | Kind::Map(_) | Kind::TaggedUnion(_) | Kind::Union(_) | Kind::Intersection(_) | Kind::Table(_) | Kind::Tuple(_) => false,
+        Kind::Array(a) => same_value_is_equal(&a.element.ty),
+        Kind::Struct(s) => s.extra.is_none() && s.fields.iter().all(|f| same_value_is_equal(&f.ty)),
+        Kind::Enum(e) => same_value_is_equal(&e.ty),
+        _ => true,
+    }
 }
 
 /// The statements the DuckDB analysis reads; any other is a command ([`lex::Statement`]).
@@ -55,10 +87,6 @@ const RETURN_ROWS: &[&str] = &["SELECT", "EXPLAIN", "CALL", "PRAGMA", "RELATION"
 pub fn analyze_text(sql: &str, host: &Host) -> Lazy<Analysis> {
     reylo_engine_core::structured::analyze(sql, Dialect::Duckdb, host, &|sql, marked| analyze(sql, host, marked), &|diagnostics| reylo_engine_core::analysis::bare_of(sql, Dialect::Duckdb, diagnostics))
 }
-
-/// The diagnostic code of a column or a parameter that holds a struct whose fields have no names
-/// ([`crate::types::unnamed`]).
-pub const UNNAMED_FIELDS: u32 = 22;
 
 /// The analysis of a statement whose placeholders are Reylo's and DuckDB's own; `marked` names the
 /// parameters cast to `nullable(…)`.
@@ -136,13 +164,20 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let proven = shaped.as_deref().filter(|_| rows).and_then(|s| outputs(s, &ctx)).filter(|out| {
         out.len() == raw.columns.len() && out.iter().zip(&raw.columns).all(|(o, c)| o.name.as_deref().is_none_or(|n| n.eq_ignore_ascii_case(&c.name)))
     });
+    // The constants each column holds, where the statement writes nothing else into it.
+    let literals = shaped.as_deref().filter(|_| rows).and_then(crate::literals::columns).filter(|l| l.len() == raw.columns.len()).unwrap_or_default();
     let columns: Vec<Column> = if rows {
         raw.columns
             .iter()
             .enumerate()
             .map(|(i, c)| {
                 let out = proven.as_ref().map(|p| &p[i]);
-                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), out.map_or_else(|| crate::types::of(&c.ty), |o| with_version(with_rows(crate::types::of(&c.ty), o), o)), !out.is_some_and(|o| o.not_null)) }
+                let ty = out.map_or_else(|| crate::types::of(&c.ty), |o| with_distinct(with_version(with_rows(crate::types::of(&c.ty), o), o), o));
+                let ty = match literals.get(i) {
+                    Some(Some(written)) => reylo_engine_core::literal::narrow(&ty, written).unwrap_or(ty),
+                    _ => ty,
+                };
+                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), ty, !out.is_some_and(|o| o.not_null)) }
             })
             .collect()
     } else {
@@ -185,25 +220,6 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             None => (Cardinality::Many, Some("the engine does not read this statement's syntax, so nothing bounds its rows".to_string())),
         }
     };
-    // A struct whose fields have no names is refused where a column or a parameter has one.
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    if rows {
-        for c in raw.columns.iter().filter(|c| crate::types::unnamed(&c.ty)) {
-            let message = format!("Column \"{}\" holds a struct whose fields have no names, as (1, 'a') and row(…) build, and a value's fields are read by their names: name them, as in {{'a': 1, 'b': 'x'}} or struct_pack(a := 1, b := 'x')", c.name);
-            diagnostics.push(Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: UNNAMED_FIELDS, server_code: None });
-        }
-    }
-    for (i, name) in lexed.params.iter().enumerate() {
-        let n = (i + 1).to_string();
-        let described = raw.params.iter().find(|p| p.name == n).or_else(|| raw.params.get(i));
-        if !described.and_then(|p| p.ty.as_ref()).is_some_and(crate::types::unnamed) {
-            continue;
-        }
-        let Some(p) = lexed.placeholders.iter().find(|p| &p.name == name) else { continue };
-        let written = &sql[p.start..p.end];
-        let message = format!("{written} takes a struct whose fields have no names, and a value's fields are read by their names: cast it to a struct that names them, as in {written}::struct(a integer, b varchar)");
-        diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
-    }
     let rewritten_sql = rewritten.sql.clone();
     let analysis_columns = columns.len();
     let targets = shaped.as_deref().and_then(|statement| {
@@ -229,7 +245,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         value: false,
         rewritten,
         style: lexed.style,
-        diagnostics,
+        diagnostics: Vec::new(),
         unresolved: Vec::new(),
         structured: Vec::new(),
         fresh: None,
@@ -333,14 +349,37 @@ fn shallow(e: &Expr, found: &dyn Fn(&Expr) -> bool) -> bool {
     e.visit(&mut Shallow { depth: 0, found }).is_break()
 }
 
-/// The one statement of the text as `sqlparser`'s DuckDB dialect reads it, if it reads it.
+/// The one statement of the text as `sqlparser`'s DuckDB dialect reads it, if it reads it, each
+/// block comment read as DuckDB reads it ([`without_block_comments`]).
 fn parse(sql: &str) -> Option<Statement> {
-    let mut statements = Parser::parse_sql(&DuckDbDialect {}, sql).ok()?;
+    let mut statements = Parser::parse_sql(&DuckDbDialect {}, &without_block_comments(sql)).ok()?;
     if statements.len() == 1 {
         statements.pop()
     } else {
         None
     }
+}
+
+/// The text with each block comment written as spaces, a space for each character and its line
+/// breaks kept, so that a place in it, a line and a column of characters, is the same text's.
+/// DuckDB nests block comments, so `/* /* */ 'a' */` is one comment, and sqlparser's DuckDB
+/// dialect ends one at its first `*/`, which would read `'a'` as code: the engine's lexer finds
+/// them as DuckDB does.
+fn without_block_comments(sql: &str) -> Cow<'_, str> {
+    let Ok(lexed) = lex::lex(sql, Dialect::Duckdb) else { return Cow::Borrowed(sql) };
+    let comments: Vec<(usize, usize)> = lexed.opaque.iter().copied().filter(|&(start, _)| sql[start..].starts_with("/*")).collect();
+    if comments.is_empty() {
+        return Cow::Borrowed(sql);
+    }
+    let mut out = String::with_capacity(sql.len());
+    let mut at = 0;
+    for (start, end) in comments {
+        out.push_str(&sql[at..start]);
+        out.extend(sql[start..end].chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+        at = end;
+    }
+    out.push_str(&sql[at..]);
+    Cow::Owned(out)
 }
 
 /// A write that WITH queries feed (`WITH x AS (…) INSERT …`), which the tree reads as a query whose
@@ -688,6 +727,14 @@ pub fn place(message: &str, text: &str) -> (String, Option<usize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_block_comment_nests_as_duckdb_reads_it() {
+        let read = |sql: &str| parse(sql).map(|s| s.to_string());
+        assert_eq!(read("select /* /* */ 'a' -- */\n'b' as k").as_deref(), Some("SELECT 'b' AS k"));
+        assert_eq!(without_block_comments("select /* a\n/* b */ c */ 1"), "select     \n             1");
+        assert_eq!(without_block_comments("select '/* not a comment */' -- /* nor this\n"), "select '/* not a comment */' -- /* nor this\n");
+    }
 
     #[test]
     fn an_error_is_placed_at_duckdb_s_caret() {

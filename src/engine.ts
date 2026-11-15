@@ -127,7 +127,7 @@ const KEPT_ANSWERS = 512;
 export class Engine extends EngineCore {
   readonly binary: string;
   readonly dialect: Dialect;
-  /** The engine's fingerprint, core's sources and its database's, which names the `.reylo/` entries it writes. */
+  /** The engine's fingerprint, core's sources and its database's, which names the `reylo/.cache/` entries it writes. */
   readonly fingerprint: string;
   /** The child that answers this database's requests that need no database, started again where it stopped. */
   #core: Channel;

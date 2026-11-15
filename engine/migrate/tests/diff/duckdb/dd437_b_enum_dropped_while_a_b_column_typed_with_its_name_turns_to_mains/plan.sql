@@ -1,0 +1,1 @@
+drop type b.mood;

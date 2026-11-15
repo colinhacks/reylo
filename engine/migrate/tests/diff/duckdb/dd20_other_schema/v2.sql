@@ -1,0 +1,1 @@
+create schema billing; create table billing.invoices (id bigint primary key, total decimal(12, 2), paid boolean default false); create table billing.items (id bigint primary key, invoice_id bigint references billing.invoices (id));

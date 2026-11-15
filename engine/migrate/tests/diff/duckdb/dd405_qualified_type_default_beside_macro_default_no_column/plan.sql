@@ -1,0 +1,11 @@
+alter table t alter column a drop default;
+alter table t alter column b drop default;
+alter table u alter column d drop default;
+drop type s.mood;
+drop macro m;
+create macro m (x) as ((x + 2));
+create type s.mood as enum('a', 'b', 'c');
+alter table t alter column a set default m(1);
+alter table t alter column b set default cast(cast('a' as s.mood) as VARCHAR);
+alter table u alter column d set default m(2);
+alter table u alter column c set data type s.mood;

@@ -1,0 +1,1 @@
+create sequence ids; create macro next_id() as nextval('ids'); create table a (id bigint primary key default next_id(), n integer); create table b (id bigint primary key default next_id());

@@ -1,0 +1,10 @@
+drop index t_i;
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+drop macro x;
+create macro x () as (2);
+create table t (id integer, v integer, n integer, primary key (id), check ((v >= x())));
+insert into t (id, v, n) select id, v, n from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;
+drop macro y;
+create index t_i on t(v);

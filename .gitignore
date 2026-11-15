@@ -21,13 +21,13 @@ lab/**/dist/
 lab/json-schema-suite/.suite/
 
 # Mapper cache written into lab projects
-lab/**/.reylo/
+lab/**/reylo/.cache/
 
 # SQLite lab database file
 lab/sqlite/lab.db*
 
 # Example projects: mapper cache and local env
-examples/**/.reylo/
+examples/**/reylo/.cache/
 
 # The Postgres extension's build outputs: the shim, its objects, and pg_regress's own files.
 pg-extension/*.so

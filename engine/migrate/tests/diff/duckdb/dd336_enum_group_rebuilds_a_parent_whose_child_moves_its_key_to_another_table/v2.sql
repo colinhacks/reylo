@@ -1,0 +1,1 @@
+create type mood as enum ('a', 'b', 'c'); create table p (id integer primary key, code varchar check (code::mood <> 'b')); create table q (id integer primary key); create table c (id integer primary key, p_id integer references q (id));

@@ -1,5 +1,5 @@
-count_cast.sql: many () -> { c: text? }
+count_cast.sql: many () -> { c: text(¬NUL)? }
 count_star.sql: one () -> { n: int8 }
 key_sublink.sql: at_most_one () -> { id: int4 }
-max_cast.sql: many () -> { m: varchar? }
-max_sublink.sql: one () -> { m: varchar? }
+max_cast.sql: many () -> { m: varchar(¬NUL)? }
+max_sublink.sql: one () -> { m: varchar(¬NUL)? }

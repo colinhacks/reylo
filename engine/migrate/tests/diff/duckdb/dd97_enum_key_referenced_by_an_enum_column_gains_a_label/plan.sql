@@ -1,0 +1,12 @@
+drop type code;
+create type code as enum('a', 'b', 'z');
+create temporary table reylo_copy_p as select * from p;
+create temporary table reylo_copy_k as select * from k;
+drop table k;
+drop table p;
+create table p (c code, n integer, primary key (c));
+create table k (id integer, c code, foreign key (c) references p (c));
+insert into p (c, n) select c, n from temp.main.reylo_copy_p;
+insert into k (id, c) select id, c from temp.main.reylo_copy_k;
+drop table temp.main.reylo_copy_p;
+drop table temp.main.reylo_copy_k;

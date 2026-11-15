@@ -1,0 +1,1 @@
+create sequence s increment by 5; create table p (id bigint primary key default nextval('s'), n integer); create table c (id integer primary key, p_id bigint references p (id), v integer check (v > 0));

@@ -12,7 +12,7 @@
 import type { DuckdbClient } from "./decode-duckdb.ts";
 import type { QueryError } from "./query-error.ts";
 import { columnKind, describe, given, hstoreText, isArrayValued, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers, type Kind } from "./values.ts";
-import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
+import { bareName, isMysqlSet, schemaOf, type EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import type { JsonSchema } from "./engine-type.ts";
@@ -188,7 +188,7 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly inputs?: Inputs | undefined;
   /** Each output column's name and kind (src/values.ts), in order: what the run time gives each value (every build step puts it in the module). */
   readonly columns?: Columns | undefined;
-  /** Where each Postgres JSON column, by position beside `columns`, holds a float or a decimal that may be NaN or an infinity, which the run time gives as that number (src/values.ts, `numbersInJson`); `null` for a column that holds none. */
+  /** Where each Postgres JSON column, by position beside `columns`, holds a float or a decimal that may be NaN or an infinity, which the run time gives as that number, or a Postgres array it holds to one level (src/values.ts, `numbersInJson`); `null` for a column that holds neither. */
   readonly nonFinite?: readonly (JsonNumbers | null)[] | undefined;
   /** Each row as an object of the columns' names, one shape for every row (src/row.ts): every build step puts it in the module, beside `columns`. */
   readonly row?: RowBuilder | undefined;
@@ -287,7 +287,7 @@ export function execute<D extends Dialect>(
   return withCodecs(query, executeAsync(c, query, params).then((rows) => {
     for (const row of rows as Record<string, unknown>[]) {
       // Postgres writes a non-finite float or decimal inside JSON as text, whichever driver reads it.
-      for (const [name, at] of nonFinite) row[name] = numbersInJson(row[name], at);
+      for (const [name, at] of nonFinite) row[name] = numbersInJson(row[name], at, name);
       for (const [name, kind] of arrays) withinDimensions(row[name], kind, name);
     }
     return rows;
@@ -706,8 +706,8 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   if (dialect === "mysql") {
     // A SET goes as its members joined by commas, in the order its column declares them: MySQL
     // stores a SET in that order, and compares one with a parameter's text as it is written.
-    if (type.kind === "set" && v instanceof Set) {
-      const labels = type.element.type.kind === "text" ? type.element.type.enum : undefined;
+    if (type.kind === "array" && isMysqlSet(type) && v instanceof Set) {
+      const labels = type.element.type.kind === "enum" ? type.element.type.values : undefined;
       return (labels === undefined ? [...v] : [...v].sort((a, b) => labels.indexOf(a as string) - labels.indexOf(b as string))).join(",");
     }
     return type.kind === "array" && bareName(type) === "vector" && Array.isArray(v) ? vectorText(v, name, "a VECTOR") : v;

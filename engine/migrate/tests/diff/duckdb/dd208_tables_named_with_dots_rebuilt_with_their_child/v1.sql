@@ -1,0 +1,1 @@
+create table "x.y" (id integer primary key, n integer); create table "c.d" (id integer primary key, xy integer references "x.y" (id), note varchar); create index "c.d_note" on "c.d" (note); comment on column "c.d".note is 'n'; comment on table "x.y" is 'xy';

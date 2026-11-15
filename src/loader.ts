@@ -1,7 +1,7 @@
 // What every build step emits for a `.sql` file: a module that carries everything the query needs
 // at run time (the dialect, the statement as the engine rewrote it for the database, the binding
 // order, each parameter's type, the row count the analysis proved), so that the running code reads no file and asks no
-// database. The analysis comes from `src/analyze.ts`: `.reylo/` when it holds the statement for the
+// database. The analysis comes from `src/analyze.ts`: `reylo/.cache/` when it holds the statement for the
 // current schema, else the database. A build that has neither fails, because a module built
 // without the analysis would not do what its types say.
 import { existsSync } from "node:fs";
@@ -18,16 +18,16 @@ import type { Dialect } from "./execute.ts";
 
 export type SqlModule = {
   code: string;
-  /** The `.reylo/` entry the module was built from. A bundler watches it, so that the module is built again when the type check analyzes the statement anew (after a migration). */
+  /** The `reylo/.cache/` entry the module was built from. A bundler watches it, so that the module is built again when the type check analyzes the statement anew (after a migration). */
   entry: string;
   /** The project file and the `.env` files that exist: the module's text depends on them too (`sqlcommenter`, the URL), so a bundler watches them as well. */
   watched: string[];
 };
 
-/** What the build steps of this process have said already: a build says once that it reads `.reylo/` unchecked, however many modules it builds, by why it does. */
+/** What the build steps of this process have said already: a build says once that it reads `reylo/.cache/` unchecked, however many modules it builds, by why it does. */
 const said = new Set<string>();
 
-/** One line on stderr, once a run, where a module is built from `.reylo/` with no database to hold it to: the first such module's line, with the day its entry was written. */
+/** One line on stderr, once a run, where a module is built from `reylo/.cache/` with no database to hold it to: the first such module's line, with the day its entry was written. */
 function warnUnverified(line: string): void {
   const why = line.slice(0, line.lastIndexOf("; building from"));
   if (said.has(why)) return;
@@ -93,9 +93,10 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     return c.delimiter === undefined ? [c.name, kind] : [c.name, kind, c.delimiter];
   });
   // Where each Postgres JSON column holds a float or a decimal that may be NaN or an infinity,
-  // which the run time gives as that number (src/render.ts, `jsonNumbers`), by position beside
-  // `columns`: two columns may share a name, each with its own type.
-  const nonFinite = session.project.dialect === "postgres" ? analysis.columns.map((c) => jsonNumbers(c.type) ?? null) : [];
+  // which the run time gives as that number, or a Postgres array it holds to one level (src/render.ts,
+  // `jsonNumbers`), by position beside `columns`: two columns may share a name, each with its own
+  // type. Under `allow_nested_arrays: true` a Postgres array nests there too, held to no depth.
+  const nonFinite = session.project.dialect === "postgres" ? (session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis).columns.map((c) => jsonNumbers(c.type) ?? null) : [];
   // The columns that hold a family a codec gives another type, by name, as a row is keyed, each with
   // where in its value the codecs stand.
   const codecs = Object.fromEntries(analysis.columns.flatMap((c) => {

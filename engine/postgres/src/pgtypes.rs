@@ -3,7 +3,7 @@
 
 use crate::host::{as_bool, as_strings, as_u32};
 use reylo_engine_core::types::{
-    ArrayType, Bounds, BytesType, Coordinates, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometrySubtype, GeometryType, InstantType, IntegerType, Kind, MapType, Position, RangeType, Size, TextType, TimeType, Type, XmlType, Zone, MICROSECOND,
+    ArrayType, Bounds, BytesType, Coordinates, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometrySubtype, GeometryType, InstantType, IntegerType, Kind, MapType, Slot, RangeType, Size, TextType, TimeType, Type, XmlType, MAX_CODE_POINT, MICROSECOND,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -73,6 +73,9 @@ pub struct PgType {
     /// A domain's type modifier on its base type, `typtypmod` (`varchar(255)` for `create domain
     /// email as varchar(255)`); -1, none, for every other type.
     pub typmod: i32,
+    /// Whether the type, one a user or an extension defined, has a cast to `json` or `jsonb`, which
+    /// `to_json` and `to_jsonb` write its values with inside a document ([`TypeRegistry::through_json_casts`]).
+    pub json_cast: bool,
 }
 
 impl PgType {
@@ -106,6 +109,9 @@ pub struct Attribute {
     /// Its type modifier, `atttypmod` (`varchar(10)`); -1, none, where it has none or was not read.
     #[serde(default = "no_typmod")]
     pub typmod: i32,
+    /// Its comment (`COMMENT ON COLUMN`), where it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 /// The type modifier of a type that has none, as Postgres writes it.
@@ -191,7 +197,7 @@ macro_rules! composite_fields {
 /// composite's columns from `pg_attribute` as three arrays in attribute order (names, type oids,
 /// `NOT NULL`), so a whole-row value has its fields in the same round as its type, the delimiter
 /// of an array of it, its schema, a range's or multirange's subtype, a domain's type modifier, and
-/// the composite's columns' type modifiers. An enum of no label, or a
+/// the composite's columns' type modifiers and comments (`COMMENT ON COLUMN`, on a type's attribute as on a table's column), and whether a type a user defined has a cast of its own to `json` or `jsonb`. An enum of no label, or a
 /// composite of no column, has NULL for its arrays.
 macro_rules! type_columns {
     () => {
@@ -208,7 +214,11 @@ macro_rules! type_columns {
     (SELECT n.nspname::pg_catalog.text FROM pg_catalog.pg_namespace n WHERE n.oid OPERATOR(pg_catalog.=) t.typnamespace), \
     (SELECT r.rngsubtype::pg_catalog.int8 FROM pg_catalog.pg_range r WHERE r.rngtypid OPERATOR(pg_catalog.=) t.oid OR r.rngmultitypid OPERATOR(pg_catalog.=) t.oid), \
     t.typtypmod::pg_catalog.int4, ",
-    composite_fields!("a.atttypmod::pg_catalog.int4"))
+    composite_fields!("a.atttypmod::pg_catalog.int4"), ", ",
+    composite_fields!("(SELECT ds.description FROM pg_catalog.pg_description ds WHERE ds.objoid OPERATOR(pg_catalog.=) t.typrelid \
+      AND ds.classoid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid AND ds.objsubid OPERATOR(pg_catalog.=) a.attnum::pg_catalog.int4)"), ", \
+    (t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.castsource OPERATOR(pg_catalog.=) t.oid \
+      AND c.casttarget OPERATOR(pg_catalog.=) ANY ('{114,3802}'::pg_catalog.oid[])))")
     };
 }
 
@@ -362,13 +372,14 @@ impl TypeRegistry {
             let cast_name = row.get(6).and_then(Value::as_str).unwrap_or("").to_string();
             let attnums: Vec<i32> = row.get(11).and_then(Value::as_array).map(|a| a.iter().map(|n| as_u32(n).unwrap_or(0) as i32).collect()).unwrap_or_default();
             let typmods: Vec<i32> = row.get(16).and_then(Value::as_array).map(|a| a.iter().map(as_i32).collect()).unwrap_or_default();
+            let comments: Vec<Option<String>> = row.get(17).and_then(Value::as_array).map(|a| a.iter().map(|c| c.as_str().filter(|c| !c.is_empty()).map(str::to_string)).collect()).unwrap_or_default();
             let fields = match (row.get(7).and_then(as_strings), row.get(8).and_then(Value::as_array), row.get(9).and_then(Value::as_array)) {
                 (Some(names), Some(oids), Some(not_null)) if names.len() == oids.len() && names.len() == not_null.len() => names
                     .into_iter()
                     .zip(oids)
                     .zip(not_null)
                     .enumerate()
-                    .filter_map(|(i, ((name, o), n))| Some(Attribute { name, type_oid: as_u32(o)?, not_null: as_bool(n)?, attnum: attnums.get(i).copied().unwrap_or(0), typmod: typmods.get(i).copied().unwrap_or(-1) }))
+                    .filter_map(|(i, ((name, o), n))| Some(Attribute { name, type_oid: as_u32(o)?, not_null: as_bool(n)?, attnum: attnums.get(i).copied().unwrap_or(0), typmod: typmods.get(i).copied().unwrap_or(-1), comment: comments.get(i).cloned().flatten() }))
                     .collect(),
                 _ => Vec::new(),
             };
@@ -377,6 +388,7 @@ impl TypeRegistry {
             let namespace = row.get(13).and_then(Value::as_str).map(str::to_string);
             let subtype = row.get(14).and_then(as_u32).filter(|s| *s != 0);
             let typmod = row.get(15).map_or(-1, as_i32);
+            let json_cast = row.get(18).and_then(as_bool).unwrap_or(false);
             let name = name.to_string();
             let kind = match typtype {
                 "b" | "p" if elem != 0 && name.starts_with('_') => TypeKind::Array,
@@ -390,7 +402,7 @@ impl TypeRegistry {
             };
             self.types.insert(
                 oid,
-                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter, namespace, subtype, typmod },
+                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter, namespace, subtype, typmod, json_cast },
             );
         }
     }
@@ -411,6 +423,7 @@ impl TypeRegistry {
             namespace: None,
             subtype: None,
             typmod: -1,
+            json_cast: false,
         });
     }
 
@@ -568,18 +581,46 @@ impl TypeRegistry {
             .collect()
     }
 
+    /// `ty`, a value inside a document, with each type that has a cast of its own to JSON, or is a
+    /// domain over one, as any JSON: `to_json` writes a value of such a type with the cast, whatever its values are. A
+    /// PostGIS geometry, GeoJSON through its cast, and an `hstore`, an object of its keys through
+    /// its cast, are typed as those casts write them already.
+    pub fn through_json_casts(&self, ty: Type) -> Type {
+        // `to_json` looks through a domain to its base, so a domain over such a type is one too.
+        let cast: std::collections::HashSet<String> = self.types.values().filter(|t| self.get(self.resolve_domain(t.oid)).is_some_and(|b| b.json_cast)).map(PgType::qualified).collect();
+        if cast.is_empty() {
+            return ty;
+        }
+        fn walk(ty: Type, cast: &std::collections::HashSet<String>) -> Type {
+            if ty.label.as_ref().is_some_and(|l| cast.contains(l)) && !matches!(ty.kind, Kind::Geometry(_) | Kind::Map(_)) {
+                return Type::unknown();
+            }
+            let slot = |s: Slot| Slot { ty: walk(s.ty, cast), ..s };
+            let kind = match ty.kind {
+                Kind::Array(a) => Kind::Array(crate::types::ArrayType { element: Box::new(slot(*a.element)), ..a }),
+                Kind::Struct(s) => Kind::Struct(crate::types::StructType { fields: s.fields.into_iter().map(|f| Field { ty: walk(f.ty, cast), ..f }).collect(), extra: s.extra.map(|e| Box::new(slot(*e))) }),
+                Kind::Json(crate::types::JsonType { content: Some(c), schema }) => Kind::Json(crate::types::JsonType { content: Some(Box::new(slot(*c))), schema }),
+                Kind::Union(u) => Kind::Union(crate::types::UnionType { members: u.members.into_iter().map(|m| walk(m, cast)).collect() }),
+                other => other,
+            };
+            Type { kind, ..ty }
+        }
+        walk(ty, &cast)
+    }
+
     fn render_at(&self, oid: u32, typmod: i32, depth: usize, stored: bool) -> Type {
         if depth > MAX_DEPTH {
             return Type::unknown();
         }
         let Some(t) = self.get(oid) else { return Type::unknown() };
         match t.kind {
-            // A Postgres array holds any number of dimensions, whatever a column declares, and an
-            // element may be NULL whatever a column's NOT NULL says. The elements of an array of
-            // stored rows are stored rows.
+            // An array is flat, as the project file assumes of a column by default and `.run()`
+            // holds a value to (a column may hold more dimensions where `allow_nested_arrays` says),
+            // and an element may be NULL whatever a column's NOT NULL says. The elements of an array
+            // of stored rows are stored rows.
             // An array's type modifier is its element's (`varchar(20)[]`).
             TypeKind::Array => match t.elem {
-                Some(e) => Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(self.render_at(e, typmod, depth + 1, stored))), size: None, any_depth: true })).named(t.qualified()),
+                Some(e) => Type::array(Slot::nullable(self.render_at(e, typmod, depth + 1, stored))).named(t.qualified()),
                 None => Type::unknown(),
             },
             // A domain is its base type's values under its own name, its own type modifier on
@@ -611,10 +652,10 @@ impl TypeRegistry {
                             Some(facts) => facts.apply(ty),
                             None => ty,
                         };
-                        Field::new(f.name.clone(), ty, !(stored && f.not_null))
+                        Field { comment: f.comment.clone(), ..Field::new(f.name.clone(), ty, !(stored && f.not_null)) }
                     })
                     .collect();
-                Type::record(fields).named(t.qualified())
+                Type::structure(fields).named(t.qualified())
             }
             // A row value whose columns were not read: no driver parses one, so it reaches the
             // caller as its text form, and so does an array of them.
@@ -759,19 +800,24 @@ fn interval(duration: DurationType, typmod: i32) -> DurationType {
 }
 
 /// A `text` or `varchar` value kept to a CHECK's list of strings (`status IN ('active',
-/// 'banned')`): those strings alone. The caller says the type is one of the two, through any
-/// domain; `bpchar` pads what it stores, so its values are not the list's.
+/// 'banned')`): an enum of those strings over the type. The caller says the type is one of the
+/// two, through any domain; `bpchar` pads what it stores, so its values are not the list's.
 pub fn with_values(ty: Type, values: &[String]) -> Type {
     match ty.kind {
-        Kind::Text(text) if !values.is_empty() => Type { kind: Kind::Text(TextType { values: Some(values.to_vec()), ..text }), ..ty },
+        Kind::Text(_) if !values.is_empty() => Type::one_of(ty, values.to_vec()),
         // An array a CHECK holds within a list of strings holds no NULL element either: `<@` finds
         // NULL in no list ([`crate::postgres::check_array_values`]).
         Kind::Array(array) if !values.is_empty() => {
-            let element = Position::non_null(with_values(array.element.ty, values));
+            let element = Slot::non_null(with_values(array.element.ty, values));
             Type { kind: Kind::Array(ArrayType { element: Box::new(element), ..array }), ..ty }
         }
         kind => Type { kind, ..ty },
     }
+}
+
+/// Postgres's text, which holds any character but NUL, in every server encoding.
+pub fn text() -> Type {
+    Type::new(Kind::Text(TextType { code_points: Some(vec![[1, MAX_CODE_POINT]]), ..TextType::default() }))
 }
 
 /// Postgres's floats, which hold infinity, -infinity and NaN.
@@ -788,14 +834,14 @@ const DATE_MAX: &str = "+5874897-12-31";
 /// not name is opaque, which says nothing of what a value is but its name.
 fn base_type(t: &PgType) -> Type {
     let name = t.qualified();
-    let point = || Type::record(vec![Field::new("x", pg_float(11, 52, "float8"), false), Field::new("y", pg_float(11, 52, "float8"), false)]).named("point");
-    let points = |min: u64| Type::new(Kind::Array(ArrayType { element: Box::new(Position::non_null(point())), size: Some(Size { min: Some(min), ..Size::default() }), any_depth: false }));
+    let point = || Type::structure(vec![Field::new("x", pg_float(11, 52, "float8"), false), Field::new("y", pg_float(11, 52, "float8"), false)]).named("point");
+    let points = |min: u64| Type::new(Kind::Array(ArrayType { size: Some(Size { min: Some(min), ..Size::default() }), ..ArrayType::of(Slot::non_null(point())) }));
     let float8 = || pg_float(11, 52, "float8");
-    let bits = || Type::array(Position::non_null(Type::boolean()));
-    let vector = |exponent_bits, mantissa_bits| Type::array(Position::non_null(Type::float(exponent_bits, mantissa_bits)));
+    let bits = || Type::array(Slot::non_null(Type::boolean()));
+    let vector = |exponent_bits, mantissa_bits| Type::array(Slot::non_null(Type::float(exponent_bits, mantissa_bits)));
     let address = |bytes: u64, prefix: u32| {
-        Type::record(vec![
-            Field::new("address", Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(bytes)) })), false),
+        Type::structure(vec![
+            Field::new("address", Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(bytes)), ..BytesType::default() })), false),
             Field::new("prefix", Type::new(Kind::Integer(IntegerType { bits: 8, unsigned: true, bounds: Bounds { max: Some(prefix.to_string()), ..Bounds::default() }, ..IntegerType::default() })), false),
         ])
     };
@@ -817,14 +863,14 @@ fn base_type(t: &PgType) -> Type {
             nan: true,
             ..DecimalType::default()
         }),
-        (true, "text" | "varchar" | "bpchar" | "name" | "char" | "unknown") => Type::text(),
+        (true, "text" | "varchar" | "bpchar" | "name" | "char" | "unknown") => text(),
         (true, "bytea") => Type::bytes(),
         (true, "uuid") => Type::uuid(),
         (true, "date") => Type::new(Kind::Date(DateType { bounds: Bounds::between(DATE_MIN, DATE_MAX), infinity: true })),
         (true, "timestamp") => Type::new(Kind::DateTime(DateTimeType { tick: MICROSECOND.into(), bounds: Bounds::between("-4713-11-24T00:00:00", "+294276-12-31T23:59:59.999999"), infinity: true })),
-        (true, "timestamptz") => Type::new(Kind::Instant(InstantType { tick: MICROSECOND.into(), zone: None, bounds: Bounds::between("-4713-11-24T00:00:00Z", "+294276-12-31T23:59:59.999999Z"), infinity: true })),
-        (true, "time") => Type::new(Kind::Time(TimeType { tick: MICROSECOND.into(), zone: None, bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } })),
-        (true, "timetz") => Type::new(Kind::Time(TimeType { tick: MICROSECOND.into(), zone: Some(Zone::Offset), bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } })),
+        (true, "timestamptz") => Type::new(Kind::Instant(InstantType { tick: MICROSECOND.into(), bounds: Bounds::between("-4713-11-24T00:00:00Z", "+294276-12-31T23:59:59.999999Z"), infinity: true })),
+        (true, "time") => Type::new(Kind::Time(TimeType { tick: MICROSECOND.into(), offset: false, bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } })),
+        (true, "timetz") => Type::new(Kind::Time(TimeType { tick: MICROSECOND.into(), offset: true, bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } })),
         // Infinite intervals came with version 17, which the engine does not tell apart: an
         // interval may be infinite.
         (true, "interval") => Type::new(Kind::Duration(DurationType {
@@ -836,20 +882,20 @@ fn base_type(t: &PgType) -> Type {
         (true, "xml") => Type::new(Kind::Xml(XmlType { fragment: true, schemas: None })),
         (true, "bit" | "varbit") => bits(),
         (true, "inet" | "cidr") => Type::union(vec![address(4, 32), address(16, 128)]),
-        (true, "macaddr") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(6)) })),
-        (true, "macaddr8") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(8)) })),
+        (true, "macaddr") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(6)), ..BytesType::default() })),
+        (true, "macaddr8") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(8)), ..BytesType::default() })),
         (true, "point") => return point(),
-        (true, "line") => Type::record(vec![Field::new("a", float8(), false), Field::new("b", float8(), false), Field::new("c", float8(), false)]),
-        (true, "lseg") => Type::new(Kind::Array(ArrayType { element: Box::new(Position::non_null(point())), size: Some(Size::exact(2)), any_depth: false })),
-        (true, "box") => Type::record(vec![Field::new("high", point(), false), Field::new("low", point(), false)]),
-        (true, "path") => Type::record(vec![Field::new("closed", Type::boolean(), false), Field::new("points", points(1), false)]),
+        (true, "line") => Type::structure(vec![Field::new("a", float8(), false), Field::new("b", float8(), false), Field::new("c", float8(), false)]),
+        (true, "lseg") => Type::new(Kind::Array(ArrayType { size: Some(Size::exact(2)), ..ArrayType::of(Slot::non_null(point())) })),
+        (true, "box") => Type::structure(vec![Field::new("high", point(), false), Field::new("low", point(), false)]),
+        (true, "path") => Type::structure(vec![Field::new("closed", Type::boolean(), false), Field::new("points", points(1), false)]),
         (true, "polygon") => points(1),
-        (true, "circle") => Type::record(vec![Field::new("center", point(), false), Field::new("radius", float8(), false)]),
+        (true, "circle") => Type::structure(vec![Field::new("center", point(), false), Field::new("radius", float8(), false)]),
         // An extension's types, in whatever schema it was created in.
-        (_, "hstore") => Type::new(Kind::Map(MapType { key: Box::new(Type::text()), value: Box::new(Position::nullable(Type::text())) })),
+        (_, "hstore") => Type::new(Kind::Map(MapType { key: Box::new(Slot::non_null(text())), value: Box::new(Slot::nullable(text())) })),
         (_, "vector" | "sparsevec") => vector(8, 23),
         (_, "halfvec") => vector(5, 10),
-        (_, "citext") => Type::text(),
+        (_, "citext") => text(),
         (_, "geometry") => Type::new(Kind::Geometry(GeometryType { model: Some(GeometryModel::Planar), ..GeometryType::default() })),
         (_, "geography") => Type::new(Kind::Geometry(GeometryType { model: Some(GeometryModel::Geodetic), ..GeometryType::default() })),
         _ => return Type::opaque(name),
@@ -881,15 +927,15 @@ mod tests {
             assert_eq!(
                 registry.get(90001).unwrap().fields,
                 vec![
-                    Attribute { name: "id".into(), type_oid: 20, not_null: true, attnum: 0, typmod: -1 },
-                    Attribute { name: "name".into(), type_oid: 25, not_null: false, attnum: 0, typmod: -1 },
-                    Attribute { name: "tags".into(), type_oid: 1009, not_null: false, attnum: 0, typmod: -1 },
+                    Attribute { name: "id".into(), type_oid: 20, not_null: true, attnum: 0, typmod: -1, comment: None },
+                    Attribute { name: "name".into(), type_oid: 25, not_null: false, attnum: 0, typmod: -1, comment: None },
+                    Attribute { name: "tags".into(), type_oid: 1009, not_null: false, attnum: 0, typmod: -1, comment: None },
                 ]
             );
             // A stored row of the table holds its NOT NULL; a row value of its type need not. A
             // host that does not say the schema leaves the name bare.
-            assert_eq!(registry.render_row(90001).short(), "users{ id: int8, name: text?, tags: text?[]? }");
-            assert_eq!(registry.render(90001).short(), "users{ id: int8?, name: text?, tags: text?[]? }");
+            assert_eq!(registry.render_row(90001).short(), "users{ id: int8, name: text(¬NUL)?, tags: text(¬NUL)?[]? }");
+            assert_eq!(registry.render(90001).short(), "users{ id: int8?, name: text(¬NUL)?, tags: text(¬NUL)?[]? }");
         }
     }
 
@@ -924,7 +970,7 @@ mod tests {
         registry.missing(90001, &mut out);
         assert!(out.is_empty());
         // A domain is its base type's values under its own name, and an enum is its labels.
-        assert_eq!(registry.render(90001).short(), "users{ id: public.user_id?, tags: (public.mood('ok' | 'sad')?)[]? }");
+        assert_eq!(registry.render(90001).short(), "users{ id: public.user_id?, tags: public.mood('ok' | 'sad')?[]? }");
         assert_eq!(registry.render(90002), Type::integer(64).named("public.user_id"));
         assert_eq!(registry.domain_bases(&["public.user_id".to_string(), "public.mood".to_string()]), [("public.user_id".to_string(), "int8".to_string())].into_iter().collect());
     }
@@ -955,8 +1001,8 @@ mod tests {
         let registry = TypeRegistry::with_builtins();
         let json = |oid: u32, typmod: i32| serde_json::to_value(registry.render_typmod(oid, typmod)).unwrap();
         // varchar(20) and char(5): n + 4.
-        assert_eq!(json(oid::VARCHAR, 24), json!({"kind": "text", "size": {"max": 20}, "label": "varchar"}));
-        assert_eq!(json(oid::BPCHAR, 9), json!({"kind": "text", "size": {"exact": 5}, "label": "bpchar"}));
+        assert_eq!(json(oid::VARCHAR, 24), json!({"kind": "text", "code_points": [[1, 1114111]], "size": {"max": 20}, "label": "varchar"}));
+        assert_eq!(json(oid::BPCHAR, 9), json!({"kind": "text", "code_points": [[1, 1114111]], "size": {"exact": 5}, "label": "bpchar"}));
         // numeric(10,2), numeric(5,-2) and numeric(5): NaN and no infinity, no bound beyond the digits.
         assert_eq!(json(oid::NUMERIC, 655366), json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "nan": true, "label": "numeric"}));
         assert_eq!(json(oid::NUMERIC, 329730), json!({"kind": "decimal", "precision": 5, "min_scale": -2, "max_scale": -2, "nan": true, "label": "numeric"}));
@@ -993,7 +1039,7 @@ mod tests {
         // bit(7) and varbit(5), and an array's modifier on its element: varchar(20)[].
         assert_eq!(registry.render_typmod(1560, 7).short(), "bit(boolean[7])");
         assert_eq!(registry.render_typmod(1562, 5).short(), "varbit(boolean[..5])");
-        assert_eq!(registry.render_typmod(1015, 24).short(), "varchar(≤20)?[]");
+        assert_eq!(registry.render_typmod(1015, 24).short(), "varchar(≤20, ¬NUL)?[]");
         // PostGIS: geometry(Point,4326), geometry(LineStringZ,3857) and geometry(MultiPolygonZM).
         let mut registry = registry;
         registry.insert_rows(&[row(90100, "geometry", "b", 0, 0, ",", "public", 0)]);
@@ -1035,7 +1081,7 @@ mod tests {
         registry.insert_rows(&[row(90001, "vector", "b", 0, 0, ",", "extensions", 0), row(90002, "hstore", "b", 0, 0, ",", "public", 0), row(90003, "ltree", "b", 0, 0, ",", "public", 0), row(90004, "Odd Range", "r", 0, 0, ",", "My Schema", 23)]);
         assert_eq!(registry.render(90001).short(), "extensions.vector(float(8,23)[])");
         assert_eq!(serde_json::to_value(registry.render(90001)).unwrap(), json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 8, "mantissa_bits": 23}}, "label": "extensions.vector"}));
-        assert_eq!(registry.render(90002).short(), "public.hstore(text => text?)");
+        assert_eq!(registry.render(90002).short(), "public.hstore(text(¬NUL) => text(¬NUL)?)");
         assert_eq!(registry.render(90003), Type::opaque("public.ltree"));
         assert_eq!(registry.render(90004).label.as_deref(), Some("\"My Schema\".\"Odd Range\""));
     }

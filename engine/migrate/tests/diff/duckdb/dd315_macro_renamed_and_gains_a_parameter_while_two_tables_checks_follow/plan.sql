@@ -1,0 +1,12 @@
+create macro ok (s, n) as ((length(s) > n));
+create temporary table reylo_copy_a as select * from a;
+create temporary table reylo_copy_b as select * from b;
+drop table b;
+drop table a;
+create table a (id integer, x varchar, primary key (id), check (ok(x, 0)));
+create table b (id integer, a_id integer, y varchar, primary key (id), foreign key (a_id) references a (id), check (ok(y, 0)));
+insert into a (id, x) select id, x from temp.main.reylo_copy_a;
+insert into b (id, a_id, y) select id, a_id, y from temp.main.reylo_copy_b;
+drop table temp.main.reylo_copy_a;
+drop table temp.main.reylo_copy_b;
+drop macro valid;

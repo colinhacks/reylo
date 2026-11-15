@@ -1600,8 +1600,10 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "reylo"
 version = "0.8.0"
 dependencies = [
+ "regex",
  "reylo-engine-core",
  "reylo-engine-native",
+ "reylo-migrate",
  "serde_json",
  "serde_yaml",
  "tokio",
@@ -1703,6 +1705,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "reylo-migrate"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "libloading",
+ "mysql_async",
+ "pg_query",
+ "prost",
+ "regex",
+ "reylo-engine-native",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "reylo-oracle"
 version = "0.0.0"
 dependencies = [
@@ -1711,6 +1732,7 @@ dependencies = [
  "futures-util",
  "libduckdb-sys",
  "mysql_async",
+ "regex",
  "reylo-engine",
  "reylo-engine-core",
  "rusqlite",

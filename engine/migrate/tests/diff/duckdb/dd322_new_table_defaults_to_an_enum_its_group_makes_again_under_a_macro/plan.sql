@@ -1,0 +1,10 @@
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+drop type zmood;
+drop macro a_lead;
+create macro a_lead (s) as ((s != '-'));
+create type zmood as enum('a', 'b', 'c');
+create table t (id integer, code varchar, primary key (id), check ((a_lead(code) and (cast(code as zmood) != 'b'))));
+insert into t (id, code) select id, code from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;
+create table u (id integer, s varchar default cast('a' as zmood), primary key (id));

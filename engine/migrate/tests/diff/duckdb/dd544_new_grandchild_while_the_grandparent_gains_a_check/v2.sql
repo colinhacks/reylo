@@ -1,0 +1,1 @@
+create table users (id integer primary key, email varchar check (email <> '')); create table posts (id integer primary key, user_id integer references users (id)); create table tags (id integer primary key, post_id integer references posts (id)); create table tag_votes (tag_id integer references tags (id), n integer);

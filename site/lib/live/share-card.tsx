@@ -168,7 +168,7 @@ function Card({ layout: { size, rows, digits, cut } }: { layout: Layout }): Reac
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: BAR, padding: `0 ${PAD_X}px`, borderBottom: `2px solid ${color.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <svg width={(wordmarkHeight * wordmark.width) / wordmark.height} height={wordmarkHeight} viewBox={wordmark.viewBox}>
-            <path fill={color.headings} d={wordmark.mark} />
+            <path fill={color.headings} d={wordmark.markOnDark} />
             <path fill={color.headings} transform={wordmark.wordTransform} d={wordmark.word} />
           </svg>
           <div style={{ display: 'flex', width: 2, height: 30, background: color.border, margin: '0 24px' }} />

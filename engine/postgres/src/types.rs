@@ -19,6 +19,10 @@ pub struct DescribedColumn {
     /// column and a function's array result among them ([`Type::Array`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable_items: Option<bool>,
+    /// For an array column a `DISTINCT` aggregate builds (`array_agg(DISTINCT x)`), that no two of
+    /// its elements are equal ([`crate::infer::distinct_arrays`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub distinct_items: bool,
     /// For an array column the statement builds of arrays (`array_agg(tags)`), the dimensions it
     /// adds over the type the describe reports ([`crate::infer::Nesting`]); `None` for every other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,7 +100,8 @@ pub struct CheckFacts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiple_of: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pattern: Option<Pattern>,
+    /// An I-Regexp every value matches ([`reylo_engine_core::pattern`]).
+    pub pattern: Option<String>,
     /// The RFC 9562 version a `uuid` column's `uuid_extract_version` is held equal to, which says
     /// nothing alone: the function is NULL for a UUID of another variant, and a CHECK lets NULL
     /// through. A target that makes a UUID whole (`uuidv7()`) has its version too.
@@ -180,12 +185,12 @@ impl CheckFacts {
                 d.multiple_of = self.multiple_of.clone().or(d.multiple_of);
                 Kind::Decimal(d)
             }
-            Kind::Text(mut t) if t.values.is_none() => {
+            Kind::Text(mut t) => {
                 t.pattern = self.pattern.clone().or(t.pattern);
                 Kind::Text(t)
             }
             Kind::Uuid(mut u) if self.version_not_null => {
-                u.version = self.version.or(u.version);
+                u.versions = self.version.map(|v| vec![v]).or(u.versions);
                 Kind::Uuid(u)
             }
             kind => kind,

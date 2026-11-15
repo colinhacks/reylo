@@ -40,7 +40,7 @@ test("the format's JSON Schema is a valid 2020-12 schema, whose $id names its ve
   assert.equal(schema.$defs.StatementDescriptor.properties.$schema.const, schema.$id);
 });
 
-test("the shape refuses an integer's exclusive bound and a UUID version outside 1 to 8", () => {
+test("the shape refuses an integer's exclusive bound, a UUID version outside 1 to 8, a union of one member and an enum of none", () => {
   const ajv = new Ajv2020({ strict: false, allErrors: true });
   ajv.addSchema(schema);
   const type = ajv.getSchema(`${schema.$id}#/$defs/Type`)!;
@@ -48,14 +48,22 @@ test("the shape refuses an integer's exclusive bound and a UUID version outside 
     { kind: "integer", bits: 32, min: "1" },
     { kind: "float", exponent_bits: 11, mantissa_bits: 52, exclusive_min: "0" },
     { kind: "decimal", exclusive_max: "1e126" },
-    { kind: "uuid", version: 7 },
+    { kind: "uuid", versions: [4, 7] },
+    { kind: "enum", type: { kind: "text" }, values: ["a"] },
+    { kind: "union", members: [{ kind: "text" }, { kind: "bytes" }] },
   ]) assert.ok(type(t), `${JSON.stringify(t)}: ${ajv.errorsText(type.errors)}`);
   for (const t of [
     { kind: "integer", bits: 32, exclusive_min: "0" },
     { kind: "integer", bits: 32, exclusive_max: "10" },
-    { kind: "uuid", version: 0 },
-    { kind: "uuid", version: 9 },
-    { kind: "uuid", version: 4.5 },
+    { kind: "uuid", versions: [0] },
+    { kind: "uuid", versions: [9] },
+    { kind: "uuid", versions: [4.5] },
+    { kind: "uuid", versions: [] },
+    { kind: "uuid", versions: [7, 7] },
+    { kind: "enum", type: { kind: "text" }, values: [] },
+    { kind: "enum", type: { kind: "text" }, values: ["a", "a"] },
+    { kind: "union", members: [{ kind: "text" }] },
+    { kind: "intersection", members: [] },
   ]) assert.ok(!type(t), JSON.stringify(t));
 });
 

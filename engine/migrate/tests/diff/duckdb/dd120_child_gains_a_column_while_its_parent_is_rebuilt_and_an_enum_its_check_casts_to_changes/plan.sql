@@ -1,0 +1,12 @@
+create temporary table reylo_copy_p as select * from p;
+create temporary table reylo_copy_c as select * from c;
+drop table c;
+drop table p;
+drop type mood;
+create type mood as enum('a', 'b', 'c');
+create table p (id integer, name varchar, primary key (id), check (("name" != '')));
+create table c (id integer, p_id integer, m varchar, extra integer, primary key (id), foreign key (p_id) references p (id), check ((cast(m as mood) is not null)));
+insert into p (id, name) select id, name from temp.main.reylo_copy_p;
+insert into c (id, p_id, m) select id, p_id, m from temp.main.reylo_copy_c;
+drop table temp.main.reylo_copy_p;
+drop table temp.main.reylo_copy_c;

@@ -1,0 +1,1 @@
+create schema s; create table t (id bigint primary key, a varchar); create table s.t (id bigint primary key, y varchar); create table s.kid (t_id bigint references t (id)); create index t_a on t (a); create index st_y on s.t (y);

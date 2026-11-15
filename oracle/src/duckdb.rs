@@ -465,6 +465,12 @@ fn tables(db: &Db) -> Result<Vec<Table>, String> {
         .collect())
 }
 
+/// Whether a column is typed as a list of distinct elements.
+fn distinct_list(ty: &Value) -> bool {
+    use reylo_engine_core::types::{Kind, Type};
+    serde_json::from_value::<Type>(ty.clone()).is_ok_and(|t| matches!(t.kind, Kind::Array(a) if a.distinct))
+}
+
 fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
@@ -662,7 +668,7 @@ fn seed(db: &Db, scenario: Scenario) -> Result<Vec<String>, String> {
 fn parameter_pool(ty: &Value, nullable: bool, scenario: Scenario) -> Option<Vec<Option<String>>> {
     let ty: reylo_engine_core::types::Type = serde_json::from_value(ty.clone()).ok()?;
     let name = match &ty.kind {
-        reylo_engine_core::types::Kind::Text(text) if text.values.is_some() => return Some(text.values.iter().flatten().map(|l| Some(l.clone())).chain(nullable.then_some(None)).collect()),
+        reylo_engine_core::types::Kind::Enum(e) if matches!(e.ty.kind, reylo_engine_core::types::Kind::Text(_)) => return Some(e.values.iter().map(|l| Some(l.clone())).chain(nullable.then_some(None)).collect()),
         reylo_engine_core::types::Kind::Json(_) => "json".into(),
         _ => ty.label.clone()?,
     };
@@ -745,6 +751,19 @@ fn check(file: &Path, statements: &[(String, String, Value)], timeout_ms: u64, f
                         };
                         if wrong {
                             problems.push(format!("{file_name} ({}, with {with}): proven {cardinality}, returned {rows} rows", scenario.name()));
+                        }
+                        // A list typed with distinct elements holds no two of one text, nor two NULLs:
+                        // the statement read again, each row whose list repeats one kept. A statement
+                        // DuckDB cannot read as a subquery checks nothing here.
+                        for c in columns.iter().filter(|c| distinct_list(&c["type"])) {
+                            let name = c["name"].as_str().unwrap_or_default();
+                            let list = format!("q.{}", quote(name));
+                            let repeats = format!("select 1 from ({}) q where len({list}) <> len(list_distinct(list_transform({list}, x -> x::varchar))) + least(len(list_filter({list}, x -> x is null)), 1)", sql.trim().trim_end_matches(';'));
+                            if let Ran::Done((n, _)) = db.run(&repeats, &values, timeout_ms) {
+                                if n > 0 {
+                                    problems.push(format!("{file_name} ({}, with {with}): column {name} is typed with distinct elements, and {n} of its lists repeat one", scenario.name()));
+                                }
+                            }
                         }
                     }
                 }

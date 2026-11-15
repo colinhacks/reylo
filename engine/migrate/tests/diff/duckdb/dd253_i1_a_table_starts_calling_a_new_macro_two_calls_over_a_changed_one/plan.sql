@@ -1,0 +1,14 @@
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+drop macro x;
+create macro x (v) as ((v > 1));
+create table t (id integer, v integer, primary key (id), check (x(v)));
+insert into t (id, v) select id, v from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;
+create macro m2 (v) as ((x(v) and (v < 100)));
+create macro m1 (v) as (m2(v));
+create temporary table reylo_copy_t as select * from t;
+drop table t;
+create table t (id integer, v integer, primary key (id), check (m1(v)));
+insert into t (id, v) select id, v from temp.main.reylo_copy_t;
+drop table temp.main.reylo_copy_t;

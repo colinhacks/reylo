@@ -610,7 +610,7 @@ impl Builder<'_> {
                         self.in_aggregate += 1;
                         let items = self.walk_as(args[0], Reads::Copy);
                         self.in_aggregate -= 1;
-                        Shape::Array { items: Box::new(items), non_null: has_a_row }
+                        Shape::Array { items: Box::new(items), non_null: has_a_row, distinct: false }
                     }
                     // The value is the first argument that is not NULL. A constructor that is
                     // never NULL is the value whatever follows it; one that may be NULL keeps its
@@ -620,7 +620,7 @@ impl Builder<'_> {
                     "coalesce" | "ifnull" => {
                         let Some(first) = args.first().filter(|first| is_constructor(first)) else { return self.leaf(e) };
                         match self.walk(first) {
-                            Shape::Array { items, non_null: false } if args.len() > 1 && args[1..].iter().all(|a| is_empty_array(a)) => Shape::Array { items, non_null: true },
+                            Shape::Array { items, non_null: false, distinct } if args.len() > 1 && args[1..].iter().all(|a| is_empty_array(a)) => Shape::Array { items, non_null: true, distinct },
                             shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. }) => shape,
                             shape if args.len() == 1 => shape,
                             _ => Shape::Unknown,
@@ -896,7 +896,7 @@ impl Builder<'_> {
 fn force_nullable(shape: Shape) -> Shape {
     match shape {
         Shape::Object { fields, .. } => Shape::Object { fields, non_null: false },
-        Shape::Array { items, .. } => Shape::Array { items, non_null: false },
+        Shape::Array { items, distinct, .. } => Shape::Array { items, non_null: false, distinct },
         other => other,
     }
 }
@@ -1163,7 +1163,7 @@ mod tests {
         assert_eq!(plan.probes[0].wider.as_deref(), Some("SELECT p.id, p.title FROM users u, posts p"));
         assert_eq!(plan.probes[1].sql, "SELECT u.email, u.id + ? FROM users u");
         assert_eq!(plan.probes[1].wider, None);
-        let posts = Shape::Array { items: Box::new(Shape::Object { fields: vec![("id".into(), Shape::Column { probe: 0, index: 0 }), ("title".into(), Shape::Column { probe: 0, index: 1 })], non_null: true }), non_null: true };
+        let posts = Shape::Array { items: Box::new(Shape::Object { fields: vec![("id".into(), Shape::Column { probe: 0, index: 0 }), ("title".into(), Shape::Column { probe: 0, index: 1 })], non_null: true }), non_null: true, distinct: false };
         let meta = Shape::Object { fields: vec![("email".into(), Shape::Column { probe: 1, index: 0 }), ("n".into(), Shape::Column { probe: 1, index: 1 })], non_null: true };
         assert_eq!(plan.columns, vec![("posts".to_string(), posts), ("meta".to_string(), meta)]);
     }
@@ -1256,7 +1256,7 @@ mod tests {
     #[test]
     fn a_guard_keeps_the_shape_it_has_itself() {
         let shape = |item: &str| plan(&query(&format!("select {item} as o from users u")), &Columns::new()).columns.pop().map(|(_, shape)| shape);
-        let list = |non_null: bool| Some(Shape::Array { items: Box::new(Shape::Column { probe: 0, index: 0 }), non_null });
+        let list = |non_null: bool| Some(Shape::Array { items: Box::new(Shape::Column { probe: 0, index: 0 }), non_null, distinct: false });
         assert_eq!(shape("json_arrayagg(u.id)"), list(false));
         for guard in ["json_array()", "cast('[]' as json)", "cast(' [ ] ' as json)", "json_array(), (json_array())"] {
             assert_eq!(shape(&format!("coalesce(json_arrayagg(u.id), {guard})")), list(true), "{guard}");

@@ -1,0 +1,13 @@
+create temporary table "reylo_copy_x.y" as select * from "x.y";
+create temporary table "reylo_copy_c.d" as select * from "c.d";
+drop table "c.d";
+drop table "x.y";
+create table "x.y" (id integer, n integer, primary key (id), check ((n > 0)));
+create table "c.d" (id integer, xy integer, note varchar, primary key (id), foreign key (xy) references "x.y" (id));
+insert into "x.y" (id, n) select id, n from temp.main."reylo_copy_x.y";
+insert into "c.d" (id, xy, note) select id, xy, note from temp.main."reylo_copy_c.d";
+drop table temp.main."reylo_copy_x.y";
+drop table temp.main."reylo_copy_c.d";
+comment on table "x.y" is 'xy';
+create index "c.d_note" on "c.d"(note);
+comment on column "c.d".note is 'n';

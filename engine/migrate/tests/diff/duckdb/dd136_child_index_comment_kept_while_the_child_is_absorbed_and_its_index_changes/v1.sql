@@ -1,0 +1,1 @@
+create table p (id integer primary key, name varchar); create table c (id integer primary key, p_id integer references p (id), qty integer); create index c_qty on c (qty); comment on index c_qty is 'q';

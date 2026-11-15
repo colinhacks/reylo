@@ -42,21 +42,33 @@ pub struct Project {
     env: HashMap<String, String>,
 }
 
-/// The nearest directory at or above `from` that holds a `package.json`.
-pub fn package_dir(from: &Path) -> Option<PathBuf> {
-    from.ancestors().find(|d| d.join("package.json").exists()).map(Path::to_path_buf)
+/// Whether `dir` is the home directory, `HOME` (`USERPROFILE` on Windows), as written or with its links resolved, since the working directory has them resolved.
+pub fn is_home(dir: &Path, env: &HashMap<String, String>) -> bool {
+    let home = env.get(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|h| !h.is_empty()).map(PathBuf::from);
+    home.is_some_and(|h| dir == h || std::fs::canonicalize(&h).is_ok_and(|c| dir == c))
+}
+
+/// The directories a project is looked for in: `from` and those above it, up to the home directory and not including it. A home directory is no project's, though a stray `package.json` can sit there, and taking it would make every directory below it one project.
+fn ancestors<'a>(from: &'a Path, env: &'a HashMap<String, String>) -> impl Iterator<Item = &'a Path> {
+    from.ancestors().take_while(move |d| !is_home(d, env))
+}
+
+/// The nearest directory at or above `from`, below the home directory, that holds a `package.json`.
+pub fn package_dir(from: &Path, env: &HashMap<String, String>) -> Option<PathBuf> {
+    ancestors(from, env).find(|d| d.join("package.json").exists()).map(Path::to_path_buf)
 }
 
 /// The project file for the working directory: `REYLO_CONFIG`, else the one beside the package's
-/// `package.json`, else, outside any package, the nearest one at or above it.
+/// `package.json`, else, outside any package, the nearest one at or above it, below the home
+/// directory.
 pub fn find(cwd: &Path, env: &HashMap<String, String>) -> Option<PathBuf> {
     if let Some(file) = env.get("REYLO_CONFIG").filter(|f| !f.is_empty()) {
         return Some(cwd.join(file));
     }
     let beside = |d: &Path| PROJECT_FILES.iter().map(|name| d.join(name)).find(|p| p.exists());
-    match package_dir(cwd) {
+    match package_dir(cwd, env) {
         Some(dir) => beside(&dir),
-        None => cwd.ancestors().find_map(beside),
+        None => ancestors(cwd, env).find_map(beside),
     }
 }
 
@@ -231,7 +243,7 @@ fn place(text: &str, offset: usize) -> String {
 impl Project {
     pub fn resolve(cwd: &Path, env: HashMap<String, String>) -> Result<Project, String> {
         let file = find(cwd, &env);
-        let root = file.as_deref().and_then(Path::parent).map(Path::to_path_buf).or_else(|| package_dir(cwd)).unwrap_or_else(|| cwd.to_path_buf());
+        let root = file.as_deref().and_then(Path::parent).map(Path::to_path_buf).or_else(|| package_dir(cwd, &env)).unwrap_or_else(|| cwd.to_path_buf());
         // Both names beside one another: whichever were read, edits to the other would do nothing.
         // Said before anything wrong inside one, which keeping the other may leave moot. An empty
         // REYLO_CONFIG names no file, as `find` reads it.
@@ -289,8 +301,7 @@ impl Project {
         self.file.as_deref().map(|f| shown(&self.cwd, f)).unwrap_or_else(|| ".reylo.yaml".into())
     }
 
-    /// Each `${VAR}` replaced, or the variables nothing sets.
-    #[cfg(test)]
+    /// Each `${VAR}` replaced, or the variables nothing sets: a `migrate` setting's value.
     pub fn expand(&self, key: &str, text: &str) -> Result<String, String> {
         let mut missing = Vec::new();
         let out = self.substitute(text, &mut missing, &mut Vec::new());
@@ -673,6 +684,24 @@ mod tests {
         // A column counts characters.
         assert_eq!(resolve("direct_url: \"postgres://ü😀:$(x\"\n", &[]), Err("../.reylo.yaml: \"direct_url\" opens $( at column 15 and never closes it.".to_string()));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn looks_for_the_project_below_the_home_directory() {
+        let home = std::env::temp_dir().join(format!("reylo-home-{}", std::process::id()));
+        let app = home.join("scratch/app");
+        std::fs::create_dir_all(&app).unwrap();
+        // A stray package.json and project file in the home directory make no project of it.
+        std::fs::write(home.join("package.json"), "{}").unwrap();
+        std::fs::write(home.join(".reylo.yaml"), "").unwrap();
+        let env = HashMap::from([(if cfg!(windows) { "USERPROFILE" } else { "HOME" }.to_string(), home.display().to_string())]);
+        assert_eq!(find(&app, &env), None);
+        assert_eq!(Project::resolve(&app, env.clone()).unwrap().root, app);
+        // A package below it is found from any depth, as without a home directory.
+        std::fs::write(home.join("scratch/package.json"), "{}").unwrap();
+        assert_eq!(Project::resolve(&app, env).unwrap().root, home.join("scratch"));
+        assert_eq!(Project::resolve(&home.join("scratch"), HashMap::new()).unwrap().root, home.join("scratch"));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

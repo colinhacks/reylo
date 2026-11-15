@@ -1,0 +1,1 @@
+create macro clean(xs) as [item for item in xs if item <> '']; create table orders (id integer primary key, xs varchar[], n integer generated always as (len(clean(xs))) virtual); create table item (id integer primary key, order_id integer references orders (id));
