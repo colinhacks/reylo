@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rename
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nativeBinary } from "../src/native.ts";
-import { embeddedModule, projectMigrations } from "../src/embedded-module.ts";
+import { embeddedModule, lockChecksum, projectMigrations } from "../src/embedded-module.ts";
 
 // What Reylo's bundler plugins put in place of reylo's placeholder module: the migrations `reylo
 // migrate deploy` runs, in its order, which each Durable Object holds its history against when it
@@ -74,6 +74,32 @@ test("a lock with git's conflict markers, or one that lists a file the folder la
   writeFileSync(lock, text);
   renameSync(join(root, "reylo", "migrations", users!), join(root, "aside.sql"));
   assert.match((await projectMigrations(root)).error ?? "", new RegExp(`^reylo/reylo-lock\\.yaml lists ${users!.replace(".", "\\.")}, which reylo/migrations doesn't have: write it back from a database that ran it, with reylo migrate history pull`));
+});
+
+test("a migration edited after it was locked, or lines merged out of order, give migrate the deploy's refusal", async () => {
+  const root = project();
+  await change(root, "users", "create table users (id integer primary key, name text not null);\n");
+  await change(root, "bio", "create table users (id integer primary key, name text not null, bio text);\n");
+  migrate(root, "lock");
+  const [users, bio] = readdirSync(join(root, "reylo", "migrations")).sort();
+  const file = join(root, "reylo", "migrations", bio!);
+  const text = readFileSync(file, "utf8");
+  // A comment, spacing or CRLF line endings are no edit, as the lock reads them.
+  writeFileSync(file, `-- the profile's text\r\n${text.replace(/\n/g, "\r\n").replace(/ /g, "  ")}\r\n`);
+  assert.deepEqual(await names(root), [users, bio]);
+  writeFileSync(file, text.replace("bio text", "bio text not null default ''"));
+  assert.match((await projectMigrations(root)).error ?? "", new RegExp(`^reylo/migrations/${bio!.replace(".", "\\.")} changed after it was locked: a database that ran the old text refuses it`));
+  writeFileSync(file, text);
+  // Two branches that each locked a migration after users, merged as "accept both": the second
+  // line is chained after users, not after the line before it.
+  const lock = join(root, "reylo", "reylo-lock.yaml");
+  const lines = readFileSync(lock, "utf8");
+  const [first] = lines.match(/^  - .*$/gm)!;
+  const age = "20990101000000_age.sql";
+  writeFileSync(join(root, "reylo", "migrations", age), "alter table users add column age int;\n");
+  const sum = first!.split(" ").pop()!;
+  writeFileSync(lock, lines.replace(/^  - .*\n(?![\s\S]*^  - )/m, (bioLine) => `  - ${age} ${lockChecksum(sum, age, "alter table users add column age int;")}\n${bioLine}`));
+  assert.match((await projectMigrations(root)).error ?? "", new RegExp(`^reylo/reylo-lock\\.yaml was merged out of order at ${bio!.replace(".", "\\.")}`));
 });
 
 test("with no lock, the migrations run in name order, init.sql first", async () => {

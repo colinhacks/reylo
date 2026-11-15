@@ -73,6 +73,8 @@ test("a history the bundle doesn't continue is refused before anything runs, nam
   // One edited since the object ran it; trailing whitespace alone is no edit.
   assert.throws(() => runMigrations(s, [USERS, { ...BIO, sql: "alter table users add column bio text not null default '';" }, AGE]), /^Error: reylo: the migration 20261106120000_bio\.sql isn't the text this Durable Object ran/);
   assert.deepEqual(runMigrations(s, [USERS, { ...BIO, sql: BIO.sql + "\n\n" }]), []);
+  // Nor, as the lock reads a migration, is a comment, spacing or a checkout's CRLF line endings.
+  assert.deepEqual(runMigrations(s, [USERS, { ...BIO, sql: "-- the profile's text\r\nalter table users\r\n  add column bio text; /* nullable */\r\n" }]), []);
   // One the bundle's order puts before a migration the object already ran, as a branch merged late.
   const t = storage();
   runMigrations(t, [USERS, AGE]);

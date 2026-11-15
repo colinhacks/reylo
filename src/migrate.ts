@@ -9,6 +9,7 @@
 // a history the bundle doesn't continue.
 import { buildTime, type MigrateOptions } from "./build-time.ts";
 import { embedded } from "./embedded-migrations.ts";
+import { sameMigration } from "./migration-text.ts";
 
 /** A Durable Object's storage, `ctx.storage`, as far as `migrate` uses it. */
 export type MigrationStorage = {
@@ -39,7 +40,8 @@ export function runMigrations(storage: MigrationStorage, list: readonly Migratio
   ran.forEach((row, i) => {
     const m = bundled.get(row.name);
     if (!m) throw new Error(`reylo: this Durable Object ran the migration ${row.name}, which this build doesn't have: deploy a build whose migrations include it`);
-    if (m.sql.trim() !== row.sql.trim()) throw new Error(`reylo: the migration ${row.name} isn't the text this Durable Object ran: put the change in a new migration instead of editing one an object may have run`);
+    // As the lock compares them: comments, spacing and line endings aside (src/migration-text.ts).
+    if (!sameMigration(m.sql, row.sql)) throw new Error(`reylo: the migration ${row.name} isn't the text this Durable Object ran: put the change in a new migration instead of editing one an object may have run`);
     if (list[i]?.name !== row.name) throw new Error(`reylo: this Durable Object ran ${row.name} where this build's order has ${list[i]?.name ?? "nothing"} first: migrations run in the lock's order, so add a new one after those that ran`);
   });
   const done = new Set(ran.map((r) => r.name));
