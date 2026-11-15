@@ -2143,8 +2143,8 @@ fn duckdb_loads(opts: &Options) {
         texts.extend(files.into_iter().map(|f| f.sql));
     }
     let (mut installs, mut loads): (Vec<String>, Vec<String>) = (vec![], vec![]);
-    for text in &texts {
-        for statement in split_statements(text, Dialect::Duckdb) {
+    for file in &texts {
+        for statement in split_statements(file, Dialect::Duckdb) {
             let words: Vec<String> = statement.tokens.iter().take(2).map(|t| t.upper()).collect();
             let into = match words.first().map(String::as_str) {
                 Some("INSTALL") => &mut installs,
@@ -2154,10 +2154,10 @@ fn duckdb_loads(opts: &Options) {
             };
             // A `force install` as a plain one: the file's own run forces the download once, and
             // each database opened after needs the extension, not another download.
-            let text = statement.text.trim();
-            let text = match text.to_lowercase().find("install") {
-                Some(at) if words[0] == "FORCE" => text[at..].to_string(),
-                _ => text.to_string(),
+            let text = match (&statement.tokens[..], words[0].as_str()) {
+                ([_, install, .., last], "FORCE") => file[install.start..last.end].to_string(),
+                ([_, install], "FORCE") => file[install.start..install.end].to_string(),
+                _ => statement.text.trim().to_string(),
             };
             if !into.contains(&text) {
                 into.push(text);
