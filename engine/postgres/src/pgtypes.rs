@@ -581,12 +581,13 @@ impl TypeRegistry {
             .collect()
     }
 
-    /// `ty`, a value inside a document, with each type that has a cast of its own to JSON as any
-    /// JSON: `to_json` writes a value of such a type with the cast, whatever its values are. A
+    /// `ty`, a value inside a document, with each type that has a cast of its own to JSON, or is a
+    /// domain over one, as any JSON: `to_json` writes a value of such a type with the cast, whatever its values are. A
     /// PostGIS geometry, GeoJSON through its cast, and an `hstore`, an object of its keys through
     /// its cast, are typed as those casts write them already.
     pub fn through_json_casts(&self, ty: Type) -> Type {
-        let cast: std::collections::HashSet<String> = self.types.values().filter(|t| t.json_cast).map(PgType::qualified).collect();
+        // `to_json` looks through a domain to its base, so a domain over such a type is one too.
+        let cast: std::collections::HashSet<String> = self.types.values().filter(|t| self.get(self.resolve_domain(t.oid)).is_some_and(|b| b.json_cast)).map(PgType::qualified).collect();
         if cast.is_empty() {
             return ty;
         }

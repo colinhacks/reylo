@@ -1,4 +1,5 @@
 domain_array.sql: one () -> { nested: int4?[][]? }
 json_cast.sql: one () -> { moods: json unknown?[]?, docs: jsonb unknown?[]?, labels: {public.mood('happy' | 'sad')?}? }
+json_cast_domain.sql: one () -> { rows: jsonb (public.moods{ id: int4, f: unknown? })[]?, feelings: json unknown?[]? }
 json_nulls.sql: one () -> { docs: jsonb jsonb?[]?, texts: json jsonb?[]?, through_array: json jsonb?[]?, inside: json { j: jsonb?[]? } }
 typed_default.sql: one () -> { floats: float8?[], rounded: float8?[], kept: {int8?}, inside: json { n: float8?[] } }
