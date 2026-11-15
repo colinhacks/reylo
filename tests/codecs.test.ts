@@ -614,6 +614,11 @@ test("a geometry is GeoJSON with its SRID at every position outside JSON, typed 
   assert.equal(planOf(pg("geometry"), "postgres", {}), undefined);
   assert.equal(renderType(point4326, false, "postgres", codecs), `import("geojson").Point & { srid: number }`);
   assert.equal(renderParamType(point4326, "postgres", false, undefined, codecs), `import("geojson").Point & { srid?: number }`);
+  // The JSON Schema requires srid of a column, and of a parameter, which takes the column's without one, only type.
+  const required = (input: boolean, t: EngineType = point4326) => (typeSchema(t, "postgres", input, false, false, undefined, codecs) as { required?: string[]; items?: { required?: string[] } });
+  assert.deepEqual(required(false).required, ["type", "srid"]);
+  assert.deepEqual(required(true).required, ["type"]);
+  assert.deepEqual(required(true, array(point4326)).items?.required, ["type"]);
   assert.equal(renderType(pg("geometry"), false, "postgres", codecs), `import("geojson").Geometry & { srid: number }`);
   // Inside JSON a geometry is PostGIS's GeoJSON, as without the codec.
   assert.equal(renderType(pg("geometry"), true, "postgres", codecs), renderType(pg("geometry"), true, "postgres"));

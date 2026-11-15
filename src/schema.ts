@@ -278,6 +278,8 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
   // A family the project file's `js.codecs` gives another type is that type's JSON form, outside JSON.
   const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
   if (codec === "set:array" && t.kind === "array" && isMysqlSet(t)) return { ...CODEC_SCHEMA[codec], items: typeSchema(t.element.type, dialect, input) };
+  // A geometry parameter may leave out its srid, which then is the column's.
+  if (codec === "geometry" && input) return { ...CODEC_SCHEMA.geometry, required: ["type"] };
   if (codec !== undefined) return CODEC_SCHEMA[codec];
   const name = bareName(t);
   const kind = columnKind(t, dialect);
