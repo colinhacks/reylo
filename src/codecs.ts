@@ -25,6 +25,7 @@
 // This module runs in every generated module's process, so it names no Node type, and it reaches
 // Temporal through `globalThis`, where a runtime that has none (Cloudflare Workers) is told so.
 import { bareName, type EngineType } from "./engine-type.ts";
+import { fromHex, fromWkb, toHex, toWkb, type Geometry } from "./geojson.ts";
 import { columnKind, DecodeError, describe, isoYear, ParameterError, type Dialect } from "./values.ts";
 
 /** The `js.codecs` section as the engine parses it (engine/core/src/config.rs). */
@@ -37,6 +38,9 @@ export type Codecs = {
   readonly instant?: "string" | "Temporal.Instant";
   readonly duration?: "string" | "Temporal.Duration";
   readonly set?: "Set" | "Array";
+  readonly vector?: "TypedArray";
+  readonly geometry?: "GeoJSON";
+  readonly inet?: "ip-address";
 };
 
 type Family = keyof Codecs;
@@ -57,7 +61,7 @@ export const DECIMAL_LIBRARIES: Readonly<Record<DecimalLibrary, { readonly type:
 };
 
 /** A codec at one position: its family, and the type it gives where the family has more than one besides its default. */
-export type Codec = "decimal:number" | `decimal:${DecimalLibrary}` | "bytes:string" | "date" | "time" | "datetime" | "instant" | "duration" | "set:array";
+export type Codec = "decimal:number" | `decimal:${DecimalLibrary}` | "bytes:string" | "date" | "time" | "datetime" | "instant" | "duration" | "set:array" | "vector:float32" | "vector:float16" | "geometry" | "inet:ip-address";
 
 /**
  * Where a value's codecs stand: a codec for the value itself, or the parts that hold one, an
@@ -70,7 +74,11 @@ export type Plan =
   | { readonly fields: Readonly<Record<string, Plan>> }
   | { readonly entries: { readonly key?: Plan; readonly value?: Plan } }
   | { readonly tags: Readonly<Record<string, Plan>> }
-  | { readonly items: readonly (Plan | null)[]; readonly rest?: Plan };
+  | { readonly items: readonly (Plan | null)[]; readonly rest?: Plan }
+  | { readonly geometry: GeometryFormat; readonly srid: number };
+
+/** How a database writes a geometry, which its plan names: PostGIS hex EWKB, MySQL's SRID and WKB, DuckDB's WKB. */
+export type GeometryFormat = "postgres" | "mysql" | "duckdb";
 
 /** The TypeScript type of a value under each codec, which a parameter of it takes too; a SET's array is of its members' type (src/render.ts). */
 export const CODEC_TYPE: Readonly<Record<Codec, string>> = {
@@ -86,6 +94,11 @@ export const CODEC_TYPE: Readonly<Record<Codec, string>> = {
   instant: "Temporal.Instant",
   duration: "Temporal.Duration",
   "set:array": "string[]",
+  "vector:float32": "Float32Array",
+  "vector:float16": "Float16Array",
+  // A geometry's GeoJSON type by its subtype (src/render.ts), from @types/geojson.
+  geometry: `import("geojson").Geometry & { srid: number }`,
+  "inet:ip-address": `import("ip-address").Address4 | import("ip-address").Address6`,
 };
 
 type TemporalName = "PlainDate" | "PlainTime" | "PlainDateTime" | "Instant" | "Duration";
@@ -106,6 +119,10 @@ const FAMILY: Readonly<Record<Codec, Family>> = {
   instant: "instant",
   duration: "duration",
   "set:array": "set",
+  "vector:float32": "vector",
+  "vector:float16": "vector",
+  geometry: "geometry",
+  "inet:ip-address": "inet",
 };
 
 /**
@@ -124,9 +141,16 @@ const SQLITE_DECLARED: Readonly<Record<string, Family>> = { DATE: "date", DATETI
  */
 function family(t: EngineType, dialect: Dialect): Family | undefined {
   if (t.kind === "duration") return "duration";
+  // pgvector's vectors and MySQL's VECTOR, each a one-dimensional array of non-null floats.
+  if (t.kind === "array" && (dialect === "postgres" ? ["vector", "halfvec"] : dialect === "mysql" ? ["vector"] : []).includes(bareName(t))) return "vector";
+  // Postgres's network addresses, each an address and its prefix.
+  if (dialect === "postgres" && t.kind === "union" && (bareName(t) === "inet" || bareName(t) === "cidr")) return "inet";
+  // PostGIS's geometry and geography, MySQL's GEOMETRY, and DuckDB's, which the engine knows by name alone.
+  if ((t.kind === "geometry" && dialect !== "sqlite") || (t.kind === "opaque" && dialect === "duckdb" && bareName(t) === "geometry")) return "geometry";
   const kind = columnKind(t, dialect);
   switch (kind) {
     case "decimal":
+    case "money":
       return "decimal";
     case "bytes":
       return "bytes";
@@ -152,8 +176,15 @@ export function leafCodec(t: EngineType, dialect: Dialect, codecs: Codecs): Code
   switch (f) {
     case "set":
       return v === "Array" ? "set:array" : undefined;
+    case "vector": {
+      // A halfvec's elements are 16-bit floats, of 5 exponent bits.
+      const element = t.kind === "array" ? t.element.type : undefined;
+      return v !== "TypedArray" ? undefined : element?.kind === "float" && element.exponent_bits === 5 ? "vector:float16" : "vector:float32";
+    }
     case "decimal":
       return v === undefined || v === "string" ? undefined : `decimal:${v as "number" | DecimalLibrary}`;
+    case "inet":
+      return v === "ip-address" ? "inet:ip-address" : undefined;
     case "bytes":
       return v === "string" ? "bytes:string" : undefined;
     case undefined:
@@ -170,6 +201,9 @@ export function leafCodec(t: EngineType, dialect: Dialect, codecs: Codecs): Code
 export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = false): Plan | undefined {
   if (!Object.keys(codecs).length) return undefined;
   const leaf = leafCodec(t, dialect, codecs);
+  // A geometry's plan names how its database writes it, and the SRID a parameter without one
+  // takes: the column's, PostGIS's 4326 for a geography that names none, else 0.
+  if (leaf === "geometry") return { geometry: dialect as GeometryFormat, srid: t.kind === "geometry" ? (t.srid ?? (t.model === "geodetic" && dialect === "postgres" ? 4326 : 0)) : 0 };
   if (leaf !== undefined) return leaf;
   switch (t.kind) {
     case "array": {
@@ -221,16 +255,22 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
   }
 }
 
-/** The decimal libraries a value's plan builds values with: the packages its module imports. */
-export function planLibraries(plan: Plan, into = new Set<DecimalLibrary>()): Set<DecimalLibrary> {
+/** A library a codec builds values with, which the module imports from the app's install: a decimal library, or ip-address. */
+export type Library = DecimalLibrary | "ip-address";
+
+/** The libraries a value's plan builds values with: the packages its module imports. */
+export function planLibraries(plan: Plan, into = new Set<Library>()): Set<Library> {
   if (typeof plan === "string") {
     if (plan.startsWith("decimal:") && plan !== "decimal:number") into.add(plan.slice("decimal:".length) as DecimalLibrary);
+    if (plan === "inet:ip-address") into.add("ip-address");
   } else if ("array" in plan) planLibraries(plan.array, into);
   else if ("entries" in plan) {
     if (plan.entries.key !== undefined) planLibraries(plan.entries.key, into);
     if (plan.entries.value !== undefined) planLibraries(plan.entries.value, into);
   } else if ("items" in plan) {
     for (const p of [...plan.items, plan.rest]) if (p !== null && p !== undefined) planLibraries(p, into);
+  } else if ("geometry" in plan) {
+    // GeoJSON is plain objects, typed by @types/geojson alone.
   } else for (const p of Object.values("fields" in plan ? plan.fields : plan.tags)) planLibraries(p, into);
   return into;
 }
@@ -242,8 +282,12 @@ export function planLibraries(plan: Plan, into = new Set<DecimalLibrary>()): Set
 type DecimalValue = { toFixed(): string; isFinite?(): boolean; isZero?(): boolean };
 /** A decimal library's class, which the module imports: decimal.js's and bignumber.js's tell their own values from others by a static check, which holds across two copies of the package. */
 export type DecimalClass = (new (text: string) => DecimalValue) & { isDecimal?(v: unknown): boolean; isBigNumber?(v: unknown): boolean };
-/** The classes a module's codecs build values with, which it imports from the app's install: `decimal`, the class of `js.codecs.decimal`'s library. */
-export type Libraries = { readonly decimal?: DecimalClass };
+/** ip-address's module, which the module imports whole: its two classes. */
+export type IpAddress = { Address4: new (text: string) => AddressValue; Address6: new (text: string) => AddressValue };
+/** An ip-address value: its text as given, the prefix after a slash included, and its prefix's length. */
+type AddressValue = { address: string; subnetMask: number; correctForm(): string };
+/** The classes a module's codecs build values with, which it imports from the app's install: `decimal`, the class of `js.codecs.decimal`'s library, and `inet`, ip-address's module. */
+export type Libraries = { readonly decimal?: DecimalClass; readonly inet?: IpAddress };
 
 /** A decimal library's codec's package. */
 const libraryOf = (codec: Codec) => codec.slice("decimal:".length) as DecimalLibrary;
@@ -367,6 +411,9 @@ const SHAPE: Partial<Record<Codec, RegExp>> = {
 /** The value a position of `codec` holds, from the one src/values.ts decoded; null stays null, and an array is decoded element by element. `libraries`: the classes the module imports. */
 export function decodeCodec(codec: Codec, v: unknown, column: string, libraries?: Libraries): unknown {
   if (v === null || v === undefined) return v;
+  // A vector is an array of numbers itself, its float32 or float16 values as the server stores
+  // them, which its typed array holds exactly; an array of arrays is an array of vectors.
+  if (VECTOR_CLASS[codec] !== undefined && Array.isArray(v)) return v.some(Array.isArray) ? v.map((e) => decodeCodec(codec, e, column, libraries)) : vectorClass(codec, column, "Column").from(v as number[]);
   if (Array.isArray(v)) return v.map((e) => decodeCodec(codec, e, column, libraries));
   switch (codec) {
     case "set:array":
@@ -384,6 +431,17 @@ export function decodeCodec(codec: Codec, v: unknown, column: string, libraries?
     case "decimal:bignumber.js":
     case "decimal:big.js":
       return typeof v === "string" ? decimalOf(codec, decimalClass(codec, libraries, column, "Column"), v, column) : v;
+    case "inet:ip-address": {
+      if (typeof v !== "string") return v;
+      const lib = libraries?.inet;
+      if (lib === undefined) throw new DecodeError(`Column "${column}" is an ip-address Address4 or Address6 by js.codecs.inet in the project file, and this query's module imports no ip-address: build it again.`);
+      // Postgres writes an address with its prefix where it is not the address's whole width.
+      try {
+        return v.includes(":") ? new lib.Address6(v) : new lib.Address4(v);
+      } catch {
+        throw new DecodeError(`Column "${column}" holds ${JSON.stringify(v)}, which ip-address does not read (js.codecs.inet is ip-address in the project file). Cast it to text in the statement (${column}::text) to read it as it is.`);
+      }
+    }
     case "bytes:string":
       return v instanceof Uint8Array ? base64(v) : v;
     default: {
@@ -405,9 +463,19 @@ export function decodeCodec(codec: Codec, v: unknown, column: string, libraries?
   }
 }
 
-/** Whether a plan's value is an array itself, an array's or a tuple's, so that an array element is one value of it, not a further level of a Postgres array. */
+/** Whether a plan's value is an array itself, an array's, a tuple's or a vector's, so that an array element is one value of it, not a further level of a Postgres array. */
 function nestsArray(plan: Plan): boolean {
-  return typeof plan === "object" && ("array" in plan || "items" in plan);
+  return typeof plan === "object" ? "array" in plan || "items" in plan : VECTOR_CLASS[plan] !== undefined;
+}
+
+/** The typed array of each vector codec, as `Object.prototype.toString` names its values. */
+const VECTOR_CLASS: Partial<Readonly<Record<Codec, "Float32Array" | "Float16Array">>> = { "vector:float32": "Float32Array", "vector:float16": "Float16Array" };
+
+/** The global typed array a vector codec builds: a runtime without `Float16Array` (before Node 24) is told which setting needs it. */
+function vectorClass(codec: Codec, name: string, what: "Column" | "Parameter"): { from(values: ArrayLike<number>): unknown } {
+  const cls = (globalThis as unknown as Record<string, { from(values: ArrayLike<number>): unknown } | undefined>)[VECTOR_CLASS[codec]!];
+  if (cls === undefined) throw new (what === "Column" ? DecodeError : ParameterError)(`${what} "${name}" is a ${VECTOR_CLASS[codec]} by js.codecs.vector in the project file, and this JavaScript runtime has none. Run on one that has it, or leave js.codecs.vector out.`);
+  return cls;
 }
 
 /**
@@ -418,6 +486,7 @@ function nestsArray(plan: Plan): boolean {
 export function decodePlan(plan: Plan, v: unknown, column: string, libraries?: Libraries): unknown {
   if (v === null || v === undefined) return v;
   if (typeof plan === "string") return decodeCodec(plan, v, column, libraries);
+  if ("geometry" in plan) return decodeGeometry(plan, v, column);
   if ("array" in plan) {
     // An element may be an array itself, in a Postgres array of any depth.
     const element = (e: unknown): unknown => (Array.isArray(e) && !nestsArray(plan.array) ? e.map(element) : decodePlan(plan.array, e, column, libraries));
@@ -494,11 +563,26 @@ export function encodeCodec(codec: Codec, v: unknown, name: string, dialect: Dia
     if (!Array.isArray(v) || !v.every((m) => typeof m === "string")) throw refuse("an array of the SET's members");
     return new Set(v);
   }
+  // A vector takes its typed array alone, and binds as the numbers the driver writes as its text.
+  const vector = VECTOR_CLASS[codec];
+  if (vector !== undefined) {
+    if (tag(v) !== `[object ${vector}]`) throw refuse(`a ${vector}`);
+    return Array.from(v as ArrayLike<number>);
+  }
   if (Array.isArray(v)) return v.map((e) => encodeCodec(codec, e, name, dialect, libraries));
   switch (codec) {
     case "decimal:number":
       if (typeof v !== "number") throw refuse("a number");
       return String(v);
+    case "inet:ip-address": {
+      // Its text as given, which Postgres reads with its prefix: a value of the module's copy of
+      // ip-address, or another's, told by its fields.
+      const lib = libraries?.inet;
+      const o = v as Partial<AddressValue> | null;
+      const ours = lib !== undefined && (v instanceof lib.Address4 || v instanceof lib.Address6);
+      if (!ours && !(o !== null && typeof o === "object" && typeof o.address === "string" && typeof o.subnetMask === "number" && typeof o.correctForm === "function")) throw refuse("an ip-address Address4 or Address6");
+      return (v as AddressValue).address;
+    }
     case "decimal:decimal.js":
     case "decimal:bignumber.js":
     case "decimal:big.js": {
@@ -525,6 +609,55 @@ export function encodeCodec(codec: Codec, v: unknown, name: string, dialect: Dia
   }
 }
 
+/**
+ * A geometry as GeoJSON with its SRID, from what its database wrote: PostGIS's hex EWKB, MySQL's
+ * SRID and WKB, DuckDB's WKB, which keeps no SRID, so the column's.
+ */
+function decodeGeometry(plan: { geometry: GeometryFormat; srid: number }, v: unknown, column: string): unknown {
+  const refuse = (why: string) => new DecodeError(`Column "${column}" holds ${why} (js.codecs.geometry is GeoJSON in the project file). Cast it to text in the statement (ST_AsText(${column})) to read it as it is.`);
+  let bytes: Uint8Array;
+  let srid = plan.srid;
+  if (typeof v === "string") bytes = fromHex(v, refuse);
+  else if (v instanceof Uint8Array) {
+    bytes = v;
+    if (plan.geometry === "mysql") {
+      if (v.byteLength < 4) throw refuse(`${v.byteLength} bytes, too few for a MySQL geometry`);
+      srid = new DataView(v.buffer, v.byteOffset, 4).getUint32(0, true);
+      bytes = v.subarray(4);
+    }
+  } else return v;
+  const read = fromWkb(bytes, srid, refuse);
+  return { ...read.geometry, srid: read.srid };
+}
+
+/**
+ * A GeoJSON geometry as its database reads it: PostGIS hex EWKB carrying its SRID, MySQL's SRID and
+ * WKB, of X and Y alone, and DuckDB's WKB. Its `srid`, else the column's, is the value's SRID.
+ */
+function encodeGeometry(plan: { geometry: GeometryFormat; srid: number }, v: unknown, name: string): unknown {
+  const refuse = (why: string) => new ParameterError(`Parameter "${name}" takes a GeoJSON geometry, as js.codecs.geometry in the project file says; got ${why}.`);
+  if (v === null || typeof v !== "object" || Array.isArray(v)) throw refuse(describe(v));
+  const given = (v as { srid?: unknown }).srid;
+  if (given !== undefined && !(Number.isInteger(given) && (given as number) >= 0 && (given as number) <= 0xffffffff)) throw refuse(`an srid of ${describe(given)}, which is no SRID`);
+  const srid = (given as number | undefined) ?? plan.srid;
+  switch (plan.geometry) {
+    case "postgres":
+      return toHex(toWkb(v as Geometry, srid, true, refuse));
+    case "mysql": {
+      const wkb = toWkb(v as Geometry, 0, false, refuse);
+      // ISO WKB counts a Z in thousands of its type code, which MySQL's geometries never have.
+      if (new DataView(wkb.buffer).getUint32(1, true) >= 1000) throw refuse(`a geometry with Z coordinates, which MySQL keeps none of`);
+      const out = new Uint8Array(4 + wkb.byteLength);
+      new DataView(out.buffer).setUint32(0, srid, true);
+      out.set(wkb, 4);
+      return out;
+    }
+    default:
+      if (srid !== plan.srid) throw refuse(`an srid of ${srid}, where DuckDB keeps none in a value and the column's is ${plan.srid}`);
+      return toWkb(v as Geometry, 0, false, refuse);
+  }
+}
+
 /** Whether a Temporal value of `codec` holds a part of a second finer than a microsecond. */
 function pastMicroseconds(codec: Codec, v: unknown): boolean {
   const t = v as { epochNanoseconds?: bigint; nanosecond?: number; nanoseconds?: number };
@@ -537,6 +670,7 @@ function pastMicroseconds(codec: Codec, v: unknown): boolean {
 export function encodePlan(plan: Plan, v: unknown, name: string, dialect: Dialect, libraries?: Libraries): unknown {
   if (v === null || v === undefined) return v;
   if (typeof plan === "string") return encodeCodec(plan, v, name, dialect, libraries);
+  if ("geometry" in plan) return encodeGeometry(plan, v, name);
   if ("array" in plan) {
     const element = (e: unknown): unknown => (Array.isArray(e) && !nestsArray(plan.array) ? e.map(element) : encodePlan(plan.array, e, name, dialect, libraries));
     return Array.isArray(v) ? v.map(element) : v;

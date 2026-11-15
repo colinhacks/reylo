@@ -87,7 +87,7 @@ Each Postgres type maps to one TypeScript type, and `.run()` returns the same va
 | `smallint`, `integer`, `oid` | `number` | `42` |
 | `bigint`, `bigserial`, `count(*)` | `bigint` | `9007199254740993n` |
 | `real`, `double precision` | `number` | `1.1` |
-| `numeric`, `money` | `string` | `"12.50"`, `"$1.50"` |
+| `numeric`, `money` | `string` | `"12.50"`, `"1.50"` |
 | `text`, `varchar`, `char`, `uuid` | `string` | `"Ada"` |
 | `boolean` | `boolean` | `true` |
 | `date` | `string` | `"2026-10-20"` |
@@ -141,13 +141,13 @@ Postgres types a `sum()` by what it adds up: an `integer` column sums to a `bigi
 
 ### Decimals
 
-A `numeric` comes back as its exact text, keeping the column's scale, and so does an `avg()`. A `money` comes back as text in the server's currency format:
+A `numeric` comes back as its exact text, keeping the column's scale, and so does an `avg()`. A `money` comes back as its exact decimal text too, read from the C locale's `$1,234.56`, and a parameter of it takes that text, to the cent. Under another `lc_monetary`, set `lc_monetary = 'C'` on the session, the role or the database, or cast the column to `numeric`:
 
 <Pairs>
 
 - `12.50::numeric` → `"12.50"`
 - `avg(2::integer)` → `"2.0000000000000000"`
-- `1.50::money` → `"$1.50"`
+- `1234.5::money` → `"1234.50"`
 
 </Pairs>
 
