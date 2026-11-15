@@ -2152,7 +2152,13 @@ fn duckdb_loads(opts: &Options) {
                 Some("LOAD") => &mut loads,
                 _ => continue,
             };
-            let text = statement.text.trim().to_string();
+            // A `force install` as a plain one: the file's own run forces the download once, and
+            // each database opened after needs the extension, not another download.
+            let text = statement.text.trim();
+            let text = match text.to_lowercase().find("install") {
+                Some(at) if words[0] == "FORCE" => text[at..].to_string(),
+                _ => text.to_string(),
+            };
             if !into.contains(&text) {
                 into.push(text);
             }
