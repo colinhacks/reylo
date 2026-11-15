@@ -6558,4 +6558,36 @@ time.sleep(600)
             assert!(!p.dir.join("prod.duckbd").exists() && !p.dir.join("prod.sqlitee").exists(), "a file was made");
         }
     }
+
+    // A project loads an extension once, in a file, as Postgres's `create extension` holds: every
+    // database Reylo Migrate opens for it, the shadows included, loads it first, so a migration
+    // needs no `load` of its own. Spatial's type, functions and R-tree index through new, dev,
+    // deploy --dry-run, deploy, status, db push and db wipe, in one test, so that one install runs.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_extension_loaded_once_reaches_every_command() {
+        let v1 = "install spatial;\nload spatial;\ncreate table places (id integer primary key, name varchar, g geometry);";
+        let Some(mut p) = at(v1, "insert into places values (1, 'a', st_point(1, 2))").await else { return };
+        // A check calling the extension's function, and its index: a rebuild, and a migration with no load.
+        let v2 = format!("{}\ncreate index places_g on places using rtree (g);", v1.replace("g geometry)", "g geometry check (st_x(g) >= 0))"));
+        let sql = evolve(&mut p, &v2, &[], &[]).await;
+        assert!(!sql.contains("load"), "{sql}");
+        assert_eq!(one(&p, "select count(*)::varchar as v from places").await, "1");
+        // Deployed to a database of its own, which another process made, and checked.
+        let mut q = P::sibling(&p);
+        for f in p.files() {
+            std::fs::copy(p.dir.join("migrations").join(&f), q.dir.join("migrations").join(&f)).unwrap();
+        }
+        std::fs::copy(p.dir.join("schema.sql"), q.dir.join("schema.sql")).unwrap();
+        assert_eq!(q.migrate().await, 0, "{}", q.peek());
+        q.exec("insert into places values (2, 'b', st_point(3, 4))").await;
+        // Its exit code is the lock's, which this copy never wrote: what matters is that it reads.
+        q.status().await;
+        assert_has!(q.output(), r"applied");
+        assert_eq!(q.dry_run().await, 0, "{}", q.peek());
+        // db push, then db wipe, on the development database.
+        push(&mut p, &v2.replace("st_x(g) >= 0", "st_x(g) >= -1")).await;
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.peek());
+        p.output();
+        assert_eq!(one(&p, "select count(*)::varchar as v from places").await, "0");
+    }
 }

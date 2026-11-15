@@ -216,9 +216,26 @@ impl Drop for Instance {
 /// The files this process has open, by path, each while a connection to it lives.
 static OPEN: Mutex<Option<HashMap<PathBuf, Weak<Instance>>>> = Mutex::new(None);
 
+/// The `install` and `load` statements of each project's files (`schema.sql` and its migrations),
+/// by the project's root, which every database DuckDB opens for it runs before anything else: a
+/// project loads an extension once, in a file, as Postgres's `create extension` holds, and DuckDB
+/// loads extensions for one database at a time.
+static LOADS: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
+
+/// Names the statements every database opened for the project at `root` runs first.
+pub fn use_loads(root: &Path, statements: Vec<String>) {
+    LOADS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(root.to_path_buf(), statements);
+}
+
+fn loads_of(root: &Path) -> Vec<String> {
+    LOADS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(root).cloned()).unwrap_or_default()
+}
+
 /// A connection to a DuckDB database.
 pub struct Conn {
     conn: Connection,
+    /// The project's root, whose `load`s a database opened beside this one runs too.
+    root: PathBuf,
     /// Last, so that it closes after the connection.
     instance: Arc<Instance>,
 }
@@ -278,6 +295,7 @@ impl Conn {
         let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
         let shared = key.as_ref().and_then(|k| open.get_or_insert_with(HashMap::new).get(k).and_then(Weak::upgrade));
         let read_only = read_only && key.is_some();
+        let mut fresh = false;
         let instance = match shared {
             Some(instance) if instance.read_only && !read_only => return Err(Error("DuckDB has this file open read-only in this process, so it can't be written here".into())),
             Some(instance) => instance,
@@ -310,16 +328,30 @@ impl Conn {
                 if let Some(k) = key {
                     open.get_or_insert_with(HashMap::new).insert(k, Arc::downgrade(&instance));
                 }
+                fresh = true;
                 instance
             }
         };
-        drop(open);
         let mut conn: Connection = std::ptr::null_mut();
         // SAFETY: the instance is open, and the out-pointer valid.
         if unsafe { (api.connect)(instance.db, &mut conn) } != SUCCESS {
             return Err(Error("DuckDB could not connect to the database".into()));
         }
-        Ok(Conn { conn, instance })
+        let conn = Conn { conn, root: root.to_path_buf(), instance };
+        // A database new to this process loads the project's extensions, before another connection
+        // can reach it.
+        if fresh {
+            for statement in loads_of(root) {
+                self_query(conn.conn, api, &statement).map_err(|e| Error(format!("{statement}, which this project's files hold and DuckDB runs first, fails: {}", e.0)))?;
+            }
+        }
+        drop(open);
+        Ok(conn)
+    }
+
+    /// The project's root this connection was opened for.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     /// The file the database is, where it is one.
@@ -335,7 +367,7 @@ impl Conn {
         if unsafe { (api.connect)(self.instance.db, &mut conn) } != SUCCESS {
             return Err(Error("DuckDB could not connect to the database".into()));
         }
-        let mut side = Conn { conn, instance: self.instance.clone() };
+        let mut side = Conn { conn, root: self.root.clone(), instance: self.instance.clone() };
         // The database this one uses, which an in-memory shadow attaches under the target's name.
         let (_, rows) = self_query(self.conn, api, "select current_database() as n")?;
         if let Some(Some(name)) = rows.first().map(|r| r[0].clone()) {

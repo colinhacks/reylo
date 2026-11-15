@@ -731,7 +731,9 @@ fn same_statements(a: &str, b: &str, d: Dialect) -> bool {
 /// runs, since no comparison of schemas can see whether its rows were written.
 fn data_statements(sql: &str, d: Dialect) -> Vec<String> {
     let statements = split_statements(sql, d);
-    statements.iter().enumerate().filter(|(k, s)| changes_data(s) && !copies_a_rebuild(&statements, *k)).map(|(_, s)| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
+    // DuckDB's `load` loads an extension, where MySQL's `LOAD DATA` writes rows.
+    let loads_an_extension = |s: &crate::sql::Statement| d == Dialect::Duckdb && s.tokens.first().is_some_and(|t| t.upper() == "LOAD");
+    statements.iter().enumerate().filter(|(k, s)| changes_data(s) && !loads_an_extension(*s) && !copies_a_rebuild(&statements, *k)).map(|(_, s)| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
 }
 
 /// Whether statement `k` of a file is a rebuild's own copy of a table's rows, which a database the
@@ -1502,6 +1504,7 @@ fn may_leave_part(sql: &str, d: Dialect) -> bool {
 /// `reylo migrate deploy`: runs what is pending on a database that is as Reylo's last run left it, and
 /// refuses one that isn't, running nothing. It needs no shadow database: `--dry-run` is what replays.
 pub async fn deploy(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = deploy_on(&mut db, opts, log).await;
     db.close().await;
@@ -1674,6 +1677,7 @@ fn uncompared_line() -> String {
 /// history, what is pending tried in a shadow, and the migrations against schema.sql; runs nothing,
 /// and writes nothing to the database.
 pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     // A SQLite or DuckDB file that isn't there yet is a database a first deploy makes: checked as the
     // empty one opening it makes, which is removed after, with what its engine wrote beside it.
     let made: Vec<PathBuf> = match missing_file(opts)? {
@@ -1744,6 +1748,7 @@ async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 /// the history stay, and identities and sequences start again. The tables are those the comparison
 /// reads, so a platform's own (Supabase's auth.users) keep theirs.
 pub async fn db_wipe(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     if in_ci {
         return Ok(refused_in_ci("reylo db wipe", log));
     }
@@ -1869,6 +1874,7 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
 /// with data statements at its end, which a schema can't show ran. For a database changed by hand
 /// (a hotfix, then written as a migration), and one whose history was lost or kept by another tool.
 pub async fn history_push(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
@@ -2068,6 +2074,7 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
 /// is written again, and a deploy still to reach this database stays locked. Changes no database, and
 /// refuses one whose tables aren't what its history makes, whose files would not make it either.
 pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
@@ -2123,6 +2130,38 @@ pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     Ok(0)
 }
 
+/// On DuckDB, the `install` and `load` statements of the project's files, `schema.sql` and its
+/// migrations, which every database opened for the project then runs first (`duckdb::use_loads`):
+/// an extension a project loads once, in a file, is loaded wherever Reylo Migrate opens DuckDB, in
+/// shadows as in the database, each install before every load.
+fn duckdb_loads(opts: &Options) {
+    if Dialect::of_url(&opts.url).ok() != Some(Dialect::Duckdb) {
+        return;
+    }
+    let mut texts: Vec<String> = std::fs::read_to_string(&opts.schema).into_iter().collect();
+    if let Ok((files, _)) = read_migrations(&opts.dir) {
+        texts.extend(files.into_iter().map(|f| f.sql));
+    }
+    let (mut installs, mut loads): (Vec<String>, Vec<String>) = (vec![], vec![]);
+    for text in &texts {
+        for statement in split_statements(text, Dialect::Duckdb) {
+            let words: Vec<String> = statement.tokens.iter().take(2).map(|t| t.upper()).collect();
+            let into = match words.first().map(String::as_str) {
+                Some("INSTALL") => &mut installs,
+                Some("FORCE") if words.get(1).is_some_and(|w| w == "INSTALL") => &mut installs,
+                Some("LOAD") => &mut loads,
+                _ => continue,
+            };
+            let text = statement.text.trim().to_string();
+            if !into.contains(&text) {
+                into.push(text);
+            }
+        }
+    }
+    installs.extend(loads);
+    crate::duckdb::use_loads(&opts.root, installs);
+}
+
 /// A SQLite or DuckDB file that isn't there, which a command that only reads the database, or
 /// changes what it already holds, refuses: that is no database to read, and opening it would make
 /// one. What it says, where the file is missing.
@@ -2158,6 +2197,7 @@ fn there(opts: &Options) -> Result<(), Error> {
 /// reads, writes nothing and needs no shadow. It exits 1 where the database and the files aren't in
 /// step: a migration pending, cut off, edited or deleted, a change made by hand, or a check that fails.
 pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     there(opts)?;
     let mut db = Db::connect_reading(&opts.url, &opts.root).await?;
     let result = status_on(&mut db, opts, log).await;
@@ -2356,6 +2396,7 @@ fn lock_line(opts: &Options) -> String {
 /// migration it ran must be in the migrations as it ran it. This is how a project that deleted its
 /// lock takes linear history back.
 pub async fn lock_from_history(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
@@ -2415,6 +2456,7 @@ async fn lock_from_history_on(db: &mut Db, server: &mut Server, opts: &Options, 
 /// with its rows, but a platform's own objects and the extensions the project's files don't create;
 /// the history is emptied; and every migration runs as `reylo migrate dev` runs it. Never in CI.
 pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     if in_ci {
         return Ok(refused_in_ci("reylo db reset", log));
     }
@@ -2552,6 +2594,7 @@ pub struct Choices {
 }
 
 pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     static VALID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9_]+$").expect("a valid pattern"));
     if name.is_empty() {
         return Err(Error("name the migration: reylo migrate new <name>".into()));
@@ -3511,6 +3554,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
 /// `reylo migrate init`: writes `schema.sql` and `migrations/init.sql` from the database, then
 /// records init.sql without running it, once a shadow shows the database already has its schema.
 pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     let started = if opts.schema.exists() { Some(shown(&opts.schema)) } else if !read_migrations(&opts.dir)?.0.is_empty() { Some(shown(&opts.dir)) } else { None };
     if let Some(what) = started {
         let problem = Problem::new("project-started", format!("This project has started already ({what} {})", if what.ends_with(".sql") { "exists" } else { "holds migrations" }))
@@ -3575,6 +3619,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 /// nothing for an empty database. Writes no file and changes no database: saving it over schema.sql,
 /// whose comments and layout it doesn't keep, is a redirect.
 pub async fn db_introspect(opts: &Options, schemas: &[String]) -> Result<String, Error> {
+    duckdb_loads(opts);
     there(opts)?;
     let mut db = Db::connect_reading(&opts.url, &opts.root).await?;
     let result = match catalog(&mut db).await {
@@ -3709,6 +3754,7 @@ pub fn refused_in_ci(command: &str, log: Log<'_>) -> i32 {
 /// database already has (`db push` made it) is recorded instead. Never in CI (`in_ci`, from the `CI`
 /// variable).
 pub async fn dev(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     if in_ci {
         return Ok(refused_in_ci("reylo migrate dev", log));
     }
@@ -4390,6 +4436,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
 /// for `create` to write next. Refuses a database with a migration it hasn't applied, or one whose
 /// history disagrees with the files. Never in CI.
 pub async fn db_push(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    duckdb_loads(opts);
     if in_ci {
         return Ok(refused_in_ci("reylo db push", log));
     }
@@ -4745,6 +4792,8 @@ mod tests {
         assert_eq!(data_statements("create table archive (id integer); insert into archive (id) select id from posts;", Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("insert into posts (id) select id from old; drop table old;", Dialect::Duckdb).len(), 1);
         assert_eq!(data_statements("update posts set body = '';", Dialect::Sqlite).len(), 1);
+        assert!(data_statements("install spatial; load spatial; create table places (g geometry);", Dialect::Duckdb).is_empty());
+        assert_eq!(data_statements("load data infile 'a.csv' into table t;", Dialect::Mysql).len(), 1);
     }
 
     #[test]
