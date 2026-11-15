@@ -141,7 +141,7 @@ Postgres types a `sum()` by what it adds up: an `integer` column sums to a `bigi
 
 ### Decimals
 
-A `numeric` comes back as its exact text, keeping the column's scale, and so does an `avg()`. A `money` comes back as its exact decimal text too, read from the C locale's `$1,234.56`, and a parameter of it takes that text, to the cent. Under another `lc_monetary`, set `lc_monetary = 'C'` on the session, the role or the database, or cast the column to `numeric`:
+A `numeric` comes back as its exact text, keeping the column's scale, and so does an `avg()`. A `money` comes back as its exact decimal text too, read from the C locale's `$1,234.56`, and a parameter of it takes that text, to the cent:
 
 <Pairs>
 
@@ -150,6 +150,8 @@ A `numeric` comes back as its exact text, keeping the column's scale, and so doe
 - `1234.5::money` → `"1234.50"`
 
 </Pairs>
+
+Postgres reads a `money` parameter in the session's `lc_monetary` too, and under `de_DE` stores `1234.56` as `123456.00` with no error, where a read of another locale's text is refused. Set `lc_monetary = 'C'` on the session, the role or the database, or cast through `numeric` both ways: the column to read it, and the parameter to write it (`:fee::numeric`).
 
 ### Dates and times
 
