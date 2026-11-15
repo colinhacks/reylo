@@ -147,10 +147,15 @@ test("reylo migrate init starts no project in the home directory, and passes ove
   assert.equal(existsSync(join(home, "reylo")), false);
 });
 
-test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {
-  const gone = reylo(project(), ["generate"]);
-  assert.equal(gone.status, 2);
-  assert.equal(gone.err, "reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.\n");
+test("reylo generate names its generators, and TypeScript needs none", () => {
+  const bare = reylo(project(), ["generate"]);
+  assert.equal(bare.status, 2);
+  assert.match(bare.out, /^Usage: reylo generate <generator>/);
+  assert.match(bare.out, /rust-sqlx/);
+  assert.match(bare.out, /TypeScript needs no generator/);
+  const unknown = reylo(project(), ["generate", "typescript"]);
+  assert.equal(unknown.status, 2);
+  assert.equal(unknown.err, "reylo generate: no generator typescript: the one there is is rust-sqlx (reylo generate --help)\n");
 });
 
 test("reylo play is the playground's server, in JavaScript", () => {

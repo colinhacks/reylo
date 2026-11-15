@@ -77,13 +77,13 @@ export const PROJECT_FILE = ".reylo.yaml";
 export const PROJECT_FILES = [PROJECT_FILE, ".reylo.yml"] as const;
 const DEFAULT_ENV_FILES = [".env.local", ".env"];
 
-/** The package directory: the nearest one at or above `from`, below the home directory (`HOME`, or `USERPROFILE` on Windows, in `env`), that holds a `package.json`, else `from`. A home directory is no project's, though a stray `package.json` can sit there, and taking it would make every directory below it one project (engine/cli/src/project.rs). */
+/** The package directory: the nearest one at or above `from`, below the home directory (`HOME`, or `USERPROFILE` on Windows, in `env`), that holds a `package.json` or a `Cargo.toml` (a Rust crate's, which is a project of its own), else `from`. A home directory is no project's, though a stray `package.json` can sit there, and taking it would make every directory below it one project (engine/native/src/project.rs). */
 export function packageDir(from: string, env: Record<string, string | undefined> = process.env): string {
   const home = process.platform === "win32" ? env.USERPROFILE : env.HOME;
   // As written, or with its links resolved, as a working directory has them.
   const stops = home ? [resolve(home), realOr(home)] : [];
   for (let dir = resolve(from); !stops.includes(dir); dir = dirname(dir)) {
-    if (existsSync(join(dir, "package.json"))) return dir;
+    if (existsSync(join(dir, "package.json")) || existsSync(join(dir, "Cargo.toml"))) return dir;
     if (dirname(dir) === dir) break;
   }
   return resolve(from);
@@ -160,8 +160,8 @@ export function dialectOf(url: string): Dialect | undefined {
  * the first `#`, spaces and tabs trimmed, less a quote at each end. In a value that starts with a
  * double quote, `\n` and `\r` are a newline and a carriage return. Node's own `parseEnv` is not used:
  * a line whose empty value ends in a space takes the next line as its value there. The binary reads
- * env files the same way (`parse_env` in engine/cli/src/project.rs), and both are held to
- * engine/cli/src/env-file-cases.json.
+ * env files the same way (`parse_env` in engine/native/src/project.rs), and both are held to
+ * engine/native/src/env-file-cases.json.
  */
 export function readEnvFile(path: string): Record<string, string> {
   let text: string;
@@ -215,7 +215,7 @@ function place(text: string, offset: number): string {
   return `${lines.length}:${[...lines.at(-1)!].length + 1}`;
 }
 
-/** Why a file could not be read, as `reylo analyze` says it (`unreadable` in engine/cli/src/project.rs). */
+/** Why a file could not be read, as `reylo analyze` says it (`unreadable` in engine/native/src/project.rs). */
 function unreadable(e: NodeJS.ErrnoException): string {
   if (e.code === "ENOENT") return "it does not exist";
   if (e.code === "EISDIR") return "it is a directory";
@@ -508,7 +508,7 @@ export function duckdbPath(url: string, baseDir: string): string {
 
 /**
  * Why a `file://` URL names no file Node reads, as `reylo analyze` says it (`file_url_path` in
- * engine/cli/src/project.rs), or undefined where it names one or is no `file://` URL.
+ * engine/native/src/project.rs), or undefined where it names one or is no `file://` URL.
  */
 export function sqliteUrlProblem(url: string): string | undefined {
   if (!url.startsWith("file://")) return undefined;

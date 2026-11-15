@@ -63,7 +63,7 @@ jobs:
           # Every database, or the ones the change reaches.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-duckdb -p reylo-engine -p reylo-engine-native -p reylo-migrate -p reylo -p reylo-oracle'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-duckdb -p reylo-engine -p reylo-engine-native -p reylo-migrate -p reylo -p reylo-oracle -p reylo-codegen -p reylo-sqlx'
             echo 'shards=["postgres","sqlite","duckdb","mysql-1","mysql-2","mysql-slow"]'
             echo playground=true
           }
@@ -85,7 +85,7 @@ jobs:
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          postgres=false mysql=false sqlite=false duckdb=false binary=false
+          postgres=false mysql=false sqlite=false duckdb=false binary=false rust=false
           while read -r file; do
             case "$file" in
               engine/postgres/*) postgres=true ;;
@@ -93,6 +93,8 @@ jobs:
               engine/sqlite/* | oracle/cases/sqlite_*) sqlite=true ;;
               engine/duckdb/* | oracle/cases/duckdb_*) duckdb=true ;;
               engine/cli/* | engine/migrate/*) binary=true ;;
+              # The Rust crate, whose generator the binary's reylo generate runs.
+              rust/*) rust=true binary=true ;;
               oracle/cases/*) postgres=true ;;
             esac
           done <<<"$files"
@@ -103,6 +105,7 @@ jobs:
           $mysql && { tests="$tests -p reylo-engine-mysql"; shards="$shards,\"mysql-1\",\"mysql-2\",\"mysql-slow\""; }
           # The binary's own crates, the migrations and the command line, which link every database.
           $binary && tests="$tests -p reylo-migrate -p reylo"
+          $rust && tests="$tests -p reylo-codegen -p reylo-sqlx"
           if [ -z "$tests" ]; then
             { echo engine=false; echo tests=; echo 'shards=[]'; } >> "$GITHUB_OUTPUT"
           else
@@ -301,6 +304,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/duckdb" && tar -xzf "$RUNNER_TEMP/duckdb.tgz" -C "$RUNNER_TEMP/duckdb"
           echo "REYLO_DUCKDB_LIBRARY=$RUNNER_TEMP/duckdb/package/libduckdb.so" >> "$GITHUB_ENV"
       - run: cargo test ${{ needs.scope.outputs.tests }}
+      # Each demo's statements typed by the macro as it compiles, and the modules reylo generate and
+      # reylo-build write, built and run, on these servers: the engine's every change reaches them.
+      - name: Build and run the Rust crate's demos
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: .github/scripts/rust-demos.sh
       - if: always()
         run: sccache --show-stats
 

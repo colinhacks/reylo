@@ -17,6 +17,7 @@ on:
       - engine/cli/**
       - engine/native/**
       - engine/migrate/**
+      - rust/reylo-codegen/**
       - npm/**
       - scripts/build.ts
       - src/cli.ts

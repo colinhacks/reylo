@@ -20,8 +20,8 @@ function tree(files: Record<string, string>): string {
 }
 
 test("an env file reads as dotenv reads it, and as the binary reads it", () => {
-  // The binary's reader is held to the same cases (engine/cli/src/project.rs).
-  const cases: { case: string; env: string; vars: Record<string, string> }[] = JSON.parse(readFileSync(new URL("../engine/cli/src/env-file-cases.json", import.meta.url), "utf8"));
+  // The binary's reader is held to the same cases (engine/native/src/project.rs).
+  const cases: { case: string; env: string; vars: Record<string, string> }[] = JSON.parse(readFileSync(new URL("../engine/native/src/env-file-cases.json", import.meta.url), "utf8"));
   for (const c of cases) assert.deepEqual({ ...readEnvFile(join(tree({ ".env": c.env }), ".env")) }, c.vars, c.case);
   // A file that cannot be read sets nothing, as a missing one does; a byte that is not UTF-8 loses only itself.
   const root = tree({ ".env/x": "" });

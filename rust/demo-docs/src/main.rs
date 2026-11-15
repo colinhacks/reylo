@@ -1,0 +1,102 @@
+//! The docs' Rust snippets (site/content/docs/index.mdx, rust.mdx, rust-usage.mdx), each as the page
+//! writes it, with the type the page names for each value written out, run against the schema of
+//! the docs' examples.
+
+use sqlx::PgPool;
+
+// The intro (index.mdx).
+#[reylo::query("
+    select u.id, u.name, count(p.id)::int as post_count
+    from users u
+    left join posts p on p.user_id = u.id
+    where u.id = :id::int
+    group by u.id
+")]
+pub mod get_author {}
+
+// Setup (rust.mdx), and The module (rust-usage.mdx).
+#[reylo::query("select id, name, email from users where id = :id::int")]
+pub mod get_user {}
+
+// .run() (rust-usage.mdx).
+#[reylo::query("select count(*) as n from users")]
+pub mod count_users {}
+
+#[reylo::query("select id, title from posts where user_id = :user_id::int")]
+pub mod posts_by_user {}
+
+#[reylo::query("update users set name = :name where id = :id::int")]
+pub mod rename_user {}
+
+// Parameters.
+#[reylo::query("select id, name from users where role = :role order by id")]
+pub mod users_by_role {}
+
+#[reylo::query("select id, title from posts where user_id = coalesce(:user_id::nullable(int), user_id) order by id")]
+pub mod posts_of {}
+
+// Your own methods.
+#[reylo::query("select id, name, email from users where id = :id::int")]
+pub mod get_contact {
+    impl Row {
+        pub fn label(&self) -> &str {
+            self.email.as_deref().unwrap_or(&self.name)
+        }
+    }
+}
+
+// JSON.
+#[reylo::query("select json_build_object('id', u.id, 'name', u.name) as author from users u where u.id = :id::int")]
+pub mod author_json {}
+
+// Dates and times.
+#[reylo::query("select title, published_at from posts order by id")]
+pub mod published {}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+
+    // author: Option<get_author::Row>
+    let author: Option<get_author::Row> = get_author::Query { id: 1 }.run(&pool).await?;
+    let a = author.expect("ada");
+    let (_, _, _): (i32, String, i32) = (a.id, a.name.clone(), a.post_count);
+    println!("intro       {a:?}");
+
+    // user: Option<get_user::Row>
+    let user = get_user::Query { id: 1 }.run(&pool).await?;
+    let u: get_user::Row = user.expect("ada");
+    let (_, _, _): (i32, String, Option<String>) = (u.id, u.name.clone(), u.email.clone());
+    println!("setup       {u:?}");
+
+    let count: count_users::Row = count_users::Query.run(&pool).await?;
+    let user: Option<get_user::Row> = get_user::Query { id: 1 }.run(&pool).await?;
+    let posts: Vec<posts_by_user::Row> =
+        posts_by_user::Query { user_id: 1 }.run(&pool).await?;
+    let changed: u64 = rename_user::Query { name: "ada", id: 1 }.run(&pool).await?;
+    let _: i64 = count.n;
+    println!("run         {count:?} {} {} {changed}", user.is_some(), posts.len());
+
+    let mut tx = pool.begin().await?;
+    rename_user::Query { name: "ada", id: 1 }.run(&mut *tx).await?;
+    tx.commit().await?;
+
+    let role = users_by_role::UserRole::Admin;
+    let admins = users_by_role::Query { role }.run(&pool).await?;
+    let everyone = posts_of::Query { user_id: None }.run(&pool).await?;
+    let ada_s = posts_of::Query { user_id: Some(1) }.run(&pool).await?;
+    println!("params      {admins:?} {} {}", everyone.len(), ada_s.len());
+
+    let contact = get_contact::Query { id: 2 }.run(&pool).await?.expect("bob");
+    println!("methods     {}", contact.label());
+
+    let row = author_json::Query { id: 1 }.run(&pool).await?.expect("ada");
+    let author: author_json::Author = row.author.0;
+    let (_, _): (i32, String) = (author.id, author.name.clone());
+    println!("json        {author:?}");
+
+    let rows = published::Query.run(&pool).await?;
+    let _: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> = rows[0].published_at;
+    println!("dates       {rows:?}");
+    Ok(())
+}

@@ -2,7 +2,7 @@
 //! project names, as the type check reads it: a YAML document per statement, or with
 //! `--format json` one line of JSON per statement.
 
-use crate::project::{self, Project};
+use reylo_engine_native::project::{self, Project};
 use reylo_engine_core::api::{utf16_offset, Analysis};
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::types::{Cardinality, DialectVersion, Diagnostic, Kind, ResultRows, StatementDescriptor};
@@ -11,23 +11,21 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub const USAGE: &str = "Usage: reylo analyze <file.sql | directory | -> ... [--url <url>] [--format yaml | json]
+pub const USAGE: &str = "Usage: reylo analyze <file.sql | directory | 'glob' | -> ... [--url <url>] [--format yaml | json]
        reylo analyze --sql <statement> [--url <url>] [--format yaml | json]
 
 Prints each statement's type descriptor, with the file it was read from: as YAML, a document per
 statement (--format yaml, the default), or as one line of JSON per statement (--format json).
 Each diagnostic is also written to standard error, as file:line:column and the message, with a
 caret under its place. A directory is searched for .sql files, leaving out node_modules, dist,
-build, out, target, coverage, hidden directories and what git ignores; - reads one statement
-from standard input.
+build, out, target, coverage, hidden directories and what git ignores; a glob in quotes, as
+'src/**/*.sql', is expanded by Reylo; - reads one statement from standard input.
 The database is --url, else the project file's direct_url, else DATABASE_URL, from the
 environment or the .env files; a relative SQLite path in --url is read from the working
 directory, one in the project's URL from the project's root. A statement the engine cannot
 analyze is printed with one diagnostic that says why. Exits with 1 when any statement has a
 diagnostic, and with 2 when the database cannot be reached or the statements cannot be read.";
 
-/// The directories a directory's search leaves out: dependencies and build output.
-const SKIPPED: &[&str] = &["node_modules", "dist", "build", "out", "target", "coverage"];
 
 /// How standard output writes each descriptor.
 #[derive(Clone, Copy, PartialEq)]
@@ -304,72 +302,13 @@ fn read_inputs(path: &str, cwd: &Path) -> Result<Vec<Input>, String> {
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut sql).map_err(|e| format!("cannot read standard input: {e}"))?;
         return Ok(vec![Input { file: None, sql }]);
     }
-    let full = cwd.join(path);
-    let files = if full.is_dir() {
-        let mut found = Vec::new();
-        sql_files(&full, &mut found);
-        let ignored = git_ignored(&full, &found);
-        found.retain(|f| !ignored.contains(f));
-        found.sort();
-        found
-    } else if full.is_file() {
-        vec![full]
-    } else {
-        return Err(format!("{path} does not exist"));
-    };
-    files
+    reylo_codegen::files::sql_files(path, cwd)?
         .into_iter()
         .map(|file| {
             let sql = std::fs::read_to_string(&file).map_err(|e| format!("cannot read {}: {e}", shown(cwd, &file)))?;
             Ok(Input { file: Some(shown(cwd, &file)), sql })
         })
         .collect()
-}
-
-/// Every `.sql` file under `dir`, leaving out the directories [`SKIPPED`] names and hidden ones but
-/// `.server`, whose queries a framework keeps there.
-fn sql_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(kind) = entry.file_type() else { continue };
-        if kind.is_dir() {
-            if !SKIPPED.contains(&name.as_str()) && (!name.starts_with('.') || name == ".server") {
-                sql_files(&path, out);
-            }
-        } else if kind.is_file() && path.extension().is_some_and(|x| x.eq_ignore_ascii_case("sql")) {
-            out.push(path);
-        }
-    }
-}
-
-/// The files among `files` that git ignores: none where git is missing or `dir` is in no repository.
-fn git_ignored(dir: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
-    use std::io::Write;
-    if files.is_empty() {
-        return Vec::new();
-    }
-    let Ok(mut child) = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["check-ignore", "--stdin", "-z"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
-        return Vec::new();
-    };
-    let list: Vec<u8> = files.iter().flat_map(|f| f.to_string_lossy().into_owned().into_bytes().into_iter().chain([0])).collect();
-    // The list is written while git's answer is read: git writes each ignored path as it reads it,
-    // and stops reading once a full pipe stops its writes.
-    let writer = child.stdin.take().map(|mut stdin| std::thread::spawn(move || drop(stdin.write_all(&list))));
-    let Ok(out) = child.wait_with_output() else { return Vec::new() };
-    if let Some(writer) = writer {
-        let _ = writer.join();
-    }
-    out.stdout.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| PathBuf::from(String::from_utf8_lossy(s).into_owned())).collect()
 }
 
 /// A path from the working directory, written with `/`, as the type check writes it.

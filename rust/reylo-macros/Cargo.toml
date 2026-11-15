@@ -1,0 +1,25 @@
+[package]
+name = "reylo-macros"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "The attribute #[reylo::query(\"…\")] mod name {}: the statement typed by Reylo's engine at compile time, against the project's database or reylo/.cache/ where it cannot be reached, and expanded to Query, Row and run on sqlx."
+
+[lib]
+proc-macro = true
+
+# Which Rust types the macro writes for dates and times, uuids and decimals: `reylo`'s features of
+# the same names turn these on beside sqlx's support for the types.
+[features]
+chrono = []
+time = []
+uuid = []
+rust_decimal = []
+bigdecimal = []
+
+[dependencies]
+# The statement's analysis, and the module's items from it.
+reylo-codegen = { path = "../reylo-codegen", default-features = false, features = ["analyze"] }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

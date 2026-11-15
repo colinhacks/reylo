@@ -1,0 +1,9 @@
+[package]
+name = "reylo-build"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Writes the modules of reylo generate rust-sqlx from a build script, into Cargo's OUT_DIR: each .sql file's Query, Row and run on sqlx, typed by Reylo's engine."
+
+[dependencies]
+reylo-codegen = { path = "../reylo-codegen", features = ["generate"] }
