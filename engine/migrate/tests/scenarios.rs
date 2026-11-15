@@ -135,7 +135,12 @@ impl P {
 
     /// `db push` alone.
     async fn db_push(&mut self) -> i32 {
-        self.run(async |o, log| reylo_migrate::db_push(o, false, log).await).await
+        self.run(async |o, log| reylo_migrate::db_push(o, false, &Default::default(), log).await).await
+    }
+
+    /// `db push` with its flags: what it is told to drop and rename, and `--force`.
+    async fn db_push_with(&mut self, push: &reylo_migrate::Push) -> i32 {
+        self.run(async |o, log| reylo_migrate::db_push(o, false, push, log).await).await
     }
 
     /// `dev`, then `db push` where it succeeded: a development database taken to schema.sql.
@@ -144,7 +149,7 @@ impl P {
         if code != 0 {
             return code;
         }
-        self.run(async |o, log| reylo_migrate::db_push(o, false, log).await).await
+        self.run(async |o, log| reylo_migrate::db_push(o, false, &Default::default(), log).await).await
     }
 
     /// `deploy --dry-run`: what deploy checks, and the migrations against schema.sql.
@@ -414,6 +419,9 @@ for_each_dialect!(
     db_push_keeps_what_it_records_when_it_undoes_the_rest,
     db_push_runs_or_records_a_migration_cut_off,
     db_push_rewinds_only_what_the_rewound_migrations_made,
+    db_push_refuses_a_drop_until_drop_names_it,
+    db_push_force_accepts_every_destructive_change,
+    db_push_takes_a_rename_it_is_told_of,
     create_guesses_no_rename_a_table_that_stays_could_explain,
     every_applied_row_holds_the_fingerprint_it_left,
     a_run_cut_off_before_its_fingerprint_is_refused,
@@ -1448,7 +1456,7 @@ async fn db_push_takes_a_development_database_to_schema_sql(mut p: P) {
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_has!(p.output(), "Up to date");
     // Never in CI.
-    assert_eq!(p.run(async |o, log| reylo_migrate::db_push(o, true, log).await).await, 1);
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_push(o, true, &Default::default(), log).await).await, 1);
     assert_has!(p.output(), "CI is set, and reylo db push is for development databases");
 }
 
@@ -2044,6 +2052,103 @@ async fn db_push_rewinds_only_what_the_rewound_migrations_made(mut p: P) {
     assert!(p.try_rows("select 1 from tags").await.is_err());
 }
 
+/// What `reylo db push` is told: `--drop`, each `--rename <old>=<new>`, and `--force`.
+fn push(drop: &[&str], rename: &[(&str, &str)], force: bool) -> reylo_migrate::Push {
+    let choices = reylo_migrate::Choices { drop: drop.iter().map(|d| d.to_string()).collect(), rename: rename.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
+    reylo_migrate::Push { choices, force }
+}
+
+async fn db_push_refuses_a_drop_until_drop_names_it(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, name {text});"));
+    p.schema(&format!("create table users (id {id}, name {text}, bio {text}); create table tags (id {int});"));
+    assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
+    p.exec("insert into users (name, bio) values ('ada', 'hi')").await;
+    p.exec("insert into tags values (1)").await;
+    p.output();
+    // schema.sql no longer has them: refused, and nothing changes.
+    p.schema(&format!("create table users (id {id}, name {text});"));
+    assert_eq!(p.db_push().await, 1);
+    let out = p.output();
+    assert_has!(&out, r"✗ This push drops the (table tags, and the column users\.bio|column users\.bio, and the table tags), with their data\n\n  To drop them:\n    reylo db push --drop (tags,users\.bio|users\.bio,tags)\n  To accept every destructive change:\n    reylo db push --force\n");
+    assert_has!(&out, "Nothing was changed.");
+    assert_eq!(p.rows("select * from tags").await.len(), 1);
+    assert_eq!(p.rows("select bio from users").await[0].text("bio"), "hi");
+    // Watching, the refusal is printed and waited out like any run's, and its fixes keep watching.
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_push_watch(o, false, &Default::default(), Some(1), log).await).await, 1);
+    assert_has!(p.output(), r"This push drops[\s\S]*reylo db push --watch --drop ");
+    // One named: the other is still refused, and the fix keeps what was named.
+    assert_eq!(p.db_push_with(&push(&["tags"], &[], false)).await, 1);
+    assert_has!(p.output(), r"✗ This push drops the column users\.bio and its data\n\n  To drop it:\n    reylo db push --drop tags,users\.bio\n  To accept every destructive change:\n    reylo db push --force\n");
+    assert_eq!(p.rows("select * from tags").await.len(), 1);
+    // A name that names nothing it drops is refused, as a typo would be.
+    assert_eq!(p.db_push_with(&push(&["tags", "users.bi"], &[], false)).await, 1);
+    assert_has!(p.output(), r"--drop names users\.bi, which this push doesn't drop");
+    // Both named: dropped, saying what they held.
+    assert_eq!(p.db_push_with(&push(&["tags", "users.bio"], &[], false)).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Pushing \S*schema\.sql to [\s\S]*! Dropped [^\n]*tags \(1 row\)[\s\S]*✓ This database matches \S*schema\.sql");
+    assert!(p.try_rows("select 1 from tags").await.is_err());
+    assert!(p.try_rows("select bio from users").await.is_err());
+    assert_eq!(p.rows("select name from users").await[0].text("name"), "ada");
+}
+
+async fn db_push_force_accepts_every_destructive_change(mut p: P) {
+    let (id, text) = (p.t.id, p.t.text);
+    // Each database's change that keeps the column but loses what its values hold.
+    let (before, after, why) = match p.d {
+        Dialect::Postgres => ("timestamptz", "date", r"users\.stamp changes from timestamp with time zone to date, which keeps only the date"),
+        Dialect::Mysql => ("datetime(6)", "datetime", r"users\.stamp changes from datetime\(6\) to datetime, which rounds to whole seconds"),
+        Dialect::Sqlite => ("text", "integer", r"users\.stamp changes from text to integer, which stores text that reads as a number as that number"),
+        Dialect::Duckdb => ("timestamptz", "date", r"users\.stamp changes from timestamp with time zone to date, which keeps only the date"),
+    };
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, stamp {before}, bio {text});"));
+    p.schema(&format!("create table users (id {id}, stamp {before}, bio {text});"));
+    assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
+    p.exec("insert into users (bio) values ('hi')").await;
+    p.output();
+    // A type change that loses values is refused as a drop is, each with its own fix.
+    p.schema(&format!("create table users (id {id}, stamp {after});"));
+    assert_eq!(p.db_push().await, 1);
+    let out = p.output();
+    assert_has!(&out, r"✗ This push drops the column users\.bio and its data\n\n  To drop it:\n    reylo db push --drop users\.bio\n");
+    assert_has!(&out, &format!(r"✗ {why}[^\n]*\n\n  To accept that:\n    reylo db push --drop users\.stamp\n  To accept every destructive change:\n    reylo db push --force\n"));
+    assert_eq!(p.rows("select bio from users").await[0].text("bio"), "hi");
+    // The narrowing alone, the drop named: still refused.
+    assert_eq!(p.db_push_with(&push(&["users.bio"], &[], false)).await, 1);
+    assert_has!(p.output(), &format!(r"✗ {why}"));
+    assert!(p.try_rows("select bio from users").await.is_ok());
+    // --force accepts both at once.
+    assert_eq!(p.db_push_with(&push(&[], &[], true)).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Pushing \S*schema\.sql to [\s\S]*✓ This database matches \S*schema\.sql");
+    assert!(p.try_rows("select bio from users").await.is_err());
+    // A name --drop gives that names nothing still stands with --force.
+    p.schema(&format!("create table users (id {id});"));
+    assert_eq!(p.db_push_with(&push(&["users.stam"], &[], true)).await, 1);
+    assert_has!(p.output(), r"--drop names users\.stam, which this push doesn't drop");
+    assert!(p.try_rows("select stamp from users").await.is_ok());
+}
+
+async fn db_push_takes_a_rename_it_is_told_of(mut p: P) {
+    let (id, text) = (p.t.id, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, middle_name {text}, legacy {text});"));
+    p.schema(&format!("create table users (id {id}, middle_name {text}, legacy {text});"));
+    assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
+    p.exec("insert into users (middle_name, legacy) values ('m', 'l')").await;
+    p.output();
+    // Two text columns go and one comes: which, if any, was renamed is for the person to say.
+    p.schema(&format!("create table users (id {id}, nickname {text});"));
+    assert_eq!(p.db_push().await, 1);
+    assert_has!(p.output(), r"✗ This push drops the columns users\.legacy and users\.middle_name, with their data\n\n  To drop them:\n    reylo db push --drop users\.legacy,users\.middle_name\n  If any were renamed instead, as users\.nickname:\n    reylo db push \\\n      --rename users\.legacy=<new name> \\\n      --rename users\.middle_name=<new name>\n  To accept every destructive change:\n    reylo db push --force\n");
+    // A rename named alone leaves the other column's drop refused.
+    assert_eq!(p.db_push_with(&push(&[], &[("users.middle_name", "nickname")], false)).await, 1);
+    assert_has!(p.output(), r"✗ This push drops the column users\.legacy and its data\n\n  To drop it:\n    reylo db push \\\n      --drop users\.legacy \\\n      --rename users\.middle_name=nickname\n");
+    // Stated: renamed, keeping its rows, and the other dropped.
+    assert_eq!(p.db_push_with(&push(&["users.legacy"], &[("users.middle_name", "nickname")], false)).await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.rows("select nickname from users").await[0].text("nickname"), "m");
+    assert!(p.try_rows("select legacy from users").await.is_err());
+}
+
 async fn create_guesses_no_rename_a_table_that_stays_could_explain(mut p: P) {
     let (id, text) = (p.t.id, p.t.text);
     p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text});"));
@@ -2215,13 +2320,13 @@ async fn db_push_watch_syncs_again_when_schema_sql_changes(mut p: P) {
         std::thread::sleep(std::time::Duration::from_millis(1200));
         std::fs::write(schema, later).unwrap();
     });
-    assert_eq!(p.run(async |o, log| reylo_migrate::db_push_watch(o, false, Some(2), log).await).await, 0, "{}", p.peek());
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_push_watch(o, false, &Default::default(), Some(2), log).await).await, 0, "{}", p.peek());
     saver.join().unwrap();
     let out = p.output();
     assert_has!(&out, r"Watching \S*schema\.sql and \S*migrations: each save pushes again");
     assert_has!(&out, r"This database matches \S*schema\.sql and its migrations[\s\S]*\d\d:\d\d:\d\d[\s\S]*Pushing \S*schema\.sql to \S+\n  \+ alter table users add column bio");
     assert!(p.try_rows("select bio from users").await.is_ok());
-    assert_eq!(p.run(async |o, log| reylo_migrate::db_push_watch(o, true, Some(1), log).await).await, 1);
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_push_watch(o, true, &Default::default(), Some(1), log).await).await, 1);
     assert_has!(p.output(), "CI is set, and reylo db push --watch is for development databases");
 }
 
@@ -5441,7 +5546,7 @@ comment on macro table app.recent is 'last n';
         p.exec("insert into notes values (1, 'a')").await;
         p.output();
         p.schema("create schema archive; create table archive.notes (id integer primary key, body varchar);");
-        let push = p.run(async |o, log| reylo_migrate::db_push(o, false, log).await).await;
+        let push = p.run(async |o, log| reylo_migrate::db_push(o, false, &Default::default(), log).await).await;
         assert_eq!(push, 0, "db push: {}", p.output());
     }
 
@@ -5456,7 +5561,7 @@ comment on macro table app.recent is 'last n';
         p.exec("insert into t (v) values (5), (6), (7)").await;
         p.output();
         p.schema("create sequence s increment by 2; create macro x() as 2; create table t (id bigint primary key default nextval('s'), v integer, check (v >= x()));");
-        let push = p.run(async |o, log| reylo_migrate::db_push(o, false, log).await).await;
+        let push = p.run(async |o, log| reylo_migrate::db_push(o, false, &Default::default(), log).await).await;
         assert_eq!(push, 0, "db push: {}", p.output());
         p.exec("insert into t (v) values (8)").await;
         let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
@@ -6099,7 +6204,7 @@ comment on macro table app.recent is 'last n';
         let opts = p.opts();
         let mut out: Vec<String> = Vec::new();
         let r = match which {
-            "db push" => reylo_migrate::db_push(&opts, false, &mut |l: &str| out.push(l.to_string())).await,
+            "db push" => reylo_migrate::db_push(&opts, false, &Default::default(), &mut |l: &str| out.push(l.to_string())).await,
             "new" => reylo_migrate::create(&opts, "next", &Default::default(), &mut |l: &str| out.push(l.to_string())).await,
             "db wipe" => reylo_migrate::db_wipe(&opts, false, &mut |l: &str| out.push(l.to_string())).await,
             _ => unreachable!(),
@@ -6410,7 +6515,7 @@ comment on macro table app.recent is 'last n';
         let code = p.db_push().await;
         let out = p.output();
         assert_eq!(code, 0, "{out}");
-        let status = answer(&mut p, async |o, log| reylo_migrate::db_push(o, false, log).await).await;
+        let status = answer(&mut p, async |o, log| reylo_migrate::db_push(o, false, &Default::default(), log).await).await;
         assert!(status.is_ok(), "db push printed:\n{out}\nthen db push again refuses: {}", status.unwrap_err());
     }
 

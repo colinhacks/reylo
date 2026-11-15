@@ -2519,8 +2519,9 @@ async fn emptied(db: &mut Db, server: &mut Server, opts: &Options, log: Log<'_>)
             then.push(forget);
         }
     }
-    match take_to(db, &target, &then, &lines).await? {
-        Err(lines) => {
+    match take_to(db, &target, &then, &lines, None).await? {
+        Err(Unreached::Refused(problems)) => return Ok(refuse(&problems, log)),
+        Err(Unreached::Differs(lines)) => {
             let problem = Problem::new("reset-incomplete", "Reylo can't drop everything on this database").lines(lines);
             if d != Dialect::Mysql {
                 return Ok(refuse(&[problem], log));
@@ -2882,18 +2883,27 @@ async fn rename_tables(db: &mut Db, current: &crate::diff::Schema, target: &Targ
 /// The plan from the database to `target`: a table that goes while one of its columns comes renamed
 /// first, on the database itself, then the diff engine's plan from there, which is not run.
 async fn plan_to(db: &mut Db, target: &Target, live: bool) -> Result<(Vec<String>, crate::diff::Plan), Error> {
+    match plan_asked(db, target, live, None).await? {
+        Ok(Settled { renames, plan, .. }) => Ok((renames, plan)),
+        Err(_) => unreachable!("nothing is refused where nothing is asked"),
+    }
+}
+
+/// What `reylo db push` is told about what its plan drops and renames: as `migrate new` is, and whether
+/// `--force` accepts every destructive change at once.
+#[derive(Clone, Debug, Default)]
+pub struct Push {
+    pub choices: Choices,
+    pub force: bool,
+}
+
+/// `plan_to`, settled as `asking` (what was stated, the command, and `--force`) says.
+async fn plan_asked(db: &mut Db, target: &Target, live: bool, asking: Option<(&Push, &Asked)>) -> Result<Result<Settled, Vec<Problem>>, Error> {
     let mut current = crate::diff::read(db).await?;
     current.live = live;
-    let renamed = crate::diff::table_renames(&current, &target.schema, &[], &std::collections::BTreeSet::new());
-    let renames = if renamed.is_empty() { vec![] } else { rename_tables(db, &current, target, &renamed).await? };
-    if !renames.is_empty() {
-        current = crate::diff::read(db).await?;
-        current.live = live;
-    }
-    let alterer = crate::diff::alterer(db).await?;
-    let mut plan = crate::diff::plan(&current, &target.schema, alterer.as_ref());
-    style(db, &mut plan, &target.schema).await?;
-    Ok((renames, plan))
+    let none = Choices::default();
+    let choices = asking.map_or(&none, |(push, _)| &push.choices);
+    settle(db, current, target, live, choices, asking.map(|(_, asked)| asked), asking.is_some_and(|(push, _)| push.force)).await
 }
 
 /// The statements that rename the tables `renamed` names (each its old id in `current`, its new id
@@ -2960,8 +2970,35 @@ fn shell_word(name: &str) -> String {
     format!("'{}'", name.replace('\'', "'\\''"))
 }
 
-/// The command that writes the migration with what the person stated and what is to be added.
-fn create_command(migration: &str, choices: &Choices, more_drops: &[String], renames: &[(String, String)]) -> String {
+/// The command a refusal of what a change drops speaks of: what it calls the change (`migration`,
+/// `push`), the command line its fixes repeat with their flags, and whether `--force` can accept
+/// every destructive change at once.
+struct Asked {
+    subject: &'static str,
+    head: String,
+    offers_force: bool,
+}
+
+impl Asked {
+    fn migration(name: &str) -> Asked {
+        Asked { subject: "migration", head: format!("reylo migrate new {name}"), offers_force: false }
+    }
+
+    fn push(watch: bool) -> Asked {
+        Asked { subject: "push", head: if watch { "reylo db push --watch".to_string() } else { "reylo db push".to_string() }, offers_force: true }
+    }
+}
+
+/// The refusals `--force` accepts: what a change drops, a type change that loses values, and a rename
+/// that may be a drop. A name `--drop` or `--rename` gives that names nothing still stands.
+const DESTRUCTIVE: [&str; 3] = ["drops-data", "loses-data", "rename-guess"];
+
+/// The command that makes the change with what the person stated and what is to be added.
+fn create_command(asked: &Asked, choices: &Choices, more_drops: &[String], renames: &[(String, String)]) -> String {
+    command_line(asked, choices, more_drops, renames, false)
+}
+
+fn command_line(asked: &Asked, choices: &Choices, more_drops: &[String], renames: &[(String, String)], force: bool) -> String {
     let mut drops: Vec<&String> = Vec::new();
     for name in choices.drop.iter().chain(more_drops) {
         if !drops.contains(&name) {
@@ -2973,8 +3010,11 @@ fn create_command(migration: &str, choices: &Choices, more_drops: &[String], ren
         flags.push(format!("--drop {}", drops.iter().map(|n| shell_word(n)).collect::<Vec<_>>().join(",")));
     }
     flags.extend(choices.rename.iter().chain(renames).map(|(old, new)| format!("--rename {}={}", shell_word(old), shell_word(new))));
+    if force {
+        flags.push("--force".to_string());
+    }
     // Several flags read one to a line, where the shell continues a line with a backslash.
-    let (head, gap) = (format!("reylo migrate new {migration}"), if cfg!(windows) || flags.len() < 2 { " " } else { " \\\n      " });
+    let (head, gap) = (asked.head.clone(), if cfg!(windows) || flags.len() < 2 { " " } else { " \\\n      " });
     std::iter::once(head).chain(flags).collect::<Vec<_>>().join(gap)
 }
 
@@ -2993,7 +3033,7 @@ struct Guess {
 
 /// The refusal for guesses, with what else the migration asks of `--drop`: one block, and the one
 /// command for each way of settling them all.
-fn guess_problem(guesses: &[Guess], drops: &[(String, String)], narrowed: &[(String, String)], outside: &[String], stated: &Choices, migration: &str) -> Problem {
+fn guess_problem(guesses: &[Guess], drops: &[(String, String)], narrowed: &[(String, String)], outside: &[String], stated: &Choices, asked: &Asked) -> Problem {
     let one = guesses.len() == 1;
     let title = if one { "This looks like a rename, but it changes more than the name".to_string() } else { format!("These {} look like renames, but each changes more than its name", guesses.len()) };
     let (old_width, new_width) = (guesses.iter().map(|g| g.old.chars().count()).max().unwrap_or(0), guesses.iter().map(|g| g.new.chars().count()).max().unwrap_or(0));
@@ -3010,8 +3050,8 @@ fn guess_problem(guesses: &[Guess], drops: &[(String, String)], narrowed: &[(Str
     let renames: Vec<(String, String)> = guesses.iter().map(|g| (g.old.clone(), g.new.clone())).collect();
     let dropped: Vec<String> = guesses.iter().filter(|g| !g.in_guessed_table).map(|g| g.old.clone()).chain(outside.iter().cloned()).collect();
     problem
-        .fix(if one { "If it is a rename, keeping its rows" } else { "If they are renames, keeping their rows" }, &[&create_command(migration, stated, &more, &renames)])
-        .fix(if one { "If it is new, dropping the old one and its data" } else { "If they are new, dropping the old ones and their data" }, &[&create_command(migration, stated, &dropped, &[])])
+        .fix(if one { "If it is a rename, keeping its rows" } else { "If they are renames, keeping their rows" }, &[&create_command(asked, stated, &more, &renames)])
+        .fix(if one { "If it is new, dropping the old one and its data" } else { "If they are new, dropping the old ones and their data" }, &[&create_command(asked, stated, &dropped, &[])])
 }
 
 /// The problems with what `choices` states about the tables and columns a plan drops (`lost`, as
@@ -3021,7 +3061,20 @@ fn guess_problem(guesses: &[Guess], drops: &[(String, String)], narrowed: &[(Str
 /// own columns a drop of the table takes along; `added` are the columns and tables the plan adds, the
 /// names a person could mean by a rename.
 #[allow(clippy::too_many_arguments)]
-fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String, String)], guesses: &[Guess], owners: &dyn Fn(&str) -> bool, added: &[String], choices: &Choices, migration: &str) -> Vec<Problem> {
+fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String, String)], guesses: &[Guess], owners: &dyn Fn(&str) -> bool, added: &[String], choices: &Choices, asked: &Asked) -> Vec<Problem> {
+    let mut problems = drop_problems_of(lost, shown, narrowed, guesses, owners, added, choices, asked);
+    // Where --force can accept them all, the last says so, once nothing but what it accepts is left.
+    if asked.offers_force && !problems.is_empty() && problems.iter().all(|p| DESTRUCTIVE.contains(&p.code)) {
+        let stated = Choices { drop: vec![], rename: choices.rename.clone() };
+        let last = problems.pop().expect("a problem");
+        problems.push(last.fix("To accept every destructive change", &[&command_line(asked, &stated, &[], &[], true)]));
+    }
+    problems
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drop_problems_of(lost: &[String], shown: &[String], narrowed: &[(String, String, String)], guesses: &[Guess], owners: &dyn Fn(&str) -> bool, added: &[String], choices: &Choices, asked: &Asked) -> Vec<Problem> {
+    let subject = asked.subject;
     let display = |id: &String| lost.iter().position(|l| l == id).map(|k| shown_id(&shown[k])).or_else(|| narrowed.iter().find(|(n, _, _)| n == id).map(|(_, s, _)| shown_id(s))).unwrap_or_else(|| shown_id(id));
     let mut problems = Vec::new();
     let mut named: Vec<String> = Vec::new();
@@ -3033,7 +3086,7 @@ fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String,
         match resolve(&all, w) {
             Ok(hits) if hits.is_empty() => {
                 let columns: Vec<String> = lost.iter().filter(|l| l.starts_with("column ") && split_name(&shown_id(l)).last() == split_name(w).last() && split_name(w).len() == 1).map(&display).collect();
-                problems.push(Problem::new("drop-name-unknown", format!("--drop names {w}, which this migration doesn't drop")).note(if !columns.is_empty() {
+                problems.push(Problem::new("drop-name-unknown", format!("--drop names {w}, which this {subject} doesn't drop")).note(if !columns.is_empty() {
                     format!("A column is named with its table: {}.", columns.join(", "))
                 } else if lost.is_empty() {
                     "It drops no table or column.".to_string()
@@ -3054,18 +3107,18 @@ fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String,
         let drops: Vec<(String, String)> = unstated.iter().map(|l| (l.split(' ').next().unwrap_or_default().to_string(), display(l))).collect();
         let lossy: Vec<(String, String)> = unnamed.iter().map(|(_, name, why)| (name.clone(), why.clone())).collect();
         let outside: Vec<String> = unstated.iter().copied().chain(unnamed.iter().map(|(id, _, _)| *id)).filter(|id| !owners(id)).map(&display).collect();
-        problems.push(guess_problem(guesses, &drops, &lossy, &outside, &stated, migration));
+        problems.push(guess_problem(guesses, &drops, &lossy, &outside, &stated, asked));
         return problems;
     }
     if !unstated.is_empty() {
         let list: Vec<String> = unstated.iter().map(|l| display(l)).collect();
         let what: Vec<(String, String)> = unstated.iter().map(|l| (l.split(' ').next().unwrap_or_default().to_string(), display(l))).collect();
         let title = match unstated.as_slice() {
-            [one] => format!("This migration drops {} and {}", drop_phrase(&what), if one.starts_with("table ") { "its rows" } else { "its data" }),
-            _ => format!("This migration drops {}, with their data", drop_phrase(&what)),
+            [one] => format!("This {subject} drops {} and {}", drop_phrase(&what), if one.starts_with("table ") { "its rows" } else { "its data" }),
+            _ => format!("This {subject} drops {}, with their data", drop_phrase(&what)),
         };
         let mut problem = Problem::new("drops-data", title)
-            .fix(if list.len() == 1 { "To drop it" } else { "To drop them" }, &[&create_command(migration, &stated, &list, &[])]);
+            .fix(if list.len() == 1 { "To drop it" } else { "To drop them" }, &[&create_command(asked, &stated, &list, &[])]);
         // Where something comes as these go, any of them may be renamed: which became which is
         // for the person to say, so the command names no new name for them.
         // What the plan adds of the same kind: a table renamed is a table, a column a column.
@@ -3074,18 +3127,18 @@ fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String,
         if !like.is_empty() {
             let renames: Vec<(String, String)> = list.iter().map(|old| (old.clone(), "<new name>".to_string())).collect();
             let what = format!("If {} renamed instead, as {}", if list.len() == 1 { "it was" } else { "any were" }, like.join(", "));
-            problem = problem.fix(what, &[&create_command(migration, &stated, &[], &renames)]);
+            problem = problem.fix(what, &[&create_command(asked, &stated, &[], &renames)]);
         }
         problems.push(problem);
     }
     for (_, name, why) in &unnamed {
-        problems.push(Problem::new("loses-data", format!("{name} {why}")).fix("To accept that", &[&create_command(migration, &stated, std::slice::from_ref(name), &[])]));
+        problems.push(Problem::new("loses-data", format!("{name} {why}")).fix("To accept that", &[&create_command(asked, &stated, std::slice::from_ref(name), &[])]));
     }
     problems
 }
 
 /// The columns `choices` renames, as (old, new) ids of `from` and `to`; or why one cannot be.
-fn stated_renames(from: &crate::diff::Schema, to: &crate::diff::Schema, choices: &Choices) -> Result<Vec<(String, String)>, Vec<Problem>> {
+fn stated_renames(from: &crate::diff::Schema, to: &crate::diff::Schema, choices: &Choices, subject: &str) -> Result<Vec<(String, String)>, Vec<Problem>> {
     let gone: Vec<String> = from.objects.keys().filter(|id| id.starts_with("column ") && !to.objects.contains_key(*id)).cloned().collect();
     let mut out = Vec::new();
     let mut problems = Vec::new();
@@ -3093,7 +3146,7 @@ fn stated_renames(from: &crate::diff::Schema, to: &crate::diff::Schema, choices:
         let old_id = match resolve(&gone, old) {
             Ok(hits) if hits.len() == 1 => hits[0].clone(),
             Ok(_) => {
-                problems.push(Problem::new("rename-name-unknown", format!("--rename names {old}, which isn't a table or column this migration removes")).note("A column is named with its table, --rename users.full_name=name, and a table by its name, --rename users=accounts."));
+                problems.push(Problem::new("rename-name-unknown", format!("--rename names {old}, which isn't a table or column this {subject} removes")).note("A column is named with its table, --rename users.full_name=name, and a table by its name, --rename users=accounts."));
                 continue;
             }
             Err(could) => {
@@ -3108,11 +3161,138 @@ fn stated_renames(from: &crate::diff::Schema, to: &crate::diff::Schema, choices:
         let found = if exact.is_empty() { added.iter().filter(|(_, n)| n.eq_ignore_ascii_case(&wanted)).map(|(id, _)| *id).collect() } else { exact };
         match found.as_slice() {
             [new_id] => out.push((old_id, (*new_id).clone())),
-            [] => problems.push(Problem::new("rename-target-unknown", format!("--rename gives {old} the name {new}, which isn't a column this migration adds to its table"))),
+            [] => problems.push(Problem::new("rename-target-unknown", format!("--rename gives {old} the name {new}, which isn't a column this {subject} adds to its table"))),
             many => problems.push(Problem::new("rename-target-ambiguous", format!("--rename gives {old} the name {new}, which could be any of {}", many.iter().map(|c| shown_id(c)).collect::<Vec<_>>().join(", "))).note("Quote the name as it is written: --rename 'users.n=\"Total\"'.")),
         }
     }
     if problems.is_empty() { Ok(out) } else { Err(problems) }
+}
+
+/// A plan `settle` settled: the statements that renamed tables on the database, the plan from there,
+/// and the renames it took without being told, each the old name, the new one and whether it is a
+/// table.
+struct Settled {
+    renames: Vec<String>,
+    plan: crate::diff::Plan,
+    assumed: Vec<(String, String, bool)>,
+}
+
+/// The plan from `db`, which reads as `current`, to `target`, as `choices` settles it: tables renamed
+/// as --rename states, or where one goes while one of the same columns comes, on `db` itself, keeping
+/// their rows, with what Postgres named after them; then the diff engine's plan from there, which is
+/// not run. With `asked`, a plan that drops a table or column `--drop` doesn't name, changes a
+/// column's type in a way that loses values, or renames what may be new is refused, as is a name
+/// `--drop` or `--rename` gives that names nothing; with `force` too, only the names are. Without it,
+/// everything is taken as planned. `live` marks the schemas read from `db` as a live database's.
+async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, live: bool, choices: &Choices, asked: Option<&Asked>, force: bool) -> Result<Result<Settled, Vec<Problem>>, Error> {
+    let d = db.dialect();
+    let subject = asked.map_or("change", |a| a.subject);
+    let tables_only = |a: &crate::diff::Schema, b: &crate::diff::Schema| -> Vec<String> { a.objects.values().filter(|o| o.kind == Some(crate::diff::Kind::Table) && !b.objects.contains_key(&o.id)).map(|o| o.id.clone()).collect() };
+    let (gone_tables, come_tables) = (tables_only(&current, &target.schema), tables_only(&target.schema, &current));
+    let mut stated_tables = Vec::new();
+    let mut column_renames = Vec::new();
+    let mut problems = Vec::new();
+    for (old, new) in &choices.rename {
+        match resolve(&gone_tables, old) {
+            Ok(hits) if hits.len() == 1 => match resolve(&come_tables, new) {
+                Ok(to) if to.len() == 1 => stated_tables.push((hits[0].clone(), to[0].clone())),
+                _ => problems.push(Problem::new("rename-target-unknown", format!("--rename gives the table {old} the name {new}, which isn't a table this {subject} creates"))),
+            },
+            Err(could) => problems.push(Problem::new("rename-name-ambiguous", format!("--rename names {old}, which could be any of {}", could.iter().map(|c| shown_id(c)).collect::<Vec<_>>().join(", "))).note("Name it with its schema.")),
+            _ => column_renames.push((old.clone(), new.clone())),
+        }
+    }
+    if !problems.is_empty() {
+        return Ok(Err(problems));
+    }
+    let dropped_tables: std::collections::BTreeSet<String> = choices.drop.iter().filter_map(|w| resolve(&gone_tables, w).ok()).flatten().collect();
+    let renamed_tables = crate::diff::table_renames(&current, &target.schema, &stated_tables, &dropped_tables);
+    // A table renamed with its columns changing too is a guess only the person can settle.
+    let mut guesses: Vec<Guess> = Vec::new();
+    let mut guessed_tables: std::collections::BTreeSet<String> = Default::default();
+    // Renames written without being asked: each old name, new name, and whether it is a table.
+    let mut assumed: Vec<(String, String, bool)> = Vec::new();
+    for (old, new, _) in renamed_tables.iter().filter(|(_, _, was_stated)| !was_stated) {
+        match crate::diff::column_changes(&current, &target.schema, old, new) {
+            Some(change) => {
+                guesses.push(Guess { old: shown_name(old), new: shown_name(new), change, in_guessed_table: false });
+                guessed_tables.insert(new.clone());
+            }
+            None => assumed.push((shown_name(old), shown_name(new), true)),
+        }
+    }
+    let before = current.clone();
+    let mut renames = Vec::new();
+    if !renamed_tables.is_empty() {
+        renames = rename_tables(db, &current, target, &renamed_tables).await?;
+        current = crate::diff::read(db).await?;
+        current.live = live;
+    }
+    let settled = async {
+        // A name --drop or --rename gives through a renamed table's old name means it under its new one.
+        let follow = |name: &str| -> String {
+            if !matches!(resolve(&gone_tables, name), Ok(hits) if hits.is_empty()) {
+                return name.to_string();
+            }
+            let w = split_name(name);
+            for (old_id, new_id, _) in &renamed_tables {
+                let (old, new) = (split_name(&shown_id(old_id)), split_name(&shown_id(new_id)));
+                let head = &w[..w.len().saturating_sub(1)];
+                if !head.is_empty() && head.len() <= old.len() && old[old.len() - head.len()..] == *head {
+                    let mut out: Vec<String> = new[new.len() - head.len()..].to_vec();
+                    out.push(w.last().cloned().unwrap_or_default());
+                    return out.join(".");
+                }
+            }
+            name.to_string()
+        };
+        let columns = Choices { drop: choices.drop.iter().map(|w| follow(w)).collect(), rename: column_renames.iter().map(|(a, b)| (follow(a), b.clone())).collect() };
+        let alterer = crate::diff::alterer(db).await?;
+        let stated = match stated_renames(&current, &target.schema, &columns, subject) {
+            Ok(stated) => stated,
+            Err(problems) => return Ok(Err(problems)),
+        };
+        // The columns --drop names are never guessed renamed.
+        let gone: Vec<String> = current.objects.keys().filter(|id| id.starts_with("column ") && !target.schema.objects.contains_key(*id)).cloned().collect();
+        let dropped: std::collections::BTreeSet<String> = columns.drop.iter().filter_map(|w| resolve(&gone, w).ok()).flatten().collect();
+        let mut plan = crate::diff::plan_with(&current, &target.schema, alterer.as_ref(), &stated, &dropped);
+        let lost = plan.losses.clone();
+        let narrowing: Vec<(String, String)> = plan.narrowings.clone();
+        let guessed: Vec<String> = plan.renames.iter().map(|r| r.0.clone()).collect();
+        style(db, &mut plan, &target.schema).await?;
+        let narrowed: Vec<(String, String, String)> = narrowing.iter().zip(&plan.narrowings).map(|((id, why), (shown, _))| (id.clone(), shown.clone(), why.clone())).collect();
+        let owned_by_guess = |id: &str| current.objects.get(id).and_then(|o| o.owner.as_ref()).is_some_and(|t| guessed_tables.contains(t));
+        let mut guesses = guesses;
+        let mut assumed = assumed;
+        for (raw, (old, new, change)) in guessed.iter().zip(&plan.renames) {
+            let old = shown_id(old);
+            match change {
+                Some(change) => guesses.push(Guess { old, new: new.clone(), change: change.clone(), in_guessed_table: owned_by_guess(raw) }),
+                None => assumed.push((old, new.clone(), false)),
+            }
+        }
+        if let Some(asked) = asked {
+            // What the plan adds, the names a person might mean by a rename of what it drops.
+            let added: Vec<String> = target.schema.objects.iter().filter(|(id, o)| matches!(o.kind, Some(crate::diff::Kind::Column | crate::diff::Kind::Table)) && !current.objects.contains_key(*id) && !(o.kind == Some(crate::diff::Kind::Column) && o.owner.as_ref().is_some_and(|t| !current.objects.contains_key(t)))).map(|(id, o)| format!("{} {}", if o.kind == Some(crate::diff::Kind::Table) { "table" } else { "column" }, shown_name(id))).collect();
+            let mut problems = drop_problems(&lost, &plan.losses, &narrowed, &guesses, &owned_by_guess, &added, &Choices { drop: columns.drop.clone(), rename: choices.rename.clone() }, asked);
+            if force {
+                problems.retain(|p| !DESTRUCTIVE.contains(&p.code));
+            }
+            if !problems.is_empty() {
+                return Ok(Err(problems));
+            }
+        }
+        Ok(Ok((plan, assumed)))
+    }
+    .await;
+    // MySQL commits each rename on its own, so a refusal renames the tables back.
+    if d == Dialect::Mysql && !renamed_tables.is_empty() && !matches!(settled, Ok(Ok(_))) {
+        let back: Vec<(String, String, bool)> = renamed_tables.iter().rev().map(|(old, new, _)| (new.clone(), old.clone(), true)).collect();
+        for statement in table_rename_statements(d, &target.schema, &before, &back) {
+            db.script(&format!("{statement};")).await?;
+        }
+    }
+    settled.map(|r| r.map(|(plan, assumed)| Settled { renames, plan, assumed }))
 }
 
 /// The new migration's text: the diff engine's plan from the migrations replayed in order to
@@ -3177,94 +3357,14 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         // renamed first on the replay, keeping their rows, with what Postgres named after them, and
         // the rest planned from there.
         let d = shadows.db(c).dialect();
-        let tables_only = |a: &crate::diff::Schema, b: &crate::diff::Schema| -> Vec<String> { a.objects.values().filter(|o| o.kind == Some(crate::diff::Kind::Table) && !b.objects.contains_key(&o.id)).map(|o| o.id.clone()).collect() };
-        let (gone_tables, come_tables) = (tables_only(&current, &target), tables_only(&target, &current));
-        let mut stated_tables = Vec::new();
-        let mut column_renames = Vec::new();
-        let mut problems = Vec::new();
-        for (old, new) in &choices.rename {
-            match resolve(&gone_tables, old) {
-                Ok(hits) if hits.len() == 1 => match resolve(&come_tables, new) {
-                    Ok(to) if to.len() == 1 => stated_tables.push((hits[0].clone(), to[0].clone())),
-                    _ => problems.push(Problem::new("rename-target-unknown", format!("--rename gives the table {old} the name {new}, which isn't a table this migration creates"))),
-                },
-                Err(could) => problems.push(Problem::new("rename-name-ambiguous", format!("--rename names {old}, which could be any of {}", could.iter().map(|c| shown_id(c)).collect::<Vec<_>>().join(", "))).note("Name it with its schema.")),
-                _ => column_renames.push((old.clone(), new.clone())),
-            }
-        }
-        if !problems.is_empty() {
-            return Ok(Err(problems));
-        }
-        let dropped_tables: std::collections::BTreeSet<String> = choices.drop.iter().filter_map(|w| resolve(&gone_tables, w).ok()).flatten().collect();
-        let renamed_tables = crate::diff::table_renames(&current, &target, &stated_tables, &dropped_tables);
-        // A table renamed with its columns changing too is a guess only the person can settle.
-        let mut guesses: Vec<Guess> = Vec::new();
-        let mut guessed_tables: std::collections::BTreeSet<String> = Default::default();
-        // Renames written without being asked: each old name, new name, and whether it is a table.
-        let mut assumed: Vec<(String, String, bool)> = Vec::new();
-        for (old, new, _) in renamed_tables.iter().filter(|(_, _, was_stated)| !was_stated) {
-            match crate::diff::column_changes(&current, &target, old, new) {
-                Some(change) => {
-                    guesses.push(Guess { old: shown_name(old), new: shown_name(new), change, in_guessed_table: false });
-                    guessed_tables.insert(new.clone());
-                }
-                None => assumed.push((shown_name(old), shown_name(new), true)),
-            }
-        }
-        if !renamed_tables.is_empty() {
-            let indexes = if d == Dialect::Postgres { crate::diff::postgres::index_names(shadows.db(a)).await? } else { Default::default() };
-            let to = Target { schema: target, indexes };
-            let statements = rename_tables(shadows.db(c), &current, &to, &renamed_tables).await?;
-            target = to.schema;
-            current = crate::diff::read(shadows.db(c)).await?;
-            moves.extend(statements);
-        }
-        // A name --drop or --rename gives through a renamed table's old name means it under its new one.
-        let follow = |name: &str| -> String {
-            if !matches!(resolve(&gone_tables, name), Ok(hits) if hits.is_empty()) {
-                return name.to_string();
-            }
-            let w = split_name(name);
-            for (old_id, new_id, _) in &renamed_tables {
-                let (old, new) = (split_name(&shown_id(old_id)), split_name(&shown_id(new_id)));
-                let head = &w[..w.len().saturating_sub(1)];
-                if !head.is_empty() && head.len() <= old.len() && old[old.len() - head.len()..] == *head {
-                    let mut out: Vec<String> = new[new.len() - head.len()..].to_vec();
-                    out.push(w.last().cloned().unwrap_or_default());
-                    return out.join(".");
-                }
-            }
-            name.to_string()
-        };
-        let columns = Choices { drop: choices.drop.iter().map(|w| follow(w)).collect(), rename: column_renames.iter().map(|(a, b)| (follow(a), b.clone())).collect() };
-        let alterer = crate::diff::alterer(shadows.db(c)).await?;
-        let renames = match stated_renames(&current, &target, &columns) {
-            Ok(renames) => renames,
+        let indexes = if d == Dialect::Postgres { crate::diff::postgres::index_names(shadows.db(a)).await? } else { Default::default() };
+        let target = Target { schema: target, indexes };
+        let asked = Asked::migration(migration);
+        let Settled { renames, mut plan, assumed } = match settle(shadows.db(c), current, &target, false, choices, Some(&asked), false).await? {
+            Ok(settled) => settled,
             Err(problems) => return Ok(Err(problems)),
         };
-        // The columns --drop names are never guessed renamed.
-        let gone: Vec<String> = current.objects.keys().filter(|id| id.starts_with("column ") && !target.objects.contains_key(*id)).cloned().collect();
-        let dropped: std::collections::BTreeSet<String> = columns.drop.iter().filter_map(|w| resolve(&gone, w).ok()).flatten().collect();
-        let mut plan = crate::diff::plan_with(&current, &target, alterer.as_ref(), &renames, &dropped);
-        let lost = plan.losses.clone();
-        let narrowing: Vec<(String, String)> = plan.narrowings.clone();
-        let guessed: Vec<String> = plan.renames.iter().map(|r| r.0.clone()).collect();
-        style(shadows.db(c), &mut plan, &target).await?;
-        let narrowed: Vec<(String, String, String)> = narrowing.iter().zip(&plan.narrowings).map(|((id, why), (shown, _))| (id.clone(), shown.clone(), why.clone())).collect();
-        let owned_by_guess = |id: &str| current.objects.get(id).and_then(|o| o.owner.as_ref()).is_some_and(|t| guessed_tables.contains(t));
-        for (raw, (old, new, change)) in guessed.iter().zip(&plan.renames) {
-            let old = shown_id(old);
-            match change {
-                Some(change) => guesses.push(Guess { old, new: new.clone(), change: change.clone(), in_guessed_table: owned_by_guess(raw) }),
-                None => assumed.push((old, new.clone(), false)),
-            }
-        }
-        // What the plan adds, the names a person might mean by a rename of what it drops.
-        let added: Vec<String> = target.objects.iter().filter(|(id, o)| matches!(o.kind, Some(crate::diff::Kind::Column | crate::diff::Kind::Table)) && !current.objects.contains_key(*id) && !(o.kind == Some(crate::diff::Kind::Column) && o.owner.as_ref().is_some_and(|t| !current.objects.contains_key(t)))).map(|(id, o)| format!("{} {}", if o.kind == Some(crate::diff::Kind::Table) { "table" } else { "column" }, shown_name(id))).collect();
-        let problems = drop_problems(&lost, &plan.losses, &narrowed, &guesses, &owned_by_guess, &added, &Choices { drop: columns.drop.clone(), rename: choices.rename.clone() }, migration);
-        if !problems.is_empty() {
-            return Ok(Err(problems));
-        }
+        moves.extend(renames);
         if plan.statements.is_empty() && moves.is_empty() {
             return Ok(Ok(drafted(vec![String::new()], 0, vec![], true)));
         }
@@ -3313,7 +3413,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
                 _ => "Where any aren't renames",
             };
             notes.push(format!("    {unasked}, delete the file, then:"));
-            notes.push(format!("      {}", paint("cyan", &create_command(migration, choices, &names, &[]))));
+            notes.push(format!("      {}", paint("cyan", &create_command(&asked, choices, &names, &[]))));
         }
         if failed.is_none() && reached == wanted {
             return Ok(Ok(drafted(texts, 0, notes, false)));
@@ -3686,12 +3786,21 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
     result
 }
 
+/// Why `take_to` left the database as it was.
+enum Unreached {
+    /// The plan ran, but the database didn't then read as the target: how it differs.
+    Differs(Vec<String>),
+    /// What was stated refused the plan before it ran.
+    Refused(Vec<Problem>),
+}
+
 /// Takes the database to `target`: a table that goes while one of its columns comes renamed first,
 /// keeping its rows, then the diff engine's plan from there, then `then` (statements of the
 /// history's own). Kept only if the database then reads as `expect`, all in one transaction where
 /// the database has transactional DDL, so nothing has changed otherwise; on MySQL, which commits
-/// each statement, checked after. Gives the renames and the plan it ran.
-async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String]) -> Result<Result<(Vec<String>, crate::diff::Plan), Vec<String>>, Error> {
+/// each statement, checked after. Gives the renames and the plan it ran. With `asking`, a plan that
+/// drops what wasn't stated is refused before any of it runs (`settle`).
+async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String], asking: Option<(&Push, &Asked)>) -> Result<Result<(Vec<String>, crate::diff::Plan), Unreached>, Error> {
     let d = db.dialect();
     let expect = crate::catalog::without_comments(expect);
     let expect = &expect[..];
@@ -3703,7 +3812,10 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
         db.exec("begin").await?;
     }
     let result = async {
-        let (renames, plan) = plan_to(db, target, true).await?;
+        let (renames, plan) = match plan_asked(db, target, true, asking).await? {
+            Ok(Settled { renames, plan, .. }) => (renames, plan),
+            Err(problems) => return Ok(Err(Unreached::Refused(problems))),
+        };
         for s in plan.runnable().chain(then) {
             db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await?;
         }
@@ -3712,7 +3824,7 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
         }
         let now = crate::catalog::without_comments(&crate::catalog::without_extra_children(&catalog(db).await?, expect));
         if now != expect {
-            return Ok(Err(describe_diff("this database", &now, "the target", expect)));
+            return Ok(Err(Unreached::Differs(describe_diff("this database", &now, "the target", expect))));
         }
         if transactional {
             db.exec("commit").await?;
@@ -4314,9 +4426,10 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
         // undoes the changes no migration made too.
         let plan = match undone {
             Some(plan) => plan,
-            None => match take_to(db, &k_target, &forget, &at_kept).await {
+            None => match take_to(db, &k_target, &forget, &at_kept, None).await {
                 Err(e) => return fail("Rewinding this database failed", e.0, log),
-                Ok(Err(lines)) => return refused("Rewinding this database wouldn't reach what its migrations make", lines, log),
+                Ok(Err(Unreached::Refused(problems))) => return Ok(refuse(&problems, log)),
+                Ok(Err(Unreached::Differs(lines))) => return refused("Rewinding this database wouldn't reach what its migrations make", lines, log),
                 Ok(Ok((_, plan))) => {
                     base = at_kept.clone();
                     plan
@@ -4407,9 +4520,10 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
             }
             let text = kept.iter().chain(&records).map(|m| m.sql.as_str()).collect::<Vec<_>>().join(";\n");
             let target = read_target(shadows.db(lane), (d == Dialect::Duckdb).then_some(text.as_str())).await?;
-            match take_to(db, &target, &[], &expect).await {
+            match take_to(db, &target, &[], &expect, None).await {
                 Err(e) => return fail("Undoing changes no migration made failed", e.0, log),
-                Ok(Err(lines)) => return refused("Undoing changes no migration made wouldn't reach what the migrations make", lines, log),
+                Ok(Err(Unreached::Refused(problems))) => return Ok(refuse(&problems, log)),
+                Ok(Err(Unreached::Differs(lines))) => return refused("Undoing changes no migration made wouldn't reach what the migrations make", lines, log),
                 Ok(Ok((_, plan))) => {
                     rows.open(log);
                     log(&format!("  {} Undid what no migration made, so that {} runs on what the migrations make", paint("yellow", "↺"), pending[0].name));
@@ -4442,14 +4556,20 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
 /// `reylo db push`: takes a development database that is at its migrations (`dev` brings it
 /// there) to schema.sql: what schema.sql has that no migration makes is made, unrecorded,
 /// for `create` to write next. Refuses a database with a migration it hasn't applied, or one whose
-/// history disagrees with the files. Never in CI.
-pub async fn db_push(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+/// history disagrees with the files, and as `create` does, a push that drops a table or column, or
+/// changes a column's type in a way that loses values, unless `push` states it with `--drop`
+/// (`--force` accepts every one), or renames what may be new. Never in CI.
+pub async fn db_push(opts: &Options, in_ci: bool, push: &Push, log: Log<'_>) -> Result<i32, Error> {
+    db_push_as(opts, in_ci, push, &Asked::push(false), log).await
+}
+
+async fn db_push_as(opts: &Options, in_ci: bool, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
     duckdb_loads(opts);
     if in_ci {
         return Ok(refused_in_ci("reylo db push", log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    let result = db_push_on(&mut db, &mut server, swept, opts, log).await;
+    let result = db_push_on(&mut db, &mut server, swept, opts, push, asked, log).await;
     db.close().await;
     server.close().await;
     result
@@ -4457,9 +4577,10 @@ pub async fn db_push(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, E
 
 /// `reylo db push --watch`: syncs, then again each time schema.sql or a migration changes,
 /// until it is stopped. Each run prints its block under the time it ran; one that changes nothing
-/// prints a line. A refusal (a migration to apply first) is printed and waited out like any run.
-/// `runs` bounds how many runs it makes, for a test; None runs until stopped.
-pub async fn db_push_watch(opts: &Options, in_ci: bool, runs: Option<usize>, log: Log<'_>) -> Result<i32, Error> {
+/// prints a line. A refusal (a migration to apply first, a drop `push` doesn't state) is printed and
+/// waited out like any run, and what `push` states holds for every run. `runs` bounds how many runs it
+/// makes, for a test; None runs until stopped.
+pub async fn db_push_watch(opts: &Options, in_ci: bool, push: &Push, runs: Option<usize>, log: Log<'_>) -> Result<i32, Error> {
     if in_ci {
         return Ok(refused_in_ci("reylo db push --watch", log));
     }
@@ -4483,7 +4604,7 @@ pub async fn db_push_watch(opts: &Options, in_ci: bool, runs: Option<usize>, log
         let before = snapshot();
         let mut lines: Vec<String> = Vec::new();
         // A database that went away (restarting) is waited out like a refusal: said, then watched.
-        let code = match db_push(opts, false, &mut |l: &str| lines.push(l.to_string())).await {
+        let code = match db_push_as(opts, false, push, &Asked::push(true), &mut |l: &str| lines.push(l.to_string())).await {
             Ok(code) => code,
             Err(e) => {
                 lines.push(format!("{} {e}", paint("bold red", "✗")));
@@ -4520,7 +4641,7 @@ pub async fn db_push_watch(opts: &Options, in_ci: bool, runs: Option<usize>, log
     }
 }
 
-async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
     swept_note(swept, log);
     let _held = lock(db, opts).await?;
     let d = db.dialect();
@@ -4577,14 +4698,15 @@ async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Optio
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql.as_str()]).collect();
     let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, &texts).await;
     let in_order: Vec<Migration> = applied.iter().filter_map(|r| files.iter().find(|f| f.name == r.name).cloned()).collect();
-    let result = db_push_in_shadows(&mut shadows, db, opts, &in_order, &schema_sql, log).await;
+    let result = db_push_in_shadows(&mut shadows, db, opts, &in_order, &schema_sql, push, asked, log).await;
     shadows.finish().await;
     result
 }
 
 /// What schema.sql has that no migration makes, made on the database, unrecorded; `applied` is the
 /// migrations in the order the database ran them.
-async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, applied: &[Migration], schema_sql: &str, log: Log<'_>) -> Result<i32, Error> {
+#[allow(clippy::too_many_arguments)]
+async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, applied: &[Migration], schema_sql: &str, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
     let d = db.dialect();
     let fail = |m: &str, error: String, log: Log<'_>| {
         let problem = Problem::new("db-push-failed", m.to_string()).note(error);
@@ -4606,9 +4728,10 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
     if now != wanted {
         let target = read_target(shadows.db(s_lane), Some(schema_sql)).await?;
         let counts = table_rows(db).await?;
-        let (renames, plan) = match take_to(db, &target, &[], &wanted).await {
+        let (renames, plan) = match take_to(db, &target, &[], &wanted, Some((push, asked))).await {
             Err(e) => return fail(if d == Dialect::Mysql { "reylo db push failed partway" } else { "reylo db push failed" }, e.0, log),
-            Ok(Err(lines)) => {
+            Ok(Err(Unreached::Refused(problems))) => return Ok(refuse(&problems, log)),
+            Ok(Err(Unreached::Differs(lines))) => {
                 let problem = Problem::new("db-push-incomplete", format!("Reylo can't take this database the rest of the way to {}", shown(&opts.schema))).lines(lines).fix("Write the change as a migration, finishing by hand what it leaves out", &["reylo migrate new <name>"]);
                 if d != Dialect::Mysql {
                     return Ok(refuse(&[problem], log));

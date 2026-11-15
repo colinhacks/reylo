@@ -39,7 +39,7 @@ Try a change before you write its migration: `reylo db push --watch` takes your 
 </Feature>
 <Feature icon="split" title="Explicit drops">
 
-Every destructive change a migration makes needs `--drop`: a dropped table or column, or a type change that loses values, is refused until `--drop` names it. Where Reylo Migrate can't tell a rename from a drop, `--rename` settles it.
+Every destructive change needs `--drop`, in a migration and in a push: a dropped table or column, or a type change that loses values, is refused until `--drop` names it. Where Reylo Migrate can't tell a rename from a drop, `--rename` settles it.
 
 </Feature>
 <Feature icon="layers" title="Dry runs in shadow databases">
@@ -271,6 +271,9 @@ Commands:
   migrate history push     Record the migrations this database's schema has
   migrate history pull     Write the migrations this database ran into files
   db push                  Take this database to schema.sql, unrecorded
+    --drop <names>         Accept what it drops: tables and columns
+    --rename <old>=<new>   Say a table or column was renamed
+    --force                Accept everything it drops
     --watch                Push again on each save
   db reset                 Rebuild this database from the migrations
   db wipe                  Delete every row, keeping the schema
@@ -636,7 +639,7 @@ Works on your database directly, outside the migrations.
 
 Takes your development database to `schema.sql`, with no migration.
 
-It's for trying a change. What the file no longer has is dropped, with its rows:
+It's for trying a change:
 
 ```sql title="schema.sql"
 create table users (
@@ -655,6 +658,32 @@ Pushing reylo/schema.sql to postgres://localhost:5432/app
 ✓ This database matches reylo/schema.sql
 ! Not in a migration yet: reylo migrate new <name> writes it
 ```
+
+Nothing is dropped until you name it, as with `reylo migrate new`. A push that drops a table or column, or changes a type so that values are lost, is refused:
+
+```sql title="schema.sql"
+create table users (
+  id integer primary key,
+  email text not null,
+  bio text, -- [!code --]
+  nick text -- [!code --]
+  bio text -- [!code ++]
+);
+```
+
+```terminal
+$ reylo db push
+✗ This push drops the column users.nick and its data
+
+  To drop it:
+    reylo db push --drop users.nick
+  To accept every destructive change:
+    reylo db push --force
+
+Nothing was changed.
+```
+
+Where it can't tell a rename from a drop, `--rename` says which it is, as it does for a migration. To accept every drop and lossy change at once, pass `--force`.
 
 With `--watch`, it pushes again each time you save. It needs your database at its migrations, so it refuses until `reylo migrate dev` has run. Until you write the migration, `reylo migrate dev` says so, and keeps the lock as it was:
 
