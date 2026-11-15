@@ -151,6 +151,15 @@ impl Db {
         }
     }
 
+    /// A connection for a command that only reads the database: as `connect`, but a DuckDB file is
+    /// opened read-only, so that it reads beside another process that reads it.
+    pub async fn connect_reading(url: &str, base: &Path) -> Result<Db, Error> {
+        match Dialect::of_url(url)? {
+            Dialect::Duckdb => Ok(Db::Duckdb(crate::duckdb::Conn::open_as(&crate::duckdb::path_of(url, base), base, true)?)),
+            _ => Db::connect(url, base).await,
+        }
+    }
+
     pub fn dialect(&self) -> Dialect {
         match self {
             Db::Postgres(_) => Dialect::Postgres,

@@ -1376,7 +1376,17 @@ fn extensions_in(text: &str) -> Vec<String> {
 }
 
 async fn open(opts: &Options) -> Result<(Db, Server, usize), Error> {
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let db = Db::connect(&opts.url, &opts.root).await?;
+    with_shadows(db, opts).await
+}
+
+/// The same for a command that only reads the database (`Db::connect_reading`).
+async fn open_reading(opts: &Options) -> Result<(Db, Server, usize), Error> {
+    let db = Db::connect_reading(&opts.url, &opts.root).await?;
+    with_shadows(db, opts).await
+}
+
+async fn with_shadows(mut db: Db, opts: &Options) -> Result<(Db, Server, usize), Error> {
     let mut server = shadow_server(&mut db, opts).await?;
     let swept = server.sweep().await?;
     Ok((db, server, swept))
@@ -1678,7 +1688,8 @@ pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 }
 
 async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    let (mut db, mut server, swept) = open(opts).await?;
+    // Read-only, but for a file a first deploy makes, which opening it makes.
+    let (mut db, mut server, swept) = if missing_file(opts)?.is_some() { open(opts).await? } else { open_reading(opts).await? };
     swept_note(swept, log);
     let unmodeled = crate::catalog::unmodeled(&mut db).await;
     let result = check(&mut db, Some(&mut server), opts).await;
@@ -2121,9 +2132,13 @@ fn missing(opts: &Options) -> Result<Option<String>, Error> {
 
 /// The file a SQLite or DuckDB URL names, where it isn't there, and which of the two it is.
 fn missing_file(opts: &Options) -> Result<Option<(PathBuf, &'static str)>, Error> {
-    let (path, which) = match Dialect::of_url(&opts.url)? {
-        Dialect::Sqlite => (crate::db::sqlite_path(&opts.url, &opts.root), "SQLite"),
-        Dialect::Duckdb => (crate::duckdb::path_of(&opts.url, &opts.root), "DuckDB"),
+    missing_at(&opts.url, &opts.root)
+}
+
+fn missing_at(url: &str, root: &Path) -> Result<Option<(PathBuf, &'static str)>, Error> {
+    let (path, which) = match Dialect::of_url(url)? {
+        Dialect::Sqlite => (crate::db::sqlite_path(url, root), "SQLite"),
+        Dialect::Duckdb => (crate::duckdb::path_of(url, root), "DuckDB"),
         _ => return Ok(None),
     };
     Ok((path != ":memory:" && !Path::new(&path).exists()).then(|| (PathBuf::from(path), which)))
@@ -2144,7 +2159,7 @@ fn there(opts: &Options) -> Result<(), Error> {
 /// step: a migration pending, cut off, edited or deleted, a change made by hand, or a check that fails.
 pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     there(opts)?;
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::connect_reading(&opts.url, &opts.root).await?;
     let result = status_on(&mut db, opts, log).await;
     db.close().await;
     result
@@ -3561,10 +3576,14 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 /// whose comments and layout it doesn't keep, is a redirect.
 pub async fn db_introspect(opts: &Options, schemas: &[String]) -> Result<String, Error> {
     there(opts)?;
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
-    let lines = catalog(&mut db).await;
+    let mut db = Db::connect_reading(&opts.url, &opts.root).await?;
+    let result = match catalog(&mut db).await {
+        Ok(lines) if holds_a_schema(&lines) => schema_as_sql_on(&mut db, opts, schemas).await,
+        Ok(_) => Ok(String::new()),
+        Err(e) => Err(e),
+    };
     db.close().await;
-    Ok(if holds_a_schema(&lines?) { schema_as_sql(opts, schemas).await? } else { String::new() })
+    result
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4681,6 +4700,11 @@ fn and_list(items: &[String]) -> String {
 /// text or files, in the order given; records nothing. For a change typed by hand during
 /// development, and a seed after `reylo migrate dev`.
 pub async fn run_sql(url: &str, root: &Path, items: &[(String, String)], log: Log<'_>) -> Result<i32, Error> {
+    // A SQLite or DuckDB file that isn't there is no database to run on, and opening it would make
+    // one: refused, as the migrations' commands refuse it.
+    if let Some((path, which)) = missing_at(url, root)? {
+        return Ok(refuse(&[Problem::new("no-database", format!("No {which} database at {}", path.display()))], log));
+    }
     let mut db = Db::connect(url, root).await?;
     let mut code = 0;
     for (label, sql) in items {
