@@ -111,6 +111,8 @@ fn shown(path: &Path) -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     match path.strip_prefix(&cwd) {
         Ok(rel) if rel.as_os_str().is_empty() => ".".into(),
+        // A path in the project reads as `reylo/schema.sql` on every platform, as git and the docs write it.
+        Ok(rel) if cfg!(windows) => rel.to_string_lossy().replace('\\', "/"),
         Ok(rel) => rel.to_string_lossy().into_owned(),
         Err(_) => path.to_string_lossy().into_owned(),
     }
