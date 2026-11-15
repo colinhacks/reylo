@@ -1,0 +1,2 @@
+equal_unalike.sql: one () -> { words: varchar?[]?, kept: varchar[]?, spans: interval[]? }
+union_cast.sql: many () -> { l: decimal(38,0)?[]? }

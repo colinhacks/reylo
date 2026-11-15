@@ -557,11 +557,39 @@ fn line(analysis: &Value) -> String {
     out
 }
 
-/// A type in one short line ([`Type::short`]), or the JSON it is where it is no type the engine
-/// writes.
+/// A type in one short line ([`Type::short`]), then the comments its fields carry (`/* a.b: '…' */`),
+/// or the JSON it is where it is no type the engine writes.
 fn render(ty: &Value) -> String {
     match serde_json::from_value::<Type>(ty.clone()) {
-        Ok(t) => t.short(),
+        Ok(t) => {
+            let mut notes = Vec::new();
+            comments(&t, "", &mut notes);
+            if notes.is_empty() { t.short() } else { format!("{} /* {} */", t.short(), notes.join(", ")) }
+        }
         Err(_) => ty.to_string(),
+    }
+}
+
+/// Each comment a field inside `ty` carries, at its path from the type (`author.name: 'Shown publicly'`).
+fn comments(ty: &Type, path: &str, out: &mut Vec<String>) {
+    use reylo_engine_core::types::Kind;
+    let at = |name: &str| if path.is_empty() { name.to_string() } else { format!("{path}.{name}") };
+    match &ty.kind {
+        Kind::Struct(s) => {
+            for f in &s.fields {
+                if let Some(comment) = &f.comment {
+                    out.push(format!("{}: '{}'", at(&f.name), comment.replace('\'', "''").replace('\n', "\\n")));
+                }
+                comments(&f.ty, &at(&f.name), out);
+            }
+        }
+        Kind::Array(a) => comments(&a.element.ty, &at("[]"), out),
+        Kind::Json(j) => {
+            if let Some(content) = &j.content {
+                comments(&content.ty, path, out);
+            }
+        }
+        Kind::Union(u) => u.members.iter().for_each(|m| comments(m, path, out)),
+        _ => {}
     }
 }

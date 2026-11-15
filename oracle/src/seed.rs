@@ -845,7 +845,9 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
                 }
                 innermost = inner;
             }
-            depth_contradiction(&ty, text).or_else(|| (!innermost.element.nullable && array_has_null(text, delimiter)).then(|| "typed with non-null elements holds a NULL element".to_string()))
+            depth_contradiction(&ty, text)
+                .or_else(|| (!innermost.element.nullable && array_has_null(text, delimiter)).then(|| "typed with non-null elements holds a NULL element".to_string()))
+                .or_else(|| array.distinct.then(|| repeated(&array_elements(text, delimiter)?)).flatten())
         }
         Kind::Json(JsonType { content: Some(content), .. }) => {
             let json: Value = serde_json::from_str(text).ok()?;
@@ -1101,6 +1103,56 @@ fn depth_contradiction(ty: &Type, text: &str) -> Option<String> {
     (depth < levels).then(|| format!("typed with {levels} dimensions holds {depth}"))
 }
 
+/// Why the elements of an array typed distinct are not, if they are not: two of them the same value,
+/// as the same text, a NULL as another NULL.
+pub(crate) fn repeated(elements: &[String]) -> Option<String> {
+    let mut seen = HashSet::new();
+    elements.iter().find(|e| !seen.insert(e.as_str())).map(|e| format!("typed with distinct elements holds {e} twice"))
+}
+
+/// Whether a JSON value is or holds a number.
+fn holds_number(v: &Value) -> bool {
+    match v {
+        Value::Number(_) => true,
+        Value::Array(items) => items.iter().any(holds_number),
+        Value::Object(fields) => fields.values().any(holds_number),
+        _ => false,
+    }
+}
+
+/// The elements of a one-dimensional Postgres array as its text writes them, each as written, quotes
+/// and escapes included, so that one value is one text; an unquoted NULL is `NULL`. `None` for an
+/// array of more dimensions.
+fn array_elements(text: &str, delimiter: char) -> Option<Vec<String>> {
+    let body = if text.starts_with('[') { &text[text.find('=')? + 1..] } else { text };
+    let inner = body.trim().strip_prefix('{')?.strip_suffix('}')?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let (mut out, mut token, mut quoted, mut escaped) = (Vec::new(), String::new(), false, false);
+    for c in inner.chars() {
+        match c {
+            _ if escaped => {
+                token.push(c);
+                escaped = false;
+            }
+            '\\' => {
+                token.push(c);
+                escaped = true;
+            }
+            '"' => {
+                token.push(c);
+                quoted = !quoted;
+            }
+            '{' | '}' if !quoted => return None,
+            _ if c == delimiter && !quoted => out.push(std::mem::take(&mut token).trim().to_string()),
+            _ => token.push(c),
+        }
+    }
+    out.push(token.trim().to_string());
+    Some(out)
+}
+
 fn array_has_null(text: &str, delimiter: char) -> bool {
     // An unquoted NULL between delimiters is a NULL element; a quoted "NULL" is a string.
     let mut in_quotes = false;
@@ -1178,6 +1230,13 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
             // column's, so a deeper one says nothing.
             if flat_in_json(ty) && items.iter().any(Value::is_array) {
                 return None;
+            }
+            // A number is read as a double, which can make two of them one, so an element holding
+            // one is left to the database's own DISTINCT.
+            if array.distinct {
+                if let Some(why) = repeated(&items.iter().filter(|i| !holds_number(i)).map(Value::to_string).collect::<Vec<_>>()) {
+                    return Some(format!("{why} at {at}"));
+                }
             }
             for (i, item) in items.iter().enumerate() {
                 if item.is_null() && !array.element.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, item)) {

@@ -1077,7 +1077,7 @@ impl Type {
     /// precision and scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`)
     /// and divisor (`int4(×5)`), a uuid's versions (`uuid(v7)`), a text's encoding and code points.
     /// An array is its element and `[]`, `?` after an element that may be null (`text?[]`), and a
-    /// set its element in braces (`set{text}`); a struct is its fields (`point{ x: float8, y: float8 }`,
+    /// set its element in braces (`set{text}`, and `{int4}` for one a Postgres array type or no name names); a struct is its fields (`point{ x: float8, y: float8 }`,
     /// `?` after a field that may be null and before one that may be absent); a table its cardinality
     /// and columns (`many{ id: int8 }`); JSON a statement built is its content after its name
     /// (`json { id: int4 }`), and JSON a schema holds to the schema; a union is its members between `|`,
@@ -1141,7 +1141,11 @@ impl Type {
                     _ => format!("{base}({values})"),
                 }
             }
-            Kind::Array(a) if a.distinct => format!("{}{{{}}}", label(), slot_short(&a.element)),
+            // A Postgres array type's own name (`_int4`), like no name at all, says no more than its element.
+            Kind::Array(a) if a.distinct => {
+                let name = self.label.as_deref().filter(|n| !n.rsplit('.').next().unwrap_or(*n).starts_with('_')).unwrap_or("");
+                format!("{name}{{{}}}", slot_short(&a.element))
+            }
             Kind::Array(a) => {
                 let element = slot_short(&a.element);
                 let sized = match &a.size {

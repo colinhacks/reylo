@@ -247,7 +247,7 @@ pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistr
     let mut unresolved = Vec::new();
     let ctx = ResolveCtx { probes, registry, param_oids, document: true };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
-    Resolved { ty: document(ty), non_null, unresolved }
+    Resolved { ty: document(registry.through_json_casts(ty)), non_null, unresolved }
 }
 
 /// Turn the shape of a whole row of no type the catalog has, or of an array of such rows, at a SQL
@@ -578,7 +578,12 @@ impl Builder<'_> {
                 match (self.walk(first), &c.args[1..]) {
                     (shape, []) => shape,
                     (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. } | Shape::Tuple { non_null: true, .. }), _) => shape,
-                    (Shape::Array { items, .. }, [default]) if crate::infer::is_empty_array(default) || (is_array_agg(first) && is_empty_sql_array(default)) => Shape::Array { items, non_null: true },
+                    (Shape::Array { items, distinct, .. }, [default]) if crate::infer::is_empty_array(default) || (is_array_agg(first) && is_empty_sql_array(default)) => {
+                        // A typed empty array is the type both take, and a cast to it may make two
+                        // elements one (`int8` to `float8`); a document or a bare `'{}'` casts nothing.
+                        let casts = is_array_agg(first) && !matches!(default.node.as_ref(), Some(NodeEnum::AConst(_)));
+                        Shape::Array { items, non_null: true, distinct: distinct && !casts }
+                    }
                     // A placeholder is the whole's type under a default that cannot widen it, and it
                     // resolves nullable. Under any other one the whole is no probe's to read, since a
                     // probe binds nothing: `coalesce($1::int, 1.5)` is a numeric.
@@ -661,7 +666,7 @@ impl Builder<'_> {
                 self.rows = rows;
                 self.withs.pop();
                 self.stack.pop();
-                Shape::Array { items: Box::new(items), non_null: true }
+                Shape::Array { items: Box::new(items), non_null: true, distinct: false }
             }
             Some(NodeEnum::SubLink(s)) => {
                 if s.sub_link_type != protobuf::SubLinkType::ExprSublink as i32 {
@@ -740,7 +745,7 @@ impl Builder<'_> {
                 self.rows = rows;
                 self.withs.pop();
                 self.stack.pop();
-                Shape::Array { items: Box::new(items), non_null: true }
+                Shape::Array { items: Box::new(items), non_null: true, distinct: false }
             }
             Some(NodeEnum::FuncCall(inner)) if crate::infer::builtin_name(&inner.funcname).is_some_and(|n| n == "array_agg" && self.trust.builtin(&n)) && inner.args.len() == 1 && !inner.func_variadic && !inner.agg_star => {
                 // An aggregate of the top statement's own under a plain GROUP BY, or over a frame
@@ -770,7 +775,7 @@ impl Builder<'_> {
             self.in_aggregate += 1;
             let items = self.walk(&f.args[0]);
             self.in_aggregate -= 1;
-            return Shape::Array { items: Box::new(items), non_null };
+            return Shape::Array { items: Box::new(items), non_null, distinct: f.agg_distinct };
         };
         let (_, from, outer) = self.stack[self.stack.len() - 1].clone();
         let both = match outer {
@@ -783,7 +788,7 @@ impl Builder<'_> {
         let items = self.walk(&f.args[0]);
         self.withs.pop();
         self.stack.pop();
-        Shape::Array { items: Box::new(items), non_null }
+        Shape::Array { items: Box::new(items), non_null, distinct: f.agg_distinct }
     }
 
     /// Whether a value read where the builder stands may be NULL for a grouping set.
@@ -1230,7 +1235,7 @@ fn is_array_agg(expr: &Node) -> bool {
 }
 
 /// Whether `expr` is an empty Postgres array: `'{}'`, under casts.
-fn is_empty_sql_array(expr: &Node) -> bool {
+pub(crate) fn is_empty_sql_array(expr: &Node) -> bool {
     match expr.node.as_ref() {
         Some(NodeEnum::AConst(c)) => matches!(&c.val, Some(protobuf::a_const::Val::Sval(s)) if s.sval == "{}"),
         Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(is_empty_sql_array),
@@ -1471,7 +1476,7 @@ fn aggregates(expr: &Node, level: &Level, trust: &Trust) -> bool {
 fn force_nullable(shape: Shape) -> Shape {
     match shape {
         Shape::Object { fields, .. } => Shape::Object { fields, non_null: false },
-        Shape::Array { items, .. } => Shape::Array { items, non_null: false },
+        Shape::Array { items, distinct, .. } => Shape::Array { items, non_null: false, distinct },
         Shape::Tuple { items, skips_nulls, .. } => Shape::Tuple { items, non_null: false, skips_nulls },
         Shape::Unknown | Shape::Nullable(_) => shape,
         // A column, a whole row or a parameter says nothing of the row it is read from.
@@ -1671,7 +1676,7 @@ impl ResolveCtx<'_> {
         let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { crate::postgres::nest(col, self.registry) };
         // A built array of arrays carries its elements' nullability at its innermost level, as a result column does.
         let items = if col.nested.is_some() { None } else { col.nullable_items };
-        col.facts.apply(col.non_finite.apply(crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, items), col.values.as_deref(), self.registry.holds_strings(col.type_oid)), col.document.as_ref())))
+        col.facts.apply(col.non_finite.apply(crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_distinct(crate::postgres::with_items(ty, items), col.distinct_items, true), col.values.as_deref(), self.registry.holds_strings(col.type_oid)), col.document.as_ref())))
     }
 
     /// One shape as (type, whether the value can never be null).
@@ -1687,9 +1692,9 @@ impl ResolveCtx<'_> {
                     .collect();
                 (Type::structure(fields), *non_null)
             }
-            Shape::Array { items, non_null } => {
+            Shape::Array { items, non_null, distinct } => {
                 let (of, items_non_null) = self.node(items, &join(path, "[]"), unresolved);
-                (Type::array(Slot::new(of, !items_non_null)), *non_null)
+                (crate::postgres::with_distinct(Type::array(Slot::new(of, !items_non_null)), *distinct, true), *non_null)
             }
             // A tuple is the JSON Schema of an array of exactly its items, each as the database
             // writes it inside a document. Where NULL items are left out and one may be NULL,
@@ -2167,7 +2172,7 @@ mod tests {
         assert_eq!(p.columns.len(), 1);
         let (name, shape) = &p.columns[0];
         assert_eq!(name, "comments");
-        let Shape::Array { items, non_null } = shape else { panic!("{shape:?}") };
+        let Shape::Array { items, non_null, .. } = shape else { panic!("{shape:?}") };
         assert!(non_null, "coalesce(…, '[]') makes the array non-null");
         assert_eq!(
             **items,
@@ -2339,7 +2344,7 @@ mod tests {
     fn a_whole_row_with_no_probe_answered_is_no_row_at_a_sql_position() {
         let registry = TypeRegistry::with_builtins();
         let row = Shape::Row { probe: 0 };
-        let rows = Shape::Array { items: Box::new(row.clone()), non_null: false };
+        let rows = Shape::Array { items: Box::new(row.clone()), non_null: false, distinct: false };
         // A probe the engine never ran, or one past its budget: the describe's type stands.
         for shape in [&row, &rows] {
             assert!(resolve_row(shape, &[None], &registry, &[]).is_none(), "{shape:?}");
@@ -2396,7 +2401,7 @@ mod tests {
             "SELECT json_agg(u.*) FILTER (WHERE u.id IS NOT NULL) AS authors FROM users u",
         ] {
             let p = shapes(sql);
-            assert_eq!(p.columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false }, "{sql}");
+            assert_eq!(p.columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false, distinct: false }, "{sql}");
             assert!(p.probes[0].sql.starts_with("SELECT u.* FROM users u"), "{sql}: {}", p.probes[0].sql);
         }
         let o = shapes("SELECT jsonb_build_object('author', u.*) AS j FROM users u");
@@ -2422,14 +2427,14 @@ mod tests {
         // table's describes as the table's type and stays a value of its own.
         for sql in ["SELECT jsonb_agg(s) AS rows FROM (SELECT id, title FROM posts) s", "WITH s AS (SELECT id, title FROM posts) SELECT jsonb_agg(s) AS rows FROM s"] {
             let p = shapes(sql);
-            assert_eq!(p.columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false }, "{sql}");
+            assert_eq!(p.columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false, distinct: false }, "{sql}");
             assert!(p.probes[0].sql.contains("SELECT s.* FROM"), "{sql}: {}", p.probes[0].sql);
         }
-        assert_ne!(shapes("SELECT jsonb_agg(u) AS rows FROM users u").columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false });
+        assert_ne!(shapes("SELECT jsonb_agg(u) AS rows FROM users u").columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false, distinct: false });
         // So is one at a SQL position, alone, under `array_agg` (`coalesce(…, '{}')` never NULL),
         // and as a scalar subquery's one target, which the describe types `record` or `record[]`.
         assert_eq!(shapes("SELECT s FROM (SELECT id FROM posts) s").columns[0].1, Shape::Row { probe: 0 });
-        assert_eq!(shapes("SELECT coalesce(array_agg(s), '{}') AS rows FROM (SELECT id FROM posts) s").columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: true });
+        assert_eq!(shapes("SELECT coalesce(array_agg(s), '{}') AS rows FROM (SELECT id FROM posts) s").columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: true, distinct: false });
         assert!(matches!(shapes("SELECT u.id, (SELECT array_agg(c) FROM (SELECT id FROM comments) c) AS cs FROM users u").columns[0].1, Shape::Array { .. }));
         // A bare name that is a column is the column, however an item is called.
         assert!(shapes("SELECT array_agg(id) AS ids FROM (SELECT id FROM posts) id").columns.is_empty());
@@ -2684,8 +2689,8 @@ mod tests {
         assert_eq!(p.probes[0].sql, "SELECT c.body AS a0 FROM comments c");
         assert_eq!(p.probes[1].sql, "SELECT u.name AS a0 FROM users u");
         let Shape::Object { fields, .. } = &p.columns[0].1 else { panic!() };
-        assert_eq!(fields[0].1, Shape::Array { items: Box::new(Shape::Column { probe: 0, index: 0 }), non_null: false });
-        assert_eq!(fields[1].1, Shape::Array { items: Box::new(Shape::Column { probe: 1, index: 0 }), non_null: false });
+        assert_eq!(fields[0].1, Shape::Array { items: Box::new(Shape::Column { probe: 0, index: 0 }), non_null: false, distinct: false });
+        assert_eq!(fields[1].1, Shape::Array { items: Box::new(Shape::Column { probe: 1, index: 0 }), non_null: false, distinct: false });
     }
 
     #[test]
@@ -2706,7 +2711,7 @@ mod tests {
     const BYTEA: u32 = 17;
 
     fn column(name: &str, type_oid: u32, type_name: &str, nullable: bool) -> DescribedColumn {
-        DescribedColumn { name: name.into(), type_oid, typmod: -1, type_name: type_name.into(), nullable, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
+        DescribedColumn { name: name.into(), type_oid, typmod: -1, type_name: type_name.into(), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
     }
 
     #[test]

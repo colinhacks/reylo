@@ -73,6 +73,9 @@ pub struct PgType {
     /// A domain's type modifier on its base type, `typtypmod` (`varchar(255)` for `create domain
     /// email as varchar(255)`); -1, none, for every other type.
     pub typmod: i32,
+    /// Whether the type, one a user or an extension defined, has a cast to `json` or `jsonb`, which
+    /// `to_json` and `to_jsonb` write its values with inside a document ([`TypeRegistry::through_json_casts`]).
+    pub json_cast: bool,
 }
 
 impl PgType {
@@ -106,6 +109,9 @@ pub struct Attribute {
     /// Its type modifier, `atttypmod` (`varchar(10)`); -1, none, where it has none or was not read.
     #[serde(default = "no_typmod")]
     pub typmod: i32,
+    /// Its comment (`COMMENT ON COLUMN`), where it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 /// The type modifier of a type that has none, as Postgres writes it.
@@ -191,7 +197,7 @@ macro_rules! composite_fields {
 /// composite's columns from `pg_attribute` as three arrays in attribute order (names, type oids,
 /// `NOT NULL`), so a whole-row value has its fields in the same round as its type, the delimiter
 /// of an array of it, its schema, a range's or multirange's subtype, a domain's type modifier, and
-/// the composite's columns' type modifiers. An enum of no label, or a
+/// the composite's columns' type modifiers and comments (`COMMENT ON COLUMN`, on a type's attribute as on a table's column), and whether a type a user defined has a cast of its own to `json` or `jsonb`. An enum of no label, or a
 /// composite of no column, has NULL for its arrays.
 macro_rules! type_columns {
     () => {
@@ -208,7 +214,11 @@ macro_rules! type_columns {
     (SELECT n.nspname::pg_catalog.text FROM pg_catalog.pg_namespace n WHERE n.oid OPERATOR(pg_catalog.=) t.typnamespace), \
     (SELECT r.rngsubtype::pg_catalog.int8 FROM pg_catalog.pg_range r WHERE r.rngtypid OPERATOR(pg_catalog.=) t.oid OR r.rngmultitypid OPERATOR(pg_catalog.=) t.oid), \
     t.typtypmod::pg_catalog.int4, ",
-    composite_fields!("a.atttypmod::pg_catalog.int4"))
+    composite_fields!("a.atttypmod::pg_catalog.int4"), ", ",
+    composite_fields!("(SELECT ds.description FROM pg_catalog.pg_description ds WHERE ds.objoid OPERATOR(pg_catalog.=) t.typrelid \
+      AND ds.classoid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid AND ds.objsubid OPERATOR(pg_catalog.=) a.attnum::pg_catalog.int4)"), ", \
+    (t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.castsource OPERATOR(pg_catalog.=) t.oid \
+      AND c.casttarget OPERATOR(pg_catalog.=) ANY ('{114,3802}'::pg_catalog.oid[])))")
     };
 }
 
@@ -362,13 +372,14 @@ impl TypeRegistry {
             let cast_name = row.get(6).and_then(Value::as_str).unwrap_or("").to_string();
             let attnums: Vec<i32> = row.get(11).and_then(Value::as_array).map(|a| a.iter().map(|n| as_u32(n).unwrap_or(0) as i32).collect()).unwrap_or_default();
             let typmods: Vec<i32> = row.get(16).and_then(Value::as_array).map(|a| a.iter().map(as_i32).collect()).unwrap_or_default();
+            let comments: Vec<Option<String>> = row.get(17).and_then(Value::as_array).map(|a| a.iter().map(|c| c.as_str().filter(|c| !c.is_empty()).map(str::to_string)).collect()).unwrap_or_default();
             let fields = match (row.get(7).and_then(as_strings), row.get(8).and_then(Value::as_array), row.get(9).and_then(Value::as_array)) {
                 (Some(names), Some(oids), Some(not_null)) if names.len() == oids.len() && names.len() == not_null.len() => names
                     .into_iter()
                     .zip(oids)
                     .zip(not_null)
                     .enumerate()
-                    .filter_map(|(i, ((name, o), n))| Some(Attribute { name, type_oid: as_u32(o)?, not_null: as_bool(n)?, attnum: attnums.get(i).copied().unwrap_or(0), typmod: typmods.get(i).copied().unwrap_or(-1) }))
+                    .filter_map(|(i, ((name, o), n))| Some(Attribute { name, type_oid: as_u32(o)?, not_null: as_bool(n)?, attnum: attnums.get(i).copied().unwrap_or(0), typmod: typmods.get(i).copied().unwrap_or(-1), comment: comments.get(i).cloned().flatten() }))
                     .collect(),
                 _ => Vec::new(),
             };
@@ -377,6 +388,7 @@ impl TypeRegistry {
             let namespace = row.get(13).and_then(Value::as_str).map(str::to_string);
             let subtype = row.get(14).and_then(as_u32).filter(|s| *s != 0);
             let typmod = row.get(15).map_or(-1, as_i32);
+            let json_cast = row.get(18).and_then(as_bool).unwrap_or(false);
             let name = name.to_string();
             let kind = match typtype {
                 "b" | "p" if elem != 0 && name.starts_with('_') => TypeKind::Array,
@@ -390,7 +402,7 @@ impl TypeRegistry {
             };
             self.types.insert(
                 oid,
-                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter, namespace, subtype, typmod },
+                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter, namespace, subtype, typmod, json_cast },
             );
         }
     }
@@ -411,6 +423,7 @@ impl TypeRegistry {
             namespace: None,
             subtype: None,
             typmod: -1,
+            json_cast: false,
         });
     }
 
@@ -568,6 +581,32 @@ impl TypeRegistry {
             .collect()
     }
 
+    /// `ty`, a value inside a document, with each type that has a cast of its own to JSON as any
+    /// JSON: `to_json` writes a value of such a type with the cast, whatever its values are. A
+    /// PostGIS geometry, GeoJSON through its cast, and an `hstore`, an object of its keys through
+    /// its cast, are typed as those casts write them already.
+    pub fn through_json_casts(&self, ty: Type) -> Type {
+        let cast: std::collections::HashSet<String> = self.types.values().filter(|t| t.json_cast).map(PgType::qualified).collect();
+        if cast.is_empty() {
+            return ty;
+        }
+        fn walk(ty: Type, cast: &std::collections::HashSet<String>) -> Type {
+            if ty.label.as_ref().is_some_and(|l| cast.contains(l)) && !matches!(ty.kind, Kind::Geometry(_) | Kind::Map(_)) {
+                return Type::unknown();
+            }
+            let slot = |s: Slot| Slot { ty: walk(s.ty, cast), ..s };
+            let kind = match ty.kind {
+                Kind::Array(a) => Kind::Array(crate::types::ArrayType { element: Box::new(slot(*a.element)), ..a }),
+                Kind::Struct(s) => Kind::Struct(crate::types::StructType { fields: s.fields.into_iter().map(|f| Field { ty: walk(f.ty, cast), ..f }).collect(), extra: s.extra.map(|e| Box::new(slot(*e))) }),
+                Kind::Json(crate::types::JsonType { content: Some(c), schema }) => Kind::Json(crate::types::JsonType { content: Some(Box::new(slot(*c))), schema }),
+                Kind::Union(u) => Kind::Union(crate::types::UnionType { members: u.members.into_iter().map(|m| walk(m, cast)).collect() }),
+                other => other,
+            };
+            Type { kind, ..ty }
+        }
+        walk(ty, &cast)
+    }
+
     fn render_at(&self, oid: u32, typmod: i32, depth: usize, stored: bool) -> Type {
         if depth > MAX_DEPTH {
             return Type::unknown();
@@ -612,7 +651,7 @@ impl TypeRegistry {
                             Some(facts) => facts.apply(ty),
                             None => ty,
                         };
-                        Field::new(f.name.clone(), ty, !(stored && f.not_null))
+                        Field { comment: f.comment.clone(), ..Field::new(f.name.clone(), ty, !(stored && f.not_null)) }
                     })
                     .collect();
                 Type::structure(fields).named(t.qualified())
@@ -887,9 +926,9 @@ mod tests {
             assert_eq!(
                 registry.get(90001).unwrap().fields,
                 vec![
-                    Attribute { name: "id".into(), type_oid: 20, not_null: true, attnum: 0, typmod: -1 },
-                    Attribute { name: "name".into(), type_oid: 25, not_null: false, attnum: 0, typmod: -1 },
-                    Attribute { name: "tags".into(), type_oid: 1009, not_null: false, attnum: 0, typmod: -1 },
+                    Attribute { name: "id".into(), type_oid: 20, not_null: true, attnum: 0, typmod: -1, comment: None },
+                    Attribute { name: "name".into(), type_oid: 25, not_null: false, attnum: 0, typmod: -1, comment: None },
+                    Attribute { name: "tags".into(), type_oid: 1009, not_null: false, attnum: 0, typmod: -1, comment: None },
                 ]
             );
             // A stored row of the table holds its NOT NULL; a row value of its type need not. A

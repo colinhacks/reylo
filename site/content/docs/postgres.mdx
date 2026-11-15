@@ -647,6 +647,8 @@ select
 
 </Analyzed>
 
+The schema and the query narrow these. A `CHECK` holds a string to a `pattern`, from a `like`, or from a case-sensitive `~` where an I-Regexp matches exactly the values it finds a match in, so `code ~ '^[A-Z]{3}$'` is `[A-Z]{3}`. An array that `array_agg(distinct …)`, `json_agg(distinct …)` or `jsonb_agg(distinct …)` builds is `distinct`, unless its elements hold an array, which Postgres compares with its bounds, JSON, whose `null` and SQL's `NULL` are one value inside JSON, or a PostGIS geometry, which it compares by its bytes. A composite type's attribute comments are its fields' comments, wherever the row is a value.
+
 ## Nullability
 
 Every column is typed `| null` unless Reylo can tell it never is null. On Postgres, it reads your schema and the query:
