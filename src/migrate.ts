@@ -81,7 +81,8 @@ export function migrate(storage: MigrationStorage): string[];
  */
 export function migrate(options?: MigrateOptions): Promise<string[]>;
 export function migrate(arg?: MigrationStorage | MigrateOptions): string[] | Promise<string[]> {
-  if (!isStorage(arg)) return buildTime().migrate(arg ?? {});
+  // A promise that rejects, never a throw, where the build-time half can't be loaded.
+  if (!isStorage(arg)) return Promise.resolve(arg ?? {}).then((options) => buildTime().migrate(options));
   if (embedded === undefined) throw new Error("reylo: this bundle holds no migrations for migrate: build it with reylo/vite or reylo/esbuild, in a project whose migrations are in reylo/migrations");
   if ("error" in embedded) throw new Error(`reylo: ${embedded.error}`);
   return runMigrations(arg, embedded as readonly Migration[]);

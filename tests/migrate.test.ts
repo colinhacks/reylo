@@ -87,3 +87,17 @@ test("migrate(ctx.storage) in a bundle Reylo's plugin didn't build says so, runn
   assert.throws(() => migrate(s), /^Error: reylo: this bundle holds no migrations for migrate: build it with reylo\/vite or reylo\/esbuild/);
   assert.equal(s.db.prepare("select count(*) as n from sqlite_schema").get()!.n, 0);
 });
+
+test("migrate() in a runtime that can't run the engine rejects, never throws", async () => {
+  // As on a runtime with no `process.getBuiltinModule`, where the build-time half is out of reach.
+  const host = process as { getBuiltinModule?: unknown };
+  const saved = host.getBuiltinModule;
+  host.getBuiltinModule = undefined;
+  try {
+    let promise: Promise<string[]> | undefined;
+    assert.doesNotThrow(() => (promise = migrate()));
+    await assert.rejects(promise!, /^Error: reylo cannot run its engine in this runtime/);
+  } finally {
+    host.getBuiltinModule = saved;
+  }
+});
