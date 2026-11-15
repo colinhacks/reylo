@@ -1,15 +1,40 @@
 ---
 title: Reylo
-description: Import .sql files into TypeScript with full type inference. A TypeScript 7.1 content mapper types each query from your live Postgres, MySQL or SQLite database.
+description: Reylo is an engine that infers type information from SQL queries, read from your live database. TypeScript and Rust use its types as you write, and its CLI prints them as data.
 ---
 
-<p className="dk-subheader hero">Import `.sql` files into your TypeScript code with full type inference</p>
+<p className="dk-subheader hero">An engine that infers the types of your SQL queries</p>
 
 <HeroActions />
 
-<HeroDemo />
+Reylo is an engine that infers type information from SQL queries.
 
-If you have a file like this:
+It has your live database prepare each query, without running it, and reads the catalog.
+
+Reylo is the perfect option for the agent era:
+
+<div className="dk-features">
+
+- 💪 **The full power of SQL** — any syntax, function or operator your database supports
+- 🌵 **DRY** — no redundant hand-written types
+- 🎯 **Checked against your database** — a misspelled column is a compile error
+- 🤖 **Agent-friendly** — DRY code is more maintainable for agents
+- 🧩 **Postgres, MySQL and SQLite** — and DuckDB (preview) in TypeScript; Neon, PlanetScale, Cloudflare D1, Turso and more
+- 🔌 **Your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](/typescript#run) in TypeScript, sqlx in Rust
+
+</div>
+
+<InferenceCard>
+
+```sql file="get_user.sql" dialect="all"
+select id, name, email from users where id = :id::int
+```
+
+</InferenceCard>
+
+Your code reads those types as you write it.
+
+If you have a query like this:
 
 ```sql title="get_author.sql"
 select u.id, u.name, count(p.id)::int as post_count
@@ -19,18 +44,39 @@ where u.id = :id::int
 group by u.id
 ```
 
-You can import it directly from a TypeScript file like this:
+In TypeScript, import the file, and your editor knows each row:
 
 ```ts twoslash title="main.ts" dialect="postgres"
-// @hover: getAuthor author
+// @noErrors
 import postgres from "postgres";
 import getAuthor from "./get_author.sql";
 
 const db = postgres(process.env.DATABASE_URL);
-
-// hover over author to see its type
 const author = await getAuthor.run(db, { id: 1 });
+
+author?.
+//      ^|
 ```
+
+In Rust, an attribute types the statement as your crate compiles:
+
+<Completion items="id: i32, name: String, post_count: i32" at="7">
+
+```rust title="main.rs"
+#[reylo::query("
+    select u.id, u.name, count(p.id)::int as post_count
+    from users u
+    left join posts p on p.user_id = u.id
+    where u.id = :id::int
+    group by u.id
+")]
+pub mod get_author {}
+
+let author = get_author::Query { id: 1 }.run(&pool).await?.expect("author 1");
+author.
+```
+
+</Completion>
 
 <Details summary="View the schema" id="schema">
 
@@ -138,22 +184,34 @@ create table events (
 
 </Details>
 
-<Callout title="Content mappers">
+The [CLI](/cli) prints what Reylo infers, as data:
 
-Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in TypeScript 7.1 (currently [in beta](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/)), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
+<Analyzed file="get_author.sql" lines="24">
 
-</Callout>
+```sql schema
+create table users (
+  id serial primary key,
+  name text not null
+);
+create table posts (
+  id serial primary key,
+  user_id integer not null references users (id)
+);
+```
 
-Reylo is the perfect option for the agent era:
+```sql
+select u.id, u.name, count(p.id)::int as post_count
+from users u
+left join posts p on p.user_id = u.id
+where u.id = :id::int
+group by u.id
+```
 
-<div className="dk-features">
+</Analyzed>
 
-- 💪 **The full power of SQL** — any syntax, function or operator your database supports
-- 🌵 **DRY** — no redundant hand-written types
-- 🎯 **Checked against your database** — a misspelled column is a type error
-- 🤖 **Agent-friendly** — DRY code is more maintainable for agents
-- 🧩 **Postgres, MySQL, SQLite and DuckDB** (preview) — Neon, PlanetScale, Cloudflare D1, Turso and more
-- 🔌 **Bring your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](/usage#run)
-- ⚡ **No codegen** — no generated files, no watcher
+## Get started
 
-</div>
+Pick your language:
+
+- **[TypeScript](/typescript)** — import `.sql` files, typed by a TypeScript 7.1 content mapper
+- **[Rust](/rust)** — an attribute macro types each statement when your crate compiles, and runs it on sqlx

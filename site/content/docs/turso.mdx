@@ -16,6 +16,7 @@ Turso Cloud runs libSQL, a fork of SQLite, so everything on the [SQLite](/sqlite
 | Turso Cloud | `@libsql/client`, with `.run()` |
 | Turso's own engine | `@tursodatabase/database`, with `.run()`, and `.runSync()` on its compat `Database` |
 | SQLite versions | Reylo's 3.53, and the SQLite of each driver your `package.json` lists: 3.45.1 for `@libsql/client` |
+| Rust | Types against the same local file; sqlx has no libSQL client, so its queries can't run on Turso Cloud |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -90,7 +91,7 @@ direct_url: file:./dev.db
 - A `DATABASE_URL` that holds your `libsql://` URL fails the type check, which reads only `file:` and `sqlite:` URLs for SQLite. A `direct_url` wins over it.
 - In development, your app can open the same file: `createClient({ url: "file:dev.db" })` needs no auth token.
 - In CI, run your migrations into the file before the type check ([Deployment](/deployment#sqlite)). The job needs no Turso token.
-- Before a query runs, `.run()` reads the schema again through your client and warns if a column the query names has changed on Turso Cloud since the build ([When the schema changes](/observability#when-the-schema-changes)).
+- Before a query runs, `.run()` reads the schema again through your client and warns if a column the query names has changed on Turso Cloud since the build ([When the schema changes](/typescript#when-the-schema-changes)).
 
 ## SQLite version
 
@@ -139,5 +140,5 @@ const sameUser = findUser.runSync(compat, { id: 1 });
 - The `Database` of `@tursodatabase/database/compat` is synchronous, so `.runSync()` works on it, inside its `db.transaction(fn)` as well.
 - The type check reads the same file, through `direct_url` as above.
 - With `@tursodatabase/database` in your `package.json`, the type check also runs each query on Turso's engine, unless your schema has an FTS5 table, which the engine can't open.
-- From 0.8 on, its errors carry no code. With [`.try()`](/usage#try), `code` is `undefined` and only `message` names the failure.
+- From 0.8 on, its errors carry no code. With [`.try()`](/typescript#try), `code` is `undefined` and only `message` names the failure.
 - An integer past 2^53 comes back exact.

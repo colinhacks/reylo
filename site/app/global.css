@@ -222,8 +222,9 @@
    Schema (where the example needs one) as a band across the top, then the
    Query, and Params and Returns beside it (`side`) or under it (`rows`), all
    visible at once. The rows' code blocks lose their own frames, so the card is
-   the one frame; only the query keeps its copy button. The dialect switch sits
-   at the top right of the query's column, or of the schema band. */
+   the one frame. Each switch sits at the right of the label line of what it
+   changes: the database on the Query row's, the language on the Params and
+   Returns band's. */
 #nd-page .reylo-inference-card {
   --reylo-side: 16rem;
   container-type: inline-size;
@@ -235,6 +236,11 @@
   overflow: hidden;
 }
 
+#nd-page .reylo-inference-card-row,
+#nd-page .reylo-inference-languages {
+  position: relative;
+}
+
 #nd-page .reylo-inference-card-switch {
   position: absolute;
   top: 0.375rem;
@@ -243,8 +249,16 @@
   display: flex;
 }
 
-#nd-page .reylo-inference-card[data-layout='side']:not(:has([data-row='schema'])) .reylo-inference-card-switch {
-  right: calc(var(--reylo-side) + 0.5rem);
+/* A card's code has no copy button: its corner is the switches'. */
+#nd-page .reylo-inference-card .dk-code-copy {
+  display: none;
+}
+
+/* The language switch over a table that follows it (Inference's Primitives). */
+#nd-page .reylo-language-switch {
+  display: flex;
+  justify-content: flex-end;
+  margin-block: 0 -0.25rem;
 }
 
 #nd-page .reylo-inference-card .dk-variant-follow {
@@ -313,11 +327,11 @@
   background: var(--color-fd-muted);
 }
 
-#nd-page .reylo-inference-card-types {
+#nd-page .reylo-inference-languages {
   background: var(--color-fd-muted);
 }
 
-#nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types {
+#nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-languages {
   border-top: 1px solid var(--color-fd-border);
 }
 
@@ -330,18 +344,14 @@
     grid-column: 1 / -1;
   }
 
-  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-types {
+  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-languages {
     border-left: 1px solid var(--color-fd-border);
   }
 }
 
 @media (max-width: 639px) {
-  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-types {
+  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-languages {
     border-top: 1px solid var(--color-fd-border);
-  }
-
-  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-switch {
-    right: 0.5rem;
   }
 }
 
@@ -1147,4 +1157,41 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   text-decoration-skip-ink: none;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
+}
+
+/* A completion list over a Rust block (components/completion.tsx): it opens under the block's last
+   line, `--reylo-at` characters in, as Twoslash's own list does, and the block keeps room for it. */
+#nd-page .reylo-completion {
+  position: relative;
+}
+/* Room at the block's foot for the list, as Twoslash leaves under its own. */
+#nd-page .reylo-completion pre {
+  padding-bottom: 7rem;
+}
+#nd-page .reylo-completion-list {
+  position: absolute;
+  top: calc(100% - 7.85rem);
+  left: calc(1rem + var(--reylo-at) * 1ch);
+  z-index: 2;
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
+}
+#nd-page .reylo-completion-list li {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: space-between;
+}
+#nd-page .reylo-completion-type {
+  color: var(--color-fd-muted-foreground);
+}
+
+/* An editor's completion list sits in the page's prose, whose list items keep a margin between
+   them: here they sit as close as an editor's, Twoslash's and the Rust popup's alike. */
+#nd-page .twoslash-completion-list,
+#nd-page .twoslash-completion-list li {
+  margin-block: 0;
+}
+#nd-page .twoslash-completion-list {
+  padding-inline-start: 3px;
 }

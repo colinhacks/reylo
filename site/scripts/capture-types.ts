@@ -20,7 +20,8 @@
 // itself, `src/mapper.ts` started as TypeScript starts it (scripts/mapper-diagnostics.ts), on the
 // same schema, and the errors it gives the file, where the editor and `tsc` place them, are written
 // to lib/sql-errors.json; an example the mapper finds no error in fails the run.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -32,6 +33,7 @@ import { docComment, leadingComment, statementAfter } from '../../src/doc-commen
 import { queryErrorType, reyloImport, standardColumnsType } from '../../src/module-types.ts';
 import type { Analysis } from '../../src/engine.ts';
 import { analysisWithBases } from '../../src/engine-type.ts';
+import { descriptor } from '../../src/analyze-api.ts';
 import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
 import { sitePages } from '../lib/page-files.ts';
 import { isErrorExample, type Errors } from '../lib/sql-errors.ts';
@@ -124,7 +126,7 @@ function compile(sql: string, dialect: Dialect): string {
  * One change: a typed JSON parameter takes the type computed from its schema (`json`), where the
  * loader says `unknown`.
  */
-async function render(session: Session, source: string, written: string, sql: string, json: Map<string, string>, strict = session.project.strictParams): Promise<{ text: string; analysis: Analysis } | { error: string }> {
+async function render(session: Session, source: string, written: string, sql: string, json: Map<string, string>, strict = session.project.strictParams): Promise<{ text: string; analysis: Analysis; raw: Analysis } | { error: string }> {
   const project = session.project;
   const paramType = (q: Analysis['params'][number], rendered: string): string => {
     if (json.has(q.name)) return json.get(q.name)!;
@@ -179,7 +181,7 @@ async function render(session: Session, source: string, written: string, sql: st
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
   const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
-  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', rowType, inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect), analysis.ordered === true), analysis };
+  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', rowType, inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect), analysis.ordered === true), analysis, raw: outcome.analysis };
 }
 
 // ---- The scratch databases ----
@@ -272,6 +274,8 @@ const warnings: string[] = [];
 const root = mkdtempSync(path.join(tmpdir(), 'reylo-capture-'));
 let captured = 0;
 let analyzed = 0;
+// Each inference card's statement, with the engine's own analysis of it, for its type descriptor and Rust types.
+const inference: { dialect: Dialect; name: string; hash: string; raw: Analysis }[] = [];
 
 try {
   for (const page of pages) {
@@ -324,6 +328,7 @@ try {
           return;
         }
         analyzed++;
+        if (block.inferenceCard) inference.push({ dialect, name: block.name!, hash: block.hash, raw: result.raw });
         if (!needed.has(block)) {
           console.log(`${DIALECT_NAME[dialect].padEnd(8)} ${block.name}: ${summary(result.text)}  (nothing imports it)`);
           return;
@@ -425,6 +430,38 @@ if (errors.length) {
   console.error(`capture: ${errors.length} error${errors.length === 1 ? '' : 's'}; lib/sql-modules.json and lib/sql-errors.json are unchanged.`);
   process.exit(1);
 }
+
+// The inference cards' other languages (lib/remark-mapper.ts): each statement's type descriptor, its
+// parameters and result as `reylo analyze` writes them, and its Rust types, as `#[reylo::query]`
+// writes them, from the renderer `REYLO_DOCS_RUST` names (reylo-codegen's `docs` example). Without
+// it, the Rust types the file already holds are kept.
+type InferenceCapture = { descriptor: { params: unknown; result: unknown }; rust?: { params: string; returns: string } | { error: string } };
+const capturesFile = path.join(site, 'lib', 'inference-captures.json');
+const before = existsSync(capturesFile) ? (JSON.parse(readFileSync(capturesFile, 'utf8')) as Record<string, Record<string, Record<string, InferenceCapture>>>) : {};
+const keyOf = (c: { dialect: string; name: string; hash: string }) => `${c.dialect}\0${c.name}\0${c.hash}`;
+const rust = new Map<string, InferenceCapture['rust']>();
+const renderer = process.env.REYLO_DOCS_RUST;
+if (renderer) {
+  const input = inference.filter((c) => c.dialect !== 'duckdb').map((c) => JSON.stringify({ key: keyOf(c), dialect: c.dialect, analysis: c.raw })).join('\n');
+  const run = spawnSync(renderer, [], { input, encoding: 'utf8', maxBuffer: 1 << 28 });
+  if (run.status !== 0) fail(`REYLO_DOCS_RUST (${renderer}) exited ${run.status}: ${run.stderr}`);
+  for (const line of run.stdout.split('\n').filter(Boolean)) {
+    const { key, ...answer } = JSON.parse(line) as { key: string } & ({ params: string; returns: string } | { error: string });
+    rust.set(key, answer);
+  }
+} else {
+  console.warn('warning: REYLO_DOCS_RUST names no renderer: the inference cards keep the Rust types lib/inference-captures.json holds');
+}
+const captures: Record<string, Record<string, Record<string, InferenceCapture>>> = {};
+for (const c of inference) {
+  const d = descriptor(c.raw.rewritten.sql, c.dialect, '', c.raw);
+  const shown = rust.get(keyOf(c)) ?? before[c.dialect]?.[c.name]?.[c.hash]?.rust;
+  ((captures[c.dialect] ??= {})[c.name] ??= {})[c.hash] = { descriptor: { params: d.params, result: d.result }, ...(c.dialect !== 'duckdb' && shown && { rust: shown }) };
+}
+const sortedCaptures = Object.fromEntries(
+  ORDER.filter((d) => captures[d]).map((d) => [d, Object.fromEntries(Object.entries(captures[d]!).sort(([a], [b]) => a.localeCompare(b)).map(([name, byHash]) => [name, Object.fromEntries(Object.entries(byHash).sort(([a], [b]) => a.localeCompare(b)))]))]),
+);
+writeFileSync(capturesFile, JSON.stringify({ $comment: 'Written by `nub run capture` (scripts/capture-types.ts): each inference card statement\'s type descriptor and Rust types. Read by lib/remark-mapper.ts. Never edit by hand.', ...sortedCaptures }, null, 2) + '\n');
 
 // Sorted, so a capture that changes nothing changes nothing in git.
 const sorted = Object.fromEntries(

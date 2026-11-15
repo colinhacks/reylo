@@ -108,7 +108,7 @@ returning id
 
 ## TCP drivers
 
-Over TCP, pass a `pg` pool or a postgres.js client, made with the pooled connection string:
+Over TCP, pass a `pg` pool or a postgres.js client, or in Rust an sqlx pool, made with the pooled connection string:
 
 ```ts twoslash tab="pg"
 import pg from "pg";
@@ -126,7 +126,16 @@ const db = postgres(process.env.DATABASE_URL);
 const user = await getUser.run(db, { id: 1 });
 ```
 
-Each runs a transaction its own way: on a client checked out of the pool with `pg`, and in `db.begin()` with postgres.js ([Drivers](/postgres#drivers)).
+```rust tab="sqlx"
+#[reylo::query("select id, name, email from users where id = :id")]
+pub mod get_user {}
+
+// sqlx with its "tls-rustls" feature: Neon requires TLS
+let db = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+let user = get_user::Query { id: 1 }.run(&db).await?;
+```
+
+Each runs a transaction its own way: on a client checked out of the pool with `pg`, in `db.begin()` with postgres.js ([Drivers](/postgres#drivers)), and in `db.begin()` with sqlx ([Rust](/rust#run)).
 
 ## Branches
 
