@@ -382,7 +382,7 @@ const user = await getUser.run(db, { id: 1 });
 
 [Reylo Migrate](/migrations) runs on DuckDB with the same commands.
 
-It runs on your project's own `@duckdb/node-api`, which it needs at 2.0, and refuses an older one. DuckDB lets one process at a time open a file to write, so stop your app, its dev server included, before you run one: each command refuses while another process holds the database, and changes nothing.
+It runs on your project's own `@duckdb/node-api`, which it needs at 2.0, and refuses an older one. DuckDB lets one process at a time open a file to write, so stop your app, its dev server included, before you run a command that writes: each refuses while another process holds the database, and changes nothing. The commands that only read (`status`, `deploy --dry-run` and `db introspect`) open the file read-only, so they run beside other processes that only read it.
 
 DuckDB's `alter table` adds no check or foreign key, changes no column an index covers, and changes little of a table another table's key references. So `reylo migrate new` writes such a change as a rebuild: the table's rows go to a temporary table, the table is made again, and the rows come back, with those of every table whose keys reference it. A check added to `authors`:
 
