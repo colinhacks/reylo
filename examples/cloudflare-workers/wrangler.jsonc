@@ -5,9 +5,10 @@
   "compatibility_date": "2026-10-01",
   "d1_databases": [
     // `wrangler d1 create reylo-example` prints the real database_id; locally any id names a database.
-    { "binding": "DB", "database_name": "reylo-example", "database_id": "00000000-0000-0000-0000-000000000000" }
+    { "binding": "DB", "database_name": "reylo-example", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "reylo/migrations" }
   ],
-  // A board is a Durable Object with a SQLite database of its own (src/worker.ts).
+  // A board is a Durable Object with a SQLite database of its own, which runs the same migrations
+  // with migrate (src/worker.ts).
   "durable_objects": { "bindings": [{ "name": "BOARD", "class_name": "Board" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Board"] }],
   // Wrangler makes every imported .sql file a text module by default. This list keeps its other

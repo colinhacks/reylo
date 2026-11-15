@@ -6,6 +6,8 @@ import type { Tooling } from "./tooling-loader.ts";
 import { releaseConnections } from "./analyze.ts";
 import { sqlModule } from "./loader.ts";
 import { mapperHandlers } from "./mapper-server.ts";
+import { embeddedModule } from "./embedded-module.ts";
+import { migrate } from "./migrate-deploy.ts";
 import { analyze } from "./analyze-api.ts";
 
-export default { analyze, sqlModule, releaseConnections, mapperHandlers } satisfies Tooling;
+export default { analyze, migrate, sqlModule, embeddedModule, releaseConnections, mapperHandlers } satisfies Tooling;

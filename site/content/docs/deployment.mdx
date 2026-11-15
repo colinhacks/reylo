@@ -180,12 +180,12 @@ jobs:
 
 ## Cloudflare D1
 
-Apply your D1 migrations to the local database before the type check:
+Run your migrations on the local database before the type check:
 
 ```yaml title=".github/workflows/ci.yml"
 steps:
   # ...
-  - run: npx wrangler d1 migrations apply DB --local
+  - run: npx reylo migrate deploy
   - run: npm run typecheck
   - run: npm run build
 ```

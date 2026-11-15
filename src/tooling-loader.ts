@@ -20,6 +20,8 @@ import type { BuildTime } from "./build-time.ts";
 export type Tooling = BuildTime & {
   /** The module a build step writes for a `.sql` file, and what the build watches: the `reylo/.cache/` entry it was built from, and the project's files its text reads. */
   sqlModule(path: string, source: string): Promise<{ code: string; entry: string; watched: string[] }>;
+  /** What a build step puts in place of reylo's src/embedded-migrations.ts: the migrations of the project at `root`, for `migrate(ctx.storage)`, and what the build watches. */
+  embeddedModule(root: string): Promise<{ code: string; watched: string[] }>;
   /** Closes every build step's connection, for a build that has ended. */
   releaseConnections(): Promise<void>;
   /** The methods of TypeScript's content mapper protocol, which src/mapper.ts serves over this process's stdin and stdout. */
