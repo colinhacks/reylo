@@ -1,0 +1,1 @@
+select array_agg(distinct array[id, post_id]) as pairs, jsonb_agg(distinct array[name]) as lists, array_agg(distinct name)::varchar[] as cast_names, array_agg(name) as all_names, coalesce(array_agg(distinct name), '{x,x}') as padded from tags

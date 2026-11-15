@@ -1,0 +1,1 @@
+select coalesce(array_agg(distinct i), '{}'::float8[]) as floats, coalesce(array_agg(distinct n), '{}'::float8[]) as rounded, coalesce(array_agg(distinct i), '{}') as kept, json_build_object('n', (select coalesce(array_agg(distinct i), '{}'::float8[]) from j)) as inside from j

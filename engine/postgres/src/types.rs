@@ -19,6 +19,10 @@ pub struct DescribedColumn {
     /// column and a function's array result among them ([`Type::Array`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable_items: Option<bool>,
+    /// For an array column a `DISTINCT` aggregate builds (`array_agg(DISTINCT x)`), that no two of
+    /// its elements are equal ([`crate::infer::distinct_arrays`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub distinct_items: bool,
     /// For an array column the statement builds of arrays (`array_agg(tags)`), the dimensions it
     /// adds over the type the describe reports ([`crate::infer::Nesting`]); `None` for every other.
     #[serde(default, skip_serializing_if = "Option::is_none")]

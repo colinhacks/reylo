@@ -2269,7 +2269,7 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
                 .collect();
             (Type::structure(fields), *non_null)
         }
-        Shape::Array { items, non_null } => {
+        Shape::Array { items, non_null, .. } => {
             let (ty, nn) = resolve(items, outcomes, plan, flows, documents, views);
             (Type::array(Slot::new(ty, !nn)), *non_null)
         }

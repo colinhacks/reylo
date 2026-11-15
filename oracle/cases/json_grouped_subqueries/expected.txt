@@ -1,4 +1,4 @@
-agg_in_filter_sub.sql: one () -> { j: jsonb { a: int8[], b: int4[], c: int8[]? }? }
+agg_in_filter_sub.sql: one () -> { j: jsonb { a: int8[], b: {int4}, c: int8[]? }? }
 alias_named_like_column.sql: many () -> { j: jsonb { m: unknown?, a: unknown?[]? }? }
 any_value_grouped_sub.sql: one () -> { j: jsonb { k: text(¬NUL), a: int8[], m: text(¬NUL)? }? }
 any_value_sub.sql: one () -> { j: jsonb { k: text(¬NUL)?, a: int8[]? } }
@@ -16,7 +16,7 @@ cte_rollup_outer.sql: many () -> { j: jsonb { k: unknown?, c: unknown? }? }
 derived_agg_outer.sql: one () -> { j: jsonb { k: unknown?, c: unknown? }? }
 derived_carrier.sql: one () -> { j: jsonb { a: int8[], m: int4, k: text(¬NUL) }? }
 derived_rollup_outer.sql: many () -> { j: jsonb { k: int8?, c: int8, a: int8?[] }? }
-distinct_aggregates.sql: one () -> { j: jsonb { s: text(¬NUL), c: int8, a: text(¬NUL)?[], m: int4? }? }
+distinct_aggregates.sql: one () -> { j: jsonb { s: text(¬NUL), c: int8, a: {text(¬NUL)?}, m: int4? }? }
 empty_table.sql: one () -> { j: jsonb { c: int8, m: int4?, a: int4[]?, s: int8? } }
 empty_table_grouped.sql: one () -> { j: jsonb { c: int8, m: int4, a: int4[] }? }
 filter_outer.sql: many () -> { j: jsonb { t: unknown?, c: unknown? }? }

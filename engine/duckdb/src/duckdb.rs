@@ -44,6 +44,38 @@ fn with_version(mut ty: Type, out: &Out) -> Type {
     ty
 }
 
+/// A list type under what the statement shows of its elements ([`Out::distinct`]): no two equal,
+/// and none NULL where the call drops NULL. Only where DuckDB's equality finds two values equal
+/// whenever the format reads them as one value ([`same_value_is_equal`]).
+fn with_distinct(mut ty: Type, out: &Out) -> Type {
+    if let (Some(non_null), Kind::Array(array)) = (out.distinct, &mut ty.kind) {
+        if non_null {
+            array.element.nullable = false;
+        }
+        if same_value_is_equal(&array.element.ty) {
+            array.distinct = true;
+        }
+    }
+    ty
+}
+
+/// Whether DuckDB's equality on values of `ty` finds two equal whenever the format reads them as
+/// one value, so that a list it keeps distinct holds no two such values. Not text: `list(DISTINCT
+/// s)` and `list_distinct` compare text as its bytes, while the column's collation or
+/// `default_collation` (`NOCASE`) may find two of them equal. Not a duration: `list_distinct` keeps
+/// `INTERVAL 1 DAY` and `INTERVAL 24 HOURS`, which DuckDB finds equal. Not a float, whose -0 and 0
+/// the format reads as one value, nor JSON, whose text may differ for one document (`{"a":1}` and
+/// `{"a": 1}`), nor a geometry, nor a type the engine does not structure, nor anything holding one.
+fn same_value_is_equal(ty: &Type) -> bool {
+    match &ty.kind {
+        Kind::Float(_) | Kind::Text(_) | Kind::Duration(_) | Kind::Geometry(_) | Kind::Json(_) | Kind::Opaque | Kind::Unknown | Kind::Map(_) | Kind::TaggedUnion(_) | Kind::Union(_) | Kind::Intersection(_) | Kind::Table(_) | Kind::Tuple(_) => false,
+        Kind::Array(a) => same_value_is_equal(&a.element.ty),
+        Kind::Struct(s) => s.extra.is_none() && s.fields.iter().all(|f| same_value_is_equal(&f.ty)),
+        Kind::Enum(e) => same_value_is_equal(&e.ty),
+        _ => true,
+    }
+}
+
 /// The statements the DuckDB analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "from", "values", "table", "insert", "update", "delete", "pivot", "unpivot", "summarize"];
 
@@ -140,7 +172,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             .enumerate()
             .map(|(i, c)| {
                 let out = proven.as_ref().map(|p| &p[i]);
-                let ty = out.map_or_else(|| crate::types::of(&c.ty), |o| with_version(with_rows(crate::types::of(&c.ty), o), o));
+                let ty = out.map_or_else(|| crate::types::of(&c.ty), |o| with_distinct(with_version(with_rows(crate::types::of(&c.ty), o), o), o));
                 let ty = match literals.get(i) {
                     Some(Some(written)) => reylo_engine_core::literal::narrow(&ty, written).unwrap_or(ty),
                     _ => ty,
