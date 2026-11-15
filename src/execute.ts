@@ -20,7 +20,7 @@ import type { Checks } from "./checks.ts";
 import type { Members, Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
 import { compared, due, passed, staleError, warnDrifted, type Fresh } from "./fresh.ts";
-import { decodeCodecs, encodePlan, type Plan } from "./codecs.ts";
+import { decodeCodecs, encodePlan, type Libraries, type Plan } from "./codecs.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 
@@ -200,6 +200,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly cardinality?: "many" | "one" | "maybeOne" | "none" | undefined;
   /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts). */
   readonly codecs?: Readonly<Record<string, Plan>> | undefined;
+  /** The classes the codecs build values with, which the module imports from the app's install (src/codecs.ts). */
+  readonly libraries?: Libraries | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
   readonly structured?: readonly Structured[] | undefined;
   /** The catalog facts the statement relied on, checked before it runs (src/fresh.ts). */
@@ -296,7 +298,7 @@ export function execute<D extends Dialect>(
 function withCodecs(query: QueryModule, rows: unknown[] | Promise<unknown[]>): unknown[] | Promise<unknown[]> {
   const codecs = query.codecs;
   if (codecs === undefined || Object.keys(codecs).length === 0) return rows;
-  return Array.isArray(rows) ? decodeCodecs(rows, codecs) : rows.then((r) => decodeCodecs(r, codecs));
+  return Array.isArray(rows) ? decodeCodecs(rows, codecs, query.libraries) : rows.then((r) => decodeCodecs(r, codecs, query.libraries));
 }
 
 /**
@@ -497,7 +499,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     // A value of a family the project file's `js.codecs` gives another type takes that type alone,
     // wherever it stands in the parameter, a structured parameter's members among them, and is
     // bound as the text or the bytes its type reads (src/codecs.ts).
-    if (input?.codec !== undefined) bound.values[i] = encodePlan(input.codec, bound.values[i], name, query.dialect);
+    if (input?.codec !== undefined) bound.values[i] = encodePlan(input.codec, bound.values[i], name, query.dialect, query.libraries);
     // A structured parameter is checked against its column list and written as the JSON the
     // statement reads; in an insert, its lists name only the keys the call carries. It refuses
     // null itself, saying what to pass.

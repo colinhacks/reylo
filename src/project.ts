@@ -13,10 +13,11 @@
 // is the one the entries of the project's cache (`reylo/.cache/`) record.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
-import type { Codecs } from "./codecs.ts";
+import { DECIMAL_LIBRARIES, type Codecs, type DecimalLibrary } from "./codecs.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
@@ -529,4 +530,55 @@ export function sqlitePath(url: string, baseDir: string): string {
   if (unusable) throw new Error(`Cannot read the SQLite URL ${url}: ${unusable}.`);
   const raw = url.startsWith("file://") ? fileURLToPath(url) : url.replace(/^(file|sqlite):(\/\/)?/, "");
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
+}
+
+/**
+ * The `package.json` of `name` as a file in `dir` imports it, from the nearest `node_modules` up, or
+ * where Yarn's Plug'n'Play runs, which keeps no `node_modules`, as its resolver finds it; undefined
+ * where none holds it. Node's own resolver is not asked elsewhere: it also searches `NODE_PATH` and
+ * the global folders, which an `import` never reads.
+ */
+function installed(name: string, dir: string): { types?: unknown; typings?: unknown; exports?: unknown } | undefined {
+  const read = (file: string) => {
+    try {
+      return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return {};
+    }
+  };
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    const file = join(at, "node_modules", name, "package.json");
+    if (existsSync(file)) return read(file);
+    if (dirname(at) === at) break;
+  }
+  if (!process.versions.pnp) return undefined;
+  const require = createRequire(join(resolve(dir), "_"));
+  try {
+    return read(require.resolve(`${name}/package.json`));
+  } catch {}
+  // A package whose `exports` hides its `package.json`: walk up from its entry point to the manifest that names it.
+  try {
+    for (let at = dirname(require.resolve(name)); dirname(at) !== at; at = dirname(at)) {
+      const file = join(at, "package.json");
+      if (existsSync(file) && read(file).name === name) return read(file);
+    }
+  } catch {}
+  return undefined;
+}
+
+/**
+ * Why a `.sql` file in `dir` cannot use the decimal library `js.codecs.decimal` names, which its
+ * module imports from the app's own install: the package is not there, or it ships no types and
+ * its DefinitelyTyped package is not there either. Undefined where it can.
+ */
+export function decimalLibraryProblem(codecs: Codecs, dir: string): string | undefined {
+  const library = codecs.decimal;
+  if (library === undefined || library === "string" || library === "number") return undefined;
+  const { types } = DECIMAL_LIBRARIES[library as DecimalLibrary];
+  const setting = `js.codecs.decimal is ${library} in the project file`;
+  const pkg = installed(library, dir);
+  if (pkg === undefined) return `${setting}, and no ${library} is installed where this file can import it: install it (npm install ${library}), or set js.codecs.decimal to string.`;
+  const typed = pkg.types !== undefined || pkg.typings !== undefined || JSON.stringify(pkg.exports ?? null).includes('"types"');
+  if (!typed && types !== undefined && installed(types, dir) === undefined) return `${setting}, which ships no types of its own: install ${types} beside it (npm install --save-dev ${types}).`;
+  return undefined;
 }

@@ -14,12 +14,24 @@ importers:
       '@duckdb/node-api':
         specifier: 2.0.0-r.1
         version: 2.0.0-r.1
+      '@types/big.js':
+        specifier: 7.0.0
+        version: 7.0.0
       '@types/node':
         specifier: ^26.6.1
         version: 26.6.6
       ajv:
         specifier: 8.20.0
         version: 8.20.0
+      big.js:
+        specifier: 7.0.1
+        version: 7.0.1
+      bignumber.js:
+        specifier: 11.1.5
+        version: 11.1.5
+      decimal.js:
+        specifier: 10.6.0
+        version: 10.6.0
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
@@ -945,6 +957,9 @@ packages:
   '@tybys/wasm-util@0.10.4':
     resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
 
+  '@types/big.js@7.0.0':
+    resolution: {integrity: sha512-WfAGp7IbJvyB8EmWK4tJD24rJRAL6uVbw3LV/hJntFNam+os9KWKj0PzXo8rRRpjupYK8U0M8FoBB8dBhWF2dg==}
+
   '@types/node@26.6.6':
     resolution: {integrity: sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==}
 
@@ -1133,6 +1148,12 @@ packages:
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
+  big.js@7.0.1:
+    resolution: {integrity: sha512-iFgV784tD8kq4ccF1xtNMZnXeZzVuXWWM+ERFzKQjv+A5G9HC8CY3DuV45vgzFFcW+u2tIvmF95+AzWgs6BjCg==}
+
+  bignumber.js@11.1.5:
+    resolution: {integrity: sha512-6WmzCNtUnfKpbozq+hOgWaZMMzORmYBwF1xZScyoIX3QRYWeKTtxxwDOW5tIz7C9BdjkIYHGTcelCLkXg0mndw==}
+
   binaryen@132.0.0:
     resolution: {integrity: sha512-4Usg7yEvwO3FMso3Oov6qkOOHSod1IEv+boKkh77kTljM+eNBouqCTbqWswGzbG+vDNO/b/v2C4gfEh1WgB9Lg==}
     hasBin: true
@@ -1156,6 +1177,9 @@ packages:
     resolution: {integrity: sha512-/Brt+/Ps7DQ1mYuUsDISTQTFSaZfCSoRHkHnh9Dm5WHCO6arc/vzVdD8TXssfyNex2Iv3UR8NHdahsqABPDh0w==}
     engines: {node: '>=18.0.0'}
     hasBin: true
+
+  decimal.js@10.6.0:
+    resolution: {integrity: sha512-YpgQiITW3JXGntzdUmyUR1V812Hn8T1YVXhCu+wO3OpS4eU9l4YdD3qjyiKdV6mvV29zapkMeD390UVEf2lkUg==}
 
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
@@ -2150,6 +2174,8 @@ snapshots:
       tslib: 2.9.1
     optional: true
 
+  '@types/big.js@7.0.0': {}
+
   '@types/node@26.6.6':
     dependencies:
       undici-types: 8.9.0
@@ -2258,6 +2284,10 @@ snapshots:
 
   base64-js@1.5.1: {}
 
+  big.js@7.0.1: {}
+
+  bignumber.js@11.1.5: {}
+
   binaryen@132.0.0: {}
 
   brace-expansion@5.0.12:
@@ -2283,6 +2313,8 @@ snapshots:
       '@andreiltd/componentize-qjs-binding-linux-x64-musl': 0.4.5
       '@andreiltd/componentize-qjs-binding-win32-arm64-msvc': 0.4.5
       '@andreiltd/componentize-qjs-binding-win32-x64-msvc': 0.4.5
+
+  decimal.js@10.6.0: {}
 
   detect-libc@2.1.2: {}
 

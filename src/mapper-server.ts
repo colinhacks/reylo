@@ -7,7 +7,7 @@ import { dirname, relative, sep } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes, queryErrorType, reyloImport, withinFile } from "./module-types.ts";
-import { PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
+import { decimalLibraryProblem, PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
 import type { Codecs } from "./codecs.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, statementAfter } from "./doc-comment.ts";
@@ -161,6 +161,13 @@ export function mapperHandlers(): MapperHandlers {
       // the docs site's playground shares (src/module-types.ts).
       const types = moduleTypes(sql, analysis, dialect, lexed, project.strictParams, project.projectFile, project.codecs, project.allowNestedArrays && dialect === "postgres");
       diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
+      // A decimal library the declared types name is the app's install beside the file, which the
+      // project file can name before the app installs it.
+      const library = project.codecs.decimal;
+      if (library !== undefined && library !== "string" && library !== "number" && [types.params, types.row, types.columns ?? ""].some((t) => t.includes(`import("${library}")`))) {
+        const missing = decimalLibraryProblem(project.codecs, dirname(p.fileName));
+        if (missing) diagnostics.push(diag(size, missing, 0, 1, 11));
+      }
       // The compiled statement, without the comment naming its file, which the run time adds where
       // it sends the statement (src/sqlcommenter.ts).
       return emit(analysis.rewritten.sql.trimEnd(), types.params, types.row, types.cardinality, types.names, types.queryError, types.columns, analysis.ordered === true);
