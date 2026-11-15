@@ -17,6 +17,9 @@ let user = get_user::Query { id: 1 }.run(&pool).await?;
 
 The attribute fills the module with the statement's types: `Query`, its parameters, and `Row`, one row of its result. The query runs on sqlx, on your own pool, connection or transaction.
 
+> [!NOTE] Not on crates.io yet
+> The `reylo` and `reylo-build` crates are published once `pg_query`, the Postgres parser they build on, releases the fixes they need.
+
 ## Setup
 
 To use Reylo in Rust, you'll need:
@@ -294,7 +297,7 @@ Reylo can write each query's module to a file instead.
 reylo generate rust-sqlx
 ```
 
-It writes a `.rs` file beside each `.sql` file of the crate, holding what `#[reylo::query]` would: `Query`, `Row` and `.run()`.
+It writes a `.rs` file beside each `.sql` file of the crate, holding what `#[reylo::query]` would: `Query`, `Row` and `.run()`. The `reylo` command comes with Reylo's npm package, so `npx reylo generate rust-sqlx` runs it with nothing installed.
 
 ```text
 src/

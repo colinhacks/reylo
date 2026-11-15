@@ -61,7 +61,7 @@ export function getMDXComponents(components?: MDXComponents) {
     // (lib/remark-typedefs.ts fills them).
     TypeDefCard: ({ children }: { children: ReactNode }) => (
       <div className="typedef-card">
-        <InferenceCard layout="rows" bare>
+        <InferenceCard layout="rows">
           {children}
         </InferenceCard>
       </div>
@@ -70,7 +70,7 @@ export function getMDXComponents(components?: MDXComponents) {
     // writes for a column of it (lib/remark-typedefs.ts fills them).
     TypeListCard: ({ children }: { children: ReactNode }) => (
       <div className="typedef-card typedef-type-list">
-        <InferenceCard layout="rows" bare>
+        <InferenceCard layout="rows">
           {children}
         </InferenceCard>
       </div>

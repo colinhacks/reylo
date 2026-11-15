@@ -100,7 +100,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub id: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: String,\n    pub name: Option<String>,\n    pub posts: Json<Vec<PostsItem>>,\n}\n\npub struct PostsItem {\n    pub id: String,\n    pub title: String,\n}"
+          "returns": "Option<{\n    id: String,\n    name: Option<String>,\n    posts: Json<Vec<PostsItem>>,\n}>\n\npub struct PostsItem {\n    pub id: String,\n    pub title: String,\n}"
         }
       }
     },
@@ -157,7 +157,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub users: serde_json::Value,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n}"
+          "returns": "Vec<{ id: i32 }>"
         }
       }
     },
@@ -210,7 +210,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub since: chrono::DateTime<chrono::Utc>,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub newUsers: i32,\n    pub newPosts: i32,\n    pub drafts: i32,\n}"
+          "returns": "{ newUsers: i32, newPosts: i32, drafts: i32 }"
         }
       }
     },
@@ -292,7 +292,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub limit: i32,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub user_count: i32,\n    pub post_count: i32,\n    pub recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+          "returns": "{\n    user_count: i32,\n    post_count: i32,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
     },
@@ -353,7 +353,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i32,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n    pub email: Option<String>,\n}"
+          "returns": "Option<{ id: i32, name: String, email: Option<String> }>"
         }
       }
     },
@@ -392,7 +392,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub name: &'a str,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub id: i32,\n}"
+          "returns": "{ id: i32 }"
         }
       }
     },
@@ -458,7 +458,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub limit: i32,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub kind: String,\n}"
+          "returns": "Vec<{ id: i32, kind: String }>"
         }
       }
     },
@@ -544,7 +544,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i32,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub payload: serde_json::Value,\n}"
+          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
         }
       }
     },
@@ -602,7 +602,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i32,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub payload: serde_json::Value,\n}"
+          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
         }
       }
     },
@@ -660,7 +660,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub kind: String,\n    pub id: i32,\n    pub label: String,\n}"
+          "returns": "Vec<{ kind: String, id: i32, label: String }>"
         }
       }
     },
@@ -694,7 +694,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: i32,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub posts: i32,\n}"
+          "returns": "{ posts: i32 }"
         }
       }
     },
@@ -747,7 +747,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: Option<i32>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub title: String,\n}"
+          "returns": "Vec<{ id: i32, title: String }>"
         }
       }
     },
@@ -802,7 +802,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub since: chrono::DateTime<chrono::Utc>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub title: String,\n}"
+          "returns": "Vec<{ name: String, title: String }>"
         }
       }
     },
@@ -938,7 +938,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub q: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -990,7 +990,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub email: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Option<{ id: i32, name: String }>"
         }
       }
     },
@@ -1055,7 +1055,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub role: UserRole,\n}\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub email: String,\n    pub has_posts: bool,\n}"
+          "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
         }
       }
     },
@@ -1137,7 +1137,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub since: chrono::DateTime<chrono::Utc>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub posts: Json<Vec<PostsItem>>,\n}\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+          "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
     },
@@ -1190,7 +1190,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: i32,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub title: Option<String>,\n}"
+          "returns": "Vec<{ name: String, title: Option<String> }>"
         }
       }
     },
@@ -1248,7 +1248,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub role: UserRole,\n}\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -1304,7 +1304,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub title: Option<String>,\n    pub published_at: Option<\n        chrono::DateTime<chrono::Utc>,\n    >,\n}"
+          "returns": "Vec<{\n    name: String,\n    title: Option<String>,\n    published_at: Option<\n        chrono::DateTime<chrono::Utc>,\n    >,\n}>"
         }
       }
     },
@@ -1369,274 +1369,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub id: i32,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub old_name: String,\n    pub new_name: String,\n}"
-        }
-      }
-    },
-    "pg_card_insert_select.sql": {
-      "7064b7f29b454737": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "int8"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n}"
-        }
-      }
-    },
-    "pg_card_partial.sql": {
-      "9797036508d8d297": {
-        "descriptor": {
-          "params": [
-            {
-              "name": "slug",
-              "type": {
-                "kind": "text",
-                "code_points": [
-                  [
-                    1,
-                    1114111
-                  ]
-                ],
-                "label": "text"
-              }
-            }
-          ],
-          "result": {
-            "kind": "table",
-            "cardinality": "at_most_one",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int4"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query<'a> {\n    pub slug: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n}"
-        }
-      }
-    },
-    "pg_card_subquery.sql": {
-      "31ed10aaddeada86": {
-        "descriptor": {
-          "params": [
-            {
-              "name": "id",
-              "type": {
-                "kind": "integer",
-                "bits": 64,
-                "label": "int8"
-              }
-            }
-          ],
-          "result": {
-            "kind": "table",
-            "cardinality": "at_most_one",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "int8"
-                }
-              },
-              {
-                "name": "total",
-                "type": {
-                  "kind": "decimal",
-                  "precision": 12,
-                  "min_scale": 2,
-                  "max_scale": 2,
-                  "min": "0",
-                  "nan": true,
-                  "label": "numeric"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query {\n    pub id: i64,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i64,\n    pub total: rust_decimal::Decimal,\n}"
-        }
-      }
-    },
-    "pg_card_trigger.sql": {
-      "f2b50e8c5d165005": {
-        "descriptor": {
-          "params": [
-            {
-              "name": "id",
-              "type": {
-                "kind": "integer",
-                "bits": 32,
-                "label": "int4"
-              }
-            },
-            {
-              "name": "body",
-              "type": {
-                "kind": "text",
-                "code_points": [
-                  [
-                    1,
-                    1114111
-                  ]
-                ],
-                "label": "text"
-              }
-            }
-          ],
-          "result": {
-            "kind": "table",
-            "cardinality": "one",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int4"
-                }
-              },
-              {
-                "name": "edited_at",
-                "type": {
-                  "kind": "instant",
-                  "tick": "1/1000000",
-                  "min": "-4713-11-24T00:00:00Z",
-                  "max": "+294276-12-31T23:59:59.999999Z",
-                  "infinity": true,
-                  "label": "timestamptz"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query<'a> {\n    pub id: i32,\n    pub body: &'a str,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub id: i32,\n    pub edited_at: chrono::DateTime<\n        chrono::Utc,\n    >,\n}"
-        }
-      }
-    },
-    "pg_card_unique.sql": {
-      "a37354ad0076c4cd": {
-        "descriptor": {
-          "params": [
-            {
-              "name": "email",
-              "type": {
-                "kind": "text",
-                "code_points": [
-                  [
-                    1,
-                    1114111
-                  ]
-                ],
-                "label": "text"
-              }
-            }
-          ],
-          "result": {
-            "kind": "table",
-            "cardinality": "at_most_one",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int4"
-                }
-              },
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query<'a> {\n    pub email: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
-        }
-      }
-    },
-    "pg_card_with_input.sql": {
-      "c8336f7ffe2a37da": {
-        "descriptor": {
-          "params": [
-            {
-              "name": "id",
-              "type": {
-                "kind": "integer",
-                "bits": 32,
-                "label": "int4"
-              }
-            },
-            {
-              "name": "name",
-              "type": {
-                "kind": "text",
-                "code_points": [
-                  [
-                    1,
-                    1114111
-                  ]
-                ],
-                "label": "text"
-              }
-            }
-          ],
-          "result": {
-            "kind": "table",
-            "cardinality": "at_most_one",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int4"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query<'a> {\n    pub id: i32,\n    pub name: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n}"
+          "returns": "Option<{ old_name: String, new_name: String }>"
         }
       }
     },
@@ -1706,7 +1439,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub ships_on: chrono::NaiveDate,\n    pub receipt: Vec<u8>,\n    pub id: i64,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i64,\n    pub ships_on: Option<chrono::NaiveDate>,\n    pub receipt: Option<Vec<u8>>,\n}"
+          "returns": "Option<{\n    id: i64,\n    ships_on: Option<chrono::NaiveDate>,\n    receipt: Option<Vec<u8>>,\n}>"
         }
       }
     },
@@ -1737,7 +1470,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub merged: serde_json::Value,\n    pub k: serde_json::Value,\n}"
+          "returns": "Vec<{\n    merged: serde_json::Value,\n    k: serde_json::Value,\n}>"
         }
       }
     },
@@ -1777,7 +1510,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub big_order: Option<Json<BigOrder>>,\n}\n\npub struct BigOrder {\n    pub id: i64,\n}"
+          "returns": "Vec<{ big_order: Option<Json<BigOrder>> }>\n\npub struct BigOrder {\n    pub id: i64,\n}"
         }
       }
     },
@@ -1829,7 +1562,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub summary: Json<Summary>,\n}\n\npub struct Summary {\n    pub name: String,\n    pub orders: i64,\n}"
+          "returns": "Vec<{ summary: Json<Summary> }>\n\npub struct Summary {\n    pub name: String,\n    pub orders: i64,\n}"
         }
       }
     },
@@ -1878,7 +1611,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub kind: String,\n    pub x: Option<serde_json::Value>,\n}"
+          "returns": "Vec<{ kind: String, x: Option<serde_json::Value> }>"
         }
       }
     },
@@ -1947,7 +1680,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub kind: &'a str,\n    pub payload: serde_json::Value,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub id: i64,\n}"
+          "returns": "{ id: i64 }"
         }
       }
     },
@@ -2000,572 +1733,6 @@
         },
         "rust": {
           "error": "totals_item holds a decimal inside JSON, which no Rust number reads exactly: cast it to text inside the JSON, as `x::text`"
-        }
-      }
-    },
-    "pg_null_aggregates.sql": {
-      "1f1e008e342fa646": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "user_id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int4"
-                }
-              },
-              {
-                "name": "order_ids",
-                "type": {
-                  "kind": "array",
-                  "element": {
-                    "type": {
-                      "kind": "integer",
-                      "bits": 64,
-                      "label": "int8"
-                    }
-                  },
-                  "label": "_int8"
-                }
-              },
-              {
-                "name": "last_ships_on",
-                "type": {
-                  "kind": "date",
-                  "min": "-4713-11-24",
-                  "max": "+5874897-12-31",
-                  "infinity": true,
-                  "label": "date"
-                },
-                "nullable": true
-              },
-              {
-                "name": "paid_total",
-                "type": {
-                  "kind": "decimal",
-                  "min_scale": 0,
-                  "max_scale": 16383,
-                  "exclusive_min": "-1e131072",
-                  "exclusive_max": "1e131072",
-                  "infinity": true,
-                  "nan": true,
-                  "label": "numeric"
-                },
-                "nullable": true
-              }
-            ],
-            "unique": [
-              [
-                "user_id"
-              ]
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub user_id: i32,\n    pub order_ids: Vec<i64>,\n    pub last_ships_on: Option<chrono::NaiveDate>,\n    pub paid_total: Option<rust_decimal::Decimal>,\n}"
-        }
-      }
-    },
-    "pg_null_columns.sql": {
-      "454fac5f9df30c85": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                }
-              },
-              {
-                "name": "email",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub email: Option<String>,\n}"
-        }
-      }
-    },
-    "pg_null_expressions.sql": {
-      "3b2e993dbb244a58": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "shout",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                }
-              },
-              {
-                "name": "upper_email",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                },
-                "nullable": true
-              },
-              {
-                "name": "email_or_empty",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                }
-              },
-              {
-                "name": "no_email",
-                "type": {
-                  "kind": "boolean",
-                  "label": "bool"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub shout: String,\n    pub upper_email: Option<String>,\n    pub email_or_empty: String,\n    pub no_email: bool,\n}"
-        }
-      }
-    },
-    "pg_null_function.sql": {
-      "f634abf309b974e4": {
-        "descriptor": {
-          "params": [
-            {
-              "name": "post_id",
-              "type": {
-                "kind": "integer",
-                "bits": 64,
-                "label": "int8"
-              }
-            }
-          ],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "int8"
-                }
-              },
-              {
-                "name": "body",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                }
-              }
-            ],
-            "unique": [
-              [
-                "id"
-              ]
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query {\n    pub post_id: i64,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub body: String,\n}"
-        }
-      }
-    },
-    "pg_null_left_join.sql": {
-      "56f847eb1efd2795": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                }
-              },
-              {
-                "name": "total",
-                "type": {
-                  "kind": "decimal",
-                  "precision": 12,
-                  "min_scale": 2,
-                  "max_scale": 2,
-                  "min": "0",
-                  "nan": true,
-                  "label": "numeric"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub total: Option<rust_decimal::Decimal>,\n}"
-        }
-      }
-    },
-    "pg_null_rows.sql": {
-      "95bc3d9d377afabb": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "order",
-                "type": {
-                  "kind": "json",
-                  "content": {
-                    "type": {
-                      "kind": "struct",
-                      "fields": [
-                        {
-                          "name": "id",
-                          "type": {
-                            "kind": "integer",
-                            "bits": 64,
-                            "label": "int8"
-                          }
-                        },
-                        {
-                          "name": "user_id",
-                          "type": {
-                            "kind": "integer",
-                            "bits": 32,
-                            "label": "int4"
-                          }
-                        },
-                        {
-                          "name": "total",
-                          "type": {
-                            "kind": "decimal",
-                            "precision": 12,
-                            "min_scale": 2,
-                            "max_scale": 2,
-                            "min": "0",
-                            "nan": true,
-                            "label": "numeric"
-                          }
-                        },
-                        {
-                          "name": "paid",
-                          "type": {
-                            "kind": "boolean",
-                            "label": "bool"
-                          }
-                        },
-                        {
-                          "name": "placed_at",
-                          "type": {
-                            "kind": "instant",
-                            "tick": "1/1000000",
-                            "min": "-4713-11-24T00:00:00Z",
-                            "max": "+294276-12-31T23:59:59.999999Z",
-                            "infinity": true,
-                            "label": "timestamptz"
-                          }
-                        },
-                        {
-                          "name": "ships_on",
-                          "type": {
-                            "kind": "date",
-                            "min": "-4713-11-24",
-                            "max": "+5874897-12-31",
-                            "infinity": true,
-                            "label": "date"
-                          },
-                          "nullable": true
-                        },
-                        {
-                          "name": "receipt",
-                          "type": {
-                            "kind": "bytes",
-                            "label": "bytea"
-                          },
-                          "nullable": true
-                        }
-                      ]
-                    }
-                  },
-                  "label": "jsonb"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "error": "order_total holds a decimal inside JSON, which no Rust number reads exactly: cast it to text inside the JSON, as `x::text`"
-        }
-      }
-    },
-    "pg_null_subqueries.sql": {
-      "17d2efcdc680fd2c": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "one",
-            "columns": [
-              {
-                "name": "orders",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "int8"
-                }
-              },
-              {
-                "name": "first_name",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Row\n\npub struct Row {\n    pub orders: i64,\n    pub first_name: Option<String>,\n}"
-        }
-      }
-    },
-    "pg_null_union.sql": {
-      "0371b522ff46f555": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "label",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                }
-              },
-              {
-                "name": "contact",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub label: String,\n    pub contact: Option<String>,\n}"
-        }
-      }
-    },
-    "pg_null_where.sql": {
-      "aaa98d767f3d079d": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "code_points": [
-                    [
-                      1,
-                      1114111
-                    ]
-                  ],
-                  "label": "text"
-                }
-              },
-              {
-                "name": "total",
-                "type": {
-                  "kind": "decimal",
-                  "precision": 12,
-                  "min_scale": 2,
-                  "max_scale": 2,
-                  "min": "0",
-                  "nan": true,
-                  "label": "numeric"
-                }
-              },
-              {
-                "name": "ships_on",
-                "type": {
-                  "kind": "date",
-                  "min": "-4713-11-24",
-                  "max": "+5874897-12-31",
-                  "infinity": true,
-                  "label": "date"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub total: rust_decimal::Decimal,\n    pub ships_on: Option<chrono::NaiveDate>,\n}"
-        }
-      }
-    },
-    "pg_null_window.sql": {
-      "65cb7c3ce6b04519": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "int8"
-                }
-              },
-              {
-                "name": "previous",
-                "type": {
-                  "kind": "instant",
-                  "tick": "1/1000000",
-                  "min": "-4713-11-24T00:00:00Z",
-                  "max": "+294276-12-31T23:59:59.999999Z",
-                  "infinity": true,
-                  "label": "timestamptz"
-                },
-                "nullable": true
-              },
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "int8"
-                }
-              },
-              {
-                "name": "running_total",
-                "type": {
-                  "kind": "decimal",
-                  "min_scale": 0,
-                  "max_scale": 16383,
-                  "exclusive_min": "-1e131072",
-                  "exclusive_max": "1e131072",
-                  "infinity": true,
-                  "nan": true,
-                  "label": "numeric"
-                }
-              }
-            ],
-            "unique": [
-              [
-                "id"
-              ]
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub previous: Option<\n        chrono::DateTime<chrono::Utc>,\n    >,\n    pub n: i64,\n    pub running_total: rust_decimal::Decimal,\n}"
         }
       }
     },
@@ -2626,7 +1793,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub from: chrono::DateTime<chrono::Utc>,\n    pub to: chrono::DateTime<chrono::Utc>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub day: String,\n    pub orders: i32,\n}"
+          "returns": "Vec<{ day: String, orders: i32 }>"
         }
       }
     },
@@ -2733,79 +1900,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub role: Option<UserRole>,\n}\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
-        }
-      }
-    },
-    "pg_subquery_rows.sql": {
-      "ec72d610c1ee9ca0": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "one",
-            "columns": [
-              {
-                "name": "people",
-                "type": {
-                  "kind": "json",
-                  "content": {
-                    "type": {
-                      "kind": "array",
-                      "element": {
-                        "type": {
-                          "kind": "struct",
-                          "fields": [
-                            {
-                              "name": "id",
-                              "type": {
-                                "kind": "integer",
-                                "bits": 32,
-                                "label": "int4"
-                              }
-                            },
-                            {
-                              "name": "name",
-                              "type": {
-                                "kind": "text",
-                                "code_points": [
-                                  [
-                                    1,
-                                    1114111
-                                  ]
-                                ],
-                                "label": "text"
-                              }
-                            },
-                            {
-                              "name": "email",
-                              "type": {
-                                "kind": "text",
-                                "code_points": [
-                                  [
-                                    1,
-                                    1114111
-                                  ]
-                                ],
-                                "label": "text"
-                              },
-                              "nullable": true
-                            }
-                          ]
-                        }
-                      }
-                    }
-                  },
-                  "label": "jsonb"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Row\n\npub struct Row {\n    pub people: Option<\n        Json<Vec<PeopleItem>>,\n    >,\n}\n\npub struct PeopleItem {\n    pub id: i32,\n    pub name: String,\n    pub email: Option<String>,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -2839,7 +1934,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: i32,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub count: i32,\n}"
+          "returns": "{ count: i32 }"
         }
       }
     },
@@ -3000,7 +2095,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub id: &'a str,\n    pub title: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: String,\n}"
+          "returns": "Option<{ id: String }>"
         }
       }
     },
@@ -3040,7 +2135,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub user_id: Option<i32>,\n    pub posts: i32,\n}"
+          "returns": "Vec<{ user_id: Option<i32>, posts: i32 }>"
         }
       }
     },
@@ -3104,7 +2199,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub filters: serde_json::Value,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub title: String,\n    pub author: String,\n}"
+          "returns": "Vec<{ id: i32, title: String, author: String }>"
         }
       }
     },
@@ -3161,7 +2256,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub sort: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -3239,7 +2334,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub patch: serde_json::Value,\n    pub id: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: String,\n    pub name: Option<String>,\n    pub email: String,\n}"
+          "returns": "Option<{\n    id: String,\n    name: Option<String>,\n    email: String,\n}>"
         }
       }
     },
@@ -3304,7 +2399,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub email: &'a str,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "{ id: i32, name: String }"
         }
       }
     },
@@ -3363,7 +2458,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub ids: Vec<Option<i32>>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -3433,7 +2528,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub posts: Json<Vec<PostsItem>>,\n}\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+          "returns": "Vec<{ id: i32, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
     },
@@ -3611,7 +2706,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub title: String,\n    pub n: i64,\n    pub prev: Option<String>,\n}"
+          "returns": "Vec<{\n    id: i32,\n    title: String,\n    n: i64,\n    prev: Option<String>,\n}>"
         }
       }
     }
@@ -3715,7 +2810,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub limit: i32,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub user_count: i64,\n    pub post_count: i64,\n    pub recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+          "returns": "{\n    user_count: i64,\n    post_count: i64,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
     },
@@ -3771,7 +2866,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i32,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n    pub email: Option<String>,\n}"
+          "returns": "Option<{ id: i32, name: String, email: Option<String> }>"
         }
       }
     },
@@ -3856,7 +2951,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i32,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub payload: serde_json::Value,\n}"
+          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
         }
       }
     },
@@ -3913,7 +3008,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i32,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub payload: serde_json::Value,\n}"
+          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
         }
       }
     },
@@ -4001,7 +3096,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: i32,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub posts: i64,\n}"
+          "returns": "{ posts: i64 }"
         }
       }
     },
@@ -4047,7 +3142,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: Option<i32>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub title: String,\n}"
+          "returns": "Vec<{ id: i32, title: String }>"
         }
       }
     },
@@ -4097,7 +3192,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub since: chrono::NaiveDateTime,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub title: String,\n}"
+          "returns": "Vec<{ name: String, title: String }>"
         }
       }
     },
@@ -4178,7 +3273,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub q: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -4223,7 +3318,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub email: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Option<{ id: i32, name: String }>"
         }
       }
     },
@@ -4280,7 +3375,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub role: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub email: String,\n    pub has_posts: bool,\n}"
+          "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
         }
       }
     },
@@ -4355,7 +3450,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub since: chrono::NaiveDateTime,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub posts: Json<Vec<PostsItem>>,\n}\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+          "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
     },
@@ -4405,7 +3500,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: i32,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub title: Option<String>,\n}"
+          "returns": "Vec<{ name: String, title: Option<String> }>"
         }
       }
     },
@@ -4457,7 +3552,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub role: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -4504,7 +3599,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub title: Option<String>,\n    pub published_at: Option<\n        chrono::NaiveDateTime,\n    >,\n}"
+          "returns": "Vec<{\n    name: String,\n    title: Option<String>,\n    published_at: Option<chrono::NaiveDateTime>,\n}>"
         }
       }
     },
@@ -4548,7 +3643,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: i32,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub ids: Json<Vec<i64>>,\n}"
+          "returns": "{ ids: Json<Vec<i64>> }"
         }
       }
     },
@@ -4610,7 +3705,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub wrapped: Json<Wrapped>,\n    pub x: Option<serde_json::Value>,\n}\n\npub struct Wrapped {\n    pub p: serde_json::Value,\n}"
+          "returns": "Vec<{\n    wrapped: Json<Wrapped>,\n    x: Option<serde_json::Value>,\n}>\n\npub struct Wrapped {\n    pub p: serde_json::Value,\n}"
         }
       }
     },
@@ -4669,7 +3764,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub user_id: i32,\n    pub order_ids: Json<Vec<i64>>,\n    pub last_ships_on: Option<chrono::NaiveDate>,\n    pub spent: rust_decimal::Decimal,\n}"
+          "returns": "Vec<{\n    user_id: i32,\n    order_ids: Json<Vec<i64>>,\n    last_ships_on: Option<chrono::NaiveDate>,\n    spent: rust_decimal::Decimal,\n}>"
         }
       }
     },
@@ -4707,7 +3802,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub email: Option<String>,\n}"
+          "returns": "Vec<{ name: String, email: Option<String> }>"
         }
       }
     },
@@ -4755,7 +3850,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub n: i64,\n    pub shout: Option<String>,\n    pub shout_or_empty: String,\n    pub half: Option<rust_decimal::Decimal>,\n}"
+          "returns": "Vec<{\n    n: i64,\n    shout: Option<String>,\n    shout_or_empty: String,\n    half: Option<rust_decimal::Decimal>,\n}>"
         }
       }
     },
@@ -4793,7 +3888,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub total: Option<rust_decimal::Decimal>,\n}"
+          "returns": "Vec<{\n    name: String,\n    total: Option<rust_decimal::Decimal>,\n}>"
         }
       }
     },
@@ -4826,7 +3921,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub role: Option<String>,\n    pub n: i64,\n}"
+          "returns": "Vec<{ role: Option<String>, n: i64 }>"
         }
       }
     },
@@ -4859,7 +3954,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub orders: i64,\n}"
+          "returns": "Vec<{ id: i32, orders: i64 }>"
         }
       }
     },
@@ -4903,7 +3998,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub total: rust_decimal::Decimal,\n    pub ships_on: chrono::NaiveDate,\n}"
+          "returns": "Vec<{\n    name: String,\n    total: rust_decimal::Decimal,\n    ships_on: chrono::NaiveDate,\n}>"
         }
       }
     },
@@ -4943,7 +4038,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub running_total: rust_decimal::Decimal,\n    pub last_ships_on: Option<chrono::NaiveDate>,\n}"
+          "returns": "Vec<{\n    id: i64,\n    running_total: rust_decimal::Decimal,\n    last_ships_on: Option<chrono::NaiveDate>,\n}>"
         }
       }
     },
@@ -5028,7 +4123,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub after: i32,\n    pub n: i32,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n}"
+          "returns": "Vec<{ name: String }>"
         }
       }
     },
@@ -5072,7 +4167,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub role: Option<&'a str>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -5272,7 +4367,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub filters: serde_json::Value,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub title: String,\n    pub author: String,\n}"
+          "returns": "Vec<{ id: i32, title: String, author: String }>"
         }
       }
     },
@@ -5315,7 +4410,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub sort: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -5358,7 +4453,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub ids: serde_json::Value,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i32, name: String }>"
         }
       }
     },
@@ -5473,7 +4568,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i32,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i32,\n    pub name: String,\n    pub posts: Json<Vec<PostsItem>>,\n    pub latest_post: Option<Json<LatestPost>>,\n}\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}\n\npub struct LatestPost {\n    pub id: i32,\n    pub title: String,\n}"
+          "returns": "Option<{\n    id: i32,\n    name: String,\n    posts: Json<Vec<PostsItem>>,\n    latest_post: Option<Json<LatestPost>>,\n}>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}\n\npub struct LatestPost {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
     },
@@ -5527,7 +4622,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i32,\n    pub title: String,\n    pub n: u64,\n    pub prev: Option<String>,\n}"
+          "returns": "Vec<{\n    id: i32,\n    title: String,\n    n: u64,\n    prev: Option<String>,\n}>"
         }
       }
     }
@@ -5632,7 +4727,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub limit: i64,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub user_count: i64,\n    pub post_count: i64,\n    pub recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i64,\n    pub title: String,\n}"
+          "returns": "{\n    user_count: i64,\n    post_count: i64,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i64,\n    pub title: String,\n}"
         }
       }
     },
@@ -5684,7 +4779,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i64,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i64,\n    pub name: String,\n    pub email: Option<String>,\n}"
+          "returns": "Option<{ id: i64, name: String, email: Option<String> }>"
         }
       }
     },
@@ -5718,7 +4813,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub name: &'a str,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub id: i64,\n}"
+          "returns": "{ id: i64 }"
         }
       }
     },
@@ -5767,7 +4862,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub kind: String,\n    pub id: i64,\n    pub label: String,\n}"
+          "returns": "Vec<{ kind: String, id: i64, label: String }>"
         }
       }
     },
@@ -5799,7 +4894,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: i64,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub posts: i64,\n}"
+          "returns": "{ posts: i64 }"
         }
       }
     },
@@ -5842,7 +4937,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: Option<i64>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub title: String,\n}"
+          "returns": "Vec<{ id: i64, title: String }>"
         }
       }
     },
@@ -5886,7 +4981,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub since: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub title: String,\n}"
+          "returns": "Vec<{ name: String, title: String }>"
         }
       }
     },
@@ -5961,7 +5056,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub q: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i64, name: String }>"
         }
       }
     },
@@ -6004,7 +5099,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub email: &'a str,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i64,\n    pub name: String,\n}"
+          "returns": "Option<{ id: i64, name: String }>"
         }
       }
     },
@@ -6053,7 +5148,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub role: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub email: String,\n    pub has_posts: bool,\n}"
+          "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
         }
       }
     },
@@ -6121,7 +5216,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub since: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub posts: Json<Vec<PostsItem>>,\n}\n\npub struct PostsItem {\n    pub id: i64,\n    pub title: String,\n}"
+          "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i64,\n    pub title: String,\n}"
         }
       }
     },
@@ -6165,7 +5260,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub user_id: i64,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub title: Option<String>,\n}"
+          "returns": "Vec<{ name: String, title: Option<String> }>"
         }
       }
     },
@@ -6208,7 +5303,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub role: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i64, name: String }>"
         }
       }
     },
@@ -6301,7 +5396,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Row\n\npub struct Row {\n    pub n: i64,\n    pub top: Option<i64>,\n}"
+          "returns": "{ n: i64, top: Option<i64> }"
         }
       }
     },
@@ -6353,7 +5448,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub nick: Option<String>,\n}"
+          "returns": "Vec<{ name: String, nick: Option<String> }>"
         }
       }
     },
@@ -6402,7 +5497,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub shout: Option<String>,\n    pub label: String,\n    pub n: i64,\n    pub per_id: Option<i64>,\n}"
+          "returns": "Vec<{\n    shout: Option<String>,\n    label: String,\n    n: i64,\n    per_id: Option<i64>,\n}>"
         }
       }
     },
@@ -6445,7 +5540,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub total_cents: Option<i64>,\n}"
+          "returns": "Vec<{ name: String, total_cents: Option<i64> }>"
         }
       }
     },
@@ -6496,7 +5591,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub name: String,\n    pub total_cents: i64,\n    pub ships_on: String,\n}"
+          "returns": "Vec<{\n    name: String,\n    total_cents: i64,\n    ships_on: String,\n}>"
         }
       }
     },
@@ -6543,7 +5638,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub previous_total: Option<i64>,\n    pub n: i64,\n    pub largest_total: i64,\n}"
+          "returns": "Vec<{\n    id: i64,\n    previous_total: Option<i64>,\n    n: i64,\n    largest_total: i64,\n}>"
         }
       }
     },
@@ -6635,7 +5730,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub name: Option<&'a str>,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i64, name: String }>"
         }
       }
     },
@@ -6661,7 +5756,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub nick: Option<String>,\n}"
+          "returns": "Vec<{ nick: Option<String> }>"
         }
       }
     },
@@ -6687,7 +5782,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub role: String,\n}"
+          "returns": "Vec<{ role: String }>"
         }
       }
     },
@@ -6728,7 +5823,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub total_cents: i64,\n    pub receipt: Option<Vec<u8>>,\n}"
+          "returns": "Vec<{\n    id: i64,\n    total_cents: i64,\n    receipt: Option<Vec<u8>>,\n}>"
         }
       }
     },
@@ -6923,7 +6018,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub sort: &'a str,\n}",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub name: String,\n}"
+          "returns": "Vec<{ id: i64, name: String }>"
         }
       }
     },
@@ -6974,7 +6069,7 @@
         },
         "rust": {
           "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub email: &'a str,\n}",
-          "returns": "Row\n\npub struct Row {\n    pub id: i64,\n    pub name: String,\n}"
+          "returns": "{ id: i64, name: String }"
         }
       }
     },
@@ -7118,7 +6213,7 @@
         },
         "rust": {
           "params": "pub struct Query {\n    pub id: i64,\n}",
-          "returns": "Option<Row>\n\npub struct Row {\n    pub id: i64,\n    pub name: String,\n    pub posts: Json<Vec<PostsItem>>,\n    pub latest_post: Option<Json<LatestPost>>,\n}\n\npub struct PostsItem {\n    pub id: i64,\n    pub title: String,\n}\n\npub struct LatestPost {\n    pub id: i64,\n    pub title: String,\n}"
+          "returns": "Option<{\n    id: i64,\n    name: String,\n    posts: Json<Vec<PostsItem>>,\n    latest_post: Option<Json<LatestPost>>,\n}>\n\npub struct PostsItem {\n    pub id: i64,\n    pub title: String,\n}\n\npub struct LatestPost {\n    pub id: i64,\n    pub title: String,\n}"
         }
       }
     },
@@ -7168,7 +6263,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<Row>\n\npub struct Row {\n    pub id: i64,\n    pub title: String,\n    pub n: i64,\n    pub prev: Option<String>,\n}"
+          "returns": "Vec<{\n    id: i64,\n    title: String,\n    n: i64,\n    prev: Option<String>,\n}>"
         }
       }
     }
