@@ -37,9 +37,9 @@ Delete the lockfile, and Reylo Migrate runs migrations in lexicographic order, w
 Try a change before you write its migration: `reylo db push --watch` takes your development database to `schema.sql` on every save.
 
 </Feature>
-<Feature icon="split" title="Explicit disambiguation">
+<Feature icon="split" title="Explicit drops">
 
-Where Reylo Migrate can't tell a rename from a drop, `--rename` and `--drop` settle it. A migration drops nothing until `--drop` names it.
+Every destructive change a migration makes needs `--drop`: a dropped table or column, or a type change that loses values, is refused until `--drop` names it. Where Reylo Migrate can't tell a rename from a drop, `--rename` settles it.
 
 </Feature>
 <Feature icon="layers" title="Dry runs in shadow databases">
@@ -124,6 +124,8 @@ Applying to postgres://db.example.com/app
 
 Your schema lives in `schema.sql`, or in your migrations alone.
 
+### Schema file
+
 By default it's `schema.sql`: the whole schema you want, as plain SQL, from which `reylo migrate new` writes each change as a migration, as in [Basic usage](#basic-usage).
 
 ### Schemaless mode
@@ -156,6 +158,10 @@ What changes:
 You give up the one file that shows your whole schema, and the check that your migrations make the schema you meant.
 
 ## Ordering
+
+Your migrations run in one order: the lockfile's, or their names'.
+
+### Lockfile
 
 The lockfile, `reylo-lock.yaml`, keeps your migrations in one order.
 
