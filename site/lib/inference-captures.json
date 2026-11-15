@@ -99,7 +99,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub id: &'a str,\n}",
+          "params": "Query { id: &'a str }",
           "returns": "Option<{\n    id: String,\n    name: Option<String>,\n    posts: Json<Vec<PostsItem>>,\n}>\n\npub struct PostsItem {\n    pub id: String,\n    pub title: String,\n}"
         }
       }
@@ -123,7 +123,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub users: serde_json::Value,\n}",
+          "params": "Query { users: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -156,7 +156,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub users: serde_json::Value,\n}",
+          "params": "Query { users: serde_json::Value }",
           "returns": "Vec<{ id: i32 }>"
         }
       }
@@ -209,7 +209,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub since: chrono::DateTime<chrono::Utc>,\n}",
+          "params": "Query { since: chrono::DateTime<chrono::Utc> }",
           "returns": "{ newUsers: i32, newPosts: i32, drafts: i32 }"
         }
       }
@@ -291,7 +291,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub limit: i32,\n}",
+          "params": "Query { limit: i32 }",
           "returns": "{\n    user_count: i32,\n    post_count: i32,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
@@ -352,7 +352,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i32,\n}",
+          "params": "Query { id: i32 }",
           "returns": "Option<{ id: i32, name: String, email: Option<String> }>"
         }
       }
@@ -391,7 +391,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: &'a str,\n}",
+          "params": "Query { name: &'a str }",
           "returns": "{ id: i32 }"
         }
       }
@@ -457,7 +457,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub limit: i32,\n}",
+          "params": "Query { limit: i32 }",
           "returns": "Vec<{ id: i32, kind: String }>"
         }
       }
@@ -543,7 +543,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i32,\n}",
+          "params": "Query { id: i32 }",
           "returns": "Option<{ id: i32, payload: serde_json::Value }>"
         }
       }
@@ -601,7 +601,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i32,\n}",
+          "params": "Query { id: i32 }",
           "returns": "Option<{ id: i32, payload: serde_json::Value }>"
         }
       }
@@ -693,7 +693,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i32,\n}",
+          "params": "Query { user_id: i32 }",
           "returns": "{ posts: i32 }"
         }
       }
@@ -746,7 +746,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: Option<i32>,\n}",
+          "params": "Query { user_id: Option<i32> }",
           "returns": "Vec<{ id: i32, title: String }>"
         }
       }
@@ -801,7 +801,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub since: chrono::DateTime<chrono::Utc>,\n}",
+          "params": "Query { since: chrono::DateTime<chrono::Utc> }",
           "returns": "Vec<{ name: String, title: String }>"
         }
       }
@@ -842,7 +842,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub payload: serde_json::Value,\n}",
+          "params": "Query { payload: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -880,7 +880,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub id: i32,\n}",
+          "params": "Query { name: &'a str, id: i32 }",
           "returns": "u64"
         }
       }
@@ -937,7 +937,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub q: &'a str,\n}",
+          "params": "Query { q: &'a str }",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -989,7 +989,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub email: &'a str,\n}",
+          "params": "Query { email: &'a str }",
           "returns": "Option<{ id: i32, name: String }>"
         }
       }
@@ -1054,7 +1054,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub role: UserRole,\n}\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
+          "params": "Query { role: UserRole }\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
           "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
         }
       }
@@ -1136,7 +1136,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub since: chrono::DateTime<chrono::Utc>,\n}",
+          "params": "Query { since: chrono::DateTime<chrono::Utc> }",
           "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
@@ -1189,7 +1189,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i32,\n}",
+          "params": "Query { user_id: i32 }",
           "returns": "Vec<{ name: String, title: Option<String> }>"
         }
       }
@@ -1247,7 +1247,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub role: UserRole,\n}\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
+          "params": "Query { role: UserRole }\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -1368,7 +1368,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub id: i32,\n}",
+          "params": "Query { name: &'a str, id: i32 }",
           "returns": "Option<{ old_name: String, new_name: String }>"
         }
       }
@@ -1438,7 +1438,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub ships_on: chrono::NaiveDate,\n    pub receipt: Vec<u8>,\n    pub id: i64,\n}",
+          "params": "Query {\n    ships_on: chrono::NaiveDate,\n    receipt: Vec<u8>,\n    id: i64,\n}",
           "returns": "Option<{\n    id: i64,\n    ships_on: Option<chrono::NaiveDate>,\n    receipt: Option<Vec<u8>>,\n}>"
         }
       }
@@ -1679,7 +1679,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub kind: &'a str,\n    pub payload: serde_json::Value,\n}",
+          "params": "Query { kind: &'a str, payload: serde_json::Value }",
           "returns": "{ id: i64 }"
         }
       }
@@ -1792,7 +1792,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub from: chrono::DateTime<chrono::Utc>,\n    pub to: chrono::DateTime<chrono::Utc>,\n}",
+          "params": "Query {\n    from: chrono::DateTime<chrono::Utc>,\n    to: chrono::DateTime<chrono::Utc>,\n}",
           "returns": "Vec<{ day: String, orders: i32 }>"
         }
       }
@@ -1840,7 +1840,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i32,\n    pub total: rust_decimal::Decimal,\n    pub ships_on: Option<chrono::NaiveDate>,\n}",
+          "params": "Query {\n    user_id: i32,\n    total: rust_decimal::Decimal,\n    ships_on: Option<chrono::NaiveDate>,\n}",
           "returns": "u64"
         }
       }
@@ -1899,7 +1899,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub role: Option<UserRole>,\n}\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
+          "params": "Query { role: Option<UserRole> }\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -1933,7 +1933,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i32,\n}",
+          "params": "Query { user_id: i32 }",
           "returns": "{ count: i32 }"
         }
       }
@@ -1973,7 +1973,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub payload: serde_json::Value,\n}",
+          "params": "Query { payload: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -1997,7 +1997,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub events: serde_json::Value,\n}",
+          "params": "Query { events: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -2037,7 +2037,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub order: serde_json::Value,\n}",
+          "params": "Query { order: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -2094,7 +2094,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub id: &'a str,\n    pub title: &'a str,\n}",
+          "params": "Query { id: &'a str, title: &'a str }",
           "returns": "Option<{ id: String }>"
         }
       }
@@ -2198,7 +2198,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub filters: serde_json::Value,\n}",
+          "params": "Query { filters: serde_json::Value }",
           "returns": "Vec<{ id: i32, title: String, author: String }>"
         }
       }
@@ -2255,7 +2255,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub sort: &'a str,\n}",
+          "params": "Query { sort: &'a str }",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -2333,7 +2333,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub patch: serde_json::Value,\n    pub id: &'a str,\n}",
+          "params": "Query { patch: serde_json::Value, id: &'a str }",
           "returns": "Option<{\n    id: String,\n    name: Option<String>,\n    email: String,\n}>"
         }
       }
@@ -2398,7 +2398,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub email: &'a str,\n}",
+          "params": "Query { name: &'a str, email: &'a str }",
           "returns": "{ id: i32, name: String }"
         }
       }
@@ -2457,7 +2457,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub ids: Vec<Option<i32>>,\n}",
+          "params": "Query { ids: Vec<Option<i32>> }",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -2731,7 +2731,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub users: serde_json::Value,\n}",
+          "params": "Query { users: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -2809,7 +2809,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub limit: i32,\n}",
+          "params": "Query { limit: i32 }",
           "returns": "{\n    user_count: i64,\n    post_count: i64,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
@@ -2865,7 +2865,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i32,\n}",
+          "params": "Query { id: i32 }",
           "returns": "Option<{ id: i32, name: String, email: Option<String> }>"
         }
       }
@@ -2950,7 +2950,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i32,\n}",
+          "params": "Query { id: i32 }",
           "returns": "Option<{ id: i32, payload: serde_json::Value }>"
         }
       }
@@ -3007,7 +3007,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i32,\n}",
+          "params": "Query { id: i32 }",
           "returns": "Option<{ id: i32, payload: serde_json::Value }>"
         }
       }
@@ -3095,7 +3095,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i32,\n}",
+          "params": "Query { user_id: i32 }",
           "returns": "{ posts: i64 }"
         }
       }
@@ -3141,7 +3141,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: Option<i32>,\n}",
+          "params": "Query { user_id: Option<i32> }",
           "returns": "Vec<{ id: i32, title: String }>"
         }
       }
@@ -3191,7 +3191,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub since: chrono::NaiveDateTime,\n}",
+          "params": "Query { since: chrono::NaiveDateTime }",
           "returns": "Vec<{ name: String, title: String }>"
         }
       }
@@ -3227,7 +3227,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub id: i32,\n}",
+          "params": "Query { name: &'a str, id: i32 }",
           "returns": "u64"
         }
       }
@@ -3272,7 +3272,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub q: &'a str,\n}",
+          "params": "Query { q: &'a str }",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -3317,7 +3317,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub email: &'a str,\n}",
+          "params": "Query { email: &'a str }",
           "returns": "Option<{ id: i32, name: String }>"
         }
       }
@@ -3374,7 +3374,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub role: &'a str,\n}",
+          "params": "Query { role: &'a str }",
           "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
         }
       }
@@ -3449,7 +3449,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub since: chrono::NaiveDateTime,\n}",
+          "params": "Query { since: chrono::NaiveDateTime }",
           "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
@@ -3499,7 +3499,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i32,\n}",
+          "params": "Query { user_id: i32 }",
           "returns": "Vec<{ name: String, title: Option<String> }>"
         }
       }
@@ -3551,7 +3551,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub role: &'a str,\n}",
+          "params": "Query { role: &'a str }",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -3642,7 +3642,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i32,\n}",
+          "params": "Query { user_id: i32 }",
           "returns": "{ ids: Json<Vec<i64>> }"
         }
       }
@@ -4080,7 +4080,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i32,\n    pub total: rust_decimal::Decimal,\n    pub ships_on: Option<chrono::NaiveDate>,\n}",
+          "params": "Query {\n    user_id: i32,\n    total: rust_decimal::Decimal,\n    ships_on: Option<chrono::NaiveDate>,\n}",
           "returns": "u64"
         }
       }
@@ -4122,7 +4122,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub after: i32,\n    pub n: i32,\n}",
+          "params": "Query { after: i32, n: i32 }",
           "returns": "Vec<{ name: String }>"
         }
       }
@@ -4166,7 +4166,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub role: Option<&'a str>,\n}",
+          "params": "Query { role: Option<&'a str> }",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -4222,7 +4222,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub payload: serde_json::Value,\n}",
+          "params": "Query { payload: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -4246,7 +4246,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub events: serde_json::Value,\n}",
+          "params": "Query { events: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -4270,7 +4270,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub order: serde_json::Value,\n}",
+          "params": "Query { order: serde_json::Value }",
           "returns": "u64"
         }
       }
@@ -4366,7 +4366,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub filters: serde_json::Value,\n}",
+          "params": "Query { filters: serde_json::Value }",
           "returns": "Vec<{ id: i32, title: String, author: String }>"
         }
       }
@@ -4409,7 +4409,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub sort: &'a str,\n}",
+          "params": "Query { sort: &'a str }",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -4452,7 +4452,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub ids: serde_json::Value,\n}",
+          "params": "Query { ids: serde_json::Value }",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -4567,7 +4567,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i32,\n}",
+          "params": "Query { id: i32 }",
           "returns": "Option<{\n    id: i32,\n    name: String,\n    posts: Json<Vec<PostsItem>>,\n    latest_post: Option<Json<LatestPost>>,\n}>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}\n\npub struct LatestPost {\n    pub id: i32,\n    pub title: String,\n}"
         }
       }
@@ -4726,7 +4726,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub limit: i64,\n}",
+          "params": "Query { limit: i64 }",
           "returns": "{\n    user_count: i64,\n    post_count: i64,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i64,\n    pub title: String,\n}"
         }
       }
@@ -4778,7 +4778,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i64,\n}",
+          "params": "Query { id: i64 }",
           "returns": "Option<{ id: i64, name: String, email: Option<String> }>"
         }
       }
@@ -4812,7 +4812,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: &'a str,\n}",
+          "params": "Query { name: &'a str }",
           "returns": "{ id: i64 }"
         }
       }
@@ -4893,7 +4893,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i64,\n}",
+          "params": "Query { user_id: i64 }",
           "returns": "{ posts: i64 }"
         }
       }
@@ -4936,7 +4936,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: Option<i64>,\n}",
+          "params": "Query { user_id: Option<i64> }",
           "returns": "Vec<{ id: i64, title: String }>"
         }
       }
@@ -4980,7 +4980,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub since: &'a str,\n}",
+          "params": "Query { since: &'a str }",
           "returns": "Vec<{ name: String, title: String }>"
         }
       }
@@ -5012,7 +5012,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub id: i64,\n}",
+          "params": "Query { name: &'a str, id: i64 }",
           "returns": "u64"
         }
       }
@@ -5055,7 +5055,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub q: &'a str,\n}",
+          "params": "Query { q: &'a str }",
           "returns": "Vec<{ id: i64, name: String }>"
         }
       }
@@ -5098,7 +5098,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub email: &'a str,\n}",
+          "params": "Query { email: &'a str }",
           "returns": "Option<{ id: i64, name: String }>"
         }
       }
@@ -5147,7 +5147,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub role: &'a str,\n}",
+          "params": "Query { role: &'a str }",
           "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
         }
       }
@@ -5215,7 +5215,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub since: &'a str,\n}",
+          "params": "Query { since: &'a str }",
           "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i64,\n    pub title: String,\n}"
         }
       }
@@ -5259,7 +5259,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub user_id: i64,\n}",
+          "params": "Query { user_id: i64 }",
           "returns": "Vec<{ name: String, title: Option<String> }>"
         }
       }
@@ -5302,7 +5302,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub role: &'a str,\n}",
+          "params": "Query { role: &'a str }",
           "returns": "Vec<{ id: i64, name: String }>"
         }
       }
@@ -5677,7 +5677,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub user_id: i64,\n    pub total_cents: i64,\n    pub ships_on: Option<&'a str>,\n}",
+          "params": "Query {\n    user_id: i64,\n    total_cents: i64,\n    ships_on: Option<&'a str>,\n}",
           "returns": "u64"
         }
       }
@@ -5729,7 +5729,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: Option<&'a str>,\n}",
+          "params": "Query { name: Option<&'a str> }",
           "returns": "Vec<{ id: i64, name: String }>"
         }
       }
@@ -5878,7 +5878,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub payload: &'a str,\n}",
+          "params": "Query { payload: &'a str }",
           "returns": "u64"
         }
       }
@@ -5925,7 +5925,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub order: &'a str,\n}",
+          "params": "Query { order: &'a str }",
           "returns": "u64"
         }
       }
@@ -6017,7 +6017,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub sort: &'a str,\n}",
+          "params": "Query { sort: &'a str }",
           "returns": "Vec<{ id: i64, name: String }>"
         }
       }
@@ -6068,7 +6068,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query<'a> {\n    pub name: &'a str,\n    pub email: &'a str,\n}",
+          "params": "Query { name: &'a str, email: &'a str }",
           "returns": "{ id: i64, name: String }"
         }
       }
@@ -6212,7 +6212,7 @@
           }
         },
         "rust": {
-          "params": "pub struct Query {\n    pub id: i64,\n}",
+          "params": "Query { id: i64 }",
           "returns": "Option<{\n    id: i64,\n    name: String,\n    posts: Json<Vec<PostsItem>>,\n    latest_post: Option<Json<LatestPost>>,\n}>\n\npub struct PostsItem {\n    pub id: i64,\n    pub title: String,\n}\n\npub struct LatestPost {\n    pub id: i64,\n    pub title: String,\n}"
         }
       }

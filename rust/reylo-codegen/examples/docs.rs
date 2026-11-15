@@ -95,7 +95,8 @@ fn shown(file: syn::File) -> (String, String) {
         };
         text.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == name)
     };
-    let params_text = unparse(vec![syn::Item::Struct(params.clone())]);
+    // `Query { id: i32 }`, the fields as the struct's literal names them; a unit `Query` as it is declared.
+    let params_text = if params.fields.is_empty() { unparse(vec![syn::Item::Struct(params.clone())]) } else { format!("Query {}", record(&params)) };
     let row = named.iter().position(|item| matches!(item, syn::Item::Struct(s) if s.ident == "Row")).map(|i| named.remove(i));
     let mut taken = vec![false; named.len()];
     let mut side = |seed: String| {
