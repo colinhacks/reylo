@@ -384,7 +384,7 @@ const user = await getUser.run(db, { id: 1 });
 
 [Reylo Migrate](/migrations) runs on DuckDB with the same commands.
 
-It runs on your project's own `@duckdb/node-api`, which it needs at 2.0, and refuses an older one. DuckDB lets one process at a time open a file to write, so stop your app, its dev server included, before you run one: each command refuses while another process holds the database, and changes nothing.
+It runs on your project's own `@duckdb/node-api`, which it needs at 2.0, and refuses an older one. DuckDB lets one process at a time open a file to write, so stop your app, its dev server included, before you run a command that writes: each refuses while another process holds the database, and changes nothing. The commands that only read (`status`, `deploy --dry-run` and `db introspect`) open the file read-only, so they run beside other processes that only read it.
 
 DuckDB's `alter table` adds no check or foreign key, changes no column an index covers, and changes little of a table another table's key references. So `reylo migrate new` writes such a change as a rebuild: the table's rows go to a temporary table, the table is made again, and the rows come back, with those of every table whose keys reference it. A check added to `authors`:
 
@@ -413,7 +413,7 @@ DuckDB's catalog holds no macro parameter's default (the `5` of `b := 5`), so Re
 
 DuckDB 2.0 writes a comment on a column so that the file no longer opens, where the column's table calls a macro (in a check, a default or a generated column) and another table's key references it. Reylo Migrate follows such a comment with an `alter table` that changes nothing, which writes the table again whole. Do the same in a migration you write by hand.
 
-Each command opens the database in a DuckDB of its own, which loads no extension a migration loaded before. A migration that uses an extension's functions, types or indexes (spatial's `st_` functions, an R-tree index) starts with `load spatial;`, which Reylo Migrate doesn't write: add it by hand. Its check can't see the line is missing, since the shadow replays every migration in one DuckDB. Reylo's `db push` and `db wipe` load no extension either, so they fail on a database that needs one.
+An extension is loaded once, in `schema.sql` or the migration that first needs it, as `create extension` is on Postgres: write `install spatial;` and `load spatial;` there. Every database Reylo Migrate opens for the project loads it before anything else, its shadows included, so a migration that uses the extension's types, functions or indexes (spatial's `st_` functions, an R-tree index) needs no `load` of its own.
 
 ## Limits
 

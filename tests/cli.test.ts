@@ -65,6 +65,12 @@ test("the migration commands and reylo run are the binary's, with their output a
   db.close();
   // A flag's value after an `=` is its value, so that this runs on the database it names.
   const other = join(root, "other.db");
+  // A SQLite file that isn't there is refused, never made, as the migrations' commands refuse it.
+  const absent = reylo(root, ["run", `--url=sqlite:${other}`, "create table here (id integer)"]);
+  assert.equal(absent.status, 1);
+  assert.match(absent.out + absent.err, /No SQLite database at /);
+  assert.ok(!existsSync(other));
+  new DatabaseSync(other).close();
   assert.equal(reylo(root, ["run", `--url=sqlite:${other}`, "create table here (id integer)"]).status, 0);
   const elsewhere = new DatabaseSync(other);
   assert.deepEqual({ ...elsewhere.prepare("select count(*) as n from sqlite_schema where name = 'here'").get() }, { n: 1 });

@@ -6496,4 +6496,98 @@ comment on macro table app.recent is 'last n';
         let Some(mut p) = at(TYPED_PARAM_V1, "insert into t values (1, 'a')").await else { return };
         push(&mut p, TYPED_PARAM_V2).await;
     }
+
+    /// Another process holding a DuckDB file, read-only or to write, through the same library: a
+    /// Python of the C API, which prints `open` once it has the file.
+    fn holder(path: &std::path::Path, read_only: bool) -> std::process::Child {
+        use std::io::BufRead;
+        let script = r#"
+import ctypes, sys, time
+lib = ctypes.CDLL(sys.argv[1])
+db = ctypes.c_void_p(); cfg = ctypes.c_void_p(); err = ctypes.c_char_p()
+assert lib.duckdb_create_config(ctypes.byref(cfg)) == 0
+if sys.argv[3] == "ro":
+    assert lib.duckdb_set_config(cfg, b"access_mode", b"READ_ONLY") == 0
+st = lib.duckdb_open_ext(sys.argv[2].encode(), ctypes.byref(db), cfg, ctypes.byref(err))
+print("open" if st == 0 else "failed " + str(err.value), flush=True)
+time.sleep(600)
+"#;
+        let lib = std::env::var("REYLO_DUCKDB_LIBRARY").unwrap();
+        let mut child = std::process::Command::new("python3").args(["-c", script, &lib, &path.to_string_lossy(), if read_only { "ro" } else { "rw" }]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "open", "the holder opened the file");
+        child
+    }
+
+    // What only reads a DuckDB file opens it read-only, beside another process that reads it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn status_dry_run_and_introspect_read_beside_another_reader() {
+        let v1 = "create table items (id integer primary key, qty integer);";
+        let Some(mut p) = at(v1, "insert into items values (1, 2)").await else { return };
+        let file = p.dir.join("dev.duckdb");
+        let mut child = holder(&file, true);
+        let status = p.status().await;
+        let status_out = p.output();
+        let dry = p.dry_run().await;
+        let dry_out = p.output();
+        let text = introspect(&p).await;
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(status, 0, "{status_out}");
+        assert_eq!(dry, 0, "{dry_out}");
+        assert!(text.as_ref().is_ok_and(|t| t.contains("create table items")), "{text:?}");
+        // And what writes still refuses to start while another process holds the file.
+        let mut child = holder(&file, true);
+        let r = reylo_migrate::dev(&p.opts(), false, &mut |_: &str| {}).await;
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(r.as_ref().is_err_and(|e| e.0.contains("lock")), "{:?}", r.map_err(|e| e.0));
+    }
+
+    // reylo run on a SQLite or DuckDB file that isn't there refuses, as the migrations' commands do,
+    // rather than make an empty database at a mistyped path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reylo_run_refuses_a_file_that_is_not_there() {
+        let Some(mut p) = duckdb().await else { return };
+        for (url, which) in [(format!("duckdb:{}", p.dir.join("prod.duckbd").display()), "DuckDB"), (format!("sqlite:{}", p.dir.join("prod.sqlitee").display()), "SQLite")] {
+            let items = [("create".to_string(), "create table audit (seen timestamp)".to_string())];
+            let code = p.run(async |o, log| reylo_migrate::run_sql(&url, &o.root, &items, log).await).await;
+            assert_eq!(code, 1, "{}", p.peek());
+            assert_has!(p.output(), &format!(r"✗ No {which} database at [^\n]*\n\nNothing was changed\."));
+            assert!(!p.dir.join("prod.duckbd").exists() && !p.dir.join("prod.sqlitee").exists(), "a file was made");
+        }
+    }
+
+    // A project loads an extension once, in a file, as Postgres's `create extension` holds: every
+    // database Reylo Migrate opens for it, the shadows included, loads it first, so a migration
+    // needs no `load` of its own. Spatial's type, functions and R-tree index through new, dev,
+    // deploy --dry-run, deploy, status, db push and db wipe, in one test, so that one install runs.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_extension_loaded_once_reaches_every_command() {
+        let v1 = "install spatial;\nload spatial;\ncreate table places (id integer primary key, name varchar, g geometry);";
+        let Some(mut p) = at(v1, "insert into places values (1, 'a', st_point(1, 2))").await else { return };
+        // A check calling the extension's function, and its index: a rebuild, and a migration with no load.
+        let v2 = format!("{}\ncreate index places_g on places using rtree (g);", v1.replace("g geometry)", "g geometry check (st_x(g) >= 0))"));
+        let sql = evolve(&mut p, &v2, &[], &[]).await;
+        assert!(!sql.contains("load"), "{sql}");
+        assert_eq!(one(&p, "select count(*)::varchar as v from places").await, "1");
+        // Deployed to a database of its own, which another process made, and checked.
+        let mut q = P::sibling(&p);
+        for f in p.files() {
+            std::fs::copy(p.dir.join("migrations").join(&f), q.dir.join("migrations").join(&f)).unwrap();
+        }
+        std::fs::copy(p.dir.join("schema.sql"), q.dir.join("schema.sql")).unwrap();
+        assert_eq!(q.migrate().await, 0, "{}", q.peek());
+        q.exec("insert into places values (2, 'b', st_point(3, 4))").await;
+        // Its exit code is the lock's, which this copy never wrote: what matters is that it reads.
+        q.status().await;
+        assert_has!(q.output(), r"applied");
+        assert_eq!(q.dry_run().await, 0, "{}", q.peek());
+        // db push, then db wipe, on the development database.
+        push(&mut p, &v2.replace("st_x(g) >= 0", "st_x(g) >= -1")).await;
+        assert_eq!(wipe(&mut p).await, 0, "{}", p.peek());
+        p.output();
+        assert_eq!(one(&p, "select count(*)::varchar as v from places").await, "0");
+    }
 }

@@ -631,7 +631,7 @@ pub(crate) async fn exported(db: &mut Db) -> Result<Option<String>, Error> {
     let read = || std::fs::read_to_string(dir.join("schema.sql")).map_err(|e| Error(e.to_string()));
     let made = match conn.file() {
         Some(path) => (|| -> Result<String, Error> {
-            let mut side = crate::duckdb::Conn::open(":memory:", &std::env::temp_dir())?;
+            let mut side = crate::duckdb::Conn::open(":memory:", &conn.root().to_path_buf())?;
             // The copy binds each default and check as it makes the table, and in the current
             // database: the source, where the macros they call already are.
             side.query(&format!("attach {} as {name}_src (read_only); attach ':memory:' as {name}; use {name}_src", literal(&path.to_string_lossy())))?;
@@ -651,8 +651,12 @@ pub(crate) async fn exported(db: &mut Db) -> Result<Option<String>, Error> {
     let _ = std::fs::remove_dir_all(&dir);
     // DuckDB's copy of a schema, which a file's export goes through, fails where a column's default
     // calls a macro of another schema than `main`.
-    let why = if conn.file().is_some() { "; DuckDB can't copy the schema of a database where a column's default calls a macro of another schema than main" } else { "" };
-    made.map(Some).map_err(|e| Error(format!("DuckDB could not export this database's schema: {}{why}", e.0.lines().next().unwrap_or_default())))
+    let file = conn.file().is_some();
+    made.map(Some).map_err(|e| {
+        let first = e.0.lines().next().unwrap_or_default().to_string();
+        let why = if file && first.contains("Function with name") { "; DuckDB can't copy the schema of a database where a column's default calls a macro of another schema than main" } else { "" };
+        Error(format!("DuckDB could not export this database's schema: {first}{why}"))
+    })
 }
 
 /// The statements of an export, each after those that make what it names: `EXPORT DATABASE` writes

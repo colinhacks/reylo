@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 type Database = *mut c_void;
 type Connection = *mut c_void;
 type Prepared = *mut c_void;
+type Config = *mut c_void;
 type State = i32;
 const SUCCESS: State = 0;
 
@@ -59,6 +60,9 @@ struct Api {
     execute_prepared: unsafe extern "C" fn(Prepared, *mut RawResult) -> State,
     destroy_prepare: unsafe extern "C" fn(*mut Prepared),
     library_version: unsafe extern "C" fn() -> *const c_char,
+    create_config: unsafe extern "C" fn(*mut Config) -> State,
+    set_config: unsafe extern "C" fn(Config, *const c_char, *const c_char) -> State,
+    destroy_config: unsafe extern "C" fn(*mut Config),
 }
 
 /// The library and the error it fails to load with, once per process.
@@ -153,6 +157,9 @@ fn load(root: &Path) -> Result<Api, String> {
             execute_prepared: symbol!("duckdb_execute_prepared"),
             destroy_prepare: symbol!("duckdb_destroy_prepare"),
             library_version: symbol!("duckdb_library_version"),
+            create_config: symbol!("duckdb_create_config"),
+            set_config: symbol!("duckdb_set_config"),
+            destroy_config: symbol!("duckdb_destroy_config"),
             _library: library,
         })
         .and_then(supported)
@@ -187,6 +194,8 @@ pub fn version(root: &Path) -> Result<String, Error> {
 /// One open database: a file, or an empty one in memory.
 struct Instance {
     db: Database,
+    /// Opened read-only, beside other processes that read it.
+    read_only: bool,
     /// The file it is of, by its canonical path; none for a database in memory.
     path: Option<PathBuf>,
 }
@@ -207,9 +216,26 @@ impl Drop for Instance {
 /// The files this process has open, by path, each while a connection to it lives.
 static OPEN: Mutex<Option<HashMap<PathBuf, Weak<Instance>>>> = Mutex::new(None);
 
+/// The `install` and `load` statements of each project's files (`schema.sql` and its migrations),
+/// by the project's root, which every database DuckDB opens for it runs before anything else: a
+/// project loads an extension once, in a file, as Postgres's `create extension` holds, and DuckDB
+/// loads extensions for one database at a time.
+static LOADS: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
+
+/// Names the statements every database opened for the project at `root` runs first.
+pub fn use_loads(root: &Path, statements: Vec<String>) {
+    LOADS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(root.to_path_buf(), statements);
+}
+
+fn loads_of(root: &Path) -> Vec<String> {
+    LOADS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(root).cloned()).unwrap_or_default()
+}
+
 /// A connection to a DuckDB database.
 pub struct Conn {
     conn: Connection,
+    /// The project's root, whose `load`s a database opened beside this one runs too.
+    root: PathBuf,
     /// Last, so that it closes after the connection.
     instance: Arc<Instance>,
 }
@@ -252,6 +278,13 @@ impl Conn {
     /// A connection to the file at `path` (`:memory:` for a new empty database), whose project is at
     /// `root`. A file this process has open already is connected to again.
     pub fn open(path: &str, root: &Path) -> Result<Conn, Error> {
+        Self::open_as(path, root, false)
+    }
+
+    /// The same, read-only where `read_only` says, for a command that only reads: DuckDB lets other
+    /// processes read a file beside it, where one that writes it holds it alone. A file this process
+    /// has open to write is connected to as it is.
+    pub fn open_as(path: &str, root: &Path, read_only: bool) -> Result<Conn, Error> {
         let _ = ROOT.set(root.to_path_buf());
         let api = api()?;
         // The file's canonical path, or for one not made yet its directory's and its name, so that
@@ -261,14 +294,29 @@ impl Conn {
         // Held while the file is opened, so that two threads that open it at once share one instance.
         let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
         let shared = key.as_ref().and_then(|k| open.get_or_insert_with(HashMap::new).get(k).and_then(Weak::upgrade));
+        let read_only = read_only && key.is_some();
+        let mut fresh = false;
         let instance = match shared {
+            Some(instance) if instance.read_only && !read_only => return Err(Error("DuckDB has this file open read-only in this process, so it can't be written here".into())),
             Some(instance) => instance,
             None => {
                 let mut db: Database = std::ptr::null_mut();
                 let mut error: *mut c_char = std::ptr::null_mut();
                 let c_path = c_string(path)?;
+                let mut config: Config = std::ptr::null_mut();
+                if read_only {
+                    let (name, value) = (c_string("access_mode")?, c_string("READ_ONLY")?);
+                    // SAFETY: the config is the API's, set before the open that reads it and destroyed after.
+                    if unsafe { (api.create_config)(&mut config) } != SUCCESS || unsafe { (api.set_config)(config, name.as_ptr(), value.as_ptr()) } != SUCCESS {
+                        unsafe { (api.destroy_config)(&mut config) };
+                        return Err(Error("DuckDB could not be told to open the file read-only".into()));
+                    }
+                }
                 // SAFETY: the out-pointers are valid; a failure's message is the API's to free.
-                let state = unsafe { (api.open_ext)(c_path.as_ptr(), &mut db, std::ptr::null_mut(), &mut error) };
+                let state = unsafe { (api.open_ext)(c_path.as_ptr(), &mut db, config, &mut error) };
+                if !config.is_null() {
+                    unsafe { (api.destroy_config)(&mut config) };
+                }
                 if state != SUCCESS {
                     let said = unsafe { message(error, "DuckDB could not open the database") };
                     if !error.is_null() {
@@ -276,20 +324,34 @@ impl Conn {
                     }
                     return Err(Error(said));
                 }
-                let instance = Arc::new(Instance { db, path: key.clone() });
+                let instance = Arc::new(Instance { db, read_only, path: key.clone() });
                 if let Some(k) = key {
                     open.get_or_insert_with(HashMap::new).insert(k, Arc::downgrade(&instance));
                 }
+                fresh = true;
                 instance
             }
         };
-        drop(open);
         let mut conn: Connection = std::ptr::null_mut();
         // SAFETY: the instance is open, and the out-pointer valid.
         if unsafe { (api.connect)(instance.db, &mut conn) } != SUCCESS {
             return Err(Error("DuckDB could not connect to the database".into()));
         }
-        Ok(Conn { conn, instance })
+        let conn = Conn { conn, root: root.to_path_buf(), instance };
+        // A database new to this process loads the project's extensions, before another connection
+        // can reach it.
+        if fresh {
+            for statement in loads_of(root) {
+                self_query(conn.conn, api, &statement).map_err(|e| Error(format!("{statement}, which this project's files hold and DuckDB runs first, fails: {}", e.0)))?;
+            }
+        }
+        drop(open);
+        Ok(conn)
+    }
+
+    /// The project's root this connection was opened for.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     /// The file the database is, where it is one.
@@ -305,7 +367,7 @@ impl Conn {
         if unsafe { (api.connect)(self.instance.db, &mut conn) } != SUCCESS {
             return Err(Error("DuckDB could not connect to the database".into()));
         }
-        let mut side = Conn { conn, instance: self.instance.clone() };
+        let mut side = Conn { conn, root: self.root.clone(), instance: self.instance.clone() };
         // The database this one uses, which an in-memory shadow attaches under the target's name.
         let (_, rows) = self_query(self.conn, api, "select current_database() as n")?;
         if let Some(Some(name)) = rows.first().map(|r| r[0].clone()) {
