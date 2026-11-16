@@ -30,50 +30,6 @@ select id, name, email from users where id = :id::int
 
 </InferenceCard>
 
-Your code reads those types as you write it. If you have a query like this:
-
-```sql title="get_author.sql"
-select u.id, u.name, count(p.id)::int as post_count
-from users u
-left join posts p on p.user_id = u.id
-where u.id = :id::int
-group by u.id
-```
-
-In TypeScript, import the file, and your editor knows each row:
-
-```ts twoslash title="main.ts" dialect="postgres"
-// @noErrors
-import postgres from "postgres";
-import getAuthor from "./get_author.sql";
-
-const db = postgres(process.env.DATABASE_URL);
-const author = await getAuthor.run(db, { id: 1 });
-
-author?.
-//      ^|
-```
-
-In Rust, an attribute types the statement as your crate compiles:
-
-<Completion items="id: i32, name: String, post_count: i32" at="7">
-
-```rust title="main.rs"
-#[reylo::query("
-    select u.id, u.name, count(p.id)::int as post_count
-    from users u
-    left join posts p on p.user_id = u.id
-    where u.id = :id::int
-    group by u.id
-")]
-pub mod get_author {}
-
-let author = get_author::Query { id: 1 }.run(&pool).await?.expect("author 1");
-author.
-```
-
-</Completion>
-
 <Details summary="View the schema" id="schema">
 
 ```sql file="schema.sql" tab="Postgres" tab-group="dialect"
@@ -180,9 +136,13 @@ create table events (
 
 </Details>
 
-The [CLI](/cli) prints what Reylo infers, as data:
+Reylo comes in three pieces: the engine and its CLI, a content mapper for TypeScript, and a macro for Rust.
 
-<Analyzed file="get_author.sql" lines="24">
+### The CLI
+
+The engine is one native program, the `reylo` command, which prints what it infers for each statement, such as how many rows it returns and each column's type:
+
+<Analyzed file="get_author.sql" jq=".result">
 
 ```sql schema
 create table users (
@@ -205,9 +165,54 @@ group by u.id
 
 </Analyzed>
 
-## Get started
+It also writes and runs your migrations ([Migrations](/migrations)). Every command is on the [CLI](/cli) page.
 
-Pick your language:
+### TypeScript
 
-- **[TypeScript](/typescript)** — import `.sql` files, typed by a TypeScript 7.1 content mapper
-- **[Rust](/rust)** — an attribute macro types each statement when your crate compiles, and runs it on sqlx
+A TypeScript 7.1 content mapper types each `.sql` file you import, in your editor and in `tsc`.
+
+```sql title="get_author.sql"
+select u.id, u.name, count(p.id)::int as post_count
+from users u
+left join posts p on p.user_id = u.id
+where u.id = :id::int
+group by u.id
+```
+
+```ts twoslash title="main.ts" dialect="postgres"
+// @noErrors
+import postgres from "postgres";
+import getAuthor from "./get_author.sql";
+
+const db = postgres(process.env.DATABASE_URL);
+const author = await getAuthor.run(db, { id: 1 });
+
+author?.
+//      ^|
+```
+
+To set it up, see [Usage with TypeScript](/typescript).
+
+### Rust
+
+An attribute macro types each statement as your crate compiles, and runs it on sqlx:
+
+<Completion items="id: i32, name: String, post_count: i32" at="7">
+
+```rust title="main.rs"
+#[reylo::query("
+    select u.id, u.name, count(p.id)::int as post_count
+    from users u
+    left join posts p on p.user_id = u.id
+    where u.id = :id::int
+    group by u.id
+")]
+pub mod get_author {}
+
+let author = get_author::Query { id: 1 }.run(&pool).await?.expect("author 1");
+author.
+```
+
+</Completion>
+
+To set it up, see [Usage with Rust](/rust).

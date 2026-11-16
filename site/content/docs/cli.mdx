@@ -33,29 +33,9 @@ Flags:
 
 Prints what Reylo infers for each statement, as data.
 
-Each statement's parameters, columns, cardinality and diagnostics come as a descriptor, its types in [Reylo Type Defs](/typedefs). Run it on a file, a directory, or `-` for standard input:
+Each statement's parameters, columns, cardinality and diagnostics come as a descriptor, its types in [Reylo Type Defs](/typedefs). Run it on a file, a directory, or `-` for standard input. With `--format json` it prints one line of JSON per statement, which a program reads one line at a time:
 
 <Analyzed file="queries/get_user.sql">
-
-```sql schema
-create table users (
-  id int8 primary key,
-  email varchar(255) not null,
-  bio text
-);
-comment on column users.bio is 'Shown on the profile page';
-```
-
-```sql
--- One user, by id.
-select id, email, bio from users where id = :id
-```
-
-</Analyzed>
-
-Pass `--format json` for one line of JSON per statement, which a program reads one line at a time:
-
-<Analyzed file="queries/get_user.sql" format="json">
 
 ```sql schema
 create table users (

@@ -48,10 +48,10 @@ export type AnalyzedCard = {
   /** The schema the statement reads, built before it is analyzed. */
   schema?: string;
   query: string;
-  /** Which output the card shows: the command's, or a card of the result's columns and their types. */
+  /** Which output the card shows: the command's JSON (`yaml` and `json` alike), or a card of the result's columns and their types. */
   format: 'yaml' | 'json' | 'types';
-  /** How many lines of the output to show, a `# …` after them: all where absent. */
-  lines?: number;
+  /** A field of the descriptor to show alone, as `jq` selects it: `.result`. The whole descriptor where absent. */
+  jq?: string;
 };
 
 const attr = (node: MdNode, name: string) => node.attributes?.find((a) => a.type === 'mdxJsxAttribute' && a.name === name)?.value;
@@ -109,8 +109,9 @@ export function analyzedCards(tree: MdNode): AnalyzedCard[] {
     const format = (attr(node, 'format') ?? 'yaml') as AnalyzedCard['format'];
     if (format !== 'yaml' && format !== 'json' && format !== 'types') throw new Error(`${where} names format="${format}"; write yaml, json or types`);
     if (dialect === 'duckdb' && format !== 'types') throw new Error(`${where} reads DuckDB, which reylo analyze cannot open, so it shows format="types"`);
-    const lines = attr(node, 'lines');
-    return { node, line, file, dialect, ...(schema && { schema: schema.value! }), query: queries[0]!.value!, format, ...(typeof lines === 'string' && { lines: Number(lines) }) };
+    const jq = attr(node, 'jq');
+    if (jq !== undefined && (typeof jq !== 'string' || !/^(\.[a-z_]+)+$/.test(jq))) throw new Error(`${where} names jq="${String(jq)}"; write a field path, as .result`);
+    return { node, line, file, dialect, ...(schema && { schema: schema.value! }), query: queries[0]!.value!, format, ...(typeof jq === 'string' && { jq }) };
   });
 }
 
