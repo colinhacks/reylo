@@ -9,7 +9,8 @@ import { FINGERPRINT } from "../src/analyze.ts";
 
 for (const dialect of ["postgres", "mysql", "sqlite"] as const) {
   test(`the Rust crate's ${dialect} schema fingerprint is the loader's`, () => {
-    const copy = readFileSync(new URL(`../rust/reylo-codegen/src/fingerprint-${dialect}.sql`, import.meta.url), "utf8");
+    // Read with LF line ends, as a Windows checkout writes them CRLF.
+    const copy = readFileSync(new URL(`../rust/reylo-codegen/src/fingerprint-${dialect}.sql`, import.meta.url), "utf8").replaceAll("\r\n", "\n");
     assert.equal(copy, FINGERPRINT[dialect], `rust/reylo-codegen/src/fingerprint-${dialect}.sql differs from FINGERPRINT.${dialect} in src/analyze.ts: copy it over`);
   });
 }
