@@ -344,7 +344,7 @@ test("Postgres: rows that leave out different keys go in one insert, each such r
     assert.equal(stored[2].tag, "given");
     assert.equal(stored[2].created, "2026-03-08 02:30:00");
     // node-postgres binds the same statement.
-    const pg = require("pg");
+    const pg = driver("pg");
     const client = new pg.Client(url.href);
     await client.connect();
     try {
