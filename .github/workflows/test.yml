@@ -394,8 +394,11 @@ jobs:
       - name: Install Postgres 18, pgvector and PostGIS
         if: matrix.shard == 'postgres'
         id: pg
+        # apt, not dpkg, so a conflict with a package of the runner image is settled as the download planned it:
+        # PostGIS's GDAL pulls in mariadb-common, which the image's MySQL server conflicts with, and this
+        # shard runs no MySQL.
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive dpkg -i ~/postgres-debs/*.deb
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ~/postgres-debs/*.deb
           version=$("$PG_BIN/postgres" --version | awk '{print $3}')
           test -n "$version"
           echo "key=$ImageOS-pg$version" >> "$GITHUB_OUTPUT"
