@@ -838,6 +838,28 @@ test("sqlite: Bun.sql's SQLite adapter, which has unsafe() and no prepare()", as
   assert.deepEqual(await execute({ unsafe: async () => [row], commitDistributed: async () => {} }, lite, { id: 1, name: "ada" }), [row]);
 });
 
+test("sqlite: a BigInt outside 64 bits, which bun:sqlite and Bun.sql wrap and sqlite3 binds as NULL, is refused before any client is called; Turso's engine's 2^63 too", async () => {
+  const calls: unknown[][] = [];
+  const bun = { unsafe: async (_: string, values: unknown[]) => (calls.push(values), [row]), commitDistributed: async () => {} };
+  const db = new DatabaseSync(":memory:");
+  const outside = /^TypeError: Parameter "id" is 9223372036854775808, outside the 64-bit integers SQLite stores \(-2\^63 to 2\^63 - 1\)/;
+  await assert.rejects(Promise.resolve().then(() => execute(bun, lite, { id: 2n ** 63n, name: "ada" })), outside);
+  await assert.rejects(Promise.resolve().then(() => execute(bun, lite, { id: -(2n ** 63n) - 1n, name: "ada" })), /is -9223372036854775809, outside the 64-bit integers/);
+  assert.throws(() => execute(db, lite, { id: 2n ** 63n, name: "ada" }), outside);
+  assert.equal(calls.length, 0);
+  // The ends of the range bind as they are.
+  await execute(bun, lite, { id: 2n ** 63n - 1n, name: "ada" });
+  await execute(bun, lite, { id: -(2n ** 63n), name: "ada" });
+  assert.deepEqual(calls.map((v) => v[0]), [2n ** 63n - 1n, -(2n ** 63n)]);
+  // Turso's engine binds the whole number 2^63 as 2^63 - 1; any other driver binds the REAL.
+  const compat = { prepare: () => ({ reader: true, safeIntegers: () => {}, all: () => [row], close: () => {} }), batch: () => [], exec: () => {}, maxWriteReplicationIndex: () => {} };
+  const q = defineQuery<{ id: number; name: string }, unknown, "many", "sqlite">({ dialect: "sqlite", sql: lite.sql, params: lite.params });
+  assert.throws(() => q.runSync(compat, { id: 2 ** 63, name: "ada" }), /Parameter "id" is 9223372036854776000, which Turso's engine binds as 2\^63 - 1/);
+  assert.deepEqual(q.runSync(compat, { id: 2 ** 62, name: "ada" }), [row]);
+  await execute(bun, lite, { id: 2 ** 63, name: "ada" });
+  assert.equal(calls.at(-1)![0], 2 ** 63);
+});
+
 test("the driver's own error comes through unchanged", async () => {
   const duplicate = Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
   await assert.rejects(() => execute(pgPool(async () => Promise.reject(duplicate)), pg, { id: 1 }) as Promise<unknown>, (e) => e === duplicate);

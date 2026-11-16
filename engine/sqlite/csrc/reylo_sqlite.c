@@ -238,6 +238,8 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
   switch( op ){
     case TK_COLUMN: case TK_AGG_COLUMN: case TK_TRIGGER:
       columnRef(s, p, pSel);
+      /* RETURNING reads the row the statement wrote from registers, not from a cursor. */
+      if( p->op==TK_REGISTER ) kv_bool(s, "register", 1);
       break;
     case TK_VARIABLE:
       if( ExprHasProperty(p, EP_IntValue) ){ key(s, "name"); sqlite3_str_appendf(s, "\"?%d\",", p->iColumn); }

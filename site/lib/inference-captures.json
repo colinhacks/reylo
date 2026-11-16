@@ -1423,23 +1423,21 @@
                   "max": "+5874897-12-31",
                   "infinity": true,
                   "label": "date"
-                },
-                "nullable": true
+                }
               },
               {
                 "name": "receipt",
                 "type": {
                   "kind": "bytes",
                   "label": "bytea"
-                },
-                "nullable": true
+                }
               }
             ]
           }
         },
         "rust": {
           "params": "Query {\n    ships_on: chrono::NaiveDate,\n    receipt: Vec<u8>,\n    id: i64,\n}",
-          "returns": "Option<{\n    id: i64,\n    ships_on: Option<chrono::NaiveDate>,\n    receipt: Option<Vec<u8>>,\n}>"
+          "returns": "Option<{\n    id: i64,\n    ships_on: chrono::NaiveDate,\n    receipt: Vec<u8>,\n}>"
         }
       }
     },
@@ -2096,6 +2094,58 @@
         "rust": {
           "params": "Query { id: &'a str, title: &'a str }",
           "returns": "Option<{ id: String }>"
+        }
+      }
+    },
+    "returned_values.sql": {
+      "685d2c74e7d2c4c2": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { email: &'a str, id: i32 }",
+          "returns": "Option<{ email: String }>"
         }
       }
     },
@@ -3709,339 +3759,6 @@
         }
       }
     },
-    "my_null_aggregates.sql": {
-      "9bcb463399ce9925": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "user_id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int"
-                }
-              },
-              {
-                "name": "order_ids",
-                "type": {
-                  "kind": "json",
-                  "content": {
-                    "type": {
-                      "kind": "array",
-                      "element": {
-                        "type": {
-                          "kind": "integer",
-                          "bits": 64,
-                          "label": "bigint"
-                        }
-                      }
-                    }
-                  },
-                  "label": "json"
-                }
-              },
-              {
-                "name": "last_ships_on",
-                "type": {
-                  "kind": "date",
-                  "label": "date"
-                },
-                "nullable": true
-              },
-              {
-                "name": "spent",
-                "type": {
-                  "kind": "decimal",
-                  "label": "decimal"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    user_id: i32,\n    order_ids: Json<Vec<i64>>,\n    last_ships_on: Option<chrono::NaiveDate>,\n    spent: rust_decimal::Decimal,\n}>"
-        }
-      }
-    },
-    "my_null_columns.sql": {
-      "454fac5f9df30c85": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "size": {
-                    "max": 100
-                  },
-                  "label": "varchar"
-                }
-              },
-              {
-                "name": "email",
-                "type": {
-                  "kind": "text",
-                  "size": {
-                    "max": 255
-                  },
-                  "label": "varchar"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ name: String, email: Option<String> }>"
-        }
-      }
-    },
-    "my_null_expressions.sql": {
-      "2324d9ca957cd47a": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                }
-              },
-              {
-                "name": "shout",
-                "type": {
-                  "kind": "text",
-                  "label": "varchar"
-                },
-                "nullable": true
-              },
-              {
-                "name": "shout_or_empty",
-                "type": {
-                  "kind": "text",
-                  "label": "varchar"
-                }
-              },
-              {
-                "name": "half",
-                "type": {
-                  "kind": "decimal",
-                  "label": "decimal"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    n: i64,\n    shout: Option<String>,\n    shout_or_empty: String,\n    half: Option<rust_decimal::Decimal>,\n}>"
-        }
-      }
-    },
-    "my_null_left_join.sql": {
-      "56f847eb1efd2795": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "size": {
-                    "max": 100
-                  },
-                  "label": "varchar"
-                }
-              },
-              {
-                "name": "total",
-                "type": {
-                  "kind": "decimal",
-                  "precision": 12,
-                  "min_scale": 2,
-                  "max_scale": 2,
-                  "label": "decimal"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    name: String,\n    total: Option<rust_decimal::Decimal>,\n}>"
-        }
-      }
-    },
-    "my_null_rollup.sql": {
-      "eedaad54f2c18ce5": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "role",
-                "type": {
-                  "kind": "text",
-                  "label": "char"
-                },
-                "nullable": true
-              },
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ role: Option<String>, n: i64 }>"
-        }
-      }
-    },
-    "my_null_subqueries.sql": {
-      "46a7b60df152cd28": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int"
-                }
-              },
-              {
-                "name": "orders",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ id: i32, orders: i64 }>"
-        }
-      }
-    },
-    "my_null_where.sql": {
-      "858542e6fb70c0ea": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "size": {
-                    "max": 100
-                  },
-                  "label": "varchar"
-                }
-              },
-              {
-                "name": "total",
-                "type": {
-                  "kind": "decimal",
-                  "precision": 12,
-                  "min_scale": 2,
-                  "max_scale": 2,
-                  "label": "decimal"
-                }
-              },
-              {
-                "name": "ships_on",
-                "type": {
-                  "kind": "date",
-                  "label": "date"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    name: String,\n    total: rust_decimal::Decimal,\n    ships_on: chrono::NaiveDate,\n}>"
-        }
-      }
-    },
-    "my_null_window.sql": {
-      "de8a6efc68976fc5": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                }
-              },
-              {
-                "name": "running_total",
-                "type": {
-                  "kind": "decimal",
-                  "label": "decimal"
-                }
-              },
-              {
-                "name": "last_ships_on",
-                "type": {
-                  "kind": "date",
-                  "label": "date"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    id: i64,\n    running_total: rust_decimal::Decimal,\n    last_ships_on: Option<chrono::NaiveDate>,\n}>"
-        }
-      }
-    },
     "my_param_insert.sql": {
       "f8eac0fdbf26948f": {
         "descriptor": {
@@ -5368,280 +5085,6 @@
         }
       }
     },
-    "lite_null_aggregates.sql": {
-      "112d75ab478aa14a": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "one",
-            "columns": [
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                }
-              },
-              {
-                "name": "top",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "{ n: i64, top: Option<i64> }"
-        }
-      }
-    },
-    "lite_null_columns.sql": {
-      "c9b5edf5fe5027e0": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "union",
-                  "members": [
-                    {
-                      "kind": "text",
-                      "encoding": "UTF-8",
-                      "ill_formed": true
-                    },
-                    {
-                      "kind": "bytes"
-                    }
-                  ],
-                  "label": "TEXT"
-                }
-              },
-              {
-                "name": "nick",
-                "type": {
-                  "kind": "union",
-                  "members": [
-                    {
-                      "kind": "text",
-                      "encoding": "UTF-8",
-                      "ill_formed": true
-                    },
-                    {
-                      "kind": "bytes"
-                    }
-                  ],
-                  "label": "TEXT"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ name: String, nick: Option<String> }>"
-        }
-      }
-    },
-    "lite_null_expressions.sql": {
-      "6eea65f3d26b1534": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "shout",
-                "type": {
-                  "kind": "text",
-                  "encoding": "UTF-8",
-                  "ill_formed": true
-                },
-                "nullable": true
-              },
-              {
-                "name": "label",
-                "type": {
-                  "kind": "text",
-                  "encoding": "UTF-8",
-                  "ill_formed": true
-                }
-              },
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                }
-              },
-              {
-                "name": "per_id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    shout: Option<String>,\n    label: String,\n    n: i64,\n    per_id: Option<i64>,\n}>"
-        }
-      }
-    },
-    "lite_null_left_join.sql": {
-      "634223530b55bda3": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "union",
-                  "members": [
-                    {
-                      "kind": "text",
-                      "encoding": "UTF-8",
-                      "ill_formed": true
-                    },
-                    {
-                      "kind": "bytes"
-                    }
-                  ],
-                  "label": "TEXT"
-                }
-              },
-              {
-                "name": "total_cents",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "INTEGER"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ name: String, total_cents: Option<i64> }>"
-        }
-      }
-    },
-    "lite_null_where.sql": {
-      "dba2411ada397c59": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "union",
-                  "members": [
-                    {
-                      "kind": "text",
-                      "encoding": "UTF-8",
-                      "ill_formed": true
-                    },
-                    {
-                      "kind": "bytes"
-                    }
-                  ],
-                  "label": "TEXT"
-                }
-              },
-              {
-                "name": "total_cents",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "INTEGER"
-                }
-              },
-              {
-                "name": "ships_on",
-                "type": {
-                  "kind": "text",
-                  "encoding": "UTF-8",
-                  "ill_formed": true,
-                  "label": "TEXT"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    name: String,\n    total_cents: i64,\n    ships_on: String,\n}>"
-        }
-      }
-    },
-    "lite_null_window.sql": {
-      "74cb5a017e666df1": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "INTEGER"
-                }
-              },
-              {
-                "name": "previous_total",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                },
-                "nullable": true
-              },
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                }
-              },
-              {
-                "name": "largest_total",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    id: i64,\n    previous_total: Option<i64>,\n    n: i64,\n    largest_total: i64,\n}>"
-        }
-      }
-    },
     "lite_param_insert.sql": {
       "9806599e4a2375c0": {
         "descriptor": {
@@ -5927,6 +5370,48 @@
         "rust": {
           "params": "Query { order: &'a str }",
           "returns": "u64"
+        }
+      }
+    },
+    "returned_values.sql": {
+      "685d2c74e7d2c4c2": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { email: &'a str, id: i64 }",
+          "returns": "Option<{ email: String }>"
         }
       }
     },

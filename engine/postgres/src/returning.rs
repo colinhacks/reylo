@@ -116,6 +116,16 @@ impl Rows {
         [&self.old, &self.new].into_iter().flatten().find(|r| r.name == name)
     }
 
+    /// Whether `name`, the first field of a column reference, is for certain the new row (`true`)
+    /// or the old one (`false`); `None` where it is neither for certain.
+    pub fn row(&self, name: &str) -> Option<bool> {
+        match (&self.old, &self.new) {
+            (Some(old), _) if old.name == name && old.certain => Some(false),
+            (_, Some(new)) if new.name == name && new.certain => Some(true),
+            _ => None,
+        }
+    }
+
     /// A column reference that reads the old or the new row for certain, as the same reference to
     /// the target relation, and whether the row may be missing: `o.name` and `o.*` by the row's
     /// name, and the bare name as the whole row where `no_column` says no relation in scope has

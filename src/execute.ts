@@ -722,7 +722,7 @@ function checkBinary(type: EngineType | undefined, name: string, v: unknown, dia
 // null") and libSQL binds `true` as the REAL 1.0. A query without `inputs` gets neither. On MySQL
 // a VECTOR, MySQL's one array, as the text of its floats, `[1,2.5]`, which the engine's
 // `to_vector(?)` reads: drivers left to themselves sent an array as the text "1,2,3" (mysql2's
-// execute()) or expanded it into a list of values (mysql2's query(), mariadb). On Postgres a
+// execute() before 3.24) or expanded it into a list of values (mysql2's query(), mariadb). On Postgres a
 // pgvector vector the same way, as the text its input reads, and an array of vectors as an array
 // of those texts.
 function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name: string): unknown {

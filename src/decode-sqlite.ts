@@ -357,6 +357,7 @@ function numberOrDigits(v: unknown, type: EngineType | undefined, driver: "sqlit
 
 /** A SQLite statement's rows on each SQLite driver's client that answers through a promise, each value given its kind, or undefined on any other client. */
 async function runSqlite(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
+  int64Values(names, values, isTurso(c));
   const type = (i: number) => query.inputs?.[names[i]!]?.type;
   const columns = query.columns;
   if (typeof c.unsafe === "function") return normalize(await c.unsafe(text, values), columns);
@@ -383,6 +384,18 @@ async function runSqlite(c: Client, query: QueryModule<"sqlite">, { text, values
   return undefined;
 }
 
+// SQLite stores an INTEGER in 64 bits, so a BigInt outside them has no exact form. better-sqlite3,
+// node:sqlite, libSQL, Turso's engine and SQLite Wasm refuse one, but bun:sqlite and Bun.sql keep
+// its low 64 bits where the statement reads numbers (2^63 was stored as -2^63, and 2^64 + 5 as 5),
+// and sqlite3 binds any BigInt as NULL. Turso's engine also binds the whole number 2^63 as 2^63 - 1,
+// where every other driver binds it as the REAL it is.
+function int64Values(names: readonly string[], values: unknown[], turso: boolean): void {
+  values.forEach((v, i) => {
+    if (typeof v === "bigint" && (v >= 2n ** 63n || v < -(2n ** 63n))) throw new ParameterError(`Parameter "${names[i]}" is ${v}, outside the 64-bit integers SQLite stores (-2^63 to 2^63 - 1), so no SQLite driver binds it exactly: pass it as text.`);
+    if (turso && v === 2 ** 63) throw new ParameterError(`Parameter "${names[i]}" is ${v}, which Turso's engine binds as 2^63 - 1, the largest 64-bit integer, so it would store another number: pass it as a BigInt within 64 bits or as text.`);
+  });
+}
+
 // SQLite Wasm binds a whole number as a 64-bit integer, which wraps around past 2^63: 1e20 would be
 // stored as 7766279631452241920.
 function sqliteWasmValues(names: readonly string[], values: unknown[]): unknown[] {
@@ -394,6 +407,7 @@ function sqliteWasmValues(names: readonly string[], values: unknown[]): unknown[
 
 /** The rows of a synchronous client: a Durable Object's SQL storage, whose exec() refuses a BigInt ("Cannot convert a BigInt value to a number"), SQLite Wasm's oo1 Database (`runSqliteWasm`), or a database with prepare() (`runSyncSqlite`). */
 function runSqliteSync(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): unknown[] | Promise<unknown[]> {
+  int64Values(names, values, typeof c.maxWriteReplicationIndex === "function");
   if (isDurableObjectSql(c)) return runDurableObject(c, text, values.map((v, i) => numberOrDigits(v, query.inputs?.[names[i]!]?.type, "durable-object")), query.columns);
   if (isSqliteWasm(c)) return runSqliteWasm(c, text, sqliteWasmValues(names, values), query.columns);
   return runSyncSqlite(c, text, values, query.columns);
