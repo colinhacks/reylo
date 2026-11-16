@@ -661,8 +661,15 @@ async function codecModule(dir: string, name: string, sql: string) {
   return { code: (await import("node:fs")).readFileSync(out, "utf8"), query: (await import(pathToFileURL(out).href)).default as { run(client: unknown, params?: unknown): Promise<any[]> } };
 }
 
-test("Postgres: a vector is its typed array and a network address ip-address's class, declared, built and run", { skip: pgLive }, async () => {
-  const own = await postgresDatabase("reylo_codecs_vec", "create extension if not exists vector; create table docs (id int primary key, embedding vector(3) not null, half halfvec(2) not null, ip inet not null, net cidr not null); insert into docs values (1, '[0.1,1.5,-2]', '[0.1,2]', '192.168.1.5/24', '10.0.0.0/8');");
+test("Postgres: a vector is its typed array and a network address ip-address's class, declared, built and run", { skip: pgLive }, async (t) => {
+  const own = await postgresDatabase("reylo_codecs_vec");
+  // pgvector is the test server's to have, as CI's Linux server has it and Windows' has not.
+  const [available] = await own.sql`select 1 from pg_available_extensions where name = 'vector'`;
+  if (!available) {
+    await own.drop();
+    return t.skip("the test server has no vector");
+  }
+  await own.sql.unsafe("create extension if not exists vector; create table docs (id int primary key, embedding vector(3) not null, half halfvec(2) not null, ip inet not null, net cidr not null); insert into docs values (1, '[0.1,1.5,-2]', '[0.1,2]', '192.168.1.5/24', '10.0.0.0/8');").simple();
   try {
     const dir = codecProject(own.url, "    vector: TypedArray\n    inet: ip-address\n", "postgres", ["ip-address"]);
     const get = "select embedding, half, ip, net from docs where embedding = :embedding and ip = :ip";
