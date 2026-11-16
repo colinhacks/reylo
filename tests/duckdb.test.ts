@@ -643,6 +643,27 @@ test("DuckDB: a GEOMETRY is its WKB bytes, declared unknown as a MySQL GEOMETRY 
   }
 });
 
+test("DuckDB: with js.codecs.geometry, a GEOMETRY is GeoJSON, Z included, and binds back from it", { skip }, async () => {
+  const root = await project("create table shapes (id integer primary key, g geometry not null);");
+  writeFileSync(join(root, ".reylo.yaml"), "js:\n  codecs:\n    geometry: GeoJSON\n");
+  const insert = await built(root, "insert", "insert into shapes values (:id, :g) returning g, g::varchar as wkt");
+  await closeSessions();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    const line = { type: "LineString", coordinates: [[0, 0], [1.5, -2]] };
+    assert.deepEqual(await insert.run(c, { id: 1, g: line }), { g: { ...line, srid: 0 }, wkt: "LINESTRING (0 0, 1.5 -2)" });
+    // DuckDB writes a Z as ISO WKB's type 1001.
+    const z = await defineQuery({ dialect: "duckdb", sql: "select 'POINT Z (1 2 3)'::geometry as g", params: [], cardinality: "one", columns: [["g", "unknown"]], codecs: { g: { geometry: "duckdb", srid: 0 } } }).run(c as never);
+    assert.deepEqual(z, { g: { type: "Point", coordinates: [1, 2, 3], srid: 0 } });
+    // DuckDB keeps no SRID in a value, so one other than the column's is refused.
+    await assert.rejects(insert.run(c, { id: 2, g: { ...line, srid: 4326 } }), /an srid of 4326, where DuckDB keeps none in a value and the column's is 0/);
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
 test("DuckDB: an ISO 8601 duration is bound as DuckDB's own interval text", () => {
   assert.equal(duckdbInterval("P1Y2M3DT4H5M6.789S"), "1 years 2 months 3 days 4 hours 5 minutes 6.789 seconds");
   assert.equal(duckdbInterval("-P1DT2H"), "-1 days -2 hours");

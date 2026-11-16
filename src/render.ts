@@ -8,8 +8,12 @@ import { CODEC_TYPE, leafCodec, type Codec, type Codecs } from "./codecs.ts";
 import { bareName, isMysqlSet, nestsAnyDeep, postgresArray, schemaOf, type EngineType, type Field, type Slot } from "./engine-type.ts";
 import { columnKind, isRowKind, kindType as typeOfKind, RANGE_BOUNDS, type Dialect, type JsonNumbers } from "./values.ts";
 
-/** The type a codec gives a value of `t`: its own, or for a SET's array an array of its members' type, by `member`. */
-function codecType(codec: Codec, t: EngineType, member: (t: EngineType) => string): string {
+/** GeoJSON's type of each geometry subtype the type descriptor names (@types/geojson). */
+const GEOJSON_TYPES: Readonly<Record<string, string>> = { point: "Point", linestring: "LineString", polygon: "Polygon", multipoint: "MultiPoint", multilinestring: "MultiLineString", multipolygon: "MultiPolygon", geometrycollection: "GeometryCollection" };
+
+/** The type a codec gives a value of `t`: its own, for a SET's array an array of its members' type, by `member`, and for a geometry GeoJSON's of its subtype, whose `srid` a parameter (`input`) may leave out. */
+function codecType(codec: Codec, t: EngineType, member: (t: EngineType) => string, input = false): string {
+  if (codec === "geometry") return `import("geojson").${(t.kind === "geometry" && t.subtype !== undefined && GEOJSON_TYPES[t.subtype]) || "Geometry"} & { srid${input ? "?" : ""}: number }`;
   if (codec === "set:array" && t.kind === "array" && isMysqlSet(t)) {
     const element = member(t.element.type);
     return /[|&]/.test(element) ? `(${element})[]` : `${element}[]`;
@@ -416,7 +420,7 @@ function renderFields(fields: readonly Field[], dialect: Dialect, extra?: Slot):
 export function renderParamType(t: EngineType, dialect: Dialect = "postgres", inRow = false, members?: readonly { readonly written: string }[], codecs: Codecs = {}): string {
   // A family the project file's `js.codecs` gives another type takes that type alone.
   const codec = leafCodec(t, dialect, codecs);
-  if (codec !== undefined) return codecType(codec, t, (e) => renderParamType(e, dialect, true));
+  if (codec !== undefined) return codecType(codec, t, (e) => renderParamType(e, dialect, true), true);
   const kind = columnKind(t, dialect);
   // DuckDB binds a number, a BigInt or the digits for a 64-bit or wider integer, the exact text for
   // a DECIMAL, the text for a date or a time, and bytes for a BLOB; a struct takes an object of

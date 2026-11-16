@@ -7,7 +7,7 @@ import { dirname, relative, sep } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes, queryErrorType, reyloImport, withinFile } from "./module-types.ts";
-import { decimalLibraryProblem, PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
+import { decimalLibraryProblem, geojsonTypesProblem, libraryProblem, PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
 import type { Codecs } from "./codecs.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, statementAfter } from "./doc-comment.ts";
@@ -166,6 +166,16 @@ export function mapperHandlers(): MapperHandlers {
       const library = project.codecs.decimal;
       if (library !== undefined && library !== "string" && library !== "number" && [types.params, types.row, types.columns ?? ""].some((t) => t.includes(`import("${library}")`))) {
         const missing = decimalLibraryProblem(project.codecs, dirname(p.fileName));
+        if (missing) diagnostics.push(diag(size, missing, 0, 1, 11));
+      }
+      // So is ip-address, a network address's.
+      if (project.codecs.inet === "ip-address" && [types.params, types.row, types.columns ?? ""].some((t) => t.includes(`import("ip-address")`))) {
+        const missing = libraryProblem("ip-address", dirname(p.fileName));
+        if (missing) diagnostics.push(diag(size, missing, 0, 1, 11));
+      }
+      // So is the GeoJSON a geometry's type names, which @types/geojson holds.
+      if (project.codecs.geometry !== undefined && [types.params, types.row, types.columns ?? ""].some((t) => t.includes(`import("geojson")`))) {
+        const missing = geojsonTypesProblem(dirname(p.fileName));
         if (missing) diagnostics.push(diag(size, missing, 0, 1, 11));
       }
       // The compiled statement, without the comment naming its file, which the run time adds where
