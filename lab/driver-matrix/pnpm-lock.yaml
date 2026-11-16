@@ -128,6 +128,9 @@ importers:
       postgres-3:
         specifier: npm:postgres@3.4.9
         version: postgres@3.4.9
+      postgres-4:
+        specifier: npm:postgres@4.1.1
+        version: postgres@4.1.1
       slonik:
         specifier: 49.12.0
         version: 49.12.0
@@ -1555,6 +1558,10 @@ packages:
   postgres@3.4.9:
     resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
     engines: {node: '>=12'}
+
+  postgres@4.1.1:
+    resolution: {integrity: sha512-1kJDojqNZC+iTHHXh6eif0J98LUtyLAePe/qkW1GK35eh2JixlsAiIKq3FGI+xqI+SUGTNodzf7TScVeIIyUug==}
+    engines: {node: '>=18'}
 
   prebuild-install@7.1.3:
     resolution: {integrity: sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==}
@@ -3180,6 +3187,8 @@ snapshots:
   postgres-range@1.1.4: {}
 
   postgres@3.4.9: {}
+
+  postgres@4.1.1: {}
 
   prebuild-install@7.1.3:
     dependencies:

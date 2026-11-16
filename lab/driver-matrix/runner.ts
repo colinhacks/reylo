@@ -39,7 +39,7 @@ const add = (s: Spec) => specs.push(s);
 
 // Postgres
 for (const [alias, v] of [["pg-8", "8.23.0"], ["pg-7", "7.18.2"]]) add({ id: `pg@${v}`, bin: NODE26, file: "drivers/pg.ts", args: ["--pkg", alias, "--version", v], meta: { pkg: "pg", version: v, target: "Postgres 14 (local)", runtime: n26 } });
-add({ id: "postgres@3.4.9", bin: NODE26, file: "drivers/postgresjs.ts", args: ["--pkg", "postgres-3", "--version", "3.4.9"], meta: { pkg: "postgres", version: "3.4.9", target: "Postgres 14 (local)", runtime: n26 } });
+for (const [alias, v] of [["postgres-4", "4.1.1"], ["postgres-3", "3.4.9"]]) add({ id: `postgres@${v}`, bin: NODE26, file: "drivers/postgresjs.ts", args: ["--pkg", alias, "--version", v], meta: { pkg: "postgres", version: v, target: "Postgres 14 (local)", runtime: n26 } });
 for (const [alias, v] of [["pglite-05", "0.5.8"], ["pglite-04", "0.4.6"], ["pglite-03", "0.3.16"], ["pglite-02", "0.2.17"]]) add({ id: `pglite@${v}`, bin: NODE26, file: "drivers/pglite.ts", args: ["--pkg", alias, "--version", v], meta: { pkg: "@electric-sql/pglite", version: v, target: "PGlite (in-process)", runtime: n26 } });
 for (const [alias, v] of [["neon-1", "1.1.0"], ["neon-010", "0.10.4"], ["neon-09", "0.9.5"]]) add({ id: `neon@${v}`, bin: NODE26, file: "drivers/neon.ts", args: ["--pkg", alias, "--version", v], meta: { pkg: "@neondatabase/serverless", version: v, target: "Postgres 14 via local Neon proxy", runtime: n26 } });
 add({ id: "pg-promise@12.7.1", bin: NODE26, file: "drivers/pgpromise.ts", args: ["--pkg", "pg-promise", "--version", "12.7.1"], meta: { pkg: "pg-promise", version: "12.7.1", target: "Postgres 14 (local)", runtime: n26 } });

@@ -2,7 +2,7 @@
 
 Generated 2026-11-03T08:38:37.162Z by `./run.sh` against the working tree at 9e2abf7c (uncommitted changes in src/: yes; src/execute.ts f4f31dd6079b, src/index.ts a65a7f86ccb5). The report and the diagnoses are in [README.md](README.md).
 
-5297 rows: 5209 pass, 4 fail, 58 unsupported (reylo refuses them with its own TypeError, as its contract says), 23 skip, 3 not run. Failing controls: 37 of 120 control rows fail, as designed.
+5428 rows: 5340 pass, 4 fail, 58 unsupported (reylo refuses them with its own TypeError, as its contract says), 23 skip, 3 not run. Failing controls: 37 of 120 control rows fail, as designed.
 
 ## Per job
 
@@ -10,6 +10,7 @@ Generated 2026-11-03T08:38:37.162Z by `./run.sh` against the working tree at 9e2
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | pg@8.23.0 | node 26.11.1 | Postgres 14 (local) | 121 | 0 | 0 | 0 | 0 |
 | pg@7.18.2 | node 26.11.1 | Postgres 14 (local) | 0 | 0 | 0 | 0 | 1 |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | 131 | 0 | 0 | 0 | 0 |
 | postgres@3.4.9 | node 26.11.1 | Postgres 14 (local) | 131 | 0 | 0 | 0 | 0 |
 | @electric-sql/pglite@0.5.8 | node 26.11.1 | PGlite (in-process) | 63 | 0 | 0 | 0 | 0 |
 | @electric-sql/pglite@0.4.6 | node 26.11.1 | PGlite (in-process) | 63 | 0 | 0 | 0 | 0 |
@@ -359,6 +360,137 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 | pg@8.23.0 | node 26.11.1 | Postgres 14 (local) | PoolClient in BEGIN/COMMIT | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
 | pg@8.23.0 | node 26.11.1 | Postgres 14 (local) | PoolClient in BEGIN/COMMIT | S8 20 concurrent queries resolve with the right rows | pass |  |
 | pg@7.18.2 | node 26.11.1 | Postgres 14 (local) | (job) | preflight | NOT RUN | the driver cannot run a query without reylo: Error: Connection terminated due to connection timeout |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1a params: int, text, bool, null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1b omitted param (undefined) binds NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2a many: 3 rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2b one: the row | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2c maybeOne: zero rows gives null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2e with(client)(params) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S3 write without RETURNING (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S3n write without parameters (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S4 INSERT ... RETURNING | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S5a repeated :id (runtime lexer) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S5b repeated :id (mapper text/order) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2a many: 3 rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2b one: the row | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2e with(client)(params) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S4 INSERT ... RETURNING | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2b one: the row | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S4 INSERT ... RETURNING | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1a params: int, text, bool, null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1b omitted param (undefined) binds NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2a many: 3 rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2b one: the row | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2c maybeOne: zero rows gives null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2d maybeOne: two rows throw reylo's error | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2e with(client)(params) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S3 write without RETURNING (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S3n write without parameters (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S4 INSERT ... RETURNING | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S5a repeated :id (runtime lexer) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S5b repeated :id (mapper text/order) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7a tx: write then commit is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7b tx: write then rollback is not visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S8 20 concurrent queries resolve with the right rows | pass |  |
 | postgres@3.4.9 | node 26.11.1 | Postgres 14 (local) | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
 | postgres@3.4.9 | node 26.11.1 | Postgres 14 (local) | sql | S1a params: int, text, bool, null | pass |  |
 | postgres@3.4.9 | node 26.11.1 | Postgres 14 (local) | sql | S1b omitted param (undefined) binds NULL | pass |  |

@@ -15,7 +15,7 @@ Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the s
 | Package | Versions | Target | Client shapes |
 | --- | --- | --- | --- |
 | pg | 8.23.0, 7.18.2 | Postgres 14 (local) | Pool, connected Client, PoolClient from `pool.connect()`, PoolClient inside BEGIN/COMMIT |
-| postgres | 3.4.9 | Postgres 14 (local) | `sql`, `sql.begin(tx)`, `tx.savepoint(sp)`, `sql.reserve()` |
+| postgres | 4.1.1, 3.4.9 | Postgres 14 (local) | `sql`, `sql.begin(tx)`, `tx.savepoint(sp)`, `sql.reserve()` |
 | @electric-sql/pglite | 0.5.8, 0.4.6, 0.3.16, 0.2.17 | in-process | PGlite, `db.transaction(tx)` |
 | @neondatabase/serverless | 1.1.0, 0.10.4, 0.9.5 | Postgres 14 behind a local Neon proxy | Pool, Client, PoolClient, PoolClient inside BEGIN/COMMIT (all over WebSocket), `neon()` over HTTP, `neon(url, { fullResults: true })` |
 | pg-promise | 12.7.1 | Postgres 14 (local) | `db`, `db.task(t)`, `db.tx(t)`, nested `t.tx(t2)` (a savepoint) |
