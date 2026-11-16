@@ -622,16 +622,22 @@ pub fn relation_name(schema: &str, relname: &str) -> String {
     }
 }
 
-/// The relations the statement reads and those it writes, each by [`relation_name`], sorted. A
-/// name a WITH query met before it has is the WITH query, never a table.
+/// The relations the statement reads and those it writes, each by [`relation_name`], sorted. An
+/// unqualified name a WITH query anywhere in the statement takes is that WITH query where it is
+/// read, never a table: the walk meets an UPDATE's FROM before its WITH, so every WITH query's name
+/// is gathered first. What an INSERT, an UPDATE, a DELETE or a MERGE writes is always a table.
 fn relations(tree: &protobuf::ParseResult) -> (Vec<String>, Vec<String>) {
-    let (mut ctes, mut read, mut written): (Vec<String>, Vec<String>, Vec<String>) = Default::default();
-    for (node, _, context, _) in tree.nodes() {
+    let nodes = tree.nodes();
+    let ctes: Vec<&String> = nodes.iter().filter_map(|(node, ..)| match node {
+        pg_query::NodeRef::CommonTableExpr(c) => Some(&c.ctename),
+        _ => None,
+    }).collect();
+    let (mut read, mut written): (Vec<String>, Vec<String>) = Default::default();
+    for (node, _, context, _) in &nodes {
         match node {
-            pg_query::NodeRef::CommonTableExpr(c) => ctes.push(c.ctename.clone()),
-            pg_query::NodeRef::RangeVar(v) if !(v.schemaname.is_empty() && ctes.contains(&v.relname)) => {
-                let list = match context {
-                    pg_query::Context::Select => &mut read,
+            pg_query::NodeRef::RangeVar(v) => {
+                let list = match *context {
+                    pg_query::Context::Select if !(v.schemaname.is_empty() && ctes.contains(&&v.relname)) => &mut read,
                     pg_query::Context::DML => &mut written,
                     _ => continue,
                 };
@@ -786,6 +792,14 @@ mod tests {
         let a = analyze(r#"WITH "a.b" AS (SELECT 1) SELECT * FROM "a.b", public."a.b""#).unwrap();
         assert_eq!(a.read_set, [r#"public."a.b""#]);
         assert_eq!(relation_name("", r#"say "hi""#), r#""say ""hi""""#);
+        // An UPDATE's FROM is walked before its WITH, and still names the WITH query.
+        let a = analyze("WITH stale AS (SELECT id FROM posts) UPDATE posts SET v = 1 FROM stale WHERE posts.id = stale.id").unwrap();
+        assert_eq!(a.read_set, ["posts"]);
+        assert_eq!(a.write_set, ["posts"]);
+        // A write's target is a table, even one a WITH query of the statement is named like.
+        let a = analyze("WITH users AS (SELECT 1 AS id) UPDATE users SET v = 1 FROM users u2 RETURNING users.id").unwrap();
+        assert_eq!(a.write_set, ["users"]);
+        assert!(a.read_set.is_empty());
     }
 
     #[test]

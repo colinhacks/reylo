@@ -2654,7 +2654,7 @@ impl Items<'_> {
                 let name = Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone()));
                 if cte.is_none() {
                     let plain = rv.schemaname.is_empty() && rv.alias.as_ref().is_none_or(|a| a.colnames.is_empty());
-                    self.shows.push(if plain { Shows::Table(rv.relname.clone()) } else { Shows::Unknown });
+                    self.shows.push(if plain { Shows::Table(crate::analyze::relation_name("", &rv.relname)) } else { Shows::Unknown });
                     self.names.push((name, Item::Table));
                     return Some(());
                 }

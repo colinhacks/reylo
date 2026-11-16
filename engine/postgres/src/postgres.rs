@@ -4245,7 +4245,9 @@ fn witness_holds(witness: &analyze::Witness, relation: &str, columns: &[Vec<Valu
     // A domain's column, or one the catalog does not report, is of no type the build vouches for.
     let read = || -> Option<Operand> {
         let name = witness.column.last()?;
-        let row = columns.iter().find(|r| r.first().and_then(as_str) == Some(relation))?;
+        // The rows are keyed by the name as the catalog was asked it, quoted where it must be.
+        let asked = analyze::relation_name("", relation);
+        let row = columns.iter().find(|r| r.first().and_then(as_str) == Some(asked.as_str()))?;
         let at = row.get(1).and_then(as_strings)?.iter().position(|c| c == name)?;
         let base = row.get(2)?.as_array()?.get(at).and_then(as_u32)?;
         let declared = row.get(5)?.as_array()?.get(at).and_then(as_u32)?;
