@@ -115,6 +115,12 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   const library = [...libraries].find((l) => l !== "ip-address");
   const imports = [...(library === undefined ? [] : [`import ReyloDecimal from ${JSON.stringify(library)};`]), ...(libraries.has("ip-address") ? [`import * as ReyloIpAddress from "ip-address";`] : [])];
   const handed = [...(library === undefined ? [] : ["decimal: ReyloDecimal"]), ...(libraries.has("ip-address") ? ["inet: ReyloIpAddress"] : [])];
+  // A SQL Server statement's parameters are bound as their types, which the app's own mssql makes
+  // (src/decode-sqlserver.ts): the module imports it, as the app does to run the statement.
+  if (dialect === "sqlserver" && analysis.params.length > 0) {
+    imports.push(`import ReyloMssql from "mssql";`);
+    handed.push("mssql: ReyloMssql.TYPES");
+  }
   const source = sourceName(path);
   // The compiled statement without the file's trailing blank lines; the comment naming the file
   // is added where the statement is sent (src/execute.ts, `sentText`).
@@ -146,7 +152,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
 }
 
 /** The define function from "reylo" a module of each dialect calls (src/index.ts). */
-export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery" };
+export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery", sqlserver: "defineSqlserverQuery" };
 
 /** The line and column, from 1, of a UTF-8 byte offset into `text`. */
 function place(text: string, bytes: number): string {

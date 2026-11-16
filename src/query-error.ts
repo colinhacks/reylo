@@ -19,6 +19,9 @@
 //   message, and the number; sqlite3 and the sqlite package only the primary code. D1 and a
 //   Durable Object write both codes at the end of the message, and Turso's engine none, or the
 //   primary one's number before 0.8.
+// - SQL Server: mssql's RequestError keeps the server's number, state and class beside the message,
+//   on itself and on tedious's error under `originalError`. SQL Server names no error, so the
+//   number is its code.
 import type { Dialect } from "./execute.ts";
 import type { POSTGRES_CODES } from "./error-codes-postgres.ts";
 import type { MYSQL_CODES } from "./error-codes-mysql.ts";
@@ -26,7 +29,7 @@ import { SQLITE_CODES } from "./error-codes-sqlite.ts";
 // `QueryError` reaches the dialects' types through an import of this file itself: TypeScript names a
 // type reached through an import as written, `PostgresQueryError`, and one declared in the same file
 // with its default filled in, `PostgresQueryError<undefined>`.
-import type { MysqlQueryError as MysqlError, PostgresQueryError as PostgresError, SqliteQueryError as SqliteError } from "./query-error.ts";
+import type { MysqlQueryError as MysqlError, PostgresQueryError as PostgresError, SqliteQueryError as SqliteError, SqlserverQueryError as SqlserverError } from "./query-error.ts";
 
 /** A SQLSTATE Postgres defines, as `"23505"`. */
 export type PostgresCode = keyof typeof POSTGRES_CODES;
@@ -207,8 +210,32 @@ type SqliteOtherCode<N> = {
 export type SqliteQueryError<N extends SqliteNarrowing | undefined = undefined> = Omit<SqliteErrorFields, "columns"> &
   ({ [C in Extract<keyof N, SqliteCode>]: SqliteMember<C, N[C]> }[Extract<keyof N, SqliteCode>] | SqliteOtherCode<N>);
 
+/** What an error SQL Server raised holds beside its number. */
+export interface SqlserverErrorFields extends Error {
+  readonly name: "QueryError";
+  /** The error's number, as `2627`: SQL Server's own code for it, in `sys.messages`. */
+  readonly number: number;
+  /** The error's state, which tells apart the places one number is raised from. */
+  readonly state: number | undefined;
+  /** The error's severity, from 11 (a mistake in the statement or its values) to 25. */
+  readonly class: number | undefined;
+  /** The server's message, as `Violation of UNIQUE KEY constraint 'UQ_users_email'. Cannot insert duplicate key in object 'dbo.users'. The duplicate key value is (ada@example.com).` */
+  readonly message: string;
+  /** The constraint or the unique index a row fails, as the message names it. */
+  readonly constraint: string | undefined;
+  /** The table the message names, as it names it (`dbo.users`). */
+  readonly table: string | undefined;
+  /** The column a NULL is refused for, a value is cut to fit, or a foreign key or check fails on. */
+  readonly column: string | undefined;
+  /** The driver's own error. */
+  readonly cause: unknown;
+}
+
+/** An error SQL Server raised. */
+export type SqlserverQueryError = Readonly<SqlserverErrorFields>;
+
 /** The error a database of the dialect raised. */
-export type QueryError<D extends Dialect = Dialect> = D extends "postgres" ? PostgresError : D extends "mysql" ? MysqlError : SqliteError;
+export type QueryError<D extends Dialect = Dialect> = D extends "postgres" ? PostgresError : D extends "mysql" ? MysqlError : D extends "sqlserver" ? SqlserverError : SqliteError;
 
 class DatabaseError extends Error {
   constructor(message: string, cause: unknown, fields: Record<string, unknown>) {
@@ -252,6 +279,42 @@ export function readSqliteError(error: unknown): SqliteQueryError | undefined {
   const read = sqliteError(error);
   if (!read) return undefined;
   return new DatabaseError(read.message, error, { code: read.code, errcode: read.errcode, ...sqliteNames(read.errcode, read.message) }) as SqliteQueryError;
+}
+
+/** The error SQL Server raised that `error` is, or undefined where it is another: mssql's RequestError with the server's number. */
+export function readSqlserverError(error: unknown): SqlserverQueryError | undefined {
+  const e = record(error);
+  if (!e || typeof e.message !== "string") return undefined;
+  const original = record(e.originalError);
+  const number = typeof e.number === "number" ? e.number : typeof original?.number === "number" ? original.number : undefined;
+  if (number === undefined || !Number.isInteger(number) || number <= 0) return undefined;
+  const int = (v: unknown) => (typeof v === "number" ? v : undefined);
+  const message = text(original?.message) ?? e.message;
+  return new DatabaseError(message, error, { number, state: int(e.state ?? original?.state), class: int(e.class ?? original?.class), ...sqlserverNames(number, message) }) as SqlserverQueryError;
+}
+
+/** What a SQL Server message names, for the errors that name a constraint, a table or a column. */
+function sqlserverNames(number: number, message: string): { constraint?: string | undefined; table?: string | undefined; column?: string | undefined } {
+  const quoted = (re: RegExp) => re.exec(message)?.[1];
+  switch (number) {
+    // Violation of PRIMARY KEY constraint 'PK_t'. Cannot insert duplicate key in object 'dbo.t'. …
+    case 2627:
+      return { constraint: quoted(/constraint '([^']+)'/), table: quoted(/in object '([^']+)'/) };
+    // Cannot insert duplicate key row in object 'dbo.t' with unique index 'ix_t_email'. …
+    case 2601:
+      return { constraint: quoted(/unique index '([^']+)'/), table: quoted(/in object '([^']+)'/) };
+    // The INSERT statement conflicted with the FOREIGN KEY constraint "FK_x". The conflict occurred in database "db", table "dbo.t", column 'id'.
+    case 547:
+      return { constraint: quoted(/constraint "([^"]+)"/), table: quoted(/table "([^"]+)"/), column: quoted(/column '([^']+)'/) };
+    // Cannot insert the value NULL into column 'name', table 'db.dbo.t'; column does not allow nulls. INSERT fails.
+    case 515:
+      return { column: quoted(/column '([^']+)'/), table: quoted(/table '([^']+)'/) };
+    // String or binary data would be truncated in table 'db.dbo.t', column 'name'. Truncated value: '…'.
+    case 2628:
+      return { table: quoted(/in table '([^']+)'/), column: quoted(/column '([^']+)'/) };
+    default:
+      return {};
+  }
 }
 
 function postgresError(error: unknown) {

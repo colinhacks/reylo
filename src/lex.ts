@@ -5,14 +5,15 @@
 // colon that opens a subscript is a slice with no lower bound (`tags[:n]`). MySQL text is read
 // as a session in the default `sql_mode` reads it: a backslash in a string escapes the character
 // after it, `"` quotes a string, `#` starts a line comment, and `--` does only before a space or
-// a control character. This is the provisional JavaScript version of the engine's lexer; the Rust
+// a control character. SQL Server's `[name]` is a quoted name, in which `]]` is one `]`, and it has
+// no `?`. This is the provisional JavaScript version of the engine's lexer; the Rust
 // engine owns the authoritative one (dollar quoting, E'' strings, nested comments, array slices,
 // MySQL's other modes).
 export type Placeholder = { name: string; start: number; end: number };
 
 // A name drops its prefix (`:id` is `id`); a positional placeholder is named by its number
 // (`$2` and `?2` are `2`), and a bare `?` takes the number after the largest so far.
-export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sqlite"): { params: string[]; placeholders: Placeholder[] } {
+export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sqlite" | "sqlserver"): { params: string[]; placeholders: Placeholder[] } {
   const placeholders: Placeholder[] = [];
   const params: string[] = [];
   let largest = 0;
@@ -37,6 +38,8 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
     if (ch === '"' || ch === "`") { i = skipQuoted(sql, i, ch, false); last = "operand"; continue; }
     // SQLite's `[name]` is a quoted identifier, which ends at the first `]`.
     if (ch === "[" && dialect === "sqlite") { const end = sql.indexOf("]", i); i = end === -1 ? sql.length : end + 1; last = "operand"; continue; }
+    // SQL Server's `[name]`, in which `]]` is one `]`.
+    if (ch === "[" && dialect === "sqlserver") { i = skipQuoted(sql, i, "]", false); last = "operand"; continue; }
     // MySQL's `--` is two minus signs before anything but a space or a control character.
     const comment = ch === "#" ? mysql : ch === "-" && next === "-" && !(mysql && i + 2 < sql.length && sql.charCodeAt(i + 2) > 32 && sql.charCodeAt(i + 2) !== 127);
     if (comment) { i = sql.indexOf("\n", i); if (i === -1) break; continue; }
@@ -64,7 +67,7 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
       const m = /^[0-9]+/.exec(sql.slice(i + 1))!;
       push(position(m[0]), i, i + 1 + m[0].length); i += 1 + m[0].length; last = "operand"; continue;
     }
-    if (ch === "?" && dialect !== "postgres") { largest += 1; push(String(largest), i, i + 1); i += 1; last = "operand"; continue; }
+    if (ch === "?" && (dialect === "mysql" || dialect === "sqlite")) { largest += 1; push(String(largest), i, i + 1); i += 1; last = "operand"; continue; }
     if (/\s/.test(ch)) { i += 1; continue; }
     if (/[A-Za-z0-9_]/.test(ch)) {
       // A name or a number, whole: `array` opens a constructor, anything else is an operand.

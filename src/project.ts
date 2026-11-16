@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
 import { DECIMAL_LIBRARIES, type Codecs, type DecimalLibrary, type Library } from "./codecs.ts";
 
-export type Dialect = "postgres" | "sqlite" | "mysql";
+export type Dialect = "postgres" | "sqlite" | "mysql" | "sqlserver";
 
 /** What the engine reads out of `.reylo.yaml`: the keys the library looks at. */
 export type ProjectFile = {
@@ -134,7 +134,7 @@ function cachedDialects(cache: string): Dialect[] {
   for (const name of names.slice(0, CACHED_READ)) {
     try {
       const { dialect } = JSON.parse(readFileSync(join(dir, name), "utf8")) as { dialect?: unknown };
-      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite") found.add(dialect);
+      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite" || dialect === "sqlserver") found.add(dialect);
     } catch {}
     if (found.size > 1) break;
   }
@@ -147,6 +147,7 @@ export function dialectOf(url: string): Dialect | undefined {
   if (scheme === "postgres" || scheme === "postgresql") return "postgres";
   if (scheme === "mysql" || scheme === "mariadb") return "mysql";
   if (scheme === "file" || scheme === "sqlite") return "sqlite";
+  if (scheme === "sqlserver" || scheme === "mssql") return "sqlserver";
   return undefined;
 }
 
@@ -483,7 +484,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     if (hit) urlSource = hit.source;
   }
   let dialect = url ? dialectOf(url) : "postgres";
-  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
+  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, sqlserver://, file: and sqlite: URLs.`;
   const unusable = url && dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
   if (unusable) error ??= `Cannot read the SQLite URL ${url} (${urlSource}): ${unusable}.`;
   // Either name, created or removed, changes the project.

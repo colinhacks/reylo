@@ -48,6 +48,11 @@ export const CATALOG_QUERIES: Record<Dialect, Queries> = {
     tables: `select table_name, column_name, column_type, is_nullable = 'YES' from information_schema.columns
   where table_schema = database() order by table_name, ordinal_position`,
   },
+  sqlserver: {
+    // The tables and views of the database the user made, by their unqualified names, as the default schema finds them.
+    tables: `select object_name(c.object_id) as table_name, c.name as column_name, type_name(c.user_type_id) as column_type, c.is_nullable as nullable from sys.columns c join sys.objects o on o.object_id = c.object_id
+  where o.type in ('U', 'V') and o.is_ms_shipped = 0 order by o.name, c.column_id`,
+  },
   sqlite: {
     // Each column named apart: a host may read a row by its columns' names.
     tables: `select m.name as table_name, p.name as column_name, p.type as column_type, not p."notnull" as nullable from sqlite_schema m join pragma_table_info(m.name) p
@@ -61,6 +66,7 @@ const SPELLED: Record<Dialect, string[]> = {
   postgres: ["bigint", "boolean", "char", "character", "character varying", "decimal", "double precision", "int", "integer", "real", "smallint", "timestamp with time zone"],
   mysql: ["binary", "char", "date", "datetime", "decimal", "double", "float", "json", "nchar", "real", "signed", "time", "unsigned", "year"],
   sqlite: ["blob", "integer", "numeric", "real", "text"],
+  sqlserver: ["bigint", "binary", "bit", "char", "date", "datetime", "datetime2", "datetimeoffset", "decimal", "float", "int", "money", "nchar", "numeric", "nvarchar", "real", "smalldatetime", "smallint", "smallmoney", "time", "tinyint", "uniqueidentifier", "varbinary", "varchar", "xml"],
 };
 
 /** A type as the list shows it: Postgres's short names for the long standard ones. */

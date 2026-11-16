@@ -200,6 +200,17 @@ pub fn present(sql: &str, dialect: Dialect) -> bool {
     lexed.placeholders.iter().any(|p| cast_at(sql, p.end).is_some() || json_cast_at(sql, p.end).is_some() || nullable_cast_at(sql, p.end).is_some() || (!reads_casts(dialect) && plain_cast_at(sql, p.end).is_some()))
 }
 
+/// The first `::` after a placeholder of a SQL Server statement, from the placeholder to the end of
+/// the cast's type or keyword.
+fn sqlserver_cast(sql: &str) -> Option<(usize, usize)> {
+    let lexed = lex::lex(sql, Dialect::Sqlserver).ok()?;
+    lexed.placeholders.iter().find_map(|p| {
+        let after = after_colons(sql, p.end)?;
+        let end = after + sql[after..].bytes().take_while(|c| c.is_ascii_alphanumeric() || *c == b'_').count();
+        Some((p.start, end.max(after)))
+    })
+}
+
 /// Whether the database reads a `::type` cast itself: Postgres does, MySQL and SQLite do not.
 fn reads_casts(dialect: Dialect) -> bool {
     dialect == Dialect::Postgres
@@ -1255,6 +1266,7 @@ fn binary(m: &Member, dialect: Dialect) -> bool {
     match dialect {
         Dialect::Postgres => false,
         Dialect::Sqlite => m.schema.is_none() && affinity(&m.ty) == "BLOB",
+        Dialect::Sqlserver => false,
         Dialect::Mysql => {
             let t = m.ty.to_ascii_lowercase();
             ["binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob"].iter().any(|b| t == *b || t.starts_with(&format!("{b}(")))
@@ -1301,7 +1313,7 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
             // MariaDB has no `CAST(… AS JSON)`.
             Dialect::Mysql if server.mariadb => ("JSON_COMPACT(", ")"),
             Dialect::Mysql => ("cast(", " as json)"),
-            Dialect::Sqlite => ("", ""),
+            Dialect::Sqlite | Dialect::Sqlserver => ("", ""),
         };
         let text = format!("{before}{placeholder}{after}");
         return Lowered { placeholder: (before.len(), before.len() + placeholder.len()), text, members: Vec::new(), lists: Vec::new() };
@@ -1449,6 +1461,7 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
                 w.push(&format!(") AS {alias}"));
             }
         }
+        Dialect::Sqlserver => unreachable!("SQL Server refuses structured parameters and casts before the pass reads them (analyze)"),
         Dialect::Mysql => {
             // A binary member is read as its hexadecimal text and decoded with UNHEX().
             let table = |w: &mut Writer, ordinal: bool, alias: &str| {
@@ -1630,6 +1643,14 @@ pub const CODE: u32 = 20;
 /// author's statement that only reports the diagnostics it is given.
 pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inner: &dyn Fn(&str, &[String]) -> Lazy<Analysis>, bare: &dyn Fn(Vec<Diagnostic>) -> Analysis) -> Lazy<Analysis> {
     let refused = |e: DescriptorError| Some(bare(vec![Diagnostic { message: e.message, start: e.start, length: e.end - e.start, code: CODE, server_code: None }]));
+    // SQL Server types a parameter by where it stands, and casts one with its own `cast(… as …)`;
+    // it takes no `::` cast, `rows(…)` or `row(…)`.
+    if dialect == Dialect::Sqlserver {
+        if let Some((start, end)) = sqlserver_cast(sql) {
+            return refused(DescriptorError { message: "SQL Server takes no :: cast on a parameter, nor rows(…), row(…), json(…) or nullable(…); write cast(:name as <type>)".into(), start, end });
+        }
+        return inner(sql, &[]);
+    }
     let found = match find(sql, dialect, &Server::default()) {
         Ok(found) => found,
         Err(e) => return refused(e),
@@ -2071,6 +2092,7 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
             let (schema, name) = split_name(written);
             host.query(SQLITE_TABLE_QUERY, vec![serde_json::json!(name), serde_json::json!(schema.unwrap_or_else(|| "main".into()))], Scope::Statement)?
         }
+        Dialect::Sqlserver => return Some(Vec::new()),
         Dialect::Mysql => {
             let (schema, name) = split_name(written);
             host.query(if server.mariadb { MARIADB_TABLE_QUERY } else { MYSQL_TABLE_QUERY }, vec![schema.map_or(Value::Null, Value::String), serde_json::json!(name)], Scope::Statement)?
@@ -2087,6 +2109,7 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
                     TableColumn { name: text(r, 0), base: text(r, 1), written: text(r, 2), not_null: flag(r, 3), has_default: flag(r, 4), generated: flag(r, 5), always: flag(r, 6), default, inherited: flag(r, 9) }
                 }
                 Dialect::Mysql => TableColumn { name: text(r, 0), base: text(r, 1), written: text(r, 2), not_null: flag(r, 3), has_default: flag(r, 4), generated: flag(r, 5), always: false, default: None, inherited: false },
+                Dialect::Sqlserver => unreachable!("SQL Server refuses structured parameters and casts before the pass reads them (analyze)"),
                 Dialect::Sqlite => {
                     let declared = text(r, 1);
                     let pk = r.get(4).and_then(Value::as_i64).unwrap_or(0);
@@ -2236,6 +2259,7 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
             }
             (mysql_type(&m.ty) != mysql_type(&c.written)).then(|| advice.to_string())
         }
+        Dialect::Sqlserver => None,
         // SQLite keeps a value by the column's affinity; a JSON member is text to it.
         Dialect::Sqlite => (m.schema.is_none() && affinity(&m.ty) != affinity(&c.written)).then(|| format!("their affinities differ ({} and {}), and {advice}", affinity(&m.ty), affinity(&c.written))),
     }

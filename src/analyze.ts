@@ -662,9 +662,19 @@ const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_a
     union all select ${line("q", named("regnamespace", "q.opcnamespace"), txt("q.opcname"), txt("m.amname"), type("q.opcintype"))} from pg_catalog.pg_opclass q join pg_catalog.pg_am m on ${eq("m.oid", "q.opcmethod")} where q.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("d", relation("d.objoid"), out("int4", "d.objsubid"), md5("d.description"))} from pg_catalog.pg_description d ${rel("d", "objoid")} where ${eq("d.classoid", PG_CLASS)} and d.objsubid operator(pg_catalog.>) 0 and ${NS}
   ) t`;
+/**
+ * SQL Server: every column, index and module (view, function, procedure, trigger) of the database
+ * the user made, each a line, hashed in their order with the server's version.
+ */
+const SQLSERVER_FINGERPRINT = `select @@version + ' ' + convert(varchar(64), hashbytes('SHA2_256', string_agg(cast(x as nvarchar(max)), nchar(10)) within group (order by x)), 2) from (
+    select concat_ws(' ', 'c', object_schema_name(c.object_id), object_name(c.object_id), c.column_id, c.name, type_name(c.user_type_id), c.max_length, c.precision, c.scale, c.is_nullable, c.collation_name, c.is_identity, c.is_computed, c.default_object_id) as x from sys.columns c join sys.objects o on o.object_id = c.object_id where o.is_ms_shipped = 0
+    union all select concat_ws(' ', 'i', object_schema_name(i.object_id), object_name(i.object_id), i.name, i.is_unique, i.has_filter, i.is_disabled, ic.key_ordinal, ic.is_included_column, col_name(ic.object_id, ic.column_id)) from sys.indexes i join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id join sys.objects o on o.object_id = i.object_id where o.is_ms_shipped = 0
+    union all select concat_ws(' ', 'm', object_schema_name(m.object_id), object_name(m.object_id), convert(varchar(64), hashbytes('SHA2_256', m.definition), 2)) from sys.sql_modules m join sys.objects o on o.object_id = m.object_id where o.is_ms_shipped = 0
+  ) t`;
 /** Each dialect's schema fingerprint query. The Rust crate keeps copies (rust/reylo-codegen/src/fingerprint-*.sql), which tests/rust-fingerprints.test.ts holds to these. */
 export const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   postgres: POSTGRES_FINGERPRINT,
+  sqlserver: SQLSERVER_FINGERPRINT,
   mysql: `select concat_ws(' ', @@version, @@sql_mode, count(*), sum(crc32(x)), bit_xor(crc32(x))) from (
     select concat_ws(' ', 'c', table_name, column_name, ordinal_position, column_type, coalesce(character_set_name, ''), is_nullable, column_key, extra, coalesce(generation_expression, ''), md5(column_comment)) as x from information_schema.columns where table_schema = database()
     union all select concat_ws(' ', 's', table_name, index_name, non_unique, seq_in_index, column_name) from information_schema.statistics where table_schema = database()

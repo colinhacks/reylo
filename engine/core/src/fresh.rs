@@ -109,6 +109,16 @@ const MYSQL_QUERY: &str = "select c.table_name as fresh_table, c.column_name as 
     from information_schema.columns c where c.table_schema = database() and c.table_name in ({tables}) \
     order by 1, 2";
 
+/// SQL Server: every column of each table `{tables}` names, each name resolved as the statement's
+/// own is, through the session's default schema. The type is the type's name with its length,
+/// precision and scale, and an identity, a computed column and a rowversion have a default.
+const SQLSERVER_QUERY: &str = "select r.name as fresh_table, cast(c.name as nvarchar(128)) as fresh_column, \
+    cast(type_name(c.user_type_id) + N'(' + cast(c.max_length as nvarchar(6)) + N',' + cast(c.precision as nvarchar(3)) + N',' + cast(c.scale as nvarchar(3)) + N')' as nvarchar(200)) as fresh_type, \
+    cast(case when c.is_nullable = 0 then N'true' else N'false' end as nvarchar(5)) as fresh_not_null, \
+    cast(case when c.default_object_id <> 0 or c.is_identity = 1 or c.is_computed = 1 or c.system_type_id = 189 then N'true' else N'false' end as nvarchar(5)) as fresh_default \
+    from (values {tables}) as r(name) join sys.columns c on c.object_id = object_id(r.name) \
+    order by 1, 2";
+
 /// SQLite: every column of each table `{tables}` (a SELECT of their names) names; an INTEGER
 /// PRIMARY KEY, the rowid, has a default.
 macro_rules! sqlite_query {
@@ -143,7 +153,13 @@ pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<
     if tables.is_empty() && parsed.functions.is_empty() {
         return Some(None);
     }
-    let names: Vec<String> = tables.iter().map(|t| if dialect == Dialect::Postgres { quoted(t) } else { t.rsplit('.').next().unwrap_or(t).to_string() }).collect();
+    // A Postgres name is quoted as an identifier; a SQL Server one is as the statement writes it,
+    // schema and brackets included, which `object_id` reads as the statement does.
+    let names: Vec<String> = tables.iter().map(|t| match dialect {
+        Dialect::Postgres => quoted(t),
+        Dialect::Sqlserver => t.clone(),
+        _ => t.rsplit('.').next().unwrap_or(t).to_string(),
+    }).collect();
     let inserts: Vec<String> = if analysis.kind == Some(crate::types::StatementKind::Insert) { parsed.write.iter().map(|t| names[tables.iter().position(|x| x == t).unwrap_or(0)].clone()).collect() } else { Vec::new() };
     if dialect == Dialect::Mysql && names.iter().any(|n| n.contains('\\')) {
         return Some(None);
@@ -152,10 +168,11 @@ pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<
     // The columns whose defaults a structured insert copied (on Postgres and SQLite), each in a
     // table the statement inserts into: their defaults' text is a sixth fact.
     let copied: Vec<&String> = analysis.structured.iter().flat_map(|i| &i.copied).collect();
-    let with_defaults = !copied.is_empty() && dialect != Dialect::Mysql;
+    let with_defaults = !copied.is_empty() && matches!(dialect, Dialect::Postgres | Dialect::Sqlite);
     let query = match dialect {
         Dialect::Postgres => (if with_defaults { PG_QUERY_DEFAULTS } else { PG_QUERY }).replace("{tables}", &literals.iter().map(|l| format!("({l}::pg_catalog.text)")).collect::<Vec<_>>().join(", ")),
         Dialect::Mysql => MYSQL_QUERY.replace("{tables}", &literals.join(", ")),
+        Dialect::Sqlserver => SQLSERVER_QUERY.replace("{tables}", &literals.iter().map(|l| format!("(N{l})")).collect::<Vec<_>>().join(", ")),
         Dialect::Sqlite => (if with_defaults { SQLITE_QUERY_DEFAULTS } else { SQLITE_QUERY }).replace("{tables}", &literals.iter().enumerate().map(|(k, l)| if k == 0 { format!("select {l} as value") } else { format!("select {l}") }).collect::<Vec<_>>().join(" union all ")),
     };
     // A function the analysis read through is a fact beside the columns its body names.
@@ -222,6 +239,10 @@ fn names_in(sql: &str, dialect: Dialect) -> (std::collections::HashSet<String>, 
             let span = &sql[s..e];
             if span.starts_with('"') || span.starts_with('`') {
                 names.insert(span[1..span.len().saturating_sub(1)].to_ascii_lowercase());
+                previous = "name".into();
+            } else if span.starts_with('[') {
+                // A SQL Server name in brackets, in which `]]` is one `]`.
+                names.insert(span[1..span.len().saturating_sub(1)].replace("]]", "]").to_ascii_lowercase());
                 previous = "name".into();
             }
             i = e.max(i + 1);

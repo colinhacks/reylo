@@ -5,8 +5,8 @@
 //! opens a connection. It replays an analysis, naming the statements it needs described and the
 //! catalog queries it needs run, and a host answers them ([`replay`]).
 //!
-//! Each database's engine is behind a feature (`postgres`, `sqlite`, `mysql`). A client feature
-//! (`tokio-postgres`, `rusqlite`, `mysql_async`) adds the answers over that client and an
+//! Each database's engine is behind a feature (`postgres`, `sqlite`, `mysql`, `sqlserver`). A client
+//! feature (`tokio-postgres`, `rusqlite`, `mysql_async`, `tiberius`) adds the answers over that client and an
 //! `analyze` that runs a statement's whole replay on it ([`clients`]). A host that answers the
 //! engine its own way implements [`Answerer`] or [`AsyncAnswerer`] and calls [`replay::run`] or
 //! [`replay::run_async`] with its database's engine.
@@ -34,8 +34,11 @@ pub use reylo_engine_sqlite as sqlite;
 /// The MySQL engine: the server's prepare metadata, read with a parse of the statement.
 #[cfg(feature = "mysql")]
 pub use reylo_engine_mysql as mysql;
+/// The SQL Server engine: the server's own describe, read with a parse of the statement.
+#[cfg(feature = "sqlserver")]
+pub use reylo_engine_sqlserver as sqlserver;
 
-#[cfg(any(feature = "tokio-postgres", feature = "rusqlite", feature = "mysql_async"))]
+#[cfg(any(feature = "tokio-postgres", feature = "rusqlite", feature = "mysql_async", feature = "tiberius"))]
 pub mod clients;
 
 /// Why a client could not answer the engine at all: a lost connection, a catalog query the

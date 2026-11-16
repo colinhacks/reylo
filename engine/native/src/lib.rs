@@ -23,6 +23,8 @@ pub mod mysql;
 pub mod postgres;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+#[cfg(feature = "sqlserver")]
+pub mod sqlserver;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 mod tls;
 
@@ -42,7 +44,7 @@ pub enum Failure {
 
 impl Failure {
     /// The failure a program's answer reports.
-    #[cfg_attr(not(any(feature = "postgres", feature = "mysql", feature = "sqlite")), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "postgres", feature = "mysql", feature = "sqlite", feature = "sqlserver")), allow(dead_code))]
     fn of(answer: &Value) -> Failure {
         let message = answer["message"].as_str().unwrap_or_default().to_string();
         match answer["status"].as_str() {
@@ -118,7 +120,7 @@ pub async fn answer<P: Program>(program: &mut P, line: &str) -> String {
 }
 
 /// A URL parameter's value, percent-decoded.
-#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 pub(crate) fn decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

@@ -48,7 +48,7 @@ pub fn leading(sql: &str, dialect: Dialect) -> Leading {
             continue;
         }
         if ch == Some(b'/') && next == Some(b'*') && !(mysql && matches!(bytes.get(at + 2), Some(b'!' | b'+'))) {
-            let nests = dialect == Dialect::Postgres;
+            let nests = matches!(dialect, Dialect::Postgres | Dialect::Sqlserver);
             let (mut depth, mut j) = (1, at + 2);
             while j < bytes.len() && depth > 0 {
                 if bytes[j..].starts_with(b"*/") {

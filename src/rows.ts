@@ -12,7 +12,7 @@ import { columnKind, describe, given, hstoreText, ParameterError, postgresInterv
 
 export { describe, zoned } from "./values.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
+type Dialect = "postgres" | "mysql" | "sqlite" | "sqlserver";
 /** A structured parameter's column list as written, by member, beside its type's fields. */
 export type Members = readonly { readonly written: string; readonly schema?: JsonSchema }[];
 /** One member: its field of the parameter's record and the type its column list writes. */

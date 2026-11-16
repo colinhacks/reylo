@@ -85,7 +85,7 @@ export type Drift = { name: string; how?: string };
  * engine gives them as declared, so a build on one and a run on the other saw the same schema. A
  * Postgres or MySQL type is compared exactly: a quoted Postgres type name keeps its case.
  */
-export function compared(fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite"): { stale: string[]; drifted: Drift[] } | undefined {
+export function compared(fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite" | "sqlserver"): { stale: string[]; drifted: Drift[] } | undefined {
   const now = new Map<string, string[]>();
   const width = fresh.rows[0]?.length === 6 ? 6 : 5;
   const columns = COLUMNS.slice(0, width);

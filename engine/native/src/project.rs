@@ -84,6 +84,7 @@ pub fn dialect_of(url: &str) -> Option<&'static str> {
         "postgres" | "postgresql" => Some("postgres"),
         "mysql" | "mariadb" => Some("mysql"),
         "file" | "sqlite" => Some("sqlite"),
+        "sqlserver" | "mssql" => Some("sqlserver"),
         _ => None,
     }
 }

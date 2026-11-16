@@ -1,5 +1,5 @@
 # One Cargo workspace over the engine (`engine/`: `reylo-engine-core`, what every database shares;
-# `reylo-engine-postgres`, `reylo-engine-sqlite` and `reylo-engine-mysql`, one per
+# `reylo-engine-postgres`, `reylo-engine-sqlite`, `reylo-engine-mysql` and `reylo-engine-sqlserver`, one per
 # database; `reylo-engine-build`, their build scripts' source hash; `reylo-engine`, the
 # facade a Rust host links; `reylo-engine-native`, the program that connects each database's engine
 # to its database; and `reylo`, the binary that serves them all, `engine/cli`) and the soundness
@@ -24,6 +24,7 @@ members = [
   "engine/postgres",
   "engine/sqlite",
   "engine/mysql",
+  "engine/sqlserver",
   "oracle",
   "rust/reylo",
   "rust/reylo-macros",

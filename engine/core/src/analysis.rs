@@ -224,7 +224,7 @@ pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> 
         match b {
             b'\'' | b'"' | b'`' => {
                 // MySQL reads a backslash in a string as an escape, and so does Postgres in E'…'.
-                let escapes = (dialect == Dialect::Mysql && b != b'`') || (b == b'\'' && i > 0 && matches!(bytes[i - 1], b'e' | b'E') && (i < 2 || !ident(bytes[i - 2])));
+                let escapes = (dialect == Dialect::Mysql && b != b'`') || (dialect != Dialect::Sqlserver && b == b'\'' && i > 0 && matches!(bytes[i - 1], b'e' | b'E') && (i < 2 || !ident(bytes[i - 2])));
                 let from = i;
                 i += 1;
                 while i < bytes.len() && bytes[i] != b {
@@ -314,7 +314,7 @@ pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> 
         let distinct = is(w, "from") && k > 0 && is(words[k - 1], "distinct") && ((k > 1 && is(words[k - 2], "is")) || (k > 2 && is(words[k - 2], "not") && is(words[k - 3], "is")));
         !operand && !distinct
     };
-    let returning = words.iter().enumerate().position(|(k, w)| dialect != Dialect::Mysql && is(*w, "returning") && clause(k));
+    let returning = words.iter().enumerate().position(|(k, w)| matches!(dialect, Dialect::Postgres | Dialect::Sqlite) && is(*w, "returning") && clause(k));
     let select = words.iter().position(|w| is(*w, "select"));
     let first_arm = select.is_some_and(|s| words[..s].iter().any(|w| SET_OPERATIONS.iter().any(|o| is(*w, o))));
     // A statement, or its first arm, in parentheses: its list is inside them.

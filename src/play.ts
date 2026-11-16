@@ -152,7 +152,7 @@ async function databaseBackend(session: Session): Promise<Backend> {
   return {
     dialect,
     ...(project.notice ? { notice: project.notice } : {}),
-    label: `${dialect === "postgres" ? "Postgres" : dialect === "mysql" ? "MySQL" : "SQLite"} at ${session.where()} (${project.urlSource})`,
+    label: `${dialect === "postgres" ? "Postgres" : dialect === "mysql" ? "MySQL" : dialect === "sqlserver" ? "SQL Server" : "SQLite"} at ${session.where()} (${project.urlSource})`,
     schema: (await schemaDdl(dialect, (sql) => session.query(sql))) ?? schemaText(dialect, cat),
     catalog: cat,
     async analyze(sql, width) {
@@ -238,7 +238,7 @@ select ddl from (
 
 /** The schema as the page shows it where the database refuses to give it: each table's columns, as a CREATE TABLE writes them. */
 function schemaText(dialect: Dialect, cat: Catalog): string {
-  const q = (name: string) => (/^[a-z_][a-z0-9_]*$/.test(name) ? name : dialect === "mysql" ? `\`${name}\`` : `"${name.replace(/"/g, '""')}"`);
+  const q = (name: string) => (/^[a-z_][a-z0-9_]*$/.test(name) ? name : dialect === "mysql" ? `\`${name}\`` : dialect === "sqlserver" ? `[${name.replace(/]/g, "]]")}]` : `"${name.replace(/"/g, '""')}"`);
   return cat.tables
     .map((t) => {
       const width = Math.max(...t.columns.map((c) => q(c.name).length));
