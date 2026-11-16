@@ -1548,7 +1548,7 @@ version = "0.0.0"
 
 [[package]]
 name = "reylo-engine-core"
-version = "0.8.0-beta"
+version = "0.8.0-beta.0"
 dependencies = [
  "libc",
  "reylo-engine-build",
