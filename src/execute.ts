@@ -471,10 +471,10 @@ function holdsMoney(t: EngineType): boolean {
 }
 
 /**
- * Postgres reads a `money` parameter in the session's lc_monetary, which under another locale than
- * C's or English's reads the same text as another amount without an error (under de_DE,
- * `1234.56` is 123456.00): `.run()` reads a money in the C locale's form and refuses another, and a
- * parameter is refused there too. A client is checked once, before the first statement that takes
+ * Postgres reads a `money` parameter in the session's lc_monetary, which under another locale can
+ * read the same text as another amount without an error (under de_DE, `1234.56` is 123456.00):
+ * `.run()` reads a money in the C locale's form and refuses another, and a parameter is refused
+ * under a session that does not write 1234.50 as the C locale's `$1,234.50`. A client is checked once, before the first statement that takes
  * one, by the text its session writes for 1234.50; a client whose check fails to run is not held up.
  */
 async function checkMoneyLocale(c: AnyClient, query: QueryModule): Promise<void> {

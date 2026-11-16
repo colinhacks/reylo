@@ -398,7 +398,7 @@ function isoStyle(x: string): string {
 
 /**
  * A Postgres `money`'s exact decimal text, from the text the server writes in the session's
- * lc_monetary: `$1,234.56` and `-$1,234.56` in the C locale and English ones. Another locale
+ * lc_monetary: `$1,234.56` and `-$1,234.56` in the C locale and the ones that write it alike, as en_US does. Another locale
  * writes another symbol, separators and number of digits (`1.234,56 €`), which would read as
  * another amount, so it is refused, as Prisma's Postgres driver refuses it.
  */
