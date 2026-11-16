@@ -138,7 +138,7 @@ impl Generator {
         if self.build_script {
             let out_dir = PathBuf::from(std::env::var("OUT_DIR").map_err(|_| Error("OUT_DIR is not set: reylo_build runs in a build script".into()))?);
             let out = out_dir.join(self.out.clone().unwrap_or_else(|| "queries.rs".into()));
-            let written = write(&out, &one_file(&modules, &inputs, &out, true)?)?;
+            let written = write(&out, &one_file(&modules, &inputs, &base, &out, true)?)?;
             for input in &inputs {
                 let dir = if files::is_glob(input) { files::glob_root(input) } else { input.as_str() };
                 println!("cargo:rerun-if-changed={}", base.join(dir).display());
@@ -158,7 +158,7 @@ impl Generator {
         match &self.out {
             Some(out) => {
                 let out = base.join(out);
-                Ok(vec![write(&out, &one_file(&modules, &inputs, &out, false)?)?])
+                Ok(vec![write(&out, &one_file(&modules, &inputs, &base, &out, false)?)?])
             }
             None => modules.iter().map(|m| write(&m.file.with_extension("rs"), &beside(m)?)).collect(),
         }
@@ -294,7 +294,7 @@ fn beside(module: &Module) -> Result<String, Error> {
 /// Every module in one file, a module per directory under the input that found it, so that a
 /// module's path stays as it is when other `.sql` files come and go. A build script's names each
 /// `.sql` file by its full path and needs no check, since Cargo runs it again when one changes.
-fn one_file(modules: &[Module], inputs: &[String], out: &Path, build_script: bool) -> Result<String, Error> {
+fn one_file(modules: &[Module], inputs: &[String], base: &Path, out: &Path, build_script: bool) -> Result<String, Error> {
     #[derive(Default)]
     struct Node {
         dirs: BTreeMap<String, Node>,
@@ -338,7 +338,10 @@ fn one_file(modules: &[Module], inputs: &[String], out: &Path, build_script: boo
         Ok(quote!(#(#items)*))
     }
     let tokens = render(&root, out)?;
-    let header = format!("{MARK} from {}: edit the queries and run it again, never this file.\n\n", inputs.join(", "));
+    // The inputs from the file's own directory, so that every checkout writes the same header; a
+    // build script's file is in OUT_DIR, which no checkout shares, so its inputs read as given.
+    let from: Vec<String> = if build_script { inputs.to_vec() } else { inputs.iter().map(|input| relative(out.parent().unwrap_or(Path::new("")), &base.join(input))).map(|p| if p == "." { "its own directory".into() } else { p }).collect() };
+    let header = format!("{MARK} from {}: edit the queries and run it again, never this file.\n\n", from.join(", "));
     format_file(header, tokens)
 }
 
