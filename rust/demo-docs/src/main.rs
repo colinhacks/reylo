@@ -78,8 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("run         {count:?} {} {} {changed}", user.is_some(), posts.len());
 
     let mut tx = pool.begin().await?;
-    rename_user::Query { name: "ada", id: 1 }.run(&mut *tx).await?;
+    let user: Option<get_user::Row> = get_user::Query { id: 1 }.run(&mut *tx).await?;
     tx.commit().await?;
+    println!("transaction {}", user.is_some());
 
     let role = users_by_role::UserRole::Admin;
     let admins = users_by_role::Query { role }.run(&pool).await?;

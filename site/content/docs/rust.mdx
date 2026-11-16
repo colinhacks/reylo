@@ -17,8 +17,11 @@ let user = get_user::Query { id: 1 }.run(&pool).await?;
 
 The attribute fills the module with the statement's types: `Query`, its parameters, and `Row`, one row of its result. The query runs on sqlx, on your own pool, connection or transaction.
 
-> [!NOTE] Not on crates.io yet
-> The `reylo` and `reylo-build` crates are published once `pg_query`, the Postgres parser they build on, releases the fixes they need.
+<Callout title="Not on crates.io yet">
+
+The `reylo` and `reylo-build` crates are published once `pg_query`, the Postgres parser they build on, releases the fixes they need.
+
+</Callout>
 
 ## Setup
 
@@ -81,69 +84,42 @@ column "nme" does not exist (42703)
 
 Each statement gets a module of its types.
 
-The attribute fills it with:
+### Usage
 
-- **`Query`**, the statement's parameters, one field per `:name`, with `.run()`. It is also named `Params`, the name compiler errors use.
-- **`Row`**, one row of the result, which derives `Debug`, `Clone` and `PartialEq`, and serde's `Serialize` where every field's type has it.
-- **An enum** for each Postgres enum the statement reads or binds, and **a struct** for each JSON object it builds.
-
-For the statement above, that is:
+Declare a query with `#[reylo::query]` on an empty module, then run it with `.run()`:
 
 ```rust
+use sqlx::PgPool;
+
+#[reylo::query("select id, name, email from users where id = :id::int")]
+pub mod get_user {}
+
+let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+
+// user: Option<get_user::Row>
+let user = get_user::Query { id: 1 }.run(&pool).await?;
+```
+
+Each `:name` in the statement is a field of `Query`. Pass `.run()` a pool, a connection or a [transaction](#run).
+
+### The module
+
+The attribute writes the statement's types into the module.
+
+```rust
+#[reylo::query("select id, name, email from users where id = :id::int")]
 pub mod get_user {
+    // written by the attribute:
     pub struct Query { pub id: i32 }
     pub struct Row { pub id: i32, pub name: String, pub email: Option<String> }
 }
 ```
 
-### `.run()`
+- **`Query`**, one field per parameter, typed by its cast or by where the statement uses it, a text parameter a `&str`. It's also named `Params`, the name compiler errors use.
+- **`Row`**, one row of the result, a column that may be null an `Option`. It derives `Debug`, `Clone` and `PartialEq`, and serde's `Serialize` where every field's type has it.
+- **An enum** for each Postgres enum the statement reads or binds ([Enums](#enums)), and **a struct** for each JSON object it builds ([JSON](#json)).
 
-Run a query with `.run()`, on a pool, a connection or a transaction.
-
-It returns what the statement's cardinality says:
-
-```rust
-#[reylo::query("select count(*) as n from users")]
-pub mod count_users {}
-
-#[reylo::query("select id, title from posts where user_id = :user_id::int")]
-pub mod posts_by_user {}
-
-#[reylo::query("update users set name = :name where id = :id::int")]
-pub mod rename_user {}
-
-let count: count_users::Row = count_users::Query.run(&pool).await?;
-let user: Option<get_user::Row> = get_user::Query { id: 1 }.run(&pool).await?;
-let posts: Vec<posts_by_user::Row> =
-    posts_by_user::Query { user_id: 1 }.run(&pool).await?;
-let changed: u64 = rename_user::Query { name: "ada", id: 1 }.run(&pool).await?;
-```
-
-A write with no `returning` returns the number of rows it changed.
-
-In a transaction, pass the connection it holds:
-
-```rust
-let mut tx = pool.begin().await?;
-rename_user::Query { name: "ada", id: 1 }.run(&mut *tx).await?;
-tx.commit().await?;
-```
-
-### Parameters
-
-Each `:name` is a field of `Query`, typed by its cast or by where the statement uses it.
-
-A text parameter is a `&str`, and an enum parameter takes the enum the module holds:
-
-```rust
-#[reylo::query("select id, name from users where role = :role order by id")]
-pub mod users_by_role {}
-
-let role = users_by_role::UserRole::Admin;
-let admins = users_by_role::Query { role }.run(&pool).await?;
-```
-
-To accept null, cast a parameter to `nullable(…)`, which makes its field an `Option`:
+To accept null in a parameter, cast it to `nullable(…)`, which makes its field an `Option`:
 
 ```rust
 #[reylo::query("
@@ -155,6 +131,37 @@ pub mod posts_of {}
 
 let everyone = posts_of::Query { user_id: None }.run(&pool).await?;
 let ada_s = posts_of::Query { user_id: Some(1) }.run(&pool).await?;
+```
+
+### `.run()`
+
+What `.run()` returns follows the statement's cardinality:
+
+| Rows | `.run()` returns |
+| --- | --- |
+| Exactly one, as `select count(*) from users` | `Row` |
+| At most one, as a lookup by a unique key | `Option<Row>` |
+| Any number | `Vec<Row>` |
+| None: a write with no `returning` | `u64`, the number of rows it changed |
+
+To run a query in a transaction, pass the connection it holds:
+
+```rust
+let mut tx = pool.begin().await?;
+let user = get_user::Query { id: 1 }.run(&mut *tx).await?;
+tx.commit().await?;
+```
+
+### Enums
+
+Each Postgres enum the statement reads or binds is an enum in its module, with a variant per label:
+
+```rust
+#[reylo::query("select id, name from users where role = :role order by id")]
+pub mod users_by_role {}
+
+let role = users_by_role::UserRole::Admin;
+let admins = users_by_role::Query { role }.run(&pool).await?;
 ```
 
 ### Methods
