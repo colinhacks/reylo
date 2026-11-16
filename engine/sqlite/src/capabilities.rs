@@ -130,7 +130,7 @@ pub fn refine(analysis: &Analysis, host: &Host) -> Lazy<Option<Capabilities>> {
         return Some(Some(capabilities));
     };
     let text = |row: &Vec<Value>, k: usize| row.get(k).and_then(Value::as_str).map(str::to_ascii_lowercase);
-    let tagged = |tag: &str| rows.iter().filter(move |row| row.first().and_then(Value::as_str) == Some(tag));
+    let tagged = |tag: &'static str| rows.iter().filter(move |row| row.first().and_then(Value::as_str) == Some(tag));
     let is = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
     for row in tagged("virtual") {
         let (Some(table), Some(sql)) = (text(row, 1), text(row, 2)) else { continue };
