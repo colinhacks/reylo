@@ -100,9 +100,10 @@ test("postgres: every client gets an array for a SQL array parameter as its lite
     assert.ok(!Array.isArray(data));
     assert.equal(JSON.stringify(data), '[1,{"a":"b"}]');
   }
-  // postgres.js (typed() beside unsafe()), whose JSON serializer Drizzle replaces with one that passes the value through.
+  // postgres.js (typed() beside unsafe()), whose JSON serializer Drizzle replaces with one that passes the value through,
+  // gets every parameter as its text declared unknown, since one is.
   await execute(postgresJsSql((_, values) => void seen.push(values)), typed, typedValues);
-  assert.deepEqual(seen.at(-1), ['{"1","3"}', "ada", { value: '[1,{"a":"b"}]', type: 705 }]);
+  assert.deepEqual(seen.at(-1), [{ value: '{"1","3"}', type: 705 }, { value: "ada", type: 705 }, { value: '[1,{"a":"b"}]', type: 705 }]);
 });
 
 // Every kind of JSON value, null, and a jsonb[] parameter, whose elements are JSON values.
@@ -270,7 +271,7 @@ test("postgres: postgres.js, which binds a date or time string through new Date(
   const bun = { unsafe, typed, commitDistributed: async () => {} };
   await execute(bun, q, values);
   assert.deepEqual(seen, [
-    [{ value: "2026-01-02 03:04:05.006", type: 705 }, { value: "infinity", type: 705 }, { value: "2026-01-02 03:04:05 America/New_York", type: 705 }, { value: "1970-01-01T00:00:00Z", type: 705 }, "ada"],
+    [{ value: "2026-01-02 03:04:05.006", type: 705 }, { value: "infinity", type: 705 }, { value: "2026-01-02 03:04:05 America/New_York", type: 705 }, { value: "1970-01-01T00:00:00Z", type: 705 }, { value: "ada", type: 705 }],
     ["2026-01-02 03:04:05.006", "infinity", "2026-01-02 03:04:05 America/New_York", "1970-01-01T00:00:00Z", "ada"],
   ]);
 });
@@ -399,7 +400,7 @@ test("postgres: Neon's neon() before 1.0 is called with (text, values)", async (
 // postgres.js on a throwaway server (REYLO_TEST_PG), in a database of its own; the driver is lab/drivers'.
 
 test("postgres.js: a statement with parameters is prepared on its connection and run again from there, unless the client was made with prepare: false", { skip: pgLive }, async () => {
-  const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
+  const postgres = driver("postgres");
   const own = await postgresDatabase("reylo_execute_prepare");
   const url = new URL(own.url);
   const prepared = own.sql;
@@ -425,6 +426,24 @@ test("postgres.js: a statement with parameters is prepared on its connection and
     assert.deepEqual(await prepared.begin(async (tx: never) => (await execute(tx, q, { id: 1 }), statements(tx))), [{ statement: text, runs: "3" }]);
   } finally {
     await unprepared.end();
+    await own.drop();
+  }
+});
+
+test("postgres.js: a JSON parameter beside an untyped one is stored as its JSON on every run, in a transaction too", { skip: pgLive }, async () => {
+  // postgres.js 4 keeps the parameter types the server described for such a statement, and from
+  // its second run sent the JSON text through its jsonb serializer, which stored a JSON string.
+  const own = await postgresDatabase("reylo_execute_json_again");
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select (:doc::jsonb)::text as doc, :id::int as id", params: ["doc", "id"], inputs: { doc: { type: { kind: "json" } } } };
+  const docs = async (c: any) => {
+    const out: unknown[] = [];
+    for (let id = 0; id < 3; id++) out.push(...(await execute(c, q, { doc: [1, "a"], id })).map((r) => (r as { doc: unknown }).doc));
+    return out;
+  };
+  try {
+    assert.deepEqual(await docs(own.sql), Array(3).fill('[1, "a"]'));
+    assert.deepEqual(await own.sql.begin((tx: never) => docs(tx)), Array(3).fill('[1, "a"]'));
+  } finally {
     await own.drop();
   }
 });

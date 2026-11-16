@@ -18,10 +18,11 @@ export const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(D
 /** Why a test of the live MySQL skips, or `false`. */
 export const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
 
-/** A driver as `lab/drivers` installs it. */
+/** A driver as `lab/drivers` installs it: an ES module's default export, as postgres.js 4's. */
 export function driver(name: string): any {
   const pkg = name.startsWith("@") ? name.split("/").slice(0, 2).join("/") : name.split("/")[0]!;
-  return createRequire(join(DRIVERS, pkg, "package.json"))(name);
+  const m = createRequire(join(DRIVERS, pkg, "package.json"))(name);
+  return m?.[Symbol.toStringTag] === "Module" && "default" in m ? m.default : m;
 }
 
 let sqlite3: Promise<any> | undefined;

@@ -591,7 +591,7 @@ export function rawStatement(query: QueryModule, params: unknown): { text: strin
 }
 
 /** A bound value as the text Postgres's input function reads, as `.run()` sends it through pg. */
-function postgresText(query: QueryModule, name: string, v: unknown): string | null {
+export function postgresText(query: QueryModule, name: string, v: unknown): string | null {
   if (v == null) return null;
   const t = query.inputs?.[name]?.type;
   if (isJsonValue(query, name, v)) return jsonText(v);

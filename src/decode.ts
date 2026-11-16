@@ -28,7 +28,7 @@
 import { coerce, DecodeError, elementKind, isRowKind, numbersInJson, scalarKind, textDecoder, utf8, withinDimensions, type Columns, type Decoder, type JsonNumbers, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { lastOfEach, rowOf, type RowBuilder } from "./row.ts";
-import { arrayLiteral, asByteaHex, isJsonValue, isTime, jsonText, jsonValue, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { arrayLiteral, asByteaHex, isJsonValue, isTime, jsonText, jsonValue, postgresText, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
 import { readPostgresError } from "./query-error.ts";
 
 type AnyClient = Record<string, any>;
@@ -670,9 +670,19 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
     // serializer would write a value as JSON, but a client Drizzle wraps has that serializer
     // replaced by one that passes the value through (drizzle-orm/postgres-js), and a
     // transaction shows neither. Bun.sql serializes the value itself.
+    // postgres.js 4 keeps the parameter types the server described for a statement that has an
+    // untyped parameter, and from its second run serializes every value by them, one declared
+    // `unknown` too: JSON text went through the jsonb serializer and was stored as a JSON string.
+    // So where one parameter is declared `unknown`, every one is, as its text, and postgres.js
+    // never learns the statement's types. postgres.js 3 sends such a value as it is either way.
     const bun = typeof c.commitDistributed === "function";
     const asText = typeof c.typed === "function" && !bun;
-    const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i), query.dialect) ? c.typed(v, 705) : v));
+    const unknown = (v: unknown, i: number) => isJsonParam(v, i) || (typeof v === "string" && isTime(type(i), query.dialect));
+    const mapped = !asText
+      ? bound.map((v, i) => (isJsonParam(v, i) ? { toJSON: () => jsonValue(v) } : v))
+      : bound.some(unknown)
+        ? bound.map((v, i) => c.typed(postgresText(query, names[i]!, v), 705))
+        : bound;
     return bun ? bunRows(await c.unsafe(text, mapped), query.columns, true) : await postgresJs(c, text, mapped, query.columns, query.row);
   }
   if (isNeonFunction(c)) return await neonCallable(c, text, json().map(asByteaHex), query.columns);

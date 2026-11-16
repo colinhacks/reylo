@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { transform, DRIVERS, PG, MYSQL, pgLive, mysqlLive } from "./helpers.ts";
+import { transform, DRIVERS, PG, MYSQL, pgLive, mysqlLive, driver } from "./helpers.ts";
 
 // A parameter nothing in the statement types is error reylo12 in the type check unless the project
 // file says `allow_untyped_params: true`. The content
@@ -96,7 +96,7 @@ test("SQLite: a parameter as a whole sort or group key is error reylo17 at the p
 
 test("Postgres: a JSON cast without a schema is no untyped parameter", { skip: pgLive }, async () => {
   const require = createRequire(join(DRIVERS, "postgres", "package.json"));
-  const postgres = require("postgres");
+  const postgres = driver("postgres");
   const admin = postgres(PG!, { max: 1, onnotice: () => {} });
   const name = `reylo_strict_${process.pid}`;
   await admin.unsafe(`drop database if exists ${name}`);
