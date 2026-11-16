@@ -9,6 +9,7 @@ import { checks, defineQuery } from "../src/index.ts";
 import type { EngineType, JsonSchema } from "../src/engine-type.ts";
 import { array, checked, lite as liteType, my as myType, oneOf, pg as pgType, record } from "./descriptors.ts";
 import { existsSync } from "node:fs";
+import { connect, createServer, type AddressInfo, type Socket } from "node:net";
 import { DRIVERS, driver, MYSQL, mysqlDatabase, mysqlLive, pgLive, plain, postgresDatabase, sqliteWasm } from "./helpers.ts";
 import { neonSql, pgPool, postgresJsSql } from "./stand-ins.ts";
 
@@ -446,6 +447,85 @@ test("mysql: execute() → [rows, fields] on mysql2, a repeated name repeated in
   assert.deepEqual(values, [1, "ada", 1]);
   assert.deepEqual({ ...options, typeCast: typeof options.typeCast }, { sql: "select ? as id, ? as name, ? as again", supportBigNumbers: true, bigNumberStrings: true, dateStrings: true, rowsAsArray: true, nestTables: false, typeCast: "function" });
   assert.deepEqual(await execute(pool, my, { id: 1, name: "ada" }), []);
+});
+
+test("mysql: a refusal of mysql2's prepared statements, as Cloudflare Hyperdrive answers one, names the mariadb driver", async () => {
+  const refusal = Object.assign(new Error("Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages"), { code: "ER_UNKNOWN_COM_ERROR" });
+  const pool = { query: async () => [[], []] as [unknown, unknown], execute: async () => Promise.reject(refusal) };
+  await assert.rejects(async () => execute(pool, my, { id: 1, name: "ada" }), (e: Error) => {
+    assert.equal(e.message, "reylo cannot run a mysql statement through mysql2 here: Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages. mysql2's execute(), which Reylo runs, prepares every statement, and this server, as Cloudflare Hyperdrive does, refuses prepared statements. Connect with the mariadb driver instead, whose query() Reylo runs without them.");
+    assert.equal(e.cause, refusal);
+    return true;
+  });
+  // Any other error is the driver's own.
+  const other = new Error("Unknown column 'nmae' in 'field list'");
+  await assert.rejects(async () => execute({ ...pool, execute: async () => Promise.reject(other) }, my, { id: 1, name: "ada" }), (e: unknown) => e === other);
+});
+
+// A proxy in front of the test MySQL that refuses prepared statements as Cloudflare Hyperdrive does:
+// a client's command is a packet with sequence id 0, and COM_STMT_PREPARE (0x16) gets an error
+// packet with Hyperdrive's message. Clients connect without TLS, so the proxy reads their packets.
+async function refusingPrepares(): Promise<{ port: number; close(): Promise<void> }> {
+  const u = new URL(MYSQL!);
+  const sockets = new Set<Socket>();
+  const proxy = createServer((client) => {
+    const upstream = connect(Number(u.port), u.hostname);
+    sockets.add(client).add(upstream);
+    let pending = Buffer.alloc(0);
+    upstream.on("data", (d) => client.write(d));
+    client.on("data", (d: Buffer) => {
+      pending = Buffer.concat([pending, d]);
+      while (pending.length >= 4 && pending.length >= 4 + pending.readUIntLE(0, 3)) {
+        const packet = pending.subarray(0, 4 + pending.readUIntLE(0, 3));
+        pending = pending.subarray(packet.length);
+        if (packet[3] !== 0 || packet[4] !== 0x16) {
+          upstream.write(packet);
+          continue;
+        }
+        const payload = Buffer.concat([Buffer.from([0xff, 0x2b, 0x05]), Buffer.from("#HY000Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages")]);
+        const head = Buffer.alloc(4);
+        head.writeUIntLE(payload.length, 0, 3);
+        head[3] = 1;
+        client.write(Buffer.concat([head, payload]));
+      }
+    });
+    const end = () => (client.destroy(), upstream.destroy());
+    client.on("close", end).on("error", end);
+    upstream.on("close", end).on("error", end);
+  });
+  await new Promise<void>((done) => proxy.listen(0, "127.0.0.1", done));
+  return {
+    port: (proxy.address() as AddressInfo).port,
+    close: () => new Promise<void>((done) => (sockets.forEach((s) => s.destroy()), proxy.close(() => done()))),
+  };
+}
+
+const mariadbLive = mysqlLive || (!existsSync(join(DRIVERS, "mariadb")) && "lab/drivers is not installed");
+
+test("mysql: through a server that refuses prepared statements, as Cloudflare Hyperdrive does, mysql2 is refused with what to use instead, and mariadb runs", { skip: mariadbLive }, async () => {
+  const own = await mysqlDatabase("reylo_execute_refusing", "create table users (id int primary key, name text not null); insert into users values (1, 'Ada')");
+  const proxy = await refusingPrepares();
+  const u = new URL(MYSQL!);
+  const connection = { host: "127.0.0.1", port: proxy.port, user: decodeURIComponent(u.username) || "root", password: decodeURIComponent(u.password), database: new URL(own.url).pathname.slice(1) };
+  const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select name from users where id = :id", params: ["id"] };
+  try {
+    const m = await driver("mysql2/promise").createConnection(connection);
+    try {
+      await assert.rejects(async () => execute(m, q, { id: 1 }), (e: Error) => e.message.startsWith("reylo cannot run a mysql statement through mysql2 here: Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages.") && e.message.endsWith("Connect with the mariadb driver instead, whose query() Reylo runs without them."));
+    } finally {
+      await m.end();
+    }
+    for (const client of [await driver("mariadb").createConnection(connection), driver("mariadb").createPool({ ...connection, connectionLimit: 1 })]) {
+      try {
+        assert.deepEqual(plain((await execute(client, q, { id: 1 })) as object[]), [{ name: "Ada" }]);
+      } finally {
+        await client.end();
+      }
+    }
+  } finally {
+    await proxy.close();
+    await own.drop();
+  }
 });
 
 test("mysql: PlanetScale's execute() → { rows }", async () => {
