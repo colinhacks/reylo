@@ -261,13 +261,15 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     }
 
     let version: i64 = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
-    let locale_column = if version >= 170000 { "co.colllocale" } else { "co.colliculocale" };
+    // A collation's locale is `colllocale` from Postgres 17, `colliculocale` in 15 and 16, and an
+    // ICU collation's `collcollate` before; its rules are Postgres 16's. Read through `to_jsonb`, a
+    // column the server lacks is null rather than an error.
     for r in db
         .rows(&format!(
             "select co.oid, format('%I.%I', n.nspname, co.collname) as name, co.collprovider as provider, co.collisdeterministic as det,
-              co.collcollate as lc_collate, co.collctype as lc_ctype, {} as locale, co.collicurules as rules
+              co.collcollate as lc_collate, co.collctype as lc_ctype,
+              coalesce(to_jsonb(co) ->> 'colllocale', to_jsonb(co) ->> 'colliculocale', co.collcollate) as locale, to_jsonb(co) ->> 'collicurules' as rules
             from pg_collation co join pg_namespace n on n.oid = co.collnamespace where {ns} and {} and {}",
-            locale_column,
             not_extension("pg_collation", "co"),
             not_platform("co.collowner")
         ))
