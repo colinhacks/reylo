@@ -15,7 +15,8 @@
 //! Items the crate writes inside the module's braces are kept, so `impl Row { … }` can sit with the
 //! query; the module sees the items of the one around it. A value a type cannot hold is refused
 //! when it is read (`reylo::Exact`); where no Rust type holds a column's values, the expansion fails
-//! at the statement and says how to cast it.
+//! at the statement and says how to cast it. A statement the database refuses fails at its string
+//! with the database's error, and the file, line and column inside the string it points at.
 //!
 //! The run time is sqlx's: the query runs on the caller's sqlx pool, connection or transaction.
 //! Postgres, SQLite and MySQL, whichever the URL's scheme names.
@@ -62,7 +63,34 @@ fn items(sql: &LitStr) -> syn::Result<TokenStream2> {
     let span = sql.span();
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(span, "CARGO_MANIFEST_DIR is not set"))?;
     let (dialect, analysis) = reylo_codegen::analysis::analyze(std::path::Path::new(&manifest), &sql.value()).map_err(|message| syn::Error::new(span, message))?;
+    if let Some(diagnostics) = analysis["diagnostics"].as_array().filter(|d| !d.is_empty()) {
+        let each = diagnostics.iter().map(|d| (d["message"].as_str().unwrap_or("the statement cannot be analyzed"), d["start"].as_u64().map_or(0, |s| s as usize)));
+        return Err(refused(sql, each));
+    }
     reylo_codegen::items(dialect, options(), &analysis, span)
+}
+
+/// An error at the statement for each of the engine's diagnostics. A compiler error cannot point
+/// inside a string on stable Rust, so one the engine places past the statement's first byte also
+/// names its file, line and column, as `at src/main.rs:3:16` under the message. Where the macro's
+/// host cannot say where the string is (rust-analyzer's macro server, without a file to read, names
+/// none), the error stands at the string alone.
+fn refused<'a>(sql: &LitStr, diagnostics: impl Iterator<Item = (&'a str, usize)>) -> syn::Error {
+    let start = sql.span().unwrap();
+    let file = start.file();
+    let literal = sql.token().to_string();
+    let mut errors = diagnostics.map(|(message, offset)| {
+        if offset == 0 || file.is_empty() {
+            return syn::Error::new(sql.span(), message);
+        }
+        let (line, column) = reylo_codegen::place::in_literal(&literal, start.line(), start.column(), offset);
+        syn::Error::new(sql.span(), format!("{message}\nat {file}:{line}:{column}"))
+    });
+    let mut error = errors.next().expect("a diagnostic");
+    for next in errors {
+        error.combine(next);
+    }
+    error
 }
 
 /// The crates the expansion may name, as `reylo`'s features of the same names turn them on.

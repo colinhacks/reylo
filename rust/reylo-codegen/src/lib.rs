@@ -27,6 +27,8 @@ pub mod files;
 #[cfg(feature = "generate")]
 pub mod generate;
 
+/// Where a statement's byte stands in the string literal that holds it.
+pub mod place;
 /// The items as a file shows them, the prelude's names written short.
 pub mod readable;
 
