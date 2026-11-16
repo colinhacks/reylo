@@ -392,6 +392,59 @@
   color: var(--color-fd-headings);
 }
 
+/* A code-tab strip keeps to one line and scrolls sideways when its tabs outrun the card, as Usage's
+   thirteen SQLite drivers do, where docs-kit wraps it. While tabs lie beyond the right edge, the
+   card's top right corner fades the strip out under a chevron (the card's, since a sticky element
+   inside the strip stops short of its end padding); the fade goes as the strip reaches its end, and
+   never shows on a strip that fits, whose scroll timeline is inactive. A strip with the dialect
+   switch still wraps, so that on a phone the switch drops under its file tabs rather than out of view. */
+#nd-page .dk-code-tabs:has(> [role='tablist']:not(:has(.dk-variant-switch))) {
+  position: relative;
+  timeline-scope: --reylo-strip;
+}
+
+#nd-page .dk-code-tabs > [role='tablist']:not(:has(.dk-variant-switch)) {
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+  scroll-timeline: --reylo-strip inline;
+}
+
+#nd-page .dk-code-tabs > [role='tablist']:not(:has(.dk-variant-switch))::-webkit-scrollbar {
+  display: none;
+}
+
+#nd-page .dk-code-tabs:has(> [role='tablist']:not(:has(.dk-variant-switch)))::after {
+  content: '›';
+  position: absolute;
+  top: 1px;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 3rem;
+  height: 1.75rem;
+  padding-inline-end: 0.5rem;
+  border-start-end-radius: calc(0.75rem - 1px);
+  background: linear-gradient(to right, transparent, var(--color-fd-card) 65%);
+  color: var(--color-fd-muted-foreground);
+  font-size: 1rem;
+  pointer-events: none;
+  opacity: 0;
+  animation: reylo-strip-more linear both;
+  animation-timeline: --reylo-strip;
+}
+
+@keyframes reylo-strip-more {
+  0%,
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 /* A card or an example on one database only says so in a light gray label where the switch would
    be (components/dialect-tabs.tsx), in the switch's face and size. */
 #nd-page .reylo-dialect-only {
