@@ -6,9 +6,10 @@
 //
 // The drivers keep the same facts in different places, measured on each (lab/driver-matrix):
 // - Postgres: pg, PGlite and Neon keep the server's fields under pg's names (`constraint`), and
-//   postgres.js under the protocol's (`constraint_name`, and `data type_name` with its space).
-//   Bun.sql keeps the SQLSTATE in `errno`, with a name of its own in `code`, and writes its own
-//   stack's column over `column` where the server sent none.
+//   postgres.js under the protocol's (`constraint_name`, and the data type as `data_type_name` from
+//   4.0, `data type_name` with its space before). Bun.sql keeps the SQLSTATE in `errno`, with a name
+//   of its own in `code`, and before 1.4.4 wrote its own stack's column over `column` where the
+//   server sent none.
 // - MySQL: mysql2, mariadb and Bun.sql give the number and the state; mariadb's message starts with
 //   a header of its own, and its `sqlMessage` (`text` before 3.0) is the server's. mariadb numbers
 //   its own errors 45001 to 45999, with a state too. @planetscale/database writes the number and the
@@ -272,7 +273,7 @@ function postgresError(error: unknown) {
       schema: text(e.schema ?? e.schema_name),
       table: text(e.table ?? e.table_name),
       column: text(e.column ?? e.column_name),
-      dataType: text(e.dataType ?? e["data type_name"]),
+      dataType: text(e.dataType ?? e.data_type_name ?? e["data type_name"]),
       constraint: text(e.constraint ?? e.constraint_name),
     },
   };

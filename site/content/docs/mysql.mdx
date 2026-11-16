@@ -692,7 +692,7 @@ await getUser.run(reserved, { id: 1 });
 reserved.release();
 ```
 
-Bun loses the microseconds of a `DATETIME`, a fraction that is all zeros, and a `TIME`'s fraction in a query with parameters, before Reylo sees them. An expression that could be a `BIGINT` or a `DECIMAL` (`round(:x)`) comes back as a `bigint` when it has no decimal point, since Bun returns both as text. Bun 1.4 can't read a `VECTOR` at all (`ERR_MYSQL_UNSUPPORTED_COLUMN_TYPE`), so select `vector_to_string(v)` instead.
+Bun loses the microseconds of a `DATETIME` and a fraction that is all zeros before Reylo sees them, and before Bun 1.4.4 a `TIME`'s fraction in a query with parameters too. An expression that could be a `BIGINT` or a `DECIMAL` (`round(:x)`) comes back as a `bigint` when it has no decimal point, since Bun returns both as text. Bun 1.4 can't read a `VECTOR` at all (`ERR_MYSQL_UNSUPPORTED_COLUMN_TYPE`), so select `vector_to_string(v)` instead.
 
 ### Drizzle
 
