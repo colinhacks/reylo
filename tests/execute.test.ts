@@ -226,7 +226,7 @@ test("a query without inputs, defined by hand or built before them, binds every 
   const hand: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :ids::int[] = :ids::int[]", params: ["ids"], inputs: { ids: { type: array(pgType("int4")) } } };
   seen.length = 0;
   await execute(sql, hand, { ids: [2] });
-  assert.deepEqual(seen, [['{"2"}']]);
+  assert.deepEqual(seen, [[{ value: '{"2"}', type: 705 }]]);
 });
 
 test("a Date for any date or time parameter, and a string without its zone for a timestamptz one, is refused before the statement runs", async () => {
@@ -430,19 +430,27 @@ test("postgres.js: a statement with parameters is prepared on its connection and
   }
 });
 
-test("postgres.js: a JSON parameter beside an untyped one is stored as its JSON on every run, in a transaction too", { skip: pgLive }, async () => {
-  // postgres.js 4 keeps the parameter types the server described for such a statement, and from
-  // its second run sent the JSON text through its jsonb serializer, which stored a JSON string.
-  const own = await postgresDatabase("reylo_execute_json_again");
-  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select (:doc::jsonb)::text as doc, :id::int as id", params: ["doc", "id"], inputs: { doc: { type: { kind: "json" } } } };
-  const docs = async (c: any) => {
+test("postgres.js: JSON and array parameters beside an untyped one reach the server as written on every run, in a transaction too", { skip: pgLive }, async () => {
+  // postgres.js 4 serializes the values of such a statement by the types the server described for
+  // it: the JSON text was stored as a JSON string from the second run, and the jsonb[] literal was
+  // refused as a malformed array from the first.
+  const own = await postgresDatabase("reylo_execute_typed_again");
+  const q: QueryModule<"postgres"> = {
+    dialect: "postgres",
+    sql: "select (:doc::jsonb)::text as doc, (:docs::jsonb[])::text as docs, (:flags::bool[])::text as flags, (:days::date[])::text as days, (:raw::bytea[])::text as raw, :id::int as id",
+    params: ["doc", "docs", "flags", "days", "raw", "id"],
+    inputs: { doc: { type: { kind: "json" } }, docs: { type: array({ kind: "json" }) }, flags: { type: array(pgType("bool")) }, days: { type: array(pgType("date")) }, raw: { type: array(pgType("bytea")) } },
+  };
+  const values = { doc: [1, "a"], docs: [{ a: 1 }, 2], flags: [true, false], days: ["2026-01-02"], raw: [new Uint8Array([1, 2])] };
+  const expected = { doc: '[1, "a"]', docs: '{"{\\"a\\": 1}",2}', flags: "{t,f}", days: "{2026-01-02}", raw: '{"\\\\x0102"}' };
+  const runs = async (c: any) => {
     const out: unknown[] = [];
-    for (let id = 0; id < 3; id++) out.push(...(await execute(c, q, { doc: [1, "a"], id })).map((r) => (r as { doc: unknown }).doc));
+    for (const id of [1, null, 3]) out.push(...(await execute(c, q, { ...values, id })).map(({ id: _, ...r }: any) => r));
     return out;
   };
   try {
-    assert.deepEqual(await docs(own.sql), Array(3).fill('[1, "a"]'));
-    assert.deepEqual(await own.sql.begin((tx: never) => docs(tx)), Array(3).fill('[1, "a"]'));
+    assert.deepEqual(await runs(own.sql), Array(3).fill(expected));
+    assert.deepEqual(await own.sql.begin((tx: never) => runs(tx)), Array(3).fill(expected));
   } finally {
     await own.drop();
   }

@@ -95,7 +95,6 @@ test("SQLite: a parameter as a whole sort or group key is error reylo17 at the p
 });
 
 test("Postgres: a JSON cast without a schema is no untyped parameter", { skip: pgLive }, async () => {
-  const require = createRequire(join(DRIVERS, "postgres", "package.json"));
   const postgres = driver("postgres");
   const admin = postgres(PG!, { max: 1, onnotice: () => {} });
   const name = `reylo_strict_${process.pid}`;
