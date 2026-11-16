@@ -635,7 +635,7 @@ const callbackPool = mariadbCallbacks.createPool(process.env.DATABASE_URL);
 await getUser.run(callbackPool, { id: 1 });
 ```
 
-Reylo runs each query through its `query()` method, which prepares nothing, so it also works through Cloudflare Hyperdrive. Connect it with the fields of the binding:
+Reylo runs each query through its `query()` method, which prepares nothing, so it also works through Cloudflare Hyperdrive, in a Worker with Node's APIs (a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag). Connect it with the fields of the binding:
 
 ```ts twoslash tab="worker.ts"
 /// <reference types="@cloudflare/workers-types" />

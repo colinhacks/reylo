@@ -146,8 +146,7 @@ export async function mysql2(m: AnyClient, text: string, values: unknown[], colu
   try {
     answer = await m.execute({ sql: text, ...MYSQL2_OPTIONS, ...proto, typeCast: needsCast(m, columns) ? mysql2Cast : true }, values);
   } catch (e) {
-    // execute() prepares every statement, which Cloudflare Hyperdrive refuses ("Hyperdrive does not
-    // currently support MySQL COM_STMT_PREPARE messages"); mariadb's query() prepares nothing.
+    // execute() prepares every statement, which Cloudflare Hyperdrive refuses ("Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages"); mariadb's query() prepares nothing.
     if (e instanceof Error && /COM_STMT_PREPARE/.test(e.message)) throw new Error(`reylo cannot run a mysql statement through mysql2 here: ${e.message}. mysql2's execute(), which Reylo runs, prepares every statement, and this server, as Cloudflare Hyperdrive does, refuses prepared statements. Connect with the mariadb driver instead, whose query() Reylo runs without them.`, { cause: e });
     throw e;
   }
