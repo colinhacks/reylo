@@ -661,7 +661,7 @@ const userById = db.transaction((id: number) =>
 const sameUser = userById(1);
 ```
 
-An integer past 2^53 comes back exact.
+An integer past 2^53 comes back exact. Bun, through `bun:sqlite` and `Bun.sql` alike, keeps only the low 64 bits of a `bigint` outside SQLite's 64-bit range, so Reylo rejects such a parameter rather than store another number.
 
 ### libSQL
 
@@ -702,7 +702,7 @@ const userById = compat.transaction((id: number) =>
 const sameUser = userById(1);
 ```
 
-An integer past 2^53 comes back exact.
+An integer past 2^53 comes back exact. Turso binds the number `2 ** 63` as 2^63 − 1, so Reylo rejects it.
 
 ### SQLite Wasm
 
@@ -822,7 +822,7 @@ await db.begin(async (tx) => {
 });
 ```
 
-Without `safeIntegers`, Bun rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. On Bun 1.4.3, `Bun.sql` returns no rows for a query containing a `"` inside a single-quoted string, such as `json_extract('{"a":1}', '$.a')`: pass the document as a parameter instead, `json_extract(:doc::text, '$.a')`.
+Without `safeIntegers`, Bun rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. Before Bun 1.4.4, `Bun.sql` returns no rows for a query containing a `"` inside a single-quoted string, such as `json_extract('{"a":1}', '$.a')`: pass the document as a parameter instead, `json_extract(:doc::text, '$.a')`.
 
 ### Drizzle
 
