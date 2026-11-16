@@ -3737,12 +3737,13 @@ pub struct WrittenReturning {
 }
 
 impl WrittenReturning {
-    /// The target's columns the statement writes a non-null value to in every row it returns, each
-    /// with whether one of those values may reach it through an assignment cast. `not_null` says
-    /// which of the target's columns hold a value in every row of it, and `selected` which columns
-    /// of the INSERT's SELECT do.
-    pub fn non_null(&self, not_null: &dyn Fn(&str) -> bool, selected: &dyn Fn(usize) -> bool) -> HashMap<String, bool> {
-        let holds = |value: &WrittenValue, excluded: &dyn Fn(&str) -> bool| {
+    /// The target's columns the statement writes a non-null value to in every row it returns.
+    /// `not_null` says which of the target's columns hold a value in every row of it, `selected`
+    /// which columns of the INSERT's SELECT do, and `uncast` which columns are of a type no cast of
+    /// a user's or an extension's targets: a value that may reach a column through an assignment
+    /// cast is non-null there only then.
+    pub fn non_null(&self, not_null: &dyn Fn(&str) -> bool, selected: &dyn Fn(usize) -> bool, uncast: &dyn Fn(&str) -> bool) -> HashSet<String> {
+        let holds = |value: &WrittenValue, column: &str, excluded: &dyn Fn(&str) -> bool| {
             let leaves: Vec<DescribedColumn> = value
                 .leaves
                 .iter()
@@ -3756,24 +3757,25 @@ impl WrittenReturning {
                     DescribedColumn { name: String::new(), type_oid: oid::UNKNOWN, typmod: -1, type_name: String::new(), nullable: !non_null, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
                 })
                 .collect();
-            resolve(&value.claim, Some(&leaves)).non_null
+            (!value.cast || uncast(column)) && resolve(&value.claim, Some(&leaves)).non_null
         };
-        // The columns every way writes a non-null value to, each with whether a value is cast.
-        let every = |ways: &[HashMap<String, Vec<WrittenValue>>], excluded: &dyn Fn(&str) -> bool| -> Option<HashMap<String, bool>> {
-            let mut ways = ways.iter().map(|way| -> HashMap<String, bool> {
-                way.iter().filter(|(_, values)| !values.is_empty() && values.iter().all(|v| holds(v, excluded))).map(|(column, values)| (column.clone(), values.iter().any(|v| v.cast))).collect()
+        // The columns every way writes a non-null value to.
+        let every = |ways: &[HashMap<String, Vec<WrittenValue>>], excluded: &dyn Fn(&str) -> bool| -> Option<HashSet<String>> {
+            let mut ways = ways.iter().map(|way| -> HashSet<String> {
+                way.iter().filter(|(column, values)| !values.is_empty() && values.iter().all(|v| holds(v, column, excluded))).map(|(column, _)| column.clone()).collect()
             });
             let first = ways.next()?;
-            Some(ways.fold(first, |known, way| known.into_iter().filter_map(|(column, cast)| way.get(&column).map(|other| (column.clone(), cast || *other))).collect()))
+            Some(ways.fold(first, |known, way| known.intersection(&way).cloned().collect()))
         };
         let inserted = every(&self.inserts, &|_| false);
-        // `excluded` is the row an upsert's one insert proposed, as it wrote it.
+        // `excluded` is the row an upsert's one insert proposed, as it reached the row: a column it
+        // wrote a non-null value to, through no cast that may give NULL.
         let proposed = inserted.clone().unwrap_or_default();
-        let updated = every(&self.updates, &|column| proposed.contains_key(column));
+        let updated = every(&self.updates, &|column| proposed.contains(column));
         match (inserted, updated) {
-            (Some(inserted), Some(updated)) => inserted.into_iter().filter_map(|(column, cast)| updated.get(&column).map(|other| (column.clone(), cast || *other))).collect(),
+            (Some(inserted), Some(updated)) => inserted.intersection(&updated).cloned().collect(),
             (Some(only), None) | (None, Some(only)) => only,
-            (None, None) => HashMap::new(),
+            (None, None) => HashSet::new(),
         }
     }
 }
@@ -3934,7 +3936,13 @@ fn written_returning_here(sql: &str, trust: &Trust, columns: &Columns) -> Option
                     if lists.len() != v.values_lists.len() {
                         return None;
                     }
-                    inserts.push(way(rows_written(&insert_names(&s.cols)?, &lists), false));
+                    // A `*` in a row is as many values as it shows, none included, which moves
+                    // every value after it to another column: such rows write nothing read here.
+                    if lists.iter().any(|row| row.iter().any(spreads)) {
+                        inserts.push(HashMap::new());
+                    } else {
+                        inserts.push(way(rows_written(&insert_names(&s.cols)?, &lists), false));
+                    }
                 }
                 // Any other SELECT: column `n` of its rows is written to the `n`th column.
                 Some(NodeEnum::SelectStmt(v)) => {
@@ -3977,7 +3985,7 @@ fn written_returning_here(sql: &str, trust: &Trust, columns: &Columns) -> Option
                 match protobuf::CmdType::try_from(c.command_type).ok()? {
                     protobuf::CmdType::CmdUpdate => updates.push(way(assignments(&c.target_list), false)),
                     // `INSERT DEFAULT VALUES` has no values and writes no column.
-                    protobuf::CmdType::CmdInsert if c.values.is_empty() => inserts.push(HashMap::new()),
+                    protobuf::CmdType::CmdInsert if c.values.is_empty() || c.values.iter().any(spreads) => inserts.push(HashMap::new()),
                     protobuf::CmdType::CmdInsert => inserts.push(way(rows_written(&insert_names(&c.target_list)?, &[c.values.as_slice()]), false)),
                     protobuf::CmdType::CmdNothing => {}
                     _ => return None,
@@ -4002,6 +4010,12 @@ fn written_returning_here(sql: &str, trust: &Trust, columns: &Columns) -> Option
     Some(WrittenReturning { target, events, columns: out, inserts, updates, select, plan, leaf_columns })
 }
 
+/// Whether a value is `*`, `x.*` or `(row).*`, which Postgres expands into as many values as it
+/// shows, none at all included.
+fn spreads(node: &Node) -> bool {
+    is_star(node) || expands(node)
+}
+
 /// Each row's value per column of `names`, `None` for a column written in part, and for one the
 /// row leaves out, which takes its default.
 fn rows_written<'a>(names: &[(String, bool)], rows: &[&'a [Node]]) -> Vec<(String, Option<&'a Node>)> {
@@ -4019,8 +4033,9 @@ fn assignments(list: &[Node]) -> Vec<(String, Option<&Node>)> {
         })
         .map(|rt| {
             let val = rt.val.as_deref().filter(|_| rt.indirection.is_empty()).and_then(|val| match val.node.as_ref() {
+                // A `*` among the row's fields moves every field after it to another column.
                 Some(NodeEnum::MultiAssignRef(m)) => match m.source.as_deref().and_then(|s| s.node.as_ref()) {
-                    Some(NodeEnum::RowExpr(r)) => usize::try_from(m.colno - 1).ok().and_then(|i| r.args.get(i)),
+                    Some(NodeEnum::RowExpr(r)) if !r.args.iter().any(spreads) => usize::try_from(m.colno - 1).ok().and_then(|i| r.args.get(i)),
                     _ => None,
                 },
                 _ => Some(val),
@@ -4552,15 +4567,15 @@ mod tests {
         let trust = Trust { non_null_params: true, nullable_params: [2].into_iter().collect(), ..Default::default() };
         let found = |sql: &str| written_returning(sql, &trust, &columns).unwrap();
         let some = |c: &str| Some(c.to_string());
-        // The target's columns written a non-null value, each with whether one may be cast; `id`
-        // is the one column that holds a value in every row of the table, and the SELECT that
+        // The target's columns written a non-null value. `id` is the one column that holds a value
+        // in every row of the table, `n` is of a type a user's cast targets, and the SELECT that
         // feeds an INSERT has its second column non-null.
         let written = |sql: &str| {
-            let mut out: Vec<(String, bool)> = found(sql).non_null(&|c| c == "id", &|i| i == 1).into_iter().collect();
+            let mut out: Vec<String> = found(sql).non_null(&|c| c == "id", &|i| i == 1, &|c| c != "n").into_iter().collect();
             out.sort();
             out
         };
-        let w = |pairs: &[(&str, bool)]| pairs.iter().map(|(c, cast)| (c.to_string(), *cast)).collect::<Vec<_>>();
+        let w = |columns: &[&str]| columns.iter().map(|c| c.to_string()).collect::<Vec<_>>();
         // The new row's columns, by any name, and none of the old row's.
         let i = found("INSERT INTO todos (id, title, n) VALUES (1, 'a', now()) RETURNING title, n AS at, owner_id, new.title AS t, old.title AS o, *");
         assert_eq!(i.columns, [some("title"), some("n"), some("owner_id"), some("title"), None, some("id"), some("owner_id"), some("title"), some("n")]);
@@ -4568,27 +4583,32 @@ mod tests {
         // An expression's leaves, each by the column it reads of the new row.
         let e = found("UPDATE todos t SET title = 'a' RETURNING upper(title) AS up, old.title || new.title AS both, t.title || owner_id::text AS joined, title");
         assert_eq!(e.leaf_columns, [some("title"), None, some("title"), some("title"), some("owner_id")]);
-        // A string literal and a bare parameter are read as the column's type; anything else may be cast.
-        assert_eq!(written("INSERT INTO todos (id, title, n) VALUES (1, 'a', now()) RETURNING title"), w(&[("id", true), ("n", true), ("title", false)]));
-        assert_eq!(written("INSERT INTO todos (title, n) VALUES ($1, $3::int8) RETURNING title"), w(&[("n", true), ("title", false)]));
+        // A string literal and a bare parameter are read as the column's type; any other value
+        // reaches a column of a type a user's cast targets through that cast, which may give NULL.
+        assert_eq!(written("INSERT INTO todos (id, title, n) VALUES (1, 'a', now()) RETURNING title"), w(&["id", "title"]));
+        assert_eq!(written("INSERT INTO todos (title, n) VALUES ($1, $3::int8) RETURNING title"), w(&["title"]));
         // A parameter the caller may pass NULL for, `DEFAULT`, NULL, and a column a row leaves out
         // write nothing; every row of a VALUES list must write a value.
         assert_eq!(written("INSERT INTO todos (title, n, owner_id) VALUES ($2, DEFAULT, NULL) RETURNING title"), w(&[]));
-        assert_eq!(written("INSERT INTO todos (title, n) VALUES ('a', 1), ('b', $2) RETURNING title"), w(&[("title", false)]));
-        assert_eq!(written("INSERT INTO todos VALUES (1, 2, 'a') RETURNING title"), w(&[("id", true), ("owner_id", true), ("title", false)]));
+        assert_eq!(written("INSERT INTO todos (title, owner_id) VALUES ('a', 1), ('b', $2) RETURNING title"), w(&["title"]));
+        assert_eq!(written("INSERT INTO todos VALUES (1, 2, 'a') RETURNING title"), w(&["id", "owner_id", "title"]));
         assert_eq!(written("INSERT INTO todos DEFAULT VALUES RETURNING title"), w(&[]));
-        assert_eq!(written("INSERT INTO todos (title[1], n) VALUES ('a', 1) RETURNING title"), w(&[("n", true)]));
+        assert_eq!(written("INSERT INTO todos (title[1], id) VALUES ('a', 1) RETURNING title"), w(&["id"]));
+        // A `*` among a row's values moves the values after it to other columns.
+        assert_eq!(written("INSERT INTO todos (id, owner_id, title) VALUES ((ROW(1, 2)::pair).*, 'a') RETURNING title"), w(&[]));
+        assert_eq!(written("UPDATE todos SET (id, owner_id, title) = ROW(o.*, 'a') FROM owners o RETURNING title"), w(&[]));
         // An upsert writes its row and, where it conflicts, what its DO UPDATE sets: `excluded` is
         // the row it proposed, and the row in its way holds what the table's constraints say.
-        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = excluded.title RETURNING title"), w(&[("title", false)]));
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = excluded.title RETURNING title"), w(&["title"]));
         assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = excluded.n RETURNING title"), w(&[]));
+        assert_eq!(written("INSERT INTO todos (id, title, n) VALUES (1, 'a', 2) ON CONFLICT (id) DO UPDATE SET title = excluded.n RETURNING title"), w(&[]));
         assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET n = 1 RETURNING title"), w(&[]));
         assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = todos.title RETURNING title"), w(&[]));
-        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = todos.id::text, id = excluded.id RETURNING title"), w(&[("id", true), ("title", true)]));
-        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO NOTHING RETURNING title"), w(&[("id", true), ("title", false)]));
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = todos.id::text, id = excluded.id RETURNING title"), w(&["id", "title"]));
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO NOTHING RETURNING title"), w(&["id", "title"]));
         // An UPDATE writes what its SET does, from the row it changes and what it joins in.
-        assert_eq!(written("UPDATE todos SET title = coalesce(title, ''), n = owners.name FROM owners WHERE owners.id = todos.owner_id RETURNING title, n"), w(&[("title", true)]));
-        assert_eq!(written("UPDATE todos SET (title, n) = ('a', 1) RETURNING title"), w(&[("n", true), ("title", false)]));
+        assert_eq!(written("UPDATE todos SET title = coalesce(title, ''), owner_id = owners.id FROM owners WHERE owners.id = todos.owner_id RETURNING title"), w(&["title"]));
+        assert_eq!(written("UPDATE todos SET (title, owner_id) = ('a', 1) RETURNING title"), w(&["owner_id", "title"]));
         assert_eq!(written("UPDATE todos SET (title, n) = (SELECT 'a', 1) RETURNING title"), w(&[]));
         assert_eq!(written("UPDATE todos SET title = 'a', title[1] = 'b' RETURNING title"), w(&[]));
         assert_eq!(found("UPDATE todos SET n = 1 FROM owners RETURNING name, title, id").columns, [None, some("title"), None]);
@@ -4596,14 +4616,15 @@ mod tests {
         // deleted row as it was, and its `*` shows the source's columns first.
         let merge = "MERGE INTO todos t USING owners o ON t.owner_id = o.id WHEN MATCHED AND o.name = 'x' THEN DO NOTHING WHEN MATCHED THEN UPDATE SET title = 'a' WHEN NOT MATCHED THEN INSERT (id, title) VALUES (o.id, 'b')";
         assert_eq!(found(&format!("{merge} RETURNING t.title, new.title, title, o.name")).columns, [some("title"), some("title"), some("title"), None]);
-        assert_eq!(written(&format!("{merge} RETURNING t.title")), w(&[("title", false)]));
+        assert_eq!(written(&format!("{merge} RETURNING t.title")), w(&["title"]));
         assert_eq!(written("MERGE INTO todos t USING owners o ON t.owner_id = o.id WHEN NOT MATCHED BY SOURCE THEN UPDATE SET title = o.name RETURNING t.title"), w(&[]));
+        assert_eq!(written("MERGE INTO todos t USING owners o ON t.owner_id = o.id WHEN NOT MATCHED THEN INSERT (id, title) VALUES (o.*, 'b') RETURNING t.title"), w(&[]));
         assert!(written_returning("MERGE INTO todos t USING owners o ON t.owner_id = o.id WHEN MATCHED THEN DELETE WHEN NOT MATCHED THEN INSERT (id, title) VALUES (o.id, 'b') RETURNING t.title", &trust, &columns).is_none());
         assert!(written_returning(&format!("{merge} RETURNING *"), &trust, &columns).is_none());
         // An INSERT's SELECT writes its columns in order, and is read as a statement of its own.
         let s = found("WITH x AS (SELECT 1 AS id, 'a' AS name) INSERT INTO todos (id, title) SELECT id, name FROM x RETURNING title");
         assert_eq!(s.select.as_deref(), Some("WITH x AS (SELECT 1 AS id, 'a' AS name) SELECT id, name FROM x"));
-        assert_eq!(written("INSERT INTO todos (id, title) SELECT id, name FROM owners RETURNING title"), w(&[("title", true)]));
+        assert_eq!(written("INSERT INTO todos (id, title) SELECT id, name FROM owners RETURNING title"), w(&["title"]));
         // Nothing for a DELETE, a SELECT, or a write to a WITH query's name.
         assert!(written_returning("DELETE FROM todos RETURNING title", &trust, &columns).is_none());
         assert!(written_returning("SELECT 1", &trust, &columns).is_none());

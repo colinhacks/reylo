@@ -1913,30 +1913,26 @@ impl<'a> Engine<'a> {
             let reads = relations.get(oid).map(|(_, reads)| reads);
             let not_null = |column: &str| attnum(column).is_some_and(|a| reads.is_some_and(|reads| reads.get(&a) == Some(&true)));
             let selected = |i: usize| selected.as_ref().and_then(|s| s.columns.get(i)).is_some_and(|c| !c.nullable);
-            // Each column written a non-null value, with whether a column of type `oid` holds it:
-            // one of a type no user's cast targets holds whatever value the write casts to it.
-            let written = found.non_null(&not_null, &selected);
-            let holds = |column: &str, oid: u32| written.get(column).is_some_and(|cast| !cast || registry.get(registry.resolve_domain(oid)).is_some_and(|t| trust.cast_targets.as_ref().is_none_or(|targets| targets.contains(&t.name))));
+            // A column whose type, a domain's base type, no user's or extension's cast targets.
+            let uncast = |column: &str| columns.type_of(&found.target, column).and_then(|t| registry.get(registry.resolve_domain(t))).is_some_and(|t| trust.cast_targets.as_ref().is_none_or(|targets| targets.contains(&t.name)));
+            let written = found.non_null(&not_null, &selected, &uncast);
             for ((column, raw), col) in found.columns.iter().zip(&raw.columns).zip(described.columns.iter_mut()) {
-                if column.as_deref().is_some_and(|column| raw.table == *oid && attnum(column) == Some(raw.attnum) && holds(column, raw.oid)) {
+                if column.as_deref().is_some_and(|column| raw.table == *oid && attnum(column) == Some(raw.attnum) && written.contains(column)) {
                     col.nullable = false;
                 }
             }
-            // Each leaf of the list's expressions that reads a column of the new row written a
-            // value, with whether a value may be cast to it.
-            found.leaf_columns.iter().map(|c| c.as_ref().and_then(|c| written.get(c)).copied()).collect::<Vec<Option<bool>>>()
+            // Each leaf of the list's expressions that reads a column of the new row written a value.
+            found.leaf_columns.iter().map(|c| c.as_ref().is_some_and(|c| written.contains(c))).collect::<Vec<bool>>()
         };
         // An expression of the list reads a column written a value as that value: its leaf is
         // non-null, and the expression is read again over the leaves.
-        let Some(probe) = found.plan.leaves.as_ref().filter(|_| found.plan.reads_leaves() && written.iter().any(Option::is_some)) else { return Some(()) };
+        let Some(probe) = found.plan.leaves.as_ref().filter(|_| found.plan.reads_leaves() && written.contains(&true)) else { return Some(()) };
         let Some(mut leaves) = self.probe(probe, trust)?.map(|d| d.columns) else { return Some(()) };
         if leaves.len() != written.len() {
             return Some(());
         }
-        let registry = self.registry.borrow();
-        let castable = |oid: u32| registry.get(registry.resolve_domain(oid)).is_some_and(|t| trust.cast_targets.as_ref().is_none_or(|targets| targets.contains(&t.name)));
-        for (leaf, cast) in leaves.iter_mut().zip(&written) {
-            if cast.is_some_and(|cast| !cast || castable(leaf.type_oid)) {
+        for (leaf, written) in leaves.iter_mut().zip(&written) {
+            if *written {
                 leaf.nullable = false;
             }
         }

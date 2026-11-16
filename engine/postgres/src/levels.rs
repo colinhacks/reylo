@@ -54,7 +54,7 @@ impl Columns {
     }
 
     /// The type of a relation's column, where the host gave it.
-    fn type_of(&self, relation: &str, column: &str) -> Option<u32> {
+    pub(crate) fn type_of(&self, relation: &str, column: &str) -> Option<u32> {
         let position = self.0.get(relation)?.iter().position(|c| c == column)?;
         self.1.get(relation)?.get(position).copied().flatten()
     }

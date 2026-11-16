@@ -1,4 +1,6 @@
 cast_parameter.sql: many (note: text(¬NUL)) -> { note: text(¬NUL)? }
+excluded_cast.sql: one () -> { note: varchar(¬NUL)? }
+excluded_literal.sql: one () -> { note: varchar(¬NUL) }
 string_literal.sql: one () -> { note: text(¬NUL) }
 typed_value.sql: one () -> { note: text(¬NUL)?, n: int8 }
 user_cast.sql: one () -> { note: text(¬NUL)? }

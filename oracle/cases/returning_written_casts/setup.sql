@@ -7,3 +7,5 @@ insert into t values (1, null, null);
 create type boxed as (v int);
 create function boxed_text(boxed) returns text language sql as 'select null::text';
 create cast (boxed as text) with function boxed_text(boxed) as assignment;
+create table u (id int primary key, note varchar, other text);
+insert into u values (1, 'a', 'b');
