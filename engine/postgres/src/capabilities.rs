@@ -24,6 +24,32 @@ macro_rules! catalog {
     };
 }
 
+/// The text identifier `$name` as Postgres writes it where it must be quoted: bare where it is
+/// lowercase letters, digits and underscores not starting with a digit, else in double quotes, a
+/// quote inside doubled, as a type's `label` writes each part of its name.
+macro_rules! identifier {
+    ($name:literal) => {
+        concat!(
+            "CASE WHEN ", $name, " OPERATOR(pg_catalog.~) '^[a-z_][a-z0-9_]*$'::pg_catalog.text THEN ", $name, " \
+            ELSE pg_catalog.textcat(pg_catalog.textcat('\"'::pg_catalog.text, pg_catalog.replace(", $name, ", '\"'::pg_catalog.text, '\"\"'::pg_catalog.text)), '\"'::pg_catalog.text) END"
+        )
+    };
+}
+
+/// The name of relation `c` in schema `n`, qualified as a `label` is (`public.posts`,
+/// `public."a.b"`), so a dot inside a name never reads as the one between the schema and the name.
+macro_rules! qualified {
+    () => {
+        concat!(
+            "pg_catalog.textcat(pg_catalog.textcat(",
+            identifier!("n.nspname::pg_catalog.text"),
+            ", '.'::pg_catalog.text), ",
+            identifier!("c.relname::pg_catalog.text"),
+            ")"
+        )
+    };
+}
+
 /// Code that touches no table: an operator class or family, which an index scan calls, and a
 /// function `$p` that is immutable and written in C or built in, as an extension's are; an
 /// aggregate is so where each of its support functions is. A function in SQL or a procedural
@@ -103,7 +129,7 @@ pub const TABLES_QUERY: &str = concat!(
       UNION ALL SELECT c.oid, 3 FROM pg_catalog.pg_class c JOIN (SELECT w.oid FROM w UNION SELECT r.oid FROM r) x ON c.oid OPERATOR(pg_catalog.=) x.oid \
         WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.pronargs OPERATOR(pg_catalog.>=) 1 \
           AND p.proargtypes[0] OPERATOR(pg_catalog.=) c.reltype AND NOT ", harmless_function!("p"), ")) \
-    SELECT pg_catalog.textcat(pg_catalog.textcat(n.nspname::pg_catalog.text, '.'::pg_catalog.text), c.relname::pg_catalog.text), \
+    SELECT ", qualified!(), ", \
       pg_catalog.max(a.access), c.relkind OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
     FROM reached a JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) a.oid JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace \
     GROUP BY 1, 3"
@@ -140,7 +166,7 @@ pub const IMMUTABLE_QUERY: &str = concat!(
 /// Every relation an extension owns, qualified by its schema: the tables its code may read, as
 /// PostGIS's functions read `spatial_ref_sys`, where a statement sets off code of an extension's.
 pub const EXTENSION_TABLES_QUERY: &str = concat!(
-    "SELECT pg_catalog.textcat(pg_catalog.textcat(n.nspname::pg_catalog.text, '.'::pg_catalog.text), c.relname::pg_catalog.text) \
+    "SELECT ", qualified!(), " \
     FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) d.objid JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace \
     WHERE d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_extension"), " \
       AND d.deptype OPERATOR(pg_catalog.=) 'e'::pg_catalog.\"char\" AND c.relkind OPERATOR(pg_catalog.=) ANY ('{r,p,v,m,f}'::pg_catalog.\"char\"[])"
@@ -411,7 +437,8 @@ fn reached(sql: &str, node: &NodeEnum, host: &Host, capabilities: &mut Capabilit
     Some(())
 }
 
-/// Every relation the statement names, wherever it stands, as it names it: `schema.name` or `name`.
+/// Every relation the statement names, wherever it stands, as it names it: `schema.name` or `name`,
+/// as [`analyze::relation_name`] writes it.
 fn range_vars(node: &NodeEnum) -> Vec<String> {
     let Ok(tree) = serde_json::to_value(node) else { return Vec::new() };
     let mut found = Vec::new();
@@ -421,10 +448,7 @@ fn range_vars(node: &NodeEnum) -> Vec<String> {
                 if let Some(rv) = map.get("RangeVar") {
                     let part = |key: &str| rv.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
                     if let Some(name) = part("relname") {
-                        found.push(match part("schemaname") {
-                            Some(schema) => format!("{schema}.{name}"),
-                            None => name.to_string(),
-                        });
+                        found.push(analyze::relation_name(part("schemaname").unwrap_or(""), name));
                     }
                 }
                 map.values().for_each(|child| walk(child, found));
@@ -565,9 +589,5 @@ fn locked(l: &pg_query::protobuf::LockStmt, host: &Host, capabilities: &mut Capa
 
 /// A relation's name as a statement qualifies it.
 fn qualified(rv: &pg_query::protobuf::RangeVar) -> String {
-    if rv.schemaname.is_empty() {
-        rv.relname.clone()
-    } else {
-        format!("{}.{}", rv.schemaname, rv.relname)
-    }
+    analyze::relation_name(&rv.schemaname, &rv.relname)
 }

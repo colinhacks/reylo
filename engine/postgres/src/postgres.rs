@@ -1290,7 +1290,7 @@ impl<'a> Engine<'a> {
             let definition = {
                 let known = self.relations.borrow();
                 let views = self.views.borrow();
-                known.iter().find(|(_, (n, _))| *n == name).and_then(|(oid, _)| views.get(oid).cloned())
+                known.iter().find(|(_, (n, _))| analyze::relation_name("", n) == name).and_then(|(oid, _)| views.get(oid).cloned())
             };
             let Some(definition) = definition else { continue };
             let parsed = analyze::analyze(&definition).ok();
@@ -2879,10 +2879,7 @@ fn conflict_targets(sql: &str) -> Vec<ConflictTarget> {
     fn target(insert: &Value) -> Option<ConflictTarget> {
         let relation = insert.get("relation")?;
         let name = relation.get("relname")?.as_str()?;
-        let relation = match relation.get("schemaname").and_then(Value::as_str) {
-            Some(schema) if !schema.is_empty() => format!("{schema}.{name}"),
-            _ => name.to_string(),
-        };
+        let relation = analyze::relation_name(relation.get("schemaname").and_then(Value::as_str).unwrap_or(""), name);
         let infer = insert.get("on_conflict_clause")?.get("infer")?;
         if infer.get("conname").and_then(Value::as_str).is_some_and(|c| !c.is_empty()) {
             return None;
@@ -3037,7 +3034,7 @@ fn missing_rows(sql: &str, origins: &[bool], columns: &dyn Fn(&str) -> Option<Ve
             NodeEnum::MergeStmt(s) => (s.relation.as_ref()?, &s.returning_clause),
             _ => return None,
         };
-        Some((Rows::of(node)?, relation.relname.clone(), jsonshape::returning(clause)))
+        Some((Rows::of(node)?, analyze::relation_name(&relation.schemaname, &relation.relname), jsonshape::returning(clause)))
     };
     let reads_missing = |rows: &Rows, relation: &str, node: &pg_query::protobuf::Node| {
         let known = columns(relation);
@@ -3269,6 +3266,7 @@ fn sublink_rows(sql: &str) -> Option<SublinkRows> {
     if select.op != SetOperation::SetopNone as i32 {
         return None;
     }
+    let tables = tables.iter().map(|t| analyze::relation_name("", t)).collect();
     Some(SublinkRows { targets: select.target_list.iter().map(row).collect(), tables })
 }
 
@@ -4537,12 +4535,22 @@ struct InsertTarget {
     defaults: Vec<usize>,
 }
 
+/// A relation's name in a message, in double quotes: as [`analyze::relation_name`] writes it where
+/// that quotes a part already (`"Users"`, `public."a.b"`).
+fn shown(relation: &str) -> String {
+    if relation.contains('"') {
+        relation.to_string()
+    } else {
+        format!("\"{relation}\"")
+    }
+}
+
 /// The INSERT the top statement is (a WITH before it allowed), as [`InsertTarget`] reads it.
 fn insert_target(sql: &str) -> Option<InsertTarget> {
     let parsed = crate::stack::parse(sql).ok()?;
     let Some(NodeEnum::InsertStmt(insert)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return None };
     let rv = insert.relation.as_ref()?;
-    let relation = if rv.schemaname.is_empty() { rv.relname.clone() } else { format!("{}.{}", rv.schemaname, rv.relname) };
+    let relation = analyze::relation_name(&rv.schemaname, &rv.relname);
     let start = usize::try_from(rv.location).ok()?;
     let end = sql[start..].find(|c: char| c.is_whitespace() || c == '(').map_or(sql.len(), |i| start + i);
     let columns = (!insert.cols.is_empty()).then(|| {
@@ -4615,8 +4623,8 @@ fn unwritten(target: &InsertTarget, rows: &[Vec<Value>]) -> Option<String> {
     let quoted: Vec<String> = missing.iter().map(|m| format!("\"{m}\"")).collect();
     match quoted.as_slice() {
         [] => None,
-        [one] => Some(format!("Column {one} of \"{}\" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.", target.relation)),
-        many => Some(format!("Columns {} of \"{}\" are NOT NULL with no default, and this insert leaves them out or writes DEFAULT to them, so Postgres refuses every row it inserts.", many.join(", "), target.relation)),
+        [one] => Some(format!("Column {one} of {} is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.", shown(&target.relation))),
+        many => Some(format!("Columns {} of {} are NOT NULL with no default, and this insert leaves them out or writes DEFAULT to them, so Postgres refuses every row it inserts.", many.join(", "), shown(&target.relation))),
     }
 }
 

@@ -71,6 +71,8 @@ const STATEMENTS = [
   "select n.id, n.email from named n join posts p on p.author = n.id where p.id = :id",
   "select p.title, n.email from posts p left join named n on n.id = p.author",
   `select u.id, i.label from users u left join "dot.ted".items i on i.id = u.id`,
+  // The parse names no table a WITH query takes the name of, even read inside it, so the describe's columns of it are asked for by oid.
+  "with users as (select * from users) select p.title, u.email from posts p left join users u on u.id = p.author",
   "select id from users where name ~~~ :q::text",
 ];
 

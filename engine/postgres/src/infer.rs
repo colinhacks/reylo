@@ -3642,7 +3642,7 @@ fn write_narrowing_here(sql: &str, trust: &Trust, columns: &Columns) -> Option<W
         let name = if rt.name.is_empty() { c.fields.last().and_then(|f| last_string(std::slice::from_ref(f)))? } else { rt.name.clone() };
         out.push(narrowed(&c).filter(|_| !missing).map(|read| (name, read)));
     }
-    let target = if relation.schemaname.is_empty() { relation.relname.clone() } else { format!("{}.{}", relation.schemaname, relation.relname) };
+    let target = crate::analyze::relation_name(&relation.schemaname, &relation.relname);
     Some(WriteNarrowing { target, update, assigned, columns: out })
 }
 

@@ -1,0 +1,4 @@
+insert_dotted.sql: at_most_one (id: int4, v: text(¬NUL)?) -> { id: int4, v: text(¬NUL)? }
+insert_schema.sql: one (id: int4, v: text(¬NUL)) -> { id: int4, v: text(¬NUL) }
+select_dotted.sql: at_most_one (id: int4) -> { id: int4, v: text(¬NUL)? }
+update_dotted.sql: at_most_one (v: text(¬NUL)?, id: int4) -> { v: text(¬NUL)? }
