@@ -207,7 +207,7 @@ If your runtime has `Temporal`, read the instant with `Temporal.Instant.from()`,
 
 **Fractions of a second**
 
-A `timestamptz` or `timestamp` always has six fraction digits, the microseconds Postgres keeps, so two of them sort as strings in the order of their times.
+A `timestamptz` or `timestamp` always has six fraction digits, the microseconds Postgres keeps, so two of them sort as strings in the order of their times. A `Date` keeps milliseconds, so a value passed through one loses its microseconds, and `where placed_at > :since` can then match the row it came from. Pass back the text `.run()` returned.
 
 <Pairs>
 
@@ -216,8 +216,6 @@ A `timestamptz` or `timestamp` always has six fraction digits, the microseconds 
 - `'2026-10-20 10:00:00+00'::timestamptz` → `"2026-10-20T10:00:00.000000Z"`
 
 </Pairs>
-
-A `Date` keeps milliseconds, so a value passed through one loses its microseconds, and `where placed_at > :since` can then match the row it came from. Pass back the text `.run()` returned.
 
 **Infinity**
 
@@ -502,15 +500,13 @@ group by u.id
 
 **`NULL` elements**
 
-Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`.
+Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`. A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
 
 <Pairs>
 
 - `'{a,NULL}'::text[]` → `[ "a", null ]`
 
 </Pairs>
-
-A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
 
 **Several dimensions**
 
@@ -586,11 +582,7 @@ from users u
 
 <Rules>
 
-**Arrays of rows**
-
-An `array(…)` is `[]` over no rows, never `null`, where an `array_agg` of the same rows is `null`. An element is `null` only where an outer join nulls its whole row. If the row's alias is also the name of a column in scope, Postgres reads the column, and so does the type.
-
-Each level of nesting escapes the quotes and backslashes inside it again, which multiplies a JSON document's text by about four per level. Build rows nested that deep as JSON instead.
+- **Arrays of rows.** An `array(…)` is `[]` over no rows, never `null`, where an `array_agg` of the same rows is `null`. An element is `null` only where an outer join nulls its whole row. If the row's alias is also the name of a column in scope, Postgres reads the column, and so does the type. Each level of nesting escapes the quotes and backslashes inside it again, which multiplies a JSON document's text by about four per level. Build rows nested that deep as JSON instead.
 
 **Geometric types**
 
@@ -770,7 +762,7 @@ values ('click', :payload::text::jsonb)
 
 **JSON null**
 
-Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `not null` JSON column can hold. Where it takes null, as for a column that may hold it or a cast to [`nullable(jsonb)`](#parameters-that-may-be-null), `null` is SQL's `NULL`:
+Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `not null` JSON column can hold. Where it takes null, as for a column that may hold it or a cast to [`nullable(jsonb)`](#parameters-that-may-be-null), `null` is SQL's `NULL`: A `coalesce` or a null test doesn't make a parameter take null, so `coalesce(:doc::jsonb, doc)` given `null` gives JSON's `null`. Write `coalesce(:doc::nullable(jsonb), doc)` to keep `doc`.
 
 ```ts twoslash tab="main.ts"
 import jsonKind from "./pg_json_kind.sql";
@@ -782,8 +774,6 @@ const { kind } = await jsonKind.run(db, { doc: null });
 ```sql tab="pg_json_kind.sql"
 select jsonb_typeof(:doc::jsonb) as kind
 ```
-
-A `coalesce` or a null test doesn't make a parameter take null, so `coalesce(:doc::jsonb, doc)` given `null` gives JSON's `null`. Write `coalesce(:doc::nullable(jsonb), doc)` to keep `doc`.
 
 </Rules>
 
@@ -842,9 +832,8 @@ With [`.try()`](/typescript#try), an error Postgres raised comes back as `{ erro
 
 Since a function may raise any code, TypeScript takes any string for `code`. Compare `condition` to have it catch a misspelled name.
 
-When nothing the query sets off is code a user or an extension wrote (no trigger or rule on a table it writes, and no default, check, policy, view, operator class, operator or function that calls such code, nor a function such as `query_to_xml()` that runs SQL it is given), its error type is narrowed: `code` is one Postgres defines, and a unique, not-null, foreign key, check or exclusion violation names only the constraints, tables, columns and domains the query writes through, its partitions and the tables its foreign keys' actions reach included.
-
-An error inside a transaction aborts it, even when `.try()` returns the error: every later statement fails with `in_failed_sql_transaction`, and a commit rolls back without an error. With postgres.js, `sql.begin()` and `tx.savepoint()` reject with any error a statement in them raised, including one `.try()` returned. To carry on after an error, run the statement in a savepoint and roll back to it: with pg, `savepoint s` before it and `rollback to savepoint s` when it fails; with postgres.js, `.run()` inside `tx.savepoint()`, catching the error it rejects with.
+- When nothing the query sets off is code a user or an extension wrote (no trigger or rule on a table it writes, and no default, check, policy, view, operator class, operator or function that calls such code, nor a function such as `query_to_xml()` that runs SQL it is given), its error type is narrowed: `code` is one Postgres defines, and a unique, not-null, foreign key, check or exclusion violation names only the constraints, tables, columns and domains the query writes through, its partitions and the tables its foreign keys' actions reach included.
+- An error inside a transaction aborts it, even when `.try()` returns the error: every later statement fails with `in_failed_sql_transaction`, and a commit rolls back without an error. With postgres.js, `sql.begin()` and `tx.savepoint()` reject with any error a statement in them raised, including one `.try()` returned. To carry on after an error, run the statement in a savepoint and roll back to it: with pg, `savepoint s` before it and `rollback to savepoint s` when it fails; with postgres.js, `.run()` inside `tx.savepoint()`, catching the error it rejects with.
 
 ## Drivers
 
@@ -1071,15 +1060,13 @@ from orders o
 where o.paid
 ```
 
-**Cardinality**
-
-The query's Standard Query object says how many rows its statement returns as `cardinality`, so a driver tells a list of rows from one value that is itself an array, as in `select array_agg(id) from orders`.
+- **Cardinality.** The query's Standard Query object says how many rows its statement returns as `cardinality`, so a driver tells a list of rows from one value that is itself an array, as in `select array_agg(id) from orders`.
 
 **Total order**
 
 A query whose `order by` sorts by a unique key of the rows it sorts has a total order: no two rows of a result tie, so the order is the same on every run. Reylo marks it on the query's Standard Query object as `ordered: true`, in its type too, so anything that compares two results by position can require it.
 
-The key may be a result key or a table's primary key or unique key, selected or not, whose columns may not be null, through joins that add one row at most per row of that table; where each table's key is sorted by, the keys together are. A `limit` or `offset` keeps the order total. A query without an `order by` has none, and so does one that sorts a key's column by an expression, with `using`, or under a collation that is not deterministic, or with `collate`, and one that sorts by anything whose value can change from run to run, such as `random()`, a window function or a `string_agg`, even one with an `order by` of its own. A query that returns one row at most has none, since its cardinality says as much.
+- The key may be a result key or a table's primary key or unique key, selected or not, whose columns may not be null, through joins that add one row at most per row of that table; where each table's key is sorted by, the keys together are. A `limit` or `offset` keeps the order total. A query without an `order by` has none, and so does one that sorts a key's column by an expression, with `using`, or under a collation that is not deterministic, or with `collate`, and one that sorts by anything whose value can change from run to run, such as `random()`, a window function or a `string_agg`, even one with an `order by` of its own. A query that returns one row at most has none, since its cardinality says as much.
 
 ```ts twoslash tab="main.ts"
 import recentOrders from "./pg_ordered_orders.sql";
@@ -1118,7 +1105,7 @@ What Reylo can't type on Postgres, and what to do instead:
 
 Each of these is one statement in place of code around one.
 
-**Fill only what is still empty**
+### Fill only what is still empty
 
 To write each column only where it is still null, use `coalesce` in one statement, rather than reading the row and then updating it. Two callers can't overwrite each other, and `returning` says what the row holds now:
 
@@ -1134,7 +1121,7 @@ returning id, ships_on, receipt
 
 </InferenceCard>
 
-**Buckets with no gaps**
+### Buckets with no gaps
 
 To count by day with a row for each empty day, join a `generate_series` to the counts, rather than filling the gaps with `Date` arithmetic:
 
@@ -1157,7 +1144,7 @@ order by day
 
 </InferenceCard>
 
-**An enum's labels as a type**
+### An enum's labels as a type
 
 A query you import only for its `Row` type never runs, so it can give you each enum as a union:
 

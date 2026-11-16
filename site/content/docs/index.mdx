@@ -9,9 +9,7 @@ description: Reylo is an engine that infers type information from SQL queries, r
 
 Reylo is an engine that infers type information from SQL queries.
 
-It has your live database prepare each query, without running it, and reads the catalog.
-
-Reylo is the perfect option for the agent era:
+It has your live database prepare each query, without running it, and reads the catalog. Reylo is the perfect option for the agent era:
 
 <div className="dk-features">
 
@@ -32,9 +30,7 @@ select id, name, email from users where id = :id::int
 
 </InferenceCard>
 
-Your code reads those types as you write it.
-
-If you have a query like this:
+Your code reads those types as you write it. If you have a query like this:
 
 ```sql title="get_author.sql"
 select u.id, u.name, count(p.id)::int as post_count

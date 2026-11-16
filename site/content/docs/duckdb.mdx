@@ -118,13 +118,9 @@ from users
 
 </InferenceCard>
 
-**Decimals**
+- **Decimals.** A `DECIMAL` is its exact text, as DuckDB stores it with its scale, and a parameter of one takes that text.
 
-A `DECIMAL` is its exact text, as DuckDB stores it with its scale, and a parameter of one takes that text.
-
-**Dates and times**
-
-A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, and a `TIMESTAMPTZ` its instant in UTC, as `Temporal.Instant.from` reads it. A year past 9999 is written as ISO 8601 extends it, `+010000-01-01`, and an infinite date or timestamp as `"infinity"` or `"-infinity"`. An `INTERVAL` is an ISO 8601 duration, which its parameter takes back.
+- **Dates and times.** A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, and a `TIMESTAMPTZ` its instant in UTC, as `Temporal.Instant.from` reads it. A year past 9999 is written as ISO 8601 extends it, `+010000-01-01`, and an infinite date or timestamp as `"infinity"` or `"-infinity"`. An `INTERVAL` is an ISO 8601 duration, which its parameter takes back.
 
 **Nested types**
 
@@ -139,9 +135,7 @@ from events
 
 </InferenceCard>
 
-**JSON**
-
-A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/inference#typed-json), takes any value `JSON.stringify` writes, or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
+- **JSON.** A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/inference#typed-json), takes any value `JSON.stringify` writes, or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
 
 </Rules>
 
@@ -296,7 +290,8 @@ const user = await getUser.run(db, { id: 1 });
 
 [Reylo Migrate](/migrations) runs on DuckDB with the same commands.
 
-It runs on your project's own `@duckdb/node-api`, which it needs at 2.0, and refuses an older one. DuckDB lets one process at a time open a file to write, so stop your app, its dev server included, before you run a command that writes: each refuses while another process holds the database, and changes nothing. The commands that only read (`status`, `deploy --dry-run` and `db introspect`) open the file read-only, so they run beside other processes that only read it.
+- It runs on your project's own `@duckdb/node-api`, which it needs at 2.0, and refuses an older one.
+- DuckDB lets one process at a time open a file to write, so stop your app, its dev server included, before you run a command that writes: each refuses while another process holds the database, and changes nothing. The commands that only read (`status`, `deploy --dry-run` and `db introspect`) open the file read-only, so they run beside other processes that only read it.
 
 DuckDB's `alter table` adds no check or foreign key, changes no column an index covers, and changes little of a table another table's key references. So `reylo migrate new` writes such a change as a rebuild: the table's rows go to a temporary table, the table is made again, and the rows come back, with those of every table whose keys reference it. A check added to `authors`:
 
@@ -321,11 +316,11 @@ DuckDB refuses a few things a migration may need, on your rows rather than in th
 - DuckDB has no `alter sequence`, so a changed sequence is made again, and in a migration it starts again where `schema.sql` starts it. Start it past the values your rows hold.
 - An `update` of a table, then `set not null` or a new index on it, is refused in one migration. Put the backfill in a migration of its own.
 
-DuckDB's catalog holds no macro parameter's default (the `5` of `b := 5`), so Reylo Migrate takes those from `schema.sql`, the migrations and DuckDB's export of the database, and never compares them: write a change to a default alone by hand, as `create or replace macro`. DuckDB can't export a database where a column's default calls a macro of a schema other than `main`. There, `reylo migrate init` and `reylo db introspect` start their SQL with a comment for each macro that has parameters, saying to add its defaults by hand.
+Also on DuckDB:
 
-DuckDB 2.0 writes a comment on a column so that the file no longer opens, where the column's table calls a macro (in a check, a default or a generated column) and another table's key references it. Reylo Migrate follows such a comment with an `alter table` that changes nothing, which writes the table again whole. Do the same in a migration you write by hand.
-
-An extension is loaded once, in `schema.sql` or the migration that first needs it, as `create extension` is on Postgres: write `install spatial;` and `load spatial;` there. Every database Reylo Migrate opens for the project loads it before anything else, its shadows included, so a migration that uses the extension's types, functions or indexes (spatial's `st_` functions, an R-tree index) needs no `load` of its own.
+- DuckDB's catalog holds no macro parameter's default (the `5` of `b := 5`), so Reylo Migrate takes those from `schema.sql`, the migrations and DuckDB's export of the database, and never compares them: write a change to a default alone by hand, as `create or replace macro`. DuckDB can't export a database where a column's default calls a macro of a schema other than `main`. There, `reylo migrate init` and `reylo db introspect` start their SQL with a comment for each macro that has parameters, saying to add its defaults by hand.
+- DuckDB 2.0 writes a comment on a column so that the file no longer opens, where the column's table calls a macro (in a check, a default or a generated column) and another table's key references it. Reylo Migrate follows such a comment with an `alter table` that changes nothing, which writes the table again whole. Do the same in a migration you write by hand.
+- An extension is loaded once, in `schema.sql` or the migration that first needs it, as `create extension` is on Postgres: write `install spatial;` and `load spatial;` there. Every database Reylo Migrate opens for the project loads it before anything else, its shadows included, so a migration that uses the extension's types, functions or indexes (spatial's `st_` functions, an R-tree index) needs no `load` of its own.
 
 ## Limits
 
