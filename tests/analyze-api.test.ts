@@ -136,9 +136,13 @@ test("analyze says what a Postgres statement may do: the tables it reaches, and 
     create function log_job() returns trigger language plpgsql as $$ begin insert into audit (what) values ('job'); return new; end $$;
     create trigger jobs_audit after update on jobs for each row execute function log_job();
     create sequence tickets;
+    create schema a;
+    create table a.b (id int primary key);
+    create table "a.b" (id int primary key, note text);
+    create trigger dotted_audit after insert on "a.b" for each row execute function log_job();
   `);
   try {
-    const [read, view, inserted, deleted, locked, triggered, ticket, set, begin, notify, ddl] = await same(db.url, [
+    const [read, view, inserted, deleted, locked, triggered, ticket, set, begin, notify, ddl, dottedRead, dottedWrite, schemaWrite] = await same(db.url, [
       "select id, email from users where id = :id",
       "select title, email from titles",
       "insert into users (email) values (:email) returning id",
@@ -150,6 +154,9 @@ test("analyze says what a Postgres statement may do: the tables it reaches, and 
       "begin",
       "select pg_notify('jobs', :what::text)",
       "create table more (id int primary key)",
+      `select id from "a.b"`,
+      `insert into "a.b" (id) values (:id)`,
+      "insert into a.b (id) values (:id)",
     ]);
     assert.deepEqual(read!.capabilities, { tables: { "public.users": "read" } });
     // A view reads the tables it is made of.
@@ -167,6 +174,10 @@ test("analyze says what a Postgres statement may do: the tables it reaches, and 
     assert.deepEqual(notify!.capabilities, { tables: {}, external: true });
     // DDL sets off any event trigger, whose code is not read.
     assert.deepEqual(ddl!.capabilities, { tables: "unknown", ddl: true, session: true, external: true });
+    // A dot inside a quoted name is part of it: "a.b" is its own table, never the table b of the schema a, so its write sets off its trigger.
+    assert.deepEqual(dottedRead!.capabilities, { tables: { 'public."a.b"': "read" } });
+    assert.deepEqual(dottedWrite!.capabilities, { tables: "unknown", ddl: true, session: true, external: true });
+    assert.deepEqual(schemaWrite!.capabilities, { tables: { "a.b": "write" } });
   } finally {
     await db.drop();
   }

@@ -211,10 +211,8 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
             let Some(relname) = node.get("relation").and_then(|r| r.get("relname")).and_then(|r| r.as_str()) else { return };
             // The relation as the statement writes it, schema and all, as `read_set` and
             // `write_set` name it: `kv` and `public.kv` are each looked up as written.
-            let relation = match node.get("relation").and_then(|r| r.get("schemaname")).and_then(|r| r.as_str()).filter(|s| !s.is_empty()) {
-                Some(schema) => format!("{schema}.{relname}"),
-                None => relname.to_string(),
-            };
+            let schema = node.get("relation").and_then(|r| r.get("schemaname")).and_then(|r| r.as_str()).unwrap_or("");
+            let relation = relation_name(schema, relname);
             let relation = relation.as_str();
             let mut set = |targets: Option<&Value>| {
                 for target in targets.and_then(|t| t.as_array()).into_iter().flatten() {
@@ -439,9 +437,7 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         }
     }
 
-    let listed = parsed.listed();
-    let read_set = listed.select_tables();
-    let write_set = listed.dml_tables();
+    let (read_set, write_set) = relations(&parsed.protobuf);
 
     Ok(Analysis {
         kind,
@@ -612,6 +608,51 @@ fn reduced_by_joins(item: &protobuf::Node, rel: &str) -> Option<Vec<Witness>> {
     (!nulled && !witnesses.is_empty()).then_some(witnesses)
 }
 
+/// A relation's name as `to_regclass` reads it back, the way a statement may write it: each part
+/// bare where it is lowercase letters, digits and underscores not starting with a digit, else in
+/// double quotes, so a dot or a capital inside a quoted name stays part of it (`"a.b"` is one
+/// table, `a.b` the table `b` of the schema `a`). An empty schema leaves the name unqualified,
+/// resolved through the search path.
+pub fn relation_name(schema: &str, relname: &str) -> String {
+    let relname = crate::pgtypes::quote_ident(relname);
+    if schema.is_empty() {
+        relname
+    } else {
+        format!("{}.{relname}", crate::pgtypes::quote_ident(schema))
+    }
+}
+
+/// The relations the statement reads and those it writes, each by [`relation_name`], sorted. An
+/// unqualified name a WITH query anywhere in the statement takes is that WITH query where it is
+/// read, never a table: the walk meets an UPDATE's FROM before its WITH, so every WITH query's name
+/// is gathered first. What an INSERT, an UPDATE, a DELETE or a MERGE writes is always a table.
+fn relations(tree: &protobuf::ParseResult) -> (Vec<String>, Vec<String>) {
+    let nodes = tree.nodes();
+    let ctes: Vec<&String> = nodes.iter().filter_map(|(node, ..)| match node {
+        pg_query::NodeRef::CommonTableExpr(c) => Some(&c.ctename),
+        _ => None,
+    }).collect();
+    let (mut read, mut written): (Vec<String>, Vec<String>) = Default::default();
+    for (node, _, context, _) in &nodes {
+        match node {
+            pg_query::NodeRef::RangeVar(v) => {
+                let list = match *context {
+                    pg_query::Context::Select if !(v.schemaname.is_empty() && ctes.contains(&&v.relname)) => &mut read,
+                    pg_query::Context::DML => &mut written,
+                    _ => continue,
+                };
+                list.push(relation_name(&v.schemaname, &v.relname));
+            }
+            _ => {}
+        }
+    }
+    for list in [&mut read, &mut written] {
+        list.sort_unstable();
+        list.dedup();
+    }
+    (read, written)
+}
+
 fn relnames_in(v: &Value) -> Vec<String> {
     let mut out = Vec::new();
     visit(v, &mut |key, node| {
@@ -738,6 +779,27 @@ mod tests {
         let a = analyze("UPDATE app.notes SET a = $1 WHERE id = $2").unwrap();
         assert_eq!(a.bare, vec![(1, "app.notes".to_string(), Name("a".into()))]);
         assert_eq!(a.write_set, ["app.notes"]);
+    }
+
+    #[test]
+    fn a_dot_or_a_capital_inside_a_quoted_name_stays_part_of_it() {
+        let a = analyze(r#"INSERT INTO "a.b" (id) SELECT id FROM a.b JOIN "Users" u ON true JOIN app."x.y" ON true RETURNING id"#).unwrap();
+        assert_eq!(a.write_set, [r#""a.b""#]);
+        assert_eq!(a.read_set, [r#""Users""#, "a.b", r#"app."x.y""#]);
+        let a = analyze(r#"UPDATE "a.b" SET note = $1 WHERE id = 1"#).unwrap();
+        assert_eq!(a.bare, vec![(1, r#""a.b""#.to_string(), Filled::Name("note".into()))]);
+        // A WITH query's name is never a table, but a schema-qualified one of its name is.
+        let a = analyze(r#"WITH "a.b" AS (SELECT 1) SELECT * FROM "a.b", public."a.b""#).unwrap();
+        assert_eq!(a.read_set, [r#"public."a.b""#]);
+        assert_eq!(relation_name("", r#"say "hi""#), r#""say ""hi""""#);
+        // An UPDATE's FROM is walked before its WITH, and still names the WITH query.
+        let a = analyze("WITH stale AS (SELECT id FROM posts) UPDATE posts SET v = 1 FROM stale WHERE posts.id = stale.id").unwrap();
+        assert_eq!(a.read_set, ["posts"]);
+        assert_eq!(a.write_set, ["posts"]);
+        // A write's target is a table, even one a WITH query of the statement is named like.
+        let a = analyze("WITH users AS (SELECT 1 AS id) UPDATE users SET v = 1 FROM users u2 RETURNING users.id").unwrap();
+        assert_eq!(a.write_set, ["users"]);
+        assert!(a.read_set.is_empty());
     }
 
     #[test]

@@ -333,7 +333,9 @@ jobs:
     needs: scope
     if: ${{ !github.event.repository.private && needs.scope.outputs.shards != '[]' }}
     name: Soundness oracle (${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04, not the latest image: on 26.04 pgrx 0.16 cannot build the JSON Schema validators against
+    # Postgres 18's headers, and PostGIS's packages conflict with the image's MySQL server.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false

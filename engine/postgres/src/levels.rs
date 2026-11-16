@@ -215,7 +215,7 @@ impl Level {
                 let shown = match with {
                     Some(shown) => shown.clone(),
                     None => {
-                        let name = if rv.schemaname.is_empty() { rv.relname.clone() } else { format!("{}.{}", rv.schemaname, rv.relname) };
+                        let name = crate::analyze::relation_name(&rv.schemaname, &rv.relname);
                         match columns.of(&name) {
                             Some(names) => Shown { names: names.iter().cloned().map(Some).collect(), exact: true },
                             None => Shown::unknown(),
@@ -223,7 +223,7 @@ impl Level {
                     }
                 };
                 let relation = (with.is_none() && rv.alias.as_ref().is_none_or(|a| a.colnames.is_empty()))
-                    .then(|| if rv.schemaname.is_empty() { rv.relname.clone() } else { format!("{}.{}", rv.schemaname, rv.relname) });
+                    .then(|| crate::analyze::relation_name(&rv.schemaname, &rv.relname));
                 let name = rv.alias.as_ref().map_or_else(|| rv.relname.clone(), |a| a.aliasname.clone());
                 self.items.push(Item { name: Some(name), shown: shown.renamed(rv.alias.as_ref()), relation, anonymous: with.is_some() });
             }

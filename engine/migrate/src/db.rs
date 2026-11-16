@@ -466,9 +466,14 @@ impl Server {
                     return Err(Error(format!("cannot connect to the server's postgres or template1 database to create shadow databases: {last}")));
                 };
                 let version: i64 = target.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
-                let locale = if version >= 170000 { "datlocale" } else { "daticulocale" };
+                // The locale provider is Postgres 15's, and the locale `datlocale` from 17 and
+                // `daticulocale` in 15 and 16: read through `to_jsonb`, a column the server lacks is
+                // null, and a database before 15 is libc's.
                 let props = |filter: &str| {
-                    format!("select pg_encoding_to_char(encoding) as enc, datcollate as collate, datctype as ctype, datlocprovider as provider, {locale} as locale from pg_database where {filter}")
+                    format!(
+                        "select pg_encoding_to_char(encoding) as enc, datcollate as collate, datctype as ctype, coalesce(to_jsonb(d) ->> 'datlocprovider', 'c') as provider,
+                          coalesce(to_jsonb(d) ->> 'datlocale', to_jsonb(d) ->> 'daticulocale') as locale from pg_database d where {filter}"
+                    )
                 };
                 let mine = target.rows(&props("datname = current_database()")).await?.into_iter().next();
                 let template = pg_rows(&admin, &props("datname = 'template1'")).await?.into_iter().next();
@@ -484,8 +489,12 @@ impl Server {
                             Some(l) if !l.is_empty() => format!(" {} {}", if provider == "icu" { "icu_locale" } else { "builtin_locale" }, literal(l)),
                             _ => String::new(),
                         };
+                        // `locale_provider` is Postgres 15's: before it, every database is libc's. The
+                        // statement runs on the shadows' server, which `shadow_url` may make another.
+                        let shadow_version: i64 = pg_rows(&admin, "select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
+                        let provider = if shadow_version >= 150000 { format!(" locale_provider {provider}{locale}") } else { String::new() };
                         format!(
-                            " template template0 encoding {} lc_collate {} lc_ctype {} locale_provider {provider}{locale}",
+                            " template template0 encoding {} lc_collate {} lc_ctype {}{provider}",
                             literal(m.text("enc")),
                             literal(m.text("collate")),
                             literal(m.text("ctype"))
