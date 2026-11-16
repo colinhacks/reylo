@@ -2052,6 +2052,11 @@ async fn db_push_rewinds_only_what_the_rewound_migrations_made(mut p: P) {
     assert!(p.try_rows("select 1 from tags").await.is_err());
 }
 
+/// `reylo db push --force`.
+fn forced() -> reylo_migrate::Push {
+    reylo_migrate::Push { force: true, ..Default::default() }
+}
+
 /// What `reylo db push` is told: `--drop`, each `--rename <old>=<new>`, and `--force`.
 fn push(drop: &[&str], rename: &[(&str, &str)], force: bool) -> reylo_migrate::Push {
     let choices = reylo_migrate::Choices { drop: drop.iter().map(|d| d.to_string()).collect(), rename: rename.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
@@ -5039,10 +5044,11 @@ comment on macro table app.recent is 'last n';
         sql
     }
 
-    /// `db push` to `v2`, then `db push` again, which must find the database at schema.sql.
+    /// `db push --force` to `v2`, then `db push` again, which must find the database at schema.sql.
+    /// What it drops is accepted: these are about the push reaching the schema.
     async fn push(p: &mut P, v2: &str) {
         p.schema(v2);
-        let code = p.db_push().await;
+        let code = p.db_push_with(&forced()).await;
         assert_eq!(code, 0, "db push:\n{}", p.output());
         let first = p.output();
         let code = p.db_push().await;
@@ -5535,7 +5541,7 @@ comment on macro table app.recent is 'last n';
         let _ = rows;
     }
 
-    /// `db push` of the same move, guessed.
+    /// `db push` of the same move, which drops the table and makes it again, as `--force` accepts.
     #[tokio::test(flavor = "current_thread")]
     async fn db_push_makes_a_table_in_a_new_schema() {
         let Some(mut p) = duckdb().await else { return };
@@ -5546,7 +5552,7 @@ comment on macro table app.recent is 'last n';
         p.exec("insert into notes values (1, 'a')").await;
         p.output();
         p.schema("create schema archive; create table archive.notes (id integer primary key, body varchar);");
-        let push = p.run(async |o, log| reylo_migrate::db_push(o, false, &Default::default(), log).await).await;
+        let push = p.db_push_with(&forced()).await;
         assert_eq!(push, 0, "db push: {}", p.output());
     }
 
@@ -5676,7 +5682,7 @@ comment on macro table app.recent is 'last n';
         let v1 = "create schema s2; create macro valid(s) as s <> ''; create table t (id integer primary key, m varchar check (valid(m)));";
         let Some(mut p) = at(v1, "insert into t values (1, 'a')").await else { return };
         p.schema("create schema s2; create macro valid(s) as s <> ''; create table s2.t (id integer primary key, m varchar check (valid(m)));");
-        let code = p.db_push().await;
+        let code = p.db_push_with(&forced()).await;
         let out = p.output();
         eprintln!("db push of a move:\n{out}");
         assert_eq!(code, 0, "{out}");
