@@ -1552,7 +1552,7 @@ html #nd-page .prose table {
   flex-direction: column;
   width: var(--fd-sidebar-width);
   height: 100dvh;
-  padding: 2rem 1rem 0;
+  padding: 0 1rem;
 }
 
 @media (max-width: 63.99rem) {
@@ -1562,15 +1562,17 @@ html #nd-page .prose table {
 }
 
 .dk-pages-brand {
-  flex: none;
   margin-bottom: 1.5rem;
 }
 
-/* The margin and padding keep the current page's mark, out in the column's gutter, inside the scroller's clip. */
+/* The margin and padding keep the current page's mark, out in the column's gutter, inside the scroller's clip.
+   The name scrolls with the pages, so the top padding is the scroller's own, and the name leaves past
+   the window's edge rather than under a band of the column's padding. */
 .dk-pages-scroll {
   flex: 1;
   min-height: 0;
   margin-inline-start: -0.75rem;
+  padding-block-start: 2rem;
   padding-inline-start: 0.75rem;
   overflow-y: auto;
   scrollbar-width: none;

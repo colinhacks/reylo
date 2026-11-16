@@ -72,16 +72,16 @@ function Foot({ list, github, star }: { list: PageList; github: string; star: bo
 
 /**
  * The left column: the name, then the pages and after them the links away from the docs, the theme
- * switch and the note under the repository's link, which scroll with the pages rather than stay
- * pinned to the column's foot.
+ * switch and the note under the repository's link, all of which scroll together, the name with the
+ * pages rather than pinned over them, and the foot rather than pinned to the column's foot.
  */
 export function PageListColumn({ list, brand, github }: { list: PageList; brand: ReactNode; github: string }) {
   const scroll = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => centerCurrent(scroll.current), [list.current]);
   return (
     <aside id="dk-page-list">
-      <div className="dk-pages-brand">{brand}</div>
       <div ref={scroll} className="dk-pages-scroll">
+        <div className="dk-pages-brand">{brand}</div>
         <Groups list={list} />
         <Foot list={list} github={github} star />
       </div>
