@@ -1,17 +1,17 @@
 ---
 title: SQLite
-description: How Reylo types SQL queries on SQLite. The TypeScript type of each column, null values, row counts, parameters, drivers and limits.
+description: How Reylo types SQL queries on SQLite. Each column's type in TypeScript and Rust, null values, row counts, parameters, drivers and limits.
 ---
 
 <p className="dk-subheader">How Reylo types queries on SQLite</p>
 
-[Reylo](/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers how it types and runs queries on SQLite: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript and Rust. This page covers how it types and runs queries on SQLite: column types, null values, row counts, parameters and drivers.
 
 | | |
 | --- | --- |
 | SQLite versions | Reylo checks each query with its own SQLite 3.53, and again with the SQLite of each driver your `package.json` lists ([Functions](#functions)) |
 | Connection | A `file:` or `sqlite:` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url); a relative path starts at your `package.json` |
-| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso, SQLite Wasm, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite` and `Bun.sql`, Drizzle over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects, and Knex over `better-sqlite3` or `sqlite3` ([Drivers](#drivers)) |
+| Drivers | In TypeScript, `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso, SQLite Wasm, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite` and `Bun.sql`, Drizzle over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects, and Knex over `better-sqlite3` or `sqlite3` ([Drivers](#drivers)); in Rust, sqlx |
 | Type checking | Reylo's engine reads the database file itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -58,17 +58,16 @@ Reylo types each query from SQLite's own analysis of it.
 
 Reylo reads the schema from the database file and [prepares](https://sqlite.org/c3ref/prepare.html) the query in its own copy of SQLite, which reports where each column and parameter comes from.
 
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | where SQLite places the parameter: a comparison with a column, an element of a row value, an `insert` or `update` column, a `cast`, `limit` and `offset` |
-| Column types | the declared type's affinity |
-| Nullability | the table's `NOT NULL`, outer joins, Reylo's table of SQLite's built-in functions |
-| Cardinality | unique indexes and `integer primary key` |
-| Nested JSON | built with `json_object` and `json_group_array`, typed from their arguments |
-
 ## Data types
 
-SQLite doesn't enforce column types: a column's declared type only sets its affinity, except in a `STRICT` table ([Declared types and STRICT tables](#declared-types-and-strict-tables)). Reylo types each column by its declared type, and `.run()` returns the same value for it on every driver, or throws where a driver would round it ([Drivers](#drivers)):
+SQLite doesn't enforce column types: a column's declared type only sets its affinity, except in a `STRICT` table ([Declared types and STRICT tables](#declared-types-and-strict-tables)). Reylo types each column by its declared type, in TypeScript and in Rust.
+
+<LanguageSwitch />
+
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
+
+In TypeScript, `.run()` returns the same value for a type on every driver, or throws where a driver would round it ([Drivers](#drivers)):
 
 | Declared type, or expression | TypeScript | The value `.run()` returns |
 | --- | --- | --- |
@@ -85,7 +84,35 @@ SQLite doesn't enforce column types: a column's declared type only sets its affi
 | `json_object(…)`, `json_group_array(…)` | the object or array it builds | `{ total: 1250 }` |
 | `json_extract(…)`, `->`, `->>` | `unknown` | `1250` |
 
-Each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
+</LanguagePanel>
+<LanguagePanel value="Rust">
+
+In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)), and a value of another kind than its declared type's is an error when the row is read:
+
+| Declared type, or expression | Rust |
+| --- | --- |
+| `INTEGER`, `INT`, and any other type with `INT` in its name | `i64` |
+| `BIGINT`, `INT8`, `UNSIGNED BIG INT` | `i64` |
+| `REAL`, `FLOAT`, `DOUBLE` | `f64` |
+| `TEXT`, `VARCHAR`, and any type with `CHAR`, `CLOB` or `TEXT` | `String` |
+| `BLOB` | `Vec<u8>` |
+| `BOOLEAN`, `BOOL` | `bool` |
+| A comparison, `IS NULL`, `IN`, `BETWEEN`, `LIKE`, `GLOB`, `EXISTS`, `NOT`, `AND`, `OR` | `bool` |
+| `NUMERIC`, `DECIMAL`, `DATE`, `DATETIME`, and any other name | a compile error asking for a cast, as `cast(x as real)` |
+| No type, or `ANY` in a `STRICT` table | a compile error asking for a cast |
+| `count(*)`, `length(…)` | `i64` |
+| `json_object(…)`, `json_group_array(…)` | sqlx's `Json` of what it builds |
+| `json_extract(…)`, `->`, `->>` | a compile error asking for a cast |
+
+</LanguagePanel>
+<LanguagePanel value="Type Defs">
+
+Each type's descriptor is under [Type descriptors](#type-descriptors).
+
+</LanguagePanel>
+</LanguagePanels>
+
+In TypeScript, each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
 
 ### Declared types and STRICT tables
 
@@ -444,123 +471,22 @@ select * from loose, strict_types
 
 ## Nullability
 
-Every column is typed `| null` unless Reylo can tell it never is null. SQLite itself reports nothing useful here, so Reylo reads your schema and the query:
+Each column can be null unless Reylo can tell it never is, from `NOT NULL`, joins, `where` tests and expressions ([Inference](/inference#left-joins)). SQLite reports nothing about nulls, so Reylo reads the schema and its own table of SQLite's built-in functions. On SQLite:
 
-<Rules>
+- **Division** by a column is nullable, since dividing by zero returns `NULL`, and so is a remainder by a fraction under 1, such as `x % 0.5`, since SQLite casts both operands of `%` to `INTEGER`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
+- **A column beside an aggregate** with no `group by` is nullable, since the query returns its one row over no rows too.
+- **Over a window**, `sum` and `avg` are nullable, since SQLite returns `NaN` as `NULL`, and so is `group_concat`, which libSQL and Turso return as `NULL` over a frame of empty strings.
 
-**`NOT NULL` columns**
-
-A table's column is non-null if it's declared `NOT NULL`.
-
-<InferenceCard>
-
-```sql file="lite_null_columns.sql" dialect="sqlite"
-select name, nick
-from users
-```
-
-</InferenceCard>
-
-**Outer joins**
-
-An outer join makes the joined table's columns nullable.
-
-<InferenceCard>
-
-```sql file="lite_null_left_join.sql" dialect="sqlite"
-select u.name, o.total_cents
-from users u
-left join orders o on o.user_id = u.id
-```
-
-</InferenceCard>
-
-**Tests that rule out `NULL`**
-
-A test that fails on `NULL` in the `where` makes its column non-null, and on a joined table shows the row exists.
-
-<InferenceCard>
-
-```sql file="lite_null_where.sql" dialect="sqlite"
-select u.name, o.total_cents, o.ships_on
-from users u
-left join orders o on o.user_id = u.id
-where o.ships_on is not null
-```
-
-</InferenceCard>
-
-**Expressions**
-
-Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Nor is a remainder by a fraction under 1, such as `x % 0.5`: SQLite casts both operands of `%` to `INTEGER`, which makes the divisor `0`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
-
-<InferenceCard>
-
-```sql file="lite_null_expressions.sql" dialect="sqlite"
-select upper(nick) as shout,
-  coalesce(nick, name) as label,
-  length(name) as n,
-  100 / id as per_id
-from users
-```
-
-</InferenceCard>
-
-**Aggregates**
-
-An aggregate other than `count` returns `NULL` over no rows. So does a column selected beside it with no `group by`.
-
-<InferenceCard>
-
-```sql file="lite_null_aggregates.sql" dialect="sqlite"
-select count(*) as n, max(total_cents) as top
-from orders
-```
-
-</InferenceCard>
-
-**Window functions**
-
-A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. Over a window, `min` and `max` follow their argument, unless a `filter` or a frame that can leave out the current row keeps them nullable. A `sum` or `avg` is nullable, since SQLite returns `NaN` as `NULL`, and so is `group_concat`, which libSQL and Turso return as `NULL` over a frame of empty strings.
-
-<InferenceCard>
-
-```sql file="lite_null_window.sql" dialect="sqlite"
-select id,
-  lag(total_cents) over (order by id) as previous_total,
-  row_number() over (order by id) as n,
-  max(total_cents) over (partition by user_id) as largest_total
-from orders
-```
-
-</InferenceCard>
-
-</Rules>
-
-To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
+To say a value is never null, write `coalesce(x, …)` or `where x is not null`.
 
 ## Cardinality
 
-Reylo infers how many rows a query returns, and types `.run()`'s result to match:
+Reylo infers how many rows a query returns from its keys, aggregates, `limit 1` and `returning` ([Inference](/inference#unique-keys)). On SQLite:
 
-| `.run()` returns | `cardinality` | When the query |
-| --- | --- | --- |
-| `Row` | `one` | is an aggregate without a `group by`, `values` of one row, or inserts one row and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key, an `integer primary key` or a unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`; or inserts one row with `returning` that `or ignore`, `on conflict do nothing`, a `before` trigger or a constraint declared `on conflict ignore` can skip |
-| `void` | `none` | is an `insert`, `update`, `delete` or `replace` without `returning` |
-| `Row[]` | `many` | is anything else |
-
-Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/inference#values)). Among several columns, such an expression is a type error where SQLite's name for it, its text, isn't an identifier, as with `count(*)`. SQLite leaves that name unspecified from one release to the next.
-
-These don't count as a key match, so the query returns `Row[]`:
-
-| Case | Example |
-| --- | --- |
-| A unique index on an expression, or a partial one | `where lower(email) = :email`, even with a unique index on `lower(email)` |
-| A `TEXT` or untyped key compared with a number, which SQLite converts, so `'1'` and `'01'` both match | `where code = cast(:code as integer)` |
-| A key compared under another collation: SQLite uses the left side's, so `'x'` and `'X'` both match | `r.k = c.code`, with a `NOCASE` column on the left |
-| A column you declared named `rowid`, which isn't the real rowid | `where rowid = :id` |
-| A subquery, a `with` query or a view that passes the key through an expression, repeats rows with `union all`, or joins several rows per row of the keyed table | `select * from (select id + 0 as id from users) u where u.id = :id` |
+- **`integer primary key`** is a key, and so is a unique index, but not one on an expression or a partial one, and not a column you declared named `rowid`, which isn't the real rowid.
+- **An insert of one row with `returning`** returns that row, or `null` where `or ignore`, `on conflict do nothing`, a `before` trigger or a constraint declared `on conflict ignore` can skip it.
+- **A key matches exactly or not at all.** It doesn't count when a `TEXT` or untyped key is compared with a number, which SQLite converts, so `'1'` and `'01'` both match, or under another collation, since SQLite uses the left side's.
+- **An unnamed expression** among several columns is a type error where its text isn't an identifier, as with `count(*)`: SQLite names the column by that text, and leaves the name unspecified from one release to the next. Name it with `as`.
 
 ## Parameters
 

@@ -38,8 +38,8 @@ In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an 
 <DialectTabs>
 <Dialect value="Postgres">
 
-<InferenceLanguages>
-<InferenceLanguage value="TypeScript">
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
 
 | SQL type | TypeScript |
 | --- | --- |
@@ -67,8 +67,8 @@ In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an 
 | `hstore` | `Record<string, string \| null>` |
 | Every other type (`inet`, `cidr`, `tsvector`, `xml`, …) | a `string`, as the database writes it |
 
-</InferenceLanguage>
-<InferenceLanguage value="Rust">
+</LanguagePanel>
+<LanguagePanel value="Rust">
 
 | SQL type | Rust |
 | --- | --- |
@@ -96,19 +96,19 @@ In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an 
 | `hstore` | not yet: cast it to `text` |
 | Every other type (`inet`, `cidr`, `tsvector`, `xml`, …) | not yet: cast it to `text` |
 
-</InferenceLanguage>
-<InferenceLanguage value="Type Defs">
+</LanguagePanel>
+<LanguagePanel value="Type Defs">
 
 Each type's descriptor, field by field, is on [Type Defs](/typedefs).
 
-</InferenceLanguage>
-</InferenceLanguages>
+</LanguagePanel>
+</LanguagePanels>
 
 </Dialect>
 <Dialect value="MySQL">
 
-<InferenceLanguages>
-<InferenceLanguage value="TypeScript">
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
 
 | SQL type | TypeScript |
 | --- | --- |
@@ -128,8 +128,8 @@ Each type's descriptor, field by field, is on [Type Defs](/typedefs).
 | `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Uint8Array` |
 | `VECTOR` | `number[]` |
 
-</InferenceLanguage>
-<InferenceLanguage value="Rust">
+</LanguagePanel>
+<LanguagePanel value="Rust">
 
 | SQL type | Rust |
 | --- | --- |
@@ -149,19 +149,19 @@ Each type's descriptor, field by field, is on [Type Defs](/typedefs).
 | `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Vec<u8>`; a wider `BIT` a `u64` |
 | `VECTOR` | not yet |
 
-</InferenceLanguage>
-<InferenceLanguage value="Type Defs">
+</LanguagePanel>
+<LanguagePanel value="Type Defs">
 
 Each type's descriptor, field by field, is on [Type Defs](/typedefs).
 
-</InferenceLanguage>
-</InferenceLanguages>
+</LanguagePanel>
+</LanguagePanels>
 
 </Dialect>
 <Dialect value="SQLite">
 
-<InferenceLanguages>
-<InferenceLanguage value="TypeScript">
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
 
 | Declared type | TypeScript |
 | --- | --- |
@@ -176,8 +176,8 @@ Each type's descriptor, field by field, is on [Type Defs](/typedefs).
 | No type, or `ANY` in a `STRICT` table | `unknown` |
 | `json_object(…)`, `json_group_array(…)` | [the object or array it builds](#json) |
 
-</InferenceLanguage>
-<InferenceLanguage value="Rust">
+</LanguagePanel>
+<LanguagePanel value="Rust">
 
 | Declared type | Rust |
 | --- | --- |
@@ -192,13 +192,13 @@ Each type's descriptor, field by field, is on [Type Defs](/typedefs).
 | No type, or `ANY` in a `STRICT` table | not yet: cast it |
 | `json_object(…)`, `json_group_array(…)` | sqlx's `Json` of what it builds |
 
-</InferenceLanguage>
-<InferenceLanguage value="Type Defs">
+</LanguagePanel>
+<LanguagePanel value="Type Defs">
 
 Each type's descriptor, field by field, is on [Type Defs](/typedefs).
 
-</InferenceLanguage>
-</InferenceLanguages>
+</LanguagePanel>
+</LanguagePanels>
 
 </Dialect>
 </DialectTabs>

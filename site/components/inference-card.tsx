@@ -78,6 +78,20 @@ export function InferenceLanguage({ value, children }: { value: LanguageName; ch
   return <Variant value={value}>{children}</Variant>;
 }
 
+/** A block outside a card in each language, following the page's language choice, under a `<LanguageSwitch />`: no switch or band of its own. */
+export function LanguagePanels({ children }: { children: ReactNode }) {
+  return (
+    <VariantTabs group="language" values={LANGUAGES} follow>
+      {children}
+    </VariantTabs>
+  );
+}
+
+/** One language's panel inside `<LanguagePanels>`. */
+export function LanguagePanel({ value, children }: { value: LanguageName; children: ReactNode }) {
+  return <Variant value={value}>{children}</Variant>;
+}
+
 /** TypeScript | Rust | Type Defs over a block whose panels follow the page's language choice, as Inference's Primitives. */
 export function LanguageSwitch() {
   return (

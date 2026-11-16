@@ -9,7 +9,7 @@ import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
 import { MigrationsDiagram } from './migrations-diagram';
-import { InferenceCard, InferenceCardPlay, InferenceCardRow, InferenceCardTypes, InferenceLanguage, InferenceLanguages, LanguageSwitch } from './inference-card';
+import { InferenceCard, InferenceCardPlay, InferenceCardRow, InferenceCardTypes, InferenceLanguage, InferenceLanguages, LanguagePanel, LanguagePanels, LanguageSwitch } from './inference-card';
 import { Pairs, Rules } from './value-pairs';
 
 /**
@@ -45,6 +45,8 @@ export function getMDXComponents(components?: MDXComponents) {
     InferenceLanguage,
     // The language switch over Inference's Primitives tables, which follow it.
     LanguageSwitch,
+    LanguagePanels,
+    LanguagePanel,
     // The cards under /migrations' title (components/feature-cards.tsx).
     Features,
     Feature,

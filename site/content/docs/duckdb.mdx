@@ -1,11 +1,11 @@
 ---
 title: DuckDB
-description: How Reylo types SQL queries on DuckDB. The TypeScript type of each column, null values, row counts, parameters, files, drivers and limits.
+description: How Reylo types SQL queries on DuckDB in TypeScript. Each column's type, null values, row counts, parameters, files, drivers and limits.
 ---
 
 <p className="dk-subheader">How Reylo types queries on DuckDB</p>
 
-[Reylo](/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers how it types and runs queries on DuckDB: column types, null values, row counts, parameters, files and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database. This page covers how it types and runs queries on DuckDB, in TypeScript: column types, null values, row counts, parameters, files and drivers.
 
 <Callout title="Preview">
 
@@ -62,16 +62,16 @@ Reylo types each query from DuckDB's own analysis of it.
 
 DuckDB runs inside your app, so the type check [prepares](https://duckdb.org/docs/stable/sql/query_syntax/prepared_statements) the query on your project's own `@duckdb/node-api` and reads back DuckDB's own type information on its parameters and return type. Reylo reads the catalog for the rest.
 
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | the prepared statement's description |
-| Column types | the prepared statement's description |
-| Nullability | the table's `NOT NULL` and primary key columns, then what the query rules out |
-| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
-
 ## Data types
 
-DuckDB's prepared statement reports the exact type of every parameter and column, and `.run()` returns one value for each type:
+DuckDB's prepared statement reports the exact type of every parameter and column.
+
+<LanguageSwitch />
+
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
+
+In TypeScript, `.run()` returns one value for each type:
 
 | DuckDB type | TypeScript | The value `.run()` returns |
 | --- | --- | --- |
@@ -94,6 +94,19 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 | `MAP(K, V)` | `{ key: K; value: V \| null }[]` | `[{ key: "k", value: 1 }]` |
 | `UNION(a T, …)` | `{ tag: "a"; value: T \| null } \| …` | `{ tag: "str", value: "s" }` |
 | `VARIANT` | `unknown` | the value it holds, in its own type's form: `42` |
+
+</LanguagePanel>
+<LanguagePanel value="Rust">
+
+Reylo's Rust crate types queries on Postgres, MySQL and SQLite, not DuckDB ([Rust](/rust)).
+
+</LanguagePanel>
+<LanguagePanel value="Type Defs">
+
+Each type's descriptor is under [Type descriptors](#type-descriptors).
+
+</LanguagePanel>
+</LanguagePanels>
 
 <Rules>
 
@@ -179,120 +192,24 @@ A list that `list(distinct …)` or `array_agg(distinct …)` builds is `distinc
 
 ## Nullability
 
-Every column is typed `| null` unless Reylo can tell it never is null. DuckDB's own description of a query doesn't say which columns hold `NULL` reliably, so Reylo reads your schema and the query:
+Each column can be null unless Reylo can tell it never is, from `NOT NULL`, joins, `where` tests and expressions ([Inference](/inference#left-joins)). DuckDB's description of a query doesn't say reliably which columns hold `NULL`, so Reylo reads the schema and the query. On DuckDB:
 
-<Rules>
-
-**`NOT NULL` columns**
-
-A table's column is non-null if it's declared `NOT NULL`, or is part of its primary key.
-
-<InferenceCard>
-
-```sql file="duck_null_columns.sql" dialect="duckdb"
-select id, name, email
-from users
-```
-
-</InferenceCard>
-
-**Outer joins**
-
-An outer join makes the joined table's columns nullable, and a test in the `where` that fails on `NULL` shows the row exists.
-
-<InferenceCard>
-
-```sql file="duck_null_left_join.sql" dialect="duckdb"
-select u.name, t.name as team
-from users u
-left join teams t on t.id = u.team_id
-```
-
-</InferenceCard>
-
-<InferenceCard>
-
-```sql file="duck_null_where.sql" dialect="duckdb"
-select u.name, t.name as team
-from users u
-left join teams t on t.id = u.team_id
-where t.id is not null
-```
-
-</InferenceCard>
-
-**Expressions**
-
-Arithmetic, comparisons, `||`, `coalesce` and `case` are non-null over non-null values, and so are DuckDB's functions of one value such as `lower` and `length`. A division is nullable, since `SET error_on_division_by_zero = false` makes dividing by zero return `NULL`, and so is a part of a date, such as `year(…)`, which is `NULL` for an infinite date. A cast of a `JSON` value to anything but text or `JSON` is nullable too, since JSON's `null` casts to `NULL`.
-
-<InferenceCard>
-
-```sql file="duck_null_expressions.sql" dialect="duckdb"
-select upper(email) as shout,
-  coalesce(email, name) as contact,
-  length(name) as n,
-  id / 2 as half
-from users
-```
-
-</InferenceCard>
-
-**Aggregates**
-
-A `count` is never null, but `count_if` is null over no rows. Any other aggregate is null over no rows, and over a group's rows only where its argument is. Under `rollup`, `cube` or `grouping sets`, a key is null in the rows that total it, whether it is a column or an expression.
-
-<InferenceCard>
-
-```sql file="duck_null_aggregates.sql" dialect="duckdb"
-select team_id, count(*) as members, max(name) as last
-from users
-group by team_id
-```
-
-</InferenceCard>
-
-**Table macros**
-
-A table macro's body is read as the query it is, so its body decides which columns are null and how many rows it returns.
-
-<InferenceCard>
-
-```sql schema dialect="duckdb"
-create table comments (
-  id bigint primary key,
-  post_id bigint not null,
-  body varchar not null
-);
-
-create macro comments_for(p) as table
-  select id, body
-  from comments
-  where post_id = p;
-```
-
-```sql file="duck_null_macro.sql" dialect="duckdb"
-select id, body
-from comments_for(:post_id::bigint)
-```
-
-</InferenceCard>
-
-</Rules>
+- **Primary key columns** are non-null, as `NOT NULL` ones are.
+- **Division** is nullable, since `SET error_on_division_by_zero = false` makes dividing by zero return `NULL`, and so is a part of a date, such as `year(…)`, which is `NULL` for an infinite date, and a cast of a `JSON` value to anything but text or `JSON`, since JSON's `null` casts to `NULL`.
+- **`count_if`** is null over no rows, where `count` never is.
+- **`rollup`, `cube` and `grouping sets`** make a key null in the rows that total it, whether it is a column or an expression.
+- **A table macro's body** is read as the query it is, so it decides which columns are null and how many rows the macro returns.
 
 ## Cardinality
 
-Reylo infers how many rows a query returns, and types `.run()`'s result to match:
+Reylo infers how many rows a query returns from its keys, aggregates, `limit 1` and `returning` ([Inference](/inference#unique-keys)). On DuckDB:
 
-| `.run()` returns | `cardinality` | When the query |
-| --- | --- | --- |
-| `Row` | `one` | is an aggregate without a `group by`, or with a `group by all` whose columns read the tables only inside aggregates; has no `from`; is `values` of one row; or inserts one row and has `returning` |
-| `Row \| null` | `maybeOne` | matches every column of a primary key or a `unique` constraint of its one table with `=`; has `limit 1`; inserts one row `on conflict do nothing`, or `do update` with a `where`, and has `returning`; or is an `update` or `delete` by key with `returning` |
-| `void` | `none` | is an `insert`, `update` or `delete` without `returning`, or another statement that returns no rows, such as `create table` |
-| `Row[]` | `many` | is anything else |
-
-Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/inference#values)). Among several columns, such an expression is a type error where DuckDB's name for it isn't an identifier, as with `count_star()`. A word DuckDB calls without parentheses, such as `current_date`, keeps its rows, since DuckDB reads it as a column wherever one has that name.
-
-A value of another type doesn't count as matching a key: DuckDB compares a text key with a number as numbers, so `where code = 1` matches both `'1'` and `'01'`, and a number key with a float as floats. Neither does any value of a text key under a collation such as `collate nocase`, which holds both `'a'` and `'A'`.
+- **One row** comes back from a query with no `from`, and from a `group by all` whose columns read the tables only inside aggregates.
+- **A key match** counts only in a query of one table, on its primary key or a `unique` constraint.
+- **An insert of one row with `returning`** returns that row, or `null` with `on conflict do nothing`, or `do update` with a `where`.
+- **A statement that returns no rows**, such as `create table`, is `void`.
+- **A key matches exactly or not at all.** It doesn't count when DuckDB compares a text key with a number, as numbers, so `where code = 1` matches both `'1'` and `'01'`, a number key with a float, as floats, or a text key under a collation such as `collate nocase`.
+- **An unnamed expression** among several columns is a type error where DuckDB's name for it isn't an identifier, as with `count_star()`. Name it with `as`.
 
 ## Parameters
 
