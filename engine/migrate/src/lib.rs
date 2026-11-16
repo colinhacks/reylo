@@ -57,7 +57,8 @@ impl Dialect {
             "postgres" | "postgresql" => Ok(Dialect::Postgres),
             "mysql" | "mariadb" => Ok(Dialect::Mysql),
             "sqlite" | "file" => Ok(Dialect::Sqlite),
-            _ if lower == ":memory:" || [".db", ".sqlite", ".sqlite3"].iter().any(|e| lower.ends_with(e)) => Ok(Dialect::Sqlite),
+            // A bare path, or one on a Windows drive (`C:\app.db`): any other scheme names a database Reylo doesn't read.
+            _ if scheme.len() <= 1 && (lower == ":memory:" || [".db", ".sqlite", ".sqlite3"].iter().any(|e| lower.ends_with(e))) => Ok(Dialect::Sqlite),
             _ => Err(Error(format!("no database for the URL's scheme: {}", redact(url)))),
         }
     }
@@ -113,6 +114,10 @@ mod tests {
         assert_eq!(Dialect::of_url("postgresql://u@h/db").unwrap(), Dialect::Postgres);
         assert_eq!(Dialect::of_url("mysql://root@127.0.0.1:3306/app").unwrap(), Dialect::Mysql);
         assert_eq!(Dialect::of_url("file:./dev.db").unwrap(), Dialect::Sqlite);
+        assert_eq!(Dialect::of_url("./dev.db").unwrap(), Dialect::Sqlite);
+        assert_eq!(Dialect::of_url("C:\\app.db").unwrap(), Dialect::Sqlite);
+        assert_eq!(Dialect::of_url(":memory:").unwrap(), Dialect::Sqlite);
+        assert!(Dialect::of_url("duckdb:./app.db").is_err());
         assert_eq!(percent_decode("a%20b%2"), "a b%2");
         assert_eq!(redact("postgres://u:p@h/db"), "postgres://…@h/db");
     }
