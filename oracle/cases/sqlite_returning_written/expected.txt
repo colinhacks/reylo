@@ -10,7 +10,7 @@ insert_select.sql: many () -> { note: TEXT(UTF-8, ill-formed) }
 insert_select_nullable.sql: many () -> { note: TEXT(UTF-8, ill-formed)? }
 replace_row.sql: one () -> { note: TEXT(UTF-8, ill-formed) }
 trigger_insert.sql: one () -> { note: TEXT(text(UTF-8, ill-formed) | bytes) }
-trigger_update.sql: many () -> { note: TEXT(text(UTF-8, ill-formed) | bytes), other: TEXT(text(UTF-8, ill-formed) | bytes)? }
+trigger_update.sql: many () -> { note: TEXT(text(UTF-8, ill-formed) | bytes)?, other: TEXT(text(UTF-8, ill-formed) | bytes)? }
 update_expression.sql: many () -> { note: TEXT(UTF-8, ill-formed) }
 update_from.sql: many () -> { note: TEXT(UTF-8, ill-formed)? }
 update_literal.sql: at_most_one () -> { note: TEXT(UTF-8, ill-formed), at: TEXT(UTF-8, ill-formed)? }

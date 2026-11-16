@@ -1544,9 +1544,9 @@ impl Analyzer<'_> {
     /// A column reference: through the cursor to a subquery's column, or the table column itself.
     fn column_ref(&self, n: &Node, scope: &ScopeStack) -> Fact {
         // RETURNING's read of a column the statement wrote a non-null value to in every row it
-        // returns: SQLite computes an UPDATE's values before its BEFORE triggers run and loads
-        // again only the columns the UPDATE leaves alone, no trigger can assign NEW, and RETURNING
-        // reports the row before any AFTER trigger runs. A view's INSTEAD OF trigger is no table.
+        // returns, where no BEFORE trigger fires on the write ([`Analyzer::written_non_null`]): no
+        // trigger can assign NEW, and RETURNING reports the row before any AFTER trigger runs. A
+        // view's INSTEAD OF trigger is no table.
         if n.register && !n.view && !n.generated && n.column.as_ref().is_some_and(|c| self.written.borrow().contains(&c.to_ascii_lowercase())) {
             let aff = n.affinity.as_deref().unwrap_or(&n.aff);
             let ty = match &n.declared {
@@ -2203,10 +2203,20 @@ impl Analyzer<'_> {
     /// the column, its VALUES or its SELECT's column, and each value every DO UPDATE of an upsert
     /// assigns it (a DO NOTHING returns no row), or each value an UPDATE's SET assigns it, all of
     /// them non-null. A column a write leaves out takes its default, or keeps what the row held,
-    /// and `excluded.<column>` proves nothing here.
+    /// and `excluded.<column>` proves nothing here. Nothing at all where a BEFORE or INSTEAD OF
+    /// trigger on the table fires on the write: SQLite leaves undefined what a BEFORE UPDATE
+    /// trigger's change to the row being updated does to the update.
     fn written_non_null(&self) -> HashSet<String> {
         let t = self.tree;
         let (Some(dml), Some(_)) = (&t.dml, &t.returning) else { return HashSet::new() };
+        let events = match dml.kind.as_str() {
+            "update" => TRIGGER_ROW_UPDATE,
+            _ if dml.upserts.iter().any(|u| u.do_update) => TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE,
+            _ => TRIGGER_ROW_INSERT,
+        };
+        if self.skipping.get(&dml.table.to_ascii_lowercase()).is_some_and(|mask| mask & events != 0) {
+            return HashSet::new();
+        }
         let scope: ScopeStack = Vec::new();
         let non_null = |known: HashMap<String, bool>| -> HashSet<String> { known.into_iter().filter(|(_, n)| *n).map(|(c, _)| c).collect() };
         let assigned = |items: &[tree::SetItem]| -> HashSet<String> {
@@ -3618,6 +3628,17 @@ mod tests {
         assert_eq!(nullable("insert into users (id, name, email) values (1, 'a', 'x') on conflict (id) do update set email = 'y' returning email"), [false]);
         assert_eq!(nullable("insert into users (id, name, email) values (1, 'a', 'x') on conflict (id) do update set name = 'b' returning email"), [true]);
         assert_eq!(nullable("insert into users (id, name, email) values (1, 'a', 'x') on conflict (id) do nothing returning email"), [false]);
+        // A BEFORE trigger that fires on the write may change the row, and an AFTER one runs after
+        // RETURNING reads it.
+        let triggered = |sql: &str, trigger: &str| {
+            let mut schema = ddl();
+            schema.push(trigger.to_string());
+            analyze_ddl(sql, &schema, &Extras::default()).analysis.columns.iter().map(|c| c.nullable).collect::<Vec<_>>()
+        };
+        assert_eq!(triggered("update users set email = 'x' returning email", "create trigger b before update on users begin select 1; end"), [true]);
+        assert_eq!(triggered("insert into users (name, email) values ('a', 'x') on conflict (email) do update set email = 'y' returning email", "create trigger b before update on users begin select 1; end"), [true]);
+        assert_eq!(triggered("insert into users (name, email) values ('a', 'x') returning email", "create trigger b before update on users begin select 1; end"), [false]);
+        assert_eq!(triggered("insert into users (name, email) values ('a', 'x') returning email", "create trigger a after insert on users begin update users set email = null; end"), [false]);
         // A DELETE returns the row as it was, and a column read elsewhere than the row is the table's.
         assert_eq!(nullable("delete from users where id = 1 returning email"), [true]);
         assert_eq!(nullable("update users set email = 'x' returning (select email from users where id = 2) as other"), [true]);
