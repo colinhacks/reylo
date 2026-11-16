@@ -1585,8 +1585,14 @@ from input, json_each(input.events) as e
 To see what Reylo infers without writing any code, run `reylo analyze` from a shell:
 
 ```terminal
-Usage: reylo analyze <file.sql | directory | 'glob' | -> ... [--url <url>] [--format yaml | json]
-       reylo analyze --sql <statement> [--url <url>] [--format yaml | json]
+# every statement under queries/
+$ npx reylo analyze queries
+
+# one file, as JSON
+$ npx reylo analyze queries/get_user.sql --format json
+
+# one statement, against another database
+$ npx reylo analyze --sql "select 1 as one" --url postgres://localhost/app
 ```
 
 - It reads a file, a directory of `.sql` files, a glob in quotes, or `-` for one statement on standard input; `--sql` takes a statement in place of files.
