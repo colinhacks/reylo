@@ -24,7 +24,7 @@
 // and a column whose kind is `bool` (src/values.ts) is made a boolean after the driver, a value
 // other than 0 or 1 refused (`truth`).
 import { lastOfEach, namesInResult, rowOf } from "./row.ts";
-import { bigInteger, coerce, DecodeError, describe, truth, utf8, type Columns, type Kind } from "./values.ts";
+import { bigInteger, coerce, DecodeError, describe, truth, utf8, withFraction, type Columns, type Kind } from "./values.ts";
 import { bunRows } from "./decode.ts";
 import { readMysqlError } from "./query-error.ts";
 import type { AnyClient as Client, Bound, QueryModule, Runtime } from "./execute.ts";
@@ -73,11 +73,7 @@ const DATETIME = 12, TIMESTAMP = 7, TIME = 11;
  * from the column's own count.
  */
 function wallClock(s: string, decimals: number, type: number): string {
-  let text = s;
-  if (decimals > 0) {
-    const dot = text.indexOf(".");
-    text = dot < 0 ? `${text}.${"0".repeat(decimals)}` : text.padEnd(dot + 1 + decimals, "0");
-  }
+  const text = withFraction(s, decimals);
   return type === TIME ? text : text.replace(" ", "T");
 }
 

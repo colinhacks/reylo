@@ -1,0 +1,1 @@
+insert into t (id, note) values (1, 'x'), (5, 'y') on conflict (id) do update set note = 'z' returning old.note as before, new.note as after

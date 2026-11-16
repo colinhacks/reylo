@@ -3,7 +3,7 @@ compound_loose.sql: many () -> { i: INT(int64 | float(11,52) | text(UTF-8, ill-f
 compound_strict.sql: many () -> { i: INT }
 compound_values.sql: many () -> { i: INT(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes) }
 computed.sql: many () -> { plus: int64, text_of: text(UTF-8, ill-formed), filled: int64, larger: int64 }
-insert_returning.sql: one () -> { id: INTEGER, i: INT, t: TEXT(UTF-8, ill-formed)?, a: unknown? }
+insert_returning.sql: one () -> { id: INTEGER, i: INT, t: TEXT(UTF-8, ill-formed), a: unknown? }
 loose_read.sql: many () -> { id: INTEGER, n: INTEGER(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)?, r: REAL(float(11,52) | text(UTF-8, ill-formed) | bytes)?, t: TEXT(text(UTF-8, ill-formed) | bytes)?, b: BLOB(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)? }
 loose_rowids.sql: many () -> { a: INTEGER, b: INTEGER, c: INTEGER }
 no_alias_desc.sql: many () -> { a: INTEGER(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)? }
@@ -18,4 +18,4 @@ through_recursive.sql: many () -> { i: INT(int64 | float(11,52) | text(UTF-8, il
 through_subquery.sql: many () -> { i: INT, t: TEXT(UTF-8, ill-formed)? }
 through_view.sql: many () -> { id: INTEGER, i: INT, t: TEXT(UTF-8, ill-formed)? }
 through_with.sql: many () -> { i: INT, t: TEXT(UTF-8, ill-formed)?, a: unknown? }
-update_returning.sql: many () -> { id: INTEGER, n: INTEGER(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)? }
+update_returning.sql: many () -> { id: INTEGER, n: INTEGER(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes) }

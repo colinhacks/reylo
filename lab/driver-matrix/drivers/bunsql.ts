@@ -34,8 +34,6 @@ await runJob(meta, async () => {
     dialect: adapter,
     count: async (tag) => Number((await sql.unsafe(`select count(*) as n from ${table} where tag = ${ph}`, [tag]))[0].n),
     shapes: taggedShapes(sql, { reserve: adapter !== "sqlite" }),
-    // Bun.sql decodes a timestamptz to a Date itself, and a year before 1 comes back an Invalid Date.
-    skip: adapter === "postgres" ? { S11b: "Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in" } : undefined,
     close: () => sql.close(),
   };
 });
