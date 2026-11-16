@@ -14,12 +14,12 @@ Commands:
   analyze <paths>          Print what Reylo infers for each statement
     --sql <statement>      Read this statement, in place of files
     --url <url>            The database, in place of the project's
-    --format yaml|json     YAML, the default, or a line of JSON per statement
-  generate <generator>     Write each .sql file's module for a language: rust-sqlx
+    --format <yaml|json>   YAML, the default, or a line of JSON per statement
+  generate <generator>     Write each .sql file's module for a language
     --out <file>           Write every module into one file
   migrate <command>        Write, check and run your migrations
   db <command>             Push, reset, wipe or print a development database
-  run <sql>                Run SQL on the database as written, recording nothing
+  run <sql>                Run SQL as written, recording nothing
     --file <path>          Run a file's SQL too, after the text
     --url <url>            The database, in place of the project's
   play                     Serve the playground on this machine

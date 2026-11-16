@@ -1208,11 +1208,11 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 }
 /* Room at the block's foot for the list, as Twoslash leaves under its own. */
 #nd-page .reylo-completion pre {
-  padding-bottom: 7rem;
+  padding-bottom: 4.25rem;
 }
 #nd-page .reylo-completion-list {
   position: absolute;
-  top: calc(100% - 7.85rem);
+  top: calc(100% - 5.1rem);
   left: calc(1rem + var(--reylo-at) * 1ch);
   z-index: 2;
   margin: 0;
@@ -1233,7 +1233,4 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 #nd-page .twoslash-completion-list,
 #nd-page .prose :is(.twoslash-completion-list, .reylo-completion-list) > li {
   margin-block: 0;
-}
-#nd-page .twoslash-completion-list {
-  padding-inline-start: 3px;
 }
