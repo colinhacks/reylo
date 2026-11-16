@@ -65,7 +65,13 @@ pub fn of_statement(t: &Tree) -> Capabilities {
         if name == "load_extension" {
             // Loads code the engine cannot read, from a file.
             unread(&mut capabilities);
-        } else if !BUILT_IN.contains(&name.as_str()) && !name.starts_with("pragma_") {
+        } else if let Some(pragma) = name.strip_prefix("pragma_") {
+            // A PRAGMA's table-valued form reads what the PRAGMA does: every table's rows, for one
+            // that checks them.
+            if !SCHEMA_PRAGMAS.contains(&pragma) {
+                capabilities.unknown_tables();
+            }
+        } else if !BUILT_IN.contains(&name.as_str()) {
             unread(&mut capabilities);
         }
     }
@@ -80,25 +86,40 @@ const SCHEMA_PRAGMAS: &[&str] = &[
     "ignore_check_constraints", "legacy_alter_table", "locking_mode", "mmap_size", "query_only", "read_uncommitted", "recursive_triggers", "reverse_unordered_selects", "secure_delete", "soft_heap_limit", "threads", "trusted_schema", "writable_schema",
 ];
 
+/// The PRAGMAs among them that take a table or an index to describe, in parentheses.
+const TABLE_ARGUMENT_PRAGMAS: &[&str] = &["table_info", "table_xinfo", "table_list", "index_list", "index_info", "index_xinfo", "foreign_key_list"];
+
+/// A PRAGMA's name, lowercased and its schema left off: `integrity_check` in
+/// `PRAGMA main.integrity_check(t)`.
+fn pragma_name(sql: &str) -> String {
+    let lower = sql.to_ascii_lowercase();
+    let after = lower.find("pragma").map_or("", |at| &lower[at + "pragma".len()..]).trim_start();
+    let name: String = after.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.').collect();
+    name.rsplit('.').next().unwrap_or("").to_string()
+}
+
 /// What a command (DDL, a PRAGMA, a transaction's control) does, by its first keyword.
 pub fn of_command(sql: &str, kind: &str) -> Capabilities {
     let mut capabilities = Capabilities::default();
     match kind {
         "begin" | "commit" | "end" | "rollback" | "savepoint" | "release" => capabilities.transaction = true,
-        // A PRAGMA that sets something: on the connection (`foreign_keys`), or in the file (`user_version`, `journal_mode`).
-        "pragma" if sql.contains('=') || sql.contains('(') => {
-            capabilities.session = true;
-            capabilities.ddl = true;
-        }
-        // A PRAGMA that reads a setting or the schema, and a plan: no rows of a table.
-        "pragma" if SCHEMA_PRAGMAS.iter().any(|p| has_word(sql, Dialect::Sqlite, &[*p])) => {}
-        "explain" => {}
-        // Any other PRAGMA may read every table's rows (`integrity_check`, `foreign_key_check`) or
-        // change the file (`optimize`, which may run ANALYZE, `wal_checkpoint`, `incremental_vacuum`).
         "pragma" => {
-            capabilities.ddl = true;
-            capabilities.unknown_tables();
+            let name = pragma_name(sql);
+            // A value sets something: on the connection (`foreign_keys`), or in the file
+            // (`user_version`, `journal_mode`); a table to describe is no value.
+            let sets = sql.contains('=') || sql.contains('(') && !TABLE_ARGUMENT_PRAGMAS.contains(&name.as_str());
+            capabilities.session = sets;
+            capabilities.ddl = sets;
+            // Any PRAGMA but one of a setting or the schema may read every table's rows
+            // (`integrity_check`, `foreign_key_check`) or change the file (`optimize`, which may run
+            // ANALYZE, `wal_checkpoint`, `incremental_vacuum`), with or without an argument.
+            if !SCHEMA_PRAGMAS.contains(&name.as_str()) {
+                capabilities.ddl = true;
+                capabilities.unknown_tables();
+            }
         }
+        // A plan: no rows of a table.
+        "explain" => {}
         // A database file, attached to the connection or let go.
         "attach" | "detach" => {
             capabilities.session = true;
