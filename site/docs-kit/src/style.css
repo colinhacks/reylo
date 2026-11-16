@@ -1671,6 +1671,11 @@ html #nd-page .prose table {
   opacity: 0.7;
 }
 
+/* A page that leaves the docs, in a group of pages: its ↗ a little apart from its name. */
+.dk-pages-item .dk-pages-out {
+  margin-inline-start: 0.375rem;
+}
+
 /* The foot, after the last group and scrolling with it: a hairline, the links away from the docs,
    then the repository and the theme switch, with `TocFooter`'s room under them for the note, clear
    of the address bubble Chrome shows. */

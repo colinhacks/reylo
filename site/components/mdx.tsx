@@ -22,7 +22,7 @@ export function getMDXComponents(components?: MDXComponents) {
     AgentPrompt: ({ children }: { children: ReactNode }) => <AgentPrompt title="Set up Reylo with an agent">{children}</AgentPrompt>,
     // The figure under How it works (components/how-it-works-diagram.tsx).
     HowItWorksDiagram,
-    // The records and commands of Reylo Migrate, at the top of the Migrations page (components/migrations-diagram.tsx).
+    // The records and commands of Reylo Migrate, at the top of the Reylo Migrate page (components/migrations-diagram.tsx).
     MigrationsDiagram,
     // The badges and "Copy agent prompt" under the main page's subheader (components/hero.tsx).
     HeroActions,
@@ -47,12 +47,12 @@ export function getMDXComponents(components?: MDXComponents) {
     LanguageSwitch,
     LanguagePanels,
     LanguagePanel,
-    // The cards under /migrations' title (components/feature-cards.tsx).
+    // The cards under /migrate's title (components/feature-cards.tsx).
     Features,
     Feature,
     Choice,
     Way,
-    // The vertical stepper on /migrations (components/steps.tsx).
+    // The vertical stepper on /migrate (components/steps.tsx).
     Steps,
     Step,
     // An editor's completion list over a Rust block (components/completion.tsx).

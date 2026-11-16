@@ -126,7 +126,7 @@
       }
     },
     {
-      "src": "^/(typescript|rust|inference|configuration|migrations|compare|faq|postgres|mysql|sqlite|prisma)$",
+      "src": "^/(typescript|rust|inference|configuration|migrate|compare|faq|postgres|mysql|sqlite|prisma)$",
       "has": [
         {
           "type": "header",
@@ -153,9 +153,9 @@
       "permanent": true
     },
     {
-      "source": "/typedefs",
-      "destination": "/",
-      "permanent": false
+      "source": "/migrations",
+      "destination": "/migrate",
+      "permanent": true
     },
     {
       "source": "/cloudflare",

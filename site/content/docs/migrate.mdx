@@ -1,9 +1,9 @@
 ---
-title: Migrations
+title: Reylo Migrate
 description: Put your schema in schema.sql, and Reylo Migrate writes, checks and runs each migration, on Postgres, MySQL and SQLite.
 ---
 
-<p className="dk-subheader">Put your schema in a SQL file, and Reylo Migrate writes the migrations</p>
+<p className="dk-subheader hero">Put your schema in a SQL file, and Reylo Migrate writes the migrations</p>
 
 You keep the schema you want in `schema.sql`. Each command moves a change one step: `reylo migrate new` writes it into a migration, and `reylo migrate dev` runs the migrations on your database:
 
@@ -306,7 +306,7 @@ Then write the first migration: reylo migrate new <name>
 Writes the next migration, from your change to `schema.sql`.
 
 - It replays your migrations on a shadow database, and writes the change from what they make to `schema.sql`. It never reads your database's schema.
-- With no `schema.sql`, it writes what your development database has that your migrations don't make ([Schemaless mode](/migrations#schemaless-mode)).
+- With no `schema.sql`, it writes what your development database has that your migrations don't make ([Schemaless mode](/migrate#schemaless-mode)).
 - The file is yours: read it, and add the data changes a schema can't say.
 - It names anything in `schema.sql` that Reylo Migrate compares by name only, or not at all, such as a text search configuration or a security label. Write a change to those by hand.
 - On DuckDB, a change its `alter table` can't make rebuilds the table ([DuckDB](/duckdb#migrations)).
@@ -559,7 +559,7 @@ A pending migration counts, so in CI, run it after a deploy, to confirm the data
 
 Writes the lock from your database's history.
 
-It lists the migrations in the order your database ran them, and checks on a shadow database that they reach `schema.sql`. Use it to turn the lock back on ([Lock-free mode](/migrations#lock-free-mode)), or to write one that was lost. It refuses where a lock exists, since that one lists what other databases ran too:
+It lists the migrations in the order your database ran them, and checks on a shadow database that they reach `schema.sql`. Use it to turn the lock back on ([Lock-free mode](/migrate#lock-free-mode)), or to write one that was lost. It refuses where a lock exists, since that one lists what other databases ran too:
 
 ```terminal
 $ reylo migrate lock

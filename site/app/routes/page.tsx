@@ -114,6 +114,9 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
   const files = use(loadPage(path));
   const components = getMDXComponents(slug === '' ? { HeroActions: () => <HeroActions agentPrompt={agentPrompt} /> } : undefined);
   const main = slug === '';
+  // Reylo Migrate is a site of its own, on one page: its own title, as the main page's is, and no
+  // list of the docs' pages, so docs-kit draws its table of contents on the left.
+  const standalone = STANDALONE.has(slug);
   // A page named for a file (`.reylo.yaml`) is titled in code, as the list writes it.
   const code = pageGroups.some((g) => g.items.some((item) => 'code' in item && item.code && item.href === url));
 
@@ -131,14 +134,14 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       // The tree's names are the pages' titles, plain strings, so it reaches the browser as it is
       // (Fumadocs' serializer would wrap each name in a span of its own).
       tree={tree as Root}
-      title={main ? <HeroTitle>{title}</HeroTitle> : code ? <code>{title}</code> : title}
+      title={main || standalone ? <HeroTitle>{title}</HeroTitle> : code ? <code>{title}</code> : title}
       // An h4 (Usage's database under `.run()`) stays on the page but out of the table.
       // A page with one heading or none has no table of contents: a column listing one entry tells the
       // reader nothing.
       toc={((toc) => (toc.length < 2 ? [] : toc))(files.flatMap((file) => file.toc).filter((item) => item.depth <= 3))}
       fold={FOLD[slug] ?? []}
       centered={CENTERED[slug]}
-      pages={{ groups: pageGroups, links: pageLinks, linksLabel: 'Links', current: url }}
+      pages={standalone ? undefined : { groups: pageGroups, links: pageLinks, linksLabel: 'Links', current: url }}
       pageTitle={pageName(slug, title)}
       brand={<Brand />}
       github={githubUrl}
@@ -158,6 +161,9 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
     </DocsShell>
   );
 }
+
+/** The pages that are a site of their own, on one page, outside the docs' page list. */
+const STANDALONE = new Set(['migrate']);
 
 /** The current page's name on the phone's strip, as the list names it. */
 function pageName(slug: string, title: string): string {

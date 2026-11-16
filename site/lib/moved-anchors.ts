@@ -45,7 +45,7 @@ const MOVED: Record<string, string> = {
   "delete": "/typescript#run",
   "delete-rows": "/typescript#run",
   "deploy-build": "/deployment#build-before-migrate",
-  "deploy-migrations": "/migrations#deploy",
+  "deploy-migrations": "/migrate#deploy",
   "deploy-other-database": "/configuration#direct_url",
   "deploying": "/configuration#direct_url",
   "dialects": "/postgres",

@@ -41,7 +41,7 @@ export const pageGroups = [
       { title: 'Usage with TypeScript', href: '/typescript' },
       { title: 'Usage with Rust', href: '/rust' },
       { title: 'Inference engine', href: '/inference' },
-      { title: 'Migrations', href: '/migrations' },
+      { title: 'Reylo Migrate', href: '/migrate', external: true },
       { title: 'Comparison', href: '/compare' },
       { title: 'FAQ', href: '/faq' },
     ],

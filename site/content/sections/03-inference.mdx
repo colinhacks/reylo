@@ -27,6 +27,73 @@ Each card shows the types in TypeScript or in Rust: pick one at the top of any c
 
 Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next check sees the new schema: a dropped column fails in the statement that names it, and in the code that reads it.
 
+## `reylo analyze`
+
+To see what Reylo infers without writing any code, run `reylo analyze` on a statement:
+
+<Analyzed file="queries/get_user.sql">
+
+```sql schema
+create table users (
+  id int8 primary key,
+  email varchar(255) not null,
+  bio text
+);
+comment on column users.bio is 'Shown on the profile page';
+```
+
+```sql
+-- One user, by id.
+select id, email, bio from users where id = :id
+```
+
+</Analyzed>
+
+It reads a file, a directory of `.sql` files, a glob in quotes, or `-` for one statement on standard input:
+
+```terminal
+# every statement under queries/
+$ npx reylo analyze queries
+
+# one statement, against another database
+$ npx reylo analyze --sql "select 1 as one" --url postgres://localhost/app
+```
+
+- **The format.** YAML by default, or with `--format json`, one line of JSON per statement, which a program reads one line at a time.
+- **The database** is the project's, or `--url`.
+- **Diagnostics** are also written to standard error, with each one's file, line and column and a caret under its place.
+- **The exit code** is 1 when any statement has a diagnostic, and 2 when the command can't reach the database or read the statements.
+
+### The descriptor
+
+One per statement, with the `file` it was read from:
+
+| Field | What it holds |
+| --- | --- |
+| `$schema` | The format's version, as the URL of its [JSON Schema](/typedefs/0.1.0.json) |
+| `dialect` | The database's `name` and its server's `version` |
+| `sql` | The statement as the database runs it, with its own placeholders |
+| `kind` | What the statement does: `select`, `insert`, `update`, `delete`, `merge` or `other` |
+| `comment` | The prose in comments before the statement |
+| `params` | Each parameter, in order: its `name`, its `type`, and `nullable` and `optional` where they hold |
+| `result` | The rows: their `columns`, each with a `name` and a `type`, and the `cardinality` |
+| `diagnostics` | What the database reports, each with a `message` and its `start` and `end` |
+
+The `cardinality` is how many rows the statement returns: `one`, `at_most_one`, `many`, or `none` for a write without `returning`.
+
+### Types
+
+Each `type` is a Reylo Type Def: an object whose `kind` names it, with fields that narrow it.
+
+| A Postgres column | Its type |
+| --- | --- |
+| `integer` | `{ "kind": "integer", "bits": 32, "label": "int4" }` |
+| `numeric(10,2)` | `{ "kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "nan": true, "label": "numeric" }` |
+| `varchar(255)` | `{ "kind": "text", "code_points": [[1, 1114111]], "size": { "max": 255 }, "label": "varchar" }` |
+| `jsonb` | `{ "kind": "json", "label": "jsonb" }` |
+
+[Reylo Type Defs](/typedefs) covers every kind and field.
+
 ## Primitives [#primitives]
 
 Each SQL type has one TypeScript type, the same on every driver, and one Rust type.
@@ -1579,22 +1646,3 @@ from input, json_each(input.events) as e
 ```
 
 </InferenceCard>
-
-## `reylo analyze`
-
-To see what Reylo infers without writing any code, run `reylo analyze` from a shell:
-
-```terminal
-# every statement under queries/
-$ npx reylo analyze queries
-
-# one file, as JSON
-$ npx reylo analyze queries/get_user.sql --format json
-
-# one statement, against another database
-$ npx reylo analyze --sql "select 1 as one" --url postgres://localhost/app
-```
-
-- It reads a file, a directory of `.sql` files, a glob in quotes, or `-` for one statement on standard input; `--sql` takes a statement in place of files.
-- It prints each statement's parameters, columns, nullability and cardinality, as YAML or, with `--format json`, one line of JSON per statement.
-- The database is the project's, or `--url`. It exits with 1 when any statement has a diagnostic, and with 2 when it can't reach the database or read the statements.

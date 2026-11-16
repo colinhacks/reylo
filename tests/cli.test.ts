@@ -57,7 +57,7 @@ test("the migration commands and reylo run are the binary's, with their output a
   assert.equal(reylo(root, ["db", "--help"]).out, migrate.out);
   // The docs show the help as it is.
   // A checkout on Windows may write the page with CRLF line endings.
-  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrations.mdx"), "utf8").replaceAll("\r\n", "\n").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
+  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrate.mdx"), "utf8").replaceAll("\r\n", "\n").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
   const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
   assert.equal(run.status, 0, run.err);
   const db = new DatabaseSync(join(root, "app.db"));
