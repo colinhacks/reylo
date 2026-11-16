@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { EngineType } from "../src/engine.ts";
+import { analysisWithNestedArrays } from "../src/engine-type.ts";
 import { jsonNumbers, orNull, renderParamType, renderType } from "../src/render.ts";
+import { numbersInJson } from "../src/values.ts";
 import { typeSchema } from "../src/schema.ts";
 import { array, checked, doc, enumOf, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 
@@ -228,10 +230,18 @@ test("the run time converts each float or decimal inside Postgres JSON that may 
   const sized = { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, label: "numeric" } as const;
   const finite = { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "float8" } as const;
   const row = record([field("id", pg("int4")), field("n", pg("numeric")), field("p", sized), field("f", finite), field("at", pg("point")), field("xs", array(pg("float8")))]);
-  assert.deepEqual(jsonNumbers(doc(row)), { keys: [["n", true], ["p", true], ["xs", { items: true, deep: true }]] });
+  assert.deepEqual(jsonNumbers(doc(row)), { keys: [["n", true], ["p", true], ["xs", { items: true }]] });
   // An array a statement aggregates, of JSON, and a Postgres array of JSON values.
-  assert.deepEqual(jsonNumbers(doc({ kind: "array", element: { type: row } })), { items: { keys: [["n", true], ["p", true], ["xs", { items: true, deep: true }]] } });
-  assert.deepEqual(jsonNumbers(array(doc(record([field("n", pg("float4"))])))), { items: { keys: [["n", true]] }, deep: true });
+  assert.deepEqual(jsonNumbers(doc({ kind: "array", element: { type: row } })), { items: { keys: [["n", true], ["p", true], ["xs", { items: true }]] } });
+  assert.deepEqual(jsonNumbers(array(doc(record([field("n", pg("float4"))])))), { items: { keys: [["n", true]] } });
+  // A Postgres array inside a document is held to one level, of floats or of anything whose JSON is
+  // no array, and to none under allow_nested_arrays; one of JSON values may hold arrays at any depth.
+  const tags = record([field("xs", array(pg("float8"), true, "_float8")), field("ts", array(pg("text"), true, "_text")), field("js", array(pg("jsonb"), true, "_jsonb"))]);
+  assert.deepEqual(jsonNumbers(doc(tags)), { keys: [["xs", { items: true, flat: true }], ["ts", { items: false, flat: true }]] });
+  const nested = analysisWithNestedArrays({ columns: [{ type: doc(tags) }] }).columns[0]!.type;
+  assert.deepEqual(jsonNumbers(nested), { keys: [["xs", { items: true, deep: true }]] });
+  assert.deepEqual(numbersInJson([1, 2], { items: false, flat: true }, "doc"), [1, 2]);
+  assert.throws(() => numbersInJson({ xs: [[1, 2]] }, { keys: [["xs", { items: true, flat: true }]] }, "doc"), /Column "doc" holds, inside its JSON, a Postgres array of more than one dimension/);
   // Outside JSON a float is a number already, and a row value is its text; a number a CHECK keeps
   // clear, a geometric type written as text and a union need nothing.
   assert.equal(jsonNumbers(pg("float8")), undefined);
@@ -287,7 +297,7 @@ test("a returned array's elements may be NULL unless the statement shows they ar
 });
 
 test("a JSON value nothing constrains is any JSON value, Json, and so is a value nothing types inside JSON the statement builds; its parameter takes whatever JSON.stringify writes", () => {
-  for (const dialect of ["postgres", "mysql", "sqlite", "duckdb"] as const) {
+  for (const dialect of ["postgres", "mysql", "sqlite"] as const) {
     assert.equal(renderType({ kind: "json" }, false, dialect), "Json");
     assert.equal(renderParamType({ kind: "json" }, dialect), "JsonInput");
   }
@@ -301,7 +311,6 @@ test("a JSON value nothing constrains is any JSON value, Json, and so is a value
   assert.equal(renderType(pg("mystery"), true, "postgres"), "Json");
   // Outside JSON, a value nothing types may be any value: SQLite's json_extract, a column with no declared type.
   assert.equal(renderType({ kind: "unknown" }, false, "sqlite"), "unknown");
-  assert.equal(renderType(record([field("j", { kind: "json" }, true), field("u", { kind: "unknown" }, true)]), false, "duckdb"), "{ j: Json; u: unknown | null }");
 });
 
 test("a JSON column a CHECK holds to a JSON Schema is the type of the values the schema admits", () => {
@@ -346,10 +355,10 @@ test("a JSON column a CHECK holds to a JSON Schema is the type of the values the
   assert.equal(renderType({ kind: "json" }), "Json");
 });
 
-test("a DuckDB tagged union is { tag, value } as a value, and any JSON inside a document", () => {
+test("a tagged union is { tag, value } as a value, and any JSON inside a document", () => {
   const choice = { kind: "tagged_union", alternatives: [{ tag: "num", type: { kind: "integer", bits: 64 }, nullable: true }, { tag: "str", type: { kind: "text" }, nullable: true }], label: "union" } as unknown as EngineType;
-  assert.equal(renderType(choice, false, "duckdb"), `{ tag: "num"; value: bigint | null } | { tag: "str"; value: string | null }`);
+  assert.equal(renderType(choice, false), `{ tag: "num"; value: bigint | null } | { tag: "str"; value: string | null }`);
   // A 64-bit integer is a bigint as a value, never inside parsed JSON.
-  assert.equal(renderType(choice, true, "duckdb"), "Json");
-  assert.deepEqual(typeSchema(choice, "duckdb", false, true), {});
+  assert.equal(renderType(choice, true), "Json");
+  assert.deepEqual(typeSchema(choice, "postgres", false, true), {});
 });

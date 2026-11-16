@@ -1,16 +1,16 @@
 cast_function.sql: many () -> { m: int8? }
-casts.sql: many (p: int8) -> { t: text, l: text, f: int8?, w: int8, p: int8, b: int8? }
-check_values.sql: many () -> { status: text('active' | 'banned') }
-exact_builtin.sql: many () -> { small: bool, plus: int4, cat: text, l: text, times: int4 }
+casts.sql: many (p: int8) -> { t: text(¬NUL), l: text(¬NUL, 'x'), f: int8?, w: int8, p: int8, b: int8? }
+check_values.sql: many () -> { status: text(¬NUL, 'active' | 'banned') }
+exact_builtin.sql: many () -> { small: bool, plus: int4, cat: text(¬NUL), l: text(¬NUL), times: int4 }
 implicit_route.sql: many () -> { p: int8? }
-key_cast.sql: many () -> { name: text }
-key_literal.sql: at_most_one () -> { name: text }
-key_param.sql: many (id: int8) -> { name: text }
-outer_join_builtin.sql: many () -> { title: text, name: text, age: int4 }
-outer_join_user.sql: many () -> { title: text, name: text?, age: int4? }
-polymorphic.sql: many () -> { c: text? }
+key_cast.sql: many () -> { name: text(¬NUL) }
+key_literal.sql: at_most_one () -> { name: text(¬NUL) }
+key_param.sql: many (id: int8) -> { name: text(¬NUL) }
+outer_join_builtin.sql: many () -> { title: text(¬NUL), name: text(¬NUL), age: int4 }
+outer_join_user.sql: many () -> { title: text(¬NUL), name: text(¬NUL)?, age: int4? }
+polymorphic.sql: many () -> { c: text(¬NUL)? }
 user_exact.sql: many () -> { same: bool? }
-user_function.sql: many () -> { l: text? }
-where_cast.sql: many () -> { note: text, age: int4 }
-where_narrowed.sql: many () -> { note: text }
-where_user.sql: many () -> { note: text?, shout: text? }
+user_function.sql: many () -> { l: text(¬NUL)? }
+where_cast.sql: many () -> { note: text(¬NUL), age: int4 }
+where_narrowed.sql: many () -> { note: text(¬NUL) }
+where_user.sql: many () -> { note: text(¬NUL)?, shout: text(¬NUL)? }

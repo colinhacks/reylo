@@ -4,8 +4,8 @@ import Link from 'fumadocs-core/link';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { GitHubIcon, GitHubStar, ThemeRow } from './chrome';
 
-/** A page of the list. */
-export type PageListItem = { title: string; href: string };
+/** A page of the list. `code` writes its title as code, as a page named for a file is (`.reylo.yaml`). */
+export type PageListItem = { title: string; href: string; code?: boolean };
 
 /** A group of pages, under a label or, with none, the list's main run. */
 export type PageListGroup = { label?: string; items: PageListItem[] };
@@ -44,7 +44,7 @@ function Groups({ list, onPick }: { list: PageList; onPick?: () => void }) {
           {group.label ? <div className="dk-pages-label">{group.label}</div> : null}
           {group.items.map((item) => (
             <Link key={item.href} href={item.href} className="dk-pages-item" aria-current={item.href === list.current ? 'page' : undefined} onClick={onPick}>
-              {item.title}
+              {item.code ? <code>{item.title}</code> : item.title}
             </Link>
           ))}
         </div>
@@ -72,16 +72,16 @@ function Foot({ list, github, star }: { list: PageList; github: string; star: bo
 
 /**
  * The left column: the name, then the pages and after them the links away from the docs, the theme
- * switch and the note under the repository's link, which scroll with the pages rather than stay
- * pinned to the column's foot.
+ * switch and the note under the repository's link, all of which scroll together, the name with the
+ * pages rather than pinned over them, and the foot rather than pinned to the column's foot.
  */
 export function PageListColumn({ list, brand, github }: { list: PageList; brand: ReactNode; github: string }) {
   const scroll = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => centerCurrent(scroll.current), [list.current]);
   return (
     <aside id="dk-page-list">
-      <div className="dk-pages-brand">{brand}</div>
       <div ref={scroll} className="dk-pages-scroll">
+        <div className="dk-pages-brand">{brand}</div>
         <Groups list={list} />
         <Foot list={list} github={github} star />
       </div>

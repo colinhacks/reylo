@@ -1,1 +1,1 @@
-citext_key.sql: many () -> { n: text }
+citext_key.sql: many () -> { n: text(¬NUL) }

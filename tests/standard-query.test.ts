@@ -139,7 +139,6 @@ const KINDS = {
     ["int", 7], ["int", 7n], ["int8", 9007199254740993n], ["int8", "9007199254740993"], ["float", 1.5], ["text", "x"], ["text", 5n], ["bytes", new Uint8Array([1])], ["bool", 1n], ["bool", 0], ["json", '{"a":[1]}'],
     ["int|float|text", 2.5], ["int|float|text", "abc"], ["unknown", 3n], ["unknown", "x"],
   ],
-  duckdb: [["int8", 9007199254740993n], ["int", 7], ["decimal", "1.50"], ["bool", true], ["text", "x"], ["timestamptz", "2026-10-22T14:46:00Z"]],
 } as const;
 
 test("columns and output: decode(raw) is output(raw through columns), for every kind and array, every cardinality and every refusal", () => {
@@ -424,7 +423,7 @@ test("postgres: a built import's columns decode the types the database created a
     const { text: twice, diagnostics } = (await transform(root, { "twice.sql": "select '{}'::jsonb as x, 1 as x" }))["twice.sql"]!;
     assert.deepEqual(diagnostics.map((d: { code: number }) => d.code), [14]);
     assert.ok(twice.startsWith(`import type { Json, Query } from "reylo";`), twice);
-    assert.ok(twice.includes(`readonly columns: readonly [{ readonly name: "x"; decode(value: string): Json }, { readonly name: "x"; decode(value: string): number }]`), twice);
+    assert.ok(twice.includes(`readonly columns: readonly [{ readonly name: "x"; decode(value: string): Json }, { readonly name: "x"; decode(value: string): 1 }]`), twice);
   } finally {
     await closeSessions();
     await pool.end();

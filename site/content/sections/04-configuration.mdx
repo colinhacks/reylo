@@ -15,7 +15,11 @@ allow_untyped_params: false
 allow_nested_arrays: false
 # a comment naming each query's file, for your database's monitoring (the default)
 sqlcommenter: true
+# the directory of Reylo's files: schema.sql, the migrations and its cache (the default)
+dir: reylo
 ```
+
+The `package.json` it sits beside is the nearest one at or above the directory Reylo runs in, short of your home directory: one in the home directory itself is passed over, and `reylo migrate init` starts no project there.
 
 ## `direct_url`
 
@@ -58,7 +62,7 @@ direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
 
 A type check or a build reads this database, so in CI and on your host it needs your migrations applied. The database a query runs on is the client you pass to `.run()`, so the two can differ.
 
-A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([Schema changes](/schema-changes)). To type it on the database it runs on:
+A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([When the schema changes](/typescript#when-the-schema-changes)). To type it on the database it runs on:
 
 ```sh
 DATABASE_URL="$PRODUCTION_URL" node --import reylo/register report.ts
@@ -123,7 +127,7 @@ allow_nested_arrays: true
 
 ## `sqlcommenter`
 
-Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. On SQLite the comment opens the query instead, since SQLite would write it into the name of a last column with no alias. The query's [`.sql`](/usage#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
+Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. On SQLite the comment opens the query instead, since SQLite would write it into the name of a last column with no alias. The query's [`.sql`](/typescript#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
 
 ```yaml title=".reylo.yaml"
 # the default is true
@@ -132,6 +136,24 @@ sqlcommenter: false
 
 ```sql title="What Postgres receives for queries/get_user.sql, by default"
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
+```
+
+## `dir`
+
+The directory beside `.reylo.yaml` that holds Reylo's files: the `schema.sql`, `migrations/` and `reylo-lock.yaml` of [migrations](/migrations), which you commit, and its cache in `.cache/`, which keeps itself out of git.
+
+```yaml title=".reylo.yaml"
+# the default is reylo
+dir: db
+```
+
+## `shadow_url`
+
+The server where [migrations](/migrations) build their shadow databases, for a database whose own server refuses `create database`:
+
+```yaml title=".reylo.yaml"
+# the default is the database's own server
+shadow_url: ${SHADOW_URL}
 ```
 
 ## `js.codecs`
@@ -154,19 +176,19 @@ js:
     inet: ip-address  # or string (the default)
 ```
 
-| Family | Postgres | MySQL | SQLite | DuckDB |
-| --- | --- | --- | --- | --- |
-| `decimal` | `numeric` | `DECIMAL` | | `DECIMAL` |
-| `bytes` | `bytea` | `BINARY`, `VARBINARY`, `BLOB` | `BLOB` | `BLOB` |
-| `date` | `date` | `DATE` | a column declared `DATE` | `DATE` |
-| `time` | `time` | | a column declared `TIME` | `TIME` |
-| `datetime` | `timestamp` | `DATETIME`, `TIMESTAMP` | a column declared `DATETIME` or `TIMESTAMP` | `TIMESTAMP` |
-| `instant` | `timestamptz` | | | `TIMESTAMPTZ` |
-| `duration` | `interval` | `TIME` | | `INTERVAL` |
-| `set` | | `SET` | | |
-| `vector` | pgvector's `vector`, `halfvec` | `VECTOR` | | |
-| `geometry` | PostGIS's `geometry`, `geography` | `GEOMETRY` | | `GEOMETRY` |
-| `inet` | `inet`, `cidr` | | | |
+| Family | Postgres | MySQL | SQLite |
+| --- | --- | --- | --- |
+| `decimal` | `numeric` | `DECIMAL` | |
+| `bytes` | `bytea` | `BINARY`, `VARBINARY`, `BLOB` | `BLOB` |
+| `date` | `date` | `DATE` | a column declared `DATE` |
+| `time` | `time` | | a column declared `TIME` |
+| `datetime` | `timestamp` | `DATETIME`, `TIMESTAMP` | a column declared `DATETIME` or `TIMESTAMP` |
+| `instant` | `timestamptz` | | |
+| `duration` | `interval` | `TIME` | |
+| `set` | | `SET` | |
+| `vector` | pgvector's `vector`, `halfvec` | `VECTOR` | |
+| `geometry` | PostGIS's `geometry`, `geography` | `GEOMETRY` | |
+| `inet` | `inet`, `cidr` | | |
 
 - Every codec is exact. A number refuses a decimal a double cannot hold, and a Temporal class refuses a value it has no form for, such as Postgres's `infinity` or an interval of one month less a day, so the error names the column instead of returning a wrong value.
 - A parameter takes the codec's type: a `Temporal.Instant` where the column is an `instant`, so a row goes back in as it came out.
@@ -175,6 +197,6 @@ js:
 - A vector is a `Float32Array`, or a `Float16Array` for a `halfvec`, which needs TypeScript's `es2025` lib. Sent as JSON, a typed array is an object of its indexes, so spread it into an array first.
 - A geometry is a GeoJSON geometry with its SRID as `srid`, typed by `@types/geojson`, which you install. A parameter without an `srid` takes the column's. GeoJSON has no M coordinates or curves, so a geometry with either is refused.
 - A network address is an `Address4` or `Address6` from your own install of ip-address. Sent as JSON, one is an object of its fields, so send its `.address`.
-- A codec reaches every value Reylo decodes: an array's elements, a Postgres row value's fields, a DuckDB struct's fields, a map's keys and values, a union's value, and the members of a structured parameter. A value inside JSON the query builds keeps its JSON type.
+- A codec reaches every value Reylo decodes: an array's elements, a Postgres row value's fields, and the members of a structured parameter. A value inside JSON the query builds keeps its JSON type.
 - A 64-bit integer is always a `bigint`, its one exact type. Cast it in the query where you want a `number` or text, as `count(*)::int`.
 - A Temporal codec needs a runtime with a global `Temporal`, and TypeScript's `esnext` lib.

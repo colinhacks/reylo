@@ -1,1 +1,1 @@
-shadowed.sql: many () -> { tags: text?[]? }
+shadowed.sql: many () -> { tags: text(¬NUL)?[]? }

@@ -1,0 +1,23 @@
+[package]
+name = "demo-reylo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Its statements are typed against the demo's database as it compiles, so a build of the workspace
+# leaves it out: `cargo run -p demo-reylo --features live` builds and runs it, as
+# .github/scripts/rust-demos.sh does in CI.
+[features]
+live = []
+
+[[bin]]
+name = "demo-reylo"
+path = "src/main.rs"
+required-features = ["live"]
+
+[dependencies]
+reylo = { package = "reylo-sqlx", path = "../reylo", features = ["chrono", "uuid", "rust_decimal"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

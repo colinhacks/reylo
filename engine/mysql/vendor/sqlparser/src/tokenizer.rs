@@ -2308,11 +2308,13 @@ impl<'a> Tokenizer<'a> {
                             s.push(*next);
                             chars.next(); // consume next
                         } else {
+                            // Reylo's copy: MySQL's escapes are `\0`, `\b`, `\n`, `\r`, `\t` and `\Z`
+                            // (and the quotes and the backslash, which stand for themselves), and a
+                            // backslash before any other character is that character: `\a` is `a`
+                            // and `\f` is `f`, where upstream read a bell and a form feed.
                             let n = match next {
                                 '0' => '\0',
-                                'a' => '\u{7}',
                                 'b' => '\u{8}',
-                                'f' => '\u{c}',
                                 'n' => '\n',
                                 'r' => '\r',
                                 't' => '\t',

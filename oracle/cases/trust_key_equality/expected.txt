@@ -1,11 +1,11 @@
-builtin_key.sql: at_most_one (id: int8) -> { n: text }
-citext_key.sql: at_most_one () -> { n: text }
-citext_key_param.sql: at_most_one (h: public.citext) -> { n: text }
-computed_domain_key.sql: many (d: text) -> { n: text }
-computed_key_sum.sql: at_most_one (id: int4) -> { n: text }
-domain_key.sql: many () -> { n: text }
-domain_key_param.sql: many (d: public.mytext) -> { n: text }
-enum_key.sql: at_most_one () -> { n: text }
-enum_key_param.sql: at_most_one (m: public.mood('calm' | 'busy')) -> { n: text }
-view_citext_key.sql: at_most_one (h: public.citext) -> { n: text }
-view_domain_key.sql: many () -> { n: text }
+builtin_key.sql: at_most_one (id: int8) -> { n: text(¬NUL) }
+citext_key.sql: at_most_one () -> { n: text(¬NUL) }
+citext_key_param.sql: at_most_one (h: public.citext(¬NUL)) -> { n: text(¬NUL) }
+computed_domain_key.sql: many (d: text(¬NUL)) -> { n: text(¬NUL) }
+computed_key_sum.sql: at_most_one (id: int4) -> { n: text(¬NUL) }
+domain_key.sql: many () -> { n: text(¬NUL) }
+domain_key_param.sql: many (d: public.mytext(¬NUL)) -> { n: text(¬NUL) }
+enum_key.sql: at_most_one () -> { n: text(¬NUL) }
+enum_key_param.sql: at_most_one (m: public.mood('calm' | 'busy')) -> { n: text(¬NUL) }
+view_citext_key.sql: at_most_one (h: public.citext(¬NUL)) -> { n: text(¬NUL) }
+view_domain_key.sql: many () -> { n: text(¬NUL) }

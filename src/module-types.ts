@@ -37,7 +37,7 @@ export type ModuleTypes = {
  */
 export function queryErrorType(dialect: Dialect, errors: Analysis["errors"]): string {
   if (!errors) return `import("reylo").QueryError<${JSON.stringify(dialect)}>`;
-  const name = { postgres: "PostgresQueryError", mysql: "MysqlQueryError", sqlite: "SqliteQueryError", duckdb: "DuckdbQueryError" }[dialect];
+  const name = { postgres: "PostgresQueryError", mysql: "MysqlQueryError", sqlite: "SqliteQueryError" }[dialect];
   const names = (field: string, list: string[]) => list.map((n) => (field === "columns" ? `readonly [${n.split(", ").map((c) => JSON.stringify(c)).join(", ")}]` : JSON.stringify(n))).join(" | ");
   const codes = Object.entries(errors).map(([code, fields]) => `  ${JSON.stringify(code)}: { ${Object.entries(fields).map(([field, list]) => `${field}: ${names(field, list)}`).join("; ")} };`);
   return codes.length ? `import("reylo").${name}<{\n${codes.join("\n")}\n}>` : `import("reylo").${name}<{}>`;
@@ -179,6 +179,6 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
  * decoder takes the column's raw value, never NULL, and gives the column's type without null.
  */
 export function standardColumnsType(columns: Analysis["columns"], dialect: Dialect, codecs: Codecs = {}): string {
-  const raw = dialect === "postgres" ? "string" : dialect === "duckdb" ? "unknown" : "string | number | bigint | Uint8Array";
+  const raw = dialect === "postgres" ? "string" : "string | number | bigint | Uint8Array";
   return `readonly [${columns.map((c) => `{ readonly name: ${JSON.stringify(c.name)}; decode(value: ${raw}): ${renderType(c.type, false, dialect, codecs)} }`).join(", ")}]`;
 }

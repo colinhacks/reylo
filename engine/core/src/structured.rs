@@ -58,7 +58,7 @@ use crate::api::{Analysis, Describe, Diagnostic, Scope};
 use crate::dialect::Dialect;
 use crate::host::{as_bool, as_str, Host, Lazy};
 use crate::lex;
-use crate::types::{Field, Kind, Position, Type};
+use crate::types::{Field, Kind, Slot, Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -200,10 +200,9 @@ pub fn present(sql: &str, dialect: Dialect) -> bool {
     lexed.placeholders.iter().any(|p| cast_at(sql, p.end).is_some() || json_cast_at(sql, p.end).is_some() || nullable_cast_at(sql, p.end).is_some() || (!reads_casts(dialect) && plain_cast_at(sql, p.end).is_some()))
 }
 
-/// Whether the database reads a `::type` cast itself: Postgres and DuckDB do, MySQL and SQLite do
-/// not.
+/// Whether the database reads a `::type` cast itself: Postgres does, MySQL and SQLite do not.
 fn reads_casts(dialect: Dialect) -> bool {
-    matches!(dialect, Dialect::Postgres | Dialect::Duckdb)
+    dialect == Dialect::Postgres
 }
 
 /// After a placeholder ending at `end`: `::rows(` or `::row(`, with any spacing, as `(one, the
@@ -522,9 +521,6 @@ pub fn find(sql: &str, dialect: Dialect, server: &Server) -> Result<Vec<Found>, 
             }
             continue;
         };
-        if dialect == Dialect::Duckdb {
-            return error("DuckDB statements take no rows(…) or row(…) parameter yet: pass each value as a parameter of its own.", p.start, word_end);
-        }
         if lex::is_positional(&p.name) {
             return error("A rows or row parameter is named: write :name::rows(…), not a positional placeholder.", p.start, word_end);
         }
@@ -1257,7 +1253,7 @@ impl Writer {
 /// (wiki/typed-json-params.md). Postgres's reader takes `bytea` from its own `\x` text as it is.
 fn binary(m: &Member, dialect: Dialect) -> bool {
     match dialect {
-        Dialect::Postgres | Dialect::Duckdb => false,
+        Dialect::Postgres => false,
         Dialect::Sqlite => m.schema.is_none() && affinity(&m.ty) == "BLOB",
         Dialect::Mysql => {
             let t = m.ty.to_ascii_lowercase();
@@ -1302,8 +1298,6 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
     if let Some(cast) = &found.json {
         let (before, after) = match dialect {
             Dialect::Postgres => ("", if cast.jsonb { "::jsonb" } else { "::json" }),
-            // DuckDB has one JSON type, `json`.
-            Dialect::Duckdb => ("", "::json"),
             // MariaDB has no `CAST(… AS JSON)`.
             Dialect::Mysql if server.mariadb => ("JSON_COMPACT(", ")"),
             Dialect::Mysql => ("cast(", " as json)"),
@@ -1318,8 +1312,7 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
     let mut lists = Vec::new();
     let q = |n: &str| quote(n, dialect);
     match dialect {
-        // `find` refuses a DuckDB rows(…) parameter, so only Postgres's comes here.
-        Dialect::Postgres | Dialect::Duckdb => {
+        Dialect::Postgres => {
             let coldefs = |w: &mut Writer| {
                 for (k, m) in ms.iter().enumerate() {
                     if k > 0 {
@@ -1777,6 +1770,8 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
                 },
                 nullable: !m.not_null,
                 optional: m.omittable(),
+                default: None,
+                comment: None,
             })
             .collect();
         // The column list against the table: only once the database took every type.
@@ -1785,8 +1780,8 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
         }
         if let Some(p) = analysis.params.iter_mut().find(|p| p.name == f.name) {
             p.members = f.members.iter().map(|m| crate::api::Member { written: m.ty.clone(), schema: m.schema.clone() }).collect();
-            let row = Type::record(fields);
-            p.ty = if f.one { row } else { Type::array(Position::non_null(row)) };
+            let row = Type::structure(fields);
+            p.ty = if f.one { row } else { Type::array(Slot::non_null(row)) };
             p.nullable = false;
         }
     }
@@ -2071,8 +2066,6 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
     let Some((start, end)) = f.table else { return Some(Vec::new()) };
     let written = &sql[start..end];
     let rows = match dialect {
-        // `find` refuses a DuckDB rows(…) parameter.
-        Dialect::Duckdb => return Some(Vec::new()),
         Dialect::Postgres => host.query(PG_TABLE_QUERY, vec![serde_json::json!(written)], Scope::Statement)?,
         Dialect::Sqlite => {
             let (schema, name) = split_name(written);
@@ -2089,7 +2082,7 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
     Some(
         rows.iter()
             .map(|r| match dialect {
-                Dialect::Postgres | Dialect::Duckdb => {
+                Dialect::Postgres => {
                     let default = r.get(7).and_then(as_str).map(|e| copy_of(e, &text(r, 8), dialect));
                     TableColumn { name: text(r, 0), base: text(r, 1), written: text(r, 2), not_null: flag(r, 3), has_default: flag(r, 4), generated: flag(r, 5), always: flag(r, 6), default, inherited: flag(r, 9) }
                 }
@@ -2232,7 +2225,7 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
             // unquoted, a domain's by its base type, as the column's base is.
             let base = match (&field.ty.kind, &field.ty.label) {
                 (Kind::Json(_), _) => m.ty.clone(),
-                (Kind::Record(_) | Kind::Unknown, _) | (_, None) => return None,
+                (Kind::Struct(_) | Kind::Unknown, _) | (_, None) => return None,
                 (_, Some(name)) => split_name(domains.get(name).unwrap_or(name)).1,
             };
             (base != c.base || modifiers(&m.ty) != modifiers(&c.written)).then(|| advice.to_string())
@@ -2243,7 +2236,6 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
             }
             (mysql_type(&m.ty) != mysql_type(&c.written)).then(|| advice.to_string())
         }
-        Dialect::Duckdb => None,
         // SQLite keeps a value by the column's affinity; a JSON member is text to it.
         Dialect::Sqlite => (m.schema.is_none() && affinity(&m.ty) != affinity(&c.written)).then(|| format!("their affinities differ ({} and {}), and {advice}", affinity(&m.ty), affinity(&c.written))),
     }
@@ -2839,7 +2831,7 @@ mod tests {
             .iter()
             .map(|r| TableColumn { name: r[0].as_str().unwrap().into(), base: "text".into(), written: "text".into(), not_null: r[3] == true, has_default: false, generated: false, always: false, default: None, inherited: r[9] == true })
             .collect();
-        let fields: Vec<Field> = found[0].members.iter().map(|m| Field { name: m.name.clone(), ty: Type::text().named("text"), nullable: !m.not_null, optional: m.omittable() }).collect();
+        let fields: Vec<Field> = found[0].members.iter().map(|m| Field { optional: m.omittable(), ..Field::new(m.name.clone(), Type::text().named("text"), !m.not_null) }).collect();
         let d = check_table(&found[0], sql, &fields, &columns, &Default::default(), Dialect::Postgres);
         assert_eq!(d.len(), 1, "{d:?}");
         assert!(d[0].message.starts_with("v.note is a column of a view with no default of its own"), "{}", d[0].message);
@@ -2853,8 +2845,8 @@ mod tests {
         let columns = vec![column("d", "text", "text"), column("s", "Status", "\"Status\"")];
         let named = |name: &str| Type::text().named(name);
         let fields: Vec<Field> = vec![
-            Field { name: "d".into(), ty: named("public.dom_t"), nullable: false, optional: false },
-            Field { name: "s".into(), ty: named("public.\"Status\""), nullable: false, optional: false },
+            Field::new("d", named("public.dom_t"), false),
+            Field::new("s", named("public.\"Status\""), false),
         ];
         let domains = std::collections::BTreeMap::from([("public.dom_t".to_string(), "text".to_string())]);
         let d = check_table(&found[0], sql, &fields, &columns, &domains, Dialect::Postgres);

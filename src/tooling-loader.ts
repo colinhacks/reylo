@@ -6,8 +6,8 @@
 // The path is computed when it is needed and loaded with a `require` from
 // `process.getBuiltinModule`, which no bundler follows. A bundler that reads this file (Turbopack
 // bundles the webpack loader; webpack parses it for its build dependencies) would otherwise bundle
-// the whole build-time half with it, the engine's child processes, the project's drivers and its
-// DuckDB included. Turbopack traces a `require` made by an imported `createRequire`, and an
+// the whole build-time half with it, the engine's child processes and the project's drivers
+// included. Turbopack traces a `require` made by an imported `createRequire`, and an
 // `import()` of a computed URL, which tsc wraps in a helper of its own, and reports either as a
 // module it cannot resolve, which Next.js prints wherever reylo sits outside node_modules, as a
 // linked package does. A `require` loads an ES module that has no top-level await.
@@ -18,8 +18,10 @@ import type { BuildTime } from "./build-time.ts";
 
 /** What the build-time half offers reylo's entry points. */
 export type Tooling = BuildTime & {
-  /** The module a build step writes for a `.sql` file, and what the build watches: the `.reylo/` entry it was built from, and the project's files its text reads. */
+  /** The module a build step writes for a `.sql` file, and what the build watches: the `reylo/.cache/` entry it was built from, and the project's files its text reads. */
   sqlModule(path: string, source: string): Promise<{ code: string; entry: string; watched: string[] }>;
+  /** What a build step puts in place of reylo's src/embedded-migrations.ts: the migrations of the project at `root`, for `migrate(ctx.storage)`, and what the build watches. */
+  embeddedModule(root: string): Promise<{ code: string; watched: string[] }>;
   /** Closes every build step's connection, for a build that has ended. */
   releaseConnections(): Promise<void>;
   /** The methods of TypeScript's content mapper protocol, which src/mapper.ts serves over this process's stdin and stdout. */

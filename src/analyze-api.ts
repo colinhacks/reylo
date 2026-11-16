@@ -3,15 +3,14 @@
 // database by the engine, as plain data that serializes to JSON. `reylo analyze` prints the same
 // descriptors on the command line (engine/cli/src/analyze.rs), and both read the project as the type
 // check does: the database it names, unless the caller names another, and its `allow_untyped_params`. It
-// reads no `.reylo/` cache, and every call reads the database afresh.
+// reads no `reylo/.cache/` cache, and every call reads the database afresh.
 import { basename } from "node:path";
 import type { StatementDescriptor } from "../spec/index.ts";
 import type { AnalyzeInput } from "./build-time.ts";
 import { NotMysql, reason, refusedLogin } from "./connection.ts";
-import { duckdbDatabase } from "./duckdb.ts";
-import { AnswerCache, anyEngine, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
+import { anyEngine, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
 import { placeholdersOf, untypedParams } from "./module-types.ts";
-import { dialectOf, duckdbPath, PROJECT_FILE, resolveProject, sqlitePath, sqliteUrlProblem, type Dialect as Database } from "./project.ts";
+import { dialectOf, PROJECT_FILE, resolveProject, sqlitePath, sqliteUrlProblem, type Dialect as Database } from "./project.ts";
 
 /** The format version `analyze` writes, as the URL of its JSON Schema (spec/typedefs.schema.json), which the type holds to the spec's. */
 const SCHEMA: StatementDescriptor["$schema"] = "https://reylo.dev/typedefs/0.1.0.json";
@@ -31,14 +30,13 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
   if (!url) throw new Error(project.missingUrl);
   const dialect = dialectOf(url);
   // The project's own URL has passed this check in resolveProject: only a given one can fail it here.
-  if (!dialect) throw new Error("Cannot tell the database from the URL (the url given): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.");
+  if (!dialect) throw new Error("Cannot tell the database from the URL (the url given): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.");
   // A relative path in a URL the caller named is the caller's, from the working directory; one in the
   // project's URL is from the project's root, as the type check reads it.
   const base = given === undefined ? project.root : cwd;
   const unusable = dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
   if (unusable) throw new Error(`Cannot read the SQLite URL ${url} (the url given): ${unusable}.`);
   const strict: Strict = { params: project.strictParams, file: project.file ? basename(project.file) : PROJECT_FILE };
-  if (dialect === "duckdb") return analyzeDuckdb(duckdbPath(url, base), project.root, sql, strict);
   const target = (u: string) => (dialect === "sqlite" ? sqlitePath(u, base) : u);
   try {
     return await analyzeOn(dialect, target(url), sql, strict);
@@ -54,7 +52,7 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
 }
 
 /** The statement's descriptor over the connection to `target`, which an error it cannot be read through rejects with. */
-async function analyzeOn(dialect: Exclude<Database, "duckdb">, target: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
+async function analyzeOn(dialect: Database, target: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
   const key = `${dialect}\0${target}`;
   const entry = acquire(key, dialect, target);
   try {
@@ -96,7 +94,7 @@ type Shared = { connection: Promise<Connection>; calls: number; timer?: ReturnTy
 const connections = new Map<string, Shared>();
 
 /** The connection to `target`, opened by the engine of its database where none is open. */
-function acquire(key: string, dialect: Exclude<Database, "duckdb">, target: string): Shared {
+function acquire(key: string, dialect: Database, target: string): Shared {
   let entry = connections.get(key);
   if (!entry) {
     entry = { connection: engine(dialect).then((e) => e.open(target)), calls: 0 };
@@ -119,22 +117,6 @@ function drop(key: string, entry: Shared): void {
   clearTimeout(entry.timer);
   if (connections.get(key) === entry) connections.delete(key);
   entry.connection.then((c) => c.close(), () => {});
-}
-
-/** DuckDB runs inside the app: the engine's needs are answered by the project's own `@duckdb/node-api`, which opens the file for this call alone (src/duckdb.ts). */
-async function analyzeDuckdb(path: string, root: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
-  const duckdb = await engine("duckdb");
-  const db = duckdbDatabase(path, root);
-  return db.run(async (io) => {
-    const [[version]] = (await io.query("select version()", [])) as [[string]];
-    try {
-      const analysis = await duckdb.analyze(sql, "duckdb", io, new AnswerCache());
-      return descriptor(sql, "duckdb", version.replace(/^v/, ""), analysis, await untyped(duckdb, sql, "duckdb", analysis, strict));
-    } catch (e) {
-      if (e instanceof Unreachable) throw failure(e);
-      return refused(sql, "duckdb", version.replace(/^v/, ""), (e as Error).message);
-    }
-  });
 }
 
 /** Why the database could not be read, as `reylo analyze` words it. */
@@ -161,7 +143,7 @@ async function untyped(e: Engine, sql: string, dialect: Database, analysis: Anal
  * in UTF-16 units of the statement as written, and the database's own code (`Analysis::descriptor`
  * in engine/core/src/api.rs, which `reylo analyze` prints).
  */
-function descriptor(sql: string, dialect: Database, version: string, a: Analysis, untyped: Analysis["diagnostics"] = []): StatementDescriptor {
+export function descriptor(sql: string, dialect: Database, version: string, a: Analysis, untyped: Analysis["diagnostics"] = []): StatementDescriptor {
   return {
     $schema: SCHEMA,
     dialect: { name: dialect, version },
@@ -169,12 +151,13 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
     ...(a.kind !== undefined && { kind: a.kind }),
     ...(a.comment !== undefined && { comment: a.comment }),
     params: a.params.map((p) => ({ name: p.name, type: p.type, ...(p.nullable && { nullable: true }), ...(p.optional && { optional: true }), ...(p.comment !== undefined && { comment: p.comment }) })),
+    // A table's keys and order, only where it can hold more than one row.
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: a.cardinality,
       columns: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })),
-      ...(a.unique?.length && { unique: a.unique }),
-      ...(a.order?.length && { order: a.order }),
+      ...(a.cardinality === "many" && a.unique?.length && { unique: a.unique }),
+      ...(a.cardinality === "many" && a.order?.length && { order: a.order }),
     },
     diagnostics: [...a.diagnostics, ...untyped].map((d) => {
       const start = utf16(sql, d.start);
@@ -185,7 +168,7 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
 
 /** A statement the engine could not analyze: no parameters or columns, and one diagnostic over the whole of it. */
 function refused(sql: string, dialect: Database, version: string, message: string): StatementDescriptor {
-  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], result: { kind: "rows", cardinality: "many", columns: [] }, diagnostics: [{ message, start: 0, end: sql.length }] };
+  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], result: { kind: "table", cardinality: "many", columns: [] }, diagnostics: [{ message, start: 0, end: sql.length }] };
 }
 
 /** The UTF-16 offset of the UTF-8 byte offset `byte` of `text`: a byte inside a character counts from the character's start, and one past the end at the end (`utf16_offset` in engine/core/src/api.rs). */

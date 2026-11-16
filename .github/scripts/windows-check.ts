@@ -4,11 +4,9 @@
 // analyzes its query as the type check does, `reylo analyze` through the package's command does
 // too, and `tsc` types it. The engine opens the files a URL names itself, so each case names its
 // database differently: relative, absolute, as a file URL, on another drive, on a `subst` drive,
-// through a share, through a short (8.3) name, beside a writer holding a WAL open; a
-// DuckDB file, which the app's own @duckdb/node-api opens, named the same ways; and for Postgres the
-// TLS files a URL or the environment names.
+// through a share, through a short (8.3) name, beside a writer holding a WAL open; and for Postgres
+// the TLS files a URL or the environment names.
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
@@ -30,7 +28,6 @@ writeFileSync(join(project, "package.json"), JSON.stringify({
   type: "module",
   dependencies: { reylo: `link:${posixRelative(project, join(repo, "dist", "reylo"))}` },
   devDependencies: {
-    "@duckdb/node-api": "^2.0.0-r.1",
     "@types/node": "^26.6.1",
     typescript: "7.1.0-beta",
   },
@@ -92,12 +89,12 @@ const sessionModule = pathToFileURL(join(project, "node_modules", "reylo", "src"
 
 /**
  * One way to name the database: the loader must type the query, and so must `reylo analyze`, the
- * native binary's own reading of the project, which the package's command runs (a DuckDB database
- * runs inside the app, and the binary refuses it); for SQLite `tsc` must too.
+ * native binary's own reading of the project, which the package's command runs; for SQLite `tsc`
+ * must too.
  */
-function check(name: string, url: string, { env = {}, tsc = true, analyze = !url.startsWith("duckdb:"), refused }: { env?: Record<string, string>; tsc?: boolean; analyze?: boolean; refused?: RegExp } = {}) {
+function check(name: string, url: string, { env = {}, tsc = true, analyze = true, refused }: { env?: Record<string, string>; tsc?: boolean; analyze?: boolean; refused?: RegExp } = {}) {
   writeFileSync(join(project, ".reylo.yaml"), `direct_url: ${JSON.stringify(url)}\n`);
-  rmSync(join(project, ".reylo"), { recursive: true, force: true });
+  rmSync(join(project, "reylo", ".cache"), { recursive: true, force: true });
   const loader = run(process.execPath, ["--input-type=module", "-e", loaderAnalysis, sessionModule], project, false, env);
   console.log(`\n== ${name}: ${url}\n${loader.out.trim()}`);
   if (refused) {
@@ -111,7 +108,7 @@ function check(name: string, url: string, { env = {}, tsc = true, analyze = !url
     if (analyzed.status !== 0 || !analyzed.out.includes(`"file":"queries/get_user.sql"`)) failures.push(`${name}: reylo analyze exited ${analyzed.status}`);
   }
   if (!tsc) return;
-  rmSync(join(project, ".reylo"), { recursive: true, force: true });
+  rmSync(join(project, "reylo", ".cache"), { recursive: true, force: true });
   const check = run(process.execPath, [join(project, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--runExternalCode"], project, false, env);
   console.log(`tsc: ${check.status}${check.out.trim() ? `\n${check.out.trim()}` : ""}`);
   if (check.status !== 0) failures.push(`${name}: tsc exited ${check.status}`);
@@ -142,22 +139,6 @@ else failures.push(`the share ${unc} cannot be read on this runner`);
 const writer = sqliteDb(join(project, "wal.db"), true);
 check("a WAL database beside its writer", "file:./wal.db");
 writer.close();
-
-// DuckDB, through the project's own @duckdb/node-api: relative, absolute, as a URL's path, and on another drive.
-type DuckDB = { DuckDBInstance: { create(path: string): Promise<{ connect(): Promise<{ run(sql: string): Promise<unknown>; closeSync(): void }>; closeSync(): void }> } };
-const duckdb = createRequire(join(project, "package.json"))("@duckdb/node-api") as DuckDB;
-for (const path of [join(project, "app.duckdb"), join(other, "app.duckdb")]) {
-  rmSync(path, { force: true });
-  const instance = await duckdb.DuckDBInstance.create(path);
-  const connection = await instance.connect();
-  await connection.run("create table users (id integer primary key, name varchar not null)");
-  connection.closeSync();
-  instance.closeSync();
-}
-check("DuckDB, relative", "duckdb:./app.duckdb", { tsc: false });
-check("DuckDB, absolute", `duckdb:${join(project, "app.duckdb")}`, { tsc: false });
-check("DuckDB, a URL's path", `duckdb:///${join(project, "app.duckdb").replace(/\\/g, "/")}`, { tsc: false });
-check("DuckDB, another drive", `duckdb:${join(other, "app.duckdb")}`, { tsc: false });
 
 // Postgres over TCP, with its TLS files named every way libpq reads them.
 const pg = process.env.REYLO_WINDOWS_PG;

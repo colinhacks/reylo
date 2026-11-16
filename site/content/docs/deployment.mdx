@@ -1,17 +1,15 @@
 ---
-title: Deployment / CI
-description: How to run Reylo's type check and build in CI and on your host. A GitHub Actions workflow for Postgres, what changes for MySQL, SQLite, DuckDB and Cloudflare D1, and a host that builds before it migrates.
+title: CI
+description: How to run Reylo's type check and build in CI and on your host. A GitHub Actions workflow for Postgres, what changes for MySQL, SQLite and Cloudflare D1, and a host that builds before it migrates.
 ---
 
 <p className="dk-subheader">Type-check and build your queries in CI and on your host</p>
 
-Reylo's type check runs in CI as it does on your machine.
-
-It reads your schema from a live database, as your build does. A CI job starts a database, applies your schema to it, then runs the type check and the build.
+Reylo's type check runs in CI as it does on your machine. It reads your schema from a live database, as your build does. A CI job starts a database, applies your schema to it, then runs the type check and the build.
 
 | | |
 | --- | --- |
-| Database | A throwaway one the job starts: a service container, or a file for SQLite and DuckDB |
+| Database | A throwaway one the job starts: a service container, or a file for SQLite |
 | Schema | Your migrations or a schema file, applied before the type check |
 | Connection | `DATABASE_URL` in the job's environment, or [`direct_url`](/configuration#direct_url) |
 | Commands | The type check, then your build and your tests |
@@ -43,7 +41,7 @@ jobs:
 
 Then apply your schema, and run the type check, the build and your tests:
 
-```yaml title=".github/workflows/ci.yml"
+```yaml title=".github/workflows/ci.yml" tab="TypeScript"
 jobs:
   check:
     # ...
@@ -60,14 +58,35 @@ jobs:
       - run: npm test
 ```
 
-- The build reads the database too. Reylo's plugins read each query's types from it as they bundle the query, and `next build` runs the type check itself.
+```yaml title=".github/workflows/ci.yml" tab="Rust"
+jobs:
+  check:
+    # ...
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # your migrations, or a schema file
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql
+      # each #[reylo::query] reads the database as the crate compiles
+      - run: cargo build
+      - run: cargo test
+```
+
+- The build reads the database too. Reylo's plugins read each query's types from it as they bundle the query, and `next build` runs the type check itself. In Rust, `cargo build` is the type check.
 - A `DATABASE_URL` in the environment wins over your `.env` files. A `direct_url` in `.reylo.yaml` wins over both, so if yours names a database, point it at a variable the job sets.
 - Reylo's engine is an optional dependency, installed for the runner's platform, so don't install with `--omit=optional`.
-- Reylo keeps a cache of each query's analysis in `.reylo/`, which git ignores. A fresh checkout has none, so the type check analyzes every query on the database.
+- Reylo keeps a cache of each query's analysis in `reylo/.cache/`, which git ignores. A fresh checkout has none, so the type check analyzes every query on the database.
 
 ## Schema
 
 Apply your schema with the tool you already use, before the type check:
+
+```yaml title=".github/workflows/ci.yml" tab="Reylo Migrate"
+steps:
+  # ...
+  - run: npx reylo migrate deploy
+  - run: npm run typecheck
+```
 
 ```yaml title=".github/workflows/ci.yml" tab="Prisma"
 steps:
@@ -145,45 +164,19 @@ jobs:
       - run: npm run typecheck
 ```
 
-## DuckDB
-
-DuckDB is a file too, and the type check opens it with your project's `@duckdb/node-api`. Build it with a script:
-
-```ts title="setup.ts"
-import { readFileSync } from "node:fs";
-import { DuckDBInstance } from "@duckdb/node-api";
-
-const db = await DuckDBInstance.create("app.duckdb");
-const connection = await db.connect();
-await connection.run(readFileSync("schema.sql", "utf8"));
-connection.closeSync();
-```
-
-```yaml title=".github/workflows/ci.yml"
-jobs:
-  check:
-    # ...
-    env:
-      DATABASE_URL: duckdb:./app.duckdb
-    steps:
-      # ...
-      - run: node setup.ts
-      - run: npm run typecheck
-```
-
 ## Cloudflare D1
 
-Apply your D1 migrations to the local database before the type check:
+Run your migrations on the local database before the type check:
 
 ```yaml title=".github/workflows/ci.yml"
 steps:
   # ...
-  - run: npx wrangler d1 migrations apply DB --local
+  - run: npx reylo migrate deploy
   - run: npm run typecheck
   - run: npm run build
 ```
 
-The type check reads the local file that [`direct_url`](/cloudflare#local-database) names, so the job needs no Cloudflare account. [Cloudflare Workers](/cloudflare) covers the rest.
+The type check reads the local file that [`direct_url`](/d1#local-database) names, so the job needs no Cloudflare account. [Cloudflare D1](/d1) and [Durable Objects](/durable-objects) cover the rest.
 
 ## A host that builds before it migrates [#build-before-migrate]
 

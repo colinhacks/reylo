@@ -1,0 +1,34 @@
+[package]
+name = "reylo-sqlx"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "SQL typed by Reylo's engine at compile time, run on sqlx: #[reylo::query(\"…\")] mod name {} on Postgres, MySQL and SQLite."
+
+[dependencies]
+reylo-macros = { path = "../reylo-macros" }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The calendar arithmetic of `Exact`, at the versions sqlx's own support for them takes.
+chrono = { version = "0.4", optional = true, default-features = false, features = ["serde"] }
+time = { version = "0.3", optional = true, features = ["serde"] }
+# Only for their serde support, so that a row holding one can derive `Serialize`; sqlx's own
+# features bring the crates themselves.
+uuid = { version = "1.12", optional = true, features = ["serde"] }
+rust_decimal = { version = "1.36", optional = true, default-features = false, features = ["serde"] }
+bigdecimal = { version = "0.4", optional = true, default-features = false, features = ["serde"] }
+
+[features]
+default = ["postgres"]
+# The databases the queries run on: each turns on sqlx's driver for it.
+postgres = ["sqlx/postgres"]
+sqlite = ["sqlx/sqlite"]
+mysql = ["sqlx/mysql"]
+# Rust types for Postgres's dates and times (chrono or time), uuids, and decimals (rust_decimal
+# or bigdecimal): each turns on sqlx's support for the type and tells the macro to write it.
+chrono = ["dep:chrono", "sqlx/chrono", "reylo-macros/chrono"]
+time = ["dep:time", "sqlx/time", "reylo-macros/time"]
+uuid = ["dep:uuid", "sqlx/uuid", "reylo-macros/uuid"]
+rust_decimal = ["dep:rust_decimal", "sqlx/rust_decimal", "reylo-macros/rust_decimal"]
+bigdecimal = ["dep:bigdecimal", "sqlx/bigdecimal", "reylo-macros/bigdecimal"]

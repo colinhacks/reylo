@@ -39,7 +39,7 @@ const FIRST_USER_OID = 10000;
 
 const SCALAR_OIDS: Readonly<Record<number, Kind>> = {
   16: "bool", 17: "bytes", 20: "int8", 21: "int", 23: "int", 26: "int", 700: "float", 701: "float",
-  1700: "decimal", 1082: "date", 1114: "timestamp", 1184: "timestamptz", 1186: "interval", 114: "json", 3802: "json",
+  1700: "decimal", 790: "money", 1082: "date", 1114: "timestamp", 1184: "timestamptz", 1186: "interval", 114: "json", 3802: "json",
   600: "point", 601: "lseg", 602: "path", 603: "box", 604: "polygon", 628: "line", 718: "circle",
   3904: "range:int", 3906: "range:decimal", 3908: "range:timestamp", 3910: "range:timestamptz", 3912: "range:date", 3926: "range:int8",
   4451: "multirange:int", 4532: "multirange:decimal", 4533: "multirange:timestamp", 4534: "multirange:timestamptz", 4535: "multirange:date", 4536: "multirange:int8",
@@ -446,7 +446,7 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  * an ISO 8601 duration. A row value, a geometric type, a range and a MySQL SET are their text, which
  * Reylo reads as an object, an array or a Set, and a MySQL ENUM's text is checked.
  */
-const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector|hstore|point|line|lseg|box|path|polygon|circle|enum|set)$|^\(|^(multi)?range:|\[\]$|\|/;
+const BUN_KINDS = /^(bool|int8|money|date|timestamp|timestamptz|interval|bytes|vector|hstore|point|line|lseg|box|path|polygon|circle|enum|set)$|^\(|^(multi)?range:|\[\]$|\|/;
 
 export function bunRows(rows: unknown[], columns: Columns | undefined, postgres = false): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
@@ -682,7 +682,7 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
 /** A Postgres column's text as its kind, with the non-finite numbers inside its JSON as numbers and an array held to its dimensions, as `.run()` gives them (src/execute.ts). */
 function postgresDecoder(name: string, kind: Kind, delim: string | undefined, nonFinite: JsonNumbers | undefined, nestedArrays: boolean | undefined): (v: string) => unknown {
   const decode = textDecoder(kind, delim);
-  const numbers = nonFinite === undefined ? decode : (v: string) => numbersInJson(decode(v), nonFinite);
+  const numbers = nonFinite === undefined ? decode : (v: string) => numbersInJson(decode(v), nonFinite, name);
   return kind.endsWith("[]") && !nestedArrays ? (v) => withinDimensions(numbers(v), kind, name) : numbers;
 }
 

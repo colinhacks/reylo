@@ -135,9 +135,9 @@ pub(crate) struct Typed {
     /// Per `ENUM` and `SET` column of those tables, by table and column in lower case, its type
     /// with the labels it declares, which the prepare does not give.
     pub labelled: HashMap<(String, String), crate::types::Type>,
-    /// The `TEXT` columns of those tables that store UTF-8 (`utf8mb4`, `utf8mb3`), by table as the
-    /// server names it and column in lower case: their capacity in bytes is a client's too.
-    pub utf8: HashSet<(String, String)>,
+    /// The character set each string column of those tables stores its values in, by table as the
+    /// server names it and column in lower case ([`crate::mysql_types::character_set`]).
+    pub charsets: HashMap<(String, String), String>,
     /// Per parameter written bare and whole to one column, by table as the server names it and
     /// column in lower case, that column: the parameter takes its definition.
     pub written: HashMap<String, (String, String)>,
@@ -186,9 +186,8 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
             }
         }
         let comment = row.get(5).and_then(as_str).filter(|c| !c.is_empty()).map(String::from);
-        let text = matches!(data_type.to_ascii_lowercase().as_str(), "tinytext" | "text" | "mediumtext" | "longtext");
-        if text && row.get(6).and_then(as_str).is_some_and(|charset| ["utf8mb4", "utf8mb3", "utf8"].iter().any(|u| charset.eq_ignore_ascii_case(u))) {
-            out.utf8.insert((table.to_string(), column.to_ascii_lowercase()));
+        if let Some(charset) = row.get(6).and_then(as_str).filter(|c| !c.is_empty()) {
+            out.charsets.insert((table.to_string(), column.to_ascii_lowercase()), charset.to_string());
         }
         if let Some(comment) = &comment {
             out.columns.insert((table.to_ascii_lowercase(), column.to_ascii_lowercase()), comment.clone());

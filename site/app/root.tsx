@@ -10,6 +10,7 @@ import orbitron from '../assets/fonts/orbitron.woff2?url';
 import fontsCss from './fonts.css?url';
 import { NotFound } from '@/components/not-found';
 import { DIALECTS } from '@/lib/dialects';
+import { LANGUAGES } from '@/lib/languages';
 
 // The fonts (app/fonts.css): IBM Plex Sans for text, Geist Mono for code, and Caveat for the
 // "Leave a star!" note, with the faces next/font gave them while the site was on Next.js:
@@ -74,7 +75,7 @@ const staticIcons = '<link rel="icon" href="/favicon.ico" sizes="48x48"><link re
 export function Layout({ children }: { children: ReactNode }) {
   return (
     <DocsDocument
-      tabs={{ dialect: DIALECTS }}
+      tabs={{ dialect: DIALECTS, language: LANGUAGES }}
       head={
         <>
           <script dangerouslySetInnerHTML={{ __html: themeIcons }} />

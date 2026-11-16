@@ -24,5 +24,5 @@ scan_limit_param.sql: many (n: int32) -> { id: bigint, name: varchar(≤20)? }
 subquery_limit.sql: one () -> { first: varchar?, n: bigint }
 union_limit_1.sql: at_most_one () -> { id: bigint }
 union_limit_5.sql: many (id: bigint, other: bigint) -> { id: bigint }
-values_limit.sql: one () -> { column_0: bigint | int, column_1: varchar }
+values_limit.sql: one () -> { column_0: bigint | int, column_1: varchar('a') }
 with_limit.sql: at_most_one () -> { n: bigint }

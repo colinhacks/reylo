@@ -7,7 +7,7 @@
 //
 // A value's representation is its kind, which the build writes into the module for each output
 // column (`columns`, as `[name, kind]`): `bool` is a boolean; `int` and `float` a number; `int8` a
-// BigInt; `decimal` the exact decimal text; `date` the text `YYYY-MM-DD`; `timestamp` the server's
+// BigInt; `decimal` the exact decimal text; `money` a Postgres `money`'s exact decimal text too; `date` the text `YYYY-MM-DD`; `timestamp` the server's
 // wall-clock text with `T` between the date and the time (a year of either outside 0000–9999 in
 // ISO 8601's extended form, `+012345` or `-000001` for 2 BC); `timestamptz` the instant's ISO 8601 text
 // in UTC, with `Z` and the server's fraction; `interval` an ISO 8601 duration with its sign in
@@ -19,21 +19,19 @@
 // of them, each field listed as `[name, kind]` (`(["id","int8"],["name","text"])`); `point`,
 // `line`, `lseg`, `box`, `path`, `polygon` and `circle` Postgres's geometric types as objects of
 // their fields, as the type descriptor gives them; and `range:k` and `multirange:k` a range of `k`
-// as an object of its bounds and a multirange as an array of them. A DuckDB STRUCT, MAP or UNION
-// is decoded by the result's own types
-// (src/decode-duckdb.ts), each of its values in its own kind's form. `k[]` is an array of `k`, a NULL element `null`, and `a|b` either (a MySQL
-// expression whose type the bound value decides). No kind is a JavaScript Date. An array's text
-// separates its elements with a comma, or with its element type's own delimiter (`:` for PostGIS's
-// `geometry`), which a column carries beside its kind.
+// as an object of its bounds and a multirange as an array of them. `k[]` is an array of `k`, a NULL
+// element `null`, and `a|b` either (a MySQL expression whose type the bound value decides). No kind
+// is a JavaScript Date. An array's text separates its elements with a comma, or with its element
+// type's own delimiter (`:` for PostGIS's `geometry`), which a column carries beside its kind.
 //
 // This module runs in every generated module's process, so it names no Node type: a Buffer is
 // reached through `globalThis` where one exists.
-import { bareName, type EngineType } from "./engine-type.ts";
+import { bareName, isMysqlSet, type EngineType } from "./engine-type.ts";
 
-export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
+export type Dialect = "postgres" | "mysql" | "sqlite";
 
 /** A scalar value's representation. */
-export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
+export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "money" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
 /** Postgres's built-in geometric types, each an object of its fields (`point` is `{ x, y }`). */
 export type Geometric = "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle";
 /**
@@ -53,12 +51,13 @@ export type Kind = string;
 export type Columns = readonly (readonly [name: string, kind: Kind, delimiter?: string])[];
 
 /**
- * Where a JSON value holds a float or a decimal that may be NaN or an infinity, which Postgres
- * writes inside a document as text (src/render.ts, `jsonNumbers`): `true` for such a value,
- * `items` for an array's elements, through nested arrays where `deep`, and `keys` for an object's
- * fields.
+ * What the run time reads inside a Postgres document (src/render.ts, `jsonNumbers`): where it holds
+ * a float or a decimal that may be NaN or an infinity, which Postgres writes there as text, `true`
+ * for such a value; for an array, `items` for its elements (`false` where they need nothing),
+ * through nested arrays where `deep`, and `flat` where it is a Postgres array held to one level;
+ * and `keys` for an object's fields.
  */
-export type JsonNumbers = true | { readonly items: JsonNumbers; readonly deep?: true } | { readonly keys: readonly (readonly [key: string, at: JsonNumbers])[] };
+export type JsonNumbers = true | { readonly items: JsonNumbers | false; readonly deep?: true; readonly flat?: true } | { readonly keys: readonly (readonly [key: string, at: JsonNumbers])[] };
 
 /**
  * The JSON columns of a row whose non-finite numbers `.run()` gives as numbers: each name's last
@@ -73,23 +72,30 @@ export function rowMasks(columns: Columns, nonFinite: readonly (JsonNumbers | nu
 /**
  * A parsed JSON value with the text Postgres writes for each non-finite float or decimal at
  * `at`, `"NaN"`, `"Infinity"` or `"-Infinity"`, as that number, in place: JSON has no number for
- * one, and a float outside a document is one already.
+ * one, and a float outside a document is one already. A Postgres array there is written with as
+ * many levels as its value has, which Postgres doesn't hold to the one its type has, so one of
+ * more is refused, naming `column`, as `withinDimensions` refuses a column's.
  */
-export function numbersInJson(v: unknown, at: JsonNumbers): unknown {
+export function numbersInJson(v: unknown, at: JsonNumbers, column = ""): unknown {
   if (at === true) return v === "NaN" ? NaN : v === "Infinity" ? Infinity : v === "-Infinity" ? -Infinity : v;
   if (v === null || typeof v !== "object") return v;
   if ("items" in at) {
     if (!Array.isArray(v)) return v;
+    if (at.flat === true && v.some(Array.isArray)) {
+      throw new DecodeError(`Column "${column}" holds, inside its JSON, a Postgres array of more than one dimension, and its type has one: Reylo types a Postgres array with one dimension, which Postgres doesn't enforce. Write to_jsonb(<the array>) into the document to read it as JSON, or set allow_nested_arrays: true in .reylo.yaml to type it at any depth.`);
+    }
+    const items = at.items;
+    if (items === false) return v;
     // A Postgres array nests to any depth, each level an array; where its element is a JSON array
     // as well, an array is read as the element, since the two cannot be told apart.
-    const nested = at.deep === true && !(typeof at.items === "object" && "items" in at.items);
-    for (let i = 0; i < v.length; i++) v[i] = nested && Array.isArray(v[i]) ? numbersInJson(v[i], at) : numbersInJson(v[i], at.items);
+    const nested = at.deep === true && !(typeof items === "object" && "items" in items);
+    for (let i = 0; i < v.length; i++) v[i] = nested && Array.isArray(v[i]) ? numbersInJson(v[i], at, column) : numbersInJson(v[i], items, column);
     return v;
   }
   const o = v as Record<string, unknown>;
   for (const [key, inner] of at.keys) {
     if (!Object.prototype.hasOwnProperty.call(o, key)) continue;
-    const value = numbersInJson(o[key], inner);
+    const value = numbersInJson(o[key], inner, column);
     // `__proto__` is an own key JSON.parse made, which an assignment would not reach.
     if (key === "__proto__") Object.defineProperty(o, key, { value, writable: true, enumerable: true, configurable: true });
     else o[key] = value;
@@ -106,6 +112,7 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   float: "number",
   int8: "bigint",
   decimal: "string",
+  money: "string",
   text: "string",
   date: "string",
   timestamp: "string",
@@ -137,7 +144,7 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
  * The kind of a Postgres base type by its catalog name, for a value whose type a driver names
  * (src/decode.ts; a value the engine typed takes its kind from its descriptor, `columnKind`). Every
  * type not named here is its text: Reylo owns every oid, so the driver never parses one (an enum's label, `time`,
- * `uuid`, `money`, `xml`); a range and a row value take their kinds from their oids or their
+ * `uuid`, `xml`); a range and a row value take their kinds from their oids or their
  * descriptors (src/decode.ts). pgvector's `vector` and `halfvec`, and an
  * `hstore`, are extensions' types, named by their names as every created type is.
  */
@@ -150,6 +157,7 @@ const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   float8: "float",
   int8: "int8",
   numeric: "decimal",
+  money: "money",
   date: "date",
   timestamp: "timestamp",
   timestamptz: "timestamptz",
@@ -260,11 +268,12 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "float":
       return "float";
     case "decimal":
-      // DuckDB's BIGNUM, an integer of no fixed width, is a BigInt.
-      return dialect === "duckdb" && name === "bignum" ? "int8" : "decimal";
+      return "decimal";
     case "bytes":
       return dialect === "postgres" && (name === "macaddr" || name === "macaddr8") ? "text" : "bytes";
     case "array": {
+      // A MySQL SET is a Set of its members; a distinct array elsewhere is its text.
+      if (isMysqlSet(t)) return dialect === "mysql" ? "set" : "text";
       if (dialect === "postgres") {
         if (name === "vector" || name === "halfvec") return "vector";
         if (name === "bit" || name === "varbit" || name === "sparsevec") return "text";
@@ -275,7 +284,6 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
         if (element.kind === "opaque" && bareName(element) === "record") return "text";
       }
       if (dialect === "mysql" && name === "bit") return t.size?.exact === 1 ? "bool" : "bytes";
-      if (dialect === "duckdb" && name === "bit") return "text";
       return `${columnKind(t.element.type, dialect)}[]`;
     }
     case "json":
@@ -295,13 +303,10 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "union":
       if (dialect === "sqlite") return "label" in t && t.label !== undefined ? sqliteDeclaredKind(t.label) : "unknown";
       if (dialect === "postgres" && (name === "inet" || name === "cidr")) return "text";
-      if (dialect === "duckdb") return "unknown";
       return either(t.members.map((m) => columnKind(m, dialect)));
     case "tagged_union":
-      // A DuckDB union is decoded by the result's own types (src/decode-duckdb.ts).
       return "unknown";
-    case "record": {
-      // A DuckDB struct is decoded by the result's own types (src/decode-duckdb.ts).
+    case "struct": {
       if (dialect !== "postgres") return "unknown";
       // A Postgres row value is an object of its fields, each decoded from its text as a column of
       // its type is.
@@ -314,11 +319,11 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
       }).join(",")})`;
     }
     case "text":
-      // A MySQL ENUM of known labels holds one of them or `''`, which the run time refuses.
-      return dialect === "mysql" && name === "enum" && t.enum !== undefined && !t.enum.includes("") ? "enum" : "text";
-    case "set":
-      // A MySQL SET is a Set of its members.
-      return dialect === "mysql" ? "set" : "text";
+      return "text";
+    // One of a few values of its type: a MySQL ENUM of known labels holds one of them or `''`,
+    // which the run time refuses, and any other is its type's.
+    case "enum":
+      return dialect === "mysql" && name === "enum" && t.type.kind === "text" && !t.values.includes("") ? "enum" : columnKind(t.type, dialect);
     case "range":
     case "multirange":
       // A Postgres range is an object of its bounds, each decoded from its text as its subtype is.
@@ -327,9 +332,14 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
       // A MySQL GEOMETRY is its bytes, which `.run()` asks each driver for.
       return dialect === "postgres" ? "text" : dialect === "mysql" ? "geometry" : "unknown";
     case "opaque":
+      // A Postgres `money` is a decimal, written in the session's locale.
+      if (dialect === "postgres" && name === "money") return "money";
       return dialect === "postgres" ? "text" : "unknown";
     case "unknown":
-    case "rows":
+    case "tuple":
+    case "table":
+    case "intersection":
+    case "null":
       return "unknown";
     default:
       return "text";
@@ -377,6 +387,18 @@ function isoDate(x: string): string {
 function isoStyle(x: string): string {
   if ((x.length >= 4 && digits(x, 0, 4)) || x === "infinity" || x === "-infinity") return x;
   throw new DecodeError(`The database wrote a date or a time as ${JSON.stringify(x)}, which is not ISO 8601: the connection's DateStyle is another style, set on the session, the role or the database. Reylo reads the ISO style alone, so set it there (set datestyle = 'ISO').`);
+}
+
+/**
+ * A Postgres `money`'s exact decimal text, from the text the server writes in the session's
+ * lc_monetary: `$1,234.56` and `-$1,234.56` in the C locale and the ones that write it alike, as en_US does. Another locale
+ * writes another symbol, separators and number of digits (`1.234,56 €`), which would read as
+ * another amount, so it is refused, as Prisma's Postgres driver refuses it.
+ */
+export function money(x: string): string {
+  const m = /^(-?)\$((?:\d{1,3})(?:,\d{3})*)(\.\d+)?$/.exec(x);
+  if (m !== null) return `${m[1]}${m[2]!.replaceAll(",", "")}${m[3] ?? ""}`;
+  throw new DecodeError(`The database wrote a money value as ${JSON.stringify(x)}, which is not the C locale's form ($1,234.56): the connection's lc_monetary names another locale, set on the session, the role or the database. Reylo reads the C locale's alone, so set it there (set lc_monetary = 'C'), or cast the column to numeric in the statement.`);
 }
 
 /** `2026-10-20` as it is; `0002-06-01 BC` → `-000001-06-01` and `12345-01-01` → `+012345-01-01` (`isoDate`). */
@@ -923,7 +945,7 @@ export function postgresLiteral(t: EngineType, v: unknown, fail: (message: strin
   const shape = geometric(t);
   if (shape !== undefined) return geometricText(shape, v) ?? fail(`a ${shape}, ${TS_TYPE[shape]}; got ${describe(v)}.`);
   const kind = columnKind(t, "postgres");
-  if (t.kind === "record" && isRowKind(kind)) {
+  if (t.kind === "struct" && isRowKind(kind)) {
     const name = t.label ?? "a row value";
     if (!isObject(v)) return fail(`${name}, an object of its fields (${t.fields.map((f) => f.name).join(", ")}); got ${describe(v)}.`);
     const names = new Set(t.fields.map((f) => f.name));
@@ -980,6 +1002,7 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   float: number,
   int8: (x) => BigInt(x),
   decimal: identity,
+  money,
   text: identity,
   date,
   timestamp,
@@ -1297,6 +1320,8 @@ export function coerce(kind: Kind, v: unknown, column: string, delim = ",", post
     case "decimal":
       if (typeof v === "bigint" || typeof v === "number") return String(v);
       return v;
+    case "money":
+      return typeof v === "string" ? money(v) : v;
     case "date":
     case "timestamp":
       if (v instanceof Date) return utcText(v, kind as "date" | "timestamp", column, postgres);

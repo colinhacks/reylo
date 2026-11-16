@@ -4,15 +4,14 @@
 // (engine/native/src/lib.rs). The engine connects to the database itself. Each connection is a
 // child process of its own, which answers its requests in turn, so that a server slow to answer
 // holds up no other connection; the requests that need no database go to one child per database
-// (the ping, the lexer, and DuckDB's analysis, whose needs this process answers), and those that
-// must answer before this thread can go on (the project file's `config`) to `reylo engine
-// <database> call`, which answers the one request on its standard input and exits. A child keeps
-// this process alive only while a request waits on it, as esbuild's service does, so that a build
-// ends when its work does: the child and its pipes are unreferenced once, when it starts, and a
-// timer holds the process while a request waits. Bun keeps a process alive for good once a child
-// it unreferenced is referenced again in a Bun.build plugin's hook, which is where the esbuild
-// plugin asks the engine, so the child is never referenced again; a timer is held and let go alike
-// in every runtime.
+// (the ping and the lexer), and those that must answer before this thread can go on (the project
+// file's `config`) to `reylo engine <database> call`, which answers the one request on its standard
+// input and exits. A child keeps this process alive only while a request waits on it, as esbuild's
+// service does, so that a build ends when its work does: the child and its pipes are unreferenced
+// once, when it starts, and a timer holds the process while a request waits. Bun keeps a process
+// alive for good once a child it unreferenced is referenced again in a Bun.build plugin's hook,
+// which is where the esbuild plugin asks the engine, so the child is never referenced again; a
+// timer is held and let go alike in every runtime.
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -23,7 +22,7 @@ import { nativeBinary } from "./native.ts";
 
 export type { EngineType } from "./engine-type.ts";
 export { reason, Unreachable } from "./connection.ts";
-export type { Analysis, Answer, DbError, Described, Diagnostic, Dialect, DuckdbDescribed, DuckdbType, EngineIo, Lexed, MysqlDescribed, Need, Response } from "./engine-core.ts";
+export type { Analysis, Answer, DbError, Described, Diagnostic, Dialect, EngineIo, Lexed, MysqlDescribed, Need, Response } from "./engine-core.ts";
 export { AnswerCache, EngineCore } from "./engine-core.ts";
 
 /** The version of reylo, which the engine it runs must have: that of the package this module ships in. */
@@ -127,7 +126,7 @@ const KEPT_ANSWERS = 512;
 export class Engine extends EngineCore {
   readonly binary: string;
   readonly dialect: Dialect;
-  /** The engine's fingerprint, core's sources and its database's, which names the `.reylo/` entries it writes. */
+  /** The engine's fingerprint, core's sources and its database's, which names the `reylo/.cache/` entries it writes. */
   readonly fingerprint: string;
   /** The child that answers this database's requests that need no database, started again where it stopped. */
   #core: Channel;

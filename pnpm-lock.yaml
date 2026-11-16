@@ -11,18 +11,33 @@ importers:
       '@bytecodealliance/jco':
         specifier: 1.39.0
         version: 1.39.0(@oxc-parser/binding-wasm32-wasi@0.76.0)
-      '@duckdb/node-api':
-        specifier: 2.0.0-r.1
-        version: 2.0.0-r.1
+      '@types/big.js':
+        specifier: 7.0.0
+        version: 7.0.0
+      '@types/geojson':
+        specifier: 7946.0.16
+        version: 7946.0.16
       '@types/node':
         specifier: ^26.6.1
         version: 26.6.6
       ajv:
         specifier: 8.20.0
         version: 8.20.0
+      big.js:
+        specifier: 7.0.1
+        version: 7.0.1
+      bignumber.js:
+        specifier: 11.1.5
+        version: 11.1.5
+      decimal.js:
+        specifier: 10.6.0
+        version: 10.6.0
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      ip-address:
+        specifier: 10.7.6
+        version: 10.7.6
       slonik:
         specifier: 49.12.0
         version: 49.12.0
@@ -216,56 +231,6 @@ packages:
     resolution: {integrity: sha512-ziWmovyu1jQl9TsKlfC2bwuUZwxVPFHlX4fOqTzxhgS76jITIo45nzODEwPgU+jjmOr8F3YX2V2wAChC5NKujg==}
     engines: {node: '>=16'}
     hasBin: true
-
-  '@duckdb/node-api@2.0.0-r.1':
-    resolution: {integrity: sha512-SA4oG7X9UNpSJsr99b7rbJxSs7n5KqMEGV1kC04TxdsYHjGH6w4kGEOiC/yXzvgWr6Jd1WRQD9RUPTX6qGdEwg==}
-
-  '@duckdb/node-bindings-darwin-arm64@2.0.0-r.1':
-    resolution: {integrity: sha512-vay0TmtEaUM7Dm7z1nXlxy2KOcwlY3Xq+wAHRbkuOYmJu//qjcZBT7ijT4qE6m5qGyuLSOiq3w36ShCYApL4yg==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@duckdb/node-bindings-darwin-x64@2.0.0-r.1':
-    resolution: {integrity: sha512-mkPKjf7YR6xk8r5nVyHYjbybrQxMW+mfXJwl2otSKi8bireJV+xaOodyxqzP2cqPB95rpIg1owfYjFfUyLi7NQ==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@duckdb/node-bindings-linux-arm64-musl@2.0.0-r.1':
-    resolution: {integrity: sha512-AAmQa/uI4LDfyY7zldUwU0Qnpv+yjQPxr0k2uJQylo0tyXWzQ1O0bBWfnDmN0ulym124gFRwr+fzlHyvxCt1FA==}
-    cpu: [arm64]
-    os: [linux]
-    libc: [musl]
-
-  '@duckdb/node-bindings-linux-arm64@2.0.0-r.1':
-    resolution: {integrity: sha512-V+oOWVY8qq7t5Uh+j8Hf+iwb4pLx2GsxAso1oGBP7ubf38QN1FGoPclJ8ByZob+ZcLdSDgwlS7QUbMB9pnCi2A==}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-
-  '@duckdb/node-bindings-linux-x64-musl@2.0.0-r.1':
-    resolution: {integrity: sha512-8GCE/ye+w5GJsCgAk2owUyQA55rtoiBRe2T8A42CaqGbNNZm9hOj3C96d6flT82p7YhQVA8AzA40k9Pn30kJDg==}
-    cpu: [x64]
-    os: [linux]
-    libc: [musl]
-
-  '@duckdb/node-bindings-linux-x64@2.0.0-r.1':
-    resolution: {integrity: sha512-0VdXZQlCnD6oWwJABkp3ihZGBic/6Ora4PQekHv9jwa4Fe2OVcgm0hGtn6yyNGhURVDzZllMITEF98zdo6ussQ==}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  '@duckdb/node-bindings-win32-arm64@2.0.0-r.1':
-    resolution: {integrity: sha512-k47ASHylCPfUe7H+MvaNqsSwXGv8fjxixMF0vqJghp/wUUdAERMi1WNkPIjOj31cJ+O0x+Srdlfe4N0Diofm7Q==}
-    cpu: [arm64]
-    os: [win32]
-
-  '@duckdb/node-bindings-win32-x64@2.0.0-r.1':
-    resolution: {integrity: sha512-8moS6xWPmM4UahiUhkfNSPFQG+7kpN2zu8w39C+K9Xgn8Z4Ctu5jOSTdXlybYrLofLH8jwgoNFiUOLMXLD4giw==}
-    cpu: [x64]
-    os: [win32]
-
-  '@duckdb/node-bindings@2.0.0-r.1':
-    resolution: {integrity: sha512-R8mrpS9FFUNUL5Xi4NgirZWuP9/1KVEqy6b91a7s7TptIKnu4ZZLch3yBrN+GeWz3hoo5RUctfbaORLRFgqgwQ==}
 
   '@emnapi/core@1.11.3':
     resolution: {integrity: sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg==}
@@ -945,6 +910,12 @@ packages:
   '@tybys/wasm-util@0.10.4':
     resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
 
+  '@types/big.js@7.0.0':
+    resolution: {integrity: sha512-WfAGp7IbJvyB8EmWK4tJD24rJRAL6uVbw3LV/hJntFNam+os9KWKj0PzXo8rRRpjupYK8U0M8FoBB8dBhWF2dg==}
+
+  '@types/geojson@7946.0.16':
+    resolution: {integrity: sha512-6C8nqWur3j98U6+lXDfTUWIfgvZU+EumvpHKcYjujKH7woYyLj2sUmff0tRhrqM7BohUw7Pz3ZB1jj2gW9Fvmg==}
+
   '@types/node@26.6.6':
     resolution: {integrity: sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==}
 
@@ -1133,6 +1104,12 @@ packages:
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
+  big.js@7.0.1:
+    resolution: {integrity: sha512-iFgV784tD8kq4ccF1xtNMZnXeZzVuXWWM+ERFzKQjv+A5G9HC8CY3DuV45vgzFFcW+u2tIvmF95+AzWgs6BjCg==}
+
+  bignumber.js@11.1.5:
+    resolution: {integrity: sha512-6WmzCNtUnfKpbozq+hOgWaZMMzORmYBwF1xZScyoIX3QRYWeKTtxxwDOW5tIz7C9BdjkIYHGTcelCLkXg0mndw==}
+
   binaryen@132.0.0:
     resolution: {integrity: sha512-4Usg7yEvwO3FMso3Oov6qkOOHSod1IEv+boKkh77kTljM+eNBouqCTbqWswGzbG+vDNO/b/v2C4gfEh1WgB9Lg==}
     hasBin: true
@@ -1157,9 +1134,8 @@ packages:
     engines: {node: '>=18.0.0'}
     hasBin: true
 
-  detect-libc@2.1.2:
-    resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
-    engines: {node: '>=8'}
+  decimal.js@10.6.0:
+    resolution: {integrity: sha512-YpgQiITW3JXGntzdUmyUR1V812Hn8T1YVXhCu+wO3OpS4eU9l4YdD3qjyiKdV6mvV29zapkMeD390UVEf2lkUg==}
 
   es-module-lexer@1.7.0:
     resolution: {integrity: sha512-jEQoCwk8hyb2AZziIOLhDqpm5+2ww5uIE6lkO/6jcOCusfk6LhMHpXXfBLXTZ7Ydyt0j4VoUQv6uGNYbdW+kBA==}
@@ -1205,6 +1181,10 @@ packages:
 
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
+
+  ip-address@10.7.6:
+    resolution: {integrity: sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg==}
+    engines: {node: '>= 12'}
 
   iso8601-duration@2.2.0:
     resolution: {integrity: sha512-gyr8oFS2Xb/zaZOISDq91hAJn+KNR90iGQoKhnwhEDwswmcLsOkkICWnu19dS1I6FLhkKYmkB0llQ/3HttnM/A==}
@@ -1545,7 +1525,6 @@ snapshots:
       oxc-parser: 0.76.0(@oxc-parser/binding-wasm32-wasi@0.76.0)
     transitivePeerDependencies:
       - '@babel/runtime'
-      - '@emnapi/runtime'
       - '@oxc-minify/binding-wasm32-wasi'
 
   '@bytecodealliance/componentize-js@0.23.0(@oxc-parser/binding-wasm32-wasi@0.76.0)':
@@ -1557,7 +1536,6 @@ snapshots:
       oxc-parser: 0.76.0(@oxc-parser/binding-wasm32-wasi@0.76.0)
     transitivePeerDependencies:
       - '@babel/runtime'
-      - '@emnapi/runtime'
       - '@oxc-minify/binding-wasm32-wasi'
 
   '@bytecodealliance/jco-node-fs-darwin-arm64@0.3.2':
@@ -1637,7 +1615,6 @@ snapshots:
       unenv: 2.0.0-rc.24
     transitivePeerDependencies:
       - '@babel/runtime'
-      - '@emnapi/runtime'
       - '@oxc-minify/binding-wasm32-wasi'
 
   '@bytecodealliance/preview2-shim@0.29.0':
@@ -1658,8 +1635,6 @@ snapshots:
       '@napi-rs/lzma': 1.5.3
       fflate: 0.8.3
       tar: 7.5.22
-    transitivePeerDependencies:
-      - '@emnapi/runtime'
 
   '@bytecodealliance/wizer-darwin-arm64@10.0.0':
     optional: true
@@ -1688,47 +1663,6 @@ snapshots:
       '@bytecodealliance/wizer-linux-x64': 10.0.0
       '@bytecodealliance/wizer-win32-x64': 10.0.0
 
-  '@duckdb/node-api@2.0.0-r.1':
-    dependencies:
-      '@duckdb/node-bindings': 2.0.0-r.1
-
-  '@duckdb/node-bindings-darwin-arm64@2.0.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-darwin-x64@2.0.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-linux-arm64-musl@2.0.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-linux-arm64@2.0.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-linux-x64-musl@2.0.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-linux-x64@2.0.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-win32-arm64@2.0.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-win32-x64@2.0.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings@2.0.0-r.1':
-    dependencies:
-      detect-libc: 2.1.2
-    optionalDependencies:
-      '@duckdb/node-bindings-darwin-arm64': 2.0.0-r.1
-      '@duckdb/node-bindings-darwin-x64': 2.0.0-r.1
-      '@duckdb/node-bindings-linux-arm64': 2.0.0-r.1
-      '@duckdb/node-bindings-linux-arm64-musl': 2.0.0-r.1
-      '@duckdb/node-bindings-linux-x64': 2.0.0-r.1
-      '@duckdb/node-bindings-linux-x64-musl': 2.0.0-r.1
-      '@duckdb/node-bindings-win32-arm64': 2.0.0-r.1
-      '@duckdb/node-bindings-win32-x64': 2.0.0-r.1
-
   '@emnapi/core@1.11.3(@emnapi/runtime@1.11.3)':
     dependencies:
       '@emnapi/runtime': 1.11.3
@@ -1736,10 +1670,12 @@ snapshots:
       tslib: 2.9.1
     optional: true
 
-  '@emnapi/core@2.0.0-beta.3':
+  '@emnapi/core@2.0.0-beta.3(@emnapi/runtime@2.0.0-beta.3)':
     dependencies:
       '@emnapi/wasi-threads': 2.2.0
       tslib: 2.9.1
+    optionalDependencies:
+      '@emnapi/runtime': 2.0.0-beta.3
     optional: true
 
   '@emnapi/runtime@1.11.3':
@@ -1885,11 +1821,9 @@ snapshots:
 
   '@napi-rs/lzma-wasm32-wasi@1.5.3':
     dependencies:
-      '@emnapi/core': 2.0.0-beta.3
+      '@emnapi/core': 2.0.0-beta.3(@emnapi/runtime@2.0.0-beta.3)
       '@emnapi/runtime': 2.0.0-beta.3
-      '@napi-rs/wasm-runtime': 1.2.7(@emnapi/core@2.0.0-beta.3)(@emnapi/runtime@2.0.0-beta.3)
-    transitivePeerDependencies:
-      - '@emnapi/runtime'
+      '@napi-rs/wasm-runtime': 1.2.7(@emnapi/core@2.0.0-beta.3(@emnapi/runtime@2.0.0-beta.3))(@emnapi/runtime@2.0.0-beta.3)
     optional: true
 
   '@napi-rs/lzma-win32-arm64-msvc@1.5.3':
@@ -1920,8 +1854,6 @@ snapshots:
       '@napi-rs/lzma-win32-arm64-msvc': 1.5.3
       '@napi-rs/lzma-win32-ia32-msvc': 1.5.3
       '@napi-rs/lzma-win32-x64-msvc': 1.5.3
-    transitivePeerDependencies:
-      - '@emnapi/runtime'
 
   '@napi-rs/wasm-runtime@0.2.12':
     dependencies:
@@ -1930,9 +1862,9 @@ snapshots:
       '@tybys/wasm-util': 0.10.4
     optional: true
 
-  '@napi-rs/wasm-runtime@1.2.7(@emnapi/core@2.0.0-beta.3)(@emnapi/runtime@2.0.0-beta.3)':
+  '@napi-rs/wasm-runtime@1.2.7(@emnapi/core@2.0.0-beta.3(@emnapi/runtime@2.0.0-beta.3))(@emnapi/runtime@2.0.0-beta.3)':
     dependencies:
-      '@emnapi/core': 2.0.0-beta.3
+      '@emnapi/core': 2.0.0-beta.3(@emnapi/runtime@2.0.0-beta.3)
       '@emnapi/runtime': 2.0.0-beta.3
       '@tybys/wasm-util': 0.10.4
     optional: true
@@ -2150,6 +2082,10 @@ snapshots:
       tslib: 2.9.1
     optional: true
 
+  '@types/big.js@7.0.0': {}
+
+  '@types/geojson@7946.0.16': {}
+
   '@types/node@26.6.6':
     dependencies:
       undici-types: 8.9.0
@@ -2258,6 +2194,10 @@ snapshots:
 
   base64-js@1.5.1: {}
 
+  big.js@7.0.1: {}
+
+  bignumber.js@11.1.5: {}
+
   binaryen@132.0.0: {}
 
   brace-expansion@5.0.12:
@@ -2284,7 +2224,7 @@ snapshots:
       '@andreiltd/componentize-qjs-binding-win32-arm64-msvc': 0.4.5
       '@andreiltd/componentize-qjs-binding-win32-x64-msvc': 0.4.5
 
-  detect-libc@2.1.2: {}
+  decimal.js@10.6.0: {}
 
   es-module-lexer@1.7.0: {}
 
@@ -2332,6 +2272,8 @@ snapshots:
   fflate@0.8.3: {}
 
   ieee754@1.2.1: {}
+
+  ip-address@10.7.6: {}
 
   iso8601-duration@2.2.0: {}
 

@@ -29,42 +29,45 @@ export const compareTitle = 'Reylo compared with sqlc, sqlx, PgTyped and others'
 /** A page's title in search results and link previews, where the title is not a database's. */
 export const docsTitle = (title: string) => `${title} — Reylo`;
 
-/** The list of pages in the left column, by group, and the links away from the docs at its foot. */
+/**
+ * The list of pages in the left column, by group, and the links away from the docs at its foot:
+ * first what holds for every language, then each language's own pages, then the reference.
+ */
 export const pageGroups = [
   {
     label: 'Docs',
     items: [
       { title: 'Intro', href: '/' },
-      { title: 'Usage', href: '/usage' },
+      { title: 'Usage with TypeScript', href: '/typescript' },
+      { title: 'Usage with Rust', href: '/rust' },
       { title: 'Inference', href: '/inference' },
-      { title: 'Observability', href: '/observability' },
-      { title: 'Schema changes', href: '/schema-changes' },
+      { title: 'CLI', href: '/cli' },
+      { title: 'Migrations', href: '/migrations' },
       { title: 'Comparison', href: '/compare' },
       { title: 'FAQ', href: '/faq' },
     ],
   },
   {
-    label: 'Guides',
+    label: 'Deployment',
     items: [
-      { title: 'Cloudflare Workers', href: '/cloudflare' },
-      { title: 'Next.js', href: '/nextjs' },
+      { title: 'Cloudflare D1', href: '/d1' },
+      { title: 'Durable Objects', href: '/durable-objects' },
       { title: 'Neon', href: '/neon' },
       { title: 'Supabase', href: '/supabase' },
       { title: 'PlanetScale', href: '/planetscale' },
       { title: 'Turso', href: '/turso' },
-      { title: 'Deployment / CI', href: '/deployment' },
-      { title: 'Migrating from Prisma', href: '/prisma' },
+      { title: 'Next.js', href: '/nextjs' },
+      { title: 'CI', href: '/deployment' },
     ],
   },
   {
     label: 'Reference',
     items: [
-      { title: '.reylo.yaml', href: '/configuration' },
+      { title: '.reylo.yaml', href: '/configuration', code: true },
       { title: 'Type Defs', href: '/typedefs' },
       { title: 'Postgres', href: '/postgres' },
       { title: 'MySQL', href: '/mysql' },
       { title: 'SQLite', href: '/sqlite' },
-      { title: 'DuckDB', href: '/duckdb' },
     ],
   },
 ];

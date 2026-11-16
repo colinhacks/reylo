@@ -2,6 +2,27 @@
 title: "Setup"
 ---
 
+Reylo imports each `.sql` file as a typed module.
+
+```ts twoslash title="main.ts" dialect="postgres"
+// @hover: getAuthor author
+import postgres from "postgres";
+import getAuthor from "./get_author.sql";
+
+const db = postgres(process.env.DATABASE_URL);
+
+// hover over author to see its type
+const author = await getAuthor.run(db, { id: 1 });
+```
+
+<Callout title="Content mappers">
+
+Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in TypeScript 7.1 (currently [in beta](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/)), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
+
+</Callout>
+
+<HowItWorksDiagram />
+
 ## Setup
 
 To install Reylo, you'll need:
@@ -13,23 +34,22 @@ To install Reylo, you'll need:
   - **Postgres** 14 to 18, including Neon and PGlite
   - **MySQL** 8.0.22 or later, including PlanetScale
   - **SQLite**, including Cloudflare D1 and Durable Objects, Turso and libSQL
-  - **DuckDB** 2.0, through `@duckdb/node-api` ([preview](/duckdb))
 
 <AgentPrompt>
 
 ```text
-Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. Its docs are https://reylo.dev, with a reference page for each database (https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite, https://reylo.dev/duckdb), all served as Markdown at https://reylo.dev/llms.txt. Each step below links its section.
+Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. Its docs are https://reylo.dev, with a reference page for each database (https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite), all served as Markdown at https://reylo.dev/llms.txt. Each step below links its section.
 
 Each setup has a complete, working example project to copy, whose README's "How Reylo is wired in" lists every line Reylo needs. Install from npm, since the examples link local builds: https://github.com/colinhacks/reylo/tree/main/examples
 
-1. Check the requirements and install Reylo, which brings its engine for the machine, and TypeScript 7.1 (currently in beta): https://reylo.dev/#setup
-2. Add Reylo to tsconfig.json as a content mapper for the extensions .sql, .reylo.yaml and .reylo.yml, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/#typescript
-3. Make .sql imports load wherever the project runs code, with Node's --import or the plugin for its runtime, bundler or framework: https://reylo.dev/#plugins
+1. Check the requirements and install Reylo, which brings its engine for the machine, and TypeScript 7.1 (currently in beta): https://reylo.dev/typescript#setup
+2. Add Reylo to tsconfig.json as a content mapper for the extensions .sql, .reylo.yaml and .reylo.yml, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/typescript#typescript
+3. Make .sql imports load wherever the project runs code, with Node's --import or the plugin for its runtime, bundler or framework: https://reylo.dev/typescript#plugins
    The example for that setup shows it end to end (node, nub, bun, vite, nextjs, esbuild, webpack, rspack, jest or cloudflare-workers): https://github.com/colinhacks/reylo/tree/main/examples/<name>
    If the project runs on anything else, Reylo has no plugin for it yet: say so, and do not write one.
-4. Point Reylo at the development database with DATABASE_URL, or with direct_url in .reylo.yaml: https://reylo.dev/#database
-5. Set up the editor the project uses, or VS Code's settings when nothing in the project names an editor: https://reylo.dev/#editors
-6. Write a first query and run it with the project's own driver: https://reylo.dev/usage and https://reylo.dev/usage#run
+4. Point Reylo at the development database with DATABASE_URL, or with direct_url in .reylo.yaml: https://reylo.dev/typescript#database
+5. Set up the editor the project uses, or VS Code's settings when nothing in the project names an editor: https://reylo.dev/typescript#editors
+6. Write a first query and run it with the project's own driver: https://reylo.dev/typescript#usage and https://reylo.dev/typescript#run
    For more queries, from nested JSON to bulk inserts, see https://reylo.dev/inference
 7. Run the typecheck script. The query's types come from the database; an error in a .sql file shows at its line and column.
 8. Install Reylo's agent skill, which gives later sessions its rules for writing queries: npx skills add colinhacks/reylo --skill using-reylo
@@ -251,7 +271,7 @@ export default defineConfig({
 });
 ```
 
-Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](/configuration#direct_url) in `.reylo.yaml` to the local D1 file that `wrangler d1 migrations apply --local` creates. Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
+Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](/configuration#direct_url) in `.reylo.yaml` to a local SQLite file your migrations create ([Cloudflare D1](/d1#local-database)). Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
 
 </Tab>
 <Tab value="Jest" id="setup-jest">
@@ -303,11 +323,6 @@ DATABASE_URL=mysql://root@localhost:3306/app
 ```sh title=".env" tab="SQLite" tab-group="dialect"
 # or sqlite:; the path starts at package.json
 DATABASE_URL=file:./app.db
-```
-
-```sh title=".env" tab="DuckDB" tab-group="dialect"
-# the path starts at package.json; read with your @duckdb/node-api
-DATABASE_URL=duckdb:./app.duckdb
 ```
 
 To override this, create a `.reylo.yaml` file in your project root and set the `direct_url` field:

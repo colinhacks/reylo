@@ -1,7 +1,7 @@
 // The runtime query object behind `import query from "./file.sql"`.
 // Types come from the content mapper; values come from the runtime loader.
 import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type Runtime, type SyncClientFor } from "./execute.ts";
-import type { Plan } from "./codecs.ts";
+import type { Libraries, Plan } from "./codecs.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
@@ -13,7 +13,6 @@ import type { QueryError } from "./query-error.ts";
 import { postgres } from "./decode.ts";
 import { mysql } from "./decode-mysql.ts";
 import { sqlite } from "./decode-sqlite.ts";
-import { duckdb } from "./decode-duckdb.ts";
 import { listening, type QueryTrace } from "./trace.ts";
 import { buildTime, type AnalyzeInput, type StatementDescriptor } from "./build-time.ts";
 
@@ -21,6 +20,8 @@ export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteCli
 export type { QueryTrace } from "./trace.ts";
 export type { StandardQueryV1 } from "./standard-query.ts";
 export { checks } from "./checks.ts";
+export { migrate, type MigrationStorage } from "./migrate.ts";
+export type { MigrateOptions } from "./build-time.ts";
 export type { AnalyzeInput } from "./build-time.ts";
 export type * as TypeDefs from "../spec/index.ts";
 export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresErrorFields, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteErrorFields, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
@@ -185,6 +186,8 @@ export type QueryDefinition = {
   ordered?: boolean;
   /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts): a build step writes them where there are any. */
   codecs?: Readonly<Record<string, Plan>>;
+  /** The classes the codecs build values with (`decimal`, the class of `js.codecs.decimal`'s library), which a build step's module imports from the app's install where a codec needs one. */
+  libraries?: Libraries;
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
   structured?: readonly Structured[];
   /** The catalog facts the statement relied on, which the run time checks before it runs (src/fresh.ts). */
@@ -212,12 +215,12 @@ function onlyValue(row: unknown): unknown {
 }
 
 /** Each dialect's half of the run time, for a query defined by hand, which names its dialect. */
-const RUNTIMES: { readonly [D in Dialect]: Runtime<D> } = { postgres, mysql, sqlite, duckdb };
+const RUNTIMES: { readonly [D in Dialect]: Runtime<D> } = { postgres, mysql, sqlite };
 
 /**
  * A query, from its definition: a query defined by hand names its dialect. A module a build step
  * writes calls its dialect's own define function instead (`definePostgresQuery`, `defineMysqlQuery`,
- * `defineSqliteQuery`, `defineDuckdbQuery`), which alone names that dialect's half of the run time,
+ * `defineSqliteQuery`), which alone names that dialect's half of the run time,
  * so that a bundle holds no other dialect's drivers and error codes.
  */
 export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(def: QueryDefinition & { dialect: D; cardinality?: C }): Query<Params, Row, C, D> {
@@ -237,11 +240,6 @@ export function defineMysqlQuery<Params, Row, C extends Cardinality>(def: Omit<Q
 /** A SQLite query, as a module a build step writes defines one (`defineQuery`). */
 export function defineSqliteQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "sqlite"> {
   return define(sqlite, def);
-}
-
-/** A DuckDB query, as a module a build step writes defines one (`defineQuery`). */
-export function defineDuckdbQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "duckdb"> {
-  return define(duckdb, def);
 }
 
 function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: Runtime<D>, def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, D> {
@@ -268,6 +266,7 @@ function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: 
     ordered: def.ordered,
     cardinality,
     codecs: def.codecs,
+    libraries: def.libraries,
     structured: def.structured,
     fresh: def.fresh,
     source: def.source,

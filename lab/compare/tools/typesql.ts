@@ -31,7 +31,6 @@ export const typesql: Tool = {
   name: "TypeSQL",
   version,
   dbs: ["postgres", "mysql", "sqlite"],
-  noDuckdb: "Its clients are Postgres, MySQL, SQLite, LibSQL and D1.",
   async analyze(db, statements, urls) {
     const dir = workdir("typesql");
     symlinkSync(join(root, "node_modules"), join(dir, "node_modules"));

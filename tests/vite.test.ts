@@ -39,3 +39,28 @@ test("reylo/vite resolves a relative .sql import to its file before any other pl
 test("reylo/vite's resolveId runs before the other plugins' hooks", () => {
   assert.equal(reylo().resolveId.order, "pre");
 });
+
+// reylo's placeholder for the migrations `migrate(ctx.storage)` runs takes the project's, by its real
+// path alone (src/embedded-module.ts), and the dev server leaves reylo to the plugin.
+test("reylo/vite fills reylo's migrations placeholder with the project's, and keeps reylo out of the dev server's bundling", async () => {
+  const root = mkdtempSync(join(tmpdir(), "reylo-vite-migrations-"));
+  writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: file:./dev.sqlite\n");
+  mkdirSync(join(root, "reylo", "migrations"), { recursive: true });
+  writeFileSync(join(root, "reylo", "migrations", "init.sql"), "create table users (id integer primary key);\n");
+  const plugin = reylo();
+  plugin.configResolved({ root });
+  assert.deepEqual(plugin.config().optimizeDeps.exclude, ["reylo"]);
+  assert.deepEqual(plugin.configEnvironment().optimizeDeps.exclude, ["reylo"]);
+  const placeholder = join(import.meta.dirname, "..", "src", "embedded-migrations.ts");
+  const watched: string[] = [];
+  const load = (id: string) => plugin.load.handler.call({ addWatchFile: (f: string) => watched.push(f) }, id) as Promise<{ code: string } | null>;
+  for (const id of [placeholder, `${placeholder}?v=1a2b3c`]) {
+    assert.ok(plugin.load.filter.id.test(id), id);
+    assert.equal((await load(id))?.code, `export const embedded = [{"name":"init.sql","sql":"create table users (id integer primary key);\\n"}];\n`);
+  }
+  assert.ok(watched.includes(join(root, "reylo", "migrations", "init.sql")));
+  // A project's own file by that name is the project's.
+  writeFileSync(join(root, "embedded-migrations.ts"), "export const mine = 1;\n");
+  assert.equal(await load(join(root, "embedded-migrations.ts")), null);
+});

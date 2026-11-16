@@ -10,15 +10,16 @@
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
 // `reylo analyze` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
-// is the one the project's `.reylo/` entries record.
+// is the one the entries of the project's cache (`reylo/.cache/`) record.
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
-import type { Codecs } from "./codecs.ts";
+import { DECIMAL_LIBRARIES, type Codecs, type DecimalLibrary, type Library } from "./codecs.ts";
 
-export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
+export type Dialect = "postgres" | "sqlite" | "mysql";
 
 /** What the engine reads out of `.reylo.yaml`: the keys the library looks at. */
 export type ProjectFile = {
@@ -29,6 +30,8 @@ export type ProjectFile = {
   allow_untyped_params?: boolean;
   allow_nested_arrays?: boolean;
   sqlcommenter?: boolean;
+  /** The directory of the project's own files, `reylo` beside the project file when absent. */
+  dir?: string;
   js?: { codecs?: Codecs };
 };
 
@@ -37,6 +40,8 @@ export type ResolvedProject = {
   file: string | undefined;
   /** The directory a relative path in the project resolves against: the package's. */
   root: string;
+  /** The cache the type check and the build steps share: `.cache/` in the project's `reylo/` directory. */
+  cache: string;
   dialect: Dialect;
   /** Whether a parameter the statement does not type is an error rather than `unknown`: true unless the file says `allow_untyped_params: true`. */
   strictParams: boolean;
@@ -72,11 +77,23 @@ export const PROJECT_FILE = ".reylo.yaml";
 export const PROJECT_FILES = [PROJECT_FILE, ".reylo.yml"] as const;
 const DEFAULT_ENV_FILES = [".env.local", ".env"];
 
-/** The package directory: the nearest one at or above `from` that holds a `package.json`, else `from`. */
-export function packageDir(from: string): string {
-  for (let dir = resolve(from); ; dir = dirname(dir)) {
-    if (existsSync(join(dir, "package.json"))) return dir;
-    if (dirname(dir) === dir) return resolve(from);
+/** The package directory: the nearest one at or above `from`, below the home directory (`HOME`, or `USERPROFILE` on Windows, in `env`), that holds a `package.json` or a `Cargo.toml` (a Rust crate's, which is a project of its own), else `from`. A home directory is no project's, though a stray `package.json` can sit there, and taking it would make every directory below it one project (engine/native/src/project.rs). */
+export function packageDir(from: string, env: Record<string, string | undefined> = process.env): string {
+  const home = process.platform === "win32" ? env.USERPROFILE : env.HOME;
+  // As written, or with its links resolved, as a working directory has them.
+  const stops = home ? [resolve(home), realOr(home)] : [];
+  for (let dir = resolve(from); !stops.includes(dir); dir = dirname(dir)) {
+    if (existsSync(join(dir, "package.json")) || existsSync(join(dir, "Cargo.toml"))) return dir;
+    if (dirname(dir) === dir) break;
+  }
+  return resolve(from);
+}
+
+function realOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
   }
 }
 
@@ -87,26 +104,26 @@ export function packageDir(from: string): string {
 export function sourceName(path: string, env: Record<string, string | undefined> = process.env): string {
   const dir = dirname(path);
   const file = findProjectFile(dir, env);
-  return relative(file ? dirname(file) : packageDir(dir), path).split(sep).join("/");
+  return relative(file ? dirname(file) : packageDir(dir, env), path).split(sep).join("/");
 }
 
 /** The project file for a project directory: `REYLO_CONFIG`, or `.reylo.yaml` (else `.reylo.yml`) beside the package's `package.json`. */
 export function findProjectFile(from: string, env: Record<string, string | undefined> = process.env): string | undefined {
   if (env.REYLO_CONFIG) return resolve(env.REYLO_CONFIG);
-  const dir = packageDir(from);
+  const dir = packageDir(from, env);
   return PROJECT_FILES.map((name) => join(dir, name)).find((path) => existsSync(path));
 }
 
-/** How many of `.reylo/`'s entries are read for the dialect where no URL names one. */
+/** How many of the cache's entries are read for the dialect where no URL names one. */
 const CACHED_READ = 32;
 
 /**
- * The dialects the entries in the project's `.reylo/` record (src/analyze.ts), which name the
+ * The dialects the entries in the project's cache record (src/analyze.ts), which name the
  * database where no URL does: a build with no URL reads them. A few entries are read, which a
  * project's are all of one dialect unless its database changed.
  */
-function cachedDialects(root: string): Dialect[] {
-  const dir = join(root, ".reylo", "queries");
+function cachedDialects(cache: string): Dialect[] {
+  const dir = join(cache, "queries");
   let names: string[];
   try {
     names = readdirSync(dir).filter((n) => n.endsWith(".json"));
@@ -117,7 +134,7 @@ function cachedDialects(root: string): Dialect[] {
   for (const name of names.slice(0, CACHED_READ)) {
     try {
       const { dialect } = JSON.parse(readFileSync(join(dir, name), "utf8")) as { dialect?: unknown };
-      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite" || dialect === "duckdb") found.add(dialect);
+      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite") found.add(dialect);
     } catch {}
     if (found.size > 1) break;
   }
@@ -130,7 +147,6 @@ export function dialectOf(url: string): Dialect | undefined {
   if (scheme === "postgres" || scheme === "postgresql") return "postgres";
   if (scheme === "mysql" || scheme === "mariadb") return "mysql";
   if (scheme === "file" || scheme === "sqlite") return "sqlite";
-  if (scheme === "duckdb") return "duckdb";
   return undefined;
 }
 
@@ -143,8 +159,8 @@ export function dialectOf(url: string): Dialect | undefined {
  * the first `#`, spaces and tabs trimmed, less a quote at each end. In a value that starts with a
  * double quote, `\n` and `\r` are a newline and a carriage return. Node's own `parseEnv` is not used:
  * a line whose empty value ends in a space takes the next line as its value there. The binary reads
- * env files the same way (`parse_env` in engine/cli/src/project.rs), and both are held to
- * engine/cli/src/env-file-cases.json.
+ * env files the same way (`parse_env` in engine/native/src/project.rs), and both are held to
+ * engine/native/src/env-file-cases.json.
  */
 export function readEnvFile(path: string): Record<string, string> {
   let text: string;
@@ -198,7 +214,7 @@ function place(text: string, offset: number): string {
   return `${lines.length}:${[...lines.at(-1)!].length + 1}`;
 }
 
-/** Why a file could not be read, as `reylo analyze` says it (`unreadable` in engine/cli/src/project.rs). */
+/** Why a file could not be read, as `reylo analyze` says it (`unreadable` in engine/native/src/project.rs). */
 function unreadable(e: NodeJS.ErrnoException): string {
   if (e.code === "ENOENT") return "it does not exist";
   if (e.code === "EISDIR") return "it is a directory";
@@ -356,7 +372,7 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
  */
 export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env, options: { urlGiven?: boolean } = {}): ResolvedProject {
   const file = findProjectFile(projectDir, env);
-  const root = file ? dirname(file) : packageDir(projectDir);
+  const root = file ? dirname(file) : packageDir(projectDir, env);
   const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path).split(sep).join("/") || path : path);
   let config: ProjectFile = {};
   let error: string | undefined;
@@ -467,30 +483,22 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     if (hit) urlSource = hit.source;
   }
   let dialect = url ? dialectOf(url) : "postgres";
-  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.`;
+  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
   const unusable = url && dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
   if (unusable) error ??= `Cannot read the SQLite URL ${url} (${urlSource}): ${unusable}.`;
   // Either name, created or removed, changes the project.
   const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
-  // No URL names the database: the entries of `.reylo/`, which a build with no URL reads
+  // No URL names the database: the entries of the cache, which a build with no URL reads
   // (src/analyze.ts), do where they are all of one dialect.
-  const cached = url ? [] : cachedDialects(root);
+  const cache = join(resolve(root, config.dir ?? "reylo"), ".cache");
+  const cached = url ? [] : cachedDialects(cache);
   if (cached.length === 1) dialect = cached[0];
-  return { file, root, dialect: dialect ?? "postgres", strictParams: !(config.allow_untyped_params ?? false), allowNestedArrays: config.allow_nested_arrays ?? false, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
-}
-
-/** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */
-export function duckdbPath(url: string, baseDir: string): string {
-  let raw = url.replace(/^duckdb:(\/\/)?/i, "");
-  if (raw === "" || raw === ":memory:") return ":memory:";
-  // On Windows, `duckdb:///C:/app.duckdb` names the drive, as a file URL does.
-  if (process.platform === "win32") raw = raw.replace(/^\/(?=[A-Za-z]:[\\/])/, "");
-  return isAbsolute(raw) ? raw : resolve(baseDir, raw);
+  return { file, root, cache, dialect: dialect ?? "postgres", strictParams: !(config.allow_untyped_params ?? false), allowNestedArrays: config.allow_nested_arrays ?? false, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 
 /**
  * Why a `file://` URL names no file Node reads, as `reylo analyze` says it (`file_url_path` in
- * engine/cli/src/project.rs), or undefined where it names one or is no `file://` URL.
+ * engine/native/src/project.rs), or undefined where it names one or is no `file://` URL.
  */
 export function sqliteUrlProblem(url: string): string | undefined {
   if (!url.startsWith("file://")) return undefined;
@@ -512,4 +520,71 @@ export function sqlitePath(url: string, baseDir: string): string {
   if (unusable) throw new Error(`Cannot read the SQLite URL ${url}: ${unusable}.`);
   const raw = url.startsWith("file://") ? fileURLToPath(url) : url.replace(/^(file|sqlite):(\/\/)?/, "");
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
+}
+
+/**
+ * The `package.json` of `name` as a file in `dir` imports it, from the nearest `node_modules` up, or
+ * where Yarn's Plug'n'Play runs, which keeps no `node_modules`, as its resolver finds it; undefined
+ * where none holds it. Node's own resolver is not asked elsewhere: it also searches `NODE_PATH` and
+ * the global folders, which an `import` never reads.
+ */
+function installed(name: string, dir: string): { types?: unknown; typings?: unknown; exports?: unknown } | undefined {
+  const read = (file: string) => {
+    try {
+      return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return {};
+    }
+  };
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    const file = join(at, "node_modules", name, "package.json");
+    if (existsSync(file)) return read(file);
+    if (dirname(at) === at) break;
+  }
+  if (!process.versions.pnp) return undefined;
+  const require = createRequire(join(resolve(dir), "_"));
+  try {
+    return read(require.resolve(`${name}/package.json`));
+  } catch {}
+  // A package whose `exports` hides its `package.json`: walk up from its entry point to the manifest that names it.
+  try {
+    for (let at = dirname(require.resolve(name)); dirname(at) !== at; at = dirname(at)) {
+      const file = join(at, "package.json");
+      if (existsSync(file) && read(file).name === name) return read(file);
+    }
+  } catch {}
+  return undefined;
+}
+
+/**
+ * Why a `.sql` file in `dir` cannot use the decimal library `js.codecs.decimal` names, which its
+ * module imports from the app's own install: the package is not there, or it ships no types and
+ * its DefinitelyTyped package is not there either. Undefined where it can.
+ */
+export function decimalLibraryProblem(codecs: Codecs, dir: string): string | undefined {
+  const library = codecs.decimal;
+  if (library === undefined || library === "string" || library === "number") return undefined;
+  return libraryProblem(library as DecimalLibrary, dir);
+}
+
+/**
+ * Why a `.sql` file in `dir` cannot use a library `js.codecs` names, which its module imports from
+ * the app's own install: the package is not there, or it ships no types and its DefinitelyTyped
+ * package is not there either. Undefined where it can.
+ */
+export function libraryProblem(library: Library, dir: string): string | undefined {
+  const types = library === "ip-address" ? undefined : DECIMAL_LIBRARIES[library].types;
+  const family = library === "ip-address" ? "inet" : "decimal";
+  const setting = `js.codecs.${family} is ${library} in the project file`;
+  const pkg = installed(library, dir);
+  if (pkg === undefined) return `${setting}, and no ${library} is installed where this file can import it: install it (npm install ${library}), or ${family === "decimal" ? "set js.codecs.decimal to string" : "leave js.codecs.inet out"}.`;
+  const typed = pkg.types !== undefined || pkg.typings !== undefined || JSON.stringify(pkg.exports ?? null).includes('"types"');
+  if (!typed && types !== undefined && installed(types, dir) === undefined) return `${setting}, which ships no types of its own: install ${types} beside it (npm install --save-dev ${types}).`;
+  return undefined;
+}
+
+/** Why a `.sql` file in `dir` whose declaration names a GeoJSON type cannot have it: `js.codecs.geometry` types a geometry with @types/geojson's types, which are not installed beside it. */
+export function geojsonTypesProblem(dir: string): string | undefined {
+  if (installed("@types/geojson", dir) !== undefined) return undefined;
+  return "js.codecs.geometry is GeoJSON in the project file, whose types are @types/geojson's, and @types/geojson is not installed where this file can import it: install it (npm install --save-dev @types/geojson).";
 }

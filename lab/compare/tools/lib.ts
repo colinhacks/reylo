@@ -19,9 +19,6 @@ export interface Tool {
   dbs: Db[];
   // How a user gets a row count from this tool, when the tool does not infer one.
   cardinalityNote?: string;
-  // Types one statement on a DuckDB file, for the tools that can.
-  duckdb?(probe: Probe): Promise<Answer>;
-  noDuckdb?: string;
   // A second way to use the tool with nothing generated, run for real: the note to show where it works.
   withoutGenerating?(): Promise<string | null>;
   // Why it never connects, for a tool that reads its types elsewhere.

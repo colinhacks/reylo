@@ -65,7 +65,6 @@ export const sqlc: Tool = {
   name: "sqlc",
   version,
   dbs: ["postgres", "mysql", "sqlite"],
-  noDuckdb: 'Not in v1.31.1, the latest release. A DuckDB engine is on its unreleased main branch.',
   cardinalityNote: "Declared by hand on each query: `:one`, `:many` or `:exec`. The annotation decides the method's return type, and sqlc accepts any of them.",
   optInNote: "By default it reads your schema files and never connects. A `database:` setting asks Postgres for types, but not for nullability.",
   async withDatabaseSetting(statements, urls) {

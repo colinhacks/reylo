@@ -1,10 +1,10 @@
 /**
  * Examples of Reylo Type Defs, the type descriptor format (`index.ts`), database by database: each a statement, the schema it reads, and what introspecting it gives, whole or the part the example is about. `nub run typecheck` checks each against the types, and `tests/typedefs.test.ts` against the JSON Schema.
  *
- * Those of Postgres, MySQL, SQLite and DuckDB are what Reylo's engine writes: `tests/spec-examples.test.ts` runs each one's setup and statement on its database and compares every field the example shows, all but the server's version. Reylo runs no SQL Server or Oracle, so those two are written by hand. `nub run typedefs` copies every example into `examples.json`, which the engine's own tests read.
+ * Those of Postgres, MySQL and SQLite are what Reylo's engine writes: `tests/spec-examples.test.ts` runs each one's setup and statement on its database and compares every field the example shows, all but the server's version. Reylo runs no SQL Server, Oracle or DuckDB, so those are written by hand. `nub run typedefs` copies every example into `examples.json`, which the engine's own tests read.
  */
 
-import type { FloatType, InstantType, IntegerType, RecordType, StatementDescriptor, TextType } from "./index.ts";
+import type { FloatType, InstantType, IntegerType, StructType, StatementDescriptor, TextType } from "./index.ts";
 
 /** One example: a statement on one database, the schema it reads, and what introspecting it gives. */
 export interface Example {
@@ -19,6 +19,8 @@ export interface Example {
 }
 
 const int8: IntegerType = { kind: "integer", bits: 64, label: "int8" };
+/** Postgres's text, which holds every character but NUL. */
+const pg_text: TextType = { kind: "text", code_points: [[1, 1114111]], label: "text" };
 
 /** A first example, on Postgres: one user, by id. The statement's leading comment is its `comment`, and `sql` is the statement as the database runs it, with Postgres's own placeholders. */
 export const first_example: Example = {
@@ -33,12 +35,12 @@ export const first_example: Example = {
     comment: "One user, by id.",
     params: [{ name: "id", type: int8 }],
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "at_most_one",
       columns: [
         { name: "id", type: int8 },
-        { name: "email", type: { kind: "text", size: { max: 255 }, label: "varchar" } },
-        { name: "bio", nullable: true, type: { kind: "text", label: "text" }, comment: "Shown on the profile page" },
+        { name: "email", type: { kind: "text", code_points: [[1, 1114111]], size: { max: 255 }, label: "varchar" } },
+        { name: "bio", nullable: true, type: pg_text, comment: "Shown on the profile page" },
       ],
     },
     diagnostics: [],
@@ -48,8 +50,8 @@ export const first_example: Example = {
 const int64: IntegerType = { kind: "integer", bits: 64 };
 const float8: FloatType = { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, label: "float8" };
 const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, label: "timestamptz" };
-const point: RecordType = { kind: "record", label: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
-const sqlite_text: TextType = { kind: "text", ill_formed: "utf8" };
+const point: StructType = { kind: "struct", label: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
+const sqlite_text: TextType = { kind: "text", encoding: "UTF-8", ill_formed: true };
 
 /** Postgres: the columns the rows are sorted on. `id` follows `at`, and NULLs sort first when descending unless the key says otherwise. */
 export const sorted_rows: Example = {
@@ -58,7 +60,7 @@ export const sorted_rows: Example = {
   statement: "select id, at from events order by at desc, id",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [
         { name: "id", type: int8 },
@@ -80,26 +82,26 @@ export const unique_columns: Example = {
   statement: "select id, email, handle from accounts",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [
         { name: "id", type: int8 },
-        { name: "email", type: { kind: "text", label: "text" } },
-        { name: "handle", nullable: true, type: { kind: "text", label: "text" } },
+        { name: "email", type: pg_text },
+        { name: "handle", nullable: true, type: pg_text },
       ],
       unique: [["id"], ["email"]],
     },
   },
 };
 
-/** Postgres: a column of each kind its catalog holds. The engine types a domain's column as the base type the server describes it by, `varchar(255)`, so `e`'s type does not carry the domain's name, `public.email`, and takes its LIKE CHECK as a `pattern`. */
+/** Postgres: a column of each kind its catalog holds. The engine types a domain's column as the base type the server describes it by, `varchar(255)`, so `e`'s type does not carry the domain's name, `public.email`, and takes its LIKE CHECK as the I-Regexp `pattern` that matches the same values. An enum's labels are its `values`. Postgres lets `tags` hold arrays of any depth, and it is typed as the one-dimensional array a query reads. */
 export const postgres_columns: Example = {
   database: "postgres",
   setup: "create type mood as enum ('sad', 'ok', 'happy'); create domain email as varchar(255) check (value like '%@%'); create table t (price numeric(10,2), total numeric, at timestamptz, day date, span interval, m mood, e email, tags varchar(20)[], flags bit(7), body jsonb, during tstzrange, pos point, ring circle, addr inet, tod time)",
   statement: "select * from t",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [
         { name: "price", nullable: true, type: { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, label: "numeric" } },
@@ -107,14 +109,14 @@ export const postgres_columns: Example = {
         { name: "at", nullable: true, type: timestamptz },
         { name: "day", nullable: true, type: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true, label: "date" } },
         { name: "span", nullable: true, type: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000", infinity: true, label: "interval" } },
-        { name: "m", nullable: true, type: { kind: "text", enum: ["sad", "ok", "happy"], label: "public.mood" } },
-        { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, pattern: { dialect: "like", source: "%@%" }, label: "varchar" } },
-        { name: "tags", nullable: true, type: { kind: "array", any_depth: true, label: "_varchar", element: { nullable: true, type: { kind: "text", size: { max: 20 }, label: "varchar" } } } },
+        { name: "m", nullable: true, type: { kind: "enum", type: { kind: "text" }, values: ["sad", "ok", "happy"], label: "public.mood" } },
+        { name: "e", nullable: true, type: { kind: "text", code_points: [[1, 1114111]], size: { max: 255 }, pattern: "(.|\\n|\\r)*@(.|\\n|\\r)*", label: "varchar" } },
+        { name: "tags", nullable: true, type: { kind: "array", label: "_varchar", element: { nullable: true, type: { kind: "text", code_points: [[1, 1114111]], size: { max: 20 }, label: "varchar" } } } },
         { name: "flags", nullable: true, type: { kind: "array", size: { exact: 7 }, label: "bit", element: { type: { kind: "boolean" } } } },
         { name: "body", nullable: true, type: { kind: "json", label: "jsonb" } },
         { name: "during", nullable: true, type: { kind: "range", subtype: timestamptz, label: "tstzrange" } },
         { name: "pos", nullable: true, type: point },
-        { name: "ring", nullable: true, type: { kind: "record", label: "circle", fields: [{ name: "center", type: point }, { name: "radius", type: float8 }] } },
+        { name: "ring", nullable: true, type: { kind: "struct", label: "circle", fields: [{ name: "center", type: point }, { name: "radius", type: float8 }] } },
         {
           name: "addr",
           nullable: true,
@@ -122,8 +124,8 @@ export const postgres_columns: Example = {
             kind: "union",
             label: "inet",
             members: [
-              { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 4 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "32" } }] },
-              { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 16 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "128" } }] },
+              { kind: "struct", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 4 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "32" } }] },
+              { kind: "struct", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 16 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "128" } }] },
             ],
           },
         },
@@ -140,7 +142,7 @@ export const pgvector_column: Example = {
   statement: "select emb from items",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [{ name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, label: "public.vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } } } }],
     },
@@ -154,9 +156,29 @@ export const json_column: Example = {
   statement: "select json_agg(p.title) filter (where p.id is not null) as titles from users u left join posts p on p.author_id = u.id group by u.id",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
-      columns: [{ name: "titles", nullable: true, type: { kind: "json", label: "json", content: { type: { kind: "array", element: { type: { kind: "text", label: "text" } } } } } }],
+      columns: [{ name: "titles", nullable: true, type: { kind: "json", label: "json", content: { type: { kind: "array", element: { type: pg_text } } } } }],
+    },
+  },
+};
+
+/** Postgres: a constant the statement writes is an enum of its one value, over the type the server describes it by. A `case` whose every result is a constant is an enum of them all, and so is a column every arm of a `union` writes a constant to. */
+export const literal_columns: Example = {
+  database: "postgres",
+  setup: "create table users (id int8 primary key, banned boolean not null)",
+  statement: "select id, 'user' as kind, case when banned then 'banned' else 'active' end as status, 1 as version from users",
+  descriptor: {
+    result: {
+      kind: "table",
+      cardinality: "many",
+      columns: [
+        { name: "id", type: int8 },
+        { name: "kind", type: { kind: "enum", type: pg_text, values: ["user"] } },
+        { name: "status", type: { kind: "enum", type: pg_text, values: ["banned", "active"] } },
+        { name: "version", type: { kind: "enum", type: { kind: "integer", bits: 32, label: "int4" }, values: ["1"] } },
+      ],
+      unique: [["id"]],
     },
   },
 };
@@ -168,12 +190,12 @@ export const uuid_versions: Example = {
   statement: "select id, source, gen_random_uuid() as request from events",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [
-        { name: "id", type: { kind: "uuid", version: 7, label: "uuid" } },
+        { name: "id", type: { kind: "uuid", versions: [7], label: "uuid" } },
         { name: "source", nullable: true, type: { kind: "uuid", label: "uuid" } },
-        { name: "request", type: { kind: "uuid", version: 4, label: "uuid" } },
+        { name: "request", type: { kind: "uuid", versions: [4], label: "uuid" } },
       ],
       unique: [["id"]],
     },
@@ -187,35 +209,35 @@ export const mysql_columns: Example = {
   statement: "select id, flag, at, status, born, name, body, tags, :n + 1 next from m",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [
         { name: "id", type: { kind: "integer", bits: 64, unsigned: true, label: "bigint" } },
         { name: "flag", type: { kind: "integer", bits: 8, label: "tinyint(1)" } },
         { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", label: "timestamp" } },
-        { name: "status", type: { kind: "text", enum: ["b", "a"], label: "enum" } },
+        { name: "status", type: { kind: "enum", type: { kind: "text" }, values: ["b", "a"], label: "enum" } },
         { name: "born", nullable: true, type: { kind: "date", label: "date" } },
         { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, label: "varchar" } },
-        { name: "body", nullable: true, type: { kind: "text", size: { unit: "byte", encoding: "UTF-8", max: 65535 }, label: "text" } },
-        { name: "tags", nullable: true, type: { kind: "set", label: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
+        { name: "body", nullable: true, type: { kind: "text", encoding: "UTF-8", size: { unit: "byte", max: 65535 }, label: "text" } },
+        { name: "tags", nullable: true, type: { kind: "array", label: "set", distinct: true, element: { type: { kind: "enum", type: { kind: "text" }, values: ["a", "b"] } } } },
         { name: "next", nullable: true, type: { kind: "union", members: [{ ...int64, label: "bigint" }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "double" }, { kind: "decimal", label: "decimal" }] } },
       ],
     },
   },
 };
 
-/** SQL Server, written by hand. `at` keeps the offset each value was written with, and `label` may hold a lone surrogate. */
+/** SQL Server, written by hand. `at` keeps the offset each value was written with, and `label` may hold a lone surrogate, counted in UTF-16 units. */
 export const sqlserver_columns: Example = {
   database: "sqlserver",
   setup: "create table s (at datetimeoffset(3), label nvarchar(10))",
   statement: "select at, label from s",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [
-        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", zone: "offset", label: "datetimeoffset" } },
-        { name: "label", nullable: true, type: { kind: "text", ill_formed: "utf16", size: { max: 10 }, label: "nvarchar" } },
+        { name: "at", nullable: true, type: { kind: "zoned_datetime", tick: "1/1000", offset_only: true, label: "datetimeoffset" } },
+        { name: "label", nullable: true, type: { kind: "text", encoding: "UTF-16", ill_formed: true, size: { unit: "code_unit", max: 10 }, label: "nvarchar" } },
       ],
     },
   },
@@ -228,9 +250,9 @@ export const range_over_array: Example = {
   statement: "select r from t",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
-      columns: [{ name: "r", nullable: true, type: { kind: "range", label: "public.arrayrange", subtype: { kind: "array", any_depth: true, label: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, label: "int4" } } } } }],
+      columns: [{ name: "r", nullable: true, type: { kind: "range", label: "public.arrayrange", subtype: { kind: "array", label: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, label: "int4" } } } } }],
     },
   },
 };
@@ -244,7 +266,7 @@ export const sqlite_columns: Example = {
   statement: "select price, name, x, n from s, t",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [
         { name: "price", nullable: true, type: { kind: "union", label: "numeric", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
@@ -263,7 +285,7 @@ export const oracle_column: Example = {
   statement: "select s from shapes",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "many",
       columns: [
         {
@@ -273,9 +295,9 @@ export const oracle_column: Example = {
             kind: "union",
             label: "R.SHAPE_T",
             members: [
-              { kind: "record", label: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, label: "VARCHAR2" } }] },
+              { kind: "struct", label: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, label: "VARCHAR2" } }] },
               {
-                kind: "record",
+                kind: "struct",
                 label: "R.CIRCLE_T",
                 fields: [
                   { name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, label: "VARCHAR2" } },
@@ -296,7 +318,7 @@ export const duckdb_column: Example = {
   statement: "select union_value(num := 1)::union(num integer, str varchar) as u",
   descriptor: {
     result: {
-      kind: "rows",
+      kind: "table",
       cardinality: "one",
       columns: [
         {
@@ -308,6 +330,30 @@ export const duckdb_column: Example = {
             alternatives: [
               { tag: "num", nullable: true, type: { kind: "integer", bits: 32, label: "integer" } },
               { tag: "str", nullable: true, type: { kind: "text", label: "varchar" } },
+            ],
+          },
+        },
+      ],
+    },
+  },
+};
+
+/** DuckDB: a struct whose fields have no names, which DuckDB reads by their places, is a tuple. */
+export const duckdb_tuple: Example = {
+  database: "duckdb",
+  statement: "select row(1, 'a') as pair",
+  descriptor: {
+    result: {
+      kind: "table",
+      cardinality: "one",
+      columns: [
+        {
+          name: "pair",
+          type: {
+            kind: "tuple",
+            elements: [
+              { nullable: true, type: { kind: "integer", bits: 32, label: "integer" } },
+              { nullable: true, type: { kind: "text", label: "varchar" } },
             ],
           },
         },
@@ -329,9 +375,9 @@ export const structured_param: Example = {
           kind: "array",
           element: {
             type: {
-              kind: "record",
+              kind: "struct",
               fields: [
-                { name: "kind", type: { kind: "text", size: { max: 32 }, label: "varchar" } },
+                { name: "kind", type: { kind: "text", code_points: [[1, 1114111]], size: { max: 32 }, label: "varchar" } },
                 { name: "at", nullable: true, optional: true, type: timestamptz },
               ],
             },

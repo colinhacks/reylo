@@ -4010,12 +4010,6 @@
      "right": 1,
      "total": 1,
      "results": []
-    },
-    "duckdb": {
-     "state": "y",
-     "right": 1,
-     "total": 1,
-     "results": []
     }
    }
   },
@@ -7809,13 +7803,6 @@
      "right": 1,
      "total": 1,
      "results": []
-    },
-    "duckdb": {
-     "state": "n",
-     "right": 0,
-     "total": 1,
-     "note": "Not in v1.31.1, the latest release. A DuckDB engine is on its unreleased main branch.",
-     "results": []
     }
    }
   },
@@ -9372,13 +9359,6 @@
      "right": 0,
      "total": 1,
      "note": "It is not available for SQLite.",
-     "results": []
-    },
-    "duckdb": {
-     "state": "n",
-     "right": 0,
-     "total": 1,
-     "note": "PgTyped is Postgres only.",
      "results": []
     }
    }
@@ -13294,13 +13274,6 @@
      "right": 1,
      "total": 1,
      "results": []
-    },
-    "duckdb": {
-     "state": "n",
-     "right": 0,
-     "total": 1,
-     "note": "DuckDB isn't a Prisma datasource.",
-     "results": []
     }
    }
   },
@@ -17147,13 +17120,6 @@
      "right": 1,
      "total": 1,
      "results": []
-    },
-    "duckdb": {
-     "state": "n",
-     "right": 0,
-     "total": 1,
-     "note": "Its `--db-type` takes Postgres, MySQL and SQLite.",
-     "results": []
     }
    }
   },
@@ -18650,13 +18616,6 @@
      "right": 0,
      "total": 1,
      "note": "It is not available for SQLite.",
-     "results": []
-    },
-    "duckdb": {
-     "state": "n",
-     "right": 0,
-     "total": 1,
-     "note": "SafeQL is Postgres only.",
      "results": []
     }
    }
@@ -22716,13 +22675,6 @@
      "right": 1,
      "total": 1,
      "results": []
-    },
-    "duckdb": {
-     "state": "n",
-     "right": 0,
-     "total": 1,
-     "note": "sqlx has no DuckDB driver.",
-     "results": []
     }
    }
   },
@@ -26380,13 +26332,6 @@
      "right": 1,
      "total": 1,
      "results": []
-    },
-    "duckdb": {
-     "state": "n",
-     "right": 0,
-     "total": 1,
-     "note": "Its clients are Postgres, MySQL, SQLite, LibSQL and D1.",
-     "results": []
     }
    }
   },
@@ -27818,13 +27763,6 @@
      "right": 0,
      "total": 1,
      "note": "It is not available for SQLite.",
-     "results": []
-    },
-    "duckdb": {
-     "state": "n",
-     "right": 0,
-     "total": 1,
-     "note": "It is Postgres only.",
      "results": []
     }
    }

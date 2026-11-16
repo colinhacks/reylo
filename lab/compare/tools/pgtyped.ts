@@ -12,7 +12,6 @@ export const pgtyped: Tool = {
   name: "PgTyped",
   version,
   dbs: ["postgres"],
-  noDuckdb: 'PgTyped is Postgres only.',
   cardinalityNote: "A query's `.run()` always returns an array, whatever the statement.",
   async analyze(_db, statements, urls) {
     const dir = workdir("pgtyped");

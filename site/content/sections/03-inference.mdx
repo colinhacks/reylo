@@ -3,11 +3,7 @@ title: "Inference"
 ---
 
 
-Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL, SQLite and DuckDB are all supported.
-
-Reylo is a [content mapper](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/#content-mappers), the kind of plugin [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) introduced for files that aren't TypeScript. Whenever the type checker meets a `.sql` import, in `tsc` or in your editor, it hands Reylo the file and takes back the module's types.
-
-<HowItWorksDiagram />
+Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
 
 To type a query, Reylo has your live database prepare it, without running it, and reads the catalog. From the answer, it learns:
 
@@ -27,18 +23,23 @@ select id, name, email from users where id = :id::int
 
 </InferenceCard>
 
-At run time, the [preload](/#setup-node) or a bundler [plugin](/#plugins) turns the same file into a module that runs the query through your driver.
+Each card shows the types in TypeScript, in Rust, or as the [type descriptor](/typedefs) the [CLI](/cli) prints: pick one at the top of any card.
 
-Reylo caches each answer in [`.reylo/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
+Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next check sees the new schema: a dropped column fails in the statement that names it, and in the code that reads it.
 
 ## Primitives [#primitives]
 
-Each SQL type has one TypeScript type, the same on every driver.
+Each SQL type has one TypeScript type, the same on every driver, and one Rust type.
 
-A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)). To give a family another type, such as a `Temporal.Instant`, set [`js.codecs`](/configuration#jscodecs).
+In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)). To give a family another type, such as a `Temporal.Instant`, set [`js.codecs`](/configuration#jscodecs).
+
+<LanguageSwitch />
 
 <DialectTabs>
 <Dialect value="Postgres">
+
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
 
 | SQL type | TypeScript |
 | --- | --- |
@@ -66,8 +67,43 @@ A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO
 | `hstore` | `Record<string, string \| null>` |
 | Every other type (`inet`, `cidr`, `tsvector`, `xml`, …) | a `string`, as the database writes it |
 
+</LanguagePanel>
+<LanguagePanel value="Rust">
+
+| SQL type | Rust |
+| --- | --- |
+| `smallint`, `integer`, `oid` | `i16`, `i32`, sqlx's `Oid` |
+| `bigint` | `i64` |
+| `real`, `double precision` | `f32`, `f64` |
+| `numeric`, `money` | `rust_decimal::Decimal`, sqlx's `PgMoney` |
+| `text`, `varchar`, `char` | `String` |
+| `boolean` | `bool` |
+| `uuid` | `uuid::Uuid` |
+| `date` | `chrono::NaiveDate` |
+| `timestamp` | `chrono::NaiveDateTime` |
+| `timestamptz` | `chrono::DateTime<Utc>` |
+| `time`, `timetz` | `chrono::NaiveTime`; `timetz` not yet |
+| `interval` | sqlx's `PgInterval` |
+| `json`, `jsonb` | `serde_json::Value`, or sqlx's `Json` of a struct |
+| `bytea` | `Vec<u8>` |
+| An array | a `Vec` of its element type, each an `Option` |
+| An enum | an enum the module holds |
+| A domain | its base type |
+| A row value of a table, a subquery or a composite type | not yet: cast it to `text` |
+| `point`, `box`, `circle` and the other geometric types | not yet: cast it to `text` |
+| A range | not yet: cast it to `text` |
+| pgvector's `vector`, `halfvec` | not yet: cast it to `text` |
+| `hstore` | not yet: cast it to `text` |
+| Every other type (`inet`, `cidr`, `tsvector`, `xml`, …) | not yet: cast it to `text` |
+
+</LanguagePanel>
+</LanguagePanels>
+
 </Dialect>
 <Dialect value="MySQL">
+
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
 
 | SQL type | TypeScript |
 | --- | --- |
@@ -87,8 +123,35 @@ A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO
 | `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Uint8Array` |
 | `VECTOR` | `number[]` |
 
+</LanguagePanel>
+<LanguagePanel value="Rust">
+
+| SQL type | Rust |
+| --- | --- |
+| `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INT`, `YEAR` | `i8`, `i16`, `i32`, `i32`, `u16`; `u8` to `u32` when `UNSIGNED` |
+| `BOOLEAN` (a `TINYINT(1)`), `BIT(1)` | `bool` |
+| A comparison, `IS NULL`, `IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT`, `AND`, `OR` | `bool` |
+| `BIGINT`, `count(*)` | `i64`, or `u64` when `UNSIGNED` |
+| `DECIMAL` | `rust_decimal::Decimal` |
+| `FLOAT`, `DOUBLE` | `f32`, `f64` |
+| `CHAR`, `VARCHAR`, `TEXT` | `String` |
+| `ENUM` | `String` |
+| `SET` | `String`, its labels joined by commas |
+| `DATE` | `chrono::NaiveDate` |
+| `DATETIME`, `TIMESTAMP` | `chrono::NaiveDateTime`, `chrono::DateTime<Utc>` |
+| `TIME` | sqlx's `MySqlTime` |
+| `JSON` | `serde_json::Value`, or sqlx's `Json` of a struct |
+| `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Vec<u8>`; a wider `BIT` a `u64` |
+| `VECTOR` | not yet |
+
+</LanguagePanel>
+</LanguagePanels>
+
 </Dialect>
 <Dialect value="SQLite">
+
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
 
 | Declared type | TypeScript |
 | --- | --- |
@@ -103,10 +166,29 @@ A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO
 | No type, or `ANY` in a `STRICT` table | `unknown` |
 | `json_object(…)`, `json_group_array(…)` | [the object or array it builds](#json) |
 
+</LanguagePanel>
+<LanguagePanel value="Rust">
+
+| Declared type | Rust |
+| --- | --- |
+| `INTEGER`, `INT`, `count(*)` | `i64` |
+| `BIGINT`, `INT8`, `UNSIGNED BIG INT` | `i64` |
+| `REAL` | `f64` |
+| `TEXT` | `String` |
+| `BLOB` | `Vec<u8>` |
+| `BOOLEAN`, `BOOL` | `bool` |
+| A comparison, `IS NULL`, `IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT`, `AND`, `OR` | `bool` |
+| `NUMERIC`, `DATE`, `DATETIME` | not yet: cast it, as `cast(x as real)` |
+| No type, or `ANY` in a `STRICT` table | not yet: cast it |
+| `json_object(…)`, `json_group_array(…)` | sqlx's `Json` of what it builds |
+
+</LanguagePanel>
+</LanguagePanels>
+
 </Dialect>
 </DialectTabs>
 
-For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types), [SQLite](/sqlite#data-types) and [DuckDB](/duckdb#data-types).
+For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types) and [SQLite](/sqlite#data-types).
 
 ## Named parameters [#naming]
 
@@ -240,7 +322,7 @@ where user_id = coalesce(:user_id::nullable(int), user_id)
 
 </InferenceCard>
 
-A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds; cast it to `nullable(…)` to pass SQL's `NULL` instead.
+A parameter written as it is to a column that may hold null, as `:published_at` is to `posts.published_at`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds; cast it to `nullable(…)` to pass SQL's `NULL` instead.
 
 ## Dynamic sorting
 
@@ -536,9 +618,8 @@ where user_id = :user_id::int
 
 An expression with no `as` has no name of its own, only what your database makes up for it, which can differ by driver. Add an `as` to get rows back, as in the [query above](#aggregates). A column read as it is, like `select id`, already has a name and keeps its rows.
 
-Where such a value may be null and the query may also match no row, `null` stands for both. Name the column to tell them apart.
-
-Among several columns, a made-up name that isn't an identifier, like `count(*)` or `?column?`, is a type error. Name the column with `as`.
+- Where such a value may be null and the query may also match no row, `null` stands for both. Name the column to tell them apart.
+- Among several columns, a made-up name that isn't an identifier, like `count(*)` or `?column?`, is a type error. Name the column with `as`.
 
 ## Window functions
 
@@ -714,6 +795,18 @@ select id, kind
 from events
 order by id desc
 limit :limit::int
+```
+
+</InferenceCard>
+
+So is a column the query fills with constants, each arm of a `union all` adding its own:
+
+<InferenceCard>
+
+```sql file="inferred_feed.sql" dialect="all"
+select 'user' as kind, id, name as label from users
+union all
+select 'post', id, title from posts
 ```
 
 </InferenceCard>

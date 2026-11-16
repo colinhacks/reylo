@@ -1,4 +1,4 @@
-concat_ws.sql: many () -> { joined: text?, listed: text }
+concat_ws.sql: many () -> { joined: text(¬NUL)?, listed: text(¬NUL) }
 ranges.sql: many () -> { lo: int4?, hi: int4? }
-timestamps.sql: many () -> { y: text?, m: numeric?, d: float8? }
-total.sql: many () -> { lo: text, up: text, num: text, len: int4, day: timestamp }
+timestamps.sql: many () -> { y: text(¬NUL)?, m: numeric?, d: float8? }
+total.sql: many () -> { lo: text(¬NUL), up: text(¬NUL), num: text(¬NUL), len: int4, day: timestamp }

@@ -1,0 +1,7 @@
+derived.sql: one () -> { names: text(¬NUL)?[]? }
+grouped.sql: many () -> { post_id: int4?, names: {text(¬NUL)?}, scores: {numeric?}, fs: {float8?}, ats: {timestamptz?} } key (post_id)
+json.sql: one () -> { names: jsonb {text(¬NUL)?}?, scores: json {numeric?}?, rows: jsonb (public.tags{ id: int4, post_id: int4?, name: text(¬NUL)?, score: numeric?, f: float8?, at: timestamptz? })[]? }
+nested_json.sql: many () -> { id: int4, o: json { names: {text(¬NUL)?} } } key (id)
+says_nothing.sql: one () -> { pairs: int4?[][]?, lists: jsonb text(¬NUL)?[][]?, cast_names: varchar(¬NUL)?[]?, all_names: text(¬NUL)?[]?, padded: text(¬NUL)?[] }
+set_operation.sql: many () -> { names: text(¬NUL)?[]? }
+wrapped.sql: one () -> { names: {text(¬NUL)?}, later: {text(¬NUL)}? }

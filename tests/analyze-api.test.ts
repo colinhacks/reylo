@@ -3,14 +3,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { build } from "esbuild";
 import { analyze, type TypeDefs } from "../src/index.ts";
 import { nativeBinary } from "../src/native.ts";
-import { DRIVERS, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT } from "./helpers.ts";
+import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT } from "./helpers.ts";
 
 type StatementDescriptor = TypeDefs.StatementDescriptor;
 
@@ -53,7 +53,7 @@ test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as rey
     params: [{ name: "id", type: { kind: "integer", bits: 64 } }],
     diagnostics: [],
   });
-  assert.equal(result.kind, "rows");
+  assert.equal(result.kind, "table");
   assert.equal(result.cardinality, "at_most_one");
   assert.deepEqual(result.columns.map((c) => [c.name, c.nullable ?? false]), [["id", false], ["name", false], ["email", true]]);
   assert.match(user!.dialect.version, /^3\.\d+\.\d+$/);
@@ -117,25 +117,6 @@ test("analyze reads MySQL, its server's version and the server's own error codes
     assert.deepEqual(missing!.diagnostics.map((d) => d.code), ["1054"]);
   } finally {
     await db.drop();
-  }
-});
-
-test("analyze reads DuckDB through the project's own @duckdb/node-api", { skip: existsSync(join(DRIVERS, "@duckdb", "node-api")) ? false : "lab/drivers is not installed (no @duckdb/node-api)" }, async () => {
-  const root = mkdtempSync(join(tmpdir(), "reylo-analyze-api-duckdb-"));
-  writeFileSync(join(root, "package.json"), "{}");
-  mkdirSync(join(root, "node_modules", "@duckdb"), { recursive: true });
-  symlinkSync(join(DRIVERS, "@duckdb", "node-api"), join(root, "node_modules", "@duckdb", "node-api"));
-  const cwd = process.cwd();
-  process.chdir(root);
-  try {
-    const td = await analyze({ url: "duckdb::memory:", sql: "select 42::integer as answer, :name::varchar as name" });
-    assert.equal(td.$schema, "https://reylo.dev/typedefs/0.1.0.json");
-    assert.equal(td.dialect.name, "duckdb");
-    assert.match(td.dialect.version, /^\d+\.\d+\.\d+/);
-    assert.deepEqual(td.result.columns.map((c) => [c.name, c.type.kind]), [["answer", "integer"], ["name", "text"]]);
-    assert.deepEqual(td.params.map((p) => p.name), ["name"]);
-  } finally {
-    process.chdir(cwd);
   }
 });
 
@@ -227,7 +208,7 @@ test("an app's bundle of the root module holds none of the build-time half, and 
   const { outputFiles, warnings, metafile } = await build({ entryPoints: [join(ROOT, "src", "index.ts")], bundle: true, platform: "browser", format: "esm", write: false, metafile: true, logLevel: "silent" });
   assert.deepEqual(warnings, []);
   const inputs = Object.keys(metafile.inputs);
-  for (const part of ["src/tooling.ts", "src/analyze-api.ts", "src/engine.ts", "src/analyze.ts", "src/duckdb.ts", "src/project.ts"]) assert.ok(!inputs.includes(part), `${part} is in the bundle`);
+  for (const part of ["src/tooling.ts", "src/analyze-api.ts", "src/engine.ts", "src/analyze.ts", "src/project.ts"]) assert.ok(!inputs.includes(part), `${part} is in the bundle`);
   assert.ok(inputs.includes("src/build-time.ts"));
   assert.doesNotMatch(outputFiles[0]!.text, /child_process|import\.meta/);
   // A browser, or a Worker without nodejs_compat: no `process` to reach Node through.

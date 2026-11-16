@@ -23,12 +23,13 @@ export { pageFiles };
 // The conventions (the contract between the page and this file):
 // - A `sql` block's file name is its `title`, else its `file` meta attribute, which names the file
 //   without showing it and which this plugin removes, else its `tab` when that is not a dialect
-//   name; a block whose name ends in `.sql` is a statement, except `schema.sql`, the page's schema.
+//   name; a block whose name ends in `.sql` is a statement, except `schema.sql`, the page's schema,
+//   and a migration's file (`20261104140347_add_bio.sql`, `init.sql`).
 // - A `sql` block with `dialect="all"` is the same statement in every dialect: it is shown once,
 //   analyzed in each, and a `ts twoslash` block that imports it follows the page's dialect choice,
 //   as under a code-tab group of dialects.
 // - A block's dialect is its `tab` when that is Postgres, MySQL or SQLite; else the enclosing
-//   <Dialect value> (or <Tab value>) panel's; else its `dialect="postgres|mysql|sqlite|duckdb"` meta
+//   <Dialect value> (or <Tab value>) panel's; else its `dialect="postgres|mysql|sqlite"` meta
 //   attribute's, which this plugin removes; else, for a `ts twoslash` block, the dialect of the
 //   `.sql` blocks it imports; else Postgres.
 // - The page is several files, shown in order: content/docs/index.mdx (the title, the opening and the
@@ -72,24 +73,25 @@ export type MdNode = {
 };
 type Code = MdNode & { type: 'code'; value: string };
 
-/** The dialects of the main page's examples, whose code tabs and switch name them in this order. DuckDB's examples are on its own page. */
+/** The dialects of the main page's examples, whose code tabs and switch name them in this order. */
 export const DIALECTS = ['Postgres', 'MySQL', 'SQLite'] as const;
-export type DialectName = (typeof DIALECTS)[number] | 'DuckDB';
-export type Dialect = 'postgres' | 'mysql' | 'sqlite' | 'duckdb';
-const DIALECT_OF: Record<string, Dialect> = { postgres: 'postgres', mysql: 'mysql', sqlite: 'sqlite', duckdb: 'duckdb' };
-export const DIALECT_NAME: Record<Dialect, DialectName> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite', duckdb: 'DuckDB' };
+export type DialectName = (typeof DIALECTS)[number];
+export type Dialect = 'postgres' | 'mysql' | 'sqlite';
+const DIALECT_OF: Record<string, Dialect> = { postgres: 'postgres', mysql: 'mysql', sqlite: 'sqlite' };
+export const DIALECT_NAME: Record<Dialect, DialectName> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite' };
 /** The client an example calls `db`: the one Basic usage builds in each dialect. */
 const CLIENT: Record<Dialect, string> = {
   postgres: 'import("postgres").Sql',
   mysql: 'import("mysql2/promise").Pool',
   sqlite: 'import("better-sqlite3").Database',
-  duckdb: 'import("@duckdb/node-api").DuckDBConnection',
 };
 /** A tab or panel value or a meta attribute naming a dialect, in any case. */
 const dialectOf = (value: unknown): Dialect | undefined => (typeof value === 'string' ? DIALECT_OF[value.toLowerCase()] : undefined);
 
 /** The file whose blocks hold each dialect's schema, in the accordion near the top of a page. */
 export const SCHEMA_FILE = 'schema.sql';
+/** A migration's file name, as `reylo migrate new` writes it: a file the page shows, never a statement. */
+export const MIGRATION_FILE = /^(\d{14}_[a-z0-9_]+|init)\.sql$/;
 
 export type Block = {
   /** The page file the block is in, relative to the site, when the page is several files. */
@@ -142,7 +144,7 @@ export function collect(tree: MdNode): Block[] {
         const panelDialect = panel && dialectOf(attr(panel, 'value'));
         const metaDialect = attribute(code.meta, 'dialect');
         const every = metaDialect === 'all';
-        if (metaDialect !== undefined && !every && !dialectOf(metaDialect)) throw new Error(`${where(code)}: dialect="${metaDialect}" names no dialect; write postgres, mysql, sqlite, duckdb or all.`);
+        if (metaDialect !== undefined && !every && !dialectOf(metaDialect)) throw new Error(`${where(code)}: dialect="${metaDialect}" names no dialect; write postgres, mysql, sqlite or all.`);
         const dialect = tabDialect ?? panelDialect ?? dialectOf(metaDialect) ?? 'postgres';
         const name = attribute(code.meta, 'title') ?? attribute(code.meta, 'file') ?? (tab && !tabDialect ? tab : undefined);
         const card = node.name === INFERENCE_CARD ? node : undefined;
@@ -183,7 +185,7 @@ function attr(node: MdNode, name: string): unknown {
 const where = (node: MdNode) => `line ${node.position?.start.line ?? '?'}`;
 
 /** A database's own page, whose every example is that database's. */
-const DIALECT_PAGE = /(^|\/)(postgres|mysql|sqlite|duckdb)\.mdx$/;
+const DIALECT_PAGE = /(^|\/)(postgres|mysql|sqlite)\.mdx$/;
 /** A file of the main page's sections, which share its schema (lib/page-files.ts). */
 const MAIN_PAGE = /(^|\/)content\/sections\/[^/]+\.mdx$/;
 
@@ -210,7 +212,7 @@ function cardSchema(card: MdNode, dialect: Dialect): string | undefined {
 }
 
 /** A `.sql` block that a page analyzes: every SQL block named `*.sql` but the schema and the error examples (a TypeScript tab named Bun.sql is not one). */
-export const isStatement = (block: Block) => (block.node.lang ?? 'sql') === 'sql' && !!block.name?.endsWith('.sql') && block.name !== SCHEMA_FILE && !isErrorExample(block.node);
+export const isStatement = (block: Block) => (block.node.lang ?? 'sql') === 'sql' && !!block.name?.endsWith('.sql') && block.name !== SCHEMA_FILE && !MIGRATION_FILE.test(block.name) && !isErrorExample(block.node);
 
 /** `import getUser from "./get_user.sql"`. */
 const IMPORT = /\b(?:from|import)\s+["']\.\/([^"']+\.sql)["']/g;
@@ -412,6 +414,14 @@ export function mapperDependents(): Plugin {
 }
 
 /** lib/sql-modules.json as the build reads it: the site's own copy, read again for every page so a new capture shows on the next render. */
+/** Each inference card statement's type descriptor and Rust types, by dialect, name and hash (scripts/capture-types.ts writes them). */
+export type InferenceCaptures = Partial<Record<Dialect, Record<string, Record<string, { descriptor: { params: unknown; result: unknown }; rust?: { params: string; returns: string } | { error: string } }>>>>;
+
+export function readInferenceCaptures(site = process.cwd()): InferenceCaptures {
+  const file = path.join(site, 'lib', 'inference-captures.json');
+  return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as InferenceCaptures) : {};
+}
+
 export function readModules(site = process.cwd()): Modules {
   const file = path.join(site, 'lib', 'sql-modules.json');
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Modules) : {};
@@ -475,7 +485,7 @@ const TYPE_WIDTH = { side: 30, rows: 64 } as const;
 export function moduleTypes(module: string): { params: string | undefined; row: string; cardinality: string } {
   const params = /^export type Params = (.*);$/m.exec(module)?.[1];
   const row = /^export type Row = (.*);$/m.exec(module)?.[1];
-  const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite|duckdb)", QueryError> & \{/.exec(module)?.[1];
+  const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)", QueryError> & \{/.exec(module)?.[1];
   if (params === undefined || row === undefined || cardinality === undefined) throw new Error(`a module lib/remark-mapper.ts cannot read:\n${module}`);
   return { params: params === 'Record<never, never>' ? undefined : params, row, cardinality };
 }
@@ -491,6 +501,7 @@ const codeNode = (lang: string, value: string): MdNode => ({ type: 'code', lang,
  */
 function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, page: string) {
   const width = TYPE_WIDTH[INFERENCE_CARD_LAYOUT];
+  const captures = readInferenceCaptures();
   const cards: { card: MdNode; parent: MdNode }[] = [];
   const find = (node: MdNode) => {
     for (const child of node.children ?? []) {
@@ -511,21 +522,44 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
       const rows: MdNode[] = [];
       if (block.schema !== undefined) rows.push(jsx('InferenceCardRow', [['label', 'Schema']], [codeNode('sql', block.schema)]));
       rows.push(jsx('InferenceCardRow', [['label', 'Query']], [codeNode('sql', block.node.value)]));
-      const types: MdNode[] = [];
-      types.push(jsx('InferenceCardRow', [['label', 'Params']], [codeNode('ts', params ? formatType(params, width) : 'void')]));
-      types.push(jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('ts', formatType(resultType(row, cardinality), width))]));
-      rows.push(jsx('InferenceCardTypes', [], types));
+      const typescript = [
+        jsx('InferenceCardRow', [['label', 'Params']], [codeNode('ts', params ? formatType(params, width) : 'void')]),
+        jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('ts', formatType(resultType(row, cardinality), width))]),
+      ];
+      // The same statement as `#[reylo::query]` types it.
+      const captured = captures[dialect]?.[block.name!]?.[block.hash];
+      if (captured === undefined) throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no type descriptor for the ${DIALECT_NAME[dialect]} statement ${block.name} of this inference card; run \`nub run capture\` in site/ (with the scratch databases running and REYLO_DOCS_RUST naming the Rust renderer), then build again.`);
+      const rust =
+        captured.rust === undefined
+          ? (() => {
+              throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no Rust types for the ${DIALECT_NAME[dialect]} statement ${block.name}; run \`nub run capture\` with REYLO_DOCS_RUST naming the Rust renderer.`);
+            })()
+          : 'error' in captured.rust
+            ? [jsx('InferenceCardRow', [['label', 'Error']], [codeNode('text', captured.rust.error)])]
+            : [
+                // A statement with no parameters has a unit `Query`, which says nothing worth a row.
+                ...(/^pub struct Query;$/.test(captured.rust.params.trim()) ? [] : [jsx('InferenceCardRow', [['label', 'Params']], [codeNode('rust', captured.rust.params)])]),
+                jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('rust', captured.rust.returns)]),
+              ];
+      rows.push(
+        jsx('InferenceLanguages', [], [
+          jsx('InferenceLanguage', [['value', 'TypeScript']], [jsx('InferenceCardTypes', [], typescript)]),
+          jsx('InferenceLanguage', [['value', 'Rust']], [jsx('InferenceCardTypes', [], rust)]),
+        ]),
+      );
       return jsx('Dialect', [['value', DIALECT_NAME[dialect]]], rows);
     });
     // A card that every dialect shows alike, the same statement with the same types, needs no tabs:
-    // it shows the one panel's rows, with no switch.
+    // it shows the one panel's rows. Elsewhere the database switch goes on the Query row's line, but
+    // on a database's own page, which is that database's throughout.
     const same = dialects.length === DIALECTS.length && panels.every((panel) => JSON.stringify(panel.children) === JSON.stringify(panels[0]!.children));
-    card.attributes = [
-      { type: 'mdxJsxAttribute', name: 'dialects', value: dialects.map((d) => DIALECT_NAME[d]).join(',') },
-      { type: 'mdxJsxAttribute', name: 'layout', value: INFERENCE_CARD_LAYOUT },
-      // A database's own page is that database's throughout: its cards need no switch or label.
-      ...(DIALECT_PAGE.test(page) || same ? [{ type: 'mdxJsxAttribute', name: 'bare', value: null }] : []),
-    ];
+    if (!same && !DIALECT_PAGE.test(page)) {
+      for (const panel of panels) {
+        const query = panel.children!.find((row) => row.name === 'InferenceCardRow' && attr(row, 'label') === 'Query')!;
+        query.attributes!.push({ type: 'mdxJsxAttribute', name: 'dialects', value: dialects.map((d) => DIALECT_NAME[d]).join(',') });
+      }
+    }
+    card.attributes = [{ type: 'mdxJsxAttribute', name: 'layout', value: INFERENCE_CARD_LAYOUT }];
     card.children = same ? panels[0]!.children! : [jsx('DialectTabs', [['follow', null]], panels)];
     // The playground runs the main page's Postgres schema alone, so a card there whose Postgres
     // statement needs no schema of its own links that statement there, under the card, whichever
@@ -546,6 +580,7 @@ export function remarkMapper() {
     const compiler = file.data?._compiler as { addDependency(file: string): void } | undefined;
     compiler?.addDependency(path.join(process.cwd(), 'lib', 'sql-modules.json'));
     compiler?.addDependency(path.join(process.cwd(), 'lib', 'sql-errors.json'));
+    compiler?.addDependency(path.join(process.cwd(), 'lib', 'inference-captures.json'));
     const page = !file.path ? 'the page' : path.relative(process.cwd(), file.path).startsWith('..') ? file.path : path.relative(process.cwd(), file.path);
     let blocks: Block[];
     let plans: Plan[];

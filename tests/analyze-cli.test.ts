@@ -75,16 +75,16 @@ test("analyze prints YAML by default, a document per statement, and each diagnos
   const run = spawnSync(nativeBinary(), ["analyze", "q"], { cwd: root, env: inherited(), encoding: "utf8" });
   assert.equal(run.status, 1, run.stderr);
   const [a, b] = run.stdout.split("\n---\n") as [string, string];
-  assert.ok(a.startsWith(`file: q/a.sql\n$schema: ${SCHEMA}\ndialect:\n  name: sqlite\n  version: "3.`), a);
+  assert.ok(a.startsWith(`file: q/a.sql\n$schema: ${SCHEMA}\ndialect: { name: sqlite, version: "3.`), a);
   // A statement of several lines is a literal block, a comment of one line plain, and a type on its own line.
   assert.match(a, /\nsql: \|\n  -- Names, by id\.\n  select name from users where id = \S+\nkind: select\ncomment: Names, by id\.\nparams:\n  - name: id\n    type: \{ kind: integer, bits: 64 \}\n/);
   assert.match(a, /\ndiagnostics: \[\]$/);
-  assert.ok(b.startsWith("file: q/b.sql\n") && b.includes("\ndiagnostics:\n  - message: \"no such column: nope\"\n"), b);
+  assert.ok(b.startsWith("file: q/b.sql\n") && b.includes('\ndiagnostics:\n  - { message: "no such column: nope", '), b);
   // The same descriptors as --format json prints, which the JSON lines hold to the schema.
   assert.deepEqual(analyzeIn(root, ["q"]).lines.map((l) => [l.file, l.diagnostics.length]), [["q/a.sql", 0], ["q/b.sql", 1]]);
   assert.equal(run.stderr, "q/b.sql:2:3: no such column: nope\n    nope from users\n    ^^^^\n");
   const json = spawnSync(nativeBinary(), ["analyze", "--format=json", "--sql", "select name from users"], { cwd: root, env: inherited(), encoding: "utf8" });
-  assert.equal((JSON.parse(json.stdout) as Line).result.columns[0]!.name, "name");
+  assert.equal(((JSON.parse(json.stdout) as Line).result).columns[0]!.name, "name");
   const toml = spawnSync(nativeBinary(), ["analyze", "--format", "toml", "--sql", "select 1"], { cwd: root, env: inherited(), encoding: "utf8" });
   assert.equal(toml.status, 2);
   assert.match(toml.stderr, /^reylo analyze: --format takes yaml or json, not toml\n/);
@@ -123,9 +123,9 @@ test("analyze takes the project's direct_url and --url, and says what it cannot 
   assert.deepEqual(own.lines[0]!.result.columns.map((c) => c.name), ["label"]);
   const given = analyzeIn(root, ["--sql", "select name from users", "--url", "file:./app.db"]);
   assert.equal(given.status, 0, given.stderr);
-  const duckdb = analyzeIn(root, ["--sql", "select 1", "--url", "duckdb:./dev.duckdb"]);
-  assert.equal(duckdb.status, 2);
-  assert.match(duckdb.stderr, /^reylo analyze: A DuckDB database runs inside the app/);
+  const other = analyzeIn(root, ["--sql", "select 1", "--url", "http://localhost/app"]);
+  assert.equal(other.status, 2);
+  assert.match(other.stderr, /^reylo analyze: Cannot tell the database from the URL/);
   const bare = mkdtempSync(join(tmpdir(), "reylo-analyze-cli-"));
   writeFileSync(join(bare, "package.json"), "{}");
   const none = analyzeIn(bare, ["--sql", "select 1"]);
@@ -205,7 +205,7 @@ test("analyze reads an environment variable that is not UTF-8 as Node does, rath
   const root = project({});
   const run = spawnSync("/bin/sh", ["-c", `export NOT_UTF8="$(printf '\\377')"; exec "$0" analyze --format json --sql "select id from users"`, nativeBinary()], { cwd: root, env: inherited(), encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
-  assert.equal((JSON.parse(run.stdout) as Line).result.columns[0]!.name, "id");
+  assert.equal(((JSON.parse(run.stdout) as Line).result).columns[0]!.name, "id");
 });
 
 test("analyze reads a Postgres statement over its own connection, the server's version beside it", { skip: pgLive }, async () => {

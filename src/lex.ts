@@ -1,8 +1,6 @@
 // Placeholder lexing for the runtime loader: finds `:name` (and SQLite's `@name` and `$name`), and
-// the dialect's own positional form (`$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite, and
-// all three on DuckDB),
-// outside strings and comments, and
-// returns the binding order. A name may be dotted
+// the dialect's own positional form (`$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite),
+// outside strings and comments, and returns the binding order. A name may be dotted
 // (`:auth.user_id`); each segment starts like a name, so `arr[1:2]` is a slice, and on Postgres a
 // colon that opens a subscript is a slice with no lower bound (`tags[:n]`). MySQL text is read
 // as a session in the default `sql_mode` reads it: a backslash in a string escapes the character
@@ -14,7 +12,7 @@ export type Placeholder = { name: string; start: number; end: number };
 
 // A name drops its prefix (`:id` is `id`); a positional placeholder is named by its number
 // (`$2` and `?2` are `2`), and a bare `?` takes the number after the largest so far.
-export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sqlite" | "duckdb"): { params: string[]; placeholders: Placeholder[] } {
+export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sqlite"): { params: string[]; placeholders: Placeholder[] } {
   const placeholders: Placeholder[] = [];
   const params: string[] = [];
   let largest = 0;
@@ -57,12 +55,12 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
       const m = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/.exec(sql.slice(i + 1))!;
       push(m[0], i, i + 1 + m[0].length); i += 1 + m[0].length; last = "operand"; continue;
     }
-    if (ch === "$" && (dialect === "postgres" || dialect === "duckdb") && next !== undefined && /[0-9]/.test(next)) {
+    if (ch === "$" && dialect === "postgres" && next !== undefined && /[0-9]/.test(next)) {
       const m = /^[0-9]+/.exec(sql.slice(i + 1))!;
       push(position(m[0]), i, i + 1 + m[0].length); i += 1 + m[0].length; last = "operand"; continue;
     }
-    if (ch === "?" && (dialect === "sqlite" || dialect === "duckdb") && next !== undefined && /[0-9]/.test(next)) {
-      // SQLite's and DuckDB's `?NNN` names the same position a `$NNN` does.
+    if (ch === "?" && dialect === "sqlite" && next !== undefined && /[0-9]/.test(next)) {
+      // SQLite's `?NNN` names the same position a `$NNN` does.
       const m = /^[0-9]+/.exec(sql.slice(i + 1))!;
       push(position(m[0]), i, i + 1 + m[0].length); i += 1 + m[0].length; last = "operand"; continue;
     }

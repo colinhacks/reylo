@@ -1,33 +1,33 @@
 // What every build step emits for a `.sql` file: a module that carries everything the query needs
 // at run time (the dialect, the statement as the engine rewrote it for the database, the binding
 // order, each parameter's type, the row count the analysis proved), so that the running code reads no file and asks no
-// database. The analysis comes from `src/analyze.ts`: `.reylo/` when it holds the statement for the
+// database. The analysis comes from `src/analyze.ts`: `reylo/.cache/` when it holds the statement for the
 // current schema, else the database. A build that has neither fails, because a module built
 // without the analysis would not do what its types say.
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { Session } from "./analyze.ts";
-import { sourceName } from "./project.ts";
+import { libraryProblem, sourceName } from "./project.ts";
 import { rowSource } from "./row.ts";
 import { querySchemas } from "./schema.ts";
 import { columnKind } from "./values.ts";
 import { jsonNumbers } from "./render.ts";
 import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
-import { planOf } from "./codecs.ts";
+import { planLibraries, planOf, type Library } from "./codecs.ts";
 import type { Dialect } from "./execute.ts";
 
 export type SqlModule = {
   code: string;
-  /** The `.reylo/` entry the module was built from. A bundler watches it, so that the module is built again when the type check analyzes the statement anew (after a migration). */
+  /** The `reylo/.cache/` entry the module was built from. A bundler watches it, so that the module is built again when the type check analyzes the statement anew (after a migration). */
   entry: string;
   /** The project file and the `.env` files that exist: the module's text depends on them too (`sqlcommenter`, the URL), so a bundler watches them as well. */
   watched: string[];
 };
 
-/** What the build steps of this process have said already: a build says once that it reads `.reylo/` unchecked, however many modules it builds, by why it does. */
+/** What the build steps of this process have said already: a build says once that it reads `reylo/.cache/` unchecked, however many modules it builds, by why it does. */
 const said = new Set<string>();
 
-/** One line on stderr, once a run, where a module is built from `.reylo/` with no database to hold it to: the first such module's line, with the day its entry was written. */
+/** One line on stderr, once a run, where a module is built from `reylo/.cache/` with no database to hold it to: the first such module's line, with the day its entry was written. */
 function warnUnverified(line: string): void {
   const why = line.slice(0, line.lastIndexOf("; building from"));
   if (said.has(why)) return;
@@ -93,15 +93,28 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     return c.delimiter === undefined ? [c.name, kind] : [c.name, kind, c.delimiter];
   });
   // Where each Postgres JSON column holds a float or a decimal that may be NaN or an infinity,
-  // which the run time gives as that number (src/render.ts, `jsonNumbers`), by position beside
-  // `columns`: two columns may share a name, each with its own type.
-  const nonFinite = session.project.dialect === "postgres" ? analysis.columns.map((c) => jsonNumbers(c.type) ?? null) : [];
+  // which the run time gives as that number, or a Postgres array it holds to one level (src/render.ts,
+  // `jsonNumbers`), by position beside `columns`: two columns may share a name, each with its own
+  // type. Under `allow_nested_arrays: true` a Postgres array nests there too, held to no depth.
+  const nonFinite = session.project.dialect === "postgres" ? (session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis).columns.map((c) => jsonNumbers(c.type) ?? null) : [];
   // The columns that hold a family a codec gives another type, by name, as a row is keyed, each with
   // where in its value the codecs stand.
   const codecs = Object.fromEntries(analysis.columns.flatMap((c) => {
     const plan = planOf(c.type, dialect, session.project.codecs);
     return plan === undefined ? [] : [[c.name, plan]];
   }));
+  // The libraries a codec builds values with, imported from the app's own install beside the
+  // `.sql` file, only where the statement holds a value of one: a decimal library's class by a
+  // default import, which every version gives as its class, and ip-address whole.
+  const libraries = new Set<Library>();
+  for (const plan of [...Object.values(codecs), ...Object.values(inputs).map((i) => i.codec)]) if (plan !== undefined) planLibraries(plan, libraries);
+  for (const library of libraries) {
+    const missing = libraryProblem(library, dirname(path));
+    if (missing) throw new Error(`${path}: ${missing}`);
+  }
+  const library = [...libraries].find((l) => l !== "ip-address");
+  const imports = [...(library === undefined ? [] : [`import ReyloDecimal from ${JSON.stringify(library)};`]), ...(libraries.has("ip-address") ? [`import * as ReyloIpAddress from "ip-address";`] : [])];
+  const handed = [...(library === undefined ? [] : ["decimal: ReyloDecimal"]), ...(libraries.has("ip-address") ? ["inet: ReyloIpAddress"] : [])];
   const source = sourceName(path);
   // The compiled statement without the file's trailing blank lines; the comment naming the file
   // is added where the statement is sent (src/execute.ts, `sentText`).
@@ -119,20 +132,21 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   const define = DEFINE[session.project.dialect];
   const code = [
     `import { ${define}${checked ? ", checks" : ""} } from "reylo";`,
+    ...imports,
     // `sql` is the compiled statement and `raw` the file as written; the definition's own `sql` is
     // the statement as written and its `text` the compiled one. The comment naming the file
     // (src/sqlcommenter.ts) is added where the statement is sent, so `sql` leaves it out.
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default ${define}({ sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}${analysis.value ? "value: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
+    `export default ${define}({ sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}${analysis.value ? "value: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${handed.length ? `, libraries: { ${handed.join(", ")} }` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };
 }
 
 /** The define function from "reylo" a module of each dialect calls (src/index.ts). */
-export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery", duckdb: "defineDuckdbQuery" };
+export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery" };
 
 /** The line and column, from 1, of a UTF-8 byte offset into `text`. */
 function place(text: string, bytes: number): string {

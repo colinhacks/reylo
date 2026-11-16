@@ -2620,8 +2620,8 @@ fn ordered_select(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(
 /// A LIMIT or an OFFSET keeps the order. A locking clause doesn't: at READ COMMITTED a row it waited
 /// for is returned with its new values, in the place its old ones sorted to, so such a statement
 /// has no order to state.
-pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> Vec<crate::types::OrderColumn> {
-    use crate::types::{NullsOrder, OrderColumn};
+pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> Vec<crate::types::SortKey> {
+    use crate::types::{NullsOrder, SortKey};
     use protobuf::{SortByDir, SortByNulls};
     crate::stack::run(|| {
         let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
@@ -2632,7 +2632,7 @@ pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(Str
         let set_operation = s.larg.is_some() || s.rarg.is_some();
         let from = (!set_operation).then(|| From::read(&s, &catalog)).filter(|f| f.refused.is_none());
         let positions = target_positions(&s);
-        let mut order: Vec<OrderColumn> = Vec::new();
+        let mut order: Vec<SortKey> = Vec::new();
         for item in &s.sort_clause {
             let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { break };
             let Some(e) = by.node.as_deref() else { break };
@@ -2665,7 +2665,7 @@ pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(Str
             } else {
                 desc
             };
-            order.push(OrderColumn { column: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
+            order.push(SortKey { column: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
         }
         order
     })
@@ -3650,7 +3650,7 @@ pub fn never_a_row(sql: &str, dialect: Dialect) -> Option<&'static str> {
 /// The one `SELECT` a statement is, parsed as the dialect's statements are read.
 fn one_select(sql: &str, dialect: Dialect) -> Result<Box<SelectStmt>, String> {
     let text = match dialect {
-        Dialect::Postgres | Dialect::Duckdb => sql.to_string(),
+        Dialect::Postgres => sql.to_string(),
         Dialect::Sqlite | Dialect::Mysql => infer::dollar_placeholders(sql),
     };
     let parsed = crate::stack::parse(&text).map_err(|_| match dialect {

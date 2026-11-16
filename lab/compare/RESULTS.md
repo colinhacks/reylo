@@ -17,7 +17,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 | Postgres | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | MySQL | yes | yes | no | yes | yes | no | yes | yes | no |
 | SQLite | yes | yes | no | yes | yes | no | yes | yes | no |
-| DuckDB | yes | no | no | no | no | no | no | no | no |
 
 ## Reylo 0.7.0
 
@@ -109,8 +108,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 - postgres: `select payload from events`: `payload` is typed `json.RawMessage`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `json.RawMessage`, without its fields
 
-**DuckDB**: no. Not in v1.31.1, the latest release. A DuckDB engine is on its unreleased main branch.
-
 ## PgTyped 2.4.3
 
 **No codegen**: no. A run leaves new files to commit: `src/q.queries.ts`.
@@ -170,8 +167,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 **MySQL**: no. It is not available for MySQL.
 
 **SQLite**: no. It is not available for SQLite.
-
-**DuckDB**: no. PgTyped is Postgres only.
 
 ## TypedSQL 7.10.1
 
@@ -264,8 +259,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 
 - postgres: `select payload from events`: `payload` is typed `$runtime.JsonValue`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `$runtime.InputJsonObject`, without its fields
-
-**DuckDB**: no. DuckDB isn't a Prisma datasource.
 
 ## sqlx-ts 0.49.0
 
@@ -376,8 +369,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 - postgres: `select payload from events`: `payload` is typed `object`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `object`, without its fields
 
-**DuckDB**: no. Its `--db-type` takes Postgres, MySQL and SQLite.
-
 ## SafeQL 5.4.2
 
 **No codegen**: partly. A run leaves changed source to commit: `right.ts`.
@@ -426,8 +417,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 **MySQL**: no. It is not available for MySQL.
 
 **SQLite**: no. It is not available for SQLite.
-
-**DuckDB**: no. SafeQL is Postgres only.
 
 ## sqlx 0.9.0
 
@@ -530,8 +519,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 - postgres: `select payload from events`: `payload` is typed `JSONB`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `JSONB or Option<JSONB>`, without its fields
 
-**DuckDB**: no. sqlx has no DuckDB driver.
-
 ## TypeSQL 0.24.0
 
 **No codegen**: no. A run leaves new files to commit: `sql/index.ts`, `sql/q0.ts`, `sql/q1.ts`.
@@ -587,8 +574,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 - postgres: `select payload from events`: `payload` is typed `any`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `any`, without its fields
 
-**DuckDB**: no. Its clients are Postgres, MySQL, SQLite, LibSQL and D1.
-
 ## Postgres Typed SQL 0.1.0-beta.22
 
 **No codegen**: partly. By default it writes files to commit. An experimental workflow on TypeScript 7.1 types the import with nothing generated.
@@ -612,8 +597,6 @@ Written by `./run.sh` on 2026-11-09. Each mark comes from what the tool answered
 **MySQL**: no. It is not available for MySQL.
 
 **SQLite**: no. It is not available for SQLite.
-
-**DuckDB**: no. It is Postgres only.
 
 ## The queries
 

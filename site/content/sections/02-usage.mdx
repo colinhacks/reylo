@@ -4,6 +4,8 @@ title: "Usage"
 
 {/* Usage is basic usage only: the first example, then one h2 per member of an imported query (.sql, .run(), .runSync(), .try(), .with()). Anything else, such as tracing, goes in a section of its own or in the FAQ, never under Usage. */}
 
+## Usage
+
 
 Write a query in a `.sql` file, import it, and run it with your database driver. The query is your database's own SQL: any function, operator or syntax it supports works. Reylo uses your live dev database to compile the query and retrieve its types.
 
@@ -21,7 +23,7 @@ select id, name, email from users where id = :id::int
 
 Pass your database client as the first argument of `.run()`: a pool, a client, or a connection or [transaction](#run) taken from one, from any of the [supported drivers](#run).
 
-## `.sql`
+### `.sql`
 
 To get the compiled query, with your database's own placeholders:
 
@@ -31,9 +33,9 @@ import getUser from "./get_user.sql";
 getUser.sql; // "select id, name, email from users where id = $1::int"
 ```
 
-To get the file's contents as written, before Reylo compiles its [parameters](/inference#naming), use `.raw`. Its path, relative to your project, is `.source`, a name for your [logs and traces](/observability); Reylo's own errors about the query start with it.
+To get the file's contents as written, before Reylo compiles its [parameters](/inference#naming), use `.raw`. Its path, relative to your project, is `.source`, a name for your [logs and traces](/typescript#observability); Reylo's own errors about the query start with it.
 
-## `.run()`
+### `.run()`
 
 To run an imported Reylo query, pass a database connection/pool into the `.run()` method along with any parameters:
 
@@ -49,7 +51,7 @@ const user = await getUser.run(db, { id: 1 });
 
 Reylo has no driver of its own: it runs each query on your app's database client, from any of these drivers. Each example also runs two queries in a transaction, a client of its own that you pass to `.run()` the same way. Await each query in turn, since a connection runs one statement at a time; on Postgres an error aborts the transaction, so every later statement in it fails until it rolls back ([Database errors](/postgres#database-errors)).
 
-### Postgres [#postgres-drivers]
+#### Postgres [#postgres-drivers]
 
 ```ts twoslash tab="pg" dialect="postgres" tab-group="postgres-driver"
 import pg from "pg";
@@ -236,7 +238,7 @@ await db.transaction(async (trx) => {
 });
 ```
 
-### MySQL [#mysql-drivers]
+#### MySQL [#mysql-drivers]
 
 ```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
 import mysql from "mysql2/promise";
@@ -352,7 +354,7 @@ await db.transaction(async (trx) => {
 });
 ```
 
-### SQLite [#sqlite-drivers]
+#### SQLite [#sqlite-drivers]
 
 ```ts twoslash tab="better-sqlite3" dialect="sqlite" tab-group="sqlite-driver"
 import Database from "better-sqlite3";
@@ -593,31 +595,7 @@ await db.transaction(async (trx) => {
 });
 ```
 
-### DuckDB [#duckdb-drivers]
-
-```ts tab="@duckdb/node-api"
-import { DuckDBInstance } from "@duckdb/node-api";
-import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
-
-const instance = await DuckDBInstance.create("app.duckdb");
-const db = await instance.connect();
-
-const user = await getUser.run(db, { id: 1 });
-
-// two inserts in one transaction, on the connection itself: both land, or neither
-await db.run("begin");
-try {
-  await createUser.run(db, { name: "Ada" });
-  await createUser.run(db, { name: "Grace" });
-  await db.run("commit");
-} catch (error) {
-  await db.run("rollback");
-  throw error;
-}
-```
-
-## `.runSync()`
+### `.runSync()`
 
 For databases that support synchronous operations, you can use `.runSync()`.
 
@@ -641,7 +619,7 @@ const user = getUser.runSync(db, { id: 1 });
 //    ^?
 ```
 
-## `.try()`
+### `.try()`
 
 To get your database's errors as values, use `.try()`. It returns `{ value }`, or `{ error }` when the database refuses the query:
 
@@ -698,11 +676,11 @@ The error is your database's own, typed with every code it defines, so TypeScrip
 
 When the query runs none of your own code, such as a trigger or a function you wrote, Reylo also narrows each error to the names it can carry: a unique violation names one of the unique keys of the tables the query writes, as in the examples above. Your database's page says what it narrows.
 
-Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say. The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
+- Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say.
+- The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
+- On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
 
-On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
-
-## `.readOnly`
+### `.readOnly`
 
 To tell whether a query writes nothing, read `.readOnly`. It is `true` only where Reylo finds nothing that could write, so it's safe to run the query again after a lost connection:
 
@@ -715,7 +693,7 @@ getUser.readOnly;
 
 A write is `false`, and so is a query that locks rows or may call a volatile function, directly or through a view, a policy or an operator. A function of your own counts by the volatility it declares.
 
-## `.with()`
+### `.with()`
 
 To bind the query to a client, call `.with()`. It returns a function that takes the parameters:
 

@@ -1,14 +1,17 @@
-// The type descriptor format's page (content/docs/typedefs.mdx): each `<TypeDef>` card (lib/typedefs.ts)
-// becomes the docs' card of labelled rows (`TypeDefCard`, components/mdx.tsx), Types, Schema, Query,
-// Descriptor and Holds; `<TypeDefPart of="id" show="sql" />` a part of a card's descriptor;
-// `<TypeDefsVersion />` the chips under the title, the format's version from its JSON Schema, its
-// stage and a link to that schema; and `<TypeDefsSpec />` its
-// TypeScript, spec/index.ts, without its prose, so that the page restates none of them by hand.
+// The type format's page (content/docs/typedefs.mdx), the CLI page (content/docs/cli.mdx) and the dialect pages:
+// each `<TypeDef>` card (lib/typedefs.ts) becomes the docs' card of labelled rows (`TypeDefCard`,
+// components/mdx.tsx), Types, Holds and Databases, its example types first held to the format's
+// JSON Schema, so that the build fails on one the format refuses; each `<Analyzed>` card the command
+// and the output `nub run capture-typedefs` captured for it, or, for `format="types"`, a card of
+// each result column's type; `<TypeDefsVersion />` the badge under the
+// title, the format's stage and version from its JSON Schema, and the button to that schema; and
+// `<TypeDefsSpec />` its TypeScript, spec/index.ts, without its prose, so that the page restates
+// none of them by hand.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { MdNode } from './remark-mapper.ts';
-import { annotate, cards, CAPTURES, keyOf, readCaptures, shown, TYPEDEF, type Card } from './typedefs.ts';
-import * as examples from '../../spec/examples.ts';
+import { analyzedCards, CAPTURES, DATABASE_NAMES, DATABASES, keyOf, readCaptures, typeCards, values, type AnalyzedCard, type TypeCard } from './typedefs.ts';
 
 const SPEC = path.resolve(import.meta.dirname, '..', '..', 'spec');
 
@@ -21,37 +24,79 @@ const jsx = (name: string, attributes: [string, string | null][], children: MdNo
 });
 const row = (label: string, children: MdNode[]) => jsx('InferenceCardRow', [['label', label]], children);
 const span = (className: string, value: string): MdNode => ({ type: 'mdxJsxTextElement', name: 'span', attributes: [{ type: 'mdxJsxAttribute', name: 'className', value: className }], children: [{ type: 'text', value }] });
-const link = (url: string, value: string) => ({ type: 'link', url, children: [{ type: 'text', value }] }) as MdNode;
+const link = (url: string, className: string, value: string) => ({ type: 'mdxJsxTextElement', name: 'a', attributes: [{ type: 'mdxJsxAttribute', name: 'href', value: url }, { type: 'mdxJsxAttribute', name: 'className', value: className }], children: [{ type: 'text', value }] }) as MdNode;
 
-/** The descriptor of an example of spec/examples.ts, by its name. */
-function example(name: string, where: string): unknown {
-  const found = (examples as unknown as Record<string, examples.Example | undefined>)[name];
-  if (!found?.descriptor) throw new Error(`${where}: example="${name}" names no example spec/examples.ts exports`);
-  return found.descriptor;
+/** The format's JSON Schema, and a validator of one type against it. */
+function typeValidator() {
+  const schema = JSON.parse(readFileSync(path.join(SPEC, 'typedefs.schema.json'), 'utf8'));
+  const ajv = new Ajv2020({ strict: false, allErrors: true });
+  ajv.addSchema(schema);
+  const validate = ajv.getSchema(`${schema.$id}#/$defs/Type`)!;
+  return (value: unknown) => (validate(value) ? undefined : ajv.errorsText(validate.errors));
 }
 
-/** A database's types of a kind: each a type's name as code, or a phrase ("a composite type") as text. */
-const typeLine = ([database, types]: [string, string[]]): MdNode => ({
-  type: 'paragraph',
-  children: [span('typedef-database', database), ...types.map((t): MdNode => (/^(?:an?|every) /.test(t) ? span('typedef-phrase', t) : { type: 'inlineCode', value: t }))],
-});
+/** One database's types of a kind: each a type's name as code, a phrase ("a composite type") as text, or an em dash where it has none. */
+function typesRow(card: TypeCard): MdNode {
+  const line = (database: (typeof DATABASES)[number]): MdNode => {
+    const types = card.types[database] ?? [];
+    const shown = types.length ? types.map((t): MdNode => (/^(?:an?|every|any) /.test(t) ? span('typedef-phrase', t) : { type: 'inlineCode', value: t })) : [span('typedef-none', '—')];
+    return { type: 'paragraph', children: [span('typedef-database', DATABASE_NAMES[database]), jsx('span', [['className', 'typedef-names']], shown)] } as MdNode;
+  };
+  return jsx('div', [['className', 'typedef-types']], DATABASES.map(line));
+}
 
-function render(card: Card, descriptor: unknown) {
-  const rows: MdNode[] = [];
-  const databases = Object.entries(card.types);
-  if (databases.length) rows.push(row('Types', [jsx('div', [['className', 'typedef-types']], databases.map(typeLine))]));
-  const schema = (card.node.children ?? []).find((c) => c.type === 'code' && /(?:^|\s)schema(?:\s|$)/.test(c.meta ?? ''));
-  const query = (card.node.children ?? []).find((c) => c.type === 'code' && c !== schema);
-  if (schema) rows.push(row('Schema', [code('sql', schema.value!)]));
-  if (query) rows.push(row('Query', [code('sql', query.value!)]));
-  rows.push(row('Descriptor', [code('jsonc', annotate(shown(descriptor, card.show), card.notes))]));
+function renderType(card: TypeCard, valid: (value: unknown) => string | undefined, where: string) {
+  const found = values(card.examples.value ?? '');
+  if (!found.length) throw new Error(`${where}: a <TypeDef> card's jsonc block holds no type`);
+  found.forEach((value, i) => {
+    const why = valid(value);
+    if (why) throw new Error(`${where}: example ${i + 1} of this <TypeDef> card is no type of the format: ${why}\n${JSON.stringify(value)}`);
+  });
+  const rows: MdNode[] = [row('Types', [card.examples])];
   if (card.holds.length) {
-    const values: MdNode = { type: 'paragraph', children: card.holds.map((value) => ({ type: 'inlineCode', value })) };
-    rows.push(row('Holds', [jsx('div', [['className', 'typedef-values']], [values])]));
+    const held: MdNode = { type: 'paragraph', children: card.holds.map((value) => ({ type: 'inlineCode', value })) };
+    rows.push(row('Holds', [jsx('div', [['className', 'typedef-values']], [held])]));
   }
+  rows.push(row('Databases', [typesRow(card)]));
   card.node.name = 'TypeDefCard';
   card.node.attributes = [];
   card.node.children = rows;
+}
+
+/** A type on one line, as JSON with a space after each colon and comma: `{ "kind": "integer", "bits": 32 }`. */
+function oneLine(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(oneLine).join(', ')}]`;
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value);
+    return entries.length ? `{ ${entries.map(([k, v]) => `${JSON.stringify(k)}: ${oneLine(v)}`).join(', ')} }` : '{}';
+  }
+  return JSON.stringify(value);
+}
+
+/** A card of a statement's result columns, a row each: its name, the SQL type the card names it for, over its type. */
+function renderTypes(card: AnalyzedCard, json: string) {
+  const columns = (JSON.parse(json) as { result: { columns: { name: string; type: unknown }[] } }).result.columns;
+  card.node.name = 'TypeListCard';
+  card.node.attributes = [];
+  card.node.children = columns.map((c) => row(c.name, [code('json', oneLine(c.type))]));
+}
+
+/**
+ * An `<Analyzed>` card as a terminal: the command with `--format json`, piped through `jq`, and the
+ * JSON it prints. The CLI writes a line of JSON per statement, which `jq` lays out as shown, or the
+ * one field the card's `jq` names.
+ */
+function renderAnalyzed(card: AnalyzedCard, json: string) {
+  const command = `npx reylo analyze ${card.file} --format json | jq${card.jq ? ` ${card.jq}` : ''}`;
+  const pick = (value: unknown) => (card.jq ?? '').split('.').slice(1).reduce((v, key) => (v as Record<string, unknown>)[key], value);
+  const shown = json
+    .trim()
+    .split('\n')
+    .map((line) => JSON.stringify(pick(JSON.parse(line)), null, 2))
+    .join('\n');
+  card.node.name = 'div';
+  card.node.attributes = [{ type: 'mdxJsxAttribute', name: 'className', value: 'typedef-analyzed' }];
+  card.node.children = [code('terminal', `$ ${command}\n${shown}`)];
 }
 
 /** The format's version, from its JSON Schema's `$id`, and the path reylo.dev serves that schema at. */
@@ -74,7 +119,6 @@ function spec(): string {
 export function remarkTypedefs() {
   return (tree: MdNode, file: { path?: string; data?: Record<string, unknown> }) => {
     const page = file.path ? path.relative(process.cwd(), file.path) : 'the page';
-    const found = cards(tree);
     const replace = (name: string, nodes: (node: MdNode) => MdNode[]) => {
       const walk = (node: MdNode) => {
         const children = node.children ?? [];
@@ -87,33 +131,32 @@ export function remarkTypedefs() {
       walk(tree);
     };
     const compiler = file.data?._compiler as { addDependency(file: string): void } | undefined;
-    const parts = new Map<string, unknown>();
-    if (found.length) {
-      compiler?.addDependency(path.join(process.cwd(), 'lib', CAPTURES));
-      compiler?.addDependency(path.join(SPEC, 'examples.ts'));
-      const captures = found.some((c) => c.statement) ? readCaptures() : {};
-      for (const card of found) {
-        const where = `${page}:${card.line}`;
-        const descriptor = card.statement ? captures[keyOf(card.statement)]?.descriptor : example(card.example!, where);
-        if (descriptor === undefined) throw new Error(`${where}: lib/${CAPTURES} holds no descriptor for this <${TYPEDEF}> card; run \`nub run capture-typedefs\` in site/ (with the scratch databases running), then build again.`);
-        if (card.id) parts.set(card.id, descriptor);
-        render(card, descriptor);
-      }
-    }
     compiler?.addDependency(path.join(SPEC, 'index.ts'));
     compiler?.addDependency(path.join(SPEC, 'typedefs.schema.json'));
-    const attribute = (node: MdNode, name: string) => String(node.attributes?.find((a) => a.type === 'mdxJsxAttribute' && a.name === name)?.value);
-    replace('TypeDefPart', (node) => {
-      const descriptor = parts.get(attribute(node, 'of'));
-      if (descriptor === undefined) throw new Error(`${page}:${node.position?.start.line ?? '?'}: <TypeDefPart of="${attribute(node, 'of')}"> names no card's id`);
-      return [code('jsonc', annotate(shown(descriptor, attribute(node, 'show')), {}))];
-    });
+    const types = typeCards(tree);
+    if (types.length) {
+      const valid = typeValidator();
+      for (const card of types) renderType(card, valid, `${page}:${card.line}`);
+    }
+    const analyzed = analyzedCards(tree);
+    if (analyzed.length) {
+      compiler?.addDependency(path.join(process.cwd(), 'lib', CAPTURES));
+      const captures = readCaptures();
+      for (const card of analyzed) {
+        const captured = captures[keyOf(card)];
+        if (captured === undefined) throw new Error(`${page}:${card.line}: lib/${CAPTURES} holds no output for this <Analyzed> card; run \`nub run capture-typedefs\` in site/ (with the scratch databases running), then build again.`);
+        if (card.format === 'types') renderTypes(card, captured.json);
+        else renderAnalyzed(card, captured.json);
+      }
+    }
     replace('TypeDefsVersion', () => {
       const { version: at, href } = version();
-      return [jsx('p', [['className', 'typedef-version not-prose']], [span('', `v${at}`), span('', 'Preview'), link(href, 'JSON Schema')])];
+      const [major, minor] = at.split('.');
+      const badge = jsx('span', [['className', 'typedef-badge']], [span('typedef-badge-stage', 'preview'), span('typedef-badge-version', `v${major}.${minor}`)]);
+      return [jsx('p', [['className', 'typedef-version not-prose']], [badge, link(href, 'typedef-schema-button', 'View JSON Schema')])];
     });
     replace('TypeDefsSpec', () => {
-      const intro: MdNode = { type: 'paragraph', children: [{ type: 'text', value: "Every type and field, as TypeScript, generated from the format's " }, link(version().href, 'JSON Schema'), { type: 'text', value: ':' }] };
+      const intro: MdNode = { type: 'paragraph', children: [{ type: 'text', value: "Every type and field, as TypeScript, generated from the format's JSON Schema:" }] };
       return [intro, jsx('div', [['className', 'typedef-spec']], [code('ts', spec(), 'title="spec/index.ts"')])];
     });
   };

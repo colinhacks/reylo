@@ -345,7 +345,6 @@ test("a hover names each dialect's error type, as the module's QueryError or the
     ["my_audited", "mysql", undefined, "MysqlQueryError"],
     ["lite_insert", "sqlite", { SQLITE_CONSTRAINT_UNIQUE: { table: ["users"], columns: ["email", "slug, lang"] } }, "QueryError"],
     ["lite_audited", "sqlite", undefined, "SqliteQueryError"],
-    ["duck_select", "duckdb", undefined, "DuckdbQueryError"],
   ];
   for (const [name, dialect, errors] of modules) {
     const text = `import type { Query } from "reylo";\nexport type QueryError = ${queryErrorType(dialect, errors)};\ndeclare const query: Query<{ id: number }, { id: number }, "many", ${JSON.stringify(dialect)}, QueryError>;\nexport default query;\n`;

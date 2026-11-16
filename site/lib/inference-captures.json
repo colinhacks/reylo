@@ -1,0 +1,6271 @@
+{
+  "$comment": "Written by `nub run capture` (scripts/capture-types.ts): each inference card statement's type descriptor and Rust types. Read by lib/remark-mapper.ts. Never edit by hand.",
+  "postgres": {
+    "author_with_posts.sql": {
+      "50aaf89d157a1a17": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                },
+                "nullable": true
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "text",
+                                "code_points": [
+                                  [
+                                    1,
+                                    1114111
+                                  ]
+                                ],
+                                "label": "text"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "code_points": [
+                                  [
+                                    1,
+                                    1114111
+                                  ]
+                                ],
+                                "label": "text"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "label": "jsonb"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: &'a str }",
+          "returns": "Option<{\n    id: String,\n    name: Option<String>,\n    posts: Json<Vec<PostsItem>>,\n}>\n\npub struct PostsItem {\n    pub id: String,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "create_users_with_posts.sql": {
+      "10ff605a89421945": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "users",
+              "type": {
+                "kind": "json",
+                "label": "jsonb"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { users: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "create_users.sql": {
+      "159fd94cf81cd5ec": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "users",
+              "type": {
+                "kind": "json",
+                "label": "jsonb"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { users: serde_json::Value }",
+          "returns": "Vec<{ id: i32 }>"
+        }
+      }
+    },
+    "dashboard_counts.sql": {
+      "76cdc765887fe6c4": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "instant",
+                "tick": "1/1000000",
+                "min": "-4713-11-24T00:00:00Z",
+                "max": "+294276-12-31T23:59:59.999999Z",
+                "infinity": true,
+                "label": "timestamptz"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "newUsers",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "newPosts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "drafts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { since: chrono::DateTime<chrono::Utc> }",
+          "returns": "{ newUsers: i32, newPosts: i32, drafts: i32 }"
+        }
+      }
+    },
+    "dashboard.sql": {
+      "d836aed9a1962aea": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "limit",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "user_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "post_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "recent_posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int4"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "code_points": [
+                                  [
+                                    1,
+                                    1114111
+                                  ]
+                                ],
+                                "label": "text"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "label": "jsonb"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { limit: i32 }",
+          "returns": "{\n    user_count: i32,\n    post_count: i32,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "get_user.sql": {
+      "d20ef17d86b8b9ce": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i32 }",
+          "returns": "Option<{ id: i32, name: String, email: Option<String> }>"
+        }
+      }
+    },
+    "inferred_create_user.sql": {
+      "64c49fd060c7b41a": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { name: &'a str }",
+          "returns": "{ id: i32 }"
+        }
+      }
+    },
+    "inferred_event_kinds.sql": {
+      "0555e510293dd913": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "limit",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "kind",
+                "type": {
+                  "kind": "enum",
+                  "type": {
+                    "kind": "text",
+                    "code_points": [
+                      [
+                        1,
+                        1114111
+                      ]
+                    ],
+                    "label": "text"
+                  },
+                  "values": [
+                    "click",
+                    "key"
+                  ]
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ],
+            "order": [
+              {
+                "column": "id",
+                "desc": true,
+                "nulls": "first"
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { limit: i32 }",
+          "returns": "Vec<{ id: i32, kind: String }>"
+        }
+      }
+    },
+    "inferred_event_payloads_union.sql": {
+      "062e21fffc127b32": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "payload",
+                "type": {
+                  "kind": "json",
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "click"
+                            ]
+                          },
+                          "x": {
+                            "type": "integer"
+                          },
+                          "y": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "x",
+                          "y"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "key"
+                            ]
+                          },
+                          "code": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "code"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ],
+                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                  },
+                  "label": "jsonb"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i32 }",
+          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
+        }
+      }
+    },
+    "inferred_event_payloads.sql": {
+      "bb1da72df4824bb5": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "payload",
+                "type": {
+                  "kind": "json",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "x": {
+                        "type": "integer"
+                      },
+                      "y": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "x",
+                      "y"
+                    ],
+                    "additionalProperties": false,
+                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                  },
+                  "label": "jsonb"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i32 }",
+          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
+        }
+      }
+    },
+    "inferred_feed.sql": {
+      "a0d47a6826767652": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "kind",
+                "type": {
+                  "kind": "enum",
+                  "type": {
+                    "kind": "text",
+                    "code_points": [
+                      [
+                        1,
+                        1114111
+                      ]
+                    ],
+                    "label": "text"
+                  },
+                  "values": [
+                    "user",
+                    "post"
+                  ]
+                }
+              },
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "label",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ kind: String, id: i32, label: String }>"
+        }
+      }
+    },
+    "inferred_post_count.sql": {
+      "39d367c1986ef7ec": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: i32 }",
+          "returns": "{ posts: i32 }"
+        }
+      }
+    },
+    "inferred_posts_by_user.sql": {
+      "926b485464c8836e": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: Option<i32> }",
+          "returns": "Vec<{ id: i32, title: String }>"
+        }
+      }
+    },
+    "inferred_published_titles.sql": {
+      "4f81e9d36bf72c73": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "instant",
+                "tick": "1/1000000",
+                "min": "-4713-11-24T00:00:00Z",
+                "max": "+294276-12-31T23:59:59.999999Z",
+                "infinity": true,
+                "label": "timestamptz"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { since: chrono::DateTime<chrono::Utc> }",
+          "returns": "Vec<{ name: String, title: String }>"
+        }
+      }
+    },
+    "inferred_record_event.sql": {
+      "fcd24568381235f0": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "payload",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    },
+                    "y": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y"
+                  ],
+                  "additionalProperties": false,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "jsonb"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { payload: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "inferred_rename_user.sql": {
+      "7fc9f64b909e5f93": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { name: &'a str, id: i32 }",
+          "returns": "u64"
+        }
+      }
+    },
+    "inferred_search_users.sql": {
+      "8db71d3e75666ab5": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "q",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { q: &'a str }",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "inferred_user_by_email.sql": {
+      "a4c80dded4b101df": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { email: &'a str }",
+          "returns": "Option<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "inferred_user_flags.sql": {
+      "c3d6564a450167b4": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "enum",
+                "type": {
+                  "kind": "text"
+                },
+                "values": [
+                  "admin",
+                  "member"
+                ],
+                "label": "public.user_role"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "has_posts",
+                "type": {
+                  "kind": "boolean",
+                  "label": "bool"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { role: UserRole }\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
+          "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
+        }
+      }
+    },
+    "inferred_user_posts.sql": {
+      "a5aaf8be81978f8b": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "instant",
+                "tick": "1/1000000",
+                "min": "-4713-11-24T00:00:00Z",
+                "max": "+294276-12-31T23:59:59.999999Z",
+                "infinity": true,
+                "label": "timestamptz"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int4"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "code_points": [
+                                  [
+                                    1,
+                                    1114111
+                                  ]
+                                ],
+                                "label": "text"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "label": "jsonb"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { since: chrono::DateTime<chrono::Utc> }",
+          "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "inferred_user_titles.sql": {
+      "9856e2a2e6b47666": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: i32 }",
+          "returns": "Vec<{ name: String, title: Option<String> }>"
+        }
+      }
+    },
+    "inferred_users.sql": {
+      "9eaf2b67e1d7bd12": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "enum",
+                "type": {
+                  "kind": "text"
+                },
+                "values": [
+                  "admin",
+                  "member"
+                ],
+                "label": "public.user_role"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { role: UserRole }\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "lateral_joins.sql": {
+      "f1f394fc0df8a2f0": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                },
+                "nullable": true
+              },
+              {
+                "name": "published_at",
+                "type": {
+                  "kind": "instant",
+                  "tick": "1/1000000",
+                  "min": "-4713-11-24T00:00:00Z",
+                  "max": "+294276-12-31T23:59:59.999999Z",
+                  "infinity": true,
+                  "label": "timestamptz"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    name: String,\n    title: Option<String>,\n    published_at: Option<\n        chrono::DateTime<chrono::Utc>,\n    >,\n}>"
+        }
+      }
+    },
+    "old_and_new_values.sql": {
+      "a4fa72ad00dd89f3": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "old_name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "new_name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { name: &'a str, id: i32 }",
+          "returns": "Option<{ old_name: String, new_name: String }>"
+        }
+      }
+    },
+    "pg_fill_order.sql": {
+      "6e372742564b3b80": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "ships_on",
+              "type": {
+                "kind": "date",
+                "min": "-4713-11-24",
+                "max": "+5874897-12-31",
+                "infinity": true,
+                "label": "date"
+              }
+            },
+            {
+              "name": "receipt",
+              "type": {
+                "kind": "bytes",
+                "label": "bytea"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 64,
+                "label": "int8"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "int8"
+                }
+              },
+              {
+                "name": "ships_on",
+                "type": {
+                  "kind": "date",
+                  "min": "-4713-11-24",
+                  "max": "+5874897-12-31",
+                  "infinity": true,
+                  "label": "date"
+                },
+                "nullable": true
+              },
+              {
+                "name": "receipt",
+                "type": {
+                  "kind": "bytes",
+                  "label": "bytea"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query {\n    ships_on: chrono::NaiveDate,\n    receipt: Vec<u8>,\n    id: i64,\n}",
+          "returns": "Option<{\n    id: i64,\n    ships_on: Option<chrono::NaiveDate>,\n    receipt: Option<Vec<u8>>,\n}>"
+        }
+      }
+    },
+    "pg_json_any.sql": {
+      "0048a29042ec121d": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "merged",
+                "type": {
+                  "kind": "json",
+                  "label": "jsonb"
+                }
+              },
+              {
+                "name": "k",
+                "type": {
+                  "kind": "json",
+                  "label": "jsonb"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    merged: serde_json::Value,\n    k: serde_json::Value,\n}>"
+        }
+      }
+    },
+    "pg_json_case.sql": {
+      "b2dd6ab696a348e4": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "big_order",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "struct",
+                      "fields": [
+                        {
+                          "name": "id",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 64,
+                            "label": "int8"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "label": "jsonb"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ big_order: Option<Json<BigOrder>> }>\n\npub struct BigOrder {\n    pub id: i64,\n}"
+        }
+      }
+    },
+    "pg_json_grouped.sql": {
+      "36575317f8177892": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "summary",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "struct",
+                      "fields": [
+                        {
+                          "name": "name",
+                          "type": {
+                            "kind": "text",
+                            "code_points": [
+                              [
+                                1,
+                                1114111
+                              ]
+                            ],
+                            "label": "text"
+                          }
+                        },
+                        {
+                          "name": "orders",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 64,
+                            "label": "int8"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "label": "jsonb"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ summary: Json<Summary> }>\n\npub struct Summary {\n    pub name: String,\n    pub orders: i64,\n}"
+        }
+      }
+    },
+    "pg_json_keys.sql": {
+      "be79555a90771488": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "kind",
+                "type": {
+                  "kind": "enum",
+                  "type": {
+                    "kind": "text",
+                    "code_points": [
+                      [
+                        1,
+                        1114111
+                      ]
+                    ],
+                    "label": "text"
+                  },
+                  "values": [
+                    "click",
+                    "key"
+                  ]
+                }
+              },
+              {
+                "name": "x",
+                "type": {
+                  "kind": "json",
+                  "schema": {
+                    "type": "integer",
+                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                  },
+                  "label": "jsonb"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ kind: String, x: Option<serde_json::Value> }>"
+        }
+      }
+    },
+    "pg_json_schema_param.sql": {
+      "3717c8b91779a996": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "kind",
+              "type": {
+                "kind": "enum",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                },
+                "values": [
+                  "click",
+                  "key"
+                ]
+              }
+            },
+            {
+              "name": "payload",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    },
+                    "y": {
+                      "type": "integer"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "jsonb"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "int8"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { kind: &'a str, payload: serde_json::Value }",
+          "returns": "{ id: i64 }"
+        }
+      }
+    },
+    "pg_json_with.sql": {
+      "c302dcbe1fb00799": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "totals",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "decimal",
+                          "precision": 12,
+                          "min_scale": 2,
+                          "max_scale": 2,
+                          "min": "0",
+                          "nan": true,
+                          "label": "numeric"
+                        }
+                      }
+                    }
+                  },
+                  "label": "jsonb"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "totals_item holds a decimal inside JSON, which no Rust number reads exactly: cast it to text inside the JSON, as `x::text`"
+        }
+      }
+    },
+    "pg_orders_per_day.sql": {
+      "3e9a16c1790f873e": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "from",
+              "type": {
+                "kind": "instant",
+                "tick": "1/1000000",
+                "min": "-4713-11-24T00:00:00Z",
+                "max": "+294276-12-31T23:59:59.999999Z",
+                "infinity": true,
+                "label": "timestamptz"
+              }
+            },
+            {
+              "name": "to",
+              "type": {
+                "kind": "instant",
+                "tick": "1/1000000",
+                "min": "-4713-11-24T00:00:00Z",
+                "max": "+294276-12-31T23:59:59.999999Z",
+                "infinity": true,
+                "label": "timestamptz"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "day",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "orders",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query {\n    from: chrono::DateTime<chrono::Utc>,\n    to: chrono::DateTime<chrono::Utc>,\n}",
+          "returns": "Vec<{ day: String, orders: i32 }>"
+        }
+      }
+    },
+    "pg_param_insert.sql": {
+      "f8eac0fdbf26948f": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            },
+            {
+              "name": "total",
+              "type": {
+                "kind": "decimal",
+                "precision": 12,
+                "min_scale": 2,
+                "max_scale": 2,
+                "min": "0",
+                "nan": true,
+                "label": "public.amount"
+              }
+            },
+            {
+              "name": "ships_on",
+              "type": {
+                "kind": "date",
+                "min": "-4713-11-24",
+                "max": "+5874897-12-31",
+                "infinity": true,
+                "label": "date"
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query {\n    user_id: i32,\n    total: rust_decimal::Decimal,\n    ships_on: Option<chrono::NaiveDate>,\n}",
+          "returns": "u64"
+        }
+      }
+    },
+    "pg_param_nullable.sql": {
+      "9541803e97ecbc29": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "enum",
+                "type": {
+                  "kind": "text"
+                },
+                "values": [
+                  "admin",
+                  "member"
+                ],
+                "label": "public.user_role"
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { role: Option<UserRole> }\n\npub enum UserRole {\n    Admin,\n    Member,\n}",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "post_total.sql": {
+      "42b8e0b1487300ef": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: i32 }",
+          "returns": "{ count: i32 }"
+        }
+      }
+    },
+    "record_click.sql": {
+      "06c5351999f7bf37": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "payload",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    },
+                    "y": {
+                      "type": "integer"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { payload: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "record_events.sql": {
+      "ab11e4accaf8fce2": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "events",
+              "type": {
+                "kind": "json",
+                "label": "jsonb"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { events: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "record_order.sql": {
+      "9f504f6de8295fd6": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "order",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    },
+                    "y": {
+                      "type": "integer"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { order: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "rename_post.sql": {
+      "ef2d400d4bbb3cff": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            },
+            {
+              "name": "title",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: &'a str, title: &'a str }",
+          "returns": "Option<{ id: String }>"
+        }
+      }
+    },
+    "rollups.sql": {
+      "c20e4461853b283d": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "user_id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                },
+                "nullable": true
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              }
+            ],
+            "order": [
+              {
+                "column": "user_id",
+                "nulls": "last"
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ user_id: Option<i32>, posts: i32 }>"
+        }
+      }
+    },
+    "search_posts.sql": {
+      "ae23b3ca05dde291": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "filters",
+              "type": {
+                "kind": "json",
+                "label": "jsonb"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "author",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { filters: serde_json::Value }",
+          "returns": "Vec<{ id: i32, title: String, author: String }>"
+        }
+      }
+    },
+    "sort_users.sql": {
+      "21366187c699bf9d": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "sort",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { sort: &'a str }",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "update_user.sql": {
+      "6a073789b0af0240": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "patch",
+              "type": {
+                "kind": "json",
+                "label": "jsonb"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                },
+                "nullable": true
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { patch: serde_json::Value, id: &'a str }",
+          "returns": "Option<{\n    id: String,\n    name: Option<String>,\n    email: String,\n}>"
+        }
+      }
+    },
+    "upserts.sql": {
+      "dabc9c36caed9bf9": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            },
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { name: &'a str, email: &'a str }",
+          "returns": "{ id: i32, name: String }"
+        }
+      }
+    },
+    "users_by_ids.sql": {
+      "c1c1e44e4105bbf6": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "ids",
+              "type": {
+                "kind": "array",
+                "element": {
+                  "type": {
+                    "kind": "integer",
+                    "bits": 32,
+                    "label": "int4"
+                  },
+                  "nullable": true
+                },
+                "label": "_int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { ids: Vec<Option<i32>> }",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "users_with_posts_json.sql": {
+      "a7d5d8900736e485": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int4"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "code_points": [
+                                  [
+                                    1,
+                                    1114111
+                                  ]
+                                ],
+                                "label": "text"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "label": "jsonb"
+                }
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ id: i32, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "users_with_posts.sql": {
+      "a7db9d50c3374218": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "array",
+                  "element": {
+                    "type": {
+                      "kind": "struct",
+                      "fields": [
+                        {
+                          "name": "id",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 32,
+                            "label": "int4"
+                          }
+                        },
+                        {
+                          "name": "title",
+                          "type": {
+                            "kind": "text",
+                            "code_points": [
+                              [
+                                1,
+                                1114111
+                              ]
+                            ],
+                            "label": "text"
+                          }
+                        }
+                      ],
+                      "label": "record"
+                    }
+                  },
+                  "label": "_record"
+                }
+              },
+              {
+                "name": "latest_post",
+                "type": {
+                  "kind": "struct",
+                  "fields": [
+                    {
+                      "name": "id",
+                      "type": {
+                        "kind": "integer",
+                        "bits": 32,
+                        "label": "int4"
+                      }
+                    },
+                    {
+                      "name": "title",
+                      "type": {
+                        "kind": "text",
+                        "code_points": [
+                          [
+                            1,
+                            1114111
+                          ]
+                        ],
+                        "label": "text"
+                      }
+                    }
+                  ],
+                  "label": "record"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "posts: Reylo has no Rust type for record yet: cast it to text in the statement, as `x::text`"
+        }
+      }
+    },
+    "window_functions.sql": {
+      "2af3718689994aa3": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int4"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              },
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "int8"
+                }
+              },
+              {
+                "name": "prev",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                },
+                "nullable": true
+              }
+            ],
+            "unique": [
+              [
+                "id"
+              ]
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    id: i32,\n    title: String,\n    n: i64,\n    prev: Option<String>,\n}>"
+        }
+      }
+    }
+  },
+  "mysql": {
+    "create_users.sql": {
+      "05b19db9ee7b07a7": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "users",
+              "type": {
+                "kind": "json",
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { users: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "dashboard.sql": {
+      "1faf3c778b112307": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "limit",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "user_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              },
+              {
+                "name": "post_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              },
+              {
+                "name": "recent_posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "size": {
+                                  "max": 65535
+                                },
+                                "label": "text"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "label": "json"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { limit: i32 }",
+          "returns": "{\n    user_count: i64,\n    post_count: i64,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "get_user.sql": {
+      "d20ef17d86b8b9ce": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 255
+                  },
+                  "label": "varchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i32 }",
+          "returns": "Option<{ id: i32, name: String, email: Option<String> }>"
+        }
+      }
+    },
+    "inferred_event_payloads_union.sql": {
+      "e7414869b46dd28a": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "payload",
+                "type": {
+                  "kind": "json",
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "click"
+                            ]
+                          },
+                          "x": {
+                            "type": "integer"
+                          },
+                          "y": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "x",
+                          "y"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "key"
+                            ]
+                          },
+                          "code": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "code"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ],
+                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                  },
+                  "label": "json"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i32 }",
+          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
+        }
+      }
+    },
+    "inferred_event_payloads.sql": {
+      "2c56b1677cb4d487": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "payload",
+                "type": {
+                  "kind": "json",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "x": {
+                        "type": "integer"
+                      },
+                      "y": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "x",
+                      "y"
+                    ],
+                    "additionalProperties": false,
+                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                  },
+                  "label": "json"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i32 }",
+          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
+        }
+      }
+    },
+    "inferred_feed.sql": {
+      "a0d47a6826767652": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "kind",
+                "type": {
+                  "kind": "enum",
+                  "type": {
+                    "kind": "text",
+                    "label": "varchar"
+                  },
+                  "values": [
+                    "user",
+                    "post"
+                  ]
+                }
+              },
+              {
+                "name": "id",
+                "type": {
+                  "kind": "union",
+                  "members": [
+                    {
+                      "kind": "integer",
+                      "bits": 32,
+                      "label": "int"
+                    },
+                    {
+                      "kind": "integer",
+                      "bits": 64,
+                      "label": "bigint"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "label",
+                "type": {
+                  "kind": "text",
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "id is one of several types, by what is bound: cast the expression in the statement, as `cast(:n + 1 as signed)`"
+        }
+      }
+    },
+    "inferred_post_count.sql": {
+      "9942a3bf1f3195dd": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: i32 }",
+          "returns": "{ posts: i64 }"
+        }
+      }
+    },
+    "inferred_posts_by_user.sql": {
+      "926b485464c8836e": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: Option<i32> }",
+          "returns": "Vec<{ id: i32, title: String }>"
+        }
+      }
+    },
+    "inferred_published_titles.sql": {
+      "4f81e9d36bf72c73": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "datetime",
+                "tick": "1/1000000",
+                "label": "datetime"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { since: chrono::NaiveDateTime }",
+          "returns": "Vec<{ name: String, title: String }>"
+        }
+      }
+    },
+    "inferred_rename_user.sql": {
+      "7fc9f64b909e5f93": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "size": {
+                  "unit": "byte",
+                  "max": 65535
+                },
+                "label": "text"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { name: &'a str, id: i32 }",
+          "returns": "u64"
+        }
+      }
+    },
+    "inferred_search_users.sql": {
+      "8db71d3e75666ab5": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "q",
+              "type": {
+                "kind": "text",
+                "label": "varchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { q: &'a str }",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "inferred_user_by_email.sql": {
+      "d3c61b953c3ec553": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "label": "varchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { email: &'a str }",
+          "returns": "Option<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "inferred_user_flags.sql": {
+      "c3d6564a450167b4": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "enum",
+                "type": {
+                  "kind": "text"
+                },
+                "values": [
+                  "admin",
+                  "member"
+                ],
+                "label": "enum"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "label": "varchar"
+                }
+              },
+              {
+                "name": "has_posts",
+                "type": {
+                  "kind": "boolean"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { role: &'a str }",
+          "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
+        }
+      }
+    },
+    "inferred_user_posts.sql": {
+      "3d5f205110f9cd5f": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "datetime",
+                "tick": "1/1000000",
+                "label": "datetime"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "size": {
+                                  "max": 65535
+                                },
+                                "label": "text"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "label": "json"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { since: chrono::NaiveDateTime }",
+          "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "inferred_user_titles.sql": {
+      "9856e2a2e6b47666": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: i32 }",
+          "returns": "Vec<{ name: String, title: Option<String> }>"
+        }
+      }
+    },
+    "inferred_users.sql": {
+      "9eaf2b67e1d7bd12": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "enum",
+                "type": {
+                  "kind": "text"
+                },
+                "values": [
+                  "admin",
+                  "member"
+                ],
+                "label": "enum"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { role: &'a str }",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "lateral_joins.sql": {
+      "1d21787bcc020fee": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 65535
+                  },
+                  "label": "text"
+                },
+                "nullable": true
+              },
+              {
+                "name": "published_at",
+                "type": {
+                  "kind": "datetime",
+                  "tick": "1",
+                  "label": "datetime"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    name: String,\n    title: Option<String>,\n    published_at: Option<chrono::NaiveDateTime>,\n}>"
+        }
+      }
+    },
+    "my_json_default.sql": {
+      "eea988c612271fda": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "ids",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "integer",
+                          "bits": 64,
+                          "label": "bigint"
+                        }
+                      }
+                    }
+                  },
+                  "label": "json"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: i32 }",
+          "returns": "{ ids: Json<Vec<i64>> }"
+        }
+      }
+    },
+    "my_json_reach.sql": {
+      "6a001a216b1d7d66": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "wrapped",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "struct",
+                      "fields": [
+                        {
+                          "name": "p",
+                          "type": {
+                            "kind": "json",
+                            "schema": {
+                              "type": "object",
+                              "properties": {
+                                "x": {
+                                  "type": "integer"
+                                },
+                                "code": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "x"
+                              ],
+                              "additionalProperties": true,
+                              "$schema": "https://json-schema.org/draft/2020-12/schema"
+                            },
+                            "label": "json"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "label": "json"
+                }
+              },
+              {
+                "name": "x",
+                "type": {
+                  "kind": "json",
+                  "label": "json"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    wrapped: Json<Wrapped>,\n    x: Option<serde_json::Value>,\n}>\n\npub struct Wrapped {\n    pub p: serde_json::Value,\n}"
+        }
+      }
+    },
+    "my_null_aggregates.sql": {
+      "9bcb463399ce9925": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "user_id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "order_ids",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "integer",
+                          "bits": 64,
+                          "label": "bigint"
+                        }
+                      }
+                    }
+                  },
+                  "label": "json"
+                }
+              },
+              {
+                "name": "last_ships_on",
+                "type": {
+                  "kind": "date",
+                  "label": "date"
+                },
+                "nullable": true
+              },
+              {
+                "name": "spent",
+                "type": {
+                  "kind": "decimal",
+                  "label": "decimal"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    user_id: i32,\n    order_ids: Json<Vec<i64>>,\n    last_ships_on: Option<chrono::NaiveDate>,\n    spent: rust_decimal::Decimal,\n}>"
+        }
+      }
+    },
+    "my_null_columns.sql": {
+      "454fac5f9df30c85": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 100
+                  },
+                  "label": "varchar"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 255
+                  },
+                  "label": "varchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ name: String, email: Option<String> }>"
+        }
+      }
+    },
+    "my_null_expressions.sql": {
+      "2324d9ca957cd47a": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              },
+              {
+                "name": "shout",
+                "type": {
+                  "kind": "text",
+                  "label": "varchar"
+                },
+                "nullable": true
+              },
+              {
+                "name": "shout_or_empty",
+                "type": {
+                  "kind": "text",
+                  "label": "varchar"
+                }
+              },
+              {
+                "name": "half",
+                "type": {
+                  "kind": "decimal",
+                  "label": "decimal"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    n: i64,\n    shout: Option<String>,\n    shout_or_empty: String,\n    half: Option<rust_decimal::Decimal>,\n}>"
+        }
+      }
+    },
+    "my_null_left_join.sql": {
+      "56f847eb1efd2795": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 100
+                  },
+                  "label": "varchar"
+                }
+              },
+              {
+                "name": "total",
+                "type": {
+                  "kind": "decimal",
+                  "precision": 12,
+                  "min_scale": 2,
+                  "max_scale": 2,
+                  "label": "decimal"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    name: String,\n    total: Option<rust_decimal::Decimal>,\n}>"
+        }
+      }
+    },
+    "my_null_rollup.sql": {
+      "eedaad54f2c18ce5": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "role",
+                "type": {
+                  "kind": "text",
+                  "label": "char"
+                },
+                "nullable": true
+              },
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ role: Option<String>, n: i64 }>"
+        }
+      }
+    },
+    "my_null_subqueries.sql": {
+      "46a7b60df152cd28": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "orders",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ id: i32, orders: i64 }>"
+        }
+      }
+    },
+    "my_null_where.sql": {
+      "858542e6fb70c0ea": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 100
+                  },
+                  "label": "varchar"
+                }
+              },
+              {
+                "name": "total",
+                "type": {
+                  "kind": "decimal",
+                  "precision": 12,
+                  "min_scale": 2,
+                  "max_scale": 2,
+                  "label": "decimal"
+                }
+              },
+              {
+                "name": "ships_on",
+                "type": {
+                  "kind": "date",
+                  "label": "date"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    name: String,\n    total: rust_decimal::Decimal,\n    ships_on: chrono::NaiveDate,\n}>"
+        }
+      }
+    },
+    "my_null_window.sql": {
+      "de8a6efc68976fc5": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              },
+              {
+                "name": "running_total",
+                "type": {
+                  "kind": "decimal",
+                  "label": "decimal"
+                }
+              },
+              {
+                "name": "last_ships_on",
+                "type": {
+                  "kind": "date",
+                  "label": "date"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    id: i64,\n    running_total: rust_decimal::Decimal,\n    last_ships_on: Option<chrono::NaiveDate>,\n}>"
+        }
+      }
+    },
+    "my_param_insert.sql": {
+      "f8eac0fdbf26948f": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            },
+            {
+              "name": "total",
+              "type": {
+                "kind": "decimal",
+                "precision": 12,
+                "min_scale": 2,
+                "max_scale": 2,
+                "label": "decimal"
+              }
+            },
+            {
+              "name": "ships_on",
+              "type": {
+                "kind": "date",
+                "label": "date"
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query {\n    user_id: i32,\n    total: rust_decimal::Decimal,\n    ships_on: Option<chrono::NaiveDate>,\n}",
+          "returns": "u64"
+        }
+      }
+    },
+    "my_param_int.sql": {
+      "fdd18702976b4e9a": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "after",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            },
+            {
+              "name": "n",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 100
+                  },
+                  "label": "varchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { after: i32, n: i32 }",
+          "returns": "Vec<{ name: String }>"
+        }
+      }
+    },
+    "my_param_nullable.sql": {
+      "2be74c562de32a19": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "text",
+                "label": "varchar"
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 100
+                  },
+                  "label": "varchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { role: Option<&'a str> }",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "post_total.sql": {
+      "d8d4f2d808db4b46": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "count(*)",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "the column \"count(*)\" is no Rust name: give it one with `as`"
+        }
+      }
+    },
+    "record_click.sql": {
+      "06c5351999f7bf37": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "payload",
+              "type": {
+                "kind": "json",
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { payload: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "record_events.sql": {
+      "71a2182c41565adf": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "events",
+              "type": {
+                "kind": "json",
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { events: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "record_order.sql": {
+      "9f504f6de8295fd6": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "order",
+              "type": {
+                "kind": "json",
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { order: serde_json::Value }",
+          "returns": "u64"
+        }
+      }
+    },
+    "rollups.sql": {
+      "c4ce3ae4d8273bd8": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "user_id",
+                "type": {
+                  "kind": "union",
+                  "members": [
+                    {
+                      "kind": "integer",
+                      "bits": 32,
+                      "label": "int"
+                    },
+                    {
+                      "kind": "integer",
+                      "bits": 64,
+                      "label": "bigint"
+                    }
+                  ]
+                },
+                "nullable": true
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "user_id is one of several types, by what is bound: cast the expression in the statement, as `cast(:n + 1 as signed)`"
+        }
+      }
+    },
+    "search_posts.sql": {
+      "136e6b52ddb89cb5": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "filters",
+              "type": {
+                "kind": "json",
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "author",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { filters: serde_json::Value }",
+          "returns": "Vec<{ id: i32, title: String, author: String }>"
+        }
+      }
+    },
+    "sort_users.sql": {
+      "21366187c699bf9d": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "sort",
+              "type": {
+                "kind": "text",
+                "label": "varchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { sort: &'a str }",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "users_by_ids.sql": {
+      "26c37437afcff5e9": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "ids",
+              "type": {
+                "kind": "json",
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "size": {
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { ids: serde_json::Value }",
+          "returns": "Vec<{ id: i32, name: String }>"
+        }
+      }
+    },
+    "users_with_posts.sql": {
+      "28206fa616bb8f8b": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "size": {
+                                  "max": 65535
+                                },
+                                "label": "text"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "label": "json"
+                }
+              },
+              {
+                "name": "latest_post",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "struct",
+                      "fields": [
+                        {
+                          "name": "id",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 32,
+                            "label": "int"
+                          }
+                        },
+                        {
+                          "name": "title",
+                          "type": {
+                            "kind": "text",
+                            "size": {
+                              "max": 65535
+                            },
+                            "label": "text"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "label": "json"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i32 }",
+          "returns": "Option<{\n    id: i32,\n    name: String,\n    posts: Json<Vec<PostsItem>>,\n    latest_post: Option<Json<LatestPost>>,\n}>\n\npub struct PostsItem {\n    pub id: i32,\n    pub title: String,\n}\n\npub struct LatestPost {\n    pub id: i32,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "window_functions.sql": {
+      "2af3718689994aa3": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "size": {
+                    "unit": "byte",
+                    "max": 65535
+                  },
+                  "label": "text"
+                }
+              },
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "unsigned": true,
+                  "label": "bigint"
+                }
+              },
+              {
+                "name": "prev",
+                "type": {
+                  "kind": "text",
+                  "label": "text"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    id: i32,\n    title: String,\n    n: u64,\n    prev: Option<String>,\n}>"
+        }
+      }
+    }
+  },
+  "sqlite": {
+    "create_users.sql": {
+      "8304e463c82bd1a0": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "users",
+              "type": {
+                "kind": "unknown"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "users may hold a value of any type: cast it in the statement, as `cast(users as integer)`"
+        }
+      }
+    },
+    "dashboard.sql": {
+      "782e54d8d101cd51": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "limit",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "user_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              },
+              {
+                "name": "post_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              },
+              {
+                "name": "recent_posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 64
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-8",
+                                "ill_formed": true
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { limit: i64 }",
+          "returns": "{\n    user_count: i64,\n    post_count: i64,\n    recent_posts: Json<Vec<RecentPostsItem>>,\n}\n\npub struct RecentPostsItem {\n    pub id: i64,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "get_user.sql": {
+      "d20ef17d86b8b9ce": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i64 }",
+          "returns": "Option<{ id: i64, name: String, email: Option<String> }>"
+        }
+      }
+    },
+    "inferred_create_user.sql": {
+      "64c49fd060c7b41a": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { name: &'a str }",
+          "returns": "{ id: i64 }"
+        }
+      }
+    },
+    "inferred_feed.sql": {
+      "a0d47a6826767652": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "kind",
+                "type": {
+                  "kind": "enum",
+                  "type": {
+                    "kind": "text",
+                    "encoding": "UTF-8",
+                    "ill_formed": true
+                  },
+                  "values": [
+                    "user",
+                    "post"
+                  ]
+                }
+              },
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "label",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ kind: String, id: i64, label: String }>"
+        }
+      }
+    },
+    "inferred_post_count.sql": {
+      "9942a3bf1f3195dd": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: i64 }",
+          "returns": "{ posts: i64 }"
+        }
+      }
+    },
+    "inferred_posts_by_user.sql": {
+      "926b485464c8836e": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: Option<i64> }",
+          "returns": "Vec<{ id: i64, title: String }>"
+        }
+      }
+    },
+    "inferred_published_titles.sql": {
+      "4f81e9d36bf72c73": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { since: &'a str }",
+          "returns": "Vec<{ name: String, title: String }>"
+        }
+      }
+    },
+    "inferred_rename_user.sql": {
+      "7fc9f64b909e5f93": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { name: &'a str, id: i64 }",
+          "returns": "u64"
+        }
+      }
+    },
+    "inferred_search_users.sql": {
+      "8db71d3e75666ab5": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "q",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { q: &'a str }",
+          "returns": "Vec<{ id: i64, name: String }>"
+        }
+      }
+    },
+    "inferred_user_by_email.sql": {
+      "daf1b9c90a400300": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { email: &'a str }",
+          "returns": "Option<{ id: i64, name: String }>"
+        }
+      }
+    },
+    "inferred_user_flags.sql": {
+      "c3d6564a450167b4": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true
+                }
+              },
+              {
+                "name": "has_posts",
+                "type": {
+                  "kind": "boolean"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { role: &'a str }",
+          "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
+        }
+      }
+    },
+    "inferred_user_posts.sql": {
+      "568aa79efbc6fb2b": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 64
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-8",
+                                "ill_formed": true
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { since: &'a str }",
+          "returns": "Vec<{ name: String, posts: Json<Vec<PostsItem>> }>\n\npub struct PostsItem {\n    pub id: i64,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "inferred_user_titles.sql": {
+      "9856e2a2e6b47666": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { user_id: i64 }",
+          "returns": "Vec<{ name: String, title: Option<String> }>"
+        }
+      }
+    },
+    "inferred_users.sql": {
+      "9eaf2b67e1d7bd12": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { role: &'a str }",
+          "returns": "Vec<{ id: i64, name: String }>"
+        }
+      }
+    },
+    "lite_fn_missing.sql": {
+      "9d0727e073b84341": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "raw",
+                "type": {
+                  "kind": "unknown"
+                },
+                "nullable": true
+              },
+              {
+                "name": "bytes",
+                "type": {
+                  "kind": "bytes"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "raw may hold a value of any type: cast it in the statement, as `cast(raw as integer)`"
+        }
+      }
+    },
+    "lite_fn_several.sql": {
+      "8e0d1e84f9c10b82": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "day",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true
+                }
+              },
+              {
+                "name": "mixed",
+                "type": {
+                  "kind": "unknown"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "mixed may hold a value of any type: cast it in the statement, as `cast(mixed as integer)`"
+        }
+      }
+    },
+    "lite_null_aggregates.sql": {
+      "112d75ab478aa14a": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              },
+              {
+                "name": "top",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "{ n: i64, top: Option<i64> }"
+        }
+      }
+    },
+    "lite_null_columns.sql": {
+      "c9b5edf5fe5027e0": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "union",
+                  "members": [
+                    {
+                      "kind": "text",
+                      "encoding": "UTF-8",
+                      "ill_formed": true
+                    },
+                    {
+                      "kind": "bytes"
+                    }
+                  ],
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "nick",
+                "type": {
+                  "kind": "union",
+                  "members": [
+                    {
+                      "kind": "text",
+                      "encoding": "UTF-8",
+                      "ill_formed": true
+                    },
+                    {
+                      "kind": "bytes"
+                    }
+                  ],
+                  "label": "TEXT"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ name: String, nick: Option<String> }>"
+        }
+      }
+    },
+    "lite_null_expressions.sql": {
+      "6eea65f3d26b1534": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "shout",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true
+                },
+                "nullable": true
+              },
+              {
+                "name": "label",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true
+                }
+              },
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              },
+              {
+                "name": "per_id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    shout: Option<String>,\n    label: String,\n    n: i64,\n    per_id: Option<i64>,\n}>"
+        }
+      }
+    },
+    "lite_null_left_join.sql": {
+      "634223530b55bda3": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "union",
+                  "members": [
+                    {
+                      "kind": "text",
+                      "encoding": "UTF-8",
+                      "ill_formed": true
+                    },
+                    {
+                      "kind": "bytes"
+                    }
+                  ],
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "total_cents",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ name: String, total_cents: Option<i64> }>"
+        }
+      }
+    },
+    "lite_null_where.sql": {
+      "dba2411ada397c59": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "union",
+                  "members": [
+                    {
+                      "kind": "text",
+                      "encoding": "UTF-8",
+                      "ill_formed": true
+                    },
+                    {
+                      "kind": "bytes"
+                    }
+                  ],
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "total_cents",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "ships_on",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    name: String,\n    total_cents: i64,\n    ships_on: String,\n}>"
+        }
+      }
+    },
+    "lite_null_window.sql": {
+      "74cb5a017e666df1": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "previous_total",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                },
+                "nullable": true
+              },
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              },
+              {
+                "name": "largest_total",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    id: i64,\n    previous_total: Option<i64>,\n    n: i64,\n    largest_total: i64,\n}>"
+        }
+      }
+    },
+    "lite_param_insert.sql": {
+      "9806599e4a2375c0": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            },
+            {
+              "name": "total_cents",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            },
+            {
+              "name": "ships_on",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query {\n    user_id: i64,\n    total_cents: i64,\n    ships_on: Option<&'a str>,\n}",
+          "returns": "u64"
+        }
+      }
+    },
+    "lite_param_nullable.sql": {
+      "857bdb72c28aa070": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "union",
+                  "members": [
+                    {
+                      "kind": "text",
+                      "encoding": "UTF-8",
+                      "ill_formed": true
+                    },
+                    {
+                      "kind": "bytes"
+                    }
+                  ],
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { name: Option<&'a str> }",
+          "returns": "Vec<{ id: i64, name: String }>"
+        }
+      }
+    },
+    "lite_types_cast.sql": {
+      "daca6a9fc4d8f87b": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "nick",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ nick: Option<String> }>"
+        }
+      }
+    },
+    "lite_types_check.sql": {
+      "10e622380b239ed7": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "role",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{ role: String }>"
+        }
+      }
+    },
+    "lite_types_strict.sql": {
+      "4d35ef445969428a": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "total_cents",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "receipt",
+                "type": {
+                  "kind": "bytes",
+                  "label": "BLOB"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    id: i64,\n    total_cents: i64,\n    receipt: Option<Vec<u8>>,\n}>"
+        }
+      }
+    },
+    "post_total.sql": {
+      "d8d4f2d808db4b46": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "count(*)",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "the column \"count(*)\" is no Rust name: give it one with `as`"
+        }
+      }
+    },
+    "record_click.sql": {
+      "06c5351999f7bf37": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "payload",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { payload: &'a str }",
+          "returns": "u64"
+        }
+      }
+    },
+    "record_events.sql": {
+      "56de752ccbd2650f": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "events",
+              "type": {
+                "kind": "unknown"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "events may hold a value of any type: cast it in the statement, as `cast(events as integer)`"
+        }
+      }
+    },
+    "record_order.sql": {
+      "9f504f6de8295fd6": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "order",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "params": "Query { order: &'a str }",
+          "returns": "u64"
+        }
+      }
+    },
+    "search_posts.sql": {
+      "659d274b42ff57db": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "filters",
+              "type": {
+                "kind": "unknown"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "author",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "filters may hold a value of any type: cast it in the statement, as `cast(filters as integer)`"
+        }
+      }
+    },
+    "sort_users.sql": {
+      "21366187c699bf9d": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "sort",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { sort: &'a str }",
+          "returns": "Vec<{ id: i64, name: String }>"
+        }
+      }
+    },
+    "upserts.sql": {
+      "dabc9c36caed9bf9": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            },
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { name: &'a str, email: &'a str }",
+          "returns": "{ id: i64, name: String }"
+        }
+      }
+    },
+    "users_by_ids.sql": {
+      "01a2082d1fb1a6e7": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "ids",
+              "type": {
+                "kind": "unknown"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "ids may hold a value of any type: cast it in the statement, as `cast(ids as integer)`"
+        }
+      }
+    },
+    "users_with_posts.sql": {
+      "c3ee47fcbc9890f2": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 64
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-8",
+                                "ill_formed": true
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "name": "latest_post",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "struct",
+                      "fields": [
+                        {
+                          "name": "id",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 64
+                          }
+                        },
+                        {
+                          "name": "title",
+                          "type": {
+                            "kind": "text",
+                            "encoding": "UTF-8",
+                            "ill_formed": true
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { id: i64 }",
+          "returns": "Option<{\n    id: i64,\n    name: String,\n    posts: Json<Vec<PostsItem>>,\n    latest_post: Option<Json<LatestPost>>,\n}>\n\npub struct PostsItem {\n    pub id: i64,\n    pub title: String,\n}\n\npub struct LatestPost {\n    pub id: i64,\n    pub title: String,\n}"
+        }
+      }
+    },
+    "window_functions.sql": {
+      "2af3718689994aa3": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "INTEGER"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              },
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64
+                }
+              },
+              {
+                "name": "prev",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "pub struct Query;",
+          "returns": "Vec<{\n    id: i64,\n    title: String,\n    n: i64,\n    prev: Option<String>,\n}>"
+        }
+      }
+    }
+  }
+}

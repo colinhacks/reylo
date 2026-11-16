@@ -29,6 +29,10 @@ pub struct Project {
     /// pooler can fail. The importer's alone: a host that serves the queries runs them through `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_url: Option<String>,
+    /// A server to make the migrations' shadow databases on, where the database's own refuses
+    /// `create database`; the database's own server when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_url: Option<String>,
     /// The `.env` files the importer and every other host read, relative to the project file
     /// (`.env.local`, then `.env`, when absent); the first that sets a variable wins, and the
     /// process environment wins over all of them.
@@ -47,6 +51,11 @@ pub struct Project {
     /// the statement's tags. On when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlcommenter: Option<bool>,
+    /// The directory of the project's own files, beside the project file (`reylo` when absent):
+    /// `schema.sql`, the migrations in `migrations/`, the lock `reylo-lock.yaml`, and the cache in
+    /// `.cache/`, which the type check and the migrations keep there, out of git.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     /// How the importer represents values in JavaScript and TypeScript.
     #[serde(default, skip_serializing_if = "Js::is_empty")]
     pub js: Js,
@@ -78,36 +87,50 @@ impl Js {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Codecs {
-    /// An exact decimal: Postgres's `numeric` and MySQL's and DuckDB's `DECIMAL`. A `number` refuses
-    /// a value a double cannot hold.
+    /// An exact decimal: Postgres's `numeric` and MySQL's `DECIMAL`. A `number` refuses
+    /// a value a double cannot hold; a decimal library, named by its package, is that library's
+    /// value, from the app's own install.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decimal: Option<DecimalCodec>,
-    /// Bytes: Postgres's `bytea`, MySQL's `BINARY`, `VARBINARY` and `BLOB`, and SQLite's and
-    /// DuckDB's `BLOB`. A `string` is their base64.
+    /// Bytes: Postgres's `bytea`, MySQL's `BINARY`, `VARBINARY` and `BLOB`, and SQLite's
+    /// `BLOB`. A `string` is their base64.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<BytesCodec>,
-    /// A date: `date`, MySQL's and DuckDB's `DATE`, a SQLite column declared `DATE`.
+    /// A date: `date`, MySQL's `DATE`, a SQLite column declared `DATE`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<DateCodec>,
-    /// A time of day with no zone: Postgres's and DuckDB's `time`, a SQLite column declared
+    /// A time of day with no zone: Postgres's `time`, a SQLite column declared
     /// `TIME`. One that keeps its offset (`timetz`) keeps its text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<TimeCodec>,
     /// A date and time of day as a wall clock reads, with no zone: Postgres's `timestamp`,
-    /// MySQL's `DATETIME` and `TIMESTAMP`, DuckDB's `TIMESTAMP`, a SQLite column declared
+    /// MySQL's `DATETIME` and `TIMESTAMP`, a SQLite column declared
     /// `DATETIME` or `TIMESTAMP`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub datetime: Option<DateTimeCodec>,
-    /// An instant: Postgres's and DuckDB's `timestamptz`.
+    /// An instant: Postgres's `timestamptz`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instant: Option<InstantCodec>,
-    /// A duration: Postgres's `interval`, MySQL's `TIME`, DuckDB's `INTERVAL`. A
+    /// A duration: Postgres's `interval`, MySQL's `TIME`. A
     /// `Temporal.Duration` refuses one whose parts differ in sign, which it cannot hold.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<DurationCodec>,
     /// A set of members: MySQL's `SET`, a `Set` by default, or an `Array` of its members.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub set: Option<SetCodec>,
+    /// A vector of floats: pgvector's `vector` and `halfvec` and MySQL's `VECTOR`, an array of
+    /// numbers by default, or a `TypedArray`: a `Float32Array`, and for a `halfvec` a
+    /// `Float16Array`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector: Option<VectorCodec>,
+    /// A geometry: PostGIS's `geometry` and `geography`, and MySQL's `GEOMETRY`.
+    /// `GeoJSON` is a GeoJSON geometry, with its SRID as an `srid` member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<GeometryCodec>,
+    /// A network address: Postgres's `inet` and `cidr`. `ip-address` is that library's
+    /// `Address4` or `Address6`, from the app's own install.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inet: Option<InetCodec>,
 }
 
 impl Codecs {
@@ -117,10 +140,17 @@ impl Codecs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
 pub enum DecimalCodec {
+    #[serde(rename = "string")]
     String,
+    #[serde(rename = "number")]
     Number,
+    #[serde(rename = "decimal.js")]
+    DecimalJs,
+    #[serde(rename = "bignumber.js")]
+    BigNumberJs,
+    #[serde(rename = "big.js")]
+    BigJs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -176,6 +206,23 @@ pub enum SetCodec {
     Array,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum VectorCodec {
+    TypedArray,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum GeometryCodec {
+    #[serde(rename = "GeoJSON")]
+    GeoJson,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum InetCodec {
+    #[serde(rename = "ip-address")]
+    IpAddress,
+}
+
 /// Why the file does not parse, at byte offsets in its text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConfigError {
@@ -218,6 +265,8 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
     if masked != text {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
+        project.dir = project.dir.as_deref().map(unmask_placeholders);
+        project.shadow_url = project.shadow_url.as_deref().map(unmask_placeholders);
         for item in project.env.iter_mut().flatten() {
             *item = unmask_placeholders(item);
         }
@@ -285,6 +334,14 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_migrations_keys() {
+        let p = parse("dir: db\nshadow_url: ${SHADOW_URL}\n").unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "shadow_url": "${SHADOW_URL}" }));
+        assert!(parse("migrate:\n  lock: true\n").is_err(), "the lock is always kept, and needs no setting");
+        assert_eq!(parse("shadow_url: null\n").unwrap().shadow_url, None, "null is the default the docs show");
+    }
+
+    #[test]
     fn a_key_the_library_does_not_know_is_an_error_at_its_place() {
         let text = "url: postgres://x/db\ndialect: sqlite\n";
         let e = parse(text).unwrap_err();
@@ -326,6 +383,20 @@ mod tests {
         assert_eq!(serde_json::to_value(parse("js:\n  codecs:\n    set: Set\n    bytes: Uint8Array\n").unwrap()).unwrap(), serde_json::json!({ "js": { "codecs": { "set": "Set", "bytes": "Uint8Array" } } }));
         assert_eq!(serde_json::to_value(parse("js:\n  codecs: {}\n").unwrap()).unwrap(), serde_json::json!({}));
         // A family or a type the section does not know is an error that names what it takes.
+        // A decimal library is named by its package.
+        for (library, codec) in [("decimal.js", DecimalCodec::DecimalJs), ("bignumber.js", DecimalCodec::BigNumberJs), ("big.js", DecimalCodec::BigJs)] {
+            let p = parse(&format!("js:\n  codecs:\n    decimal: {library}\n")).unwrap();
+            assert_eq!(p.js.codecs.decimal, Some(codec));
+            assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "js": { "codecs": { "decimal": library } } }));
+        }
+        // A vector's typed array, a geometry's GeoJSON and a network address's library.
+        let p = parse("js:\n  codecs:\n    vector: TypedArray\n    geometry: GeoJSON\n    inet: ip-address\n").unwrap();
+        assert_eq!((p.js.codecs.vector, p.js.codecs.geometry, p.js.codecs.inet), (Some(VectorCodec::TypedArray), Some(GeometryCodec::GeoJson), Some(InetCodec::IpAddress)));
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "js": { "codecs": { "vector": "TypedArray", "geometry": "GeoJSON", "inet": "ip-address" } } }));
+        let e = parse("js:\n  codecs:\n    vector: Float32Array\n").unwrap_err();
+        assert!(e.message.contains("unknown variant `Float32Array`, expected `TypedArray`"), "{}", e.message);
+        let e = parse("js:\n  codecs:\n    decimal: Decimal\n").unwrap_err();
+        assert!(e.message.contains("unknown variant `Decimal`, expected one of `string`, `number`, `decimal.js`, `bignumber.js`, `big.js`"), "{}", e.message);
         let e = parse("js:\n  codecs:\n    instant: Date\n").unwrap_err();
         assert!(e.message.contains("unknown variant `Date`, expected `string` or `Temporal.Instant`"), "{}", e.message);
         let e = parse("js:\n  codecs:\n    decimal: number\n    interval: Temporal.Duration\n").unwrap_err();

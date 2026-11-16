@@ -1,17 +1,17 @@
 ---
 title: Postgres
-description: How Reylo types SQL queries on Postgres. The TypeScript type of each column, null values, row counts, parameters, drivers and limits.
+description: How Reylo types SQL queries on Postgres. Each column's type in TypeScript and Rust, null values, row counts, parameters, drivers and limits.
 ---
 
 <p className="dk-subheader">How Reylo types queries on Postgres</p>
 
-[Reylo](/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers how it types and runs queries on Postgres: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript and Rust. This page covers how it types and runs queries on Postgres: column types, null values, row counts, parameters and drivers.
 
 | | |
 | --- | --- |
 | Postgres versions | 14 to 18 |
 | Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url). Connect directly or through a pooler in session mode, not one in transaction mode such as PgBouncer's. |
-| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, and Knex over `pg` ([Drivers](#drivers)) |
+| Drivers | In TypeScript, postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, and Knex over `pg` ([Drivers](#drivers)); in Rust, sqlx |
 | Type checking | Reylo's engine connects to Postgres itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -69,25 +69,23 @@ Reylo types each query from Postgres's own analysis of it.
 
 Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type. This information is cross-referenced against the schema catalog, enabling high-fidelity type inference for any query.
 
-| What | Where it comes from |
-| --- | --- |
-| Parameter types | the server's description of the prepared statement |
-| Column types | the server's description; an enum as its labels, a domain as its base type, a JSON column as what its JSON Schema `CHECK` admits |
-| Nullability | the catalog's `NOT NULL`, outer joins, the expressions |
-| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
-| Nested rows | an `array(select r from (…) r)` of a subquery's or a table's whole rows, typed field by field |
-| Nested JSON | built with `jsonb_build_object`, `jsonb_agg` or `to_jsonb` of a row, typed from their arguments |
-
 ## Data types
 
-Each Postgres type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from what `Bun.sql` loses ([Drivers](#drivers)):
+Each Postgres type has one TypeScript type and one Rust type.
+
+<LanguageSwitch />
+
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
+
+In TypeScript, `.run()` returns the same value for a type on every driver, apart from what `Bun.sql` loses ([Drivers](#drivers)):
 
 | SQL type | TypeScript | The value `.run()` returns |
 | --- | --- | --- |
 | `smallint`, `integer`, `oid` | `number` | `42` |
 | `bigint`, `bigserial`, `count(*)` | `bigint` | `9007199254740993n` |
 | `real`, `double precision` | `number` | `1.1` |
-| `numeric`, `money` | `string` | `"12.50"`, `"$1.50"` |
+| `numeric`, `money` | `string` | `"12.50"`, `"1.50"` |
 | `text`, `varchar`, `char`, `uuid` | `string` | `"Ada"` |
 | `boolean` | `boolean` | `true` |
 | `date` | `string` | `"2026-10-20"` |
@@ -111,7 +109,44 @@ Each Postgres type maps to one TypeScript type, and `.run()` returns the same va
 | `hstore` | `Record<string, string \| null>` | `{ a: "1", b: null }` |
 | Every other type (`inet`, `tsvector`, `xml`, …) | `string` | `"192.168.0.1"` |
 
-Each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
+</LanguagePanel>
+<LanguagePanel value="Rust">
+
+In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)):
+
+| SQL type | Rust |
+| --- | --- |
+| `smallint`, `integer`, `oid` | `i16`, `i32`, sqlx's `Oid` |
+| `bigint`, `bigserial`, `count(*)` | `i64` |
+| `real`, `double precision` | `f32`, `f64` |
+| `numeric`, `money` | `rust_decimal::Decimal` or `bigdecimal::BigDecimal`; sqlx's `PgMoney` |
+| `text`, `varchar`, `char`, `uuid` | `String`; `uuid::Uuid` |
+| `boolean` | `bool` |
+| `date` | `chrono::NaiveDate`, or `time::Date` |
+| `timestamp` | `chrono::NaiveDateTime`, or `time::PrimitiveDateTime` |
+| `timestamptz` | `chrono::DateTime<Utc>`, or `time::OffsetDateTime` |
+| `time`, `timetz` | `chrono::NaiveTime`, or `time::Time`; `timetz` not yet |
+| `interval` | sqlx's `PgInterval` |
+| `json`, `jsonb` | `serde_json::Value` |
+| `json`, `jsonb` a JSON Schema `CHECK` holds | sqlx's `Json` of what the schema admits |
+| JSON the statement builds (`jsonb_build_object`, `jsonb_agg`) | sqlx's `Json` of what it builds |
+| `bytea` | `Vec<u8>` |
+| An array | a `Vec` of its element type, each element an `Option` |
+| An enum | an enum the module holds |
+| A domain | its base type |
+| A row value of a table, a subquery or a composite type | not yet |
+| `point`, `box`, `circle` and the other geometric types | not yet |
+| A range or a multirange | not yet |
+| pgvector's `vector`, `halfvec` | not yet |
+| `hstore` | not yet |
+| Every other type (`inet`, `tsvector`, `xml`, …) | not yet |
+
+A type that is not yet written fails to compile and says to cast it to `text`. The decimal, date and uuid types are those of the features you turn on ([Install](/rust#install)), and a value its Rust type can't hold, such as `infinity` in a `date`, is an error when the row is read, never a changed value.
+
+</LanguagePanel>
+</LanguagePanels>
+
+In TypeScript, each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
 
 ### Integers
 
@@ -141,15 +176,17 @@ Postgres types a `sum()` by what it adds up: an `integer` column sums to a `bigi
 
 ### Decimals
 
-A `numeric` comes back as its exact text, keeping the column's scale, and so does an `avg()`. A `money` comes back as text in the server's currency format:
+A `numeric` comes back as its exact text, keeping the column's scale, and so does an `avg()`. A `money` comes back as its exact decimal text too, read from the C locale's `$1,234.56`, and a parameter of it takes that text, to the cent:
 
 <Pairs>
 
 - `12.50::numeric` → `"12.50"`
 - `avg(2::integer)` → `"2.0000000000000000"`
-- `1.50::money` → `"$1.50"`
+- `1234.5::money` → `"1234.50"`
 
 </Pairs>
+
+Postgres reads a `money` parameter in the session's `lc_monetary`, so under `de_DE` it would store `1234.56` as `123456.00`. Before a client's first statement with a `money` parameter, Reylo checks the locale once and refuses one that doesn't write `1234.50` as the C locale's `$1,234.50`, as it refuses another locale's text in a result. Set `lc_monetary = 'C'` on the session, the role or the database, or cast through `numeric` both ways: the column to read it, and the parameter to write it (`:fee::numeric`).
 
 ### Dates and times
 
@@ -172,7 +209,7 @@ If your runtime has `Temporal`, read the instant with `Temporal.Instant.from()`,
 
 **Fractions of a second**
 
-A `timestamptz` or `timestamp` always has six fraction digits, the microseconds Postgres keeps, so two of them sort as strings in the order of their times.
+A `timestamptz` or `timestamp` always has six fraction digits, the microseconds Postgres keeps, so two of them sort as strings in the order of their times. A `Date` keeps milliseconds, so a value passed through one loses its microseconds, and `where placed_at > :since` can then match the row it came from. Pass back the text `.run()` returned.
 
 <Pairs>
 
@@ -181,8 +218,6 @@ A `timestamptz` or `timestamp` always has six fraction digits, the microseconds 
 - `'2026-10-20 10:00:00+00'::timestamptz` → `"2026-10-20T10:00:00.000000Z"`
 
 </Pairs>
-
-A `Date` keeps milliseconds, so a value passed through one loses its microseconds, and `where placed_at > :since` can then match the row it came from. Pass back the text `.run()` returned.
 
 **Infinity**
 
@@ -467,15 +502,13 @@ group by u.id
 
 **`NULL` elements**
 
-Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`.
+Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`. A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
 
 <Pairs>
 
 - `'{a,NULL}'::text[]` → `[ "a", null ]`
 
 </Pairs>
-
-A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
 
 **Several dimensions**
 
@@ -551,11 +584,7 @@ from users u
 
 <Rules>
 
-**Arrays of rows**
-
-An `array(…)` is `[]` over no rows, never `null`, where an `array_agg` of the same rows is `null`. An element is `null` only where an outer join nulls its whole row. If the row's alias is also the name of a column in scope, Postgres reads the column, and so does the type.
-
-Each level of nesting escapes the quotes and backslashes inside it again, which multiplies a JSON document's text by about four per level. Build rows nested that deep as JSON instead.
+- **Arrays of rows.** An `array(…)` is `[]` over no rows, never `null`, where an `array_agg` of the same rows is `null`. An element is `null` only where an outer join nulls its whole row. If the row's alias is also the name of a column in scope, Postgres reads the column, and so does the type. Each level of nesting escapes the quotes and backslashes inside it again, which multiplies a JSON document's text by about four per level. Build rows nested that deep as JSON instead.
 
 **Geometric types**
 
@@ -616,389 +645,57 @@ Postgres writes a range of integers or dates as `[)`, whatever the query wrote, 
 
 </Rules>
 
-## Nullability
+### Type descriptors
 
-Every column is typed `| null` unless Reylo can tell it never is null. On Postgres, it reads your schema and the query:
+How the engine writes each type.
 
-<Rules>
+The engine gives every column its type in [Reylo Type Defs](/typedefs), as [`reylo analyze`](/cli#reylo-analyze) prints it. A column of each Postgres type:
 
-**`NOT NULL` columns**
-
-A table's column is non-null if it has a valid `NOT NULL` constraint, including in every table that inherits from it.
-
-<InferenceCard>
-
-```sql file="pg_null_columns.sql"
-select name, email
-from users
-```
-
-</InferenceCard>
-
-**Outer joins**
-
-An outer join makes the joined table's columns nullable: the right side of a `left join`, the left side of a `right join`, and both sides of a `full join`. A table joined to itself is told apart by its alias.
-
-<InferenceCard>
-
-```sql file="pg_null_left_join.sql"
-select u.name, o.total
-from users u
-left join orders o on o.user_id = u.id
-```
-
-</InferenceCard>
-
-**Tests that rule out `NULL`**
-
-A test that fails on `NULL`, in the `where` or in an inner join's `on`, makes its column non-null, whether the query selects it by name or with `*`. On a joined table, it also shows the row exists, so the table's `NOT NULL` columns are non-null again. The `where` of an `update` or a `delete` does the same for its `returning`, except for a column the `update` sets, a generated column, and a table whose trigger or rule may change the row.
-
-<InferenceCard>
-
-```sql file="pg_null_where.sql"
-select u.name, o.total, o.ships_on
-from users u
-left join orders o on o.user_id = u.id
-where o.paid
-```
-
-</InferenceCard>
-
-**Expressions**
-
-Literals, `count`, `exists` and `is null` are never null. Operators, casts, built-in functions, `in`, `between` and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is. A function that returns `NULL` for some valid input stays nullable: `nullif`, `substring` with a pattern, and `to_char`, or `extract` of a field such as `month`, over an infinite timestamp (fields that grow with time, such as `year` and `epoch`, are infinite there instead). Two set-returning functions in one select list run in step and pad the shorter with `NULL`, so both are nullable.
-
-<InferenceCard>
-
-```sql file="pg_null_expressions.sql"
-select name || '!' as shout,
-  upper(email) as upper_email,
-  coalesce(email, '') as email_or_empty,
-  email is null as no_email
-from users
-```
-
-</InferenceCard>
-
-**Aggregates**
-
-Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `array_agg` and `jsonb_agg` are non-null, `max`, `sum`, `any_value`, `percentile_cont` and `mode` are non-null when their arguments are, and a `filter` keeps an aggregate nullable.
-
-<InferenceCard>
-
-```sql file="pg_null_aggregates.sql"
-select user_id,
-  array_agg(id) as order_ids,
-  max(ships_on) as last_ships_on,
-  sum(total) filter (where paid) as paid_total
-from orders
-group by user_id
-```
-
-</InferenceCard>
-
-**Subqueries**
-
-A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`. A column of a `with` query or a subquery in `from` is as nullable as it is in that query, and one of a `lateral` subquery too. A set-returning function in `from` returns no row for a `NULL` argument, so the values of `generate_series`, the keys of `jsonb_each` and a `with ordinality` number are never null.
-
-<InferenceCard>
-
-```sql file="pg_null_subqueries.sql"
-select (select count(*) from orders) as orders,
-  (select name from users order by id limit 1) as first_name
-```
-
-</InferenceCard>
-
-**Window functions**
-
-A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. An aggregate over a window, and `first_value` or `last_value`, follows its argument, unless a `filter` or a frame that can leave out the current row keeps it nullable.
-
-<InferenceCard>
-
-```sql file="pg_null_window.sql"
-select id,
-  lag(placed_at) over (order by placed_at) as previous,
-  row_number() over (order by placed_at) as n,
-  sum(total) over (order by placed_at) as running_total
-from orders
-```
-
-</InferenceCard>
-
-**`union`**
-
-A `union` column is non-null when it's non-null in every branch.
-
-<InferenceCard>
-
-```sql file="pg_null_union.sql"
-select name as label, email as contact from users
-union all
-select 'guest', null
-```
-
-</InferenceCard>
-
-**Whole rows**
-
-A whole row is non-null unless an outer join can null it, and keeps each column's type. Turned into JSON, an outer-joined row's fields keep their own nullability.
-
-<InferenceCard>
-
-```sql file="pg_null_rows.sql"
-select to_jsonb(o) as "order"
-from orders o
-```
-
-</InferenceCard>
-
-So does the whole row of a subquery or a `with` query, which Postgres itself types only as `record`, and a recursive `with` query's `cycle` path and `search` column, which hold rows of the columns they name.
-
-<InferenceCard>
-
-```sql file="pg_subquery_rows.sql"
-select jsonb_agg(u) as people
-from (select id, name, email from users) u
-```
-
-</InferenceCard>
-
-A function that returns one value of no row type gives that value for its whole row, so `to_jsonb(f.*)` over it is a string or a number where the value is one, not an object. With several columns, a row type, `with ordinality` or `rows from` of several functions, the whole row is a row.
-
-**SQL functions**
-
-A function in `language sql` is read as the query it is, so its body decides which columns are null and how many rows it returns. Mark it `stable` if it only reads: Postgres then plans its body into your query, so a filter on its rows can use an index.
-
-<InferenceCard>
+<Analyzed file="types.sql" format="types">
 
 ```sql schema
-create table comments (
-  id bigint primary key,
-  post_id bigint not null,
-  body text not null
-);
-
-create function comments_for(p bigint)
-returns table (id bigint, body text)
-language sql stable
-as $$
-  select id, body
-  from comments
-  where post_id = p
-$$;
+create type mood as enum ('sad', 'ok', 'happy');
+create domain email as varchar(255) check (value like '%@%');
 ```
 
-```sql file="pg_null_function.sql"
-select id, body
-from comments_for(:post_id::bigint)
+```sql
+select
+  null::smallint as "smallint", null::integer as "integer", null::bigint as "bigint", null::oid as "oid",
+  null::real as "real", null::double precision as "double precision",
+  null::numeric as "numeric", null::numeric(10,2) as "numeric(10,2)", null::money as "money",
+  null::text as "text", null::varchar(255) as "varchar(255)", null::char(8) as "char(8)", null::name as "name",
+  null::mood as "mood", null::email as "email",
+  null::boolean as "boolean", null::uuid as "uuid", null::bytea as "bytea", null::macaddr as "macaddr",
+  null::date as "date", null::time as "time", null::timetz as "timetz",
+  null::timestamp as "timestamp", null::timestamptz as "timestamptz", null::interval as "interval",
+  null::json as "json", null::jsonb as "jsonb", null::xml as "xml",
+  null::integer[] as "integer[]", null::bit(7) as "bit(7)", null::varbit as "varbit",
+  null::point as "point", null::circle as "circle", null::inet as "inet",
+  null::int4range as "int4range", null::tstzmultirange as "tstzmultirange", null::tsvector as "tsvector"
 ```
 
-</InferenceCard>
+</Analyzed>
 
-</Rules>
+The schema and the query narrow these. A `CHECK` holds a string to a `pattern`, from a `like`, or from a case-sensitive `~` where an I-Regexp matches exactly the values it finds a match in, so `code ~ '^[A-Z]{3}$'` is `[A-Z]{3}`. An array that `array_agg(distinct …)`, `json_agg(distinct …)` or `jsonb_agg(distinct …)` builds is `distinct`, unless its elements hold an array, which Postgres compares with its bounds, JSON, whose `null` and SQL's `NULL` are one value inside JSON, or a PostGIS geometry, which it compares by its bytes. A composite type's attribute comments are its fields' comments, wherever the row is a value.
 
-Your own operators and casts, an extension's, and a function whose body Reylo can't read tell Reylo nothing: it assumes nothing wherever Postgres could pick one of them over a built-in. Where the operands' types can only pick a built-in, as with text and number columns beside pgvector, PostGIS or citext, the built-in's rules apply. Postgres reads a call of one argument on a whole row, as `length(o)` or `sum(o)`, as the row's column of that name where no function of the name takes the row, so Reylo types such a call as nullable, and counts it as no aggregate where a row may have a column of that name. To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
+## Nullability
+
+Each column can be null unless Reylo can tell it never is, from `NOT NULL`, joins, `where` tests and expressions ([Inference](/inference#left-joins)). On Postgres:
+
+- **Inherited tables.** A `NOT NULL` constraint holds in every table that inherits from its table.
+- **Whole rows.** The whole row of a subquery or a `with` query, which Postgres types only as `record`, is typed field by field.
+- **SQL functions.** A function in `language sql` is read as the query it is, so its body decides which columns are null. Mark it `stable` if it only reads: Postgres then plans its body into your query.
+- **Your own operators, casts and functions** tell Reylo nothing, and neither do an extension's or a function whose body Reylo can't read. Where the operands' types can only pick a built-in, as beside pgvector, PostGIS or citext, the built-in's rules apply. To say a value is never null, write `coalesce(x, …)` or `where x is not null`.
 
 ## Cardinality
 
-Reylo infers how many rows a query returns, and types `.run()`'s result to match:
+Reylo infers how many rows a query returns from its keys, aggregates, `limit 1` and `returning` ([Inference](/inference#unique-keys)). On Postgres:
 
-| `.run()` returns | `cardinality` | When the query |
-| --- | --- | --- |
-| `Row` | `one` | is an aggregate without a `group by` (or with `group by ()`), or inserts one row, with `values (…)` or a `select` of one row, and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query, a view or a `language sql` function that keeps the key; has `limit 1` or `fetch first 1 row only`; has a `where` but no `from`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`, a `from` or `using` included; or inserts one row with `returning` and `on conflict do nothing`, or `on conflict do update` beside a `with` query that writes, which may have updated that row already |
-| `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
-| `Row[]` | `many` | is anything else |
-
-Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/inference#values)). Among several columns, such an expression is a type error where Postgres names it `?column?`, as it does `id + 1`; a function's name, like `lower`, passes.
-
-<Rules>
-
-**Unique keys**
-
-A query that compares every column of a primary key or unique index with `=` returns one row or `null`. A unique index on an expression counts when the query compares the same expression, written as Postgres stores it in the index, cast included.
-
-<InferenceCard>
-
-```sql file="pg_card_unique.sql"
-select id, name
-from users
-where lower(email) = lower(:email)
-```
-
-</InferenceCard>
-
-**Writes that read a `with` query**
-
-An `update` or `delete` that joins with `from` or `using` is still a row or `null` when its key is matched, since a row it writes is written once, whatever it joins. The match can be to a `with` query of one row, the usual way to use a parameter twice:
-
-<InferenceCard>
-
-```sql file="pg_card_with_input.sql"
-with input as (
-  select :id::int as id, :name::text as name
-)
-update users u
-set name = input.name
-from input
-where u.id = input.id and u.name <> input.name
-returning u.id
-```
-
-</InferenceCard>
-
-**Triggers**
-
-A `BEFORE` row trigger can skip a row by returning `NULL`, so a write it fires on returns a row or `null`. Reylo reads a trigger written in PL/pgSQL: where every `return` returns `new`, or `old` on an update or a delete, it skips nothing, and the write keeps its cardinality. A trigger in another language, or one that assigns `new` as a whole, may skip a row.
-
-<InferenceCard>
-
-```sql schema
-create table notes (
-  id serial primary key,
-  body text not null,
-  edited_at timestamptz not null default now()
-);
-create function touch_note() returns trigger language plpgsql as $$
-begin
-  new.edited_at := now();
-  return new;
-end $$;
-create trigger touch_note before update on notes
-  for each row execute function touch_note();
-```
-
-```sql file="pg_card_trigger.sql"
-insert into notes (id, body)
-values (:id, :body)
-on conflict (id) do update set body = excluded.body
-returning id, edited_at
-```
-
-</InferenceCard>
-
-**Partial unique indexes**
-
-A partial unique index counts only when the `where` includes its condition.
-
-<InferenceCard>
-
-```sql schema
-create table slugs (
-  id serial primary key,
-  slug text not null,
-  deleted boolean not null default false
-);
-create unique index on slugs (slug) where not deleted;
-```
-
-```sql file="pg_card_partial.sql"
-select id
-from slugs
-where slug = :slug and not deleted
-```
-
-</InferenceCard>
-
-**Subqueries, `with` queries and views**
-
-A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, or when its `group by` or `distinct` lists the columns. A `union`, `intersect` or `except` without `all` is keyed on its whole row when each column is one table column on both sides, of one type, and `intersect` and `except` keep their left side's keys, with `all` or without. A key column its `where` pins to one value may be left out, a column list renames the key's columns, and a unique index on an expression counts when the select list keeps the expression under an alias.
-
-<InferenceCard>
-
-```sql file="pg_card_subquery.sql"
-select id, total
-from (
-  select o.id, o.total, u.name
-  from orders o
-  join users u on u.id = o.user_id
-  where o.paid
-) paid_orders
-where id = :id::bigint
-```
-
-</InferenceCard>
-
-A `union all`, a set-returning function such as `unnest` in the select list, or a key column passed through an expression or a cast that no unique index covers leaves no key.
-
-**What doesn't count**
-
-Part of a composite key doesn't count, and neither does a `having` or an `insert … select … returning`.
-
-<InferenceCard>
-
-```sql file="pg_card_insert_select.sql"
-insert into orders (user_id, total)
-select id, 0 from users
-returning id
-```
-
-</InferenceCard>
-
-A comparison under another collation doesn't count either. A column under the default collation compared with a value that carries a nondeterministic one compares under that one, where `'a'` can equal both `'a'` and `'A'`, so a unique key on the column bounds nothing. In a database that holds such a collation, a key is matched by a parameter, a literal, a built-in call or cast of those, or a column Reylo reads as carrying none; a subquery or your own function counts only in a database that holds none.
-
-**Result key**
-
-A query that can return more than one row may also have a result key: the columns that identify each row, since no two rows of a result agree on all of them. Anything that compares two results of the same query can match each row to its earlier version by them. Reylo lists them on the query's Standard Query object, as `query["~standard"].query.key`.
-
-A table's primary key or unique key is the result key when the query selects every column of it unchanged, none of them may be null, and its joins add one row at most per row of that table; where each table's key is selected, the keys together are. So are the `group by` columns, the `distinct on` columns, and the whole row of a `distinct`, or of a `union`, `intersect` or `except` without `all`. A column of an array, JSON or composite type is never part of one, since two of its values can read alike. A query that returns one row at most has none, since its cardinality says as much, and neither does one Reylo infers no key for.
-
-```ts twoslash tab="main.ts"
-import paidOrders from "./pg_key_orders.sql";
-
-paidOrders["~standard"].query.key; // ["id"]
-```
-
-```sql tab="pg_key_orders.sql"
-select o.id, o.total, u.name
-from orders o
-join users u on u.id = o.user_id
-where o.paid
-```
-
-**Decoding each value once**
-
-A driver that reads a result value by value can decode each value as it reads it, instead of handing the raw rows to `decode`. The query's Standard Query object lists its output columns in order as `columns`, each with its `name` and a `decode` that maps the column's text to its value, typed column by column. Its `output` takes the rows built that way, keyed by the columns' names, and returns what `decode` would: the rows, the row or `null`, as the cardinality says. Where the query's one column is an expression with no alias, both return that column's values instead of rows ([single values](/inference#values)). A driver never calls a column's `decode` for NULL, which is `null` in the row.
-
-```ts twoslash tab="main.ts"
-import paidOrders from "./pg_columns_orders.sql";
-
-const { columns, output } = paidOrders["~standard"].query;
-columns[2].decode("2026-10-22 14:46:00+02"); // "2026-10-22T12:46:00.000000Z"
-output([{ id: 1n, total: "12.50", placed_at: "2026-10-22T12:46:00.000000Z" }]);
-```
-
-```sql tab="pg_columns_orders.sql"
-select o.id, o.total, o.placed_at
-from orders o
-where o.paid
-```
-
-**Cardinality**
-
-The query's Standard Query object says how many rows its statement returns as `cardinality`, so a driver tells a list of rows from one value that is itself an array, as in `select array_agg(id) from orders`.
-
-**Total order**
-
-A query whose `order by` sorts by a unique key of the rows it sorts has a total order: no two rows of a result tie, so the order is the same on every run. Reylo marks it on the query's Standard Query object as `ordered: true`, in its type too, so anything that compares two results by position can require it.
-
-The key may be a result key or a table's primary key or unique key, selected or not, whose columns may not be null, through joins that add one row at most per row of that table; where each table's key is sorted by, the keys together are. A `limit` or `offset` keeps the order total. A query without an `order by` has none, and so does one that sorts a key's column by an expression, with `using`, or under a collation that is not deterministic, or with `collate`, and one that sorts by anything whose value can change from run to run, such as `random()`, a window function or a `string_agg`, even one with an `order by` of its own. A query that returns one row at most has none, since its cardinality says as much.
-
-```ts twoslash tab="main.ts"
-import recentOrders from "./pg_ordered_orders.sql";
-
-recentOrders["~standard"].query.ordered; // true
-```
-
-```sql tab="pg_ordered_orders.sql"
-select o.total, u.name
-from orders o
-join users u on u.id = o.user_id
-order by o.placed_at desc, o.id
-```
-
-</Rules>
+- **Unique indexes on an expression** count when the query compares the same expression, written as Postgres stores it in the index, cast included.
+- **Partial unique indexes** count only when the `where` includes the index's condition.
+- **Writes that join**, with `from`, `using` or a `with` query of one row, still return a row or `null` when their key is matched.
+- **`BEFORE` row triggers** can skip a row by returning `NULL`, so a write they fire on returns a row or `null`. A PL/pgSQL trigger whose every `return` returns `new`, or `old` on an update or a delete, skips nothing.
+- **Nondeterministic collations** bound nothing: compared under one, where `'a'` can equal `'A'`, a unique key matches more than one row.
 
 ## Parameters
 
@@ -1067,7 +764,7 @@ values ('click', :payload::text::jsonb)
 
 **JSON null**
 
-Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `not null` JSON column can hold. Where it takes null, as for a column that may hold it or a cast to [`nullable(jsonb)`](#parameters-that-may-be-null), `null` is SQL's `NULL`:
+Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `not null` JSON column can hold. Where it takes null, as for a column that may hold it or a cast to [`nullable(jsonb)`](#parameters-that-may-be-null), `null` is SQL's `NULL`: A `coalesce` or a null test doesn't make a parameter take null, so `coalesce(:doc::jsonb, doc)` given `null` gives JSON's `null`. Write `coalesce(:doc::nullable(jsonb), doc)` to keep `doc`.
 
 ```ts twoslash tab="main.ts"
 import jsonKind from "./pg_json_kind.sql";
@@ -1079,8 +776,6 @@ const { kind } = await jsonKind.run(db, { doc: null });
 ```sql tab="pg_json_kind.sql"
 select jsonb_typeof(:doc::jsonb) as kind
 ```
-
-A `coalesce` or a null test doesn't make a parameter take null, so `coalesce(:doc::jsonb, doc)` given `null` gives JSON's `null`. Write `coalesce(:doc::nullable(jsonb), doc)` to keep `doc`.
 
 </Rules>
 
@@ -1123,67 +818,9 @@ values (:user_id, :total, :ships_on)
 
 Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:role is null`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
 
-## Recipes
-
-Each of these is one statement in place of code around one.
-
-**Fill only what is still empty**
-
-To write each column only where it is still null, use `coalesce` in one statement, rather than reading the row and then updating it. Two callers can't overwrite each other, and `returning` says what the row holds now:
-
-<InferenceCard>
-
-```sql file="pg_fill_order.sql"
-update orders
-set ships_on = coalesce(ships_on, :ships_on::date),
-    receipt = coalesce(receipt, :receipt::bytea)
-where id = :id and (ships_on is null or receipt is null)
-returning id, ships_on, receipt
-```
-
-</InferenceCard>
-
-**Buckets with no gaps**
-
-To count by day with a row for each empty day, join a `generate_series` to the counts, rather than filling the gaps with `Date` arithmetic:
-
-<InferenceCard>
-
-```sql file="pg_orders_per_day.sql"
-select
-  day::date::text as day,
-  count(o.id)::int as orders
-from generate_series(
-  :from::timestamptz,
-  :to::timestamptz,
-  '1 day'
-) as day
-left join orders o
-  on o.placed_at >= day and o.placed_at < day + '1 day'
-group by day
-order by day
-```
-
-</InferenceCard>
-
-**An enum's labels as a type**
-
-A query you import only for its `Row` type never runs, so it can give you each enum as a union:
-
-```ts twoslash tab="enums.ts"
-import type { Row } from "./pg_enums.sql";
-
-export type UserRole = NonNullable<Row["role"]>;
-//          ^?
-```
-
-```sql tab="pg_enums.sql"
-select null::user_role as role
-```
-
 ## Database errors
 
-With [`.try()`](/usage#try), an error Postgres raised comes back as `{ error }`, with the fields the server sent under the same names on every driver:
+With [`.try()`](/typescript#try), an error Postgres raised comes back as `{ error }`, with the fields the server sent under the same names on every driver:
 
 | Field | What it holds |
 | --- | --- |
@@ -1197,9 +834,8 @@ With [`.try()`](/usage#try), an error Postgres raised comes back as `{ error }`,
 
 Since a function may raise any code, TypeScript takes any string for `code`. Compare `condition` to have it catch a misspelled name.
 
-When nothing the query sets off is code a user or an extension wrote (no trigger or rule on a table it writes, and no default, check, policy, view, operator class, operator or function that calls such code, nor a function such as `query_to_xml()` that runs SQL it is given), its error type is narrowed: `code` is one Postgres defines, and a unique, not-null, foreign key, check or exclusion violation names only the constraints, tables, columns and domains the query writes through, its partitions and the tables its foreign keys' actions reach included.
-
-An error inside a transaction aborts it, even when `.try()` returns the error: every later statement fails with `in_failed_sql_transaction`, and a commit rolls back without an error. With postgres.js, `sql.begin()` and `tx.savepoint()` reject with any error a statement in them raised, including one `.try()` returned. To carry on after an error, run the statement in a savepoint and roll back to it: with pg, `savepoint s` before it and `rollback to savepoint s` when it fails; with postgres.js, `.run()` inside `tx.savepoint()`, catching the error it rejects with.
+- When nothing the query sets off is code a user or an extension wrote (no trigger or rule on a table it writes, and no default, check, policy, view, operator class, operator or function that calls such code, nor a function such as `query_to_xml()` that runs SQL it is given), its error type is narrowed: `code` is one Postgres defines, and a unique, not-null, foreign key, check or exclusion violation names only the constraints, tables, columns and domains the query writes through, its partitions and the tables its foreign keys' actions reach included.
+- An error inside a transaction aborts it, even when `.try()` returns the error: every later statement fails with `in_failed_sql_transaction`, and a commit rolls back without an error. With postgres.js, `sql.begin()` and `tx.savepoint()` reject with any error a statement in them raised, including one `.try()` returned. To carry on after an error, run the statement in a savepoint and roll back to it: with pg, `savepoint s` before it and `rollback to savepoint s` when it fails; with postgres.js, `.run()` inside `tx.savepoint()`, catching the error it rejects with.
 
 ## Drivers
 
@@ -1402,6 +1038,53 @@ await db.transaction(async (trx) => {
 });
 ```
 
+### Standard Query
+
+What a driver that reads a result value by value can use, from the query's Standard Query object.
+
+<Rules>
+
+**Decoding each value once**
+
+A driver that reads a result value by value can decode each value as it reads it, instead of handing the raw rows to `decode`. The query's Standard Query object lists its output columns in order as `columns`, each with its `name` and a `decode` that maps the column's text to its value, typed column by column. Its `output` takes the rows built that way, keyed by the columns' names, and returns what `decode` would: the rows, the row or `null`, as the cardinality says. Where the query's one column is an expression with no alias, both return that column's values instead of rows ([single values](/inference#values)). A driver never calls a column's `decode` for NULL, which is `null` in the row.
+
+```ts twoslash tab="main.ts"
+import paidOrders from "./pg_columns_orders.sql";
+
+const { columns, output } = paidOrders["~standard"].query;
+columns[2].decode("2026-10-22 14:46:00+02"); // "2026-10-22T12:46:00.000000Z"
+output([{ id: 1n, total: "12.50", placed_at: "2026-10-22T12:46:00.000000Z" }]);
+```
+
+```sql tab="pg_columns_orders.sql"
+select o.id, o.total, o.placed_at
+from orders o
+where o.paid
+```
+
+- **Cardinality.** The query's Standard Query object says how many rows its statement returns as `cardinality`, so a driver tells a list of rows from one value that is itself an array, as in `select array_agg(id) from orders`.
+
+**Total order**
+
+A query whose `order by` sorts by a unique key of the rows it sorts has a total order: no two rows of a result tie, so the order is the same on every run. Reylo marks it on the query's Standard Query object as `ordered: true`, in its type too, so anything that compares two results by position can require it.
+
+- The key may be a result key or a table's primary key or unique key, selected or not, whose columns may not be null, through joins that add one row at most per row of that table; where each table's key is sorted by, the keys together are. A `limit` or `offset` keeps the order total. A query without an `order by` has none, and so does one that sorts a key's column by an expression, with `using`, or under a collation that is not deterministic, or with `collate`, and one that sorts by anything whose value can change from run to run, such as `random()`, a window function or a `string_agg`, even one with an `order by` of its own. A query that returns one row at most has none, since its cardinality says as much.
+
+```ts twoslash tab="main.ts"
+import recentOrders from "./pg_ordered_orders.sql";
+
+recentOrders["~standard"].query.ordered; // true
+```
+
+```sql tab="pg_ordered_orders.sql"
+select o.total, u.name
+from orders o
+join users u on u.id = o.user_id
+order by o.placed_at desc, o.id
+```
+
+</Rules>
+
 ## Limits
 
 What Reylo can't type on Postgres, and what to do instead:
@@ -1419,3 +1102,61 @@ What Reylo can't type on Postgres, and what to do instead:
 | `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
 | A float or `cube` on Supabase, whose Postgres prints floats rounded (`extra_float_digits = 0`), so `0.1::float8 + 0.2` comes back `0.3` | Run `alter role postgres set extra_float_digits = 1` once; the role's later connections read exact values |
+
+## Recipes
+
+Each of these is one statement in place of code around one.
+
+### Fill only what is still empty
+
+To write each column only where it is still null, use `coalesce` in one statement, rather than reading the row and then updating it. Two callers can't overwrite each other, and `returning` says what the row holds now:
+
+<InferenceCard>
+
+```sql file="pg_fill_order.sql"
+update orders
+set ships_on = coalesce(ships_on, :ships_on::date),
+    receipt = coalesce(receipt, :receipt::bytea)
+where id = :id and (ships_on is null or receipt is null)
+returning id, ships_on, receipt
+```
+
+</InferenceCard>
+
+### Buckets with no gaps
+
+To count by day with a row for each empty day, join a `generate_series` to the counts, rather than filling the gaps with `Date` arithmetic:
+
+<InferenceCard>
+
+```sql file="pg_orders_per_day.sql"
+select
+  day::date::text as day,
+  count(o.id)::int as orders
+from generate_series(
+  :from::timestamptz,
+  :to::timestamptz,
+  '1 day'
+) as day
+left join orders o
+  on o.placed_at >= day and o.placed_at < day + '1 day'
+group by day
+order by day
+```
+
+</InferenceCard>
+
+### An enum's labels as a type
+
+A query you import only for its `Row` type never runs, so it can give you each enum as a union:
+
+```ts twoslash tab="enums.ts"
+import type { Row } from "./pg_enums.sql";
+
+export type UserRole = NonNullable<Row["role"]>;
+//          ^?
+```
+
+```sql tab="pg_enums.sql"
+select null::user_role as role
+```

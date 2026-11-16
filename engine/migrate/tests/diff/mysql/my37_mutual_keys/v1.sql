@@ -1,0 +1,1 @@
+create table a (id int primary key, b_id int); create table b (id int primary key, a_id int); alter table a add constraint a_b foreign key (b_id) references b (id); alter table b add constraint b_a foreign key (a_id) references a (id);

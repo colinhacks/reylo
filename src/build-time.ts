@@ -12,11 +12,17 @@ export interface AnalyzeInput {
   /** One statement, with `:name` placeholders on every database. */
   sql: string;
   /**
-   * The database, where it is not the project's: `postgres://` or `postgresql://`, `mysql://`, a SQLite
-   * file as `file:` or `sqlite:`, or a DuckDB file as `duckdb:`, a relative path read from the working
-   * directory. Without it, the database the type check reads: `direct_url` in the project file, else
-   * `DATABASE_URL` from the environment or the project's `.env` files.
+   * The database, where it is not the project's: `postgres://` or `postgresql://`, `mysql://`, a
+   * SQLite file as `file:` or `sqlite:`, a relative path read from the working directory. Without
+   * it, the database the type check reads: `direct_url` in the project file, else `DATABASE_URL`
+   * from the environment or the project's `.env` files.
    */
+  url?: string | undefined;
+}
+
+/** What `migrate()` reads on a server: the database, where it is not the project's. */
+export interface MigrateOptions {
+  /** The database to migrate, where it is not the project's: `direct_url` in the project file, else `DATABASE_URL`. */
   url?: string | undefined;
 }
 
@@ -26,12 +32,14 @@ export type { StatementDescriptor };
 export type BuildTime = {
   /** One statement's descriptor in Reylo Type Defs (src/analyze-api.ts). */
   analyze(input: AnalyzeInput): Promise<StatementDescriptor>;
+  /** `reylo migrate deploy`, run as the command line runs it (src/migrate-deploy.ts). */
+  migrate(options: MigrateOptions): Promise<string[]>;
 };
 
 type NodeRequire = ((id: string) => unknown) & { resolve?(id: string): string };
 type Host = { getBuiltinModule?(id: string): unknown; cwd?(): string; argv?: string[] };
 
-const CANNOT_RUN = "reylo cannot analyze a statement in this runtime: the engine is a native program, which needs Node 24 or later, or Bun.";
+const CANNOT_RUN = "reylo cannot run its engine in this runtime, to analyze a statement or to migrate: the engine is a native program, which needs Node 24 or later, or Bun. On a Durable Object, migrate(ctx.storage) runs the migrations without it.";
 
 /** The build-time half, from the reylo the project resolves: from the working directory, then from the program's own script (a server started from another directory). */
 export function buildTime(): BuildTime {

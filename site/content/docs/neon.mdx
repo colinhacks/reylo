@@ -5,9 +5,7 @@ description: How to use Reylo with Neon. The connection string the type check re
 
 <p className="dk-subheader">Reylo on Neon's serverless Postgres</p>
 
-Reylo works with Neon.
-
-Neon is Postgres, so everything on the [Postgres](/postgres) page holds for it. This page covers what's specific to Neon: its two connection strings, its serverless driver and its branches.
+Reylo works with Neon. Neon is Postgres, so everything on the [Postgres](/postgres) page holds for it. This page covers what's specific to Neon: its two connection strings, its serverless driver and its branches.
 
 | | |
 | --- | --- |
@@ -16,7 +14,7 @@ Neon is Postgres, so everything on the [Postgres](/postgres) page holds for it. 
 | Queries run on | `@neondatabase/serverless`, `pg` or postgres.js, through the pooled connection string |
 | Transactions | On a `Pool`'s client over a WebSocket, not on `neon()` over HTTP |
 | Branches | Each has connection strings of its own, to type against its schema |
-| Edge runtimes | Neon's driver, on the [Next.js edge runtime](/nextjs#the-edge-runtime) and in [Cloudflare Workers](/cloudflare) |
+| Edge runtimes | Neon's driver, on the [Next.js edge runtime](/nextjs#the-edge-runtime) and in [Cloudflare Workers](/d1#setup) |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -108,7 +106,7 @@ returning id
 
 ## TCP drivers
 
-Over TCP, pass a `pg` pool or a postgres.js client, made with the pooled connection string:
+Over TCP, pass a `pg` pool or a postgres.js client, or in Rust an sqlx pool, made with the pooled connection string:
 
 ```ts twoslash tab="pg"
 import pg from "pg";
@@ -126,7 +124,16 @@ const db = postgres(process.env.DATABASE_URL);
 const user = await getUser.run(db, { id: 1 });
 ```
 
-Each runs a transaction its own way: on a client checked out of the pool with `pg`, and in `db.begin()` with postgres.js ([Drivers](/postgres#drivers)).
+```rust tab="sqlx"
+#[reylo::query("select id, name, email from users where id = :id")]
+pub mod get_user {}
+
+// sqlx with its "tls-rustls" feature: Neon requires TLS
+let db = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+let user = get_user::Query { id: 1 }.run(&db).await?;
+```
+
+Each runs a transaction its own way: on a client checked out of the pool with `pg`, in `db.begin()` with postgres.js ([Drivers](/postgres#drivers)), and in `db.begin()` with sqlx ([Rust](/rust#run)).
 
 ## Branches
 
@@ -207,6 +214,6 @@ export default {
 };
 ```
 
-- In a Worker, it needs no `nodejs_compat` flag. [Cloudflare Workers](/cloudflare) covers the Vite plugin that loads `.sql` files there.
+- In a Worker, it needs no `nodejs_compat` flag. [Cloudflare D1](/d1#setup) covers the Vite plugin that loads `.sql` files there.
 - On the Next.js edge runtime, use it the same way ([The edge runtime](/nextjs#the-edge-runtime)).
 - In an edge runtime, connect, use and close a `Pool` or `Client` within one request.

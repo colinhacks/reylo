@@ -222,8 +222,9 @@
    Schema (where the example needs one) as a band across the top, then the
    Query, and Params and Returns beside it (`side`) or under it (`rows`), all
    visible at once. The rows' code blocks lose their own frames, so the card is
-   the one frame; only the query keeps its copy button. The dialect switch sits
-   at the top right of the query's column, or of the schema band. */
+   the one frame. Each switch sits at the right of the label line of what it
+   changes: the database on the Query row's, the language on the Params and
+   Returns band's. */
 #nd-page .reylo-inference-card {
   --reylo-side: 16rem;
   container-type: inline-size;
@@ -232,7 +233,15 @@
   border: 1px solid var(--color-fd-border);
   border-radius: 0.75rem;
   background: var(--color-fd-secondary);
-  overflow: hidden;
+  /* A card taller than most of the window scrolls as one; its rows never scroll on their own. */
+  max-height: 85vh;
+  overflow: hidden auto;
+  scrollbar-width: thin;
+}
+
+#nd-page .reylo-inference-card-row,
+#nd-page .reylo-inference-languages {
+  position: relative;
 }
 
 #nd-page .reylo-inference-card-switch {
@@ -243,8 +252,16 @@
   display: flex;
 }
 
-#nd-page .reylo-inference-card[data-layout='side']:not(:has([data-row='schema'])) .reylo-inference-card-switch {
-  right: calc(var(--reylo-side) + 0.5rem);
+/* A card's code has no copy button: its corner is the switches'. */
+#nd-page .reylo-inference-card .dk-code-copy {
+  display: none;
+}
+
+/* The language switch over a table that follows it (Inference's Primitives). */
+#nd-page .reylo-language-switch {
+  display: flex;
+  justify-content: flex-end;
+  margin-block: 0 -0.25rem;
 }
 
 #nd-page .reylo-inference-card .dk-variant-follow {
@@ -262,6 +279,7 @@
   display: grid;
 }
 
+/* A row's label sits on a line of its own, above its code, at any width. */
 #nd-page .reylo-inference-card-label {
   padding: 0.75rem 1rem 0;
   font-family: var(--font-text);
@@ -281,9 +299,11 @@
   background: transparent;
 }
 
-/* Fumadocs pads a block's scrolling region; in a card the rows set the spacing. */
+/* Fumadocs pads a block's scrolling region and caps it at 600px; in a card the rows set the
+   spacing, and the card, not a row, scrolls. */
 #nd-page .reylo-inference-card-body figure.shiki > [role='region'] {
   padding-block: 0;
+  max-height: none;
 }
 
 #nd-page .reylo-inference-card-body figure.shiki pre {
@@ -312,55 +332,12 @@
   background: var(--color-fd-muted);
 }
 
-#nd-page .reylo-inference-card-types {
+#nd-page .reylo-inference-languages {
   background: var(--color-fd-muted);
 }
 
-#nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types {
+#nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-languages {
   border-top: 1px solid var(--color-fd-border);
-}
-
-/* Every row's label sits in one place: above its code where the card is narrow, and in one column
-   to the left of it where the card is wide. */
-@container (min-width: 34rem) {
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-row {
-    display: grid;
-    grid-template-columns: 5.5rem minmax(0, 1fr);
-    align-items: baseline;
-    padding-inline-start: 1rem;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-label {
-    padding: 0;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-row figure.shiki pre {
-    padding-inline-start: 0;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='schema'],
-  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='query'] {
-    padding-block: 0.625rem;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='schema'] figure.shiki pre,
-  #nd-page .reylo-inference-card[data-layout='rows'] [data-row='query'] figure.shiki pre {
-    padding-block: 0.125rem;
-  }
-
-  /* The dialect switch takes a strip of its own over the first row, which the code would run under. */
-  #nd-page .reylo-inference-card[data-layout='rows']:has(> .reylo-inference-card-switch) .dk-variant-panel > :first-child {
-    padding-top: 2.25rem;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types {
-    padding-block: 0.625rem;
-  }
-
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types figure.shiki pre,
-  #nd-page .reylo-inference-card[data-layout='rows'] .reylo-inference-card-types .reylo-inference-card-row:last-child figure.shiki pre {
-    padding-block: 0.125rem;
-  }
 }
 
 @media (min-width: 640px) {
@@ -372,18 +349,14 @@
     grid-column: 1 / -1;
   }
 
-  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-types {
+  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-languages {
     border-left: 1px solid var(--color-fd-border);
   }
 }
 
 @media (max-width: 639px) {
-  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-types {
+  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-languages {
     border-top: 1px solid var(--color-fd-border);
-  }
-
-  #nd-page .reylo-inference-card[data-layout='side'] .reylo-inference-card-switch {
-    right: 0.5rem;
   }
 }
 
@@ -424,6 +397,59 @@
   color: var(--color-fd-headings);
 }
 
+/* A code-tab strip keeps to one line and scrolls sideways when its tabs outrun the card, as Usage's
+   thirteen SQLite drivers do, where docs-kit wraps it. While tabs lie beyond the right edge, the
+   card's top right corner fades the strip out under a chevron (the card's, since a sticky element
+   inside the strip stops short of its end padding); the fade goes as the strip reaches its end, and
+   never shows on a strip that fits, whose scroll timeline is inactive. A strip with the dialect
+   switch still wraps, so that on a phone the switch drops under its file tabs rather than out of view. */
+#nd-page .dk-code-tabs:has(> [role='tablist']:not(:has(.dk-variant-switch))) {
+  position: relative;
+  timeline-scope: --reylo-strip;
+}
+
+#nd-page .dk-code-tabs > [role='tablist']:not(:has(.dk-variant-switch)) {
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+  scroll-timeline: --reylo-strip inline;
+}
+
+#nd-page .dk-code-tabs > [role='tablist']:not(:has(.dk-variant-switch))::-webkit-scrollbar {
+  display: none;
+}
+
+#nd-page .dk-code-tabs:has(> [role='tablist']:not(:has(.dk-variant-switch)))::after {
+  content: '›';
+  position: absolute;
+  top: 1px;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 3rem;
+  height: 1.75rem;
+  padding-inline-end: 0.5rem;
+  border-start-end-radius: calc(0.75rem - 1px);
+  background: linear-gradient(to right, transparent, var(--color-fd-card) 65%);
+  color: var(--color-fd-muted-foreground);
+  font-size: 1rem;
+  pointer-events: none;
+  opacity: 0;
+  animation: reylo-strip-more linear both;
+  animation-timeline: --reylo-strip;
+}
+
+@keyframes reylo-strip-more {
+  0%,
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 /* A card or an example on one database only says so in a light gray label where the switch would
    be (components/dialect-tabs.tsx), in the switch's face and size. */
 #nd-page .reylo-dialect-only {
@@ -436,22 +462,6 @@
   line-height: 1;
   color: var(--color-fd-muted-foreground);
   white-space: nowrap;
-}
-
-/* DuckDB's heading in Dialects says its support is a preview in the same light gray label, after the
-   name. It is drawn by the stylesheet, so the table of contents, the anchor and the section's Markdown
-   keep the name alone. */
-#nd-page .prose h3#duckdb .dk-heading-text::after {
-  content: 'Preview';
-  display: inline-block;
-  margin-inline-start: 0.625rem;
-  vertical-align: 0.15em;
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 500;
-  line-height: 1;
-  letter-spacing: 0;
-  color: var(--color-fd-muted-foreground);
 }
 
 
@@ -835,6 +845,260 @@ a.reylo-compare-name:hover {
   color: var(--color-fd-foreground);
 }
 
+/* A diff's lines say what they do, as a diff does: a `+` or `-` in a gutter of their own, and a
+   space beside the lines that stay, so the code lines up. Generated content, so a copy of the
+   block holds the code alone. */
+#nd-page figure.has-diff pre .line::before {
+  content: ' ';
+  position: static;
+  display: inline-block;
+  width: 2ch;
+  margin: 0;
+  text-indent: 0;
+  user-select: none;
+}
+#nd-page figure.has-diff pre .line.diff.add::before {
+  content: '+';
+  color: var(--color-fd-success, #3fb950);
+}
+#nd-page figure.has-diff pre .line.diff.remove::before {
+  content: '-';
+  color: var(--color-fd-error, #f85149);
+}
+
+/* The feature cards under a page's title (components/feature-cards.tsx). */
+.reylo-features {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin: 1.5rem 0;
+}
+
+.reylo-feature {
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.75rem;
+  background: var(--color-fd-card);
+  padding: 1rem 1.1rem 1.1rem;
+}
+
+.reylo-feature-wide {
+  grid-column: 1 / -1;
+}
+
+.reylo-feature svg,
+.reylo-choice svg {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--color-fd-primary);
+}
+
+.reylo-feature-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 -1.1rem 0.7rem;
+  padding: 0 1.1rem 0.75rem;
+  border-bottom: 1px solid var(--color-fd-border);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-fd-foreground);
+}
+
+#nd-page .prose .reylo-feature p,
+#nd-page .prose .reylo-choice p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .prose .reylo-feature code,
+#nd-page .prose .reylo-choice code {
+  white-space: nowrap;
+}
+
+/* A figure's caption (components/migrations-diagram.tsx): one line under it, centred. */
+#nd-page .prose .reylo-figure-caption {
+  margin-top: 0.75rem;
+  text-align: center;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* A choice between two ways (components/feature-cards.tsx): a card two columns wide, its name
+   over the two ways, and an "or" on the seam between them, which lies across it on a phone. */
+.reylo-choice {
+  grid-column: 1 / -1;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.75rem;
+  background: var(--color-fd-card);
+}
+
+.reylo-choice > .reylo-feature-title {
+  margin: 0;
+  padding: 1rem 1.1rem 0.75rem;
+}
+
+.reylo-choice-ways {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.reylo-choice-way {
+  position: relative;
+  padding: 0.85rem 1.1rem 1.1rem;
+}
+
+/* The two ways keep clear of the "or" on the seam between them. */
+.reylo-choice-way:first-child {
+  padding-right: 1.6rem;
+}
+
+.reylo-choice-way + .reylo-choice-way {
+  padding-left: 1.6rem;
+}
+
+.reylo-choice-way + .reylo-choice-way {
+  border-left: 1px solid var(--color-fd-border);
+}
+
+.reylo-choice-way-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-fd-foreground);
+}
+
+.reylo-choice-or {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 999px;
+  background: var(--color-fd-card);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--color-fd-muted-foreground);
+}
+
+@media (max-width: 639px) {
+  .reylo-features {
+    grid-template-columns: 1fr;
+  }
+
+  .reylo-choice-ways {
+    grid-template-columns: 1fr;
+  }
+
+  .reylo-choice-way:first-child {
+    padding-right: 1.1rem;
+    padding-bottom: 1.4rem;
+  }
+
+  .reylo-choice-way + .reylo-choice-way {
+    border-left: 0;
+    border-top: 1px solid var(--color-fd-border);
+    padding-top: 1.5rem;
+    padding-left: 1.1rem;
+  }
+
+  .reylo-choice-or {
+    top: 0;
+    left: 50%;
+  }
+}
+
+/* The vertical stepper (components/steps.tsx): a numbered dot per step, joined by a line. */
+#nd-page .prose ol.reylo-steps {
+  list-style: none;
+  counter-reset: reylo-step;
+  margin: 1.5rem 0;
+  padding: 0;
+}
+
+#nd-page .prose li.reylo-step {
+  counter-increment: reylo-step;
+  position: relative;
+  margin: 0;
+  padding: 0 0 1.25rem 2.75rem;
+}
+
+#nd-page .prose li.reylo-step::before {
+  content: counter(reylo-step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-fd-border);
+  background: var(--color-fd-card);
+  color: var(--color-fd-foreground);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.7rem;
+  text-align: center;
+}
+
+#nd-page .prose li.reylo-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: calc(0.875rem - 0.5px);
+  top: 1.95rem;
+  bottom: 0.2rem;
+  width: 1px;
+  background: var(--color-fd-border);
+}
+
+.reylo-step-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  min-height: 1.75rem;
+}
+
+.reylo-step-title {
+  font-weight: 600;
+  color: var(--color-fd-foreground);
+}
+
+.reylo-step-where {
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-fd-border);
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .prose .reylo-step-body p {
+  margin: 0.2rem 0 0;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* Inline code is one piece, never broken across two lines: a command, a path or a name reads whole,
+   in the column and in the table of contents. */
+html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [class~='not-prose'] *)),
+#nd-toc code,
+[data-toc-popover] code {
+  white-space: nowrap;
+}
+
 /* A query a tool got wrong: the docs' inference card (.reylo-inference-card), which is scoped to #nd-page, where a popup, rendered at the end of the body, is not. The popup is the card's one frame. */
 .fd-twoslash-popover.reylo-compare-pop-card {
   width: 480px;
@@ -935,4 +1199,41 @@ a.reylo-compare-name:hover {
   text-decoration-skip-ink: none;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
+}
+
+/* A completion list over a Rust block (components/completion.tsx): it opens under the block's last
+   line, `--reylo-at` characters in, as Twoslash's own list does, and the block keeps room for it. */
+#nd-page .reylo-completion {
+  position: relative;
+}
+/* Room at the block's foot for the list, as Twoslash leaves under its own. */
+#nd-page .reylo-completion pre {
+  padding-bottom: 7rem;
+}
+#nd-page .reylo-completion-list {
+  position: absolute;
+  top: calc(100% - 7.85rem);
+  left: calc(1rem + var(--reylo-at) * 1ch);
+  z-index: 2;
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
+}
+#nd-page .reylo-completion-list li {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: space-between;
+}
+#nd-page .reylo-completion-type {
+  color: var(--color-fd-muted-foreground);
+}
+
+/* An editor's completion list sits in the page's prose, whose list items keep a margin between
+   them: here they sit as close as an editor's, Twoslash's and the Rust popup's alike. */
+#nd-page .twoslash-completion-list,
+#nd-page .prose :is(.twoslash-completion-list, .reylo-completion-list) > li {
+  margin-block: 0;
+}
+#nd-page .twoslash-completion-list {
+  padding-inline-start: 3px;
 }

@@ -1,0 +1,1 @@
+select jsonb_agg(distinct v) as docs, json_agg(distinct v) as texts, array_to_json(array_agg(distinct v)) as through_array, json_build_object('j', (select array_agg(distinct v) from j)) as inside from j

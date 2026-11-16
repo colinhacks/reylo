@@ -114,8 +114,7 @@ export declare namespace StandardQueryV1 {
   /**
    * A value in its raw form: what a driver of the database reads before converting anything, and
    * binds without converting anything. On Postgres, the value's text as the server sends it in
-   * the text format; on DuckDB, the value as `@duckdb/node-api`'s `reader.getRows()` reads it,
-   * one of its own classes for a nested or temporal value. NULL is `null`.
+   * the text format. NULL is `null`.
    */
   export type RawValue<D extends Dialect = Dialect> =
     | null
@@ -151,7 +150,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
     const decode = module.runtime.decoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays);
     // A family the project file's `js.codecs` gives another type takes it here too, as in `.run()` (src/codecs.ts).
     const plan = module.codecs?.[name];
-    return plan === undefined ? decode : (v) => decodePlan(plan, decode(v), name);
+    return plan === undefined ? decode : (v) => decodePlan(plan, decode(v), name, module.libraries);
   });
   const columns = module.columns?.map(([name], i) => Object.freeze({ name, decode: decoders![i]! }) as StandardQueryV1.Column<D>);
   // A closure, not `this`: a driver may take `encode` off the object.

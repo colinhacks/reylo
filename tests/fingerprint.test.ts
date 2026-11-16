@@ -82,7 +82,7 @@ function fingerprint(database: string): string {
   return fnv(0xcbf29ce484222325n, parts, false).toString(16).padStart(16, "0");
 }
 
-for (const database of ["postgres", "sqlite", "mysql", "duckdb"] as const) {
+for (const database of ["postgres", "sqlite", "mysql"] as const) {
   test(`the ${database} engine is the build of the engine's sources`, async () => {
     const { binary, fingerprint: built } = await engine(database);
     assert.equal(built, fingerprint(database), `${binary} was built from other sources than engine/core and engine/${database}: build it again with cargo build --release -p reylo`);

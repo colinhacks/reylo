@@ -5,9 +5,7 @@ description: How to use Reylo with PlanetScale. The drivers that run your querie
 
 <p className="dk-subheader">Reylo on PlanetScale's MySQL and Postgres databases</p>
 
-Reylo works with PlanetScale.
-
-A PlanetScale MySQL database is MySQL, so everything on the [MySQL](/mysql) page holds for it. This page covers what's specific to PlanetScale.
+Reylo works with PlanetScale. A PlanetScale MySQL database is MySQL, so everything on the [MySQL](/mysql) page holds for it. This page covers what's specific to PlanetScale.
 
 | | |
 | --- | --- |
@@ -31,7 +29,7 @@ create table users (
 
 ## Drivers
 
-Run your queries with PlanetScale's serverless driver, `@planetscale/database` 1.x, or with `mysql2`.
+Run your queries with PlanetScale's serverless driver, `@planetscale/database` 1.x, or with `mysql2`, or in Rust with sqlx.
 
 ### `@planetscale/database`
 
@@ -56,7 +54,7 @@ where id = :id
 ```
 
 - Version 2.0 isn't supported, since it can't bind parameters.
-- The driver sends each query over HTTP, so it runs where there are no TCP sockets, as in [Cloudflare Workers](/cloudflare).
+- The driver sends each query over HTTP, so it runs where there are no TCP sockets, as in [Cloudflare Workers](/d1#setup).
 - It rounds a `FLOAT` to its shorter text, `1.1`, where `mysql2` returns its exact value ([Decimals](/mysql#decimals)).
 
 ### `mysql2`
@@ -87,6 +85,34 @@ PlanetScale's connection string for Node ends with an `ssl` setting, which `mysq
 
 ```sh title=".env"
 DATABASE_URL=mysql://…/app?ssl={"rejectUnauthorized":true}
+```
+
+### sqlx
+
+In Rust, pass an sqlx pool, or the transaction `.begin()` gives:
+
+```rust tab="main.rs"
+#[reylo::query("select id, name, email from users where id = :id")]
+pub mod get_user {}
+
+let db = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL")?).await?;
+let user = get_user::Query { id: 1 }.run(&db).await?;
+
+let mut tx = db.begin().await?;
+get_user::Query { id: 1 }.run(&mut *tx).await?;
+tx.commit().await?;
+```
+
+```sql tab="get_user.sql" dialect="mysql"
+select id, name, email
+from users
+where id = :id
+```
+
+Write MySQL's own `ssl-mode` in the connection string, which sqlx and Reylo both read, and turn on sqlx's `tls-rustls` feature:
+
+```sh title=".env"
+DATABASE_URL=mysql://…/app?ssl-mode=VERIFY_IDENTITY
 ```
 
 ### Drizzle
