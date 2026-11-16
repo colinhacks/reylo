@@ -684,6 +684,7 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 
 - **Inherited tables.** A `NOT NULL` constraint holds in every table that inherits from its table.
 - **Whole rows.** The whole row of a subquery or a `with` query, which Postgres types only as `record`, is typed field by field.
+- **What a write returns.** A column an `insert`, `update`, `merge` or upsert sets in every row it returns, to a value that is never null, isn't null in `returning`, nor in a `with` query that returns it. A `before` row trigger on the table or any of its partitions, a rule, a view, a foreign table and a cast of your own to the column's type can each change the value on its way, so with any of them the column is as nullable as the table says. A `merge` that can delete returns the deleted rows as they were, and `old` is the row before the write.
 - **SQL functions.** A function in `language sql` is read as the query it is, so its body decides which columns are null. Mark it `stable` if it only reads: Postgres then plans its body into your query.
 - **Your own operators, casts and functions** tell Reylo nothing, and neither do an extension's or a function whose body Reylo can't read. Where the operands' types can only pick a built-in, as beside pgvector, PostGIS or citext, the built-in's rules apply. To say a value is never null, write `coalesce(x, …)` or `where x is not null`.
 
