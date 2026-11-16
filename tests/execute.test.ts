@@ -914,14 +914,19 @@ test("an unsupported client rejects, naming what it has and what reylo takes", a
   await assert.rejects(() => execute({} as never, my) as Promise<unknown>, /query\(text, values\) as on mariadb's pool or connection, from its promise or callback API/);
   // A pg pool handed to a SQLite statement matches no SQLite shape.
   await assert.rejects(() => execute({ query: async () => ({ rows: [] }) } as never, lite) as Promise<unknown>, /sqlite statement on an object with query/);
-  // sql.js answers at once, as better-sqlite3 does, but throws SQLite's errors with no code and binds a BigInt as text: it is refused before anything runs.
-  let prepared = false;
-  const sqljs = { prepare: () => void (prepared = true), exec() {}, run() {}, getRowsModified() {} };
+  // sql.js before 1.17.0 bound a BigInt as its text and threw SQLite's errors with no code: it is refused before the statement runs, once the database has said which it does.
+  const preparedSql: string[] = [];
+  const sqljs = {
+    prepare: (sql: string) => (preparedSql.push(sql), { bind() {}, step: () => true, get: () => ["text"], free() {} }),
+    exec() {},
+    run() {},
+    getRowsModified() {},
+  };
   const one = defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select 1", params: [] });
-  const named = /sqlite statement on an object with prepare, exec, run, getRowsModified\. .* It is sql\.js, which reylo does not take: .*SQLite Wasm \(@sqlite\.org\/sqlite-wasm\)/;
-  await assert.rejects(one.run(sqljs as never), named);
-  assert.throws(() => one.runSync(sqljs as never), named);
-  assert.equal(prepared, false);
+  const old = /This sql\.js binds a BigInt as its text and throws SQLite's errors with no code, which \.try\(\) could not tell apart: reylo takes sql\.js 1\.17\.0 or later\./;
+  await assert.rejects(one.run(sqljs as never), old);
+  assert.throws(() => one.runSync(sqljs as never), old);
+  assert.deepEqual(preparedSql, ["select typeof(?)"], "the database is asked once, and the statement never prepared");
   // No client at all is named as such.
   await assert.rejects(one.run(undefined as never), /reylo cannot run a sqlite statement on undefined\./);
   await assert.rejects(one.run(null as never), /reylo cannot run a sqlite statement on null\./);
