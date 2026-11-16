@@ -92,8 +92,19 @@ const TABLE_ARGUMENT_PRAGMAS: &[&str] = &["table_info", "table_xinfo", "table_li
 /// A PRAGMA's name, lowercased and its schema left off: `integrity_check` in
 /// `PRAGMA main.integrity_check(t)`.
 fn pragma_name(sql: &str) -> String {
-    let lower = sql.to_ascii_lowercase();
-    let after = lower.find("pragma").map_or("", |at| &lower[at + "pragma".len()..]).trim_start();
+    // Past the comments before the statement, which may hold the word itself.
+    let mut rest = sql.trim_start();
+    loop {
+        if let Some(line) = rest.strip_prefix("--") {
+            rest = line.split_once('\n').map_or("", |(_, after)| after).trim_start();
+        } else if let Some(block) = rest.strip_prefix("/*") {
+            rest = block.split_once("*/").map_or("", |(_, after)| after).trim_start();
+        } else {
+            break;
+        }
+    }
+    let lower = rest.to_ascii_lowercase();
+    let after = lower.strip_prefix("pragma").unwrap_or("").trim_start();
     let name: String = after.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.').collect();
     name.rsplit('.').next().unwrap_or("").to_string()
 }
