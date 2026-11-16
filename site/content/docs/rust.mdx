@@ -63,6 +63,7 @@ A statement that reads a type whose feature is off fails to compile, and says wh
 Reylo finds your dev database through the `DATABASE_URL` environment variable, or a `.env` file beside the crate's `Cargo.toml`. In a workspace, that's the member's own, not the workspace root's:
 
 ```sh title=".env"
+# or mysql://…, or sqlite:app.db for SQLite
 DATABASE_URL=postgres://postgres@localhost:5432/app
 ```
 
