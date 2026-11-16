@@ -17,7 +17,8 @@
 //   `types` and value and column transforms, and Reylo builds the rows with the module's column
 //   names.
 // - Bun.sql decodes in native code and takes nothing per query: Reylo converts the values it got
-//   (src/values.ts, `coerce`), by each column's kind.
+//   (src/values.ts, `coerce`), by each column's kind, and by the result's own columns where Bun
+//   1.4.4 and later describe them.
 //
 // A built-in type (an oid below 10000, the same in every database and version) has its kind here.
 // A type the database created (an enum, a domain's array, an extension's type) has the kind the
@@ -25,7 +26,7 @@
 // those oids are arrays, cached in a WeakMap keyed by the app's object. A row value the module knows
 // the fields of has the kind of its column whatever its oid: `record` is one oid for every shape of
 // row, and a built-in catalog table's row type is below 10000 too.
-import { coerce, DecodeError, elementKind, isRowKind, numbersInJson, scalarKind, textDecoder, utf8, withinDimensions, type Columns, type Decoder, type JsonNumbers, type Kind } from "./values.ts";
+import { coerce, DecodeError, elementKind, isRowKind, numbersInJson, scalarKind, textDecoder, utf8, withFraction, withinDimensions, type Columns, type Decoder, type JsonNumbers, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { lastOfEach, rowOf, type RowBuilder } from "./row.ts";
 import { arrayLiteral, asByteaHex, isJsonValue, isTime, jsonText, jsonValue, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
@@ -448,29 +449,93 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  */
 const BUN_KINDS = /^(bool|int8|money|date|timestamp|timestamptz|interval|bytes|vector|hstore|point|line|lseg|box|path|polygon|circle|enum|set)$|^\(|^(multi)?range:|\[\]$|\|/;
 
+/**
+ * A column of a result as Bun.sql describes it from 1.4.4 on (`result.columns`): a Postgres oid, or
+ * a MySQL protocol type and display length. Older releases have no `columns`.
+ */
+type BunColumn = { name: string; type: number; length?: number };
+
+// MySQL's protocol types whose Bun.sql value needs the column's type to be read.
+const MYSQL_TIMESTAMP = 7, MYSQL_LONGLONG = 8, MYSQL_DATE = 10, MYSQL_DATETIME = 12, MYSQL_NEWDATE = 14;
+
+/** A column to convert: its kind, its array delimiter, and on MySQL its protocol type and a DATETIME's fraction digits. */
+type BunWork = readonly [name: string, kind: Kind, delim?: string | undefined, type?: number, digits?: number | undefined];
+
 export function bunRows(rows: unknown[], columns: Columns | undefined, postgres = false): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
-  const first = rows[0] as Record<string, unknown>;
-  // A query defined by hand carries no kinds: only what Bun's own types say is converted.
-  const work: (readonly [string, Kind, string?])[] = columns ? columns.filter(([, kind]) => BUN_KINDS.test(kind)) : Object.keys(first).map((name) => [name, "unknown"] as const);
+  const work = columns ? declaredWork(rows, columns, postgres) : describedWork(rows, postgres);
   if (!work.length) return rows;
   for (const row of rows as Record<string, unknown>[]) {
-    for (const [name, kind, delim] of work) {
+    for (const [name, kind, delim, type, digits] of work) {
       const v = row[name];
       if (v === null || v === undefined) continue;
-      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim, postgres);
+      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim, postgres, type, digits);
     }
   }
   return rows;
 }
 
-/** A value of `kind` as Bun.sql gave it: an either's digits are a MySQL BIGINT's, which Bun gives as a string. */
-function bunValue(kind: Kind, v: unknown, name: string, delim: string | undefined, postgres: boolean): unknown {
-  if (typeof v === "string" && kind.includes("|") && kind.split("|").includes("int8") && /^[+-]?\d+$/.test(v)) return BigInt(v);
-  return coerce(kind, v, name, delim, postgres);
+/** The columns Bun.sql describes, where it does and they are the module's (by count). */
+function described(rows: unknown[], count?: number): BunColumn[] | undefined {
+  const d = (rows as { columns?: unknown }).columns;
+  return Array.isArray(d) && (count === undefined || d.length === count) && d.every((c) => typeof c?.type === "number" && typeof c.name === "string") ? (d as BunColumn[]) : undefined;
 }
 
-/** A value whose kind is not known: a typed array an array, and a Date, which no kind is, the instant's text. */
+/**
+ * The module's columns whose kind Bun.sql gives in another form, the last of each name. On MySQL an
+ * either that may be a BIGINT, and a DATETIME or TIMESTAMP, also take the result's own column: its
+ * type says whether the digits are a BIGINT's or a DECIMAL's, and its length a DATETIME's fraction
+ * digits, which a Date drops when they are zeros.
+ */
+function declaredWork(rows: unknown[], columns: Columns, postgres: boolean): BunWork[] {
+  const kept = lastOfEach(columns.map(([name, kind, delim], i) => [name, kind, delim, i] as const)).filter(([, kind]) => BUN_KINDS.test(kind));
+  const needsType = (kind: Kind) => kind.split("|").some((k) => k === "int8" || k === "timestamp");
+  const meta = !postgres && kept.some(([, kind]) => needsType(kind)) ? described(rows, columns.length) : undefined;
+  return kept.map(([name, kind, delim, i]) => {
+    const c = meta && needsType(kind) ? meta[i] : undefined;
+    return c ? [name, kind, delim, c.type, fractionDigits(c)] : [name, kind, delim];
+  });
+}
+
+/**
+ * A query defined by hand: each column by the type Bun.sql 1.4.4 and later describe, as other
+ * drivers' results give them (a Postgres oid's kind, a MySQL BIGINT, DATE, DATETIME and TIMESTAMP);
+ * with no description, a Date and a typed array by what they are.
+ */
+function describedWork(rows: unknown[], postgres: boolean): BunWork[] {
+  const meta = described(rows);
+  if (!meta) return Object.keys(rows[0] as object).map((name) => [name, "unknown"]);
+  const work: BunWork[] = [];
+  for (const [name, i] of lastOfEach(meta.map((c, i) => [c.name, i] as const))) {
+    const c = meta[i]!;
+    if (postgres) {
+      const b = builtin(c.type);
+      if (!b) work.push([name, "unknown"]);
+      else if (BUN_KINDS.test(b.kind)) work.push([name, b.kind, b.delim]);
+    } else if (c.type === MYSQL_LONGLONG) work.push([name, "int8"]);
+    else if (c.type === MYSQL_DATE || c.type === MYSQL_NEWDATE) work.push([name, "date"]);
+    else if (c.type === MYSQL_DATETIME || c.type === MYSQL_TIMESTAMP) work.push([name, "timestamp", undefined, c.type, fractionDigits(c)]);
+  }
+  return work;
+}
+
+/** A MySQL DATETIME's or TIMESTAMP's fraction digits, from its display length: 19 characters, and a point and the digits. */
+function fractionDigits(c: BunColumn): number | undefined {
+  if ((c.type !== MYSQL_DATETIME && c.type !== MYSQL_TIMESTAMP) || typeof c.length !== "number") return undefined;
+  return c.length > 20 ? Math.min(c.length - 20, 6) : 0;
+}
+
+/**
+ * A value of `kind` as Bun.sql gave it. An either's digits are a MySQL BIGINT's, which Bun gives as
+ * text like a DECIMAL's: by the result's column type where Bun describes it, else when they have no
+ * point. A MySQL DATETIME's text has its column's fraction digits.
+ */
+function bunValue(kind: Kind, v: unknown, name: string, delim: string | undefined, postgres: boolean, type?: number, digits?: number): unknown {
+  if (typeof v === "string" && kind.includes("|") && kind.split("|").includes("int8") && (type === undefined ? /^[+-]?\d+$/.test(v) : type === MYSQL_LONGLONG)) return BigInt(v);
+  const out = coerce(kind, v, name, delim, postgres);
+  return digits !== undefined && v instanceof Date && typeof out === "string" ? withFraction(out, digits) : out;
+}
+
 function byType(v: unknown, name: string): unknown {
   if (v instanceof Date) return coerce("timestamptz", v, name);
   if (ArrayBuffer.isView(v) && !(v instanceof Uint8Array) && !(v instanceof DataView)) return coerce("float[]", v, name);

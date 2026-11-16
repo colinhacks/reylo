@@ -1271,6 +1271,16 @@ function utcText(d: Date, kind: "date" | "timestamp", column: string, postgres: 
   return `${date}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${fraction}`;
 }
 
+/**
+ * A MySQL time's text with its column's `digits` of fraction, the zeros a driver dropped written
+ * back: `09:31:00` of a DATETIME(3) is `09:31:00.000`, and `09:31:00.5` `09:31:00.500`.
+ */
+export function withFraction(text: string, digits: number): string {
+  if (digits <= 0) return text;
+  const dot = text.indexOf(".");
+  return dot < 0 ? `${text}.${"0".repeat(digits)}` : text.padEnd(dot + 1 + digits, "0");
+}
+
 const isBytes = (v: unknown): v is Uint8Array => v instanceof Uint8Array;
 
 /**

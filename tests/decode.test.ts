@@ -175,6 +175,54 @@ test("Bun.sql: a row value, a geometric type, a range and a MySQL SET are their 
   }]);
 });
 
+/** Rows as Bun.sql resolves them, with the `columns` Bun 1.4.4 and later describe, which no row lists. */
+const bunResult = (rows: Record<string, unknown>[], columns?: object[]) => (columns ? Object.defineProperty(rows, "columns", { value: columns }) : rows);
+
+test("Bun.sql on MySQL: the result's column type tells a BIGINT's digits from a DECIMAL's, and its length a DATETIME's fraction digits", () => {
+  const kinds: Columns = [["n", "int8|decimal"], ["d", "int8|decimal"], ["at", "timestamp"], ["at3", "timestamp"], ["at0", "timestamp"], ["zero", "timestamp"]];
+  const row = () => ({ n: "12", d: "12", at: new Date("2026-01-02T03:04:05.5Z"), at3: new Date("2026-01-02T03:04:05Z"), at0: new Date("2026-01-02T03:04:05Z"), zero: new Date("2026-01-02T03:04:05Z") });
+  const columns = [
+    { name: "n", type: 8, table: "", length: 21, flags: 128 },
+    { name: "d", type: 246, table: "", length: 11, flags: 128 },
+    { name: "at", type: 12, table: "", length: 26, flags: 128 },
+    { name: "at3", type: 7, table: "t", length: 23, flags: 128 },
+    { name: "at0", type: 12, table: "", length: 19, flags: 128 },
+    { name: "zero", type: 12, table: "", length: 26, flags: 128 },
+  ];
+  assert.deepEqual(bunRows(bunResult([row()], columns), kinds), [{ n: 12n, d: "12", at: "2026-01-02T03:04:05.500000", at3: "2026-01-02T03:04:05.000", at0: "2026-01-02T03:04:05", zero: "2026-01-02T03:04:05.000000" }]);
+  // Before Bun 1.4.4, which describes no columns: digits without a point are a BIGINT's, and the fraction is what the Date kept.
+  assert.deepEqual(bunRows(bunResult([row()]), kinds), [{ n: 12n, d: 12n, at: "2026-01-02T03:04:05.5", at3: "2026-01-02T03:04:05", at0: "2026-01-02T03:04:05", zero: "2026-01-02T03:04:05" }]);
+});
+
+test("Bun.sql: a query defined by hand reads each column by the type the result describes, as on the other drivers", () => {
+  const pg = bunResult(
+    [{ big: "9007199254740993", day: new Date("2026-01-02T00:00:00Z"), wall: new Date("2026-01-02T03:04:05.5Z"), at: new Date("2026-01-02T03:04:05.5Z"), ids: Int32Array.of(1, 2), price: "1.5", mood: new Date("2026-01-02T00:00:00Z") }],
+    [
+      { name: "big", type: 20, table: 0, number: 0 },
+      { name: "day", type: 1082, table: 0, number: 0 },
+      { name: "wall", type: 1114, table: 0, number: 0 },
+      { name: "at", type: 1184, table: 0, number: 0 },
+      { name: "ids", type: 1007, table: 0, number: 0 },
+      { name: "price", type: 1700, table: 0, number: 0 },
+      { name: "mood", type: 16500, table: 0, number: 0 },
+    ],
+  );
+  assert.deepEqual(bunRows(pg, undefined, true), [{ big: 9007199254740993n, day: "2026-01-02", wall: "2026-01-02T03:04:05.500000", at: "2026-01-02T03:04:05.500000Z", ids: [1, 2], price: "1.5", mood: "2026-01-02T00:00:00.000000Z" }]);
+  const mysql = bunResult(
+    [{ big: "9007199254740993", day: new Date("2026-01-02T00:00:00Z"), at: new Date("2026-01-02T03:04:05Z"), price: "12", n: 3 }],
+    [
+      { name: "big", type: 8, table: "t", length: 20, flags: 0 },
+      { name: "day", type: 10, table: "t", length: 10, flags: 0 },
+      { name: "at", type: 7, table: "t", length: 26, flags: 0 },
+      { name: "price", type: 246, table: "t", length: 11, flags: 0 },
+      { name: "n", type: 3, table: "t", length: 11, flags: 0 },
+    ],
+  );
+  assert.deepEqual(bunRows(mysql, undefined), [{ big: 9007199254740993n, day: "2026-01-02", at: "2026-01-02T03:04:05.000000", price: "12", n: 3 }]);
+  // Before Bun 1.4.4: a Date is taken for an instant, and every other value is kept.
+  assert.deepEqual(bunRows(bunResult([{ big: "1", day: new Date("2026-01-02T00:00:00Z") }]), undefined, true), [{ big: "1", day: "2026-01-02T00:00:00.000000Z" }]);
+});
+
 test("parseArray: quoting, escapes, NULL, nesting, bounds and box's delimiter", () => {
   assert.deepEqual(parseArray("{}", String), []);
   assert.deepEqual(parseArray('{a,"b,c","NULL",NULL,"",\"q\\"x\\\\y\"}', String), ["a", "b,c", "NULL", null, "", 'q"x\\y']);
