@@ -468,6 +468,7 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 - **Division** by a column is nullable, since dividing by zero returns `NULL`, and so is a remainder by a fraction under 1, such as `x % 0.5`, since SQLite casts both operands of `%` to `INTEGER`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
 - **A column beside an aggregate** with no `group by` is nullable, since the query returns its one row over no rows too.
 - **Over a window**, `sum` and `avg` are nullable, since SQLite returns `NaN` as `NULL`, and so is `group_concat`, which libSQL and Turso return as `NULL` over a frame of empty strings.
+- **What a write returns.** A column an `insert`, `update` or upsert sets in every row it returns, to a value that is never null, isn't null in `returning`: SQLite's triggers can't change a value the statement sets.
 
 To say a value is never null, write `coalesce(x, …)` or `where x is not null`.
 
