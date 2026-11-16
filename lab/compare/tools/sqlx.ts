@@ -43,7 +43,6 @@ export const sqlx: Tool = {
   name: "sqlx",
   version,
   dbs: ["postgres", "mysql", "sqlite"],
-  noDuckdb: 'sqlx has no DuckDB driver.',
   cardinalityNote: "You pick it on each call: `fetch_one`, `fetch_optional` or `fetch_all`.",
   async analyze(db, statements, urls) {
     build();

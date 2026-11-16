@@ -56,13 +56,11 @@ pub struct Report {
 }
 
 /// A seeded state: the edge state holds every pool whole, the plain state leaves out the values of
-/// extreme magnitude, and the empty state seeds no row at all (DuckDB's oracle alone runs it).
+/// extreme magnitude.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Scenario {
     Edges,
     Plain,
-    #[cfg(feature = "duckdb")]
-    Empty,
 }
 
 pub(crate) const SCENARIOS: [Scenario; 2] = [Scenario::Edges, Scenario::Plain];
@@ -72,8 +70,6 @@ impl Scenario {
         match self {
             Scenario::Edges => "edge values",
             Scenario::Plain => "plain values",
-            #[cfg(feature = "duckdb")]
-            Scenario::Empty => "no rows",
         }
     }
 }

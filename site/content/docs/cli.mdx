@@ -231,7 +231,6 @@ Writes the next migration, from your change to `schema.sql`.
 - With no `schema.sql`, it writes what your development database has that your migrations don't make ([Schemaless mode](/migrations#schemaless-mode)).
 - The file is yours: read it, and add the data changes a schema can't say.
 - It names anything in `schema.sql` that Reylo Migrate compares by name only, or not at all, such as a text search configuration or a security label. Write a change to those by hand.
-- On DuckDB, a change its `alter table` can't make rebuilds the table ([DuckDB](/duckdb#migrations)).
 
 Nothing is dropped until you name it. A change that drops a table or column, or changes a type so that values are lost, is refused:
 
@@ -611,7 +610,7 @@ Resetting postgres://localhost:5432/app
 
 Deletes every row, keeping the schema and the history.
 
-It leaves a platform's own tables alone, such as Supabase's `auth.users`. On DuckDB, it starts each sequence again at its lowest value, or at its highest where the sequence counts down:
+It leaves a platform's own tables alone, such as Supabase's `auth.users`:
 
 ```terminal
 $ reylo db wipe
@@ -706,7 +705,7 @@ $ reylo run 'alter table users add column bio text'
 ✓ alter table users add column bio text
 ```
 
-On a SQLite or DuckDB file that isn't there, it refuses rather than make an empty database.
+On a SQLite file that isn't there, it refuses rather than make an empty database.
 
 ## `reylo play`
 

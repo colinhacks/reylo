@@ -1,1 +1,0 @@
-create type mood as enum ('a', 'b', 'c'); create table t (id integer primary key, m varchar, check (m::mood <> 'b')); create table c (id integer primary key, t_id integer, k varchar default 'a'::mood);

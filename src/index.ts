@@ -13,7 +13,6 @@ import type { QueryError } from "./query-error.ts";
 import { postgres } from "./decode.ts";
 import { mysql } from "./decode-mysql.ts";
 import { sqlite } from "./decode-sqlite.ts";
-import { duckdb } from "./decode-duckdb.ts";
 import { listening, type QueryTrace } from "./trace.ts";
 import { buildTime, type AnalyzeInput, type StatementDescriptor } from "./build-time.ts";
 
@@ -216,12 +215,12 @@ function onlyValue(row: unknown): unknown {
 }
 
 /** Each dialect's half of the run time, for a query defined by hand, which names its dialect. */
-const RUNTIMES: { readonly [D in Dialect]: Runtime<D> } = { postgres, mysql, sqlite, duckdb };
+const RUNTIMES: { readonly [D in Dialect]: Runtime<D> } = { postgres, mysql, sqlite };
 
 /**
  * A query, from its definition: a query defined by hand names its dialect. A module a build step
  * writes calls its dialect's own define function instead (`definePostgresQuery`, `defineMysqlQuery`,
- * `defineSqliteQuery`, `defineDuckdbQuery`), which alone names that dialect's half of the run time,
+ * `defineSqliteQuery`), which alone names that dialect's half of the run time,
  * so that a bundle holds no other dialect's drivers and error codes.
  */
 export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(def: QueryDefinition & { dialect: D; cardinality?: C }): Query<Params, Row, C, D> {
@@ -241,11 +240,6 @@ export function defineMysqlQuery<Params, Row, C extends Cardinality>(def: Omit<Q
 /** A SQLite query, as a module a build step writes defines one (`defineQuery`). */
 export function defineSqliteQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "sqlite"> {
   return define(sqlite, def);
-}
-
-/** A DuckDB query, as a module a build step writes defines one (`defineQuery`). */
-export function defineDuckdbQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "duckdb"> {
-  return define(duckdb, def);
 }
 
 function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: Runtime<D>, def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, D> {

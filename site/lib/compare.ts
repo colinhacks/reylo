@@ -46,7 +46,6 @@ export const compareRows: { group: string; rows: { id: string; label: string; as
       { id: 'postgres', label: 'Postgres' },
       { id: 'mysql', label: 'MySQL' },
       { id: 'sqlite', label: 'SQLite' },
-      { id: 'duckdb', label: 'DuckDB' },
     ],
   },
 ];

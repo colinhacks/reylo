@@ -1,1 +1,0 @@
-create sequence s; create table p (id bigint primary key, n bigint check (n > 0), k bigint default nextval('s')); create table c (id integer primary key, p_id bigint references p (id), q bigint check (q < 100));

@@ -138,11 +138,8 @@ pub fn run(args: &[String]) -> i32 {
         Err(message) => return fail(&message),
     };
     let Some(dialect) = project::dialect_of(&url) else {
-        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs."));
+        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs."));
     };
-    if dialect == "duckdb" {
-        return fail("A DuckDB database runs inside the app, and the type check reads it through the project's @duckdb/node-api: reylo analyze cannot open one yet.");
-    }
     // A relative SQLite path in a URL typed on the command line is the shell's, from the working
     // directory; one in the project's URL is from the project's root, as the type check reads it.
     let base = if given { cwd.clone() } else { project.root.clone() };

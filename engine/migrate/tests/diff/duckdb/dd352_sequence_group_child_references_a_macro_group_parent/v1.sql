@@ -1,1 +1,0 @@
-create sequence s; create macro valid(c) as c <> ''; create table p (id integer primary key, code varchar check (valid(code))); create table c (id bigint primary key default nextval('s'), p_id integer references p (id));

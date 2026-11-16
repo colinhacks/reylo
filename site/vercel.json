@@ -126,7 +126,7 @@
       }
     },
     {
-      "src": "^/(typescript|rust|inference|configuration|migrations|typedefs|compare|faq|postgres|mysql|sqlite|duckdb|prisma)$",
+      "src": "^/(typescript|rust|inference|configuration|migrations|typedefs|compare|faq|postgres|mysql|sqlite|prisma)$",
       "has": [
         {
           "type": "header",
@@ -142,6 +142,11 @@
     }
   ],
   "redirects": [
+    {
+      "source": "/duckdb",
+      "destination": "/",
+      "permanent": false
+    },
     {
       "source": "/schema-changes",
       "destination": "/typescript#when-the-schema-changes",

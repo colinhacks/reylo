@@ -6,8 +6,8 @@
 // The path is computed when it is needed and loaded with a `require` from
 // `process.getBuiltinModule`, which no bundler follows. A bundler that reads this file (Turbopack
 // bundles the webpack loader; webpack parses it for its build dependencies) would otherwise bundle
-// the whole build-time half with it, the engine's child processes, the project's drivers and its
-// DuckDB included. Turbopack traces a `require` made by an imported `createRequire`, and an
+// the whole build-time half with it, the engine's child processes and the project's drivers
+// included. Turbopack traces a `require` made by an imported `createRequire`, and an
 // `import()` of a computed URL, which tsc wraps in a helper of its own, and reports either as a
 // module it cannot resolve, which Next.js prints wherever reylo sits outside node_modules, as a
 // linked package does. A `require` loads an ES module that has no top-level await.

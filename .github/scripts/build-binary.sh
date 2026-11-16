@@ -90,7 +90,7 @@ else
   printed="$(run --version)"
   version="$(node -p "require('./package.json').version")"
   [ "$printed" = "reylo $version" ] || { echo "::error::$platform: the binary prints \"$printed\", and reylo is $version"; exit 1; }
-  for db in postgres mysql sqlite duckdb; do
+  for db in postgres mysql sqlite; do
     answer="$(echo '{"op":"ping"}' | run engine "$db" call)"
     case "$answer" in *'"status":"ok"'*"\"database\":\"$db\""*) ;; *) echo "::error::$platform: reylo engine $db answered a ping with $answer"; exit 1 ;; esac
   done

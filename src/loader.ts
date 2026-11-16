@@ -146,7 +146,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
 }
 
 /** The define function from "reylo" a module of each dialect calls (src/index.ts). */
-export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery", duckdb: "defineDuckdbQuery" };
+export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery" };
 
 /** The line and column, from 1, of a UTF-8 byte offset into `text`. */
 function place(text: string, bytes: number): string {

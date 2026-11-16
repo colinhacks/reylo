@@ -24,7 +24,6 @@ export const postgrestypedsql: Tool = {
   name: "Postgres Typed SQL",
   version,
   dbs: ["postgres"],
-  noDuckdb: "It is Postgres only.",
   noConnectNote: "It loads your schema file into an embedded Postgres, and never connects to your database.",
   // Its experimental import workflow: TypeScript 7.1 types a .typed.sql import through its content mapper. A wrong assignment must fail with the query's type, with nothing left to commit.
   async withoutGenerating() {

@@ -255,7 +255,7 @@ pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> 
                 continue;
             }
             // A dollar-quoted string, `$$…$$` or `$tag$…$tag$`; `$1` is a parameter.
-            b'$' if matches!(dialect, Dialect::Postgres | Dialect::Duckdb) && (i == 0 || !ident(bytes[i - 1])) && bytes.get(i + 1).is_some_and(|c| *c == b'$' || c.is_ascii_alphabetic() || *c == b'_') => {
+            b'$' if dialect == Dialect::Postgres && (i == 0 || !ident(bytes[i - 1])) && bytes.get(i + 1).is_some_and(|c| *c == b'$' || c.is_ascii_alphabetic() || *c == b'_') => {
                 let tag_end = bytes[i + 1..].iter().position(|c| !(c.is_ascii_alphanumeric() || *c == b'_')).map(|p| i + 1 + p);
                 if let Some(t) = tag_end.filter(|t| bytes[*t] == b'$') {
                     let tag = &bytes[i..=t];
@@ -529,7 +529,7 @@ mod tests {
         assert!(!named("select x, y", &["x", "y"], Some(&[UNNAMED, UNNAMED])).value);
         // A `*` that stands for no column today beside one expression stays rows.
         assert!(!named("select *, 1 + 1 from t", &["x"], Some(&[Star, UNNAMED])).value);
-        // A statement no parse read, and a list that is not the columns' (DuckDB's `columns(…)`).
+        // A statement no parse read, and a list that is not the columns'.
         assert!(!named("select x", &["x"], None).value);
         assert!(!named("select x, y", &["x"], Some(&[UNNAMED, UNNAMED])).value);
     }
@@ -592,8 +592,6 @@ mod result_items {
         assert_eq!(pg("select a, b union select c, d").unwrap(), ["a", "b"]);
         assert_eq!(pg("select a, b;").unwrap(), ["a", "b"]);
         assert_eq!(texts("select 'it\\'s', b into @x, @y from t", Dialect::Mysql).unwrap(), ["'it\\'s'", "b"]);
-        assert_eq!(texts("select a, [1, 2], {'k': 1} from t", Dialect::Duckdb).unwrap(), ["a", "[1, 2]", "{'k': 1}"]);
-        assert_eq!(texts("from t select a, b where a > 1", Dialect::Duckdb).unwrap(), ["a", "b"]);
         assert_eq!(texts("select a, # , b\n c from t", Dialect::Mysql).unwrap(), ["a", "c"]);
         // A word that ends a list, where it is an operator's or a column's.
         assert_eq!(pg("select id, id is distinct from 1 from t").unwrap(), ["id", "id is distinct from 1"]);
@@ -602,9 +600,8 @@ mod result_items {
         assert_eq!(texts("select returning + 1, `returning` + 2 from t", Dialect::Mysql).unwrap(), ["returning + 1", "`returning` + 2"]);
         // A trailing comment is no part of an item.
         assert_eq!(pg("select id, id + 1 -- , x\nfrom t").unwrap(), ["id", "id + 1"]);
-        // MySQL's escapes in either quote, and DuckDB's dollar quotes.
+        // MySQL's escapes in either quote.
         assert_eq!(texts("select \"a\\\"\", \"x,y\" from t", Dialect::Mysql).unwrap(), ["\"a\\\"\"", "\"x,y\""]);
-        assert_eq!(texts("select id, $$a,b$$, id + 1 from t", Dialect::Duckdb).unwrap(), ["id", "$$a,b$$", "id + 1"]);
         // A statement in parentheses, and a first arm in them.
         assert_eq!(pg("((select id, id + 1 from t)) limit 1").unwrap(), ["id", "id + 1"]);
         assert_eq!(pg("(select id, id + 1 from t) union all select 1, 2").unwrap(), ["id", "id + 1"]);

@@ -1,11 +1,10 @@
 // GeoJSON geometries (RFC 7946) from the bytes a database writes for a geometry, and back: the
 // `geometry` codec of the project file's `js.codecs` (src/codecs.ts). PostGIS writes a geometry as
-// the hex text of its EWKB, MySQL as a 4-byte little-endian SRID and then its WKB, and DuckDB as
-// ISO WKB. Every coordinate is a float64 on both sides, so a geometry of X and Y, or X, Y and Z,
-// reads and writes back exactly. One GeoJSON has no form for is refused: M coordinates, which
-// `[x, y, m]` would read as Z, curves, triangles, TINs and polyhedral surfaces. The SRID, which
-// RFC 7946 dropped with `crs`, rides on the value as a `srid` member, as Prisma's PostGIS
-// extension writes it.
+// the hex text of its EWKB, and MySQL as a 4-byte little-endian SRID and then its WKB. Every
+// coordinate is a float64 on both sides, so a geometry of X and Y, or X, Y and Z, reads and writes
+// back exactly. One GeoJSON has no form for is refused: M coordinates, which `[x, y, m]` would read
+// as Z, curves, triangles, TINs and polyhedral surfaces. The SRID, which RFC 7946 dropped with
+// `crs`, rides on the value as a `srid` member, as Prisma's PostGIS extension writes it.
 //
 // This module runs in every generated module's process, so it names no Node type.
 
@@ -119,7 +118,7 @@ export function toHex(bytes: Uint8Array): string {
 
 /**
  * A GeoJSON geometry's little-endian WKB: EWKB carrying `srid` where `ewkb` and the SRID is not 0,
- * as PostGIS reads it, and ISO WKB otherwise, its Z in thousands, as MySQL and DuckDB read it.
+ * as PostGIS reads it, and ISO WKB otherwise, its Z in thousands, as MySQL reads it.
  * `refuse` makes the error for a value that is no GeoJSON geometry this writes.
  */
 export function toWkb(g: unknown, srid: number, ewkb: boolean, refuse: (why: string) => Error): Uint8Array {

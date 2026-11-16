@@ -1,1 +1,0 @@
-create schema b; create macro b.tag(s) as s || '!'; create table t (id integer primary key, s varchar default b.tag('x')); create view b.v as select id, b.tag(s) as s from t; create view w as select * from b.v;

@@ -86,7 +86,7 @@ test("an executable that answers as another database's engine, or not at all, is
 });
 
 test("each database's engine names its database, and refuses another database's statement by name", async () => {
-  for (const dialect of ["postgres", "mysql", "sqlite", "duckdb"] as const) {
+  for (const dialect of ["postgres", "mysql", "sqlite"] as const) {
     const e = await engine(dialect);
     const ping = e.call({ op: "ping" }) as { database?: string; fingerprint: string; version: string };
     assert.deepEqual([ping.database, ping.version], [dialect, VERSION]);

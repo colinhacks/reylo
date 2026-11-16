@@ -1,1 +1,0 @@
-create macro clean(s) as trim(s); create macro clean_all(xs) as [clean(x) for x in xs]; create table t (id integer primary key, tags varchar[], cleaned varchar[] generated always as (clean_all(tags)) virtual);

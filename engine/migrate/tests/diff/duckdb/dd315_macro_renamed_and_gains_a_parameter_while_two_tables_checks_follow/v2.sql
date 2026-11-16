@@ -1,1 +1,0 @@
-create macro ok(s, n) as length(s) > n; create table a (id integer primary key, x varchar check (ok(x, 0))); create table b (id integer primary key, a_id integer references a (id), y varchar check (ok(y, 0)));

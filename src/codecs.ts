@@ -1,12 +1,11 @@
-// The project file's `js.codecs`: for a family of values, the TypeScript type `.run()` returns
-// them as and a parameter of that family takes, in place of the one representation of
-// src/values.ts. A family is a kind of the type descriptor format (spec/index.ts). A
-// codec reaches every position Reylo decodes itself: a row's columns, an array's elements, a
-// DuckDB struct's fields, a map's keys and values, a tagged union's value, a structured
-// parameter's members. A value inside a JSON document the statement builds is the document's, and
-// keeps the type JSON gives it. Every codec is exact or refuses a value it cannot hold: a number
-// refuses a decimal a double does not hold, and a Temporal class
-// refuses what no Temporal value is (`infinity`, MySQL's zero date, Postgres's `24:00:00`, an
+// The project file's `js.codecs`: for a family of values, the TypeScript type `.run()` returns them
+// as and a parameter of that family takes, in place of the one representation of src/values.ts. A
+// family is a kind of the type descriptor format (spec/index.ts). A codec reaches every position
+// Reylo decodes itself: a row's columns, an array's elements, a Postgres row value's fields, a
+// tagged union's value, a structured parameter's members. A value inside a JSON document the
+// statement builds is the document's, and keeps the type JSON gives it. Every codec is exact or
+// refuses a value it cannot hold: a number refuses a decimal a double does not hold, and a Temporal
+// class refuses what no Temporal value is (`infinity`, MySQL's zero date, Postgres's `24:00:00`, an
 // interval whose parts differ in sign). A 64-bit integer has no codec: a bigint is its one exact
 // type, and a statement that wants a number or text casts it.
 //
@@ -72,13 +71,11 @@ export type Plan =
   | Codec
   | { readonly array: Plan }
   | { readonly fields: Readonly<Record<string, Plan>> }
-  | { readonly entries: { readonly key?: Plan; readonly value?: Plan } }
   | { readonly tags: Readonly<Record<string, Plan>> }
-  | { readonly items: readonly (Plan | null)[]; readonly rest?: Plan }
   | { readonly geometry: GeometryFormat; readonly srid: number };
 
-/** How a database writes a geometry, which its plan names: PostGIS hex EWKB, MySQL's SRID and WKB, DuckDB's WKB. */
-export type GeometryFormat = "postgres" | "mysql" | "duckdb";
+/** How a database writes a geometry, which its plan names: PostGIS hex EWKB, MySQL's SRID and WKB. */
+export type GeometryFormat = "postgres" | "mysql";
 
 /** The TypeScript type of a value under each codec, which a parameter of it takes too; a SET's array is of its members' type (src/render.ts). */
 export const CODEC_TYPE: Readonly<Record<Codec, string>> = {
@@ -145,8 +142,8 @@ function family(t: EngineType, dialect: Dialect): Family | undefined {
   if (t.kind === "array" && (dialect === "postgres" ? ["vector", "halfvec"] : dialect === "mysql" ? ["vector"] : []).includes(bareName(t))) return "vector";
   // Postgres's network addresses, each an address and its prefix.
   if (dialect === "postgres" && t.kind === "union" && (bareName(t) === "inet" || bareName(t) === "cidr")) return "inet";
-  // PostGIS's geometry and geography, MySQL's GEOMETRY, and DuckDB's, which the engine knows by name alone.
-  if ((t.kind === "geometry" && dialect !== "sqlite") || (t.kind === "opaque" && dialect === "duckdb" && bareName(t) === "geometry")) return "geometry";
+  // PostGIS's geometry and geography, and MySQL's GEOMETRY.
+  if (t.kind === "geometry" && dialect !== "sqlite") return "geometry";
   const kind = columnKind(t, dialect);
   switch (kind) {
     case "decimal":
@@ -212,8 +209,8 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
       return element === undefined ? undefined : { array: element };
     }
     case "struct": {
-      // A DuckDB struct, a Postgres row value and a structured parameter are objects of their fields.
-      if (dialect !== "duckdb" && dialect !== "postgres" && !param) return undefined;
+      // A Postgres row value and a structured parameter are objects of their fields.
+      if (dialect !== "postgres" && !param) return undefined;
       const fields = Object.fromEntries(t.fields.flatMap((f) => {
         const plan = planOf(f.type, dialect, codecs, param);
         return plan === undefined ? [] : [[f.name, plan]];
@@ -228,19 +225,6 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
       if (bound === undefined) return undefined;
       const fields: Plan = { fields: { lower: bound, upper: bound } };
       return t.kind === "range" ? fields : { array: fields };
-    }
-    case "map": {
-      if (dialect !== "duckdb") return undefined;
-      const key = planOf(t.key.type, dialect, codecs, param);
-      const value = planOf(t.value.type, dialect, codecs, param);
-      return key === undefined && value === undefined ? undefined : { entries: { ...(key === undefined ? {} : { key }), ...(value === undefined ? {} : { value }) } };
-    }
-    case "tuple": {
-      // A DuckDB tuple's values, by their places: its elements, its optional ones, then its rest.
-      if (dialect !== "duckdb") return undefined;
-      const items = [...t.elements, ...(t.optional_elements ?? [])].map((s) => planOf(s.type, dialect, codecs, param) ?? null);
-      const rest = t.rest === undefined ? undefined : planOf(t.rest.type, dialect, codecs, param);
-      return items.some((p) => p !== null) || rest !== undefined ? { items, ...(rest === undefined ? {} : { rest }) } : undefined;
     }
     case "tagged_union": {
       // A tagged union's value, `{ tag, value }`, by the alternative its tag names.
@@ -264,12 +248,7 @@ export function planLibraries(plan: Plan, into = new Set<Library>()): Set<Librar
     if (plan.startsWith("decimal:") && plan !== "decimal:number") into.add(plan.slice("decimal:".length) as DecimalLibrary);
     if (plan === "inet:ip-address") into.add("ip-address");
   } else if ("array" in plan) planLibraries(plan.array, into);
-  else if ("entries" in plan) {
-    if (plan.entries.key !== undefined) planLibraries(plan.entries.key, into);
-    if (plan.entries.value !== undefined) planLibraries(plan.entries.value, into);
-  } else if ("items" in plan) {
-    for (const p of [...plan.items, plan.rest]) if (p !== null && p !== undefined) planLibraries(p, into);
-  } else if ("geometry" in plan) {
+  else if ("geometry" in plan) {
     // GeoJSON is plain objects, typed by @types/geojson alone.
   } else for (const p of Object.values("fields" in plan ? plan.fields : plan.tags)) planLibraries(p, into);
   return into;
@@ -463,9 +442,9 @@ export function decodeCodec(codec: Codec, v: unknown, column: string, libraries?
   }
 }
 
-/** Whether a plan's value is an array itself, an array's, a tuple's or a vector's, so that an array element is one value of it, not a further level of a Postgres array. */
+/** Whether a plan's value is an array itself, an array's or a vector's, so that an array element is one value of it, not a further level of a Postgres array. */
 function nestsArray(plan: Plan): boolean {
-  return typeof plan === "object" ? "array" in plan || "items" in plan : VECTOR_CLASS[plan] !== undefined;
+  return typeof plan === "object" ? "array" in plan : VECTOR_CLASS[plan] !== undefined;
 }
 
 /** The typed array of each vector codec, as `Object.prototype.toString` names its values. */
@@ -492,28 +471,12 @@ export function decodePlan(plan: Plan, v: unknown, column: string, libraries?: L
     const element = (e: unknown): unknown => (Array.isArray(e) && !nestsArray(plan.array) ? e.map(element) : decodePlan(plan.array, e, column, libraries));
     return Array.isArray(v) ? v.map(element) : v;
   }
-  if ("items" in plan) {
-    if (!Array.isArray(v)) return v;
-    return v.map((e, i) => {
-      const p = i < plan.items.length ? plan.items[i] : plan.rest;
-      return p === null || p === undefined ? e : decodePlan(p, e, column, libraries);
-    });
-  }
   if (typeof v !== "object") return v;
   if ("fields" in plan) {
     // A spread copies a field named `__proto__` as the own property it is.
     const o = { ...(v as Record<string, unknown>) };
     for (const [name, p] of Object.entries(plan.fields)) if (name in o) o[name] = decodePlan(p, o[name], column, libraries);
     return o;
-  }
-  if ("entries" in plan) {
-    if (!Array.isArray(v)) return v;
-    const { key, value } = plan.entries;
-    return (v as { key: unknown; value: unknown }[]).map((e) => ({
-      ...e,
-      ...(key === undefined ? {} : { key: decodePlan(key, e.key, column, libraries) }),
-      ...(value === undefined ? {} : { value: decodePlan(value, e.value, column, libraries) }),
-    }));
   }
   const u = v as { tag?: unknown; value: unknown };
   const p = typeof u.tag === "string" ? plan.tags[u.tag] : undefined;
@@ -610,8 +573,8 @@ export function encodeCodec(codec: Codec, v: unknown, name: string, dialect: Dia
 }
 
 /**
- * A geometry as GeoJSON with its SRID, from what its database wrote: PostGIS's hex EWKB, MySQL's
- * SRID and WKB, DuckDB's WKB, which keeps no SRID, so the column's.
+ * A geometry as GeoJSON with its SRID, from what its database wrote: PostGIS's hex EWKB, or MySQL's
+ * SRID and WKB.
  */
 function decodeGeometry(plan: { geometry: GeometryFormat; srid: number }, v: unknown, column: string): unknown {
   const refuse = (why: string) => new DecodeError(`Column "${column}" holds ${why} (js.codecs.geometry is GeoJSON in the project file). Cast it to text in the statement (ST_AsText(${column})) to read it as it is.`);
@@ -631,8 +594,8 @@ function decodeGeometry(plan: { geometry: GeometryFormat; srid: number }, v: unk
 }
 
 /**
- * A GeoJSON geometry as its database reads it: PostGIS hex EWKB carrying its SRID, MySQL's SRID and
- * WKB, of X and Y alone, and DuckDB's WKB. Its `srid`, else the column's, is the value's SRID.
+ * A GeoJSON geometry as its database reads it: PostGIS hex EWKB carrying its SRID, or MySQL's SRID
+ * and WKB, of X and Y alone. Its `srid`, else the column's, is the value's SRID.
  */
 function encodeGeometry(plan: { geometry: GeometryFormat; srid: number }, v: unknown, name: string): unknown {
   const refuse = (why: string) => new ParameterError(`Parameter "${name}" takes a GeoJSON geometry, as js.codecs.geometry in the project file says; got ${why}.`);
@@ -652,9 +615,6 @@ function encodeGeometry(plan: { geometry: GeometryFormat; srid: number }, v: unk
       out.set(wkb, 4);
       return out;
     }
-    default:
-      if (srid !== plan.srid) throw refuse(`an srid of ${srid}, where DuckDB keeps none in a value and the column's is ${plan.srid}`);
-      return toWkb(v as Geometry, 0, false, refuse);
   }
 }
 
@@ -675,26 +635,11 @@ export function encodePlan(plan: Plan, v: unknown, name: string, dialect: Dialec
     const element = (e: unknown): unknown => (Array.isArray(e) && !nestsArray(plan.array) ? e.map(element) : encodePlan(plan.array, e, name, dialect, libraries));
     return Array.isArray(v) ? v.map(element) : v;
   }
-  if ("items" in plan) {
-    if (!Array.isArray(v)) return v;
-    return v.map((e, i) => {
-      const p = i < plan.items.length ? plan.items[i] : plan.rest;
-      return p === null || p === undefined ? e : encodePlan(p, e, name, dialect, libraries);
-    });
-  }
   if (typeof v !== "object") return v;
   if ("fields" in plan) {
     const o = { ...(v as Record<string, unknown>) };
     for (const [field, p] of Object.entries(plan.fields)) if (field in o) o[field] = encodePlan(p, o[field], name, dialect, libraries);
     return o;
-  }
-  if ("entries" in plan) {
-    if (!Array.isArray(v)) return v;
-    return (v as { key: unknown; value: unknown }[]).map((e) => ({
-      ...e,
-      ...(plan.entries.key === undefined ? {} : { key: encodePlan(plan.entries.key, e.key, name, dialect, libraries) }),
-      ...(plan.entries.value === undefined ? {} : { value: encodePlan(plan.entries.value, e.value, name, dialect, libraries) }),
-    }));
   }
   const u = v as { tag?: unknown; value: unknown };
   const p = typeof u.tag === "string" ? plan.tags[u.tag] : undefined;

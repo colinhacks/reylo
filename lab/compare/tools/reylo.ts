@@ -1,5 +1,5 @@
 // Reylo: `reylo generate` analyzes each .sql file into reylo/.cache/, whose entries hold the analysis the type check reads.
-import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Kind } from "../probes.ts";
 import { failed, gitDelta, gitInit, rewrite, sh, workdir, type Answer, type Tool, type TypedValue } from "./lib.ts";
@@ -37,21 +37,6 @@ export const reylo: Tool = {
   name: "Reylo",
   version,
   dbs: ["postgres", "mysql", "sqlite"],
-  async duckdb(probe) {
-    const dir = workdir("reylo-duckdb");
-    mkdirSync(join(dir, "q"));
-    writeFileSync(join(dir, "package.json"), '{"name":"p","private":true,"type":"module"}\n');
-    symlinkSync(resolve(import.meta.dirname, "../node_modules"), join(dir, "node_modules"));
-    const { DuckDBInstance } = await import("@duckdb/node-api");
-    const db = await DuckDBInstance.create(join(dir, "app.duckdb"));
-    const c = await db.connect();
-    await c.run("create table users (id integer primary key, name varchar not null)");
-    c.closeSync();
-    db.closeSync();
-    writeFileSync(join(dir, "q/smoke.sql"), `${probe.sql}\n`);
-    const run = sh(bin, ["generate", "q"], { cwd: dir, env: { DATABASE_URL: "duckdb:./app.duckdb" } });
-    return run.status === 0 ? { ok: true, params: [], columns: [], cardinality: null } : failed(run.all);
-  },
   async analyze(db, statements, urls) {
     const dir = workdir("reylo");
     mkdirSync(join(dir, "q"));

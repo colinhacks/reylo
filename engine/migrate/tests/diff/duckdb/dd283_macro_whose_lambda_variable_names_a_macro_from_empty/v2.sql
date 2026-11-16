@@ -1,1 +1,0 @@
-create macro mk(s) as s || '!'; create macro bang(xs) as list_transform(xs, lambda mk: mk(mk)); create table t (id integer primary key, tags varchar[], b varchar[] generated always as (bang(tags)) virtual);

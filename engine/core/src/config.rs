@@ -87,31 +87,31 @@ impl Js {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Codecs {
-    /// An exact decimal: Postgres's `numeric` and MySQL's and DuckDB's `DECIMAL`. A `number` refuses
+    /// An exact decimal: Postgres's `numeric` and MySQL's `DECIMAL`. A `number` refuses
     /// a value a double cannot hold; a decimal library, named by its package, is that library's
     /// value, from the app's own install.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decimal: Option<DecimalCodec>,
-    /// Bytes: Postgres's `bytea`, MySQL's `BINARY`, `VARBINARY` and `BLOB`, and SQLite's and
-    /// DuckDB's `BLOB`. A `string` is their base64.
+    /// Bytes: Postgres's `bytea`, MySQL's `BINARY`, `VARBINARY` and `BLOB`, and SQLite's
+    /// `BLOB`. A `string` is their base64.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<BytesCodec>,
-    /// A date: `date`, MySQL's and DuckDB's `DATE`, a SQLite column declared `DATE`.
+    /// A date: `date`, MySQL's `DATE`, a SQLite column declared `DATE`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<DateCodec>,
-    /// A time of day with no zone: Postgres's and DuckDB's `time`, a SQLite column declared
+    /// A time of day with no zone: Postgres's `time`, a SQLite column declared
     /// `TIME`. One that keeps its offset (`timetz`) keeps its text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<TimeCodec>,
     /// A date and time of day as a wall clock reads, with no zone: Postgres's `timestamp`,
-    /// MySQL's `DATETIME` and `TIMESTAMP`, DuckDB's `TIMESTAMP`, a SQLite column declared
+    /// MySQL's `DATETIME` and `TIMESTAMP`, a SQLite column declared
     /// `DATETIME` or `TIMESTAMP`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub datetime: Option<DateTimeCodec>,
-    /// An instant: Postgres's and DuckDB's `timestamptz`.
+    /// An instant: Postgres's `timestamptz`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instant: Option<InstantCodec>,
-    /// A duration: Postgres's `interval`, MySQL's `TIME`, DuckDB's `INTERVAL`. A
+    /// A duration: Postgres's `interval`, MySQL's `TIME`. A
     /// `Temporal.Duration` refuses one whose parts differ in sign, which it cannot hold.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<DurationCodec>,
@@ -123,7 +123,7 @@ pub struct Codecs {
     /// `Float16Array`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vector: Option<VectorCodec>,
-    /// A geometry: PostGIS's `geometry` and `geography`, and MySQL's and DuckDB's `GEOMETRY`.
+    /// A geometry: PostGIS's `geometry` and `geography`, and MySQL's `GEOMETRY`.
     /// `GeoJSON` is a GeoJSON geometry, with its SRID as an `srid` member.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometry: Option<GeometryCodec>,

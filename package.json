@@ -46,7 +46,6 @@
   },
   "devDependencies": {
     "@bytecodealliance/jco": "1.39.0",
-    "@duckdb/node-api": "2.0.0-r.1",
     "@types/big.js": "7.0.0",
     "@types/geojson": "7946.0.16",
     "@types/node": "^26.6.1",

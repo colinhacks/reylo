@@ -7,7 +7,6 @@
 //! dependencies allow. Nothing here trusts the plan: `reylo migrate new` runs it on a shadow
 //! of the migrations and compares the result with `schema.sql` before it writes the file.
 
-pub mod duckdb;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
@@ -22,7 +21,6 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         Dialect::Postgres => postgres::read(db).await,
         Dialect::Mysql => mysql::read(db).await,
         Dialect::Sqlite => sqlite::read(db).await,
-        Dialect::Duckdb => duckdb::read(db).await,
     }
 }
 
@@ -35,7 +33,6 @@ pub async fn alterer(db: &mut Db) -> Result<Box<dyn Alterer>, Error> {
         }
         Dialect::Mysql => Box::new(mysql::MysqlAlterer::default()),
         Dialect::Sqlite => Box::new(sqlite::SqliteAlterer::default()),
-        Dialect::Duckdb => Box::new(duckdb::DuckdbAlterer::default()),
     })
 }
 
@@ -83,10 +80,6 @@ pub struct Object {
     pub inline: bool,
     /// The objects it depends on, by id, in its own database.
     pub deps: BTreeSet<String>,
-    /// The objects that must be there when it is made, which its database then keeps no record of,
-    /// so that they may change or go under it (a DuckDB macro calling another): ordered before its
-    /// create and its change, never its drop.
-    pub binds: BTreeSet<String>,
     /// What a change of definition needs beyond its own statements, decided by its database.
     pub change: Change,
     /// A warning written above its create when it is created on its own (a not-null column with
@@ -154,28 +147,6 @@ pub trait Alterer {
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
         let _ = (from, to);
         None
-    }
-    /// Objects whose create or change the op of `id` (its create or its change) runs after, beyond
-    /// what its target depends on: what the alterer's statements for it make, or remake as the
-    /// target has it, need (DuckDB's rebuild of a table makes the tables that reference it, and a
-    /// macro made again remakes the tables that call it).
-    fn waits_for(&self, id: &str) -> Vec<String> {
-        let _ = id;
-        vec![]
-    }
-    /// The statements that drop `from`, where its own drop isn't all it takes: DuckDB's default that
-    /// reads a macro by a bare name, kept as it is, which must let it go first. None at all where
-    /// another op's statements drop it, as DuckDB's rebuild around a macro made again does, and
-    /// then the drop waits for nothing.
-    fn drop(&self, from: &Object) -> Option<Vec<String>> {
-        let _ = from;
-        None
-    }
-    /// Objects whose create or change the drop of `id` runs after, beyond what depends on it: the
-    /// change that lets it go, where that is another object's statements.
-    fn drop_waits_for(&self, id: &str) -> Vec<String> {
-        let _ = id;
-        vec![]
     }
     /// The plan's statements once ordered, for the settings that let them run in that order: a
     /// Postgres function's body calls others the server keeps no record of, so no order is safe.
@@ -802,7 +773,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // After what it depends on, and its owner, exist as the target has them; a created
                 // table waits for its inline columns' dependencies too, and an object on a column
                 // waits for what the column's type is (an enum changed in place).
-                let mut needs: BTreeSet<&String> = o.deps.iter().chain(&o.binds).collect();
+                let mut needs: BTreeSet<&String> = o.deps.iter().collect();
                 for d in &o.deps {
                     if let Some(c) = to.objects.get(d).filter(|c| c.kind == Some(Kind::Column)) {
                         needs.extend(c.deps.iter());
@@ -816,13 +787,6 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 }
                 for d in needs {
                     if let Some(j) = create_of(d) {
-                        if j != k {
-                            after[k].insert(j);
-                        }
-                    }
-                }
-                for d in alterer.waits_for(id) {
-                    if let Some(j) = create_of(&d) {
                         if j != k {
                             after[k].insert(j);
                         }
@@ -849,17 +813,6 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 }
             }
             Op::Drop(id) => {
-                // A drop another op's statements make waits for nothing.
-                if alterer.drop(&from.objects[id]).is_some_and(|s| s.is_empty()) {
-                    continue;
-                }
-                for d in alterer.drop_waits_for(id) {
-                    if let Some(j) = create_of(&d) {
-                        if j != k {
-                            after[k].insert(j);
-                        }
-                    }
-                }
                 // After the drops (and the changes) of what depends on it, or on anything it owns:
                 // another table's foreign key depends on this table's column.
                 let reach: Vec<&str> = with_owned(from, id).into_iter().flat_map(|o| dependents.get(o).into_iter().flatten().copied()).collect();
@@ -923,7 +876,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign {
                     plan.losses.push(id.clone());
                 }
-                plan.statements.extend(alterer.drop(o).unwrap_or_else(|| o.drop.clone()));
+                plan.statements.extend(o.drop.clone());
             }
             Op::Alter(id) => {
                 if let Some((old_id, _)) = renames.get(id).filter(|(old_id, _)| !stated.contains(old_id) && !followers.contains(id)) {

@@ -13,9 +13,9 @@ import { DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mys
 // The schema freshness check (src/fresh.ts, engine/core/src/fresh.rs). Postgres and MySQL run on throwaway servers named by
 // REYLO_TEST_PG and REYLO_TEST_MYSQL, each test in a database of its own.
 /** Each change a query survives, as the check says it. */
-const drift = (fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite" | "duckdb") => compared(fresh, rows, dialect)?.drifted.map((d) => `${d.name}: ${d.how}`);
+const drift = (fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite") => compared(fresh, rows, dialect)?.drifted.map((d) => `${d.name}: ${d.how}`);
 /** Each change that fails the call. */
-const stale = (fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite" | "duckdb") => compared(fresh, rows, dialect)?.stale;
+const stale = (fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite") => compared(fresh, rows, dialect)?.stale;
 
 /** What `run` writes through `console.warn`. */
 async function warnings(run: () => unknown): Promise<string[]> {

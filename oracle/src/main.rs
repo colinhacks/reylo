@@ -11,8 +11,7 @@
 //! answers the engine and how its runs are isolated is in `mysql.rs`. A case with a `min_version`
 //! file (a `server_version_num`, such as `180000`, or for MySQL the version as one number, such
 //! as `80400`) is skipped on an older server. A MySQL case's `sql_mode` file sets its sessions'
-//! `sql_mode`. A case whose `dialect` file says `duckdb` runs in a fresh DuckDB file, in an
-//! oracle built with the `duckdb` feature (`duckdb.rs`).
+//! `sql_mode`.
 //!
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
@@ -56,8 +55,6 @@
 //! and passes the validity rules of spec/README.md (`validity.rs`). A type that breaks one fails its
 //! case.
 
-#[cfg(feature = "duckdb")]
-mod duckdb;
 mod errors;
 mod mysql;
 mod replay;
@@ -130,10 +127,6 @@ async fn oracle() -> ExitCode {
     // A database's own test suite, replayed: `replay/`.
     if let Some(database) = replay {
         let outcome = match (database.as_str(), paths.as_slice()) {
-            #[cfg(feature = "duckdb")]
-            ("duckdb", _) => Ok(replay::duckdb::run(&paths, timeout_ms)),
-            #[cfg(not(feature = "duckdb"))]
-            ("duckdb", _) => Err("--replay duckdb runs DuckDB's tests, in an oracle built with DuckDB: --features duckdb".to_string()),
             ("sqlite", _) => Ok(replay::sqlite::run(&paths, timeout_ms)),
             ("postgres", [regress]) => match &url {
                 Some(url) => replay::postgres::run(url, regress, timeout_ms).await,
@@ -143,7 +136,7 @@ async fn oracle() -> ExitCode {
                 Some(mysqld) => replay::mysql::run(mysqld, &paths, timeout_ms).await,
                 None => Err("--replay mysql runs on a server it starts from --mysqld <path to mysqld>".to_string()),
             },
-            _ => Err("--replay takes duckdb, postgres, sqlite or mysql, and the suite's directory: postgres's src/test/regress alone".to_string()),
+            _ => Err("--replay takes postgres, sqlite or mysql, and the suite's directory: postgres's src/test/regress alone".to_string()),
         };
         return match outcome {
             Ok(true) => ExitCode::SUCCESS,
@@ -171,12 +164,6 @@ async fn oracle() -> ExitCode {
         let min = fs::read_to_string(case.join("min_version")).ok().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
         let outcome = if dialect == "sqlite" {
             run_sqlite(case, timeout_ms, &given, &mut dumped)
-        } else if dialect == "duckdb" {
-            #[cfg(feature = "duckdb")]
-            let outcome = duckdb::run(case, timeout_ms, &given, &mut dumped, statements(case));
-            #[cfg(not(feature = "duckdb"))]
-            let outcome: Result<(Vec<String>, Vec<String>), String> = Err("a DuckDB case runs in an oracle built with DuckDB: cargo run -p reylo-oracle --features duckdb".into());
-            outcome
         } else if dialect == "mysql" {
             if mysql_server.is_none() {
                 let Some(url) = mysql_url.as_deref() else {

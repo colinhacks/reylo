@@ -1,1 +1,0 @@
-create sequence s increment by 2; create table p (id integer primary key, a integer, check (a > 0)); create table c (id integer primary key, pid integer references p (id), d bigint default nextval('s') + 1);

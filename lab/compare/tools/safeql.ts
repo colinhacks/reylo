@@ -58,7 +58,6 @@ export const safeql: Tool = {
   name: "SafeQL",
   version,
   dbs: ["postgres"],
-  noDuckdb: 'SafeQL is Postgres only.',
   cardinalityNote: "Every query is typed as an array, unless your own transform says otherwise.",
   async analyze(_db, statements, urls) {
     const dir = workdir("safeql");

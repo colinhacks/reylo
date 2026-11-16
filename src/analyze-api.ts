@@ -8,10 +8,9 @@ import { basename } from "node:path";
 import type { StatementDescriptor } from "../spec/index.ts";
 import type { AnalyzeInput } from "./build-time.ts";
 import { NotMysql, reason, refusedLogin } from "./connection.ts";
-import { duckdbDatabase } from "./duckdb.ts";
-import { AnswerCache, anyEngine, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
+import { anyEngine, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
 import { placeholdersOf, untypedParams } from "./module-types.ts";
-import { dialectOf, duckdbPath, PROJECT_FILE, resolveProject, sqlitePath, sqliteUrlProblem, type Dialect as Database } from "./project.ts";
+import { dialectOf, PROJECT_FILE, resolveProject, sqlitePath, sqliteUrlProblem, type Dialect as Database } from "./project.ts";
 
 /** The format version `analyze` writes, as the URL of its JSON Schema (spec/typedefs.schema.json), which the type holds to the spec's. */
 const SCHEMA: StatementDescriptor["$schema"] = "https://reylo.dev/typedefs/0.1.0.json";
@@ -31,14 +30,13 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
   if (!url) throw new Error(project.missingUrl);
   const dialect = dialectOf(url);
   // The project's own URL has passed this check in resolveProject: only a given one can fail it here.
-  if (!dialect) throw new Error("Cannot tell the database from the URL (the url given): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.");
+  if (!dialect) throw new Error("Cannot tell the database from the URL (the url given): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.");
   // A relative path in a URL the caller named is the caller's, from the working directory; one in the
   // project's URL is from the project's root, as the type check reads it.
   const base = given === undefined ? project.root : cwd;
   const unusable = dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
   if (unusable) throw new Error(`Cannot read the SQLite URL ${url} (the url given): ${unusable}.`);
   const strict: Strict = { params: project.strictParams, file: project.file ? basename(project.file) : PROJECT_FILE };
-  if (dialect === "duckdb") return analyzeDuckdb(duckdbPath(url, base), project.root, sql, strict);
   const target = (u: string) => (dialect === "sqlite" ? sqlitePath(u, base) : u);
   try {
     return await analyzeOn(dialect, target(url), sql, strict);
@@ -54,7 +52,7 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
 }
 
 /** The statement's descriptor over the connection to `target`, which an error it cannot be read through rejects with. */
-async function analyzeOn(dialect: Exclude<Database, "duckdb">, target: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
+async function analyzeOn(dialect: Database, target: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
   const key = `${dialect}\0${target}`;
   const entry = acquire(key, dialect, target);
   try {
@@ -96,7 +94,7 @@ type Shared = { connection: Promise<Connection>; calls: number; timer?: ReturnTy
 const connections = new Map<string, Shared>();
 
 /** The connection to `target`, opened by the engine of its database where none is open. */
-function acquire(key: string, dialect: Exclude<Database, "duckdb">, target: string): Shared {
+function acquire(key: string, dialect: Database, target: string): Shared {
   let entry = connections.get(key);
   if (!entry) {
     entry = { connection: engine(dialect).then((e) => e.open(target)), calls: 0 };
@@ -119,22 +117,6 @@ function drop(key: string, entry: Shared): void {
   clearTimeout(entry.timer);
   if (connections.get(key) === entry) connections.delete(key);
   entry.connection.then((c) => c.close(), () => {});
-}
-
-/** DuckDB runs inside the app: the engine's needs are answered by the project's own `@duckdb/node-api`, which opens the file for this call alone (src/duckdb.ts). */
-async function analyzeDuckdb(path: string, root: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
-  const duckdb = await engine("duckdb");
-  const db = duckdbDatabase(path, root);
-  return db.run(async (io) => {
-    const [[version]] = (await io.query("select version()", [])) as [[string]];
-    try {
-      const analysis = await duckdb.analyze(sql, "duckdb", io, new AnswerCache());
-      return descriptor(sql, "duckdb", version.replace(/^v/, ""), analysis, await untyped(duckdb, sql, "duckdb", analysis, strict));
-    } catch (e) {
-      if (e instanceof Unreachable) throw failure(e);
-      return refused(sql, "duckdb", version.replace(/^v/, ""), (e as Error).message);
-    }
-  });
 }
 
 /** Why the database could not be read, as `reylo analyze` words it. */

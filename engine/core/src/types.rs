@@ -65,7 +65,7 @@ pub enum Kind {
     Union(UnionType),
     /// Values of every member at once.
     Intersection(UnionType),
-    /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
+    /// One of several alternatives, each named by the tag every value carries.
     TaggedUnion(TaggedUnionType),
     Range(RangeType),
     Multirange(RangeType),
@@ -810,7 +810,7 @@ pub struct Diagnostic {
 // Building types
 // ---------------------------------------------------------------------------------------------
 
-/// A microsecond, the tick of Postgres's, MySQL's and DuckDB's default times.
+/// A microsecond, the tick of Postgres's and MySQL's default times.
 pub const MICROSECOND: &str = "1/1000000";
 
 /// The draft the engine's canonical JSON Schema ([`crate::schema_type`]) is read by: its keywords

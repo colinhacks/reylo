@@ -1,1 +1,0 @@
-create macro x() as 2; create table q (id integer primary key, a integer, b integer); create table t (id integer primary key, v integer, check (v >= x())); create table c (id integer primary key, t_id integer references t (id), q_id integer references q (id), note varchar);

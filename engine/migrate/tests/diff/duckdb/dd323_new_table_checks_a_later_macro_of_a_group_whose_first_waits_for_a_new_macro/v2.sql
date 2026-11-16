@@ -1,1 +1,0 @@
-create macro a_lead(s) as s <> '-'; create macro valid(s, n) as length(s) > n; create macro zz_new(s) as s is not null; create table t (id integer primary key, code varchar check (a_lead(code) and valid(code, 0) and zz_new(code))); create table u (id integer primary key, s varchar check (valid(s, 1)));
