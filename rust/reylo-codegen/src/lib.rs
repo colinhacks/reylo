@@ -197,8 +197,24 @@ pub fn stand_ins() -> TokenStream {
 
 /// A column's or a parameter's name as a Rust field.
 pub fn field_ident(name: &str, span: Span) -> syn::Result<Ident> {
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.starts_with(|c: char| c.is_ascii_digit()) {
+    // `self`, `Self`, `super`, `crate` and `_` are keywords no raw identifier can be.
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.starts_with(|c: char| c.is_ascii_digit()) || matches!(name, "self" | "Self" | "super" | "crate" | "_") {
         return Err(syn::Error::new(span, format!("the column {name:?} is no Rust name: give it one with `as`")));
     }
     Ok(syn::parse_str::<Ident>(name).unwrap_or_else(|_| Ident::new_raw(name, span)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::field_ident;
+    use proc_macro2::Span;
+
+    #[test]
+    fn a_keyword_column_is_an_error_not_a_panic() {
+        for name in ["self", "Self", "super", "crate", "_", "", "1st", "a-b"] {
+            assert!(field_ident(name, Span::call_site()).is_err(), "{name}");
+        }
+        assert_eq!(field_ident("type", Span::call_site()).unwrap().to_string(), "r#type");
+        assert_eq!(field_ident("name", Span::call_site()).unwrap().to_string(), "name");
+    }
 }

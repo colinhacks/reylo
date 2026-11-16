@@ -86,7 +86,7 @@ fn session<C, D>(cell: &'static Mutex<Option<Session<C, D>>>, url: &str) -> Mute
 const POSTGRES_FINGERPRINT: &str = include_str!("fingerprint-postgres.sql");
 const MYSQL_FINGERPRINT: &str = include_str!("fingerprint-mysql.sql");
 /// SQLite's whole schema, and the functions of the SQLite that opened it, as the loader reads them.
-const SQLITE_FINGERPRINT: &str = "select type, name, tbl_name, coalesce(sql, '') from sqlite_schema\n    union all select 'function', name, type, narg from pragma_function_list order by 1, 2, 3, 4";
+const SQLITE_FINGERPRINT: &str = include_str!("fingerprint-sqlite.sql");
 
 impl Dialect {
     fn name(self) -> &'static str {

@@ -17,19 +17,43 @@ pub use sqlx;
 #[doc(hidden)]
 pub mod __private {
     /// Whether two texts are the same, in a constant: a module `reylo generate rust-sqlx` wrote
-    /// holds this check of its `.sql` file against the text it was written from.
+    /// holds this check of its `.sql` file against the text it was written from. A carriage return
+    /// before a line feed is passed over, so a checkout that writes lines as CRLF, as git does on
+    /// Windows, reads as the text the module was written from.
     pub const fn same_text(a: &str, b: &str) -> bool {
         let (a, b) = (a.as_bytes(), b.as_bytes());
-        if a.len() != b.len() {
-            return false;
-        }
-        let mut i = 0;
-        while i < a.len() {
-            if a[i] != b[i] {
+        let (mut i, mut j) = (0, 0);
+        loop {
+            if i + 1 < a.len() && a[i] == b'\r' && a[i + 1] == b'\n' {
+                i += 1;
+            }
+            if j + 1 < b.len() && b[j] == b'\r' && b[j + 1] == b'\n' {
+                j += 1;
+            }
+            if i == a.len() || j == b.len() {
+                return i == a.len() && j == b.len();
+            }
+            if a[i] != b[j] {
                 return false;
             }
             i += 1;
+            j += 1;
         }
-        true
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::same_text;
+
+        #[test]
+        fn a_text_is_the_same_whichever_way_its_lines_end() {
+            assert!(same_text("select 1\nfrom t\n", "select 1\nfrom t\n"));
+            assert!(same_text("select 1\r\nfrom t\r\n", "select 1\nfrom t\n"));
+            assert!(same_text("select 1\nfrom t\n", "select 1\r\nfrom t\r\n"));
+            assert!(same_text("", ""));
+            assert!(!same_text("select 1\n", "select 2\n"));
+            assert!(!same_text("select 1", "select 1\n"));
+            assert!(!same_text("a\rb", "a\nb"));
+        }
     }
 }

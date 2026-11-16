@@ -57,7 +57,7 @@ A statement that reads a type whose feature is off fails to compile, and says wh
 
 ### Database
 
-Reylo finds your dev database through the `DATABASE_URL` environment variable, or a `.env` file beside `Cargo.toml`:
+Reylo finds your dev database through the `DATABASE_URL` environment variable, or a `.env` file beside the crate's `Cargo.toml`. In a workspace, that's the member's own, not the workspace root's:
 
 ```sh title=".env"
 DATABASE_URL=postgres://postgres@localhost:5432/app
@@ -332,7 +332,7 @@ To write every module to one file, name it with `--out`:
 reylo generate rust-sqlx src/queries --out src/queries.rs
 ```
 
-Each folder becomes a module, so `users/get.sql` and `posts/get.sql` are `queries::users::get` and `queries::posts::get`.
+Each folder under an input becomes a module, so `users/get.sql` and `posts/get.sql` are `queries::users::get` and `queries::posts::get`.
 
 ### In CI
 
@@ -351,7 +351,7 @@ To commit nothing generated, write the modules at build time instead:
 ```rust title="build.rs"
 fn main() {
     reylo_build::rust_sqlx()
-        .input("src/**/*.sql")
+        .input("src/queries")
         .out("queries.rs")
         .run()
         .unwrap();

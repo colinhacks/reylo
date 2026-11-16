@@ -13,7 +13,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Exact<T>(pub T);
 
+// The readers the date and time decoders share, which only `chrono` and `time` call.
 #[cfg(feature = "postgres")]
+#[cfg_attr(not(any(feature = "chrono", feature = "time")), allow(dead_code, unused_macros, unused_imports))]
 mod postgres {
     use super::Exact;
     use sqlx::error::BoxDynError;

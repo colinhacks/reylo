@@ -94,11 +94,23 @@ impl Generator {
         } else {
             default_inputs(&base)?
         };
-        let mut found = Vec::new();
+        // Each file with the directory its module's path starts from: the directory the input names,
+        // a glob's directory up to its first wildcard, or a named file's own directory.
+        let mut found: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut errors = Vec::new();
         for input in &inputs {
+            let root = if files::is_glob(input) {
+                base.join(files::glob_root(input))
+            } else {
+                let full = base.join(input);
+                if full.is_dir() {
+                    full
+                } else {
+                    full.parent().map_or(base.clone(), Path::to_path_buf)
+                }
+            };
             match files::sql_files(input, &base) {
-                Ok(files) => found.extend(files),
+                Ok(files) => found.extend(files.into_iter().filter(|f| !found.iter().any(|(seen, _)| seen == f)).map(|f| (f, root.clone())).collect::<Vec<_>>()),
                 Err(message) => errors.push(message),
             }
         }
@@ -106,17 +118,16 @@ impl Generator {
             return Err(Error(errors.join("\n")));
         }
         found.sort();
-        found.dedup();
         if found.is_empty() {
             return Err(Error(format!("no .sql file under {}", inputs.join(", "))));
         }
 
         let mut modules = Vec::new();
         let mut options = BTreeMap::new();
-        for file in &found {
+        for (file, root) in &found {
             let shown = shown(&base, file);
             match module(file, &shown, &mut options) {
-                Ok((name, tokens)) => modules.push(Module { file: file.clone(), name, tokens }),
+                Ok((name, tokens)) => modules.push(Module { file: file.clone(), root: root.clone(), name, tokens }),
                 Err(message) => errors.push(message),
             }
         }
@@ -127,7 +138,7 @@ impl Generator {
         if self.build_script {
             let out_dir = PathBuf::from(std::env::var("OUT_DIR").map_err(|_| Error("OUT_DIR is not set: reylo_build runs in a build script".into()))?);
             let out = out_dir.join(self.out.clone().unwrap_or_else(|| "queries.rs".into()));
-            let written = write(&out, &one_file(&modules, &out, true)?)?;
+            let written = write(&out, &one_file(&modules, &inputs, &out, true)?)?;
             for input in &inputs {
                 let dir = if files::is_glob(input) { files::glob_root(input) } else { input.as_str() };
                 println!("cargo:rerun-if-changed={}", base.join(dir).display());
@@ -147,16 +158,17 @@ impl Generator {
         match &self.out {
             Some(out) => {
                 let out = base.join(out);
-                Ok(vec![write(&out, &one_file(&modules, &out, false)?)?])
+                Ok(vec![write(&out, &one_file(&modules, &inputs, &out, false)?)?])
             }
             None => modules.iter().map(|m| write(&m.file.with_extension("rs"), &beside(m)?)).collect(),
         }
     }
 }
 
-/// A statement's module: its name and its items.
+/// A statement's module: its name and its items, and the directory its path in one file starts from.
 struct Module {
     file: PathBuf,
+    root: PathBuf,
     name: String,
     tokens: TokenStream,
 }
@@ -279,11 +291,10 @@ fn beside(module: &Module) -> Result<String, Error> {
     format_file(header, quote!(#check #tokens))
 }
 
-/// Every module in one file, a module per directory under the inputs' common directory. A build
-/// script's names each `.sql` file by its full path and needs no check, since Cargo runs it again
-/// when one changes.
-fn one_file(modules: &[Module], out: &Path, build_script: bool) -> Result<String, Error> {
-    let common = common_dir(modules.iter().map(|m| m.file.parent().unwrap_or(&m.file)));
+/// Every module in one file, a module per directory under the input that found it, so that a
+/// module's path stays as it is when other `.sql` files come and go. A build script's names each
+/// `.sql` file by its full path and needs no check, since Cargo runs it again when one changes.
+fn one_file(modules: &[Module], inputs: &[String], out: &Path, build_script: bool) -> Result<String, Error> {
     #[derive(Default)]
     struct Node {
         dirs: BTreeMap<String, Node>,
@@ -291,7 +302,7 @@ fn one_file(modules: &[Module], out: &Path, build_script: bool) -> Result<String
     }
     let mut root = Node::default();
     for module in modules {
-        let rel = module.file.parent().and_then(|p| p.strip_prefix(&common).ok()).unwrap_or(Path::new(""));
+        let rel = module.file.parent().and_then(|p| p.strip_prefix(&module.root).ok()).unwrap_or(Path::new(""));
         let mut node = &mut root;
         for part in rel.components() {
             let Component::Normal(part) = part else { continue };
@@ -306,13 +317,15 @@ fn one_file(modules: &[Module], out: &Path, build_script: bool) -> Result<String
             let check = check(&module.file, &relative(out.parent().unwrap_or(Path::new("")), &module.file))?;
             quote!(#check #tokens)
         };
-        node.queries.insert(module.name.clone(), body);
+        if node.queries.insert(module.name.clone(), body).is_some() {
+            return Err(Error(format!("{}: another .sql file of the inputs is the module {} too: rename one", module.file.display(), module.name)));
+        }
     }
     fn render(node: &Node, at: &Path) -> Result<TokenStream, Error> {
         let mut items = Vec::new();
         for (name, child) in &node.dirs {
             if node.queries.contains_key(name) {
-                return Err(Error(format!("{}: both a directory and a .sql file are named {name}, which would be two modules of one name", at.display())));
+                return Err(Error(format!("{}: both a directory and a .sql file are the module {name}: rename one", at.display())));
             }
             let ident = syn::parse_str::<syn::Ident>(name).map_err(|e| Error(e.to_string()))?;
             let inner = render(child, &at.join(name))?;
@@ -324,16 +337,16 @@ fn one_file(modules: &[Module], out: &Path, build_script: bool) -> Result<String
         }
         Ok(quote!(#(#items)*))
     }
-    let tokens = render(&root, &common)?;
-    let from = if build_script { common.display().to_string() } else { relative(out.parent().unwrap_or(Path::new("")), &common) };
-    let header = format!("{MARK} from the .sql files under {from}: edit the queries and run it again, never this file.\n\n");
+    let tokens = render(&root, out)?;
+    let header = format!("{MARK} from {}: edit the queries and run it again, never this file.\n\n", inputs.join(", "));
     format_file(header, tokens)
 }
 
 /// `const _: () = assert!(…)`: the crate fails to compile, saying why, once the `.sql` file at
 /// `include` (from the generated file) no longer reads as the text it was written from.
 fn check(file: &Path, include: &str) -> Result<TokenStream, Error> {
-    let sql = std::fs::read_to_string(file).map_err(|e| Error(format!("cannot read {}: {e}", file.display())))?;
+    // Lines end in LF, whichever way the checkout writes them: `same_text` reads CRLF as LF.
+    let sql = std::fs::read_to_string(file).map_err(|e| Error(format!("cannot read {}: {e}", file.display())))?.replace("\r\n", "\n");
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let message = format!("{name} changed after its module was written: run `reylo generate rust-sqlx` again");
     Ok(quote! {

@@ -295,12 +295,20 @@ impl Types {
         let Kind::Enum(e) = &t.kind else { unreachable!("is_enum checked the kind") };
         let values = e.values.clone();
         let (schema, short) = name.rsplit_once('.').unwrap_or(("", &name));
-        let ident = format_ident!("{}", pascal(short));
+        // A type's name as a Rust one: `Self`, or a name that starts with a digit, takes a prefix.
+        let mut type_name = pascal(&short.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>());
+        if type_name.is_empty() || type_name == "Self" || type_name.starts_with(|c: char| c.is_ascii_digit()) {
+            type_name = format!("Enum{type_name}");
+        }
+        let ident = format_ident!("{}", type_name);
         let mut variants: Vec<proc_macro2::Ident> = Vec::new();
         for value in &values {
             let mut variant = pascal(&value.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>());
             if variant.is_empty() || variant.starts_with(|c: char| c.is_ascii_digit()) {
                 variant = format!("V{variant}");
+            }
+            if variant == "Self" {
+                variant.push('_');
             }
             while variants.iter().any(|v| *v == variant) {
                 variant.push('_');

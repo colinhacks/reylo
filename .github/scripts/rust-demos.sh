@@ -43,9 +43,13 @@ echo '::endgroup::'
 echo '::group::demo-codegen, reylo generate and reylo-build'
 (cd rust/demo-codegen && DATABASE_URL="$server/rust_demo" ../../target/debug/reylo generate rust-sqlx src/queries)
 DATABASE_URL="$server/rust_demo" cargo run -q -p demo-codegen --features live
-# An edited query fails to compile until its module is written again.
 query=rust/demo-codegen/src/queries/get_user.sql
 cp "$query" "${RUNNER_TEMP:-/tmp}/get_user.sql"
+# A checkout that ends its lines in CRLF, as git does on Windows, compiles the same modules.
+sed 's/$/\r/' "${RUNNER_TEMP:-/tmp}/get_user.sql" > "$query"
+DATABASE_URL="$server/rust_demo" cargo build -q -p demo-codegen --features live
+# An edited query fails to compile until its module is written again.
+cp "${RUNNER_TEMP:-/tmp}/get_user.sql" "$query"
 echo '-- edited' >> "$query"
 if DATABASE_URL="$server/rust_demo" cargo build -q -p demo-codegen --features live 2> "${RUNNER_TEMP:-/tmp}/stale.log"; then
   echo '::error::demo-codegen compiled with a query edited after its module was written'

@@ -4,7 +4,7 @@
 //! ```no_run
 //! // build.rs
 //! fn main() {
-//!     reylo_build::rust_sqlx().input("src/**/*.sql").out("queries.rs").run().unwrap();
+//!     reylo_build::rust_sqlx().input("src/queries").out("queries.rs").run().unwrap();
 //! }
 //! ```
 //!
@@ -16,7 +16,7 @@
 //! ```
 //!
 //! Each input is read from the crate's directory, `src/` where none is given, and every module
-//! goes into the one file in Cargo's `OUT_DIR`, a module per directory. Cargo runs the script
+//! goes into the one file in Cargo's `OUT_DIR`, a module per directory under its input. Cargo runs the script
 //! again when a `.sql` file, the project file, a `.env` file or the project's migrations change.
 
 pub use reylo_codegen::generate::{Error, Generator, Written};
