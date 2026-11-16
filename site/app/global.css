@@ -1247,7 +1247,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 /* An editor's completion list sits in the page's prose, whose list items keep a margin between
    them: here they sit as close as an editor's, Twoslash's and the Rust popup's alike. */
 #nd-page .twoslash-completion-list,
-#nd-page .twoslash-completion-list li {
+#nd-page .prose :is(.twoslash-completion-list, .reylo-completion-list) > li {
   margin-block: 0;
 }
 #nd-page .twoslash-completion-list {

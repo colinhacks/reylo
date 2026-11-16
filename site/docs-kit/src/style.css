@@ -1329,6 +1329,12 @@ code {
   margin-block: 0.4em;
 }
 
+/* A completion list's rows sit flush, as in an editor's, where the prose list's margins left a gap
+   between every entry. */
+#nd-page .prose .twoslash-completion-list > li {
+  margin-block: 0;
+}
+
 /* The title outranks an h2 (it was the same 28px), an h2 an h3. */
 #nd-page h1 {
   font-size: 2.5rem;
