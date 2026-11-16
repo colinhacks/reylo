@@ -118,6 +118,19 @@ pub struct Codecs {
     /// A set of members: MySQL's `SET`, a `Set` by default, or an `Array` of its members.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub set: Option<SetCodec>,
+    /// A vector of floats: pgvector's `vector` and `halfvec` and MySQL's `VECTOR`, an array of
+    /// numbers by default, or a `TypedArray`: a `Float32Array`, and for a `halfvec` a
+    /// `Float16Array`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector: Option<VectorCodec>,
+    /// A geometry: PostGIS's `geometry` and `geography`, and MySQL's `GEOMETRY`.
+    /// `GeoJSON` is a GeoJSON geometry, with its SRID as an `srid` member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<GeometryCodec>,
+    /// A network address: Postgres's `inet` and `cidr`. `ip-address` is that library's
+    /// `Address4` or `Address6`, from the app's own install.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inet: Option<InetCodec>,
 }
 
 impl Codecs {
@@ -191,6 +204,23 @@ pub enum DurationCodec {
 pub enum SetCodec {
     Set,
     Array,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum VectorCodec {
+    TypedArray,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum GeometryCodec {
+    #[serde(rename = "GeoJSON")]
+    GeoJson,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum InetCodec {
+    #[serde(rename = "ip-address")]
+    IpAddress,
 }
 
 /// Why the file does not parse, at byte offsets in its text.
@@ -359,6 +389,12 @@ mod tests {
             assert_eq!(p.js.codecs.decimal, Some(codec));
             assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "js": { "codecs": { "decimal": library } } }));
         }
+        // A vector's typed array, a geometry's GeoJSON and a network address's library.
+        let p = parse("js:\n  codecs:\n    vector: TypedArray\n    geometry: GeoJSON\n    inet: ip-address\n").unwrap();
+        assert_eq!((p.js.codecs.vector, p.js.codecs.geometry, p.js.codecs.inet), (Some(VectorCodec::TypedArray), Some(GeometryCodec::GeoJson), Some(InetCodec::IpAddress)));
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "js": { "codecs": { "vector": "TypedArray", "geometry": "GeoJSON", "inet": "ip-address" } } }));
+        let e = parse("js:\n  codecs:\n    vector: Float32Array\n").unwrap_err();
+        assert!(e.message.contains("unknown variant `Float32Array`, expected `TypedArray`"), "{}", e.message);
         let e = parse("js:\n  codecs:\n    decimal: Decimal\n").unwrap_err();
         assert!(e.message.contains("unknown variant `Decimal`, expected one of `string`, `number`, `decimal.js`, `bignumber.js`, `big.js`"), "{}", e.message);
         let e = parse("js:\n  codecs:\n    instant: Date\n").unwrap_err();

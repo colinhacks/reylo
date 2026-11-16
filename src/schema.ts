@@ -139,7 +139,8 @@ function kindSchema(kind: ScalarKind, t: EngineType, dialect: Dialect): Schema {
     case "float": return t.kind === "float" && t.exponent_bits <= 8 ? { type: "number", format: "float" } : { type: "number", format: "double" };
     // A BigInt, as the JSON integer it is.
     case "int8": return { type: "integer", format: "int64" };
-    case "decimal": return { type: "string", format: "decimal" };
+    case "decimal":
+    case "money": return { type: "string", format: "decimal" };
     case "timestamptz": return { type: "string", format: "date-time" };
     // RFC 3339's duration, which JSON Schema's `duration` format names, has no sign and no fraction.
     case "interval": return { type: "string", description: "an ISO 8601 duration with its sign in front (P1Y2M3DT4H5M6.789S, -P1D); one whose parts differ in sign signs each part (P1M-1D)" };
@@ -272,6 +273,8 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
   // A family the project file's `js.codecs` gives another type is that type's JSON form, outside JSON.
   const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
   if (codec === "set:array" && t.kind === "array" && isMysqlSet(t)) return { ...CODEC_SCHEMA[codec], items: typeSchema(t.element.type, dialect, input) };
+  // A geometry parameter may leave out its srid, which then is the column's.
+  if (codec === "geometry" && input) return { ...CODEC_SCHEMA.geometry, required: ["type"] };
   if (codec !== undefined) return CODEC_SCHEMA[codec];
   const name = bareName(t);
   const kind = columnKind(t, dialect);
@@ -366,6 +369,9 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
 /** A decimal library's value as JSON: its `toJSON()` writes its `toString()`, which turns to exponent form for a large or small value. */
 const LIBRARY_DECIMAL: Schema = { type: "string", format: "decimal", description: "a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)" };
 
+/** A typed array as JSON: `JSON.stringify` writes it as an object of its elements by index, as it writes a `Set` as `{}`. */
+const TYPED_ARRAY: Schema = { type: "object", additionalProperties: { type: "number" }, description: "a typed array, which JSON.stringify writes as an object of its elements by index ({\"0\":0.5,\"1\":1})" };
+
 /** The JSON form of each codec's value: what `JSON.stringify` writes of it, a Temporal value's being its ISO 8601 text, which a SQLite column declared as a date gives where it otherwise holds any storage class. */
 const CODEC_SCHEMA: Readonly<Record<Codec, Schema>> = {
   "decimal:number": { type: "number" },
@@ -381,6 +387,12 @@ const CODEC_SCHEMA: Readonly<Record<Codec, Schema>> = {
   duration: { type: "string", description: "an ISO 8601 duration with its sign in front (P1Y2M3DT4H5M6.789S, -P1D)" },
   // A SET's members, each once; `typeSchema` gives its items the members' own schema.
   "set:array": { type: "array", items: { type: "string" }, uniqueItems: true },
+  // `JSON.stringify` writes a typed array as an object of its elements by index.
+  "vector:float32": TYPED_ARRAY,
+  "vector:float16": TYPED_ARRAY,
+  // ip-address's values have no toJSON(), so JSON.stringify writes their fields.
+  "inet:ip-address": { type: "object", properties: { address: { type: "string" }, subnetMask: { type: "integer" } }, description: "an ip-address Address4 or Address6, which JSON.stringify writes as its fields ({\"address\":\"10.0.0.1/8\",\"subnetMask\":8,…})" },
+  geometry: { type: "object", properties: { type: { type: "string" }, srid: { type: "integer", minimum: 0 } }, required: ["type", "srid"], description: "a GeoJSON geometry, with its SRID as srid" },
 };
 
 export function querySchemas(analysis: Analysis, dialect: Dialect, codecs: Codecs = {}): { input: Schema; output: Schema } {

@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { execute, type QueryModule } from "./run.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder, withinDimensions } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, money, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder, withinDimensions } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import { array, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
@@ -930,4 +930,17 @@ test("an array of rows reads as parseArray and parseRow read it, in every quotin
   // A field named __proto__ is a field, whatever an assignment would make of it.
   const proto = textDecoder(`(${JSON.stringify(["__proto__", "int"])})`) as (text: string) => object;
   assert.deepEqual(Object.keys(proto("(1)")), ["__proto__"]);
+});
+
+test("a Postgres money is its exact decimal text, read from the C locale's, and another locale's text is refused", () => {
+  assert.equal(columnKind(pg("money"), "postgres"), "money");
+  assert.equal(scalarKind("money"), "money");
+  for (const [text, decimal] of [["$1.50", "1.50"], ["-$1,234.56", "-1234.56"], ["$92,233,720,368,547,758.07", "92233720368547758.07"], ["$0.00", "0.00"], ["$12", "12"]] as const) {
+    assert.equal(money(text), decimal, text);
+    assert.equal(textDecoder("money")(text), decimal, text);
+    assert.equal(coerce("money", text, "fee"), decimal, text);
+  }
+  assert.deepEqual(textDecoder("money[]")('{"$1.50",NULL,"-$1,000.00"}'), ["1.50", null, "-1000.00"]);
+  for (const text of ["1.234,56 €", "€1,234.56", "1234.56", "$1,23.45", "($1.50)"]) assert.throws(() => money(text), (e: Error) => e instanceof DecodeError && e.message.startsWith(`The database wrote a money value as ${JSON.stringify(text)}, which is not the C locale's form ($1,234.56)`), text);
+  assert.deepEqual(typeSchema(pg("money"), "postgres"), { type: "string", format: "decimal" });
 });

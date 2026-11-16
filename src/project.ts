@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
-import { DECIMAL_LIBRARIES, type Codecs, type DecimalLibrary } from "./codecs.ts";
+import { DECIMAL_LIBRARIES, type Codecs, type DecimalLibrary, type Library } from "./codecs.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql";
 
@@ -564,11 +564,27 @@ function installed(name: string, dir: string): { types?: unknown; typings?: unkn
 export function decimalLibraryProblem(codecs: Codecs, dir: string): string | undefined {
   const library = codecs.decimal;
   if (library === undefined || library === "string" || library === "number") return undefined;
-  const { types } = DECIMAL_LIBRARIES[library as DecimalLibrary];
-  const setting = `js.codecs.decimal is ${library} in the project file`;
+  return libraryProblem(library as DecimalLibrary, dir);
+}
+
+/**
+ * Why a `.sql` file in `dir` cannot use a library `js.codecs` names, which its module imports from
+ * the app's own install: the package is not there, or it ships no types and its DefinitelyTyped
+ * package is not there either. Undefined where it can.
+ */
+export function libraryProblem(library: Library, dir: string): string | undefined {
+  const types = library === "ip-address" ? undefined : DECIMAL_LIBRARIES[library].types;
+  const family = library === "ip-address" ? "inet" : "decimal";
+  const setting = `js.codecs.${family} is ${library} in the project file`;
   const pkg = installed(library, dir);
-  if (pkg === undefined) return `${setting}, and no ${library} is installed where this file can import it: install it (npm install ${library}), or set js.codecs.decimal to string.`;
+  if (pkg === undefined) return `${setting}, and no ${library} is installed where this file can import it: install it (npm install ${library}), or ${family === "decimal" ? "set js.codecs.decimal to string" : "leave js.codecs.inet out"}.`;
   const typed = pkg.types !== undefined || pkg.typings !== undefined || JSON.stringify(pkg.exports ?? null).includes('"types"');
   if (!typed && types !== undefined && installed(types, dir) === undefined) return `${setting}, which ships no types of its own: install ${types} beside it (npm install --save-dev ${types}).`;
   return undefined;
+}
+
+/** Why a `.sql` file in `dir` whose declaration names a GeoJSON type cannot have it: `js.codecs.geometry` types a geometry with @types/geojson's types, which are not installed beside it. */
+export function geojsonTypesProblem(dir: string): string | undefined {
+  if (installed("@types/geojson", dir) !== undefined) return undefined;
+  return "js.codecs.geometry is GeoJSON in the project file, whose types are @types/geojson's, and @types/geojson is not installed where this file can import it: install it (npm install --save-dev @types/geojson).";
 }

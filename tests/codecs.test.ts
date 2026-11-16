@@ -12,10 +12,11 @@ import { pathToFileURL } from "node:url";
 import { Decimal } from "decimal.js";
 import { BigNumber } from "bignumber.js";
 import { Big } from "big.js";
-import { DRIVERS, INDEX, pgLive, postgresDatabase, ROOT, transform } from "./helpers.ts";
+import { DRIVERS, INDEX, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT, transform } from "./helpers.ts";
 import { array, field, lite, my, pg, record } from "./descriptors.ts";
 import { decodeCodec, decodeCodecs, decodePlan, encodeCodec, encodePlan, leafCodec, planLibraries, planOf, type Codecs, type DecimalClass } from "../src/codecs.ts";
 import { execute, executeSync, type QueryModule } from "./run.ts";
+import { postgresJsSql } from "./stand-ins.ts";
 import { defineQuery } from "../src/index.ts";
 import { moduleTypes, standardColumnsType } from "../src/module-types.ts";
 import { renderParamType, renderType } from "../src/render.ts";
@@ -42,7 +43,9 @@ test("each family reaches the values that hold its kind, on every database, and 
   // What no codec reaches: a 64-bit integer, whose one exact type is a bigint, a time with its
   // offset, text, the narrower integers, JSON, a MAC address (bytes Reylo gives as their text);
   // and an array is its elements' (planOf, below).
-  for (const name of ["int8", "timetz", "text", "uuid", "int4", "float8", "bool", "jsonb", "money", "macaddr"]) assert.equal(onPg(pg(name)), undefined, name);
+  for (const name of ["int8", "timetz", "text", "uuid", "int4", "float8", "bool", "jsonb", "macaddr"]) assert.equal(onPg(pg(name)), undefined, name);
+  // A money is a decimal, read from the C locale's text.
+  assert.equal(onPg(pg("money")), "decimal:number");
   assert.equal(onPg(array(pg("timestamptz"))), undefined);
   // A moment kept with the zone it was written in would lose the zone in a Temporal.Instant.
   assert.equal(onPg({ kind: "zoned_datetime", tick: "1/1000000", offset_only: true, label: "timestamptz" }), undefined);
@@ -308,7 +311,7 @@ test("a project's js.codecs reach the module a build writes and the types it dec
 });
 
 test("a Postgres analysis gives each column of a family its codec, and none to a time with its offset", { skip: pgLive }, async () => {
-  const own = await postgresDatabase("reylo_codecs", "create table items (id int8 primary key, price numeric(10,2) not null, ratio numeric, at timestamptz, t time, tz timetz, took interval, data bytea, tags int8[]); create domain moment as timestamptz; create table logs (at moment);");
+  const own = await postgresDatabase("reylo_codecs", "create table items (id int8 primary key, price numeric(10,2) not null, ratio numeric, at timestamptz, t time, tz timetz, took interval, data bytea, tags int8[], fee money); create domain moment as timestamptz; create table logs (at moment);");
   const root = mkdtempSync(join(tmpdir(), "reylo-codecs-pg-"));
   writeFileSync(join(root, "package.json"), "{}");
   mkdirSync(join(root, "node_modules"));
@@ -320,7 +323,7 @@ test("a Postgres analysis gives each column of a family its codec, and none to a
     return analysisWithBases(outcome.analysis).columns.map((c) => planOf(c.type, "postgres", every) ?? null);
   };
   try {
-    assert.deepEqual(await plans("select id, price, ratio, at, t, tz, took, data, tags, price * 2 as doubled from items"), [null, "decimal:number", "decimal:number", "instant", "time", null, "duration", "bytes:string", null, "decimal:number"]);
+    assert.deepEqual(await plans("select id, price, ratio, at, t, tz, took, data, tags, price * 2 as doubled, fee from items"), [null, "decimal:number", "decimal:number", "instant", "time", null, "duration", "bytes:string", null, "decimal:number", "decimal:number"]);
     // A domain is decoded as the type it is made from.
     assert.deepEqual(await plans("select at from logs"), ["instant"]);
   } finally {
@@ -429,7 +432,7 @@ test("run gives a decimal library's values and binds them back, on a real driver
 });
 
 test("a project whose js.codecs.decimal names a library types each decimal as its class and imports it into each module that holds one", { skip: pgLive }, async () => {
-  const own = await postgresDatabase("reylo_decimal_libs", "create table items (id int8 primary key, price numeric(30,10) not null, name text not null); insert into items values (1, 12345678901234567890.0123456789, 'a');");
+  const own = await postgresDatabase("reylo_decimal_libs", "create table items (id int8 primary key, price numeric(30,10) not null, name text not null, fee money not null); insert into items values (1, 12345678901234567890.0123456789, 'a', 1234.5);");
   const root = (library: string, install: string[]) => {
     const dir = mkdtempSync(join(tmpdir(), "reylo-decimal-libs-"));
     writeFileSync(join(dir, "package.json"), "{}");
@@ -471,6 +474,16 @@ test("a project whose js.codecs.decimal names a library types each decimal as it
     assert.ok(row!.prices[0] instanceof Decimal);
     assert.equal((await query.run(own.sql, { min: row!.price })).length, 0);
     await assert.rejects(query.run(own.sql, { min: "1" }), (e: Error) => e instanceof ParameterError && /takes a Decimal from decimal\.js/.test(e.message));
+    // A money is a decimal too, read from the C locale's text, and its parameter holds cents.
+    const fees = join(dir, "fees.sql");
+    const feesSql = "select fee from items where fee = :fee";
+    writeFileSync(fees, feesSql);
+    writeFileSync(join(dir, "fees.mjs"), (await sqlModule(fees, feesSql)).code.replace(`from "reylo"`, `from ${JSON.stringify(INDEX)}`));
+    const byFee = (await import(pathToFileURL(join(dir, "fees.mjs")).href)).default as { run(client: unknown, params: unknown): Promise<{ fee: InstanceType<typeof Decimal> }[]> };
+    const [fee] = await byFee.run(own.sql, { fee: new Decimal("1234.50") });
+    assert.ok(fee!.fee instanceof Decimal);
+    assert.equal(fee!.fee.toFixed(), "1234.5");
+    await assert.rejects(byFee.run(own.sql, { fee: new Decimal("1234.505") }), (e: Error) => e instanceof ParameterError && e.message === `fees.sql: Parameter "fee" is a Postgres money, which holds cents: pass its decimal text, with two digits after the point at most (1234.56); got "1234.505".`);
     // A library the app does not install, or big.js without its types, is named on the file and refused by the build.
     for (const [library, install, message] of [
       ["decimal.js", [], "js.codecs.decimal is decimal.js in the project file, and no decimal.js is installed where this file can import it: install it (npm install decimal.js), or set js.codecs.decimal to string."],
@@ -490,4 +503,239 @@ test("a project whose js.codecs.decimal names a library types each decimal as it
     for (const session of Session.opened()) await session.close();
     await own.drop();
   }
+});
+
+// js.codecs.vector: a pgvector vector or a MySQL VECTOR as a Float32Array, a halfvec as a Float16Array.
+const mysqlVector = { kind: "array", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } }, label: "vector" } as unknown as EngineType;
+
+test("a vector is its typed array at every position outside JSON, and nothing but a vector is", () => {
+  const codecs: Codecs = { vector: "TypedArray" };
+  assert.equal(leafCodec(pg("vector"), "postgres", codecs), "vector:float32");
+  assert.equal(leafCodec(pg("halfvec"), "postgres", codecs), "vector:float16");
+  assert.equal(leafCodec(mysqlVector, "mysql", codecs), "vector:float32");
+  // A float array that is no vector keeps its numbers, and so does sparsevec's text.
+  for (const [t, dialect] of [[array(pg("float4")), "postgres"], [pg("sparsevec"), "postgres"]] as const) assert.equal(leafCodec(t as EngineType, dialect, codecs), undefined);
+  assert.equal(leafCodec(pg("vector"), "postgres", {}), undefined);
+  assert.equal(renderType(pg("vector"), false, "postgres", codecs), "Float32Array");
+  assert.equal(renderType(pg("halfvec"), false, "postgres", codecs), "Float16Array");
+  assert.equal(renderParamType(pg("halfvec"), "postgres", false, undefined, codecs), "Float16Array");
+  assert.equal(renderType(array(pg("vector")), false, "postgres", codecs), "(Float32Array | null)[]");
+  assert.deepEqual(planOf(array(pg("vector")), "postgres", codecs), { array: "vector:float32" });
+});
+
+test("a vector's typed array holds the floats the server stores, and a parameter takes that typed array alone", () => {
+  // pgvector prints each float32 as its shortest text, which reads back as the stored float.
+  const read = decodeCodec("vector:float32", [0.1, 1.5, -2], "embedding") as Float32Array;
+  assert.ok(read instanceof Float32Array);
+  assert.deepEqual([...read], [Math.fround(0.1), 1.5, -2]);
+  const half = decodeCodec("vector:float16", [0.099975586, 1.5], "embedding") as Float16Array;
+  assert.ok(half instanceof Float16Array);
+  assert.deepEqual([...half], [Math.f16round(0.1), 1.5]);
+  // Bound back as its numbers, which the driver writes as pgvector's text.
+  assert.deepEqual(encodeCodec("vector:float32", read, "embedding", "postgres"), [Math.fround(0.1), 1.5, -2]);
+  assert.deepEqual(encodeCodec("vector:float16", half, "embedding", "postgres"), [Math.f16round(0.1), 1.5]);
+  // An array of vectors is a typed array each, in both directions.
+  const many = decodePlan({ array: "vector:float32" }, [[1, 2], null, [3, 4]], "embeddings") as (Float32Array | null)[];
+  assert.ok(many[0] instanceof Float32Array && many[1] === null && many[2] instanceof Float32Array);
+  assert.deepEqual(encodePlan({ array: "vector:float32" }, many, "embeddings", "postgres"), [[1, 2], null, [3, 4]]);
+  // A number[] or another typed array is refused, as TypeScript refuses it.
+  for (const [codec, v, expected] of [["vector:float32", [1, 2], "Float32Array"], ["vector:float32", new Float64Array([1]), "Float32Array"], ["vector:float16", new Float32Array([1]), "Float16Array"]] as const) {
+    assert.throws(() => encodeCodec(codec, v, "embedding", "postgres"), (e: Error) => e instanceof ParameterError && e.message.startsWith(`Parameter "embedding" takes a ${expected}, as js.codecs.vector in the project file says`), expected);
+  }
+});
+
+// js.codecs.geometry: GeoJSON, with the SRID as `srid`, from PostGIS's hex EWKB and MySQL's SRID and WKB.
+const pointHex = "0101000020E6100000000000000000F03F0000000000000040"; // SRID=4326;POINT(1 2), as PostGIS's documentation prints it
+const wkb = (hex: string) => Uint8Array.from(Buffer.from(hex, "hex"));
+const pgPlan = { geometry: "postgres", srid: 0 } as const;
+
+test("a geometry is GeoJSON with its SRID at every position outside JSON, typed by its subtype", () => {
+  const codecs: Codecs = { geometry: "GeoJSON" };
+  const point4326 = { kind: "geometry", model: "planar", srid: 4326, subtype: "point", label: "geometry" } as EngineType;
+  assert.deepEqual(planOf(point4326, "postgres", codecs), { geometry: "postgres", srid: 4326 });
+  // A geography that names no SRID is PostGIS's 4326.
+  assert.deepEqual(planOf(pg("geography"), "postgres", codecs), { geometry: "postgres", srid: 4326 });
+  assert.deepEqual(planOf(pg("geometry"), "postgres", codecs), { geometry: "postgres", srid: 0 });
+  assert.deepEqual(planOf({ kind: "geometry", label: "geometry" } as EngineType, "mysql", codecs), { geometry: "mysql", srid: 0 });
+  assert.deepEqual(planOf(array(pg("geometry")), "postgres", codecs), { array: { geometry: "postgres", srid: 0 } });
+  assert.equal(planOf(pg("geometry"), "postgres", {}), undefined);
+  assert.equal(renderType(point4326, false, "postgres", codecs), `import("geojson").Point & { srid: number }`);
+  assert.equal(renderParamType(point4326, "postgres", false, undefined, codecs), `import("geojson").Point & { srid?: number }`);
+  // The JSON Schema requires srid of a column, and of a parameter, which takes the column's without one, only type.
+  const required = (input: boolean, t: EngineType = point4326) => (typeSchema(t, "postgres", input, false, false, undefined, codecs) as { required?: string[]; items?: { required?: string[] } });
+  assert.deepEqual(required(false).required, ["type", "srid"]);
+  assert.deepEqual(required(true).required, ["type"]);
+  assert.deepEqual(required(true, array(point4326)).items?.required, ["type"]);
+  assert.equal(renderType(pg("geometry"), false, "postgres", codecs), `import("geojson").Geometry & { srid: number }`);
+  // Inside JSON a geometry is PostGIS's GeoJSON, as without the codec.
+  assert.equal(renderType(pg("geometry"), true, "postgres", codecs), renderType(pg("geometry"), true, "postgres"));
+});
+
+test("a geometry reads from each database's bytes as exact GeoJSON, and binds back to the same bytes", () => {
+  assert.deepEqual(decodePlan(pgPlan, pointHex, "loc"), { type: "Point", coordinates: [1, 2], srid: 4326 });
+  assert.equal(encodePlan(pgPlan, { type: "Point", coordinates: [1, 2], srid: 4326 }, "loc", "postgres"), pointHex);
+  // A parameter without an srid takes the column's, else none.
+  assert.equal(encodePlan({ geometry: "postgres", srid: 4326 }, { type: "Point", coordinates: [1, 2] }, "loc", "postgres"), pointHex);
+  assert.equal(encodePlan(pgPlan, { type: "Point", coordinates: [1, 2] }, "loc", "postgres"), "0101000000000000000000F03F0000000000000040");
+  // Every geometry GeoJSON has, in two and three dimensions, goes round exactly, the doubles' every bit kept.
+  const shapes = [
+    { type: "Point", coordinates: [-73.98563171, 40.74843888] },
+    { type: "Point", coordinates: [] },
+    { type: "LineString", coordinates: [[0, 0, 1], [0.1, 0.2, 2]] },
+    { type: "Polygon", coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]], [[0.2, 0.2], [0.3, 0.2], [0.3, 0.3], [0.2, 0.2]]] },
+    { type: "MultiPoint", coordinates: [[1, 2], [3, 4]] },
+    { type: "MultiLineString", coordinates: [[[0, 0], [1, 1]], [[2, 2], [3, 3]]] },
+    { type: "MultiPolygon", coordinates: [[[[0, 0], [1, 0], [1, 1], [0, 0]]]] },
+    { type: "GeometryCollection", geometries: [{ type: "Point", coordinates: [1, 2] }, { type: "LineString", coordinates: [[0, 0], [Math.PI, Math.E]] }] },
+  ];
+  for (const shape of shapes) {
+    for (const [plan, dialect] of [[{ geometry: "postgres", srid: 3857 }, "postgres"], [{ geometry: "mysql", srid: 0 }, "mysql"]] as const) {
+      if (dialect === "mysql" && JSON.stringify(shape).includes(",1],[0.1")) continue;
+      const bound = encodePlan(plan, { ...shape, ...(dialect === "mysql" ? { srid: 4326 } : {}) }, "shape", dialect);
+      assert.deepEqual(decodePlan(plan, bound, "shape"), { ...shape, srid: dialect === "mysql" ? 4326 : plan.srid }, `${dialect} ${shape.type}`);
+    }
+  }
+  // MySQL's value is its SRID, little-endian, then WKB.
+  const mysqlPoint = wkb("e61000000101000000000000000000f03f0000000000000040");
+  assert.deepEqual(decodePlan({ geometry: "mysql", srid: 0 }, mysqlPoint, "loc"), { type: "Point", coordinates: [1, 2], srid: 4326 });
+  assert.deepEqual(encodePlan({ geometry: "mysql", srid: 0 }, { type: "Point", coordinates: [1, 2], srid: 4326 }, "loc", "mysql"), mysqlPoint);
+  // Big-endian WKB reads too.
+  assert.deepEqual(decodePlan({ geometry: "mysql", srid: 0 }, wkb("0000000000000000013ff00000000000004000000000000000"), "loc"), { type: "Point", coordinates: [1, 2], srid: 0 });
+});
+
+test("a geometry GeoJSON cannot hold is refused, naming the column, and so is a parameter that is no GeoJSON geometry", () => {
+  const refused = (hex: string, why: string) => assert.throws(() => decodePlan(pgPlan, hex, "loc"), (e: Error) => e instanceof DecodeError && e.message === `Column "loc" holds ${why} (js.codecs.geometry is GeoJSON in the project file). Cast it to text in the statement (ST_AsText(loc)) to read it as it is.`, why);
+  refused("0101000040000000000000F03F00000000000000400000000000001040", "a geometry with M coordinates, which GeoJSON has no place for"); // POINT M (1 2 4)
+  refused("0108000000030000000000000000000000000000000000000000000000000000000000F03F000000000000F03F00000000000000400000000000000000", "a CircularString, which GeoJSON has no form for");
+  refused("01010000", "4 bytes, which end inside a geometry");
+  refused("zz", "text that is no hex EWKB");
+  const param = (v: unknown, dialect: "postgres" | "mysql", why: string, plan = { geometry: dialect, srid: 0 } as const) =>
+    assert.throws(() => encodePlan(plan, v, "loc", dialect), (e: Error) => e instanceof ParameterError && e.message === `Parameter "loc" takes a GeoJSON geometry, as js.codecs.geometry in the project file says; got ${why}.`, why);
+  param("POINT(1 2)", "postgres", `"POINT(1 2)"`);
+  param({ type: "Circle", coordinates: [1, 2] }, "postgres", `a value whose type is "Circle", which is none of GeoJSON's geometries`);
+  param({ type: "LineString", coordinates: [[0, 0], [1, 1, 1]] }, "postgres", "positions of both two and three coordinates");
+  param({ type: "Point", coordinates: [1, 2, 3, 4] }, "postgres", "a position that is no array of two or three finite numbers: [1,2,3,4]");
+  param({ type: "Point", coordinates: [1, 2], srid: -1 }, "postgres", "an srid of -1, which is no SRID");
+  param({ type: "Point", coordinates: [1, 2, 3] }, "mysql", "a geometry with Z coordinates, which MySQL keeps none of");
+});
+
+// js.codecs.inet: ip-address's Address4 or Address6, from the app's own install.
+test("a network address is ip-address's class, read from Postgres's text and bound as it", async () => {
+  const ipAddress = (await import("ip-address")) as unknown as import("../src/codecs.ts").IpAddress;
+  const codecs: Codecs = { inet: "ip-address" };
+  for (const name of ["inet", "cidr"]) {
+    assert.equal(leafCodec(pg(name), "postgres", codecs), "inet:ip-address");
+    assert.equal(renderType(pg(name), false, "postgres", codecs), `import("ip-address").Address4 | import("ip-address").Address6`);
+  }
+  assert.deepEqual([...planLibraries({ array: "inet:ip-address" })], ["ip-address"]);
+  const libraries = { inet: ipAddress };
+  for (const [text, cls, prefix] of [["192.168.1.5", "Address4", 32], ["192.168.1.5/24", "Address4", 24], ["10.0.0.0/8", "Address4", 8], ["::1", "Address6", 128], ["2001:db8::1/64", "Address6", 64], ["::ffff:1.2.3.4", "Address6", 128]] as const) {
+    const v = decodeCodec("inet:ip-address", text, "ip", libraries) as { address: string; subnetMask: number };
+    assert.ok(v instanceof ipAddress[cls], text);
+    assert.equal(v.subnetMask, prefix, text);
+    // Bound as its text, the prefix with it.
+    assert.equal(encodeCodec("inet:ip-address", v, "ip", "postgres", libraries), text);
+  }
+  assert.throws(() => encodeCodec("inet:ip-address", "10.0.0.1", "ip", "postgres", libraries), (e: Error) => e instanceof ParameterError && e.message === `Parameter "ip" takes an ip-address Address4 or Address6, as js.codecs.inet in the project file says; got "10.0.0.1".`);
+  assert.throws(() => decodeCodec("inet:ip-address", "10.0.0.1", "ip"), (e: Error) => e instanceof DecodeError && e.message.endsWith("this query's module imports no ip-address: build it again."));
+});
+
+/** A project of its own on a test database, its project file's `js.codecs` as given, with the driver and `install`'s packages linked from the drivers' and the repository's installs. */
+function codecProject(url: string, codecs: string, driver: string, install: string[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "reylo-codecs-live-"));
+  writeFileSync(join(dir, "package.json"), "{}");
+  writeFileSync(join(dir, ".env"), `DATABASE_URL=${url}\n`);
+  writeFileSync(join(dir, ".reylo.yaml"), `js:\n  codecs:\n${codecs}`);
+  mkdirSync(join(dir, "node_modules", "@types"), { recursive: true });
+  symlinkSync(join(DRIVERS, driver), join(dir, "node_modules", driver));
+  for (const name of install) symlinkSync(join(ROOT, "node_modules", name), join(dir, "node_modules", name));
+  return dir;
+}
+
+/** The module a build writes for `sql` in `dir`, imported. */
+async function codecModule(dir: string, name: string, sql: string) {
+  const file = join(dir, `${name}.sql`);
+  writeFileSync(file, sql);
+  const out = join(dir, `${name}.mjs`);
+  writeFileSync(out, (await sqlModule(file, sql)).code.replace(`from "reylo"`, `from ${JSON.stringify(INDEX)}`));
+  return { code: (await import("node:fs")).readFileSync(out, "utf8"), query: (await import(pathToFileURL(out).href)).default as { run(client: unknown, params?: unknown): Promise<any[]> } };
+}
+
+test("Postgres: a vector is its typed array and a network address ip-address's class, declared, built and run", { skip: pgLive }, async () => {
+  const own = await postgresDatabase("reylo_codecs_vec", "create extension if not exists vector; create table docs (id int primary key, embedding vector(3) not null, half halfvec(2) not null, ip inet not null, net cidr not null); insert into docs values (1, '[0.1,1.5,-2]', '[0.1,2]', '192.168.1.5/24', '10.0.0.0/8');");
+  try {
+    const dir = codecProject(own.url, "    vector: TypedArray\n    inet: ip-address\n", "postgres", ["ip-address"]);
+    const get = "select embedding, half, ip, net from docs where embedding = :embedding and ip = :ip";
+    const { text, diagnostics } = (await transform(dir, { "get.sql": get }))["get.sql"]!;
+    assert.deepEqual(diagnostics, []);
+    assert.match(text, /embedding: Float32Array; half: Float16Array; ip: import\("ip-address"\)\.Address4 \| import\("ip-address"\)\.Address6; net: import\("ip-address"\)\.Address4 \| import\("ip-address"\)\.Address6/);
+    assert.match(text, /export type Params = \{ embedding: Float32Array; ip: import\("ip-address"\)\.Address4 \| import\("ip-address"\)\.Address6 \}/);
+    const { code, query } = await codecModule(dir, "get", get);
+    assert.match(code, /^import \* as ReyloIpAddress from "ip-address";$/m);
+    assert.match(code, /, libraries: \{ inet: ReyloIpAddress \}/);
+    const { Address4 } = await import("ip-address");
+    const [row] = await query.run(own.sql, { embedding: new Float32Array([0.1, 1.5, -2]), ip: new Address4("192.168.1.5/24") });
+    assert.ok(row.embedding instanceof Float32Array && row.half instanceof Float16Array);
+    assert.deepEqual([...row.embedding, ...row.half], [Math.fround(0.1), 1.5, -2, Math.f16round(0.1), 2]);
+    assert.ok(row.ip instanceof Address4 && row.net instanceof Address4);
+    assert.deepEqual([row.ip.address, row.ip.subnetMask, row.net.address], ["192.168.1.5/24", 24, "10.0.0.0/8"]);
+    // What .run() returned binds back as it is.
+    assert.equal((await query.run(own.sql, { embedding: row.embedding, ip: row.ip })).length, 1);
+    await assert.rejects(query.run(own.sql, { embedding: [0.1, 1.5, -2], ip: row.ip }), (e: Error) => e instanceof ParameterError && /takes a Float32Array/.test(e.message));
+    // ip-address missing is named on the file and refused by the build.
+    const bare = codecProject(own.url, "    inet: ip-address\n", "postgres", []);
+    const message = "js.codecs.inet is ip-address in the project file, and no ip-address is installed where this file can import it: install it (npm install ip-address), or leave js.codecs.inet out.";
+    assert.deepEqual((await transform(bare, { "nets.sql": "select net from docs" }))["nets.sql"]!.diagnostics.map((d) => [d.messageText, d.code]), [[message, 11]]);
+    await assert.rejects(sqlModule(join(bare, "nets.sql"), "select net from docs"), (e: Error) => e.message.endsWith(message));
+  } finally {
+    for (const session of Session.opened()) await session.close();
+    await own.drop();
+  }
+});
+
+test("MySQL: a geometry is GeoJSON with its SRID, declared, built, run and bound back", { skip: mysqlLive }, async () => {
+  const own = await mysqlDatabase("reylo_codecs_geo", "create table shapes (id int primary key, g geometry not null srid 4326, l geometry); insert into shapes values (1, ST_GeomFromText('POINT(40.75 -73.98)', 4326), ST_GeomFromText('LINESTRING(0 0, 1 1)'));");
+  try {
+    const dir = codecProject(own.url, "    geometry: GeoJSON\n", "mysql2", ["@types/geojson"]);
+    const get = "select id, g, l from shapes where id = :id";
+    const { text, diagnostics } = (await transform(dir, { "get.sql": get }))["get.sql"]!;
+    assert.deepEqual(diagnostics, []);
+    assert.match(text, /g: import\("geojson"\)\.Geometry & \{ srid: number \}; l: import\("geojson"\)\.Geometry & \{ srid: number \} \| null/);
+    const { query } = await codecModule(dir, "get", get);
+    // A primary key's row, at most one.
+    const row = (await query.run(own.db, { id: 1 })) as unknown as { g: unknown; l: unknown };
+    // MySQL keeps a geographic SRS's latitude first in its text and longitude first in its bytes, which GeoJSON's order is.
+    assert.deepEqual(row.g, { type: "Point", coordinates: [-73.98, 40.75], srid: 4326 });
+    assert.deepEqual(row.l, { type: "LineString", coordinates: [[0, 0], [1, 1]], srid: 0 });
+    const insert = (await codecModule(dir, "insert", "insert into shapes (id, g, l) values (:id, :g, :l)")).query;
+    await insert.run(own.db, { id: 2, g: row.g, l: { type: "Polygon", coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } });
+    assert.deepEqual(await own.rows("select ST_AsText(g) as g, ST_SRID(g) as s, ST_AsText(l) as l from shapes where id = 2"), [{ g: "POINT(40.75 -73.98)", s: 4326, l: "POLYGON((0 0,1 0,1 1,0 0))" }]);
+    // Without @types/geojson the file says what to install.
+    const bare = codecProject(own.url, "    geometry: GeoJSON\n", "mysql2", []);
+    assert.deepEqual((await transform(bare, { "get.sql": get }))["get.sql"]!.diagnostics.map((d) => [d.messageText, d.code]), [["js.codecs.geometry is GeoJSON in the project file, whose types are @types/geojson's, and @types/geojson is not installed where this file can import it: install it (npm install --save-dev @types/geojson).", 11]]);
+  } finally {
+    for (const session of Session.opened()) await session.close();
+    await own.drop();
+  }
+});
+
+test("a Postgres money parameter is refused where the session's lc_monetary would read it as another amount, checked once a client", async () => {
+  const insert: QueryModule<"postgres"> = { dialect: "postgres", sql: "insert into payments (fee) values (:fee)", params: ["fee"], inputs: { fee: { type: pg("money") } }, columns: [] };
+  const session = (written: string) => {
+    const sent: string[] = [];
+    return { sent, sql: postgresJsSql((text) => (sent.push(text), text.includes("::money::text") ? [{ m: written }] : [])) };
+  };
+  // A session in the C locale writes $1,234.50: the statement runs, and the client is not asked again.
+  const c = session("$1,234.50");
+  await execute(c.sql, insert, { fee: "1234.50" });
+  await execute(c.sql, insert, { fee: "1.25" });
+  assert.deepEqual(c.sent.map((t) => t.split(" ")[0] + (t.includes("::money::text") ? " (the check)" : "")), ["select (the check)", "insert", "insert"]);
+  // Under de_DE the same text would be stored as 123456.00, so nothing is sent.
+  const de = session("1.234,50 €");
+  await assert.rejects(async () => execute(de.sql, insert, { fee: "1234.50" }), (e: Error) => e instanceof ParameterError && e.message === `Parameter "fee" is a Postgres money, which Postgres reads in the session's lc_monetary, and this session writes 1234.50 as "1.234,50 €", not the C locale's "$1,234.50", so it could store the parameter as another amount. Set lc_monetary = 'C' on the session, the role or the database, or cast the parameter to numeric in the statement (:fee::numeric).`);
+  assert.equal(de.sent.some((t) => t.startsWith("insert")), false);
+  // A statement that takes no money asks nothing.
+  const other = session("1.234,50 €");
+  await execute(other.sql, { dialect: "postgres", sql: "select :n::int as n", params: ["n"], inputs: { n: { type: pg("int4") } }, columns: [["n", "int"]] }, { n: 1 });
+  assert.equal(other.sent.some((t) => t.includes("::money::text")), false);
 });

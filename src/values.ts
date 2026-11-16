@@ -7,7 +7,7 @@
 //
 // A value's representation is its kind, which the build writes into the module for each output
 // column (`columns`, as `[name, kind]`): `bool` is a boolean; `int` and `float` a number; `int8` a
-// BigInt; `decimal` the exact decimal text; `date` the text `YYYY-MM-DD`; `timestamp` the server's
+// BigInt; `decimal` the exact decimal text; `money` a Postgres `money`'s exact decimal text too; `date` the text `YYYY-MM-DD`; `timestamp` the server's
 // wall-clock text with `T` between the date and the time (a year of either outside 0000–9999 in
 // ISO 8601's extended form, `+012345` or `-000001` for 2 BC); `timestamptz` the instant's ISO 8601 text
 // in UTC, with `Z` and the server's fraction; `interval` an ISO 8601 duration with its sign in
@@ -31,7 +31,7 @@ import { bareName, isMysqlSet, type EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "mysql" | "sqlite";
 
 /** A scalar value's representation. */
-export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
+export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "money" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
 /** Postgres's built-in geometric types, each an object of its fields (`point` is `{ x, y }`). */
 export type Geometric = "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle";
 /**
@@ -112,6 +112,7 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   float: "number",
   int8: "bigint",
   decimal: "string",
+  money: "string",
   text: "string",
   date: "string",
   timestamp: "string",
@@ -143,7 +144,7 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
  * The kind of a Postgres base type by its catalog name, for a value whose type a driver names
  * (src/decode.ts; a value the engine typed takes its kind from its descriptor, `columnKind`). Every
  * type not named here is its text: Reylo owns every oid, so the driver never parses one (an enum's label, `time`,
- * `uuid`, `money`, `xml`); a range and a row value take their kinds from their oids or their
+ * `uuid`, `xml`); a range and a row value take their kinds from their oids or their
  * descriptors (src/decode.ts). pgvector's `vector` and `halfvec`, and an
  * `hstore`, are extensions' types, named by their names as every created type is.
  */
@@ -156,6 +157,7 @@ const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   float8: "float",
   int8: "int8",
   numeric: "decimal",
+  money: "money",
   date: "date",
   timestamp: "timestamp",
   timestamptz: "timestamptz",
@@ -330,6 +332,8 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
       // A MySQL GEOMETRY is its bytes, which `.run()` asks each driver for.
       return dialect === "postgres" ? "text" : dialect === "mysql" ? "geometry" : "unknown";
     case "opaque":
+      // A Postgres `money` is a decimal, written in the session's locale.
+      if (dialect === "postgres" && name === "money") return "money";
       return dialect === "postgres" ? "text" : "unknown";
     case "unknown":
     case "tuple":
@@ -383,6 +387,18 @@ function isoDate(x: string): string {
 function isoStyle(x: string): string {
   if ((x.length >= 4 && digits(x, 0, 4)) || x === "infinity" || x === "-infinity") return x;
   throw new DecodeError(`The database wrote a date or a time as ${JSON.stringify(x)}, which is not ISO 8601: the connection's DateStyle is another style, set on the session, the role or the database. Reylo reads the ISO style alone, so set it there (set datestyle = 'ISO').`);
+}
+
+/**
+ * A Postgres `money`'s exact decimal text, from the text the server writes in the session's
+ * lc_monetary: `$1,234.56` and `-$1,234.56` in the C locale and the ones that write it alike, as en_US does. Another locale
+ * writes another symbol, separators and number of digits (`1.234,56 €`), which would read as
+ * another amount, so it is refused, as Prisma's Postgres driver refuses it.
+ */
+export function money(x: string): string {
+  const m = /^(-?)\$((?:\d{1,3})(?:,\d{3})*)(\.\d+)?$/.exec(x);
+  if (m !== null) return `${m[1]}${m[2]!.replaceAll(",", "")}${m[3] ?? ""}`;
+  throw new DecodeError(`The database wrote a money value as ${JSON.stringify(x)}, which is not the C locale's form ($1,234.56): the connection's lc_monetary names another locale, set on the session, the role or the database. Reylo reads the C locale's alone, so set it there (set lc_monetary = 'C'), or cast the column to numeric in the statement.`);
 }
 
 /** `2026-10-20` as it is; `0002-06-01 BC` → `-000001-06-01` and `12345-01-01` → `+012345-01-01` (`isoDate`). */
@@ -986,6 +1002,7 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   float: number,
   int8: (x) => BigInt(x),
   decimal: identity,
+  money,
   text: identity,
   date,
   timestamp,
@@ -1303,6 +1320,8 @@ export function coerce(kind: Kind, v: unknown, column: string, delim = ",", post
     case "decimal":
       if (typeof v === "bigint" || typeof v === "number") return String(v);
       return v;
+    case "money":
+      return typeof v === "string" ? money(v) : v;
     case "date":
     case "timestamp":
       if (v instanceof Date) return utcText(v, kind as "date" | "timestamp", column, postgres);

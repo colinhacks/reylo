@@ -20,6 +20,10 @@ const geometric: Record<string, EngineType> = {
 /** Postgres's text, which holds every character but NUL. */
 const pgText: EngineType = { kind: "text", code_points: [[1, 1114111]] };
 
+/** A network address: an IPv4 or an IPv6 address, and its prefix's length (engine/postgres `pgtypes.rs`). */
+const address = (bytes: number, max: number): EngineType => ({ kind: "struct", fields: [{ name: "address", type: { kind: "bytes", size: { exact: bytes } }, nullable: false }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: String(max) }, nullable: false }] } as unknown as EngineType);
+const inetType: EngineType = { kind: "union", members: [address(4, 32), address(16, 128)] } as unknown as EngineType;
+
 /** A Postgres type by its catalog name, as the engine's registry writes it (engine/postgres `pgtypes.rs`); an extension's under the schema `public`. */
 export function pg(name: string): EngineType {
   const known: Record<string, EngineType> = {
@@ -51,6 +55,8 @@ export function pg(name: string): EngineType {
     int4multirange: { kind: "multirange", subtype: { kind: "integer", bits: 32, label: "int4" } },
     bit: { kind: "array", element: { type: { kind: "boolean" } } },
     macaddr: { kind: "bytes", size: { exact: 6 } },
+    inet: inetType,
+    cidr: inetType,
   };
   const extensions: Record<string, EngineType> = {
     vector: { kind: "array", element: { type: float(8, 23, false) } },

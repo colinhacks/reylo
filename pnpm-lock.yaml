@@ -14,6 +14,9 @@ importers:
       '@types/big.js':
         specifier: 7.0.0
         version: 7.0.0
+      '@types/geojson':
+        specifier: 7946.0.16
+        version: 7946.0.16
       '@types/node':
         specifier: ^26.6.1
         version: 26.6.6
@@ -32,6 +35,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      ip-address:
+        specifier: 10.7.6
+        version: 10.7.6
       slonik:
         specifier: 49.12.0
         version: 49.12.0
@@ -907,6 +913,9 @@ packages:
   '@types/big.js@7.0.0':
     resolution: {integrity: sha512-WfAGp7IbJvyB8EmWK4tJD24rJRAL6uVbw3LV/hJntFNam+os9KWKj0PzXo8rRRpjupYK8U0M8FoBB8dBhWF2dg==}
 
+  '@types/geojson@7946.0.16':
+    resolution: {integrity: sha512-6C8nqWur3j98U6+lXDfTUWIfgvZU+EumvpHKcYjujKH7woYyLj2sUmff0tRhrqM7BohUw7Pz3ZB1jj2gW9Fvmg==}
+
   '@types/node@26.6.6':
     resolution: {integrity: sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==}
 
@@ -1172,6 +1181,10 @@ packages:
 
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
+
+  ip-address@10.7.6:
+    resolution: {integrity: sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg==}
+    engines: {node: '>= 12'}
 
   iso8601-duration@2.2.0:
     resolution: {integrity: sha512-gyr8oFS2Xb/zaZOISDq91hAJn+KNR90iGQoKhnwhEDwswmcLsOkkICWnu19dS1I6FLhkKYmkB0llQ/3HttnM/A==}
@@ -2071,6 +2084,8 @@ snapshots:
 
   '@types/big.js@7.0.0': {}
 
+  '@types/geojson@7946.0.16': {}
+
   '@types/node@26.6.6':
     dependencies:
       undici-types: 8.9.0
@@ -2257,6 +2272,8 @@ snapshots:
   fflate@0.8.3: {}
 
   ieee754@1.2.1: {}
+
+  ip-address@10.7.6: {}
 
   iso8601-duration@2.2.0: {}
 
