@@ -32,13 +32,6 @@ const Temporal: any = (globalThis as any).Temporal;
 
 /** A SQLite column of NUMERIC affinity whose table declares it `declared`, as the engine writes it: whatever storage class a row stored, under the declared name. */
 const declared = (name: string): EngineType => ({ ...(lite("numeric") as Extract<EngineType, { kind: "union" }>), label: name });
-const duck = (name: string): EngineType => (({
-  bigint: { kind: "integer", bits: 64 }, hugeint: { kind: "integer", bits: 128 }, decimal: { kind: "decimal", precision: 18, min_scale: 3, max_scale: 3 },
-  timestamptz: { kind: "instant", tick: "1/1000000" }, timestamp_ns: { kind: "datetime", tick: "1/1000000000" }, date: { kind: "date" }, time: { kind: "time", tick: "1/1000000" },
-  interval: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000" }, blob: { kind: "bytes" }, varchar: { kind: "text" },
-}) as Record<string, EngineType>)[name]!;
-/** DuckDB's UNION, as the engine writes it: a tagged union of its alternatives, each value of which may be null. */
-const tagged = (...alternatives: [string, EngineType][]): EngineType => ({ kind: "tagged_union", label: "union", alternatives: alternatives.map(([tag, type]) => ({ tag, type, nullable: true })) });
 const every: Codecs = { decimal: "number", bytes: "string", date: "Temporal.PlainDate", time: "Temporal.PlainTime", datetime: "Temporal.PlainDateTime", instant: "Temporal.Instant", duration: "Temporal.Duration", set: "Array" };
 
 test("each family reaches the values that hold its kind, on every database, and nothing else", () => {
@@ -61,8 +54,6 @@ test("each family reaches the values that hold its kind, on every database, and 
   const onLite = (t: EngineType) => leafCodec(t, "sqlite", every);
   assert.deepEqual(["DATE", "datetime", "TIMESTAMP", "TIME", "DATETIME(6)"].map((n) => onLite(declared(n))), ["date", "datetime", "datetime", "time", "datetime"]);
   assert.deepEqual([onLite(lite("numeric")), onLite(lite("bool")), onLite(lite("int8")), onLite(lite("blob")), onLite(lite("integer"))], [undefined, undefined, undefined, "bytes:string", undefined]);
-  const onDuck = (n: string) => leafCodec(duck(n), "duckdb", every);
-  assert.deepEqual(["bigint", "hugeint", "decimal", "timestamptz", "timestamp_ns", "date", "time", "interval", "blob"].map(onDuck), [undefined, undefined, "decimal:number", "instant", "datetime", "date", "time", "duration", "bytes:string"]);
   // A family left out, or set to its default, gives no codec.
   assert.equal(leafCodec(pg("bytea"), "postgres", {}), undefined);
   assert.equal(leafCodec(pg("timestamptz"), "postgres", { instant: "string" }), undefined);
@@ -74,25 +65,16 @@ test("each family reaches the values that hold its kind, on every database, and 
 test("a plan follows every part of a value Reylo decodes, and stops at JSON", () => {
   assert.deepEqual(planOf(array(pg("timestamptz")), "postgres", every), { array: "instant" });
   assert.deepEqual(planOf(array(array(pg("numeric"))), "postgres", every), { array: { array: "decimal:number" } });
-  // A DuckDB struct's fields, a map's keys and values, a tagged union's value.
-  const struct = record([field("at", duck("timestamptz")), field("name", duck("varchar")), field("n", duck("decimal"))]);
-  assert.deepEqual(planOf(struct, "duckdb", every), { fields: { at: "instant", n: "decimal:number" } });
-  assert.deepEqual(planOf({ kind: "map", key: { type: duck("date") }, value: { type: duck("varchar"), nullable: true } }, "duckdb", every), { entries: { key: "date" } });
-  assert.deepEqual(planOf(tagged(["at", duck("timestamptz")], ["s", duck("varchar")]), "duckdb", every), { tags: { at: "instant" } });
-  // A tuple's values by their places, as DuckDB returns an unnamed struct.
-  const tuple: EngineType = { kind: "tuple", elements: [{ type: duck("date"), nullable: true }, { type: duck("varchar"), nullable: true }] };
-  assert.deepEqual(planOf(tuple, "duckdb", every), { items: ["date", null] });
-  assert.deepEqual(planOf(array(tuple, true, "list"), "duckdb", every), { array: { items: ["date", null] } });
-  assert.equal(planOf({ kind: "tuple", elements: [{ type: duck("varchar") }] }, "duckdb", every), undefined);
-  assert.deepEqual(planOf(array(struct), "duckdb", every), { array: { fields: { at: "instant", n: "decimal:number" } } });
   // A structured parameter's members are fields too.
   assert.deepEqual(planOf(array(record([field("at", pg("timestamptz")), field("name", pg("text"))])), "postgres", every, true), { array: { fields: { at: "instant" } } });
-  // A Postgres row value's fields, as a DuckDB struct's.
+  // A Postgres row value's fields.
   assert.deepEqual(planOf(array(record([field("at", pg("timestamptz"), true), field("n", pg("int4"))], "public.event")), "postgres", every), { array: { fields: { at: "instant" } } });
+  // A tagged union's value, by the alternative its tag names.
+  const tagged = { kind: "tagged_union", alternatives: [{ tag: "at", type: pg("timestamptz"), nullable: true }, { tag: "s", type: pg("text"), nullable: true }] } as EngineType;
+  assert.deepEqual(planOf(tagged, "postgres", every), { tags: { at: "instant" } });
   // JSON is the database's, and a value with no codec in it has no plan.
   assert.equal(planOf({ kind: "json", content: { type: pg("timestamptz") } }, "postgres", every), undefined);
   assert.equal(planOf(pg("point"), "postgres", every), undefined);
-  assert.equal(planOf(struct, "duckdb", {}), undefined);
   assert.equal(planOf(array(pg("text")), "postgres", every), undefined);
 });
 
@@ -100,11 +82,9 @@ test("a codec position is declared its codec's type, through every part Reylo de
   assert.equal(renderType(pg("timestamptz"), false, "postgres", every), "Temporal.Instant");
   assert.equal(renderType(array(pg("timestamptz")), false, "postgres", every), "(Temporal.Instant | null)[]");
   assert.equal(renderType(array(pg("numeric"), false), false, "postgres", every), "number[]");
-  assert.equal(renderType(record([field("at", duck("timestamptz")), field("n", duck("decimal"))]), false, "duckdb", every), "{ at: Temporal.Instant | null; n: number | null }");
   // A SET's array is of its members' type.
   assert.equal(renderType(my("set"), false, "mysql", every), "string[]");
   assert.equal(renderType({ ...my("set"), element: { type: { kind: "enum", type: { kind: "text" }, values: ["a", "b"] } } } as EngineType, false, "mysql", every), '("a" | "b")[]');
-  assert.equal(renderType(tagged(["at", duck("timestamptz")], ["s", duck("varchar")]), false, "duckdb", every), '{ tag: "at"; value: Temporal.Instant | null } | { tag: "s"; value: string | null }');
   // Inside JSON the database writes the value, which keeps JSON's type.
   assert.equal(renderType({ kind: "json", content: { type: pg("timestamptz") } }, false, "postgres", every), "string");
   assert.equal(renderParamType(my("set"), "mysql", false, undefined, every), "string[]");
@@ -155,7 +135,7 @@ test("a codec gives each value its type exactly, or refuses it naming the column
   assert.equal(String(decodeCodec("datetime", "0044-03-15T12:00:00 BC", "at")), "-000043-03-15T12:00:00");
   assert.equal(String(decodeCodec("date", "10000-01-01", "day")), "+010000-01-01");
   assert.equal(String(decodeCodec("time", "23:59:59.999999", "t")), "23:59:59.999999");
-  // A duration from Postgres's and DuckDB's ISO 8601 text, and from MySQL's TIME.
+  // A duration from Postgres's ISO 8601 text, and from MySQL's TIME.
   assert.equal(String(decodeCodec("duration", "P1Y2M3DT4H5M6.789S", "took")), "P1Y2M3DT4H5M6.789S");
   assert.equal(String(decodeCodec("duration", "-P1D", "took")), "-P1D");
   assert.equal(String(decodeCodec("duration", "838:59:59", "took")), "PT838H59M59S");
@@ -189,18 +169,15 @@ test("a codec gives each value its type exactly, or refuses it naming the column
   }
 });
 
-test("a plan gives a codec's type inside a struct, a map, a tagged union and a tuple, and leaves the rest", () => {
-  const value = { s: { at: "2026-10-20T08:00:00Z", name: "a" }, m: [{ key: "2026-10-20", value: "x" }], u: { tag: "at", value: "2026-10-20T08:00:00Z" }, v: { tag: "s", value: "y" } };
+test("a plan gives a codec's type inside a struct and a tagged union, and leaves the rest", () => {
+  const value = { s: { at: "2026-10-20T08:00:00Z", name: "a" }, u: { tag: "at", value: "2026-10-20T08:00:00Z" }, v: { tag: "s", value: "y" } };
   const s = decodePlan({ fields: { at: "instant" } }, value.s, "s") as { at: unknown; name: string };
   assert.ok(s.at instanceof Temporal.Instant);
   assert.equal(s.name, "a");
-  const m = decodePlan({ entries: { key: "date" } }, value.m, "m") as { key: unknown; value: string }[];
-  assert.ok(m[0]!.key instanceof Temporal.PlainDate);
-  assert.equal(m[0]!.value, "x");
   assert.ok((decodePlan({ tags: { at: "instant" } }, value.u, "u") as { value: unknown }).value instanceof Temporal.Instant);
   assert.equal(decodePlan({ tags: { at: "instant" } }, value.v, "v"), value.v);
   // The value itself is untouched: what the plan reaches into is copied.
-  assert.deepEqual(value, { s: { at: "2026-10-20T08:00:00Z", name: "a" }, m: [{ key: "2026-10-20", value: "x" }], u: { tag: "at", value: "2026-10-20T08:00:00Z" }, v: { tag: "s", value: "y" } });
+  assert.deepEqual(value, { s: { at: "2026-10-20T08:00:00Z", name: "a" }, u: { tag: "at", value: "2026-10-20T08:00:00Z" }, v: { tag: "s", value: "y" } });
   // A Postgres array of any depth: the plan of its elements reaches every level.
   assert.deepEqual(decodePlan({ array: "decimal:number" }, [["1.5", "2"], ["3", null]], "grid"), [[1.5, 2], [3, null]]);
   // A parameter's: the codec's type written as the driver binds it, the value itself untouched.
@@ -208,16 +185,7 @@ test("a plan gives a codec's type inside a struct, a map, a tagged union and a t
   const row = { at, name: "a" };
   assert.deepEqual(encodePlan({ array: { fields: { at: "instant" } } }, [row], "rows", "postgres"), [{ at: "2026-10-20T08:00:00Z", name: "a" }]);
   assert.equal(row.at, at);
-  assert.deepEqual(encodePlan({ tags: { at: "instant" } }, { tag: "at", value: at }, "u", "duckdb"), { tag: "at", value: "2026-10-20T08:00:00Z" });
-  assert.deepEqual(encodePlan({ entries: { value: "date" } }, [{ key: "k", value: Temporal.PlainDate.from("2026-10-20") }], "m", "duckdb"), [{ key: "k", value: "2026-10-20" }]);
-  // A DuckDB tuple's values by their places, its rest after them, and an array of tuples, each one value.
-  const pair = decodePlan({ items: ["date", null], rest: "decimal:number" }, ["2026-10-20", "x", "1.5"], "pair") as unknown[];
-  assert.ok(pair[0] instanceof Temporal.PlainDate);
-  assert.deepEqual(pair.slice(1), ["x", 1.5]);
-  const pairs = decodePlan({ array: { items: ["date", null] } }, [["2026-10-20", "x"], null], "pairs") as unknown[][];
-  assert.ok(pairs[0]![0] instanceof Temporal.PlainDate);
-  assert.deepEqual([pairs[0]![1], pairs[1]], ["x", null]);
-  assert.deepEqual(encodePlan({ items: ["date", null] }, [Temporal.PlainDate.from("2026-10-20"), "x"], "p", "duckdb"), ["2026-10-20", "x"]);
+  assert.deepEqual(encodePlan({ tags: { at: "instant" } }, { tag: "at", value: at }, "u", "postgres"), { tag: "at", value: "2026-10-20T08:00:00Z" });
 });
 
 test("a codec parameter takes its codec's type alone, bound as the text or bytes its type reads", () => {
@@ -230,7 +198,7 @@ test("a codec parameter takes its codec's type alone, bound as the text or bytes
   assert.equal(encodeCodec("datetime", Temporal.PlainDateTime.from("2026-10-20T10:00:00"), "at", "sqlite"), "2026-10-20 10:00:00");
   assert.deepEqual(encodeCodec("date", [Temporal.PlainDate.from("2026-10-20")], "days", "postgres"), ["2026-10-20"]);
   assert.deepEqual(encodeCodec("bytes:string", "AQL/", "data", "postgres"), Uint8Array.of(1, 2, 255));
-  // A duration as ISO 8601, which Postgres and DuckDB read, and as MySQL's TIME, in hours.
+  // A duration as ISO 8601, which Postgres reads, and as MySQL's TIME, in hours.
   assert.equal(encodeCodec("duration", Temporal.Duration.from("P1DT2H"), "took", "postgres"), "P1DT2H");
   assert.equal(encodeCodec("duration", Temporal.Duration.from("P1DT2H3M4.5S"), "took", "mysql"), "26:03:04.5");
   assert.equal(encodeCodec("duration", Temporal.Duration.from("-PT12H"), "took", "mysql"), "-12:00:00");
@@ -250,12 +218,11 @@ test("a codec parameter takes its codec's type alone, bound as the text or bytes
   // MySQL clips a TIME past its range without an error.
   refused("duration", Temporal.Duration.from({ hours: 839 }), /within ±838:59:59/, "mysql");
   refused("duration", Temporal.Duration.from({ hours: -838, minutes: -59, seconds: -59, milliseconds: -1 }), /within ±838:59:59/, "mysql");
-  // A part of a second Postgres and MySQL would round away, which DuckDB's nanosecond types keep.
+  // A part of a second Postgres and MySQL would round away.
   const fine = Temporal.Instant.from("2026-10-20T08:00:00.123456789Z");
   refused("instant", fine, /^Parameter "p" holds 2026-10-20T08:00:00\.123456789Z, a Temporal\.Instant past the microsecond, which Postgres would round\. Round it first/);
   refused("datetime", Temporal.PlainDateTime.from("2026-10-20T10:00:00.0000001"), /past the microsecond, which MySQL would round/, "mysql");
   refused("duration", Temporal.Duration.from("PT0.0000005S"), /a Temporal\.Duration past the microsecond/);
-  assert.equal(encodeCodec("instant", fine, "at", "duckdb"), "2026-10-20T08:00:00.123456789Z");
   assert.equal(encodeCodec("time", Temporal.PlainTime.from("10:00:00.123456"), "t", "postgres"), "10:00:00.123456");
 });
 
@@ -303,26 +270,6 @@ test("a Standard Query gives a codec's columns the same type as run, by decode a
   assert.ok(q.columns![0]!.decode("2026-10-20 10:00:00+02") instanceof Temporal.Instant);
   assert.equal(q.columns![1]!.decode("19.50"), 19.5);
   assert.equal(standardColumnsType([{ name: "at", type: pg("timestamptz"), nullable: false }] as any, "postgres", every), `readonly [{ readonly name: "at"; decode(value: string): Temporal.Instant }]`);
-});
-
-test("a Standard Query's decode gives a driver's rows back as they came, where a codec stands inside a struct, a map or a union", () => {
-  const q = defineQuery({
-    dialect: "duckdb",
-    sql: "select s, m, u from t",
-    params: [],
-    cardinality: "many",
-    columns: [["s", "unknown"], ["m", "unknown"], ["u", "unknown"]],
-    codecs: { s: { fields: { n: "decimal:number" } }, m: { entries: { key: "decimal:number", value: "decimal:number" } }, u: { tags: { num: "decimal:number" } } },
-  })["~standard"].query;
-  const raw = () => [[{ n: "1.50", x: "y" }, [{ key: "2.5", value: "3.5" }], { tag: "num", value: "4.5" }]];
-  const rows = raw();
-  assert.deepEqual(q.decode(rows), [{ s: { n: 1.5, x: "y" }, m: [{ key: 2.5, value: 3.5 }], u: { tag: "num", value: 4.5 } }]);
-  assert.deepEqual(rows, raw());
-  // Each column's decoder leaves its value as it came too, and `output` of what it gives is `decode`'s.
-  const values = raw()[0]!;
-  const decoded = Object.fromEntries(q.columns!.map((c, i) => [c.name, c.decode(values[i] as never)]));
-  assert.deepEqual(values, raw()[0]);
-  assert.deepEqual(q.output!([decoded]), q.decode(raw()));
 });
 
 test("decodeCodecs leaves the columns it names no plan for as they are", () => {
@@ -395,7 +342,7 @@ const make = (cls: unknown, text: string) => new (cls as DecimalClass)(text);
 test("a decimal library's class is a decimal's type at every position outside JSON, and its parameter's", () => {
   for (const [library, , type] of LIBRARIES) {
     const codecs: Codecs = { decimal: library };
-    for (const [t, dialect] of [[pg("numeric"), "postgres"], [my("decimal"), "mysql"], [duck("decimal"), "duckdb"]] as const) assert.equal(leafCodec(t, dialect, codecs), `decimal:${library}`);
+    for (const [t, dialect] of [[pg("numeric"), "postgres"], [my("decimal"), "mysql"]] as const) assert.equal(leafCodec(t, dialect, codecs), `decimal:${library}`);
     assert.equal(renderType(pg("numeric"), false, "postgres", codecs), `import("${library}").${type}`);
     assert.equal(renderParamType(pg("numeric"), "postgres", false, undefined, codecs), `import("${library}").${type}`);
     assert.equal(renderType(array(pg("numeric")), false, "postgres", codecs), `(import("${library}").${type} | null)[]`);

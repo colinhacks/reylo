@@ -1,1 +1,0 @@
-create type b as enum ('p', 'q', 'r'); create macro x() as 2; create table t (id integer primary key, k b, v integer, check (v >= x())); create table u (id integer primary key, n integer default x(), w varchar, check (w::b <> 'q'));

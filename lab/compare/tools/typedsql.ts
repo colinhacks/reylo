@@ -14,7 +14,6 @@ export const typedsql: Tool = {
   name: "TypedSQL",
   version,
   dbs: ["postgres", "mysql", "sqlite"],
-  noDuckdb: "DuckDB isn't a Prisma datasource.",
   cardinalityNote: "Every query returns an array, whatever the statement.",
   async analyze(db, statements, urls) {
     const dir = workdir("typedsql");

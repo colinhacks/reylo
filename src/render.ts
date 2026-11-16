@@ -148,10 +148,6 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     case "struct":
       // A row inside a document is an object of its fields; a built-in geometric type, its text.
       if (inJson) return dialect === "postgres" && name !== "record" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect, t.extra);
-      // A DuckDB struct's fields stand as a row's values do.
-      if (dialect === "duckdb") {
-        return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${orNull(renderType(f.type, false, dialect, codecs))}`).join("; ")} }` : "Record<never, never>";
-      }
       // A Postgres row value, and a geometric type, is an object of its fields, each as a column
       // of its type is (src/values.ts).
       if (dialect === "postgres") return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${(f.nullable ? orNull : (x: string) => x)(renderType(f.type, false, dialect, codecs))}`).join("; ")} }` : "Record<never, never>";
@@ -163,13 +159,9 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
         return t.content.nullable ? orNull(content) : content;
       }
       return t.schema === undefined ? JSON_TYPE : schemaType(schemaOf(t));
-    case "map":
-      // A DuckDB map's entries stand as a row's values do.
-      if (dialect === "duckdb") return `{ key: ${renderType(t.key.type, false, dialect, codecs)}; value: ${orNull(renderType(t.value.type, false, dialect, codecs))} }[]`;
-      break;
     case "tagged_union":
-      // A tagged union is one alternative, `{ tag, value }`, as DuckDB's client returns it; inside
-      // a document, whose form of it the engine does not read, any JSON.
+      // A tagged union is one alternative, `{ tag, value }`; inside a document, whose form of it the
+      // engine does not read, any JSON.
       if (inJson) break;
       return t.alternatives.length ? t.alternatives.map((a) => `{ tag: ${JSON.stringify(a.tag)}; value: ${a.nullable ? orNull(renderType(a.type, false, dialect, codecs)) : renderType(a.type, false, dialect, codecs)} }`).join(" | ") : "never";
     // A Postgres range is an object of its bounds, a multirange an array of ranges.
@@ -418,16 +410,6 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   const codec = leafCodec(t, dialect, codecs);
   if (codec !== undefined) return codecType(codec, t, (e) => renderParamType(e, dialect, true));
   const kind = columnKind(t, dialect);
-  // DuckDB binds a number, a BigInt or the digits for a 64-bit or wider integer, the exact text for
-  // a DECIMAL, the text for a date or a time, and bytes for a BLOB; a struct takes an object of
-  // its fields and a map its entries.
-  if (dialect === "duckdb") {
-    if (kind === "int8") return "number | bigint | string";
-    if (kind === "decimal" || kind === "date" || kind === "timestamp" || kind === "timestamptz" || kind === "interval") return "string";
-    if (t.kind === "tuple") return `readonly ${tupleOf(t, (e) => renderParamType(e, dialect, true, undefined, codecs))}`;
-    if (t.kind === "struct" && members === undefined) return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${orNull(renderParamType(f.type, dialect, true, undefined, codecs))}`).join("; ")} }` : "Record<never, never>";
-    if (t.kind === "map") return `readonly { key: ${renderParamType(t.key.type, dialect, true, undefined, codecs)}; value: ${orNull(renderParamType(t.value.type, dialect, true, undefined, codecs))} }[]`;
-  }
   // A JSON parameter takes the JSON a result of its type holds, which `.run()` writes with
   // `JSON.stringify`, so one with no schema takes whatever that writes, a value with a `toJSON()`
   // among them; its null is JSON's null where the statement takes no SQL NULL (src/execute.ts),

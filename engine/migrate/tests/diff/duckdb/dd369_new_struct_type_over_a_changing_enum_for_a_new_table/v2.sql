@@ -1,1 +1,0 @@
-create type mood as enum ('a', 'b', 'c'); create type pair as struct(x mood); create table t (id integer primary key, m varchar check (m::mood <> 'b')); create table u (id integer primary key, p pair);

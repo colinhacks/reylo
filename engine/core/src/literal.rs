@@ -68,7 +68,7 @@ pub fn canonical_number(text: &str) -> Option<String> {
 /// a fraction past its scale, a number past its bits), and for a kind no constant is written as. A
 /// float holds them only at 64 bits, where every client reads the value the server prints; a
 /// boolean holds them only where they are fewer than both. `true` and `false` in an integer are 1
-/// and 0, as MySQL, SQLite and DuckDB hold them.
+/// and 0, as MySQL and SQLite hold them.
 pub fn narrow(ty: &Type, literals: &[Literal]) -> Option<Type> {
     if literals.is_empty() {
         return None;

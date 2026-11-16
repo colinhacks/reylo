@@ -1,1 +1,0 @@
-create schema "Lib"; create macro "Lib"."Valid"(s) as length(s) > 0; create table t (id integer primary key, code varchar check ("Lib"."Valid"(code))); create table c (id integer primary key, t_id integer references t (id));

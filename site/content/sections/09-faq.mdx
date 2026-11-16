@@ -46,7 +46,7 @@ Yes, where `reylo/.cache/` already holds each query's analysis. A type check or 
 reylo: cannot connect to the database at localhost:5432/app (DATABASE_URL in .env): connection refused; building from reylo/.cache/, analyzed 2026-11-07
 ```
 
-The types are then as old as that analysis, so a migration since doesn't show. With a server's URL set, a build reads only what was analyzed on that database. With none, or where the database is a file, as on SQLite and DuckDB, it reads the newest analysis of any. A query that `reylo/.cache/` doesn't hold is an error.
+The types are then as old as that analysis, so a migration since doesn't show. With a server's URL set, a build reads only what was analyzed on that database. With none, or where the database is a file, as on SQLite, it reads the newest analysis of any. A query that `reylo/.cache/` doesn't hold is an error.
 
 A host that builds before it migrates, such as Vercel, starts with no `reylo/.cache/`, so build against a database of its own there, as [Deployment / CI](/deployment#build-before-migrate) describes.
 

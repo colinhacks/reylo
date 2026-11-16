@@ -84,7 +84,6 @@ pub fn dialect_of(url: &str) -> Option<&'static str> {
         "postgres" | "postgresql" => Some("postgres"),
         "mysql" | "mariadb" => Some("mysql"),
         "file" | "sqlite" => Some("sqlite"),
-        "duckdb" => Some("duckdb"),
         _ => None,
     }
 }
@@ -717,7 +716,6 @@ mod tests {
         assert_eq!(dialect_of("MySQL://root@h"), Some("mysql"));
         assert_eq!(dialect_of("mariadb://root@h"), Some("mysql"));
         assert_eq!(dialect_of("file:./app.db"), Some("sqlite"));
-        assert_eq!(dialect_of("duckdb::memory:"), Some("duckdb"));
         assert_eq!(dialect_of("http://h"), None);
         assert_eq!(dialect_of(":memory:"), None);
         assert_eq!(sqlite_path(":memory:", Path::new("/app")).unwrap(), ":memory:");

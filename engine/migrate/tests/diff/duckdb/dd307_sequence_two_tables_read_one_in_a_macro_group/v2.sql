@@ -1,1 +1,0 @@
-create sequence s increment by 2; create macro valid(c) as length(c) > 0; create table t (id bigint primary key default nextval('s'), code varchar check (valid(code))); create table u (id bigint primary key default nextval('s'), n integer);

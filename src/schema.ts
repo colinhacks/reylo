@@ -11,7 +11,7 @@ import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type Jso
 import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
 import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
+type Dialect = "postgres" | "mysql" | "sqlite";
 type Schema = { [key: string]: unknown };
 type Analysis = {
   /** The prose written in comments before the statement, which describes both schemas. */
@@ -101,11 +101,6 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     if (t.kind === "geometry" && name === "geometry" && dialect === "postgres") return GEOJSON;
     // pgvector has no cast to JSON, so a vector inside a document is its text.
     if (kind === "vector") return { type: "string" };
-  } else if (input && dialect === "duckdb") {
-    // What DuckDB binds: a 64-bit or wider integer as a number, a BigInt or its digits; a decimal as its digits.
-    if (kind === "int8") return { type: ["integer", "string"], format: "int64" };
-    if (kind === "decimal") return { type: "string", format: "decimal" };
-    if (kind === "timestamp") return { type: "string", format: "date-time" };
   } else if (input) {
     // A MySQL TINYINT(1) or BIT(1) column's parameter takes the truth value its rows return, or the integer it stores.
     if (dialect === "mysql" && kind === "bool" && t.kind !== "boolean") return { anyOf: [{ type: "boolean" }, { type: "integer", format: "int32" }] };
@@ -131,7 +126,7 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     // RFC 3339's time, which JSON Schema's `time` format names, needs an offset and stops at 23:59:60.
     case "time": return t.offset ? { type: "string", description: `pg type ${name}` } : { type: "string", description: "a time of day without a time zone (10:00:00.5)" };
     case "duration": return { type: "string", description: "a length of time as MySQL writes it, up to 838:59:59 either way (-12:00:00.5)" };
-    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : dialect === "duckdb" ? "DuckDB" : "pg"} type ${name || t.kind}` };
+    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : "pg"} type ${name || t.kind}` };
   }
 }
 
@@ -336,10 +331,6 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
       return { type: "array", items: !input && nestsAnyDeep(t) ? { anyOf: [items, { type: "array" }] } : items };
     }
     case "struct": {
-      // A DuckDB struct's fields stand as a row's values do, each may be null.
-      if (dialect === "duckdb" && !inJson) {
-        return object(t.fields, (i) => nullable(typeSchema(t.fields[i]!.type, dialect, input, false, false, undefined, codecs)));
-      }
       // A built-in geometric type is its text inside a document.
       if (inJson && dialect === "postgres" && ["point", "line", "box", "path", "circle"].includes(name)) break;
       // A row value is an object of its fields, and so is a geometric type outside a document.
@@ -360,10 +351,6 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
         return t.content.nullable ? nullable(content) : content;
       }
       return schemaOf(t) ?? {};
-    case "map":
-      // A DuckDB map as its entries, each a key and its value, in order.
-      if (dialect === "duckdb") return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key.type, dialect, input, false, false, undefined, codecs) : nullable(typeSchema(t.value.type, dialect, input, false, false, undefined, codecs)))) };
-      break;
     case "tagged_union":
       // A tagged union as its tag and its value; inside a document, whose form of it the engine
       // does not read, any JSON.

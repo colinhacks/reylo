@@ -1,1 +1,0 @@
-create macro has_tag(tags, t) as list_contains(tags, t); create table posts (id integer primary key, tags varchar[], check (not has_tag(tags, 'spam'))); create table tags (id integer primary key, post_id integer references posts (id), name varchar);

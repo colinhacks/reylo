@@ -200,10 +200,9 @@ pub fn present(sql: &str, dialect: Dialect) -> bool {
     lexed.placeholders.iter().any(|p| cast_at(sql, p.end).is_some() || json_cast_at(sql, p.end).is_some() || nullable_cast_at(sql, p.end).is_some() || (!reads_casts(dialect) && plain_cast_at(sql, p.end).is_some()))
 }
 
-/// Whether the database reads a `::type` cast itself: Postgres and DuckDB do, MySQL and SQLite do
-/// not.
+/// Whether the database reads a `::type` cast itself: Postgres does, MySQL and SQLite do not.
 fn reads_casts(dialect: Dialect) -> bool {
-    matches!(dialect, Dialect::Postgres | Dialect::Duckdb)
+    dialect == Dialect::Postgres
 }
 
 /// After a placeholder ending at `end`: `::rows(` or `::row(`, with any spacing, as `(one, the
@@ -522,9 +521,6 @@ pub fn find(sql: &str, dialect: Dialect, server: &Server) -> Result<Vec<Found>, 
             }
             continue;
         };
-        if dialect == Dialect::Duckdb {
-            return error("DuckDB statements take no rows(…) or row(…) parameter yet: pass each value as a parameter of its own.", p.start, word_end);
-        }
         if lex::is_positional(&p.name) {
             return error("A rows or row parameter is named: write :name::rows(…), not a positional placeholder.", p.start, word_end);
         }
@@ -1257,7 +1253,7 @@ impl Writer {
 /// (wiki/typed-json-params.md). Postgres's reader takes `bytea` from its own `\x` text as it is.
 fn binary(m: &Member, dialect: Dialect) -> bool {
     match dialect {
-        Dialect::Postgres | Dialect::Duckdb => false,
+        Dialect::Postgres => false,
         Dialect::Sqlite => m.schema.is_none() && affinity(&m.ty) == "BLOB",
         Dialect::Mysql => {
             let t = m.ty.to_ascii_lowercase();
@@ -1302,8 +1298,6 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
     if let Some(cast) = &found.json {
         let (before, after) = match dialect {
             Dialect::Postgres => ("", if cast.jsonb { "::jsonb" } else { "::json" }),
-            // DuckDB has one JSON type, `json`.
-            Dialect::Duckdb => ("", "::json"),
             // MariaDB has no `CAST(… AS JSON)`.
             Dialect::Mysql if server.mariadb => ("JSON_COMPACT(", ")"),
             Dialect::Mysql => ("cast(", " as json)"),
@@ -1318,8 +1312,7 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
     let mut lists = Vec::new();
     let q = |n: &str| quote(n, dialect);
     match dialect {
-        // `find` refuses a DuckDB rows(…) parameter, so only Postgres's comes here.
-        Dialect::Postgres | Dialect::Duckdb => {
+        Dialect::Postgres => {
             let coldefs = |w: &mut Writer| {
                 for (k, m) in ms.iter().enumerate() {
                     if k > 0 {
@@ -2073,8 +2066,6 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
     let Some((start, end)) = f.table else { return Some(Vec::new()) };
     let written = &sql[start..end];
     let rows = match dialect {
-        // `find` refuses a DuckDB rows(…) parameter.
-        Dialect::Duckdb => return Some(Vec::new()),
         Dialect::Postgres => host.query(PG_TABLE_QUERY, vec![serde_json::json!(written)], Scope::Statement)?,
         Dialect::Sqlite => {
             let (schema, name) = split_name(written);
@@ -2091,7 +2082,7 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
     Some(
         rows.iter()
             .map(|r| match dialect {
-                Dialect::Postgres | Dialect::Duckdb => {
+                Dialect::Postgres => {
                     let default = r.get(7).and_then(as_str).map(|e| copy_of(e, &text(r, 8), dialect));
                     TableColumn { name: text(r, 0), base: text(r, 1), written: text(r, 2), not_null: flag(r, 3), has_default: flag(r, 4), generated: flag(r, 5), always: flag(r, 6), default, inherited: flag(r, 9) }
                 }
@@ -2245,7 +2236,6 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
             }
             (mysql_type(&m.ty) != mysql_type(&c.written)).then(|| advice.to_string())
         }
-        Dialect::Duckdb => None,
         // SQLite keeps a value by the column's affinity; a JSON member is text to it.
         Dialect::Sqlite => (m.schema.is_none() && affinity(&m.ty) != affinity(&c.written)).then(|| format!("their affinities differ ({} and {}), and {advice}", affinity(&m.ty), affinity(&c.written))),
     }

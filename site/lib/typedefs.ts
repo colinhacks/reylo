@@ -10,8 +10,7 @@
 // `reylo analyze` on it, as YAML and as JSON, and writes both outputs to lib/typedefs.json, which the
 // build renders the card from, so the page shows the command's real output. A card of
 // `format="types"` shows a card instead, of each result column's name over its type, as a dialect's
-// page lists the type of each of its SQL types; a DuckDB card is one of those, analyzed through
-// `analyze()` and the project's @duckdb/node-api, since `reylo analyze` opens no DuckDB database.
+// page lists the type of each of its SQL types.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -21,12 +20,12 @@ export const TYPEDEF = 'TypeDef';
 export const ANALYZED = 'Analyzed';
 
 /** The databases a card lists types for, in the order the docs name them. */
-export const DATABASES = ['postgres', 'mysql', 'sqlite', 'duckdb'] as const;
+export const DATABASES = ['postgres', 'mysql', 'sqlite'] as const;
 export type Database = (typeof DATABASES)[number];
-export const DATABASE_NAMES: Record<Database, string> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite', duckdb: 'DuckDB' };
+export const DATABASE_NAMES: Record<Database, string> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite' };
 
-export type CardDialect = 'postgres' | 'mysql' | 'sqlite' | 'duckdb';
-const DIALECTS: CardDialect[] = ['postgres', 'mysql', 'sqlite', 'duckdb'];
+export type CardDialect = 'postgres' | 'mysql' | 'sqlite';
+const DIALECTS: CardDialect[] = ['postgres', 'mysql', 'sqlite'];
 
 export type TypeCard = {
   node: MdNode;
@@ -105,10 +104,9 @@ export function analyzedCards(tree: MdNode): AnalyzedCard[] {
     const file = attr(node, 'file');
     if (typeof file !== 'string' || !file.endsWith('.sql')) throw new Error(`${where} names its file="…sql"`);
     const dialect = (attr(node, 'dialect') ?? 'postgres') as CardDialect;
-    if (!DIALECTS.includes(dialect)) throw new Error(`${where} names dialect="${dialect}"; write postgres, mysql, sqlite or duckdb`);
+    if (!DIALECTS.includes(dialect)) throw new Error(`${where} names dialect="${dialect}"; write postgres, mysql or sqlite`);
     const format = (attr(node, 'format') ?? 'yaml') as AnalyzedCard['format'];
     if (format !== 'yaml' && format !== 'json' && format !== 'types') throw new Error(`${where} names format="${format}"; write yaml, json or types`);
-    if (dialect === 'duckdb' && format !== 'types') throw new Error(`${where} reads DuckDB, which reylo analyze cannot open, so it shows format="types"`);
     const lines = attr(node, 'lines');
     return { node, line, file, dialect, ...(schema && { schema: schema.value! }), query: queries[0]!.value!, format, ...(typeof lines === 'string' && { lines: Number(lines) }) };
   });

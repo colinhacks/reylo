@@ -19,8 +19,6 @@
 //   message, and the number; sqlite3 and the sqlite package only the primary code. D1 and a
 //   Durable Object write both codes at the end of the message, and Turso's engine none, or the
 //   primary one's number before 0.8.
-// - DuckDB: @duckdb/node-api throws a plain Error whose message names the kind of error first
-//   (`Constraint Error: Duplicate key …`), DuckDB's exception type, and nothing else.
 import type { Dialect } from "./execute.ts";
 import type { POSTGRES_CODES } from "./error-codes-postgres.ts";
 import type { MYSQL_CODES } from "./error-codes-mysql.ts";
@@ -209,35 +207,8 @@ type SqliteOtherCode<N> = {
 export type SqliteQueryError<N extends SqliteNarrowing | undefined = undefined> = Omit<SqliteErrorFields, "columns"> &
   ({ [C in Extract<keyof N, SqliteCode>]: SqliteMember<C, N[C]> }[Extract<keyof N, SqliteCode>] | SqliteOtherCode<N>);
 
-/**
- * The kinds of error DuckDB raises, by its exception type: the words its message starts with,
- * `Constraint Error: …` being `CONSTRAINT`.
- */
-const DUCKDB_CODES = {
-  Invalid: "INVALID", "Out of Range": "OUT_OF_RANGE", Conversion: "CONVERSION", "Unknown Type": "UNKNOWN_TYPE", Decimal: "DECIMAL", "Mismatch Type": "MISMATCH_TYPE", "Divide by Zero": "DIVIDE_BY_ZERO",
-  "Object Size": "OBJECT_SIZE", "Invalid type": "INVALID_TYPE", Serialization: "SERIALIZATION", TransactionContext: "TRANSACTION", "Not implemented": "NOT_IMPLEMENTED", Expression: "EXPRESSION",
-  Catalog: "CATALOG", Parser: "PARSER", Planner: "PLANNER", Scheduler: "SCHEDULER", Executor: "EXECUTOR", Constraint: "CONSTRAINT", Index: "INDEX", Stat: "STAT", Connection: "CONNECTION",
-  Syntax: "SYNTAX", Settings: "SETTINGS", Binder: "BINDER", Network: "NETWORK", Optimizer: "OPTIMIZER", NullPointer: "NULL_POINTER", IO: "IO", INTERRUPT: "INTERRUPT", FATAL: "FATAL",
-  INTERNAL: "INTERNAL", "Invalid Input": "INVALID_INPUT", "Out of Memory": "OUT_OF_MEMORY", Permission: "PERMISSION", "Parameter Not Resolved": "PARAMETER_NOT_RESOLVED",
-  "Parameter Not Allowed": "PARAMETER_NOT_ALLOWED", Dependency: "DEPENDENCY", HTTP: "HTTP", "Missing Extension": "MISSING_EXTENSION", "Extension Autoloading": "AUTOLOAD", Sequence: "SEQUENCE",
-  "Invalid Configuration": "INVALID_CONFIGURATION",
-} as const;
-
-/** The kind of an error DuckDB raised, as `"CONSTRAINT"`. */
-export type DuckdbCode = (typeof DUCKDB_CODES)[keyof typeof DUCKDB_CODES];
-
-/** An error DuckDB raised: its kind, undefined for one this list does not name, and its message. */
-export interface DuckdbQueryError extends Error {
-  readonly name: "QueryError";
-  readonly code: DuckdbCode | undefined;
-  /** DuckDB's message, as `Constraint Error: Duplicate key "id: 1" violates primary key constraint.` */
-  readonly message: string;
-  /** The driver's own error. */
-  readonly cause: unknown;
-}
-
 /** The error a database of the dialect raised. */
-export type QueryError<D extends Dialect = Dialect> = D extends "postgres" ? PostgresError : D extends "mysql" ? MysqlError : D extends "duckdb" ? DuckdbQueryError : SqliteError;
+export type QueryError<D extends Dialect = Dialect> = D extends "postgres" ? PostgresError : D extends "mysql" ? MysqlError : SqliteError;
 
 class DatabaseError extends Error {
   constructor(message: string, cause: unknown, fields: Record<string, unknown>) {
@@ -281,14 +252,6 @@ export function readSqliteError(error: unknown): SqliteQueryError | undefined {
   const read = sqliteError(error);
   if (!read) return undefined;
   return new DatabaseError(read.message, error, { code: read.code, errcode: read.errcode, ...sqliteNames(read.errcode, read.message) }) as SqliteQueryError;
-}
-
-/** The error DuckDB raised that `error` is, or undefined where it is another: a plain Error, its message opening with the kind of error, where Reylo's own errors are of classes of their own. */
-export function readDuckdbError(error: unknown): DuckdbQueryError | undefined {
-  const e = record(error);
-  const kind = error instanceof Error && Object.getPrototypeOf(error) === Error.prototype && typeof e?.message === "string" ? /^([A-Za-z ]+?) Error: /.exec(e.message)?.[1] : undefined;
-  if (kind === undefined) return undefined;
-  return new DatabaseError(e!.message as string, error, { code: (DUCKDB_CODES as Record<string, DuckdbCode>)[kind] }) as DuckdbQueryError;
 }
 
 function postgresError(error: unknown) {

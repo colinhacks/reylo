@@ -1,1 +1,0 @@
-create table a (id bigint primary key, n varchar); create table b (id integer primary key, a_id bigint references a (id)); create table c (id integer primary key, a_id bigint references a (id), b_id integer references b (id)); create index c_b on c (b_id);

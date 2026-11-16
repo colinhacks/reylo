@@ -1,7 +1,0 @@
-derived.sql: many () -> { names: varchar?[]? }
-filtered.sql: one () -> { later: varchar?[]?, kept: varchar[]? }
-grouped.sql: many () -> { post_id: integer?, names: varchar?[]?, scores: {decimal(10,2)?}? }
-list_distinct.sql: many () -> { labels: varchar[]?, again: varchar[]? }
-says_nothing.sql: one () -> { fs: double?[]?, all_names: varchar?[]?, fixed: varchar?[] }
-union_distinct.sql: many () -> { names: varchar?[]? }
-union_mixed.sql: many () -> { names: varchar?[]? }

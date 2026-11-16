@@ -1,1 +1,0 @@
-create schema b; create type mood as enum ('m'); create type b.mood as enum ('b'); create type b.pair as struct(x mood); create macro b.f(x mood) as x::varchar; create table b.t (id integer primary key, p b.pair, s varchar check (b.f(s) is not null));

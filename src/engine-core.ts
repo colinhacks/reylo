@@ -7,7 +7,7 @@ import { Unreachable } from "./connection.ts";
 import type { EngineType } from "./engine-type.ts";
 
 export type { EngineType } from "./engine-type.ts";
-export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
+export type Dialect = "postgres" | "sqlite" | "mysql";
 
 /** A diagnostic as Reylo's own tools read it: its place in UTF-8 bytes, Reylo's code, and the database's own code where the database raised it (`server_code`). */
 export type Diagnostic = { message: string; start: number; length: number; code: number; server_code?: string };
@@ -77,22 +77,17 @@ export type Need =
 export type Described = { params: { oid: number }[]; columns: { name: string; oid: number; table: number; attnum: number; typmod?: number }[] };
 /** MySQL's prepare metadata: the protocol type code, the flags (bit 1 is NOT NULL), the charset (63 is binary), the length, the decimals (a DECIMAL's scale, a time's fractional digits) and the schema and table the column is one of (empty for an expression). */
 export type MysqlDescribed = { kind: "mysql"; columns: { name: string; type: number; flags: number; charset: number; length: number; decimals?: number; schema?: string; org_table: string; org_name: string }[]; params: { type: number; flags: number; charset: number }[] };
-/** A DuckDB logical type as the engine reads it (engine/duckdb/src/api.rs): its id, its text, and what the id says more of. */
-export type DuckdbType = { id: string; text: string; alias?: string; width?: number; scale?: number; child?: DuckdbType; size?: number; fields?: { name: string; type: DuckdbType }[]; key?: DuckdbType; value?: DuckdbType; values?: string[] };
-/** What DuckDB's prepared statement reports: its statement type, each parameter's type (null where DuckDB cannot tell it), each result column's name and type. */
-export type DuckdbDescribed = { kind: "duckdb"; statement: string; params: { name: string; type: DuckdbType | null }[]; columns: { name: string; type: DuckdbType }[] };
 export type DbError = { message: string; code?: string; position?: number };
 export type Answer =
   | { describe: { params: number[]; columns: Described["columns"] } }
   | { mysql: { columns: MysqlDescribed["columns"]; params: MysqlDescribed["params"] } }
-  | { describe: { statement: string; params: DuckdbDescribed["params"]; columns: DuckdbDescribed["columns"] } }
   | { rows: unknown[][] }
   | { error: DbError };
 
 /** What the host does for the engine: describe a statement, run a catalog query. */
 export interface EngineIo {
-  /** Postgres: Parse/Describe. MySQL: a server prepare. DuckDB: a prepared statement. SQLite needs none: the engine prepares inside its own SQLite. */
-  describe(sql: string): Promise<Described | MysqlDescribed | DuckdbDescribed>;
+  /** Postgres: Parse/Describe. MySQL: a server prepare. SQLite needs none: the engine prepares inside its own SQLite. */
+  describe(sql: string): Promise<Described | MysqlDescribed>;
   /** Rows as arrays of values, in column order. */
   query(sql: string, params: unknown[]): Promise<unknown[][]>;
 }
@@ -169,7 +164,6 @@ async function fulfil(need: Need, io: EngineIo): Promise<Answer> {
   try {
     if (need.kind === "describe") {
       const d = await io.describe(need.sql);
-      if ("kind" in d && d.kind === "duckdb") return { describe: { statement: d.statement, params: d.params, columns: d.columns } };
       if ("kind" in d) return { mysql: { columns: d.columns, params: d.params } };
       return { describe: { params: d.params.map((p) => p.oid), columns: d.columns } };
     }

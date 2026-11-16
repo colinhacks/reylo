@@ -13,7 +13,6 @@ export const sqlxts: Tool = {
   name: "sqlx-ts",
   version,
   dbs: ["postgres", "mysql", "sqlite"],
-  noDuckdb: 'Its `--db-type` takes Postgres, MySQL and SQLite.',
   cardinalityNote: "It types the row only, and how many rows come back is left to you.",
   async analyze(db, statements, urls) {
     const url = db === "postgres" ? urls.postgres.replace("localhost", "127.0.0.1") : db === "mysql" ? urls.mysql : urls.sqlite;

@@ -1,1 +1,0 @@
-create sequence s increment by 5; create table p (id integer primary key, name varchar check (name <> '')); create table c (id integer primary key, p_id integer references p (id), serial_no bigint default nextval('s'));

@@ -46,9 +46,6 @@ for (const id of reportOnly ? [] : toolIds) {
     }
   }
   const cells = gradeTool(answers, tool.dbs, { wrote, connects, cardinalityNote: tool.cardinalityNote, noConnectNote: tool.noConnectNote, optInNote: tool.optInNote, withoutGenerating: await tool.withoutGenerating?.() });
-  // DuckDB takes no probes but this one: of these tools, only Reylo can point at it, and an adapter without `duckdb` has no way to.
-  const duck = await tool.duckdb?.(SMOKE);
-  cells.duckdb = duck?.ok ? { state: "y", right: 1, total: 1, results: [] } : { state: "n", right: 0, total: 1, note: duck?.error ?? tool.noDuckdb ?? `${tool.name} has no support for DuckDB.`, results: [] };
   results.tools[id] = { name: tool.name, version: tool.version, dbs: tool.dbs, connects, wrote, cells };
   writeFileSync(resolve(here, "results.json"), `${JSON.stringify(results, null, 1)}\n`);
   console.log(`\n${tool.name} ${tool.version} (${((Date.now() - t0) / 1000).toFixed(0)}s, connects: ${connects})`);
@@ -57,7 +54,7 @@ for (const id of reportOnly ? [] : toolIds) {
 
 // RESULTS.md: the grid, then every query a tool got wrong and what it answered.
 const MARK = { y: "yes", p: "partly", n: "no" };
-const ROW_LABELS: Record<string, string> = { "no-codegen": "No codegen", "from-the-database": "Live database", "outer-joins": "Nullable left joins", "expression-nullability": "Nullable expressions", "parameter-types": "Parameter types", "parameter-nullability": "Nullable parameters", cardinality: "Cardinality", "json-shapes": "Nested JSON", "json-schema": "JSON Schema types", postgres: "Postgres", mysql: "MySQL", sqlite: "SQLite", duckdb: "DuckDB" };
+const ROW_LABELS: Record<string, string> = { "no-codegen": "No codegen", "from-the-database": "Live database", "outer-joins": "Nullable left joins", "expression-nullability": "Nullable expressions", "parameter-types": "Parameter types", "parameter-nullability": "Nullable parameters", cardinality: "Cardinality", "json-shapes": "Nested JSON", "json-schema": "JSON Schema types", postgres: "Postgres", mysql: "MySQL", sqlite: "SQLite" };
 const ids = Object.keys(results.tools);
 const lines = [`# Results`, ``, `Written by \`./run.sh\` on ${results.at.slice(0, 10)}. Each mark comes from what the tool answered; [probes.ts](probes.ts) holds the queries and the right answers, and [grade.ts](grade.ts) the rules.`, ``, `| | ${ids.map((i) => results.tools[i].name).join(" | ")} |`, `| --- | ${ids.map(() => "---").join(" | ")} |`, `| Version | ${ids.map((i) => results.tools[i].version).join(" | ")} |`];
 for (const [row, label] of Object.entries(ROW_LABELS)) lines.push(`| ${label} | ${ids.map((i) => { const c = results.tools[i].cells[row]; return c ? `${MARK[c.state as "y"]}${c.total > 1 ? ` (${c.right}/${c.total})` : ""}` : "no"; }).join(" | ")} |`);

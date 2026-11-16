@@ -208,8 +208,7 @@ impl Type {
             }
             // A row's fields stand where the row does. A field that may be null is spelled as an
             // `anyOf` with null in a record with a name (a composite, an anonymous `record`), and is
-            // widened as `nullable` widens any value in one without (an object a statement built, a
-            // DuckDB struct).
+            // widened as `nullable` widens any value in one without (an object a statement built).
             Kind::Struct(r) => {
                 let mut schema = object(&r.fields, |f| {
                     let schema = f.ty.json_schema(opts);
@@ -239,7 +238,7 @@ impl Type {
             // An hstore is an object of its keys inside a document, each value text or null.
             Kind::Map(_) if bare_name(self) == "hstore" && opts.in_json => json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}),
             Kind::Map(_) if bare_name(self) == "hstore" => text_of(self),
-            // A DuckDB map as its entries, each a key and its value, in order.
+            // A map as its entries, each a key and its value, in order.
             Kind::Map(m) => {
                 let entry = json!({"type": "object", "properties": {"key": slot_schema(&m.key, opts), "value": slot_schema(&m.value, opts)}, "required": ["key", "value"]});
                 json!({"type": "array", "items": entry})

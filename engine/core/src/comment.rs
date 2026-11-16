@@ -19,7 +19,7 @@ pub fn prose(sql: &str, dialect: Dialect) -> Option<String> {
 
 /// The `--` lines and `/* … */` blocks before the statement's first token, markers stripped and
 /// lines kept: a blank line between two comments, or a change from one form to the other, starts a
-/// paragraph. Read as the dialect reads comments: Postgres and DuckDB nest block comments, MySQL's
+/// paragraph. Read as the dialect reads comments: Postgres nests block comments, MySQL's
 /// `--` is one only before a space or a control character and `#` starts one too, and MySQL's
 /// `/*!` and `/*+` are code to the server, so they end the prose.
 pub fn leading(sql: &str, dialect: Dialect) -> Leading {
@@ -48,7 +48,7 @@ pub fn leading(sql: &str, dialect: Dialect) -> Leading {
             continue;
         }
         if ch == Some(b'/') && next == Some(b'*') && !(mysql && matches!(bytes.get(at + 2), Some(b'!' | b'+'))) {
-            let nests = matches!(dialect, Dialect::Postgres | Dialect::Duckdb);
+            let nests = dialect == Dialect::Postgres;
             let (mut depth, mut j) = (1, at + 2);
             while j < bytes.len() && depth > 0 {
                 if bytes[j..].starts_with(b"*/") {

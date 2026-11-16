@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
 import { DECIMAL_LIBRARIES, type Codecs, type DecimalLibrary } from "./codecs.ts";
 
-export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
+export type Dialect = "postgres" | "sqlite" | "mysql";
 
 /** What the engine reads out of `.reylo.yaml`: the keys the library looks at. */
 export type ProjectFile = {
@@ -134,7 +134,7 @@ function cachedDialects(cache: string): Dialect[] {
   for (const name of names.slice(0, CACHED_READ)) {
     try {
       const { dialect } = JSON.parse(readFileSync(join(dir, name), "utf8")) as { dialect?: unknown };
-      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite" || dialect === "duckdb") found.add(dialect);
+      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite") found.add(dialect);
     } catch {}
     if (found.size > 1) break;
   }
@@ -147,7 +147,6 @@ export function dialectOf(url: string): Dialect | undefined {
   if (scheme === "postgres" || scheme === "postgresql") return "postgres";
   if (scheme === "mysql" || scheme === "mariadb") return "mysql";
   if (scheme === "file" || scheme === "sqlite") return "sqlite";
-  if (scheme === "duckdb") return "duckdb";
   return undefined;
 }
 
@@ -484,7 +483,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     if (hit) urlSource = hit.source;
   }
   let dialect = url ? dialectOf(url) : "postgres";
-  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.`;
+  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
   const unusable = url && dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
   if (unusable) error ??= `Cannot read the SQLite URL ${url} (${urlSource}): ${unusable}.`;
   // Either name, created or removed, changes the project.
@@ -495,15 +494,6 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   const cached = url ? [] : cachedDialects(cache);
   if (cached.length === 1) dialect = cached[0];
   return { file, root, cache, dialect: dialect ?? "postgres", strictParams: !(config.allow_untyped_params ?? false), allowNestedArrays: config.allow_nested_arrays ?? false, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
-}
-
-/** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */
-export function duckdbPath(url: string, baseDir: string): string {
-  let raw = url.replace(/^duckdb:(\/\/)?/i, "");
-  if (raw === "" || raw === ":memory:") return ":memory:";
-  // On Windows, `duckdb:///C:/app.duckdb` names the drive, as a file URL does.
-  if (process.platform === "win32") raw = raw.replace(/^\/(?=[A-Za-z]:[\\/])/, "");
-  return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
 
 /**

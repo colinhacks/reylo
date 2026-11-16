@@ -595,30 +595,6 @@ await db.transaction(async (trx) => {
 });
 ```
 
-#### DuckDB [#duckdb-drivers]
-
-```ts tab="@duckdb/node-api"
-import { DuckDBInstance } from "@duckdb/node-api";
-import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
-
-const instance = await DuckDBInstance.create("app.duckdb");
-const db = await instance.connect();
-
-const user = await getUser.run(db, { id: 1 });
-
-// two inserts in one transaction, on the connection itself: both land, or neither
-await db.run("begin");
-try {
-  await createUser.run(db, { name: "Ada" });
-  await createUser.run(db, { name: "Grace" });
-  await db.run("commit");
-} catch (error) {
-  await db.run("rollback");
-  throw error;
-}
-```
-
 ### `.runSync()`
 
 For databases that support synchronous operations, you can use `.runSync()`.

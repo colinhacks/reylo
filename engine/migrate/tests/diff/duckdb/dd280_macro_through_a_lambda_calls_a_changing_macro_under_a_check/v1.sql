@@ -1,1 +1,0 @@
-create macro valid(s) as s <> ''; create macro all_valid(xs) as len(list_filter(xs, lambda x: not valid(x))) = 0; create table t (id integer primary key, tags varchar[], ok boolean generated always as (all_valid(tags)) virtual);

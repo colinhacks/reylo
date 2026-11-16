@@ -1,1 +1,0 @@
-create type mood as enum ('a', 'b'); create sequence cs; create table p (id integer primary key, n integer check (n > 0)); create table c (id integer, p_id integer references p (id), m mood default 'a', k bigint default nextval('cs'));

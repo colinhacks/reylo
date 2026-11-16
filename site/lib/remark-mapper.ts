@@ -30,7 +30,7 @@ export { pageFiles };
 //   analyzed in each, and a `ts twoslash` block that imports it follows the page's dialect choice,
 //   as under a code-tab group of dialects.
 // - A block's dialect is its `tab` when that is Postgres, MySQL or SQLite; else the enclosing
-//   <Dialect value> (or <Tab value>) panel's; else its `dialect="postgres|mysql|sqlite|duckdb"` meta
+//   <Dialect value> (or <Tab value>) panel's; else its `dialect="postgres|mysql|sqlite"` meta
 //   attribute's, which this plugin removes; else, for a `ts twoslash` block, the dialect of the
 //   `.sql` blocks it imports; else Postgres.
 // - The page is several files, shown in order: content/docs/index.mdx (the title, the opening and the
@@ -74,18 +74,17 @@ export type MdNode = {
 };
 type Code = MdNode & { type: 'code'; value: string };
 
-/** The dialects of the main page's examples, whose code tabs and switch name them in this order. DuckDB's examples are on its own page. */
+/** The dialects of the main page's examples, whose code tabs and switch name them in this order. */
 export const DIALECTS = ['Postgres', 'MySQL', 'SQLite'] as const;
-export type DialectName = (typeof DIALECTS)[number] | 'DuckDB';
-export type Dialect = 'postgres' | 'mysql' | 'sqlite' | 'duckdb';
-const DIALECT_OF: Record<string, Dialect> = { postgres: 'postgres', mysql: 'mysql', sqlite: 'sqlite', duckdb: 'duckdb' };
-export const DIALECT_NAME: Record<Dialect, DialectName> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite', duckdb: 'DuckDB' };
+export type DialectName = (typeof DIALECTS)[number];
+export type Dialect = 'postgres' | 'mysql' | 'sqlite';
+const DIALECT_OF: Record<string, Dialect> = { postgres: 'postgres', mysql: 'mysql', sqlite: 'sqlite' };
+export const DIALECT_NAME: Record<Dialect, DialectName> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite' };
 /** The client an example calls `db`: the one Basic usage builds in each dialect. */
 const CLIENT: Record<Dialect, string> = {
   postgres: 'import("postgres").Sql',
   mysql: 'import("mysql2/promise").Pool',
   sqlite: 'import("better-sqlite3").Database',
-  duckdb: 'import("@duckdb/node-api").DuckDBConnection',
 };
 /** A tab or panel value or a meta attribute naming a dialect, in any case. */
 const dialectOf = (value: unknown): Dialect | undefined => (typeof value === 'string' ? DIALECT_OF[value.toLowerCase()] : undefined);
@@ -146,7 +145,7 @@ export function collect(tree: MdNode): Block[] {
         const panelDialect = panel && dialectOf(attr(panel, 'value'));
         const metaDialect = attribute(code.meta, 'dialect');
         const every = metaDialect === 'all';
-        if (metaDialect !== undefined && !every && !dialectOf(metaDialect)) throw new Error(`${where(code)}: dialect="${metaDialect}" names no dialect; write postgres, mysql, sqlite, duckdb or all.`);
+        if (metaDialect !== undefined && !every && !dialectOf(metaDialect)) throw new Error(`${where(code)}: dialect="${metaDialect}" names no dialect; write postgres, mysql, sqlite or all.`);
         const dialect = tabDialect ?? panelDialect ?? dialectOf(metaDialect) ?? 'postgres';
         const name = attribute(code.meta, 'title') ?? attribute(code.meta, 'file') ?? (tab && !tabDialect ? tab : undefined);
         const card = node.name === INFERENCE_CARD ? node : undefined;
@@ -187,7 +186,7 @@ function attr(node: MdNode, name: string): unknown {
 const where = (node: MdNode) => `line ${node.position?.start.line ?? '?'}`;
 
 /** A database's own page, whose every example is that database's. */
-const DIALECT_PAGE = /(^|\/)(postgres|mysql|sqlite|duckdb)\.mdx$/;
+const DIALECT_PAGE = /(^|\/)(postgres|mysql|sqlite)\.mdx$/;
 /** A file of the main page's sections, which share its schema (lib/page-files.ts). */
 const MAIN_PAGE = /(^|\/)content\/sections\/[^/]+\.mdx$/;
 
@@ -487,7 +486,7 @@ const TYPE_WIDTH = { side: 30, rows: 64 } as const;
 export function moduleTypes(module: string): { params: string | undefined; row: string; cardinality: string } {
   const params = /^export type Params = (.*);$/m.exec(module)?.[1];
   const row = /^export type Row = (.*);$/m.exec(module)?.[1];
-  const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite|duckdb)", QueryError> & \{/.exec(module)?.[1];
+  const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)", QueryError> & \{/.exec(module)?.[1];
   if (params === undefined || row === undefined || cardinality === undefined) throw new Error(`a module lib/remark-mapper.ts cannot read:\n${module}`);
   return { params: params === 'Record<never, never>' ? undefined : params, row, cardinality };
 }
@@ -532,19 +531,17 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
       const captured = captures[dialect]?.[block.name!]?.[block.hash];
       if (captured === undefined) throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no type descriptor for the ${DIALECT_NAME[dialect]} statement ${block.name} of this inference card; run \`nub run capture\` in site/ (with the scratch databases running and REYLO_DOCS_RUST naming the Rust renderer), then build again.`);
       const rust =
-        dialect === 'duckdb'
-          ? [jsx('InferenceCardRow', [['label', 'Rust']], [{ type: 'paragraph', children: [{ type: 'text', value: 'Reylo for Rust reads Postgres, MySQL and SQLite.' }] }])]
-          : captured.rust === undefined
-            ? (() => {
-                throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no Rust types for the ${DIALECT_NAME[dialect]} statement ${block.name}; run \`nub run capture\` with REYLO_DOCS_RUST naming the Rust renderer.`);
-              })()
-            : 'error' in captured.rust
-              ? [jsx('InferenceCardRow', [['label', 'Error']], [codeNode('text', captured.rust.error)])]
-              : [
-                  // A statement with no parameters has a unit `Query`, which says nothing worth a row.
-                  ...(/^pub struct Query;$/.test(captured.rust.params.trim()) ? [] : [jsx('InferenceCardRow', [['label', 'Params']], [codeNode('rust', captured.rust.params)])]),
-                  jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('rust', captured.rust.returns)]),
-                ];
+        captured.rust === undefined
+          ? (() => {
+              throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no Rust types for the ${DIALECT_NAME[dialect]} statement ${block.name}; run \`nub run capture\` with REYLO_DOCS_RUST naming the Rust renderer.`);
+            })()
+          : 'error' in captured.rust
+            ? [jsx('InferenceCardRow', [['label', 'Error']], [codeNode('text', captured.rust.error)])]
+            : [
+                // A statement with no parameters has a unit `Query`, which says nothing worth a row.
+                ...(/^pub struct Query;$/.test(captured.rust.params.trim()) ? [] : [jsx('InferenceCardRow', [['label', 'Params']], [codeNode('rust', captured.rust.params)])]),
+                jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('rust', captured.rust.returns)]),
+              ];
       const typedefs = [
         jsx('InferenceCardRow', [['label', 'Params']], [codeNode('json', jsonDocument(captured.descriptor.params as never))]),
         jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('json', jsonDocument(captured.descriptor.result as never))]),

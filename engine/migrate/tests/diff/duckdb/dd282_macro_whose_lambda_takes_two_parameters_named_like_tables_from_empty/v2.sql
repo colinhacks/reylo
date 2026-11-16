@@ -1,1 +1,0 @@
-create macro idx(xs) as list_transform(xs, lambda child, parent: child || parent::varchar); create table parent (id integer primary key, tags varchar[], s varchar[] generated always as (idx(tags)) virtual); create table child (id integer primary key, parent_id integer references parent (id));

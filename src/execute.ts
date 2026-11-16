@@ -9,7 +9,6 @@
 // this module never imports: a query reaches them through its module, so that a bundle holds only
 // the databases its queries are written for.
 
-import type { DuckdbClient } from "./decode-duckdb.ts";
 import type { QueryError } from "./query-error.ts";
 import { columnKind, describe, given, hstoreText, isArrayValued, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers, type Kind } from "./values.ts";
 import { bareName, isMysqlSet, schemaOf, type EngineType } from "./engine-type.ts";
@@ -22,7 +21,7 @@ import type { RowBuilder } from "./row.ts";
 import { compared, due, passed, staleError, warnDrifted, type Fresh } from "./fresh.ts";
 import { decodeCodecs, encodePlan, type Libraries, type Plan } from "./codecs.ts";
 
-export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
+export type Dialect = "postgres" | "mysql" | "sqlite";
 
 /**
  * pg's Pool, Client and PoolClient; PGlite and its transactions; Neon's Pool and Client;
@@ -165,11 +164,9 @@ export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbCli
 /** Every SQLite client `run` takes, or a transaction taken from one. */
 export type SqliteClient = SyncSqliteClient | SqliteWasmDatabase | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction | KnexClient;
 
-export type { DuckdbClient } from "./decode-duckdb.ts";
-
 // Each dialect's clients are one named union, so a hover over `run` reads
 // `run(client: PostgresClient, …)` rather than listing every client's shape.
-export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : D extends "duckdb" ? DuckdbClient : SqliteClient;
+export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
 export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | SqliteWasmDatabase | DurableObjectSql | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
@@ -221,7 +218,7 @@ export type QueryModule<D extends Dialect = Dialect> = {
 /**
  * What the run time does differently on each database, each in its database's own module: running
  * a statement on that database's drivers (src/decode.ts for Postgres, decode-mysql.ts,
- * decode-sqlite.ts, decode-duckdb.ts), reading their errors (src/query-error.ts) and decoding a
+ * decode-sqlite.ts), reading their errors (src/query-error.ts) and decoding a
  * Standard Query's raw values (src/standard-query.ts). A module a build step writes calls its
  * dialect's define function, which alone names its runtime, so a bundle holds the runtimes of the
  * dialects its queries are written for and no other.
@@ -232,8 +229,6 @@ export type Runtime<D extends Dialect = Dialect> = {
   run(c: AnyClient, query: QueryModule<D>, bound: Bound): Promise<unknown[] | undefined>;
   /** SQLite's synchronous clients (better-sqlite3, node:sqlite, bun:sqlite, Turso's compat Database, a Durable Object's SQL storage): the rows at once, or a promise where a statement answers with one. */
   runSync?(c: AnyClient, query: QueryModule<D>, bound: Bound): unknown[] | Promise<unknown[]>;
-  /** A bound value as the database's driver takes it, in place of what `encode` below writes for Postgres, MySQL and SQLite: DuckDB's, built with node-api's own classes. */
-  encode?(type: EngineType, v: unknown, name: string): unknown;
   /** The database's error `error` is, or undefined where it is another (`.try()`). */
   readError(error: unknown): QueryError<D> | undefined | Promise<QueryError<D> | undefined>;
   /** The same at once, for the synchronous clients (`.trySync()`). */
@@ -403,13 +398,11 @@ export function isDurableObjectSql(c: AnyClient | null | undefined): boolean {
 // A SQLite client with prepare() whose statements answer at once. D1 (batch()), sqlite3 and
 // sqlite (all() on the database), libSQL (execute()), Bun.sql (unsafe()) and Turso's promise API
 // are asynchronous. Turso's compat Database has batch() as D1 does, and answers at once; its
-// maxWriteReplicationIndex(), which every Database of Turso's has, tells it from D1's. A DuckDB
-// connection has prepare() too, answering through a promise, and runAndReadAll() beside it.
+// maxWriteReplicationIndex(), which every Database of Turso's has, tells it from D1's.
 function isSyncSqlite(c: AnyClient | null | undefined): boolean {
   return (
     c != null &&
     typeof c.prepare === "function" &&
-    typeof c.runAndReadAll !== "function" &&
     (typeof c.batch !== "function" || typeof c.maxWriteReplicationIndex === "function") &&
     typeof c.all !== "function" &&
     typeof c.execute !== "function" &&
@@ -427,15 +420,8 @@ export function isTurso(c: AnyClient): boolean {
   return typeof c.prepare === "function" && ((typeof c.connect === "function" && typeof c.maxWriteReplicationIndex === "function") || (typeof c.all === "function" && typeof c.batch === "function"));
 }
 
-/** Whether a client is @duckdb/node-api's DuckDBConnection. */
-export function isDuckdb(c: { [key: string]: unknown } | null | undefined): boolean {
-  return c != null && typeof c.runAndReadAll === "function" && typeof c.prepare === "function" && typeof c.run === "function";
-}
-
 async function executeAsync(c: AnyClient | null | undefined, query: QueryModule, params: ParamsInput): Promise<unknown[]> {
   if (c == null || (typeof c !== "object" && typeof c !== "function")) throw unsupported(c, query.dialect);
-  // A DuckDB connection has prepare() as SQLite's drivers do, and runs no other database's statement.
-  if (query.dialect !== "duckdb" && isDuckdb(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
   // The catalog facts the statement relied on, read again through the same client.
   const own = isDurableObjectSql(c) ? (c as object) : undefined;
@@ -536,8 +522,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     if (cast !== undefined && type !== undefined) checksFor(query, name).checkCast(name, cast, type, bound.values[i], query.dialect);
     checkTime(type, name, bound.values[i], query.dialect);
     checkBinary(type, name, bound.values[i], query.dialect);
-    const own = query.runtime.encode;
-    bound.values[i] = jsonNull ? JSON_NULL : own && type !== undefined ? own(type, bound.values[i], name) : encode(type, bound.values[i], query.dialect, name);
+    bound.values[i] = jsonNull ? JSON_NULL : encode(type, bound.values[i], query.dialect, name);
   });
   // Every MySQL and SQLite driver binds JSON text as text, which the database reads as JSON (a
   // structured parameter's is written already).
@@ -793,8 +778,8 @@ function dateText(d: Date): string {
 export function compile(query: QueryModule): { text: string; order: readonly string[] } {
   if (query.text && query.order) return { text: query.text, order: query.order };
   const { placeholders } = lexPlaceholders(query.sql, query.dialect);
-  // Postgres and DuckDB number each distinct parameter once.
-  const numbered = query.dialect === "postgres" || query.dialect === "duckdb";
+  // Postgres numbers each distinct parameter once.
+  const numbered = query.dialect === "postgres";
   let text = "";
   let last = 0;
   const order: string[] = [];
@@ -818,7 +803,6 @@ const accepted: Record<Dialect, string> = {
   postgres: "query(text, values) as on pg, PGlite, Neon, @vercel/postgres and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database or Knex instance over one of them",
   mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database or Knex instance over one of them",
   sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database, Cloudflare D1 and the oo1 Database of @sqlite.org/sqlite-wasm; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database or Knex instance over one of them",
-  duckdb: "runAndReadAll(sql, values) as on @duckdb/node-api's DuckDBConnection",
 };
 
 function unsupported(c: unknown, dialect: Dialect): TypeError {
@@ -840,9 +824,7 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
   const o = c as { db?: { prepare?: unknown }; selectFrom?: unknown; executeQuery?: unknown; isTransaction?: unknown; $queryRawUnsafe?: unknown; $transaction?: unknown } | null;
   const inTx = " and does not hand out its transaction's connection: take the transaction from the driver's client instead.";
   const hint =
-    dialect !== "duckdb" && isDuckdb(c as AnyClient)
-      ? ` It is a DuckDB connection, and the statement is typed for ${dialect}: set the project's URL to the DuckDB database (duckdb:./app.duckdb).`
-      : typeof o?.db?.prepare === "function"
+    typeof o?.db?.prepare === "function"
       ? " A tag store is not a client: pass its database, store.db."
       : typeof o?.selectFrom === "function" && typeof o.executeQuery === "function"
         ? ` Kysely decodes the values of its queries itself${o.isTransaction === true ? inTx : ": pass the pool or database its dialect was made with."}`

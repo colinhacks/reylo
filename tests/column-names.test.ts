@@ -239,35 +239,3 @@ test("Postgres: a column with no alias is named by the expression's form, with n
     await own.drop();
   }
 });
-
-test("DuckDB: a column with no alias is named by the statement as DuckDB reads it, with no comment in it", async () => {
-  const root = project("duckdb:./app.duckdb", ["@duckdb/node-api"]);
-  const { DuckDBInstance } = driver("@duckdb/node-api");
-  const file = join(root, "app.duckdb");
-  // On Windows DuckDB opens a file it writes with no sharing, so while it is held for writing nothing can open it again, not even the type check in this same process: the database is closed while each statement is analyzed.
-  const seed = await DuckDBInstance.create(file);
-  const setup = await seed.connect();
-  await setup.run("create table t (a int, b text); insert into t values (1, 'x')");
-  setup.closeSync();
-  seed.closeSync();
-  const cases = [
-    ["select 1 + 1", undefined, ["(1 + 1)"], { "(1 + 1)": 2 }],
-    ["select :x::int + 1", { x: 5 }, ["(CAST($1 AS INTEGER) + 1)"], { "(CAST($1 AS INTEGER) + 1)": 6 }],
-    ["update t set a = a returning upper(b)", undefined, ["upper(b)"], { "upper(b)": "X" }],
-  ] as const;
-  const modules = [];
-  for (const [raw, , names] of cases) {
-    const { query, columns } = await built(root, raw);
-    assert.deepEqual(columns, names, raw);
-    modules.push(query);
-  }
-  await closeSessions();
-  const instance = await DuckDBInstance.create(file);
-  const connection = await instance.connect();
-  try {
-    for (const [i, [raw, params, names, expected]] of cases.entries()) assert.deepEqual(row(await modules[i].run(connection, params), names), expected, raw);
-  } finally {
-    connection.closeSync();
-    instance.closeSync();
-  }
-});

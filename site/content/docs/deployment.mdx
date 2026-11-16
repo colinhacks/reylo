@@ -1,6 +1,6 @@
 ---
 title: CI
-description: How to run Reylo's type check and build in CI and on your host. A GitHub Actions workflow for Postgres, what changes for MySQL, SQLite, DuckDB and Cloudflare D1, and a host that builds before it migrates.
+description: How to run Reylo's type check and build in CI and on your host. A GitHub Actions workflow for Postgres, what changes for MySQL, SQLite and Cloudflare D1, and a host that builds before it migrates.
 ---
 
 <p className="dk-subheader">Type-check and build your queries in CI and on your host</p>
@@ -11,7 +11,7 @@ It reads your schema from a live database, as your build does. A CI job starts a
 
 | | |
 | --- | --- |
-| Database | A throwaway one the job starts: a service container, or a file for SQLite and DuckDB |
+| Database | A throwaway one the job starts: a service container, or a file for SQLite |
 | Schema | Your migrations or a schema file, applied before the type check |
 | Connection | `DATABASE_URL` in the job's environment, or [`direct_url`](/configuration#direct_url) |
 | Commands | The type check, then your build and your tests |
@@ -163,32 +163,6 @@ jobs:
       # ...
       # or your migrations
       - run: sqlite3 app.db < schema.sql
-      - run: npm run typecheck
-```
-
-## DuckDB
-
-DuckDB is a file too, and the type check opens it with your project's `@duckdb/node-api`. Build it with a script:
-
-```ts title="setup.ts"
-import { readFileSync } from "node:fs";
-import { DuckDBInstance } from "@duckdb/node-api";
-
-const db = await DuckDBInstance.create("app.duckdb");
-const connection = await db.connect();
-await connection.run(readFileSync("schema.sql", "utf8"));
-connection.closeSync();
-```
-
-```yaml title=".github/workflows/ci.yml"
-jobs:
-  check:
-    # ...
-    env:
-      DATABASE_URL: duckdb:./app.duckdb
-    steps:
-      # ...
-      - run: node setup.ts
       - run: npm run typecheck
 ```
 
