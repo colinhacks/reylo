@@ -333,7 +333,9 @@ jobs:
     needs: scope
     if: ${{ !github.event.repository.private && needs.scope.outputs.shards != '[]' }}
     name: Soundness oracle (${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04, not the latest image: on 26.04 pgrx 0.16 cannot build the JSON Schema validators against
+    # Postgres 18's headers, and PostGIS's packages conflict with the image's MySQL server.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -394,11 +396,8 @@ jobs:
       - name: Install Postgres 18, pgvector and PostGIS
         if: matrix.shard == 'postgres'
         id: pg
-        # apt, not dpkg, so a conflict with a package of the runner image is settled as the download planned it:
-        # PostGIS's GDAL pulls in mariadb-common, which the image's MySQL server conflicts with, and this
-        # shard runs no MySQL.
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ~/postgres-debs/*.deb
+          sudo DEBIAN_FRONTEND=noninteractive dpkg -i ~/postgres-debs/*.deb
           version=$("$PG_BIN/postgres" --version | awk '{print $3}')
           test -n "$version"
           echo "key=$ImageOS-pg$version" >> "$GITHUB_OUTPUT"
