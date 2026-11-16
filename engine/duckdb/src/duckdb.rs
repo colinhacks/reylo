@@ -250,6 +250,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        capabilities: None,
         read_only: false,
         notes: Vec::new(),
         tables: parsed.as_ref().map(|p| tables_through_macros(p, &catalog, &rewritten_sql)),

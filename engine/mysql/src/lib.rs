@@ -7,6 +7,7 @@
 //! `engine/native`, which the `reylo` binary serves.
 
 pub mod api;
+pub mod capabilities;
 pub mod errors;
 pub mod host;
 pub mod mysql;

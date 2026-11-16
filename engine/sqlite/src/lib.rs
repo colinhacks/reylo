@@ -8,6 +8,7 @@
 //! its own.
 
 pub mod api;
+pub mod capabilities;
 pub mod errors;
 pub mod host;
 pub mod sqlite;

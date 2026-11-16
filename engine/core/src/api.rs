@@ -255,6 +255,10 @@ pub struct Analysis {
     /// own code ([`crate::errors`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<crate::errors::Errors>,
+    /// What running the statement may do, an upper bound ([`types::Capabilities`]); absent where
+    /// nothing is said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<types::Capabilities>,
     /// Whether the engine finds nothing in the statement that could write, so that a caller may run it again after
     /// a lost connection ([`crate::database::Database::read_only`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -293,6 +297,7 @@ impl Analysis {
             comment: self.comment.clone(),
             params: self.params.iter().map(Param::descriptor).collect(),
             result: ResultRows::new(self.cardinality, self.columns.iter().map(Column::descriptor).collect(), self.unique.clone(), self.order.clone()),
+            capabilities: self.capabilities.clone(),
             diagnostics: self.diagnostics.iter().map(|d| {
                 let start = utf16_offset(sql, d.start);
                 types::Diagnostic { message: d.message.clone(), start, end: utf16_offset(sql, d.start + d.length).max(start), code: d.server_code.clone() }

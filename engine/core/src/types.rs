@@ -636,7 +636,92 @@ pub struct StatementDescriptor {
     pub params: Vec<Param>,
     /// What the statement returns.
     pub result: ResultRows,
+    /// What running the statement may do; absent where nothing is said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Capabilities>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// What running a statement may do, an upper bound: a flag it lacks, or a table it does not name,
+/// is something it cannot do.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capabilities {
+    /// Each table it touches, with the most it may do to its rows, or `unknown` where it may touch
+    /// tables the analysis cannot name.
+    pub tables: CapabilityTables,
+    /// Creates, alters or drops what the database defines, or changes who may use it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ddl: bool,
+    /// Begins or ends a transaction.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub transaction: bool,
+    /// Leaves state on the connection after it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub session: bool,
+    /// Reaches past the connection and the data: the server's settings, another session, a file,
+    /// the network.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
+}
+
+/// The tables a statement touches, by the name the database qualifies each with, or `unknown`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CapabilityTables {
+    Named(std::collections::BTreeMap<String, Access>),
+    Unknown(Unknown),
+}
+
+impl Default for CapabilityTables {
+    fn default() -> Self {
+        CapabilityTables::Named(Default::default())
+    }
+}
+
+/// The literal `unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Unknown {
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+/// The most a statement may do to a table's rows, each covering the ones before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Access {
+    Read,
+    /// Reads them and locks them until its transaction ends.
+    Readlock,
+    /// Inserts, updates or deletes them.
+    Write,
+}
+
+impl Capabilities {
+    /// That it may do `access` to `table`, beside what it may already do to it.
+    pub fn touch(&mut self, table: impl Into<String>, access: Access) {
+        if let CapabilityTables::Named(tables) = &mut self.tables {
+            let at = tables.entry(table.into()).or_insert(access);
+            *at = (*at).max(access);
+        }
+    }
+
+    /// That it may touch tables the analysis cannot name.
+    pub fn unknown_tables(&mut self) {
+        self.tables = CapabilityTables::Unknown(Unknown::Unknown);
+    }
+
+    /// Whether it may touch tables the analysis cannot name.
+    pub fn tables_unknown(&self) -> bool {
+        matches!(self.tables, CapabilityTables::Unknown(_))
+    }
+
+    /// Rule 7: a table is named.
+    pub fn check(&self) -> Result<(), String> {
+        match &self.tables {
+            CapabilityTables::Named(tables) if tables.keys().any(String::is_empty) => Err("a table of capabilities has no name".into()),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// The database a document of descriptors describes: its name and server version.
@@ -1671,6 +1756,30 @@ mod tests {
             }
         }
         assert!(types > 0);
+    }
+
+    #[test]
+    fn capabilities_read_as_the_spec_writes_them() {
+        let read = |value: Value| -> Capabilities {
+            let capabilities: Capabilities = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&capabilities).unwrap(), value);
+            capabilities
+        };
+        let named = read(json!({"tables": {"public.jobs": "readlock", "public.posts": "write"}}));
+        assert!(!named.tables_unknown());
+        assert!(read(json!({"tables": "unknown", "ddl": true, "session": true, "external": true})).tables_unknown());
+        assert_eq!(read(json!({"tables": {}, "transaction": true})).tables, CapabilityTables::default());
+        assert!(serde_json::from_value::<Capabilities>(json!({"tables": "all"})).is_err());
+        assert!(serde_json::from_value::<Capabilities>(json!({"tables": {"t": "lock"}})).is_err());
+        let mut touched = Capabilities::default();
+        touched.touch("public.posts", Access::Readlock);
+        touched.touch("public.posts", Access::Read);
+        touched.touch("public.users", Access::Write);
+        assert_eq!(serde_json::to_value(&touched).unwrap(), json!({"tables": {"public.posts": "readlock", "public.users": "write"}}));
+        touched.unknown_tables();
+        touched.touch("public.posts", Access::Write);
+        assert!(touched.tables_unknown());
+        assert!(read(json!({"tables": {"": "read"}})).check().is_err());
     }
 
     /// The kinds and fields no example in spec/examples.ts shows, and their short forms.

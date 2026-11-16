@@ -62,6 +62,8 @@ macro_rules! relname {
 /// oid of 16384 or more, the first a user's database gives), and one `('name', code, field, name)`
 /// for each name an error may carry.
 ///
+/// A trigger a partition copies from its parent's is internal on Postgres 14 and earlier, and still
+/// runs, so it counts as the parent's does; a domain counts in an array column's element too.
 /// What a write reaches: the written relations, their partitions and inheritance children, a
 /// view's base relations, and, where `$5`, the tables a foreign key's action writes in turn. What a read
 /// reaches: the read relations, their partitions and inheritance children, whose indexes a scan of
@@ -116,6 +118,9 @@ pub const ERRORS_QUERY: &str = concat!(
     dom(oid) AS ( \
       SELECT t.oid FROM pg_catalog.pg_attribute a JOIN w ON a.attrelid OPERATOR(pg_catalog.=) w.oid JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
         WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
+      UNION SELECT e.oid FROM pg_catalog.pg_attribute a JOIN w ON a.attrelid OPERATOR(pg_catalog.=) w.oid JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
+        JOIN pg_catalog.pg_type e ON e.oid OPERATOR(pg_catalog.=) t.typelem \
+        WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped AND e.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
       UNION SELECT t.oid FROM pg_catalog.pg_type t WHERE t.typname OPERATOR(pg_catalog.=) ANY ($4::pg_catalog.text[]) AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
       UNION SELECT t.typbasetype FROM dom JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) dom.oid \
         JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) t.typbasetype WHERE b.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\"), \
@@ -143,7 +148,8 @@ pub const ERRORS_QUERY: &str = concat!(
     SELECT 'open'::pg_catalog.text, 'a server newer than 19'::pg_catalog.text, NULL::pg_catalog.text, NULL::pg_catalog.text \
       WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.>=) '200000'::pg_catalog.numeric \
     UNION ALL SELECT 'open', 'trigger', g.tgname::pg_catalog.text, NULL FROM pg_catalog.pg_trigger g JOIN w ON g.tgrelid OPERATOR(pg_catalog.=) w.oid \
-      WHERE NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
+      WHERE (NOT g.tgisinternal OR (g.tgparentid OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid AND g.tgconstraint OPERATOR(pg_catalog.=) '0'::pg_catalog.oid)) \
+        AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
     UNION ALL SELECT 'open', 'rule', q.rulename::pg_catalog.text, NULL FROM pg_catalog.pg_rewrite q JOIN w ON q.ev_class OPERATOR(pg_catalog.=) w.oid \
       WHERE q.rulename OPERATOR(pg_catalog.<>) '_RETURN'::pg_catalog.name AND q.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
     UNION ALL SELECT 'open', 'foreign table', c.relname::pg_catalog.text, NULL FROM pg_catalog.pg_class c JOIN rel ON c.oid OPERATOR(pg_catalog.=) rel.oid \
@@ -255,7 +261,7 @@ fn names(list: &[String]) -> Vec<&str> {
 
 /// What [`errors`] asks of a statement as the analysis rewrites it, or `None` where it calls a
 /// function that runs SQL it is given.
-struct Request {
+pub(crate) struct Request {
     /// [`ERRORS_QUERY`]'s parameters for each thing the statement names, on its own: what it says of
     /// them together is what it says of each, so a thing another statement named reads no more.
     each: Vec<Vec<Value>>,
@@ -263,7 +269,7 @@ struct Request {
     operators: Vec<String>,
 }
 
-fn request(rewritten: &str) -> Option<Request> {
+pub(crate) fn request(rewritten: &str) -> Option<Request> {
     let parsed = analyze::analyze(rewritten).ok()?;
     if parsed.functions.iter().any(|f| RUNS_SQL.contains(&f.as_str()) || f == "ts_stat" || f == "ts_rewrite") {
         return None;
@@ -300,7 +306,7 @@ pub fn prefetch(rewritten: &str, host: &Host) {
 
 /// [`ERRORS_QUERY`]'s rows for a statement, with those of [`OPERATORS_QUERY`] among them: `Some(None)`
 /// where a query was refused.
-fn catalog_rows(request: Request, host: &Host) -> Lazy<Option<Vec<Vec<Value>>>> {
+pub(crate) fn catalog_rows(request: Request, host: &Host) -> Lazy<Option<Vec<Vec<Value>>>> {
     let rows = host.query_each(ERRORS_QUERY, request.each, Scope::Statement);
     let defined = host.query(USER_OPERATORS_QUERY, Vec::new(), Scope::Session);
     let (rows, defined) = (rows?, defined?);

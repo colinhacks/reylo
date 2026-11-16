@@ -40,6 +40,12 @@ pub trait Database {
         Some(false)
     }
 
+    /// What running the statement may do, an upper bound ([`crate::types::Capabilities`]), read
+    /// once the rest of the analysis is settled: by default nothing is said.
+    fn capabilities(_analysis: &Analysis, _host: &Host<'_, Self::Describe>) -> Lazy<Option<crate::types::Capabilities>> {
+        Some(None)
+    }
+
     /// One request's round: the analysis, and then the facts it relied on. Postgres overrides it
     /// to settle what a server-side extension offers first.
     fn round(sql: &str, answers: &Answers<Self::Describe>) -> Response {
@@ -65,12 +71,13 @@ pub fn with_facts<D: Database + ?Sized>(mut analysis: Analysis, host: &Host<'_, 
         (Some(fresh), Some(errors)) => {
             analysis.fresh = fresh;
             analysis.errors = errors;
-            match D::read_only(&analysis, host) {
-                Some(read_only) => {
+            match (D::read_only(&analysis, host), D::capabilities(&analysis, host)) {
+                (Some(read_only), Some(capabilities)) => {
                     analysis.read_only = read_only;
+                    analysis.capabilities = capabilities;
                     Response::Analysis { analysis }
                 }
-                None => Response::Need { needs: host.needs() },
+                _ => Response::Need { needs: host.needs() },
             }
         }
         _ => Response::Need { needs: host.needs() },

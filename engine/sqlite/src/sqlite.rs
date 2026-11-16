@@ -297,6 +297,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     if let lex::Statement::Command(kind) = statement {
         let columns: Vec<Column> = t.columns.iter().map(|c| Column::new(c.name.clone(), Type::unknown(), true)).collect();
         let cardinality = if columns.is_empty() { Cardinality::None } else { Cardinality::Many };
+        let capabilities = crate::capabilities::of_command(&rewritten.sql, &kind);
         let analysis = Analysis {
             kind: Some(StatementKind::of(&kind)),
             comment: None,
@@ -316,6 +317,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            capabilities: Some(capabilities),
             read_only: false,
             notes: Vec::new(),
             tables: None,
@@ -375,6 +377,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        capabilities: Some(crate::capabilities::of_statement(&t)),
         read_only: false,
         notes: Vec::new(),
         tables: Some(tables(&t)),

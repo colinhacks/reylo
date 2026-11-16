@@ -42,6 +42,11 @@ impl Database for Sqlite {
     fn read_only(analysis: &Analysis, _host: &Host) -> Lazy<bool> {
         Some(analysis.kind == Some(reylo_engine_core::types::StatementKind::Select))
     }
+
+    /// What running the statement may do: what the statement says, and what the schema adds to its writes.
+    fn capabilities(analysis: &Analysis, host: &Host) -> Lazy<Option<reylo_engine_core::types::Capabilities>> {
+        crate::capabilities::refine(analysis, host)
+    }
 }
 
 #[cfg(test)]

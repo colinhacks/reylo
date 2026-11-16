@@ -72,6 +72,11 @@ impl Database for Postgres {
         crate::errors::read_only(analysis, host)
     }
 
+    /// What running the statement may do: the tables it reaches, and what it does beyond their rows.
+    fn capabilities(analysis: &Analysis, host: &Host) -> Lazy<Option<reylo_engine_core::types::Capabilities>> {
+        crate::capabilities::capabilities(analysis, host)
+    }
+
     /// One round of the replay, through the server's extension where there is one: the
     /// whole analysis from a server with this engine inside, a round's needs in one query from a
     /// server with another build, and the needs as they are otherwise.

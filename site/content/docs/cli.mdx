@@ -33,7 +33,7 @@ Flags:
 
 Prints what Reylo infers for each statement, as data.
 
-Each statement's parameters, columns, cardinality and diagnostics come as a descriptor, its types in [Reylo Type Defs](/typedefs). Run it on a file, a directory, or `-` for standard input. With `--format json` it prints one line of JSON per statement, which a program reads one line at a time:
+Each statement's parameters, columns, cardinality, capabilities and diagnostics come as a descriptor, its types in [Reylo Type Defs](/typedefs). Run it on a file, a directory, or `-` for standard input. With `--format json` it prints one line of JSON per statement, which a program reads one line at a time:
 
 <Analyzed file="queries/get_user.sql">
 
@@ -83,6 +83,7 @@ One per statement.
 | `comment` | The prose in comments before the statement |
 | `params` | Each parameter, in order: its `name`, its [`type`](/typedefs#types), and `nullable` and `optional` where they hold |
 | `result` | The rows, a [table](/typedefs#table) of columns, and its cardinality |
+| `capabilities` | What running the statement may do: the tables it touches, and what it does beyond their rows |
 | `diagnostics` | What the database reports, each with a `message` and its `start` and `end` |
 
 The command adds `file`, the path the statement was read from.
@@ -116,6 +117,25 @@ Its `columns` are the statement's, in order, and its `cardinality` is how many r
 | `none` | None: a write without `RETURNING` |
 
 Where rows can be more than one, the table's [`unique`](/typedefs#table) lists the columns no two rows share, and its `order` the columns the rows are sorted on.
+
+#### `capabilities`
+
+What the statement may do when it runs.
+
+The `tables` object names each table the statement touches with the most it does to its rows: `read`, `readlock` (reads them and holds a lock until the transaction ends, as `FOR UPDATE` does) or `write`. A view counts with the tables it reads, and a write with the tables its foreign keys' actions reach. Where the statement sets off a trigger or a function whose body Reylo doesn't read, `tables` is `"unknown"`.
+
+| Flag | Set where the statement may |
+| --- | --- |
+| `ddl` | Create, alter or drop what the database defines, or change who may use it |
+| `transaction` | Begin or end a transaction |
+| `session` | Leave state on the connection: a setting, a temporary table, a session lock |
+| `external` | Reach past the connection and the data: the server's settings, another session, a file |
+
+Each is an upper bound, so a statement whose tables are all `read` and that sets no flag only reads: it can run again after a lost connection, or on a replica. On Postgres, `delete from users where id = :id` over a `posts` table whose key cascades gives:
+
+```json
+{ "tables": { "public.posts": "write", "public.users": "write" } }
+```
 
 #### `diagnostics`
 

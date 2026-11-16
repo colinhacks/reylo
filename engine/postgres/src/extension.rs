@@ -130,6 +130,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        capabilities: None,
         read_only: false,
         notes: remote.notes,
         tables: remote.tables,
