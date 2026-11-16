@@ -208,9 +208,10 @@ test("analyze says what a MySQL statement may do: the tables it reaches, and wha
     create table audit (what text);
     create view titles as select p.title, u.email from posts p join users u on u.id = p.author_id;
     create trigger jobs_audit after update on jobs for each row insert into audit (what) values ('job');
+    create view claimed as select id, get_lock(concat('job ', id), 0) as got from jobs;
   `);
   try {
-    const [read, view, deleted, locked, triggered, set, ddl] = await same(db.url, [
+    const [read, view, deleted, locked, triggered, set, ddl, claim] = await same(db.url, [
       "select id, email from users where id = :id",
       "select title, email from titles",
       "delete from users where id = :id",
@@ -218,6 +219,7 @@ test("analyze says what a MySQL statement may do: the tables it reaches, and wha
       "update jobs set done = true where id = :id",
       "set @user = 1",
       "create table more (id int primary key)",
+      "select id, got from claimed",
     ]);
     const name = db.url.split("/").pop()!.split("?")[0]!;
     const t = (table: string) => `${name}.${table}`;
@@ -232,6 +234,8 @@ test("analyze says what a MySQL statement may do: the tables it reaches, and wha
     assert.deepEqual(set!.capabilities, { tables: {}, session: true });
     // DDL commits the open transaction.
     assert.deepEqual(ddl!.capabilities, { tables: "unknown", ddl: true, transaction: true });
+    // A view's call to GET_LOCK leaves a named lock on the session.
+    assert.deepEqual(claim!.capabilities, { tables: { [t("claimed")]: "read", [t("jobs")]: "read" }, session: true });
   } finally {
     await db.drop();
   }

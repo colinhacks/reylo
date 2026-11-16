@@ -4,7 +4,7 @@
 //! A trigger or a stored function, whose code the engine does not read, may touch any table, and a
 //! statement that sets one off has its tables unknown.
 
-use crate::errors::list;
+use crate::errors::{list, VIEWS_QUERY};
 use crate::host::Host;
 use reylo_engine_core::api::{Analysis, Scope};
 use reylo_engine_core::dialect::Dialect;
@@ -92,7 +92,24 @@ fn reached(analysis: &Analysis, sql: &str, host: &Host, capabilities: &mut Capab
         };
         capabilities.touch(name, access);
     }
-    let functions = called(sql, Dialect::Mysql);
+    let mut functions = called(sql, Dialect::Mysql);
+    // A view calls the server's functions too: each definition it reaches is read as the
+    // statement's own text is, as `read_only` reads them, and one the session cannot read is unread.
+    if !tables.read.is_empty() {
+        let Ok(views) = host.query(&VIEWS_QUERY.replace("{read}", &list(tables.read.iter().map(String::as_str))), Vec::new(), Scope::Statement)? else {
+            unread(capabilities);
+            return Some(());
+        };
+        for view in &views {
+            match view.first().and_then(Value::as_str) {
+                Some(definition) if !definition.is_empty() => functions.extend(called(definition, Dialect::Mysql)),
+                _ => {
+                    unread(capabilities);
+                    return Some(());
+                }
+            }
+        }
+    }
     if functions.iter().any(|f| SESSION.contains(&f.as_str())) || sql.contains(":=") {
         capabilities.session = true;
     }

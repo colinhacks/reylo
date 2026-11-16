@@ -72,6 +72,14 @@ pub fn of_statement(t: &Tree) -> Capabilities {
     capabilities
 }
 
+/// The PRAGMAs that, read without a value, answer with a setting or the schema alone.
+const SCHEMA_PRAGMAS: &[&str] = &[
+    "table_info", "table_xinfo", "table_list", "index_list", "index_info", "index_xinfo", "foreign_key_list", "database_list", "collation_list", "function_list", "module_list", "pragma_list", "compile_options",
+    "user_version", "application_id", "schema_version", "data_version", "page_count", "page_size", "max_page_count", "freelist_count", "encoding", "journal_mode", "journal_size_limit", "foreign_keys", "busy_timeout",
+    "cache_size", "cache_spill", "synchronous", "temp_store", "auto_vacuum", "automatic_index", "case_sensitive_like", "cell_size_check", "checkpoint_fullfsync", "defer_foreign_keys", "fullfsync", "hard_heap_limit",
+    "ignore_check_constraints", "legacy_alter_table", "locking_mode", "mmap_size", "query_only", "read_uncommitted", "recursive_triggers", "reverse_unordered_selects", "secure_delete", "soft_heap_limit", "threads", "trusted_schema", "writable_schema",
+];
+
 /// What a command (DDL, a PRAGMA, a transaction's control) does, by its first keyword.
 pub fn of_command(sql: &str, kind: &str) -> Capabilities {
     let mut capabilities = Capabilities::default();
@@ -82,8 +90,15 @@ pub fn of_command(sql: &str, kind: &str) -> Capabilities {
             capabilities.session = true;
             capabilities.ddl = true;
         }
-        // A PRAGMA that only reads, and a plan: no rows of a table.
-        "pragma" | "explain" => {}
+        // A PRAGMA that reads a setting or the schema, and a plan: no rows of a table.
+        "pragma" if SCHEMA_PRAGMAS.iter().any(|p| has_word(sql, Dialect::Sqlite, &[*p])) => {}
+        "explain" => {}
+        // Any other PRAGMA may read every table's rows (`integrity_check`, `foreign_key_check`) or
+        // change the file (`optimize`, which may run ANALYZE, `wal_checkpoint`, `incremental_vacuum`).
+        "pragma" => {
+            capabilities.ddl = true;
+            capabilities.unknown_tables();
+        }
         // A database file, attached to the connection or let go.
         "attach" | "detach" => {
             capabilities.session = true;
@@ -93,7 +108,7 @@ pub fn of_command(sql: &str, kind: &str) -> Capabilities {
         "vacuum" => {
             capabilities.ddl = true;
             capabilities.unknown_tables();
-            if sql.to_ascii_lowercase().contains(" into ") {
+            if has_word(sql, Dialect::Sqlite, &["into"]) {
                 capabilities.external = true;
             }
         }

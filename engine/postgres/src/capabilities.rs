@@ -518,25 +518,20 @@ fn utility(node: &NodeEnum, capabilities: &mut Capabilities) {
         N::TransactionStmt(_) => capabilities.transaction = true,
         N::ConstraintsSetStmt(_) => unread(capabilities),
         // `SET LOCAL` lasts until the transaction ends, which is still after the statement.
-        N::VariableSetStmt(_) | N::ListenStmt(_) | N::UnlistenStmt(_) | N::PrepareStmt(_) | N::DeallocateStmt(_) | N::DeclareCursorStmt(_) | N::ClosePortalStmt(_) => capabilities.session = true,
+        N::VariableSetStmt(_) | N::ListenStmt(_) | N::UnlistenStmt(_) | N::PrepareStmt(_) | N::DeallocateStmt(_) | N::ClosePortalStmt(_) => capabilities.session = true,
         // DISCARD drops the session's temporary tables, among the rest of its state.
         N::DiscardStmt(_) => {
             capabilities.session = true;
             capabilities.ddl = true;
             capabilities.unknown_tables();
         }
-        // FETCH and MOVE run the cursor's query, and LOAD a shared library's code, neither of which the engine reads.
-        N::FetchStmt(_) | N::LoadStmt(_) => unread(capabilities),
+        // FETCH and MOVE run the cursor's query, and LOAD a shared library's code, neither of which
+        // the engine reads; DECLARE and EXPLAIN plan their query, and planning runs a function
+        // whose arguments are constants, a user's body included, as EXPLAIN ANALYZE runs it whole.
+        N::FetchStmt(_) | N::LoadStmt(_) | N::DeclareCursorStmt(_) | N::ExplainStmt(_) => unread(capabilities),
         // Reading a setting changes nothing.
         N::VariableShowStmt(_) => {}
         N::NotifyStmt(_) | N::AlterSystemStmt(_) | N::CheckPointStmt(_) => capabilities.external = true,
-        // A plan alone reads nothing; `EXPLAIN ANALYZE` runs the statement, which is not read here.
-        N::ExplainStmt(e) => {
-            let analyzes = e.options.iter().any(|o| matches!(o.node.as_ref(), Some(N::DefElem(d)) if d.defname.eq_ignore_ascii_case("analyze")));
-            if analyzes {
-                unread(capabilities);
-            }
-        }
         // A procedure, an anonymous block and a prepared statement run code the engine does not read, and a procedure or a block may commit.
         N::CallStmt(_) | N::DoStmt(_) | N::ExecuteStmt(_) => {
             unread(capabilities);

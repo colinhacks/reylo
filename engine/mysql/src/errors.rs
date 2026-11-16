@@ -114,7 +114,7 @@ const CHANGES_SOMETHING: [&str; 4] = ["get_lock", "release_lock", "release_all_l
 /// One row per view a read of `{read}` reaches, the tables of a view of another schema among what it
 /// reaches: its definition as the server normalizes it, NULL where this session may not read it or
 /// it is of another schema, which [`ERRORS_QUERY`] does not look into.
-const VIEWS_QUERY: &str = "with recursive r(s, t) as ( \
+pub(crate) const VIEWS_QUERY: &str = "with recursive r(s, t) as ( \
       select table_schema, table_name from information_schema.tables where table_schema = database() and table_name in ({read}) \
       union select u.table_schema, u.table_name from information_schema.view_table_usage u join r on u.view_schema = r.s and u.view_name = r.t) \
     select case when v.table_schema = database() then cast(v.view_definition as char) end from r \
