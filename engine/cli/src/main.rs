@@ -52,6 +52,9 @@ Commands:
   migrate history push     Record the migrations this database's schema has
   migrate history pull     Write the migrations this database ran into files
   db push                  Take this database to schema.sql, unrecorded
+    --drop <names>         Accept what it drops: tables and columns
+    --rename <old>=<new>   Say a table or column was renamed
+    --force                Accept everything it drops
     --watch                Push again on each save
   db reset                 Rebuild this database from the migrations
   db wipe                  Delete every row, keeping the schema
@@ -237,9 +240,9 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     let parsed = parse(&args[words..])?;
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     // What a command doesn't take is refused, never passed over: deploy --dev must not run deploy, and
-    // db push --rename must not leave its guess unsaid.
+    // db reset --force must not seem to have overridden anything.
     let takes: &[&str] = match command {
-        "db push" => &["watch"],
+        "db push" => &["watch", "force"],
         "migrate deploy" => &["dry-run"],
         _ => &[],
     };
@@ -253,10 +256,10 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     if json && has("watch") {
         return Ok(usage_error(group, args, "reylo db push --watch runs until it's stopped, so it can't print one JSON object", ""));
     }
-    if command != "migrate new" && !parsed.drops.is_empty() {
+    if !matches!(command, "migrate new" | "db push") && !parsed.drops.is_empty() {
         return refused("--drop");
     }
-    if command != "migrate new" && !parsed.renames.is_empty() {
+    if !matches!(command, "migrate new" | "db push") && !parsed.renames.is_empty() {
         return refused("--rename");
     }
     if !matches!(command, "migrate init" | "db introspect") && !parsed.schemas.is_empty() {
@@ -342,8 +345,14 @@ fn run_group(command: &str, parsed: &Args, log: &mut dyn FnMut(&str), sql: &mut 
             "migrate dev" => reylo_migrate::dev(&opts, in_ci, &mut log).await,
             "migrate deploy" if has("dry-run") => reylo_migrate::dry_run(&opts, &mut log).await,
             "migrate deploy" => reylo_migrate::deploy(&opts, &mut log).await,
-            "db push" if has("watch") => reylo_migrate::db_push_watch(&opts, in_ci, None, &mut log).await,
-            "db push" => reylo_migrate::db_push(&opts, in_ci, &mut log).await,
+            "db push" => {
+                let push = reylo_migrate::Push { choices: reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() }, force: has("force") };
+                if has("watch") {
+                    reylo_migrate::db_push_watch(&opts, in_ci, &push, None, &mut log).await
+                } else {
+                    reylo_migrate::db_push(&opts, in_ci, &push, &mut log).await
+                }
+            }
             "db introspect" => reylo_migrate::db_introspect(&opts, &parsed.schemas).await.map(|text| {
                 *sql = Some(text);
                 0
