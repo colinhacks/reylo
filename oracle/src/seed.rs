@@ -511,11 +511,13 @@ fn refuses_null(e: &tokio_postgres::Error) -> bool {
 }
 
 /// Each user table's rows written and scans begun in the current transaction, by its name
-/// qualified by its schema, as `pg_stat_xact_user_tables` counts them: a run's own are the counts
-/// after it less those before.
+/// qualified by its schema as capabilities name it (each part bare where it is lowercase letters,
+/// digits and underscores not starting with a digit, else in double quotes: `public."a.b"`), as
+/// `pg_stat_xact_user_tables` counts them: a run's own are the counts after it less those before.
 async fn table_activity(client: &Client) -> Result<HashMap<String, (i64, i64)>, String> {
+    let ident = |part: &str| format!("(case when {part}::text ~ '^[a-z_][a-z0-9_]*$' then {part}::text else '\"' || replace({part}::text, '\"', '\"\"') || '\"' end)");
     let messages = client
-        .simple_query("select schemaname || '.' || relname, n_tup_ins + n_tup_upd + n_tup_del, coalesce(seq_scan, 0) + coalesce(idx_scan, 0) from pg_catalog.pg_stat_xact_user_tables")
+        .simple_query(&format!("select {} || '.' || {}, n_tup_ins + n_tup_upd + n_tup_del, coalesce(seq_scan, 0) + coalesce(idx_scan, 0) from pg_catalog.pg_stat_xact_user_tables", ident("schemaname"), ident("relname")))
         .await
         .map_err(|e| message(&e))?;
     Ok(messages
