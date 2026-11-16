@@ -1,0 +1,44 @@
+---
+title: Cloudflare Hyperdrive
+description: How to use Reylo with Postgres or MySQL in a Cloudflare Worker through Hyperdrive. The drivers that work, the database the type check reads, and how soon a schema change shows.
+---
+
+<p className="dk-subheader">Reylo on Postgres and MySQL through Hyperdrive</p>
+
+Reylo runs in a Worker on Postgres and MySQL through Hyperdrive, Cloudflare's connection pool. Everything on the [Postgres](/postgres) and [MySQL](/mysql) pages holds through it, and this page covers what's specific to Hyperdrive. Set up the Vite plugin as on [Cloudflare D1](/d1#setup).
+
+| | |
+| --- | --- |
+| Postgres | `pg` or postgres.js, with the binding's connection string, and Drizzle over `pg` |
+| MySQL | `mariadb`, not `mysql2`: Hyperdrive refuses the prepared statements Reylo runs `mysql2` through |
+| The type check reads | Your development database, through [`direct_url`](/configuration#direct_url), never Hyperdrive |
+| Node's APIs | `pg`, postgres.js and `mariadb` need a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag |
+
+## Postgres
+
+Connect `pg` or postgres.js with the binding's connection string, and pass the client to `.run()`:
+
+```ts title="worker.ts"
+import { Client } from "pg";
+import getUser from "./get_user.sql";
+
+export default {
+  async fetch(request: Request, env: { HYPERDRIVE: Hyperdrive }, ctx: ExecutionContext) {
+    const client = new Client({ connectionString: env.HYPERDRIVE.connectionString });
+    await client.connect();
+    const user = await getUser.run(client, { id: 1 });
+    ctx.waitUntil(client.end());
+    return Response.json(user);
+  },
+};
+```
+
+## MySQL
+
+Connect with the `mariadb` driver, from the binding's `host`, `port`, `user`, `password` and `database` ([`mariadb`](/mysql#mariadb)).
+
+The `mysql2` driver fails on every query through Hyperdrive, since Reylo runs it through prepared statements, which Hyperdrive refuses. Reylo runs `mariadb` without them.
+
+## Schema changes
+
+Hyperdrive caches reads for 60 seconds by default, so the [check against schema changes](/typescript#when-the-schema-changes) sees a change about a minute after it lands.

@@ -51,6 +51,7 @@ export const pageGroups = [
     items: [
       { title: 'Cloudflare D1', href: '/d1' },
       { title: 'Durable Objects', href: '/durable-objects' },
+      { title: 'Cloudflare Hyperdrive', href: '/hyperdrive' },
       { title: 'Neon', href: '/neon' },
       { title: 'Supabase', href: '/supabase' },
       { title: 'PlanetScale', href: '/planetscale' },
