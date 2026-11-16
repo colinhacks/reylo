@@ -8,7 +8,7 @@ A live test of the client dispatch in [src/execute.ts](../../src/execute.ts): ev
 node typecheck/check.ts     # the type check alone; writes typecheck/results.json and typecheck/RESULTS.md
 ```
 
-Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the second node:sqlite job, Bun 1.3.14 for Bun.sql and bun:sqlite. The jobs call those binaries directly rather than through nub, because nub adds polyfills (a global `WebSocket`, for one) that a user's plain Node does not have. The binaries can be changed with `DM_NODE26`, `DM_NODE24` and `DM_BUN`.
+Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the second node:sqlite job, Bun 1.4.4 for Bun.sql and bun:sqlite. The jobs call those binaries directly rather than through nub, because nub adds polyfills (a global `WebSocket`, for one) that a user's plain Node does not have. The binaries can be changed with `DM_NODE26`, `DM_NODE24` and `DM_BUN`.
 
 ## Coverage
 
@@ -20,13 +20,13 @@ Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the s
 | @neondatabase/serverless | 1.1.0, 0.10.4, 0.9.5 | Postgres 14 behind a local Neon proxy | Pool, Client, PoolClient, PoolClient inside BEGIN/COMMIT (all over WebSocket), `neon()` over HTTP, `neon(url, { fullResults: true })` |
 | pg-promise | 12.7.1 | Postgres 14 (local) | `db`, `db.task(t)`, `db.tx(t)`, nested `t.tx(t2)` (a savepoint) |
 | slonik | 49.12.0 | Postgres 14 (local), with Slonik's own type parsers | the pool, a connection from `pool.connect(c)`, `pool.transaction(tx)`, nested `tx.transaction(sp)` (a savepoint) |
-| Bun.sql | Bun 1.3.14 | Postgres 14, MySQL 8.4, MySQL 8.0, SQLite file | `sql`, `sql.begin(tx)`, `tx.savepoint(sp)`, `sql.reserve()` (not on SQLite) |
+| Bun.sql | Bun 1.4.4 | Postgres 14, MySQL 8.4, MySQL 8.0, SQLite file | `sql`, `sql.begin(tx)`, `tx.savepoint(sp)`, `sql.reserve()` (not on SQLite) |
 | mysql2 | 3.24.5, 3.15.3, 2.3.3 | MySQL 8.4, MySQL 8.0 | promise Pool, Connection, PoolConnection, PoolConnection inside `beginTransaction()`; callback Pool, Connection and PoolConnection passed without `.promise()` |
 | mariadb (a MySQL client) | 3.5.4, 3.4.5, 2.5.6 | MySQL 8.4 | Pool, Connection, PoolConnection, PoolConnection inside `beginTransaction()`; `mariadb/callback` Connection, Pool, and PoolConnection inside `beginTransaction()` |
 | @planetscale/database | 2.0.0, 1.20.2 | MySQL 8.4 behind ps-http-sim | `connect()` Connection, Client, `conn.transaction(tx)` |
 | better-sqlite3 | 13.0.3, 12.11.1; 11.10.0 on Node 24 from a source build (9.6.0, 8.7.0: see below) | SQLite file | Database, `db.transaction(fn)` |
 | node:sqlite | Node 26.7.0, Node 24.19.0 | SQLite file | DatabaseSync, DatabaseSync inside BEGIN/COMMIT, `db.createTagStore()`, `db.createTagStore().db` |
-| bun:sqlite | Bun 1.3.14 | SQLite file | Database, `db.transaction(fn)` |
+| bun:sqlite | Bun 1.4.4 | SQLite file | Database, `db.transaction(fn)` |
 | @libsql/client | 0.17.4, 0.18.0, 0.15.15, 0.14.0 | SQLite file (`file:` URL) | Client, `client.transaction("write")` |
 | @tursodatabase/database | 0.8.3, 0.7.2, 0.6.1, 0.4.4 | SQLite file, opened by Turso's engine | Database from `connect()`, Database inside BEGIN/COMMIT (exec), the Transaction `db.transactionAsync(fn)` hands its callback (0.7 and later); the synchronous Database of `@tursodatabase/database/compat` and its `db.transaction(fn)` |
 | sqlite3 | 5.1.7, 6.0.1 | SQLite file | Database, BEGIN/COMMIT inside `db.serialize()` |
@@ -211,6 +211,10 @@ S10j is new, after the engine typed the JSON a SQLite statement builds as that J
 ## Run (2026-10-22): Drizzle
 
 Reylo now takes a Drizzle database and the transactions it hands out, and runs on the driver client Drizzle's session holds: `session.client`, the pool for a database and the transaction's own connection inside one, or `session.tx` inside a libSQL transaction, where `client` stays the base client ([src/execute.ts](../../src/execute.ts)). Run on `session.client` there, the libSQL job failed 13 rows with `SQLITE_BUSY`, the base client waiting on the transaction's lock. Over postgres.js, Drizzle replaces the client's `json` and `jsonb` serializers with ones that pass a value through, so Reylo now gives every postgres.js client a JSON parameter as its JSON text declared `unknown` (`sql.typed(text, 705)`). The harness takes libSQL's own `RangeError` in S10 on Drizzle's libSQL job as on libSQL's. The five Drizzle jobs, on Node 26.11.1 against a throwaway Postgres 18 (`DM_PG_URL`) and MySQL 8.4 (`DM_MYSQL_URL`), add 310 rows to [RESULTS.md](RESULTS.md), all of which pass; every other job's rows are as they were, and the gates run them again.
+
+## Re-run (2026-11-16): Bun 1.4.4
+
+The Bun jobs ran alone (`./run.sh --only bun`) on Bun 1.4.4, with Node 26.11.1 for the runner, the MySQL containers in colima and a throwaway Postgres 18 standing in for the shared Postgres 14 (`DM_PG_URL`). Bun 1.4.4 reads a timestamptz before 1 AD, which 1.4.3 decoded as an Invalid Date, so the S11b skip on Bun.sql and on Drizzle over Bun.sql is gone. The run was against src/ where Reylo reads Bun 1.4.4's `.raw()` bytes on Postgres and decodes them itself, and its result columns on MySQL ([src/decode.ts](../../src/decode.ts)): 7 jobs and 567 rows, all of them passing. [compare.ts](compare.ts) against the RESULTS.md before it: the 7 rows that differ are S11b's, from skip to pass, on Bun.sql's four shapes and Drizzle's three. RESULTS.md has those rows and the Bun jobs' version changed by hand; every other job's rows are as the last full run wrote them.
 
 ## Type check
 

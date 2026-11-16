@@ -439,7 +439,7 @@ function daysFromCivil(y: number, m: number, d: number): number {
 }
 
 /** The date `days` after 1970-01-01, the inverse of `daysFromCivil`. */
-function civilFromDays(days: number): [number, number, number] {
+export function civilFromDays(days: number): [number, number, number] {
   const z = days + 719468;
   const era = Math.floor(z / 146097);
   const doe = z - era * 146097;
@@ -1270,6 +1270,16 @@ function utcText(d: Date, kind: "date" | "timestamp", column: string, postgres: 
   // A Postgres `timestamp`'s six digits, as `sixDigits` writes them; a MySQL DATETIME's as the driver kept them.
   const fraction = postgres ? `.${pad(ms, 3)}000` : ms ? `.${pad(ms, 3).replace(/0+$/, "")}` : "";
   return `${date}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${fraction}`;
+}
+
+/**
+ * A MySQL time's text with its column's `digits` of fraction, the zeros a driver dropped written
+ * back: `09:31:00` of a DATETIME(3) is `09:31:00.000`, and `09:31:00.5` `09:31:00.500`.
+ */
+export function withFraction(text: string, digits: number): string {
+  if (digits <= 0) return text;
+  const dot = text.indexOf(".");
+  return dot < 0 ? `${text}.${"0".repeat(digits)}` : text.padEnd(dot + 1 + digits, "0");
 }
 
 const isBytes = (v: unknown): v is Uint8Array => v instanceof Uint8Array;

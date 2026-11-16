@@ -44,7 +44,7 @@ for (const [alias, v] of [["pglite-05", "0.5.8"], ["pglite-04", "0.4.6"], ["pgli
 for (const [alias, v] of [["neon-1", "1.1.0"], ["neon-010", "0.10.4"], ["neon-09", "0.9.5"]]) add({ id: `neon@${v}`, bin: NODE26, file: "drivers/neon.ts", args: ["--pkg", alias, "--version", v], meta: { pkg: "@neondatabase/serverless", version: v, target: "Postgres 14 via local Neon proxy", runtime: n26 } });
 add({ id: "pg-promise@12.7.1", bin: NODE26, file: "drivers/pgpromise.ts", args: ["--pkg", "pg-promise", "--version", "12.7.1"], meta: { pkg: "pg-promise", version: "12.7.1", target: "Postgres 14 (local)", runtime: n26 } });
 add({ id: "slonik@49.12.0", bin: NODE26, file: "drivers/slonik.ts", args: ["--pkg", "slonik", "--version", "49.12.0"], meta: { pkg: "slonik", version: "49.12.0", target: "Postgres 14 (local)", runtime: n26 } });
-add({ id: "bun-sql-postgres", bin: BUN, file: "drivers/bunsql.ts", args: ["--adapter", "postgres"], meta: { pkg: "Bun.sql (postgres)", version: "1.3.14", target: "Postgres 14 (local)", runtime: "bun" } });
+add({ id: "bun-sql-postgres", bin: BUN, file: "drivers/bunsql.ts", args: ["--adapter", "postgres"], meta: { pkg: "Bun.sql (postgres)", version: "1.4.4", target: "Postgres 14 (local)", runtime: "bun" } });
 
 // MySQL family
 const mysqlServers = [
@@ -57,7 +57,7 @@ for (const [alias, v] of [["mysql2-3", "3.24.5"], ["mysql2-315", "3.15.3"], ["my
 for (const [alias, v] of [["mariadb-3", "3.5.4"], ["mariadb-34", "3.4.5"], ["mariadb-2", "2.5.6"]]) {
   for (const [port, target] of [["33406", "MySQL 8.4"]]) add({ id: `mariadb@${v}/${target}`, bin: NODE26, file: "drivers/mariadb.ts", args: ["--pkg", alias, "--version", v, "--port", port!, "--target", target!], meta: { pkg: "mariadb", version: v, target: target!, runtime: n26 } });
 }
-for (const [port, target] of mysqlServers) add({ id: `bun-sql-mysql/${target}`, bin: BUN, file: "drivers/bunsql.ts", args: ["--adapter", "mysql", "--url", `mysql://root:porg@127.0.0.1:${port}/driver_matrix`, "--target", target!], meta: { pkg: "Bun.sql (mysql)", version: "1.3.14", target: target!, runtime: "bun" } });
+for (const [port, target] of mysqlServers) add({ id: `bun-sql-mysql/${target}`, bin: BUN, file: "drivers/bunsql.ts", args: ["--adapter", "mysql", "--url", `mysql://root:porg@127.0.0.1:${port}/driver_matrix`, "--target", target!], meta: { pkg: "Bun.sql (mysql)", version: "1.4.4", target: target!, runtime: "bun" } });
 for (const [alias, v] of [["planetscale-2", "2.0.0"], ["planetscale-1", "1.20.2"]]) add({ id: `planetscale@${v}`, bin: NODE26, file: "drivers/planetscale.ts", args: ["--pkg", alias, "--version", v], meta: { pkg: "@planetscale/database", version: v, target: "MySQL 8.4 via ps-http-sim", runtime: n26 } });
 
 // Drizzle over each of its drivers, which run on the driver packages installed under their own names.
@@ -84,8 +84,8 @@ for (const [alias, v] of [["bs3-13", "13.0.3"], ["bs3-12", "12.11.1"]]) add({ id
 for (const [alias, v] of [["bs3-11", "11.10.0"], ["bs3-9", "9.6.0"], ["bs3-8", "8.7.0"]]) add({ id: `better-sqlite3@${v}`, bin: NODE24, file: "drivers/sync-sqlite.ts", args: ["--lib", alias, "--version", v, "--from", "native-old"], sqlite: true, meta: { pkg: "better-sqlite3", version: v, target: "SQLite file", runtime: "node 24.19.0" } });
 add({ id: "node:sqlite@26", bin: NODE26, file: "drivers/sync-sqlite.ts", args: ["--lib", "node:sqlite"], sqlite: true, meta: { pkg: "node:sqlite", version: "26.7.0", target: "SQLite file", runtime: n26 } });
 add({ id: "node:sqlite@24", bin: NODE24, file: "drivers/sync-sqlite.ts", args: ["--lib", "node:sqlite"], sqlite: true, meta: { pkg: "node:sqlite", version: "24.19.0", target: "SQLite file", runtime: "node 24.19.0" } });
-add({ id: "bun:sqlite", bin: BUN, file: "drivers/sync-sqlite.ts", args: ["--lib", "bun:sqlite"], sqlite: true, meta: { pkg: "bun:sqlite", version: "1.3.14", target: "SQLite file", runtime: "bun" } });
-add({ id: "bun-sql-sqlite", bin: BUN, file: "drivers/bunsql.ts", args: ["--adapter", "sqlite"], sqlite: true, meta: { pkg: "Bun.sql (sqlite)", version: "1.3.14", target: "SQLite file", runtime: "bun" } });
+add({ id: "bun:sqlite", bin: BUN, file: "drivers/sync-sqlite.ts", args: ["--lib", "bun:sqlite"], sqlite: true, meta: { pkg: "bun:sqlite", version: "1.4.4", target: "SQLite file", runtime: "bun" } });
+add({ id: "bun-sql-sqlite", bin: BUN, file: "drivers/bunsql.ts", args: ["--adapter", "sqlite"], sqlite: true, meta: { pkg: "Bun.sql (sqlite)", version: "1.4.4", target: "SQLite file", runtime: "bun" } });
 for (const [alias, v] of [["libsql-017", "0.17.4"], ["libsql-018", "0.18.0"], ["libsql-015", "0.15.15"], ["libsql-014", "0.14.0"]]) add({ id: `libsql@${v}`, bin: NODE26, file: "drivers/libsql.ts", args: ["--pkg", alias, "--version", v], sqlite: true, meta: { pkg: "@libsql/client", version: v, target: "SQLite file (file: URL)", runtime: n26 } });
 for (const [alias, v] of [["turso-08", "0.8.3"], ["turso-07", "0.7.2"], ["turso-06", "0.6.1"], ["turso-04", "0.4.4"]]) {
   add({ id: `turso@${v}`, bin: NODE26, file: "drivers/turso.ts", args: ["--pkg", alias, "--version", v, "--api", "promise"], sqlite: true, meta: { pkg: "@tursodatabase/database", version: v, target: "SQLite file (Turso's engine)", runtime: n26 } });

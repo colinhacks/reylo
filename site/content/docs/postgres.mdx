@@ -78,7 +78,7 @@ Each Postgres type has one TypeScript type and one Rust type.
 <LanguagePanels>
 <LanguagePanel value="TypeScript">
 
-In TypeScript, `.run()` returns the same value for a type on every driver, apart from what `Bun.sql` loses ([Drivers](#drivers)):
+In TypeScript, `.run()` returns the same value for a type on every driver, apart from what `Bun.sql` loses before Bun 1.4.4 ([Drivers](#drivers)):
 
 | SQL type | TypeScript | The value `.run()` returns |
 | --- | --- | --- |
@@ -684,7 +684,6 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 
 - **Inherited tables.** A `NOT NULL` constraint holds in every table that inherits from its table.
 - **Whole rows.** The whole row of a subquery or a `with` query, which Postgres types only as `record`, is typed field by field.
-- **What a write returns.** A column an `insert`, `update`, `merge` or upsert sets in every row it returns, to a value that is never null, isn't null in `returning`, nor in a `with` query that returns it. A `before` row trigger on the table or any of its partitions, a rule, a view, a foreign table and a cast of your own to the column's type can each change the value on its way, so with any of them the column is as nullable as the table says. A `merge` that can delete returns the deleted rows as they were, and `old` is the row before the write.
 - **SQL functions.** A function in `language sql` is read as the query it is, so its body decides which columns are null. Mark it `stable` if it only reads: Postgres then plans its body into your query.
 - **Your own operators, casts and functions** tell Reylo nothing, and neither do an extension's or a function whose body Reylo can't read. Where the operands' types can only pick a built-in, as beside pgvector, PostGIS or citext, the built-in's rules apply. To say a value is never null, write `coalesce(x, …)` or `where x is not null`.
 
@@ -957,7 +956,7 @@ reserved.release();
 
 Bun.sql prepares each statement once per connection, so a query whose [filters may be left out](/inference#filter-indexes) needs `connection: { plan_cache_mode: "force_custom_plan" }` to keep using an index after five runs.
 
-Bun loses the microseconds of a `timestamp` or `timestamptz` before Reylo sees them, and a date past the year 275760, which Reylo rejects. Queries with parameters are read in binary and others as text, so a `real` comes back exact (`1.100000023841858`) only with a parameter. Before Bun 1.4.4, Bun also lost a date before 1 AD, and failed with "Failed to read data" on a `NULL` in an `int4[]` or `float4[]`, a two-dimensional `int[]` in a query with a parameter, and an array with explicit bounds in one without.
+From Bun 1.4.4, Reylo reads the bytes Bun receives and decodes them itself, so each type comes back as on the other drivers. Before 1.4.4, Bun loses the microseconds of a `timestamp` or `timestamptz` before Reylo sees them, and a date before 1 AD, which Reylo rejects; a `real` comes back exact (`1.100000023841858`) only in a query with a parameter; and Bun itself fails with "Failed to read data" on a `NULL` in an `int4[]` or `float4[]`, a two-dimensional `int[]` in a query with a parameter, and an array with explicit bounds in one without.
 
 ### PGlite
 
