@@ -56,7 +56,7 @@ where id = :id
 ```
 
 - Version 2.0 isn't supported, since it can't bind parameters.
-- The driver sends each query over HTTP, so it runs where there are no TCP sockets, as in [Cloudflare Workers](/cloudflare).
+- The driver sends each query over HTTP, so it runs where there are no TCP sockets, as in [Cloudflare Workers](/d1#setup).
 - It rounds a `FLOAT` to its shorter text, `1.1`, where `mysql2` returns its exact value ([Decimals](/mysql#decimals)).
 
 ### `mysql2`

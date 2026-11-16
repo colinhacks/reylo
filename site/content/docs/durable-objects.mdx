@@ -1,0 +1,169 @@
+---
+title: Durable Objects
+description: How to use Reylo with a Cloudflare Durable Object's SQLite database. The Vite plugin, the schema the type check reads, synchronous queries, migrations the object runs on itself, tests, and the SQLite functions Cloudflare blocks.
+---
+
+<p className="dk-subheader">Reylo on a Durable Object's database</p>
+
+Reylo runs on a Cloudflare Durable Object's own SQLite database.
+
+A Durable Object's database is SQLite, so everything on the [SQLite](/sqlite) page holds for it. This page covers what's specific to Durable Objects. D1 is on [Cloudflare D1](/d1).
+
+| | |
+| --- | --- |
+| Database | Each Durable Object's own, through `ctx.storage.sql` |
+| Bundler | Vite, with Cloudflare's Vite plugin |
+| Tests | Vitest inside workerd, with Cloudflare's Vitest plugin |
+| Example | [cloudflare-workers](https://github.com/colinhacks/reylo/tree/main/examples/cloudflare-workers), a Worker with D1 and a Durable Object that runs locally with no Cloudflare account |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="sqlite"
+create table users (
+  id integer primary key,
+  name text not null,
+  email text,
+  created_at text not null default current_timestamp
+) strict;
+```
+
+</Details>
+
+## Setup
+
+Add Reylo's Vite plugin beside Cloudflare's:
+
+```ts title="vite.config.ts"
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { defineConfig } from "vite";
+import reylo from "reylo/vite";
+
+export default defineConfig({
+  plugins: [reylo(), cloudflare()],
+});
+```
+
+- Import each `.sql` file by a relative path. A path through an alias, such as a tsconfig `paths` entry, reaches the Cloudflare plugin's text rule before Reylo.
+- A Worker that only uses Durable Objects needs no `nodejs_compat` flag.
+
+## Local database
+
+The type check reads your schema from a local SQLite file. Point [`direct_url`](/configuration#direct_url) at it:
+
+```yaml title=".reylo.yaml"
+direct_url: file:./dev.sqlite
+```
+
+Your [migrations](#migrations) create it:
+
+```sh
+reylo migrate dev
+```
+
+- Set it in `.reylo.yaml`, not in `.env`: Wrangler loads `.env` into the Worker as secrets.
+- The type check reads one database per package, the one its `.reylo.yaml` names. An object whose tables match D1's can run D1's migrations. An object with tables of its own goes in a package of its own, whose `.reylo.yaml` names a SQLite file made from that object's schema.
+
+## Queries
+
+Pass the object's `ctx.storage.sql`. It's synchronous, so `.runSync()` works on it, inside `ctx.storage.transactionSync(fn)` too:
+
+```ts twoslash tab="worker.ts"
+/// <reference types="@cloudflare/workers-types" />
+// ---cut---
+import { DurableObject } from "cloudflare:workers";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+export class Board extends DurableObject {
+  user(id: number) {
+    return getUser.runSync(this.ctx.storage.sql, { id });
+  }
+
+  // both inserts land, or neither
+  addPair() {
+    const sql = this.ctx.storage.sql;
+    this.ctx.storage.transactionSync(() => {
+      createUser.runSync(sql, { name: "Ada" });
+      createUser.runSync(sql, { name: "Grace" });
+    });
+  }
+}
+```
+
+```sql tab="get_user.sql" dialect="sqlite"
+select id, name, email from users where id = :id
+```
+
+```sql tab="create_user.sql" dialect="sqlite"
+insert into users (name) values (:name)
+```
+
+- The [check against schema changes](/typescript#when-the-schema-changes) runs in each object on its own, since each object is a database of its own. Before an object's tables exist, a query fails with the database's own error.
+- The storage rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
+
+## Migrations
+
+A Durable Object runs its migrations on itself. Pass its storage to `migrate` in its constructor:
+
+```ts twoslash title="board.ts"
+/// <reference types="@cloudflare/workers-types" />
+// the type `wrangler types` writes for the bindings
+interface Env {}
+// ---cut---
+import { DurableObject } from "cloudflare:workers";
+import { migrate } from "reylo";
+
+export class Board extends DurableObject {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    migrate(ctx.storage);
+  }
+}
+```
+
+- Reylo's Vite or esbuild plugin puts your locked migrations in the bundle, in the lock's order, and a bundle that never calls `migrate` leaves them out.
+- Each object runs the ones it hasn't run when it starts, each in a transaction, and records them in `__reylo_migrations`, so a deploy reaches every object the next time it runs.
+- An object that ran a migration the bundle lacks, or one edited since, throws and runs nothing.
+
+## Blocked functions
+
+Durable Objects block some of SQLite's functions, such as `json_pretty` and `power`. The type check also runs each query on Cloudflare's SQLite, as Wrangler runs it locally, so a blocked function is a type error. It does so when your `package.json` has `wrangler` and its config has a SQLite-backed Durable Object:
+
+```jsonc title="wrangler.jsonc"
+{
+  // ...
+  // a durable object class with a sqlite database
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Board"] }]
+}
+```
+
+## Tests
+
+Run the tests inside workerd with Cloudflare's Vitest plugin, and Reylo's beside it:
+
+```ts title="vitest.config.ts"
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
+import { defineConfig } from "vitest/config";
+import reylo from "reylo/vite";
+
+export default defineConfig({
+  plugins: [
+    reylo(),
+    cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } }),
+  ],
+});
+```
+
+Wrangler makes every imported `.sql` file a text module, and the Vitest plugin applies that rule before Vite runs any plugin. List Wrangler's other text types so that `.sql` is left to Reylo:
+
+```jsonc title="wrangler.jsonc"
+{
+  // ...
+  // wrangler's default text types, without .sql
+  "rules": [{ "type": "Text", "globs": ["**/*.txt", "**/*.html"] }]
+}
+```
+
+## Without Vite
+
+Wrangler's own bundler takes no plugins: build with esbuild and Reylo's esbuild plugin, as on [Cloudflare D1](/d1#without-vite). The esbuild plugin puts your migrations in the bundle too.

@@ -148,6 +148,11 @@
       "permanent": true
     },
     {
+      "source": "/cloudflare",
+      "destination": "/d1",
+      "permanent": true
+    },
+    {
       "source": "/usage",
       "destination": "/typescript",
       "permanent": true

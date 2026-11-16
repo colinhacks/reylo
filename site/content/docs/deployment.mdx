@@ -204,7 +204,7 @@ steps:
   - run: npm run build
 ```
 
-The type check reads the local file that [`direct_url`](/cloudflare#local-database) names, so the job needs no Cloudflare account. [Cloudflare Workers](/cloudflare) covers the rest.
+The type check reads the local file that [`direct_url`](/d1#local-database) names, so the job needs no Cloudflare account. [Cloudflare D1](/d1) and [Durable Objects](/durable-objects) cover the rest.
 
 ## A host that builds before it migrates [#build-before-migrate]
 
