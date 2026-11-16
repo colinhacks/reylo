@@ -105,11 +105,6 @@ In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)), and a value
 | `json_extract(…)`, `->`, `->>` | a compile error asking for a cast |
 
 </LanguagePanel>
-<LanguagePanel value="Type Defs">
-
-Each type's descriptor is under [Type descriptors](#type-descriptors).
-
-</LanguagePanel>
 </LanguagePanels>
 
 In TypeScript, each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
@@ -275,9 +270,7 @@ Store an instant as ISO 8601 text in UTC with a `Z`, as `strftime('%Y-%m-%dT%H:%
 
 </Pairs>
 
-**Columns declared `DATE`**
-
-A column declared `DATE` or `DATETIME` has `NUMERIC` affinity, so it can hold a number or text, typed `number | string`, and so is a value it shares with a number, as in `coalesce(due_on, 0)`. Declare it `TEXT` instead, or `INTEGER` for Unix time.
+- **Columns declared `DATE`.** A column declared `DATE` or `DATETIME` has `NUMERIC` affinity, so it can hold a number or text, typed `number | string`, and so is a value it shares with a number, as in `coalesce(due_on, 0)`. Declare it `TEXT` instead, or `INTEGER` for Unix time.
 
 </Rules>
 
@@ -368,9 +361,8 @@ JSON you build can nest inside other JSON you build, directly or through `coales
 
 Read through a subquery's column, a view or `lag`, built JSON loses SQLite's JSON marker, so Reylo types it `unknown` (a cast keeps the marker on SQLite 3.53, but not on Turso). Build the JSON in the query that returns it.
 
-An aggregate's JSON loses the marker too in a query with a window function, since SQLite computes the aggregates in a subquery of their own. Wrap the aggregate in `json(…)` to nest it as JSON.
-
-A `VIRTUAL` generated column that calls a function is computed where it's read, so it may keep the marker. Inside built JSON, Reylo types it `unknown`.
+- An aggregate's JSON loses the marker too in a query with a window function, since SQLite computes the aggregates in a subquery of their own. Wrap the aggregate in `json(…)` to nest it as JSON.
+- A `VIRTUAL` generated column that calls a function is computed where it's read, so it may keep the marker. Inside built JSON, Reylo types it `unknown`.
 
 <Pairs>
 

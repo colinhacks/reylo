@@ -233,7 +233,10 @@
   border: 1px solid var(--color-fd-border);
   border-radius: 0.75rem;
   background: var(--color-fd-secondary);
-  overflow: hidden;
+  /* A card taller than most of the window scrolls as one; its rows never scroll on their own. */
+  max-height: 85vh;
+  overflow: hidden auto;
+  scrollbar-width: thin;
 }
 
 #nd-page .reylo-inference-card-row,
@@ -296,9 +299,11 @@
   background: transparent;
 }
 
-/* Fumadocs pads a block's scrolling region; in a card the rows set the spacing. */
+/* Fumadocs pads a block's scrolling region and caps it at 600px; in a card the rows set the
+   spacing, and the card, not a row, scrolls. */
 #nd-page .reylo-inference-card-body figure.shiki > [role='region'] {
   padding-block: 0;
+  max-height: none;
 }
 
 #nd-page .reylo-inference-card-body figure.shiki pre {
@@ -1226,7 +1231,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 /* An editor's completion list sits in the page's prose, whose list items keep a margin between
    them: here they sit as close as an editor's, Twoslash's and the Rust popup's alike. */
 #nd-page .twoslash-completion-list,
-#nd-page .twoslash-completion-list li {
+#nd-page .prose :is(.twoslash-completion-list, .reylo-completion-list) > li {
   margin-block: 0;
 }
 #nd-page .twoslash-completion-list {

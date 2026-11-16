@@ -5,9 +5,7 @@ description: How to run Reylo's type check and build in CI and on your host. A G
 
 <p className="dk-subheader">Type-check and build your queries in CI and on your host</p>
 
-Reylo's type check runs in CI as it does on your machine.
-
-It reads your schema from a live database, as your build does. A CI job starts a database, applies your schema to it, then runs the type check and the build.
+Reylo's type check runs in CI as it does on your machine. It reads your schema from a live database, as your build does. A CI job starts a database, applies your schema to it, then runs the type check and the build.
 
 | | |
 | --- | --- |
@@ -178,7 +176,7 @@ steps:
   - run: npm run build
 ```
 
-The type check reads the local file that [`direct_url`](/cloudflare#local-database) names, so the job needs no Cloudflare account. [Cloudflare Workers](/cloudflare) covers the rest.
+The type check reads the local file that [`direct_url`](/d1#local-database) names, so the job needs no Cloudflare account. [Cloudflare D1](/d1) and [Durable Objects](/durable-objects) cover the rest.
 
 ## A host that builds before it migrates [#build-before-migrate]
 

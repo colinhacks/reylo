@@ -63,18 +63,14 @@ function renderType(card: TypeCard, valid: (value: unknown) => string | undefine
   card.node.children = rows;
 }
 
-/** A string YAML reads as itself unquoted in a flow collection: a word, a name or a number's text that no YAML type claims. */
-const PLAIN = /^[A-Za-z_][A-Za-z0-9_.()/+-]*$/;
-const CLAIMED = /^(?:true|false|yes|no|on|off|null|~|y|n)$/i;
-
-/** A type on one line, as `reylo analyze` prints a type that fits one: YAML's flow style, `{ kind: integer, bits: 32 }`. */
+/** A type on one line, as JSON with a space after each colon and comma: `{ "kind": "integer", "bits": 32 }`. */
 function oneLine(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(oneLine).join(', ')}]`;
   if (value !== null && typeof value === 'object') {
     const entries = Object.entries(value);
-    return entries.length ? `{ ${entries.map(([k, v]) => `${k}: ${oneLine(v)}`).join(', ')} }` : '{}';
+    return entries.length ? `{ ${entries.map(([k, v]) => `${JSON.stringify(k)}: ${oneLine(v)}`).join(', ')} }` : '{}';
   }
-  return typeof value === 'string' && PLAIN.test(value) && !CLAIMED.test(value) ? value : JSON.stringify(value);
+  return JSON.stringify(value);
 }
 
 /** A card of a statement's result columns, a row each: its name, the SQL type the card names it for, over its type. */
@@ -82,16 +78,25 @@ function renderTypes(card: AnalyzedCard, json: string) {
   const columns = (JSON.parse(json) as { result: { columns: { name: string; type: unknown }[] } }).result.columns;
   card.node.name = 'TypeListCard';
   card.node.attributes = [];
-  card.node.children = columns.map((c) => row(c.name, [code('yaml', oneLine(c.type))]));
+  card.node.children = columns.map((c) => row(c.name, [code('json', oneLine(c.type))]));
 }
 
-function renderAnalyzed(card: AnalyzedCard, output: string) {
-  const command = `npx reylo analyze ${card.file}${card.format === 'json' ? ' --format json' : ''}`;
-  let shown = output.trimEnd();
-  if (card.lines !== undefined && shown.split('\n').length > card.lines) shown = `${shown.split('\n').slice(0, card.lines).join('\n')}\n# …`;
+/**
+ * An `<Analyzed>` card as a terminal: the command with `--format json`, piped through `jq`, and the
+ * JSON it prints. The CLI writes a line of JSON per statement, which `jq` lays out as shown, or the
+ * one field the card's `jq` names.
+ */
+function renderAnalyzed(card: AnalyzedCard, json: string) {
+  const command = `npx reylo analyze ${card.file} --format json | jq${card.jq ? ` ${card.jq}` : ''}`;
+  const pick = (value: unknown) => (card.jq ?? '').split('.').slice(1).reduce((v, key) => (v as Record<string, unknown>)[key], value);
+  const shown = json
+    .trim()
+    .split('\n')
+    .map((line) => JSON.stringify(pick(JSON.parse(line)), null, 2))
+    .join('\n');
   card.node.name = 'div';
   card.node.attributes = [{ type: 'mdxJsxAttribute', name: 'className', value: 'typedef-analyzed' }];
-  card.node.children = [code('sh', command), code(card.format, shown, 'title="Output"')];
+  card.node.children = [code('terminal', `$ ${command}\n${shown}`)];
 }
 
 /** The format's version, from its JSON Schema's `$id`, and the path reylo.dev serves that schema at. */
@@ -141,7 +146,7 @@ export function remarkTypedefs() {
         const captured = captures[keyOf(card)];
         if (captured === undefined) throw new Error(`${page}:${card.line}: lib/${CAPTURES} holds no output for this <Analyzed> card; run \`nub run capture-typedefs\` in site/ (with the scratch databases running), then build again.`);
         if (card.format === 'types') renderTypes(card, captured.json);
-        else renderAnalyzed(card, captured[card.format]);
+        else renderAnalyzed(card, captured.json);
       }
     }
     replace('TypeDefsVersion', () => {

@@ -50,12 +50,13 @@ export const pageGroups = [
   {
     label: 'Deployment',
     items: [
-      { title: 'Cloudflare Workers', href: '/cloudflare' },
-      { title: 'Next.js', href: '/nextjs' },
+      { title: 'Cloudflare D1', href: '/d1' },
+      { title: 'Durable Objects', href: '/durable-objects' },
       { title: 'Neon', href: '/neon' },
       { title: 'Supabase', href: '/supabase' },
       { title: 'PlanetScale', href: '/planetscale' },
       { title: 'Turso', href: '/turso' },
+      { title: 'Next.js', href: '/nextjs' },
       { title: 'CI', href: '/deployment' },
     ],
   },

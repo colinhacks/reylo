@@ -7,7 +7,6 @@ import type { Plugin } from 'vite';
 import { pageFiles } from './page-files.ts';
 import { isErrorExample, renderErrors } from './sql-errors.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
-import { jsonDocument } from './descriptor-json.ts';
 
 export { pageFiles };
 
@@ -527,7 +526,7 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
         jsx('InferenceCardRow', [['label', 'Params']], [codeNode('ts', params ? formatType(params, width) : 'void')]),
         jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('ts', formatType(resultType(row, cardinality), width))]),
       ];
-      // The same statement as `#[reylo::query]` types it, and as its type descriptor.
+      // The same statement as `#[reylo::query]` types it.
       const captured = captures[dialect]?.[block.name!]?.[block.hash];
       if (captured === undefined) throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no type descriptor for the ${DIALECT_NAME[dialect]} statement ${block.name} of this inference card; run \`nub run capture\` in site/ (with the scratch databases running and REYLO_DOCS_RUST naming the Rust renderer), then build again.`);
       const rust =
@@ -542,15 +541,10 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
                 ...(/^pub struct Query;$/.test(captured.rust.params.trim()) ? [] : [jsx('InferenceCardRow', [['label', 'Params']], [codeNode('rust', captured.rust.params)])]),
                 jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('rust', captured.rust.returns)]),
               ];
-      const typedefs = [
-        jsx('InferenceCardRow', [['label', 'Params']], [codeNode('json', jsonDocument(captured.descriptor.params as never))]),
-        jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('json', jsonDocument(captured.descriptor.result as never))]),
-      ];
       rows.push(
         jsx('InferenceLanguages', [], [
           jsx('InferenceLanguage', [['value', 'TypeScript']], [jsx('InferenceCardTypes', [], typescript)]),
           jsx('InferenceLanguage', [['value', 'Rust']], [jsx('InferenceCardTypes', [], rust)]),
-          jsx('InferenceLanguage', [['value', 'Type Defs']], [jsx('InferenceCardTypes', [], typedefs)]),
         ]),
       );
       return jsx('Dialect', [['value', DIALECT_NAME[dialect]]], rows);

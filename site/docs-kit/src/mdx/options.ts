@@ -4,6 +4,8 @@ import type { DocsTwoslashOptions } from './twoslash.ts';
 
 type Environment = Parameters<ReturnType<typeof applyMdxPreset>>[0];
 type Langs = NonNullable<RehypeCodeOptions['langs']>;
+/** A Shiki theme: a bundled theme's name, or a theme object. */
+type Theme = NonNullable<Extract<RehypeCodeOptions, { themes: unknown }>['themes'][string]>;
 /** A list of remark plugins, as Fumadocs' preset takes them. */
 type RemarkPlugins = Extract<DefaultMDXOptions['remarkPlugins'], unknown[]>;
 
@@ -17,6 +19,11 @@ export type DocsMdxOptions = {
    * language lazily inside a Twoslash popup.
    */
   langs?: Langs;
+  /**
+   * Shiki's light and dark themes, in place of Fumadocs' `github-light` and `github-dark`, by name
+   * or as theme objects: a site's own code colours. Twoslash's popups take them too.
+   */
+  themes?: { light: Theme; dark: Theme };
   /** Shiki's colour replacements, per theme: a site's own palette for the GitHub themes. */
   colorReplacements?: RehypeCodeOptions['colorReplacements'];
 };
@@ -52,6 +59,7 @@ export async function docsMdxOptions(environment: Environment, options: DocsMdxO
       ...rehypeCodeDefaultOptions,
       transformers: [...(rehypeCodeDefaultOptions.transformers ?? []), diagnosticsTransformer, ...twoslash, hangingIndent],
       langs,
+      ...(options.themes && { themes: options.themes }),
       ...(options.colorReplacements && { colorReplacements: options.colorReplacements }),
     },
   })(environment);
