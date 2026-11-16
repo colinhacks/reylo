@@ -679,7 +679,8 @@ const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_a
     union all select ${line("q", named("regnamespace", "q.opcnamespace"), txt("q.opcname"), txt("m.amname"), type("q.opcintype"))} from pg_catalog.pg_opclass q join pg_catalog.pg_am m on ${eq("m.oid", "q.opcmethod")} where q.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("d", relation("d.objoid"), out("int4", "d.objsubid"), md5("d.description"))} from pg_catalog.pg_description d ${rel("d", "objoid")} where ${eq("d.classoid", PG_CLASS)} and d.objsubid operator(pg_catalog.>) 0 and ${NS}
   ) t`;
-const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
+/** Each dialect's schema fingerprint query. The Rust crate keeps copies (rust/reylo-codegen/src/fingerprint-*.sql), which tests/rust-fingerprints.test.ts holds to these. */
+export const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   postgres: POSTGRES_FINGERPRINT,
   mysql: `select concat_ws(' ', @@version, @@sql_mode, count(*), sum(crc32(x)), bit_xor(crc32(x))) from (
     select concat_ws(' ', 'c', table_name, column_name, ordinal_position, column_type, coalesce(character_set_name, ''), is_nullable, column_key, extra, coalesce(generation_expression, ''), md5(column_comment)) as x from information_schema.columns where table_schema = database()

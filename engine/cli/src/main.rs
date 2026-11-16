@@ -1,14 +1,14 @@
 //! `reylo`, one program for every database: the analysis engine a language's frontend talks to over
 //! standard input and output (`reylo engine <database>`, one JSON request per line, one answer per
 //! line), each statement's type descriptor on the command line (`reylo analyze`), and the
-//! migrations (`reylo migrate`, `reylo db`, `reylo run`). npm's `reylo` command runs it (src/cli.ts), but for
+//! migrations (`reylo migrate`, `reylo db`, `reylo run`), and each query's Rust module
+//! (`reylo generate`). npm's `reylo` command runs it (src/cli.ts), but for
 //! `reylo play`, the playground's server, which renders TypeScript and so runs in JavaScript.
 
 mod analyze;
-mod project;
 mod yaml;
 
-use project::Project;
+use reylo_engine_native::project::{self, Project};
 use reylo_migrate::Options;
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -18,6 +18,8 @@ const USAGE: &str = "Usage: reylo <command>
 
   analyze <paths> [--url]   Print each statement's type descriptor, read from the project's
           [--format]        database, as YAML or, with --format json, one line of JSON each
+  generate <generator>      Write each .sql file's module for a language: rust-sqlx, the Rust
+          [paths] [--out]   of #[reylo::query] (reylo generate --help)
   migrate <command>         Write, check and run migrations, and repair their history
   db <command>              Push schema.sql to a development database, reset, wipe or read it
                             (reylo migrate --help lists both groups' commands)
@@ -29,6 +31,22 @@ const USAGE: &str = "Usage: reylo <command>
                             standard input and output, one JSON request per line; with call,
                             answer the one request on standard input
   --version                 Print the version";
+
+const GENERATE_USAGE: &str = "Usage: reylo generate <generator> [<file.sql | directory | 'glob'> ...] [--out <file>]
+
+Writes each .sql file's module, typed by the project's database, as reylo analyze reads it.
+
+Generators:
+  rust-sqlx                 Query, Row and .run() on sqlx, as #[reylo::query] writes them, for
+                            the crate's reylo dependency
+
+Each .sql file's module is written beside it, get_user.sql as get_user.rs; with --out, every
+module goes into one file, each directory under the inputs a module of its own. A directory is
+searched for .sql files, and a glob in quotes is expanded by Reylo; with none, every .sql file
+under the crate's src/, from the nearest Cargo.toml, or at a workspace's root under each member's.
+A module checks as the crate compiles that its .sql file reads as it did, so a query edited since
+fails to compile until it is written again. Exits with 1 when any statement fails, writing none.
+TypeScript needs no generator: the type check reads each query itself.";
 
 const RUN_USAGE: &str = "Usage: reylo run \"<sql>\"… [--file <path>]…
 
@@ -365,6 +383,59 @@ fn run_group(command: &str, parsed: &Args, log: &mut dyn FnMut(&str), sql: &mut 
     result.map_err(|e| e.0)
 }
 
+/// `reylo generate <generator> [paths] [--out <file>]`.
+fn generate_command(args: &[String]) -> i32 {
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{GENERATE_USAGE}");
+        return if args.is_empty() { 2 } else { 0 };
+    }
+    let generator = args[0].as_str();
+    if generator != "rust-sqlx" {
+        eprintln!("reylo generate: no generator {generator}: the one there is is rust-sqlx (reylo generate --help)");
+        return 2;
+    }
+    let mut builder = reylo_codegen::generate::rust_sqlx();
+    let mut rest = args[1..].iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--out" || arg == "-o" {
+            match rest.next() {
+                Some(file) => builder = builder.out(file),
+                None => {
+                    eprintln!("reylo generate: --out takes a file");
+                    return 2;
+                }
+            }
+        } else if let Some(file) = arg.strip_prefix("--out=") {
+            builder = builder.out(file);
+        } else if arg.starts_with('-') {
+            eprintln!("reylo generate: unknown option {arg} (reylo generate --help)");
+            return 2;
+        } else {
+            builder = builder.input(arg);
+        }
+    }
+    use reylo_migrate::commands::paint;
+    let cwd = std::env::current_dir().unwrap_or_default();
+    match builder.run() {
+        Ok(written) => {
+            let changed = written.iter().filter(|w| w.changed).count();
+            for file in written.iter().filter(|w| w.changed) {
+                println!("{} Wrote {}", paint("green", "✓"), file.path.strip_prefix(&cwd).unwrap_or(&file.path).display());
+            }
+            if changed < written.len() {
+                println!("{}", paint("dim", &format!("{} unchanged", written.len() - changed)));
+            }
+            0
+        }
+        Err(e) => {
+            for line in e.to_string().lines() {
+                eprintln!("{} {line}", paint("bold red", "✗"));
+            }
+            1
+        }
+    }
+}
+
 fn run_command(args: &[String]) -> Result<i32, String> {
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{RUN_USAGE}");
@@ -425,10 +496,7 @@ fn main() {
             eprintln!("reylo play runs from reylo's npm package, which renders the playground's TypeScript: npx reylo play");
             2
         }
-        Some("generate") => {
-            eprintln!("reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.");
-            2
-        }
+        Some("generate") => generate_command(&args[1..]),
         Some(group @ ("migrate" | "db")) => group_command(group, &args[1..]).unwrap_or_else(|e| {
             eprintln!("reylo {group}: {e}");
             1

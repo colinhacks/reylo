@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 use std::future::Future;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+/// The project file, `.reylo.yaml`, and the database it names, as every frontend reads them.
+pub mod project;
 #[cfg(feature = "duckdb")]
 pub mod duckdb;
 #[cfg(feature = "mysql")]

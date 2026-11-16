@@ -26,6 +26,15 @@ members = [
   "engine/mysql",
   "engine/duckdb",
   "oracle",
+  "rust/reylo",
+  "rust/reylo-macros",
+  "rust/reylo-codegen",
+  "rust/reylo-build",
+  "rust/demo-reylo",
+  "rust/demo-sqlite",
+  "rust/demo-mysql",
+  "rust/demo-docs",
+  "rust/demo-codegen",
 ]
 
 # reylo's version, which the engine reports on ping and the npm package `reylo` must equal.

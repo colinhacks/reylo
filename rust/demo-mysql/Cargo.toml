@@ -1,0 +1,21 @@
+[package]
+name = "demo-mysql"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Its statements are typed against the demo's database as it compiles, so a build of the workspace
+# leaves it out: `cargo run -p demo-mysql --features live` builds and runs it, as
+# .github/scripts/rust-demos.sh does in CI.
+[features]
+live = []
+
+[[bin]]
+name = "demo-mysql"
+path = "src/main.rs"
+required-features = ["live"]
+
+[dependencies]
+reylo = { package = "reylo-sqlx", path = "../reylo", default-features = false, features = ["mysql", "chrono", "rust_decimal"] }
+sqlx = { version = "0.9", default-features = false, features = ["mysql", "runtime-tokio", "json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

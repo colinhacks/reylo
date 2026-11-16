@@ -161,7 +161,7 @@ async function untyped(e: Engine, sql: string, dialect: Database, analysis: Anal
  * in UTF-16 units of the statement as written, and the database's own code (`Analysis::descriptor`
  * in engine/core/src/api.rs, which `reylo analyze` prints).
  */
-function descriptor(sql: string, dialect: Database, version: string, a: Analysis, untyped: Analysis["diagnostics"] = []): StatementDescriptor {
+export function descriptor(sql: string, dialect: Database, version: string, a: Analysis, untyped: Analysis["diagnostics"] = []): StatementDescriptor {
   return {
     $schema: SCHEMA,
     dialect: { name: dialect, version },

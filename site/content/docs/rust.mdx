@@ -1,0 +1,367 @@
+---
+title: Usage with Rust
+description: Typed SQL in Rust. An attribute macro types each statement from your live database when your crate compiles, and runs it on sqlx.
+---
+
+<p className="dk-subheader">Typed SQL in Rust, checked against your database when your crate compiles</p>
+
+Reylo types each statement from your database at compile time.
+
+```rust
+#[reylo::query("select id, name, email from users where id = :id::int")]
+pub mod get_user {}
+
+// user: Option<get_user::Row>
+let user = get_user::Query { id: 1 }.run(&pool).await?;
+```
+
+The attribute fills the module with the statement's types: `Query`, its parameters, and `Row`, one row of its result. The query runs on sqlx, on your own pool, connection or transaction.
+
+> [!NOTE] Not on crates.io yet
+> The `reylo` and `reylo-build` crates are published once `pg_query`, the Postgres parser they build on, releases the fixes they need.
+
+## Setup
+
+To use Reylo in Rust, you'll need:
+
+- **sqlx 0.9**, with its Tokio runtime and your database's driver.
+- **A running dev database.** Reylo reads your current schema from it each time the crate compiles:
+  - **Postgres** 14 to 18
+  - **MySQL** 8.0.22 or later
+  - **SQLite**
+
+<div className="dk-steps">
+
+### Install
+
+Add Reylo and sqlx to `Cargo.toml`:
+
+```toml title="Cargo.toml"
+[dependencies]
+reylo = { version = "0.8", features = ["chrono", "uuid"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres"] }
+```
+
+Reylo's features choose the database and the Rust types the attribute writes:
+
+```toml title="Cargo.toml"
+reylo = { version = "0.8", features = [
+  "postgres",      # the default; or "mysql" or "sqlite"
+  "chrono",        # dates and times as chrono's types; or "time"
+  "uuid",          # uuid as uuid::Uuid
+  "rust_decimal",  # numeric as rust_decimal::Decimal; or "bigdecimal"
+] }
+```
+
+A statement that reads a type whose feature is off fails to compile, and says which feature to turn on.
+
+### Database
+
+Reylo finds your dev database through the `DATABASE_URL` environment variable, or a `.env` file beside the crate's `Cargo.toml`. In a workspace, that's the member's own, not the workspace root's:
+
+```sh title=".env"
+DATABASE_URL=postgres://postgres@localhost:5432/app
+```
+
+The URL's scheme names the database: `postgres://`, `mysql://`, or `sqlite:` with a path relative to the crate.
+
+### Editor
+
+rust-analyzer expands the attribute, so `Query` and `Row` complete and show their types on hover, with no setup of its own.
+
+A statement the database refuses is underlined at its string, with the database's own error:
+
+```text
+column "nme" does not exist (42703)
+```
+
+</div>
+
+## Macro
+
+Each statement gets a module of its types.
+
+The attribute fills it with:
+
+- **`Query`**, the statement's parameters, one field per `:name`, with `.run()`. It is also named `Params`, the name compiler errors use.
+- **`Row`**, one row of the result, which derives `Debug`, `Clone` and `PartialEq`, and serde's `Serialize` where every field's type has it.
+- **An enum** for each Postgres enum the statement reads or binds, and **a struct** for each JSON object it builds.
+
+For the statement above, that is:
+
+```rust
+pub mod get_user {
+    pub struct Query { pub id: i32 }
+    pub struct Row { pub id: i32, pub name: String, pub email: Option<String> }
+}
+```
+
+### `.run()`
+
+Run a query with `.run()`, on a pool, a connection or a transaction.
+
+It returns what the statement's cardinality says:
+
+```rust
+#[reylo::query("select count(*) as n from users")]
+pub mod count_users {}
+
+#[reylo::query("select id, title from posts where user_id = :user_id::int")]
+pub mod posts_by_user {}
+
+#[reylo::query("update users set name = :name where id = :id::int")]
+pub mod rename_user {}
+
+let count: count_users::Row = count_users::Query.run(&pool).await?;
+let user: Option<get_user::Row> = get_user::Query { id: 1 }.run(&pool).await?;
+let posts: Vec<posts_by_user::Row> =
+    posts_by_user::Query { user_id: 1 }.run(&pool).await?;
+let changed: u64 = rename_user::Query { name: "ada", id: 1 }.run(&pool).await?;
+```
+
+A write with no `returning` returns the number of rows it changed.
+
+In a transaction, pass the connection it holds:
+
+```rust
+let mut tx = pool.begin().await?;
+rename_user::Query { name: "ada", id: 1 }.run(&mut *tx).await?;
+tx.commit().await?;
+```
+
+### Parameters
+
+Each `:name` is a field of `Query`, typed by its cast or by where the statement uses it.
+
+A text parameter is a `&str`, and an enum parameter takes the enum the module holds:
+
+```rust
+#[reylo::query("select id, name from users where role = :role order by id")]
+pub mod users_by_role {}
+
+let role = users_by_role::UserRole::Admin;
+let admins = users_by_role::Query { role }.run(&pool).await?;
+```
+
+To accept null, cast a parameter to `nullable(…)`, which makes its field an `Option`:
+
+```rust
+#[reylo::query("
+    select id, title from posts
+    where user_id = coalesce(:user_id::nullable(int), user_id)
+    order by id
+")]
+pub mod posts_of {}
+
+let everyone = posts_of::Query { user_id: None }.run(&pool).await?;
+let ada_s = posts_of::Query { user_id: Some(1) }.run(&pool).await?;
+```
+
+### Methods
+
+Your own methods go inside the module, beside the types it holds:
+
+```rust
+#[reylo::query("select id, name, email from users where id = :id::int")]
+pub mod get_contact {
+    impl Row {
+        pub fn label(&self) -> &str {
+            self.email.as_deref().unwrap_or(&self.name)
+        }
+    }
+}
+```
+
+The module sees the items of the one around it, and a trait of your own can be implemented on its types from anywhere in the crate.
+
+### JSON
+
+A JSON object the statement builds is a struct of its fields, in sqlx's `Json`:
+
+```rust
+#[reylo::query("
+    select json_build_object('id', u.id, 'name', u.name) as author
+    from users u where u.id = :id::int
+")]
+pub mod author_json {}
+
+let row = author_json::Query { id: 1 }.run(&pool).await?.expect("ada");
+// author: author_json::Author { id: i32, name: String }
+let author = row.author.0;
+```
+
+Any other JSON is a `serde_json::Value`. A decimal inside JSON fails to compile, since no Rust number reads it exactly: cast it to text inside the JSON.
+
+### Types
+
+Each SQL type has one Rust type.
+
+<DialectTabs>
+<Dialect value="Postgres">
+
+| SQL type | Rust |
+| --- | --- |
+| `boolean` | `bool` |
+| `smallint`, `integer`, `bigint` | `i16`, `i32`, `i64` |
+| `real`, `double precision` | `f32`, `f64` |
+| `numeric` | `rust_decimal::Decimal`, or `bigdecimal::BigDecimal` |
+| `text`, `varchar`, `char` | `String` |
+| An enum | an enum the module holds |
+| `bytea` | `Vec<u8>` |
+| `uuid` | `uuid::Uuid` |
+| `json`, `jsonb` | `serde_json::Value`, or sqlx's `Json` of a struct of the object the statement builds |
+| `date` | `chrono::NaiveDate`, or `time::Date` |
+| `time` | `chrono::NaiveTime`, or `time::Time` |
+| `timestamp` | `chrono::NaiveDateTime`, or `time::PrimitiveDateTime` |
+| `timestamptz` | `chrono::DateTime<Utc>`, or `time::OffsetDateTime` |
+| `interval` | sqlx's `PgInterval` |
+| An array | a `Vec` of its element type, each element an `Option` |
+
+</Dialect>
+<Dialect value="MySQL">
+
+| SQL type | Rust |
+| --- | --- |
+| `BOOLEAN` (a `TINYINT(1)`), `BIT(1)` | `bool` |
+| `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INT`, `BIGINT` | `i8`, `i16`, `i32`, `i32`, `i64`, and `u8` to `u64` when `UNSIGNED` |
+| A `BIT` wider than 1 | `u64` |
+| `YEAR` | `u16` |
+| `FLOAT`, `DOUBLE` | `f32`, `f64` |
+| `DECIMAL` | `rust_decimal::Decimal`, or `bigdecimal::BigDecimal` |
+| `CHAR`, `VARCHAR`, `TEXT`, `ENUM`, `SET` | `String` |
+| `BINARY`, `VARBINARY`, `BLOB` | `Vec<u8>` |
+| `JSON` | `serde_json::Value`, or sqlx's `Json` of a struct of the object the statement builds |
+| `DATE` | `chrono::NaiveDate`, or `time::Date` |
+| `DATETIME` | `chrono::NaiveDateTime`, or `time::PrimitiveDateTime` |
+| `TIMESTAMP` | `chrono::DateTime<Utc>`, or `time::OffsetDateTime` |
+| `TIME` | sqlx's `MySqlTime` |
+
+</Dialect>
+<Dialect value="SQLite">
+
+| Declared type | Rust |
+| --- | --- |
+| `INTEGER` | `i64` |
+| `REAL` | `f64` |
+| `TEXT` | `String` |
+| `BLOB` | `Vec<u8>` |
+| `BOOLEAN` | `bool` |
+| `NUMERIC`, or no type | a compile error asking for a cast |
+
+</Dialect>
+</DialectTabs>
+
+A value its Rust type cannot hold, such as Postgres's `infinity` in a `date`, is an error when the row is read, never a changed value. A type with no Rust type here fails to compile, and says how to cast it.
+
+### Errors
+
+A mistake in a statement or its parameters fails to compile, where it is.
+
+A statement the database refuses fails at its string, with the database's own error:
+
+```text
+error: column "nme" does not exist (42703)
+ --> src/main.rs:1:16
+  |
+1 | #[reylo::query("select id, nme from users where id = :id::int")]
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+A misspelt, missing or mistyped parameter is Rust's own error on the struct:
+
+```text
+error[E0560]: struct `Params` has no field named `user_id`
+ --> src/main.rs:4:34
+  |
+4 |     let user = get_user::Query { user_id: 1 }.run(&pool).await?;
+  |                                  ^^^^^^^ `Params` does not have this field
+  |
+  = note: available fields are: `id`
+```
+
+### After a migration
+
+Cargo compiles a crate again when its files change, not its database.
+
+After a migration, compile the crate again to type its statements against the new schema:
+
+```sh
+touch src/main.rs && cargo build
+```
+
+## Codegen
+
+Reylo can write each query's module to a file instead.
+
+```sh
+reylo generate rust-sqlx
+```
+
+It writes a `.rs` file beside each `.sql` file of the crate, holding what `#[reylo::query]` would: `Query`, `Row` and `.run()`. The `reylo` command comes with Reylo's npm package, so `npx reylo generate rust-sqlx` runs it with nothing installed.
+
+```text
+src/
+  queries.rs          pub mod get_user;
+  queries/
+    get_user.sql
+    get_user.rs       written by reylo generate
+```
+
+```rust
+let user = queries::get_user::Query { id: 1 }.run(&pool).await?;
+```
+
+The crate compiles them as any other Rust: no proc macro, and no database when it builds.
+
+### Inputs
+
+Name the files or folders to read, or a glob in quotes:
+
+```sh
+reylo generate rust-sqlx src/queries src/reports
+reylo generate rust-sqlx 'src/**/*.sql'
+```
+
+With none, it reads every `.sql` file under the crate's `src/`, found from the nearest `Cargo.toml`, and at a workspace's root, every member's.
+
+### One file
+
+To write every module to one file, name it with `--out`:
+
+```sh
+reylo generate rust-sqlx src/queries --out src/queries.rs
+```
+
+Each folder under an input becomes a module, so `users/get.sql` and `posts/get.sql` are `queries::users::get` and `queries::posts::get`.
+
+### In CI
+
+Generate again in CI, against its database, and fail when a file changed:
+
+```sh
+reylo generate rust-sqlx && git diff --exit-code
+```
+
+A `.sql` file edited after its module was written fails to compile, with no database, until the module is written again.
+
+### In `build.rs`
+
+To commit nothing generated, write the modules at build time instead:
+
+```rust title="build.rs"
+fn main() {
+    reylo_build::rust_sqlx()
+        .input("src/queries")
+        .out("queries.rs")
+        .run()
+        .unwrap();
+}
+```
+
+```rust title="src/main.rs"
+mod queries {
+    include!(concat!(env!("OUT_DIR"), "/queries.rs"));
+}
+```
+
+A build script writes only into Cargo's `OUT_DIR`, so this writes one file, and every build that changes a `.sql` file needs the database.

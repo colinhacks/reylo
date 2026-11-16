@@ -7,6 +7,7 @@ import type { Plugin } from 'vite';
 import { pageFiles } from './page-files.ts';
 import { isErrorExample, renderErrors } from './sql-errors.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
+import { jsonDocument } from './descriptor-json.ts';
 
 export { pageFiles };
 
@@ -415,6 +416,14 @@ export function mapperDependents(): Plugin {
 }
 
 /** lib/sql-modules.json as the build reads it: the site's own copy, read again for every page so a new capture shows on the next render. */
+/** Each inference card statement's type descriptor and Rust types, by dialect, name and hash (scripts/capture-types.ts writes them). */
+export type InferenceCaptures = Partial<Record<Dialect, Record<string, Record<string, { descriptor: { params: unknown; result: unknown }; rust?: { params: string; returns: string } | { error: string } }>>>>;
+
+export function readInferenceCaptures(site = process.cwd()): InferenceCaptures {
+  const file = path.join(site, 'lib', 'inference-captures.json');
+  return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as InferenceCaptures) : {};
+}
+
 export function readModules(site = process.cwd()): Modules {
   const file = path.join(site, 'lib', 'sql-modules.json');
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Modules) : {};
@@ -494,6 +503,7 @@ const codeNode = (lang: string, value: string): MdNode => ({ type: 'code', lang,
  */
 function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, page: string) {
   const width = TYPE_WIDTH[INFERENCE_CARD_LAYOUT];
+  const captures = readInferenceCaptures();
   const cards: { card: MdNode; parent: MdNode }[] = [];
   const find = (node: MdNode) => {
     for (const child of node.children ?? []) {
@@ -514,21 +524,51 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
       const rows: MdNode[] = [];
       if (block.schema !== undefined) rows.push(jsx('InferenceCardRow', [['label', 'Schema']], [codeNode('sql', block.schema)]));
       rows.push(jsx('InferenceCardRow', [['label', 'Query']], [codeNode('sql', block.node.value)]));
-      const types: MdNode[] = [];
-      types.push(jsx('InferenceCardRow', [['label', 'Params']], [codeNode('ts', params ? formatType(params, width) : 'void')]));
-      types.push(jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('ts', formatType(resultType(row, cardinality), width))]));
-      rows.push(jsx('InferenceCardTypes', [], types));
+      const typescript = [
+        jsx('InferenceCardRow', [['label', 'Params']], [codeNode('ts', params ? formatType(params, width) : 'void')]),
+        jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('ts', formatType(resultType(row, cardinality), width))]),
+      ];
+      // The same statement as `#[reylo::query]` types it, and as its type descriptor.
+      const captured = captures[dialect]?.[block.name!]?.[block.hash];
+      if (captured === undefined) throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no type descriptor for the ${DIALECT_NAME[dialect]} statement ${block.name} of this inference card; run \`nub run capture\` in site/ (with the scratch databases running and REYLO_DOCS_RUST naming the Rust renderer), then build again.`);
+      const rust =
+        dialect === 'duckdb'
+          ? [jsx('InferenceCardRow', [['label', 'Rust']], [{ type: 'paragraph', children: [{ type: 'text', value: 'Reylo for Rust reads Postgres, MySQL and SQLite.' }] }])]
+          : captured.rust === undefined
+            ? (() => {
+                throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no Rust types for the ${DIALECT_NAME[dialect]} statement ${block.name}; run \`nub run capture\` with REYLO_DOCS_RUST naming the Rust renderer.`);
+              })()
+            : 'error' in captured.rust
+              ? [jsx('InferenceCardRow', [['label', 'Error']], [codeNode('text', captured.rust.error)])]
+              : [
+                  // A statement with no parameters has a unit `Query`, which says nothing worth a row.
+                  ...(/^pub struct Query;$/.test(captured.rust.params.trim()) ? [] : [jsx('InferenceCardRow', [['label', 'Params']], [codeNode('rust', captured.rust.params)])]),
+                  jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('rust', captured.rust.returns)]),
+                ];
+      const typedefs = [
+        jsx('InferenceCardRow', [['label', 'Params']], [codeNode('json', jsonDocument(captured.descriptor.params as never))]),
+        jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('json', jsonDocument(captured.descriptor.result as never))]),
+      ];
+      rows.push(
+        jsx('InferenceLanguages', [], [
+          jsx('InferenceLanguage', [['value', 'TypeScript']], [jsx('InferenceCardTypes', [], typescript)]),
+          jsx('InferenceLanguage', [['value', 'Rust']], [jsx('InferenceCardTypes', [], rust)]),
+          jsx('InferenceLanguage', [['value', 'Type Defs']], [jsx('InferenceCardTypes', [], typedefs)]),
+        ]),
+      );
       return jsx('Dialect', [['value', DIALECT_NAME[dialect]]], rows);
     });
     // A card that every dialect shows alike, the same statement with the same types, needs no tabs:
-    // it shows the one panel's rows, with no switch.
+    // it shows the one panel's rows. Elsewhere the database switch goes on the Query row's line, but
+    // on a database's own page, which is that database's throughout.
     const same = dialects.length === DIALECTS.length && panels.every((panel) => JSON.stringify(panel.children) === JSON.stringify(panels[0]!.children));
-    card.attributes = [
-      { type: 'mdxJsxAttribute', name: 'dialects', value: dialects.map((d) => DIALECT_NAME[d]).join(',') },
-      { type: 'mdxJsxAttribute', name: 'layout', value: INFERENCE_CARD_LAYOUT },
-      // A database's own page is that database's throughout: its cards need no switch or label.
-      ...(DIALECT_PAGE.test(page) || same ? [{ type: 'mdxJsxAttribute', name: 'bare', value: null }] : []),
-    ];
+    if (!same && !DIALECT_PAGE.test(page)) {
+      for (const panel of panels) {
+        const query = panel.children!.find((row) => row.name === 'InferenceCardRow' && attr(row, 'label') === 'Query')!;
+        query.attributes!.push({ type: 'mdxJsxAttribute', name: 'dialects', value: dialects.map((d) => DIALECT_NAME[d]).join(',') });
+      }
+    }
+    card.attributes = [{ type: 'mdxJsxAttribute', name: 'layout', value: INFERENCE_CARD_LAYOUT }];
     card.children = same ? panels[0]!.children! : [jsx('DialectTabs', [['follow', null]], panels)];
     // The playground runs the main page's Postgres schema alone, so a card there whose Postgres
     // statement needs no schema of its own links that statement there, under the card, whichever
@@ -549,6 +589,7 @@ export function remarkMapper() {
     const compiler = file.data?._compiler as { addDependency(file: string): void } | undefined;
     compiler?.addDependency(path.join(process.cwd(), 'lib', 'sql-modules.json'));
     compiler?.addDependency(path.join(process.cwd(), 'lib', 'sql-errors.json'));
+    compiler?.addDependency(path.join(process.cwd(), 'lib', 'inference-captures.json'));
     const page = !file.path ? 'the page' : path.relative(process.cwd(), file.path).startsWith('..') ? file.path : path.relative(process.cwd(), file.path);
     let blocks: Block[];
     let plans: Plan[];

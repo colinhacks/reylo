@@ -29,23 +29,26 @@ export const compareTitle = 'Reylo compared with sqlc, sqlx, PgTyped and others'
 /** A page's title in search results and link previews, where the title is not a database's. */
 export const docsTitle = (title: string) => `${title} — Reylo`;
 
-/** The list of pages in the left column, by group, and the links away from the docs at its foot. */
+/**
+ * The list of pages in the left column, by group, and the links away from the docs at its foot:
+ * first what holds for every language, then each language's own pages, then the reference.
+ */
 export const pageGroups = [
   {
     label: 'Docs',
     items: [
       { title: 'Intro', href: '/' },
-      { title: 'Usage', href: '/usage' },
+      { title: 'Usage with TypeScript', href: '/typescript' },
+      { title: 'Usage with Rust', href: '/rust' },
       { title: 'Inference', href: '/inference' },
-      { title: 'Observability', href: '/observability' },
+      { title: 'CLI', href: '/cli' },
       { title: 'Migrations', href: '/migrations' },
       { title: 'Comparison', href: '/compare' },
-      { title: 'CLI', href: '/cli' },
       { title: 'FAQ', href: '/faq' },
     ],
   },
   {
-    label: 'Guides',
+    label: 'Deployment',
     items: [
       { title: 'Cloudflare Workers', href: '/cloudflare' },
       { title: 'Next.js', href: '/nextjs' },
@@ -53,7 +56,7 @@ export const pageGroups = [
       { title: 'Supabase', href: '/supabase' },
       { title: 'PlanetScale', href: '/planetscale' },
       { title: 'Turso', href: '/turso' },
-      { title: 'Deployment / CI', href: '/deployment' },
+      { title: 'CI', href: '/deployment' },
     ],
   },
   {

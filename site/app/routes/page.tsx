@@ -133,7 +133,9 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       tree={tree as Root}
       title={main ? <HeroTitle>{title}</HeroTitle> : code ? <code>{title}</code> : title}
       // An h4 (Usage's database under `.run()`) stays on the page but out of the table.
-      toc={files.flatMap((file) => file.toc).filter((item) => item.depth <= 3)}
+      // A page with one heading or none has no table of contents: a column listing one entry tells the
+      // reader nothing.
+      toc={((toc) => (toc.length < 2 ? [] : toc))(files.flatMap((file) => file.toc).filter((item) => item.depth <= 3))}
       fold={FOLD[slug] ?? []}
       centered={CENTERED[slug]}
       pages={{ groups: pageGroups, links: pageLinks, linksLabel: 'Links', current: url }}

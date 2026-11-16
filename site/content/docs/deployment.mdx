@@ -1,5 +1,5 @@
 ---
-title: Deployment / CI
+title: CI
 description: How to run Reylo's type check and build in CI and on your host. A GitHub Actions workflow for Postgres, what changes for MySQL, SQLite, DuckDB and Cloudflare D1, and a host that builds before it migrates.
 ---
 
@@ -43,7 +43,7 @@ jobs:
 
 Then apply your schema, and run the type check, the build and your tests:
 
-```yaml title=".github/workflows/ci.yml"
+```yaml title=".github/workflows/ci.yml" tab="TypeScript"
 jobs:
   check:
     # ...
@@ -60,7 +60,21 @@ jobs:
       - run: npm test
 ```
 
-- The build reads the database too. Reylo's plugins read each query's types from it as they bundle the query, and `next build` runs the type check itself.
+```yaml title=".github/workflows/ci.yml" tab="Rust"
+jobs:
+  check:
+    # ...
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # your migrations, or a schema file
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql
+      # each #[reylo::query] reads the database as the crate compiles
+      - run: cargo build
+      - run: cargo test
+```
+
+- The build reads the database too. Reylo's plugins read each query's types from it as they bundle the query, and `next build` runs the type check itself. In Rust, `cargo build` is the type check.
 - A `DATABASE_URL` in the environment wins over your `.env` files. A `direct_url` in `.reylo.yaml` wins over both, so if yours names a database, point it at a variable the job sets.
 - Reylo's engine is an optional dependency, installed for the runner's platform, so don't install with `--omit=optional`.
 - Reylo keeps a cache of each query's analysis in `reylo/.cache/`, which git ignores. A fresh checkout has none, so the type check analyzes every query on the database.

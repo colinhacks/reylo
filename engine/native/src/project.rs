@@ -53,9 +53,11 @@ fn ancestors<'a>(from: &'a Path, env: &'a HashMap<String, String>) -> impl Itera
     from.ancestors().take_while(move |d| !is_home(d, env))
 }
 
-/// The nearest directory at or above `from`, below the home directory, that holds a `package.json`.
+/// The nearest directory at or above `from`, below the home directory, that holds a `package.json`
+/// or a `Cargo.toml`: a package's, or a Rust crate's, whichever is nearer, so that a crate inside a
+/// JavaScript repository is a project of its own.
 pub fn package_dir(from: &Path, env: &HashMap<String, String>) -> Option<PathBuf> {
-    ancestors(from, env).find(|d| d.join("package.json").exists()).map(Path::to_path_buf)
+    ancestors(from, env).find(|d| d.join("package.json").exists() || d.join("Cargo.toml").exists()).map(Path::to_path_buf)
 }
 
 /// The project file for the working directory: `REYLO_CONFIG`, else the one beside the package's
@@ -261,6 +263,11 @@ impl Project {
         }
         let env_files = config.env.clone().unwrap_or_else(|| DEFAULT_ENV_FILES.iter().map(|s| s.to_string()).collect()).iter().map(|f| root.join(f)).collect();
         Ok(Project { file, root, cwd: cwd.to_path_buf(), config, env_files, env })
+    }
+
+    /// The `.env` files the project reads, in the order a variable is looked up in them.
+    pub fn env_files(&self) -> &[PathBuf] {
+        &self.env_files
     }
 
     /// Whether a parameter the statement does not type is an error: unless the file says `allow_untyped_params: true`.

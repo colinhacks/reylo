@@ -2,13 +2,14 @@ import { AgentPrompt, docsMdxComponents } from 'docs-kit/components';
 import type { MDXComponents } from 'mdx/types';
 import type { ReactNode } from 'react';
 import { CompareTable } from './compare-table';
+import { Completion } from './completion';
 import { Dialect, DialectSwitch, DialectTabs } from './dialect-tabs';
 import { Choice, Feature, Features, Way } from './feature-cards';
 import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
 import { MigrationsDiagram } from './migrations-diagram';
-import { InferenceCard, InferenceCardPlay, InferenceCardRow, InferenceCardTypes } from './inference-card';
+import { InferenceCard, InferenceCardPlay, InferenceCardRow, InferenceCardTypes, InferenceLanguage, InferenceLanguages, LanguageSwitch } from './inference-card';
 import { Pairs, Rules } from './value-pairs';
 
 /**
@@ -40,6 +41,10 @@ export function getMDXComponents(components?: MDXComponents) {
     InferenceCardRow,
     InferenceCardTypes,
     InferenceCardPlay,
+    InferenceLanguages,
+    InferenceLanguage,
+    // The language switch over Inference's Primitives tables, which follow it.
+    LanguageSwitch,
     // The cards under /migrations' title (components/feature-cards.tsx).
     Features,
     Feature,
@@ -48,13 +53,15 @@ export function getMDXComponents(components?: MDXComponents) {
     // The vertical stepper on /migrations (components/steps.tsx).
     Steps,
     Step,
+    // An editor's completion list over a Rust block (components/completion.tsx).
+    Completion,
     // The marks on /compare (components/compare-table.tsx).
     CompareTable,
     // A type descriptor format card, the same card's rows: Types, Schema, Query, Descriptor and Holds
     // (lib/remark-typedefs.ts fills them).
     TypeDefCard: ({ children }: { children: ReactNode }) => (
       <div className="typedef-card">
-        <InferenceCard layout="rows" bare>
+        <InferenceCard layout="rows">
           {children}
         </InferenceCard>
       </div>
@@ -63,7 +70,7 @@ export function getMDXComponents(components?: MDXComponents) {
     // writes for a column of it (lib/remark-typedefs.ts fills them).
     TypeListCard: ({ children }: { children: ReactNode }) => (
       <div className="typedef-card typedef-type-list">
-        <InferenceCard layout="rows" bare>
+        <InferenceCard layout="rows">
           {children}
         </InferenceCard>
       </div>
