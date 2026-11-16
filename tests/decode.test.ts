@@ -489,17 +489,25 @@ test("Bun.sql 1.4.4 on Postgres: .raw()'s binary and text forms give the same ro
   // Bun's .raw() hands over each value as a Buffer.
   const bytes = (hex: string) => Buffer.from(hex, "hex");
   const query = (raw: () => Promise<unknown[]>) => Object.assign(Promise.resolve([] as unknown[]), { raw });
-  const client = (prepare: boolean) => ({
-    options: { prepare },
-    commitDistributed: async () => {},
-    unsafe: (_text: string, params: unknown[]) =>
-      query(async () => {
-        // Bun's rule: binary with parameters on a client that prepares, text otherwise.
-        const binary = prepare && params.length > 0;
-        const row = cells.map(([, , b, t]) => (binary ? bytes(b) : Buffer.from(t)));
-        return Object.assign([row], { columns: cells.map(([name, type]) => ({ name, type, table: 0, number: 0 })) });
-      }),
-  });
+  const client = (prepare: boolean) => {
+    // Bun's rule: binary on a client that prepares, but for a simple query and the first run of a
+    // statement without parameters, which Bun prepares as it runs it.
+    const prepared = new Set<string>();
+    return {
+      options: { prepare },
+      commitDistributed: async () => {},
+      unsafe: (text: string, params: unknown[]) => {
+        let simple = false;
+        const q = query(async () => {
+          const binary = prepare && !simple && (params.length > 0 || prepared.has(text));
+          prepared.add(text);
+          const row = cells.map(([, , b, t]) => (binary ? bytes(b) : Buffer.from(t)));
+          return Object.assign([row], { columns: cells.map(([name, type]) => ({ name, type, table: 0, number: 0 })) });
+        });
+        return Object.assign(q, { simple: () => ((simple = true), q) });
+      },
+    };
+  };
   const g = globalThis as { Bun?: unknown };
   const before = g.Bun;
   g.Bun = { version: "1.4.4" };
@@ -507,6 +515,15 @@ test("Bun.sql 1.4.4 on Postgres: .raw()'s binary and text forms give the same ro
     const fromBinary = await execute(client(true), probe, { id: 1 });
     const fromText = await execute(client(false), probe, { id: 1 });
     assert.deepEqual(fromBinary, fromText);
+    // A statement without parameters is text on every run, as a simple query.
+    const unprepared = client(true);
+    const bare: QueryModule<"postgres"> = { dialect: "postgres", sql: "select * from probe", params: [] };
+    assert.deepEqual(await execute(unprepared, bare), fromText);
+    assert.deepEqual(await execute(unprepared, bare), fromText);
+    // A float4 that takes nine digits to read back reads as its text does.
+    const nine = { ...client(true), unsafe: () => query(async () => Object.assign([[Buffer.from("7660266d", "hex")]], { columns: [{ name: "r", type: 700, table: 0, number: 0 }] })) };
+    const nineText = { ...client(false), unsafe: () => query(async () => Object.assign([[Buffer.from("1.13657604e+33")]], { columns: [{ name: "r", type: 700, table: 0, number: 0 }] })) };
+    assert.deepEqual(await execute(nine, probe, { id: 1 }), await execute(nineText, probe, { id: 1 }));
     assert.deepEqual(fromBinary, [{
       n: 1234, ok: true, f8: 1.5, f4: 1.1, bytes: Buffer.of(1, 255), bounded: [1, null], grid: [[1.5, 2], [3, 4]], midnight: "24:00:00",
       price: "-12.5", nan: "NaN", small: "0.000012", far: "+010000-01-01T00:00:00.000000", bc: "-000001-06-01T12:00:00.000000", at: "2026-01-02T03:04:05.123456Z", forever: "infinity",

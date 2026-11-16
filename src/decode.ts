@@ -454,8 +454,8 @@ async function rawRows(raw: unknown[] & { columns?: { name: string; type: number
 
 /**
  * The types Bun.sql 1.4.4 and later read in binary in a `.raw()` query that has parameters, on a
- * client that prepares its statements; every other result is text (Bun's docs, "`.raw()` format",
- * and its `Tag::is_binary_in`).
+ * client that prepares its statements; a simple query's results, and every other type, are text
+ * (Bun's docs, "`.raw()` format", and its `Tag::is_binary_in`).
  */
 const BUN_BINARY = new Set([16, 17, 23, 700, 701, 1083, 1114, 1184, 1007, 1021, 1700]);
 
@@ -498,7 +498,7 @@ function float4Text(f: number): string {
   if (Number.isNaN(f)) return "NaN";
   if (!Number.isFinite(f)) return f > 0 ? "Infinity" : "-Infinity";
   if (Object.is(f, -0)) return "-0";
-  for (let p = 1; p < 9; p++) {
+  for (let p = 1; p <= 9; p++) {
     const text = f.toPrecision(p);
     if (Math.fround(+text) === f) return String(+text);
   }
@@ -626,6 +626,9 @@ async function bunRaw(c: AnyClient, text: string, params: unknown[], columns: Co
   if (typeof prepare !== "boolean" || !bunReadsRaw()) return undefined;
   const pending = c.unsafe(text, params);
   if (typeof pending?.raw !== "function") return undefined;
+  // A query without parameters runs as a simple query, whose results are text on every run: a
+  // statement Bun prepared would come back in binary from its second run on its connection.
+  if (params.length === 0 && typeof pending.simple === "function") pending.simple();
   const raw = await pending.raw();
   if (!Array.isArray(raw.columns)) throw new TypeError("Reylo cannot read this Bun.sql client's rows: its .raw() result describes no columns, which Bun 1.4.4 and later do.");
   const binary = prepare && params.length > 0 ? (oid: number) => BUN_BINARY.has(oid) : undefined;
