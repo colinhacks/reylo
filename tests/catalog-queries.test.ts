@@ -83,7 +83,11 @@ const OWN_FUNCTIONS = ["stamp", "pairs"];
 // Each catalog query by a fragment of its text, so the test fails when a statement stops asking one.
 const KINDS: [string, RegExp][] = [
   ["TRUST_QUERY", /users\(kind, name, args/],
+  // Before ERRORS_QUERY, whose CTE the tables query shares.
+  ["CAPABILITIES_TABLES_QUERY", /reached\(oid, access\)/],
   ["ERRORS_QUERY", /named\(oid, written\)/],
+  ["IMMUTABLE_QUERY", /'depends on'::pg_catalog\.text, x\.name/],
+  ["EXTENSION_TABLES_QUERY", /d\.deptype OPERATOR\(pg_catalog\.=\) 'e'::pg_catalog\."char"/],
   ["OPERATORS_QUERY", /'operator'::pg_catalog\.text/],
   ["USER_OPERATORS_QUERY", /SELECT DISTINCT o\.oprname::pg_catalog\.text FROM pg_catalog\.pg_operator o WHERE/],
   ["REFUSES_NULL_QUERY", /domains\(attrelid, attnum, oid\)/],

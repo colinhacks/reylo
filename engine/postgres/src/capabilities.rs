@@ -92,6 +92,7 @@ pub const TABLES_QUERY: &str = concat!(
       UNION ALL SELECT d.objid, 2 FROM pg_catalog.pg_depend d JOIN up ON d.refobjid OPERATOR(pg_catalog.=) up.oid \
         WHERE $6::pg_catalog.bool AND d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " \
           AND d.deptype OPERATOR(pg_catalog.=) ANY ('{a,i}'::pg_catalog.\"char\"[]) \
+          AND EXISTS (SELECT 1 FROM pg_catalog.pg_class s WHERE s.oid OPERATOR(pg_catalog.=) d.objid AND s.relkind OPERATOR(pg_catalog.=) 'S'::pg_catalog.\"char\") \
       UNION ALL SELECT pg_catalog.to_regclass(x.name)::pg_catalog.oid, 2 FROM ",
     names!("$7::pg_catalog.text[]", "$8::pg_catalog.int4", "x"),
     " WHERE pg_catalog.to_regclass(x.name) IS NOT NULL \
@@ -134,6 +135,15 @@ pub const IMMUTABLE_QUERY: &str = concat!(
     names!("$4::pg_catalog.text[]", "$8::pg_catalog.int4", "x"),
     " WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_operator o JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode::pg_catalog.oid \
       WHERE o.oprname OPERATOR(pg_catalog.=) x.name AND o.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND NOT ", harmless_function!("p"), ")"
+);
+
+/// Every relation an extension owns, qualified by its schema: the tables its code may read, as
+/// PostGIS's functions read `spatial_ref_sys`, where a statement sets off code of an extension's.
+pub const EXTENSION_TABLES_QUERY: &str = concat!(
+    "SELECT pg_catalog.textcat(pg_catalog.textcat(n.nspname::pg_catalog.text, '.'::pg_catalog.text), c.relname::pg_catalog.text) \
+    FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) d.objid JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace \
+    WHERE d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_extension"), " \
+      AND d.deptype OPERATOR(pg_catalog.=) 'e'::pg_catalog.\"char\" AND c.relkind OPERATOR(pg_catalog.=) ANY ('{r,p,v,m,f}'::pg_catalog.\"char\"[])"
 );
 
 /// The server's functions that leave state on the connection.
@@ -267,6 +277,38 @@ pub fn capabilities(analysis: &Analysis, host: &Host) -> Lazy<Option<Capabilitie
     Some(Some(capabilities))
 }
 
+/// [`TABLES_QUERY`]'s parameters for a statement that reads or writes rows, and whether each call
+/// to `nextval` or `setval` names its sequence in a constant.
+fn tables_params(sql: &str, node: &NodeEnum, parsed: &analyze::Analysis) -> (Vec<Value>, bool) {
+    // Each sequence a call to `nextval` or `setval` names as a constant is written: one named any other way is unknown.
+    let (sequences, named_sequences) = sequences_named(node);
+    let written: Vec<&str> = parsed.write_set.iter().map(String::as_str).collect();
+    // Every relation the statement names, wherever it stands, is read as far as the catalog finds
+    // it: the parse's tables leave out one of a WITH query's name, even read inside that query
+    // (`with users as (select * from users) …`), and one in a subquery of `RETURNING WITH (OLD …)`.
+    let named = range_vars(node);
+    let mut read: Vec<&str> = parsed.read_set.iter().map(String::as_str).collect();
+    read.extend(named.iter().map(String::as_str));
+    read.sort_unstable();
+    read.dedup();
+    let keys = !parsed.write_set.is_empty() && parsed.changes_keys;
+    // An insert, a MERGE's, or a column set to its DEFAULT, in the statement or one of its WITH queries.
+    let inserts = !parsed.write_set.is_empty() && has_word(sql, Dialect::Postgres, &["insert", "merge", "default"]);
+    (vec![json!(written), json!(read), json!(keys), json!(written.len()), json!(read.len()), json!(inserts), json!(sequences), json!(sequences.len())], named_sequences)
+}
+
+/// Asks [`TABLES_QUERY`] and [`EXTENSION_TABLES_QUERY`] in the statement's first round, beside its
+/// other needs, as [`crate::errors::prefetch`] asks the errors' query: asked only once the analysis
+/// is done, each would take a round of its own.
+pub fn prefetch(sql: &str, host: &Host) {
+    let Ok(tree) = crate::stack::parse(sql) else { return };
+    let [stmt] = tree.protobuf.stmts.as_slice() else { return };
+    let Some(node @ (NodeEnum::SelectStmt(_) | NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_) | NodeEnum::MergeStmt(_))) = stmt.stmt.as_ref().and_then(|n| n.node.as_ref()) else { return };
+    let Ok(parsed) = analyze::analyze(sql) else { return };
+    let _ = host.query(TABLES_QUERY, tables_params(sql, node, &parsed).0, Scope::Statement);
+    let _ = host.query(EXTENSION_TABLES_QUERY, Vec::new(), Scope::Session);
+}
+
 /// What a statement that reads or writes rows reaches: its relations as the catalog expands them,
 /// the code a user or an extension wrote that it sets off, and the server's functions it calls.
 fn reached(sql: &str, node: &NodeEnum, host: &Host, capabilities: &mut Capabilities) -> Lazy<()> {
@@ -279,21 +321,12 @@ fn reached(sql: &str, node: &NodeEnum, host: &Host, capabilities: &mut Capabilit
         unread(capabilities);
         return Some(());
     };
-    // Each sequence a call to `nextval` or `setval` names as a constant is written: one named any other way is unknown.
-    let (sequences, named_sequences) = sequences_named(node);
-    let written: Vec<&str> = parsed.write_set.iter().map(String::as_str).collect();
-    // The parse leaves out every table of a WITH query's name, even one read inside that query
-    // (`with users as (select * from users) …`), so each WITH query's name is read as a table's too.
-    let ctes = with_names(node);
-    let mut read: Vec<&str> = parsed.read_set.iter().map(String::as_str).collect();
-    read.extend(ctes.iter().map(String::as_str));
-    let keys = !parsed.write_set.is_empty() && parsed.changes_keys;
-    // An insert, a MERGE's, or a column set to its DEFAULT, in the statement or one of its WITH queries.
-    let inserts = !parsed.write_set.is_empty() && has_word(sql, Dialect::Postgres, &["insert", "merge", "default"]);
-    let tables = host.query(TABLES_QUERY, vec![json!(written), json!(read), json!(keys), json!(written.len()), json!(read.len()), json!(inserts), json!(sequences), json!(sequences.len())], Scope::Statement);
+    let (params, named_sequences) = tables_params(sql, node, &parsed);
+    let tables = host.query(TABLES_QUERY, params, Scope::Statement);
+    let extensions = host.query(EXTENSION_TABLES_QUERY, Vec::new(), Scope::Session);
     let opened = errors::catalog_rows(request, host);
-    let (tables, opened) = (tables?, opened?);
-    let (Ok(tables), Some(opened)) = (tables, opened) else {
+    let (tables, extensions, opened) = (tables?, extensions?, opened?);
+    let (Ok(tables), Ok(extensions), Some(opened)) = (tables, extensions, opened) else {
         unread(capabilities);
         return Some(());
     };
@@ -340,6 +373,13 @@ fn reached(sql: &str, node: &NodeEnum, host: &Host, capabilities: &mut Capabilit
     }
     // The code of a user's or an extension's the statement sets off, unless it cannot touch a table.
     let open: Vec<(&str, &str)> = opened.iter().filter(|row| row.first().and_then(Value::as_str) == Some("open")).filter_map(|row| Some((row.get(1)?.as_str()?, row.get(2).and_then(Value::as_str).unwrap_or("")))).collect();
+    // Code of a user's or an extension's that touches no table of the statement's may still read an
+    // extension's own, as PostGIS's output of a geometry reads `spatial_ref_sys`.
+    if !open.is_empty() {
+        for name in extensions.iter().filter_map(|row| row.first().and_then(Value::as_str)) {
+            capabilities.touch(name, Access::Read);
+        }
+    }
     if open.iter().any(|(what, _)| *what == "foreign table") {
         capabilities.external = true;
     }
@@ -371,15 +411,21 @@ fn reached(sql: &str, node: &NodeEnum, host: &Host, capabilities: &mut Capabilit
     Some(())
 }
 
-/// The name of each WITH query in the statement, at any depth.
-fn with_names(node: &NodeEnum) -> Vec<String> {
+/// Every relation the statement names, wherever it stands, as it names it: `schema.name` or `name`.
+fn range_vars(node: &NodeEnum) -> Vec<String> {
     let Ok(tree) = serde_json::to_value(node) else { return Vec::new() };
     let mut found = Vec::new();
     fn walk(v: &Value, found: &mut Vec<String>) {
         match v {
             Value::Object(map) => {
-                if let Some(name) = map.get("CommonTableExpr").and_then(|c| c.get("ctename")).and_then(Value::as_str) {
-                    found.push(name.to_string());
+                if let Some(rv) = map.get("RangeVar") {
+                    let part = |key: &str| rv.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
+                    if let Some(name) = part("relname") {
+                        found.push(match part("schemaname") {
+                            Some(schema) => format!("{schema}.{name}"),
+                            None => name.to_string(),
+                        });
+                    }
                 }
                 map.values().for_each(|child| walk(child, found));
             }

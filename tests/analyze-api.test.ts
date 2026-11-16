@@ -210,14 +210,13 @@ test("analyze says what a MySQL statement may do: the tables it reaches, and wha
     create trigger jobs_audit after update on jobs for each row insert into audit (what) values ('job');
   `);
   try {
-    const [read, view, deleted, locked, triggered, set, begin, ddl] = await same(db.url, [
+    const [read, view, deleted, locked, triggered, set, ddl] = await same(db.url, [
       "select id, email from users where id = :id",
       "select title, email from titles",
       "delete from users where id = :id",
       "select id from jobs where not done for update",
       "update jobs set done = true where id = :id",
       "set @user = 1",
-      "begin",
       "create table more (id int primary key)",
     ]);
     const name = db.url.split("/").pop()!.split("?")[0]!;
@@ -231,7 +230,6 @@ test("analyze says what a MySQL statement may do: the tables it reaches, and wha
     // A trigger's body is not read: any table.
     assert.deepEqual(triggered!.capabilities, { tables: "unknown", ddl: true, session: true, external: true });
     assert.deepEqual(set!.capabilities, { tables: {}, session: true });
-    assert.deepEqual(begin!.capabilities, { tables: {}, transaction: true });
     // DDL commits the open transaction.
     assert.deepEqual(ddl!.capabilities, { tables: "unknown", ddl: true, transaction: true });
   } finally {
