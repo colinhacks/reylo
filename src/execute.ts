@@ -450,10 +450,50 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
     if (found) warnDrifted(query.source, found.drifted);
     passed(query, undefined, own);
   }
+  if (query.dialect === "postgres") await checkMoneyLocale(c, query);
   const rows = await query.runtime.run(c, query, statement(query, params));
   if (rows === undefined) throw unsupported(c, query.dialect);
   return rows;
 }
+
+/** The clients whose session writes a `money` in the C locale's form, which `checkMoneyLocale` has seen. */
+const moneyLocales = new WeakSet<object>();
+
+/** The statements that take a Postgres `money` parameter, anywhere in its value. */
+const moneyParams = new WeakMap<object, string | null>();
+
+/** Whether `t` holds a Postgres `money`, itself or in an array's elements or a structured parameter's fields. */
+function holdsMoney(t: EngineType): boolean {
+  if (t.kind === "opaque") return bareName(t) === "money";
+  if (t.kind === "array") return holdsMoney(t.element.type);
+  if (t.kind === "struct") return t.fields.some((f) => holdsMoney(f.type));
+  return false;
+}
+
+/**
+ * Postgres reads a `money` parameter in the session's lc_monetary, which under another locale than
+ * C's or English's reads the same text as another amount without an error (under de_DE,
+ * `1234.56` is 123456.00): `.run()` reads a money in the C locale's form and refuses another, and a
+ * parameter is refused there too. A client is checked once, before the first statement that takes
+ * one, by the text its session writes for 1234.50; a client whose check fails to run is not held up.
+ */
+async function checkMoneyLocale(c: AnyClient, query: QueryModule): Promise<void> {
+  let name = moneyParams.get(query);
+  if (name === undefined) moneyParams.set(query, (name = Object.entries(query.inputs ?? {}).find(([, input]) => holdsMoney(input.type))?.[0] ?? null));
+  if (name === null || moneyLocales.has(c as object)) return;
+  let written: unknown;
+  try {
+    const rows = await executeAsync(c, { dialect: "postgres", runtime: query.runtime, sql: MONEY_CHECK, params: [], text: MONEY_CHECK, order: [], columns: [["m", "text"]] }, {});
+    written = (rows[0] as { m?: unknown } | undefined)?.m;
+  } catch {
+    return;
+  }
+  if (written === "$1,234.50") return void moneyLocales.add(c as object);
+  throw new ParameterError(`Parameter "${name}" is a Postgres money, which Postgres reads in the session's lc_monetary, and this session writes 1234.50 as ${JSON.stringify(written)}, not the C locale's "$1,234.50", so it could store the parameter as another amount. Set lc_monetary = 'C' on the session, the role or the database, or cast the parameter to numeric in the statement (:${name}::numeric).`);
+}
+
+/** The text a session writes for a money of 1234.50, in its lc_monetary. */
+const MONEY_CHECK = "select 1234.50::numeric::money::text as m";
 
 // The parameters are an object, refused before anything reaches the database otherwise: an
 // array, which `run` took in the order of `params` from 2026-10-03, was dropped on 2026-10-20

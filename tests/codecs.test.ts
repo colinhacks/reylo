@@ -16,6 +16,7 @@ import { DRIVERS, INDEX, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROO
 import { array, field, lite, my, pg, record } from "./descriptors.ts";
 import { decodeCodec, decodeCodecs, decodePlan, encodeCodec, encodePlan, leafCodec, planLibraries, planOf, type Codecs, type DecimalClass } from "../src/codecs.ts";
 import { execute, executeSync, type QueryModule } from "./run.ts";
+import { postgresJsSql } from "./stand-ins.ts";
 import { defineQuery } from "../src/index.ts";
 import { moduleTypes, standardColumnsType } from "../src/module-types.ts";
 import { renderParamType, renderType } from "../src/render.ts";
@@ -773,4 +774,25 @@ test("MySQL: a geometry is GeoJSON with its SRID, declared, built, run and bound
     for (const session of Session.opened()) await session.close();
     await own.drop();
   }
+});
+
+test("a Postgres money parameter is refused where the session's lc_monetary would read it as another amount, checked once a client", async () => {
+  const insert: QueryModule<"postgres"> = { dialect: "postgres", sql: "insert into payments (fee) values (:fee)", params: ["fee"], inputs: { fee: { type: pg("money") } }, columns: [] };
+  const session = (written: string) => {
+    const sent: string[] = [];
+    return { sent, sql: postgresJsSql((text) => (sent.push(text), text.includes("::money::text") ? [{ m: written }] : [])) };
+  };
+  // A session in the C locale writes $1,234.50: the statement runs, and the client is not asked again.
+  const c = session("$1,234.50");
+  await execute(c.sql, insert, { fee: "1234.50" });
+  await execute(c.sql, insert, { fee: "1.25" });
+  assert.deepEqual(c.sent.map((t) => t.split(" ")[0] + (t.includes("::money::text") ? " (the check)" : "")), ["select (the check)", "insert", "insert"]);
+  // Under de_DE the same text would be stored as 123456.00, so nothing is sent.
+  const de = session("1.234,50 €");
+  await assert.rejects(async () => execute(de.sql, insert, { fee: "1234.50" }), (e: Error) => e instanceof ParameterError && e.message === `Parameter "fee" is a Postgres money, which Postgres reads in the session's lc_monetary, and this session writes 1234.50 as "1.234,50 €", not the C locale's "$1,234.50", so it could store the parameter as another amount. Set lc_monetary = 'C' on the session, the role or the database, or cast the parameter to numeric in the statement (:fee::numeric).`);
+  assert.equal(de.sent.some((t) => t.startsWith("insert")), false);
+  // A statement that takes no money asks nothing.
+  const other = session("1.234,50 €");
+  await execute(other.sql, { dialect: "postgres", sql: "select :n::int as n", params: ["n"], inputs: { n: { type: pg("int4") } }, columns: [["n", "int"]] }, { n: 1 });
+  assert.equal(other.sent.some((t) => t.includes("::money::text")), false);
 });

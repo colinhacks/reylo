@@ -151,7 +151,7 @@ A `numeric` comes back as its exact text, keeping the column's scale, and so doe
 
 </Pairs>
 
-Postgres reads a `money` parameter in the session's `lc_monetary` too, and under `de_DE` stores `1234.56` as `123456.00` with no error, where a read of another locale's text is refused. Set `lc_monetary = 'C'` on the session, the role or the database, or cast through `numeric` both ways: the column to read it, and the parameter to write it (`:fee::numeric`).
+Postgres reads a `money` parameter in the session's `lc_monetary`, so under `de_DE` it would store `1234.56` as `123456.00`. Before a client's first statement with a `money` parameter, Reylo checks the locale once and refuses one that isn't C's or English's, as it refuses another locale's text in a result. Set `lc_monetary = 'C'` on the session, the role or the database, or cast through `numeric` both ways: the column to read it, and the parameter to write it (`:fee::numeric`).
 
 ### Dates and times
 
