@@ -1,1 +1,0 @@
-create macro flat(xss) as list_transform(xss, lambda xs: list_transform(xs, lambda tag: tag || '')); create table posts (id integer primary key, xs varchar[][], f varchar[][] generated always as (flat(xs)) virtual); create table tag (id integer primary key, post_id integer references posts (id));

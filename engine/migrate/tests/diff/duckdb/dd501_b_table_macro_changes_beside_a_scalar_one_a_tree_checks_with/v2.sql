@@ -1,1 +1,0 @@
-create schema b; create macro b.x(a) as a > 0; create macro b.x(a) as table select a + 1 as v; create table b.pages (id integer primary key, parent_id integer references b.pages (id), n integer check (b.x(n)));

@@ -1,1 +1,0 @@
-create schema b; create table t (x varchar); create table b.t (y integer, x varchar); create macro b.tm() as table select x from t; create view b.v as select * from b.tm(); create view b.w as select y from t;

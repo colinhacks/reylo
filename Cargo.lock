@@ -278,8 +278,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ad534f4357a5264cce5019c989cf66a4f0dc4e0d1b1d15f8aacec0ff7360273"
 dependencies = [
  "find-msvc-tools",
- "jobserver",
- "libc",
  "shlex 2.0.1",
 ]
 
@@ -696,16 +694,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
-name = "filetime"
-version = "0.2.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
-dependencies = [
- "cfg-if",
- "libc",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -731,7 +719,6 @@ checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
- "zlib-rs",
 ]
 
 [[package]]
@@ -1200,16 +1187,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jobserver"
-version = "0.1.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
-dependencies = [
- "getrandom 0.4.3",
- "libc",
-]
-
-[[package]]
 name = "js-sys"
 version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1246,20 +1223,6 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
-
-[[package]]
-name = "libduckdb-sys"
-version = "1.20000.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0140448c472968ee5cf5ba697435deebe558b366ef1e5c080d24d9696b600725"
-dependencies = [
- "cc",
- "flate2",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tar",
-]
 
 [[package]]
 name = "libloading"
@@ -2007,7 +1970,6 @@ version = "0.0.0"
 dependencies = [
  "mysql_async",
  "reylo-engine-core",
- "reylo-engine-duckdb",
  "reylo-engine-mysql",
  "reylo-engine-postgres",
  "reylo-engine-sqlite",
@@ -2032,17 +1994,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reylo-engine-duckdb"
-version = "0.0.0"
-dependencies = [
- "reylo-engine-build",
- "reylo-engine-core",
- "serde",
- "serde_json",
- "sqlparser 0.63.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
 name = "reylo-engine-mysql"
 version = "0.0.0"
 dependencies = [
@@ -2050,7 +2001,7 @@ dependencies = [
  "reylo-engine-core",
  "serde",
  "serde_json",
- "sqlparser 0.63.0",
+ "sqlparser",
 ]
 
 [[package]]
@@ -2111,7 +2062,6 @@ name = "reylo-migrate"
 version = "0.0.0"
 dependencies = [
  "libc",
- "libloading",
  "mysql_async",
  "pg_query",
  "prost",
@@ -2132,7 +2082,6 @@ dependencies = [
  "boon",
  "bytes",
  "futures-util",
- "libduckdb-sys",
  "mysql_async",
  "regex",
  "reylo-engine",
@@ -2589,27 +2538,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqlparser"
-version = "0.63.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
-dependencies = [
- "log",
- "sqlparser_derive",
-]
-
-[[package]]
-name = "sqlparser_derive"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2905ae8e8148d8f7f5748ea95d1e949fa4fc1d7f5161547b758ad118b2e4b0aa"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.4",
-]
-
-[[package]]
 name = "sqlx"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2860,17 +2788,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "tar"
-version = "0.4.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
-dependencies = [
- "filetime",
- "libc",
- "xattr",
 ]
 
 [[package]]
@@ -3669,16 +3586,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xattr"
-version = "1.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "963d6fab92d5504b971dc8bd90ca743c2575e590bc8071ea5bc571598667ae08"
-dependencies = [
- "libc",
- "rustix 1.1.6",
-]
-
-[[package]]
 name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3794,12 +3701,6 @@ dependencies = [
  "quote",
  "syn 3.0.4",
 ]
-
-[[package]]
-name = "zlib-rs"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zmij"

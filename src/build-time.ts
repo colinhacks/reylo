@@ -12,10 +12,10 @@ export interface AnalyzeInput {
   /** One statement, with `:name` placeholders on every database. */
   sql: string;
   /**
-   * The database, where it is not the project's: `postgres://` or `postgresql://`, `mysql://`, a SQLite
-   * file as `file:` or `sqlite:`, or a DuckDB file as `duckdb:`, a relative path read from the working
-   * directory. Without it, the database the type check reads: `direct_url` in the project file, else
-   * `DATABASE_URL` from the environment or the project's `.env` files.
+   * The database, where it is not the project's: `postgres://` or `postgresql://`, `mysql://`, a
+   * SQLite file as `file:` or `sqlite:`, a relative path read from the working directory. Without
+   * it, the database the type check reads: `direct_url` in the project file, else `DATABASE_URL`
+   * from the environment or the project's `.env` files.
    */
   url?: string | undefined;
 }

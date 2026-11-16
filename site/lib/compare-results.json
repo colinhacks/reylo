@@ -41,9 +41,6 @@
     },
     "sqlite": {
      "state": "y"
-    },
-    "duckdb": {
-     "state": "y"
     }
    }
   },
@@ -185,10 +182,6 @@
     },
     "sqlite": {
      "state": "y"
-    },
-    "duckdb": {
-     "state": "n",
-     "note": "Not in v1.31.1, the latest release. A DuckDB engine is on its unreleased main branch."
     }
    }
   },
@@ -329,10 +322,6 @@
     "sqlite": {
      "state": "n",
      "note": "It is not available for SQLite."
-    },
-    "duckdb": {
-     "state": "n",
-     "note": "PgTyped is Postgres only."
     }
    }
   },
@@ -498,10 +487,6 @@
     },
     "sqlite": {
      "state": "y"
-    },
-    "duckdb": {
-     "state": "n",
-     "note": "DuckDB isn't a Prisma datasource."
     }
    }
   },
@@ -682,10 +667,6 @@
     },
     "sqlite": {
      "state": "y"
-    },
-    "duckdb": {
-     "state": "n",
-     "note": "Its `--db-type` takes Postgres, MySQL and SQLite."
     }
    }
   },
@@ -834,10 +815,6 @@
     "sqlite": {
      "state": "n",
      "note": "It is not available for SQLite."
-    },
-    "duckdb": {
-     "state": "n",
-     "note": "SafeQL is Postgres only."
     }
    }
   },
@@ -1004,10 +981,6 @@
     },
     "sqlite": {
      "state": "y"
-    },
-    "duckdb": {
-     "state": "n",
-     "note": "sqlx has no DuckDB driver."
     }
    }
   },
@@ -1161,10 +1134,6 @@
     },
     "sqlite": {
      "state": "y"
-    },
-    "duckdb": {
-     "state": "n",
-     "note": "Its clients are Postgres, MySQL, SQLite, LibSQL and D1."
     }
    }
   },
@@ -1275,10 +1244,6 @@
     "sqlite": {
      "state": "n",
      "note": "It is not available for SQLite."
-    },
-    "duckdb": {
-     "state": "n",
-     "note": "It is Postgres only."
     }
    }
   }

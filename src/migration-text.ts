@@ -50,7 +50,7 @@ export function canonical(sql: string): string {
       push(rest(k));
       k = b.length;
     } else if (c === "/" && b[k + 1] === "*") {
-      // Postgres and DuckDB nest block comments, while MySQL and SQLite end one at its first `*/`:
+      // Postgres nests block comments, while MySQL and SQLite end one at its first `*/`:
       // where the two end it at different places, the rest is kept as written, and so are MySQL's
       // `/*! … */` and the rest after a comment that never ends.
       let flat: number | undefined;

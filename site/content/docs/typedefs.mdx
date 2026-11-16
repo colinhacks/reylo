@@ -79,7 +79,7 @@ A truth value.
 
 A comparison's result is one on every database, though MySQL and SQLite deliver it as 1 or 0.
 
-<TypeDef holds={["true", "false"]} types={{"postgres": ["boolean"], "duckdb": ["boolean"]}}>
+<TypeDef holds={["true", "false"]} types={{"postgres": ["boolean"]}}>
 
 ```jsonc
 // Any truth value
@@ -94,7 +94,7 @@ A whole number of a fixed width.
 
 Its range follows from `bits`, two's complement unless `unsigned`. A bound is always inclusive, since `x > 0` is `x >= 1`.
 
-<TypeDef holds={["-2147483648", "0", "2147483647"]} types={{"postgres": ["smallint", "integer", "bigint", "oid"], "mysql": ["tinyint", "smallint", "mediumint", "int", "bigint", "year", "boolean"], "sqlite": ["integer"], "duckdb": ["tinyint", "smallint", "integer", "bigint", "hugeint", "utinyint", "usmallint", "uinteger", "ubigint", "uhugeint"]}}>
+<TypeDef holds={["-2147483648", "0", "2147483647"]} types={{"postgres": ["smallint", "integer", "bigint", "oid"], "mysql": ["tinyint", "smallint", "mediumint", "int", "bigint", "year", "boolean"], "sqlite": ["integer"]}}>
 
 ```jsonc
 // A 32-bit integer
@@ -115,7 +115,7 @@ An [IEEE 754](https://en.wikipedia.org/wiki/IEEE_754) binary float.
 
 Its exponent and mantissa widths fix its range and precision, so a program picks the smallest float it has that holds both. It holds the infinities and NaN only where `infinity` and `nan` say so.
 
-<TypeDef holds={["1.5", "-0", "Infinity", "NaN"]} types={{"postgres": ["real", "double precision"], "mysql": ["float", "double"], "sqlite": ["real"], "duckdb": ["float", "double"]}}>
+<TypeDef holds={["1.5", "-0", "Infinity", "NaN"]} types={{"postgres": ["real", "double precision"], "mysql": ["float", "double"], "sqlite": ["real"]}}>
 
 ```jsonc
 // A double
@@ -136,7 +136,7 @@ An exact decimal.
 
 Its `precision` counts its digits, and its scale the digits after the point. A decimal is a number, so `1.5` and `1.50` are one value.
 
-<TypeDef holds={["1.50", "99999999.99", "NaN"]} types={{"postgres": ["numeric"], "mysql": ["decimal"], "duckdb": ["decimal", "bignum"]}}>
+<TypeDef holds={["1.50", "99999999.99", "NaN"]} types={{"postgres": ["numeric"], "mysql": ["decimal"]}}>
 
 ```jsonc
 // Up to 10 digits, 2 after the point
@@ -154,7 +154,7 @@ Text.
 
 With no `encoding`, it's any valid Unicode text. An `encoding` names the character set its values are held in, from a [fixed list](#specification), and `ill_formed` lets them be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise, and a `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole.
 
-<TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext"], "sqlite": ["text"], "duckdb": ["varchar"]}}>
+<TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext"], "sqlite": ["text"]}}>
 
 ```jsonc
 // At most 255 code points
@@ -184,7 +184,7 @@ Bytes.
 
 The type states their length where it fixes one.
 
-<TypeDef holds={["0x0102", "0x"]} types={{"postgres": ["bytea", "macaddr", "macaddr8"], "mysql": ["binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob"], "sqlite": ["blob"], "duckdb": ["blob"]}}>
+<TypeDef holds={["0x0102", "0x"]} types={{"postgres": ["bytea", "macaddr", "macaddr8"], "mysql": ["binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob"], "sqlite": ["blob"]}}>
 
 ```jsonc
 // Any number of bytes
@@ -205,7 +205,7 @@ A 128-bit identifier.
 
 It holds any 128 bits, written in [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)'s text form. Its `versions` say every value has one of those RFC 9562 versions: a UUID that `uuidv7()` or `gen_random_uuid()` makes, or a column whose `CHECK`s hold `uuid_extract_version` to one and keep it non-null. A column with a `default uuidv7()` has none, since an insert may write any UUID.
 
-<TypeDef holds={["019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"]} types={{"postgres": ["uuid"], "duckdb": ["uuid"]}}>
+<TypeDef holds={["019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"]} types={{"postgres": ["uuid"]}}>
 
 ```jsonc
 // Any 128 bits
@@ -223,7 +223,7 @@ One of a list of values.
 
 Its `type` is the type of every value, and its `values` the list, each in that type's canonical text. One value makes a literal, which a constant the statement writes is: `select 'user' as kind` gives the enum of `"user"`.
 
-<TypeDef holds={["\"happy\"", "1"]} types={{"postgres": ["an enum", "a column a CHECK keeps to a list", "a constant"], "mysql": ["enum", "a constant"], "sqlite": ["a constant"], "duckdb": ["enum", "a constant"]}}>
+<TypeDef holds={["\"happy\"", "1"]} types={{"postgres": ["an enum", "a column a CHECK keeps to a list", "a constant"], "mysql": ["enum", "a constant"], "sqlite": ["a constant"]}}>
 
 ```jsonc
 // One of two strings
@@ -244,7 +244,7 @@ A calendar date.
 
 Its bounds are [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) text, with a sign and more than four digits where a year needs them. With no bounds, it runs from 0001-01-01 to 9999-12-31.
 
-<TypeDef holds={["2026-11-04", "-infinity"]} types={{"postgres": ["date"], "mysql": ["date"], "duckdb": ["date"]}}>
+<TypeDef holds={["2026-11-04", "-infinity"]} types={{"postgres": ["date"], "mysql": ["date"]}}>
 
 ```jsonc
 // Any date from 0001 to 9999
@@ -262,7 +262,7 @@ A time of day.
 
 Its `tick` is its smallest step, in seconds. It holds 24:00:00 only where its bounds say so, and keeps a UTC offset where `offset` says so.
 
-<TypeDef holds={["09:30:00", "24:00:00"]} types={{"postgres": ["time", "timetz"], "duckdb": ["time", "timetz", "time_ns"]}}>
+<TypeDef holds={["09:30:00", "24:00:00"]} types={{"postgres": ["time", "timetz"]}}>
 
 ```jsonc
 // To the microsecond, up to 24:00:00
@@ -280,7 +280,7 @@ A date and time as a wall clock reads it.
 
 With no zone, it can't be read as an instant.
 
-<TypeDef holds={["2026-11-04T09:30:00.123"]} types={{"postgres": ["timestamp"], "mysql": ["datetime"], "duckdb": ["timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns"]}}>
+<TypeDef holds={["2026-11-04T09:30:00.123"]} types={{"postgres": ["timestamp"], "mysql": ["datetime"]}}>
 
 ```jsonc
 // To the millisecond
@@ -295,7 +295,7 @@ A point on the timeline.
 
 It's the moment alone, as [Temporal](https://tc39.es/proposal-temporal/docs/instant.html)'s `Instant` is, written in UTC however a session prints it. Its bounds are in UTC.
 
-<TypeDef holds={["2026-11-04T17:30:00.123456Z"]} types={{"postgres": ["timestamptz"], "mysql": ["timestamp"], "duckdb": ["timestamptz"]}}>
+<TypeDef holds={["2026-11-04T17:30:00.123456Z"]} types={{"postgres": ["timestamptz"], "mysql": ["timestamp"]}}>
 
 ```jsonc
 // To the microsecond, and infinity and -infinity too
@@ -328,7 +328,7 @@ A length of time.
 
 Its parts are months, days and a time, each signed on its own, so 1 month and 30 days are two values. Its `max` is an [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) duration of the parts it has, each at the largest magnitude it reaches.
 
-<TypeDef holds={["P1M3D", "PT1H30M", "P-2D"]} types={{"postgres": ["interval"], "mysql": ["time"], "duckdb": ["interval"]}}>
+<TypeDef holds={["P1M3D", "PT1H30M", "P-2D"]} types={{"postgres": ["interval"], "mysql": ["time"]}}>
 
 ```jsonc
 // Months, days and a time to the microsecond
@@ -346,7 +346,7 @@ Elements, in order.
 
 Each element is a slot of its own, so it says whether it may be null. An array is flat: a two-dimensional one is an array of arrays. A [pgvector](https://github.com/pgvector/pgvector) vector is an array of floats, and a set an array whose elements never repeat, `distinct`, as MySQL's `SET` is.
 
-<TypeDef holds={["[1, null, 3]", "[]"]} types={{"postgres": ["any array", "bit", "varbit", "lseg", "polygon", "vector", "halfvec"], "mysql": ["set", "bit"], "duckdb": ["list", "array", "bit"]}}>
+<TypeDef holds={["[1, null, 3]", "[]"]} types={{"postgres": ["any array", "bit", "varbit", "lseg", "polygon", "vector", "halfvec"], "mysql": ["set", "bit"]}}>
 
 ```jsonc
 // Integers, each of which may be null
@@ -367,7 +367,7 @@ Values in order, each of its own type, with no names.
 
 Its `elements` are always there. Its `optional_elements` may be missing from the end, and its `rest` takes any number after them.
 
-<TypeDef holds={["[1, \"a\"]", "[2, null]"]} types={{"duckdb": ["a struct with no field names"]}}>
+<TypeDef holds={["[1, \"a\"]", "[2, null]"]} types={{}}>
 
 ```jsonc
 // An integer, then text that may be null
@@ -385,7 +385,7 @@ Named fields, in order.
 
 Each field is a slot with a `name`. It may be `optional`, its key left out, with a `default` the key takes when it is. A struct holds exactly its fields, unless `extra` lets it hold other keys too, each a value in its slot.
 
-<TypeDef holds={["{ \"x\": 1, \"y\": 2 }"]} types={{"postgres": ["a composite type", "point", "line", "box", "path", "circle"], "duckdb": ["struct"]}}>
+<TypeDef holds={["{ \"x\": 1, \"y\": 2 }"]} types={{"postgres": ["a composite type", "point", "line", "box", "path", "circle"]}}>
 
 ```jsonc
 // A point
@@ -422,7 +422,7 @@ Keys to values, each key once.
 
 The key is a slot, as the value is. A map whose keys may repeat is an array of `{ key, value }` structs.
 
-<TypeDef holds={["{ \"color\": \"red\", \"size\": null }"]} types={{"postgres": ["hstore"], "duckdb": ["map"]}}>
+<TypeDef holds={["{ \"color\": \"red\", \"size\": null }"]} types={{"postgres": ["hstore"]}}>
 
 ```jsonc
 // Text keys to text that may be null
@@ -437,7 +437,7 @@ Rows of columns.
 
 It's what a statement returns, and its `cardinality` says how many rows: `one`, `at_most_one`, `many` or `none`. Each column is a field, never optional. Where there may be many rows, `unique` lists the sets of columns no two rows share, a table's primary key first, and `order` the columns the rows are sorted on.
 
-<TypeDef holds={["[{ \"id\": 1 }, { \"id\": 2 }]"]} types={{"postgres": ["a statement's result"], "mysql": ["a statement's result"], "sqlite": ["a statement's result"], "duckdb": ["a statement's result"]}}>
+<TypeDef holds={["[{ \"id\": 1 }, { \"id\": 2 }]"]} types={{"postgres": ["a statement's result"], "mysql": ["a statement's result"], "sqlite": ["a statement's result"]}}>
 
 ```jsonc
 // Rows, unique by id, newest first
@@ -464,7 +464,7 @@ A [JSON](https://www.rfc-editor.org/rfc/rfc8259) value.
 
 Its `content` is what a statement built, in these same types, and its `schema` a [JSON Schema](https://json-schema.org) every value satisfies. With neither, it's any JSON.
 
-<TypeDef holds={["{ \"id\": 1, \"title\": \"Hello\" }", "null"]} types={{"postgres": ["json", "jsonb"], "mysql": ["json"], "duckdb": ["json"]}}>
+<TypeDef holds={["{ \"id\": 1, \"title\": \"Hello\" }", "null"]} types={{"postgres": ["json", "jsonb"], "mysql": ["json"]}}>
 
 ```jsonc
 // Any JSON value
@@ -547,7 +547,7 @@ One of several alternatives, each named by a tag.
 
 Every value carries its tag beside the value, even where the value is null. Unlike a union's members, two alternatives may hold one type.
 
-<TypeDef holds={["{ \"tag\": \"num\", \"value\": 1 }"]} types={{"duckdb": ["union"]}}>
+<TypeDef holds={["{ \"tag\": \"num\", \"value\": 1 }"]} types={{}}>
 
 ```jsonc
 // A number or text, each tagged

@@ -1,14 +1,11 @@
 //! A database's own test suite as a check of the engine: `--replay <database> <path>` replays the tests its authors wrote for it, statement by statement and in order, on a database of the runner's own, and holds every query the engine types against what the database returns. A column typed non-null that holds NULL, or more rows than the cardinality allows, is a contradiction; the run fails on any. The suites are read from a checkout at the version of the server that runs them, never copied:
 //!
-//! - `duckdb`: `test/sql` of DuckDB's repository (sqllogictest), run from that repository's root ([`duckdb`]).
 //! - `postgres`: `src/test/regress` of Postgres's, in the order of its `parallel_schedule`, on the server `--url` names ([`postgres`]).
 //! - `sqlite`: `test/*.test` of SQLite's, the SQL its TCL scripts run ([`sqlite`]).
 //! - `mysql`: `mysql-test/t/*.test` of MySQL's (mysqltest), on a server the runner starts from `--mysqld` and owns ([`mysql`]).
 //!
 //! What the runner does not follow it skips (a test of a feature the server lacks, the body of a loop, a second connection), and a statement that fails is no evidence. A statement with parameters is not run. The checks are of soundness alone: what a suite cannot show is whether a type is as tight as it could be, which the cases in `oracle/cases` pin.
 
-#[cfg(feature = "duckdb")]
-pub mod duckdb;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;

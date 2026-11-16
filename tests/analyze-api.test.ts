@@ -3,14 +3,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { build } from "esbuild";
 import { analyze, type TypeDefs } from "../src/index.ts";
 import { nativeBinary } from "../src/native.ts";
-import { DRIVERS, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT } from "./helpers.ts";
+import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT } from "./helpers.ts";
 
 type StatementDescriptor = TypeDefs.StatementDescriptor;
 
@@ -120,25 +120,6 @@ test("analyze reads MySQL, its server's version and the server's own error codes
   }
 });
 
-test("analyze reads DuckDB through the project's own @duckdb/node-api", { skip: existsSync(join(DRIVERS, "@duckdb", "node-api")) ? false : "lab/drivers is not installed (no @duckdb/node-api)" }, async () => {
-  const root = mkdtempSync(join(tmpdir(), "reylo-analyze-api-duckdb-"));
-  writeFileSync(join(root, "package.json"), "{}");
-  mkdirSync(join(root, "node_modules", "@duckdb"), { recursive: true });
-  symlinkSync(join(DRIVERS, "@duckdb", "node-api"), join(root, "node_modules", "@duckdb", "node-api"));
-  const cwd = process.cwd();
-  process.chdir(root);
-  try {
-    const td = await analyze({ url: "duckdb::memory:", sql: "select 42::integer as answer, :name::varchar as name" });
-    assert.equal(td.$schema, "https://reylo.dev/typedefs/0.1.0.json");
-    assert.equal(td.dialect.name, "duckdb");
-    assert.match(td.dialect.version, /^\d+\.\d+\.\d+/);
-    assert.deepEqual(td.result.columns.map((c) => [c.name, c.type.kind]), [["answer", "integer"], ["name", "text"]]);
-    assert.deepEqual(td.params.map((p) => p.name), ["name"]);
-  } finally {
-    process.chdir(cwd);
-  }
-});
-
 /** A package with `files` written into it, and the SQLite databases `databases` names, each holding one table of its name. */
 function project(files: Record<string, string>, databases: string[] = []): string {
   const root = mkdtempSync(join(tmpdir(), "reylo-analyze-api-project-"));
@@ -227,7 +208,7 @@ test("an app's bundle of the root module holds none of the build-time half, and 
   const { outputFiles, warnings, metafile } = await build({ entryPoints: [join(ROOT, "src", "index.ts")], bundle: true, platform: "browser", format: "esm", write: false, metafile: true, logLevel: "silent" });
   assert.deepEqual(warnings, []);
   const inputs = Object.keys(metafile.inputs);
-  for (const part of ["src/tooling.ts", "src/analyze-api.ts", "src/engine.ts", "src/analyze.ts", "src/duckdb.ts", "src/project.ts"]) assert.ok(!inputs.includes(part), `${part} is in the bundle`);
+  for (const part of ["src/tooling.ts", "src/analyze-api.ts", "src/engine.ts", "src/analyze.ts", "src/project.ts"]) assert.ok(!inputs.includes(part), `${part} is in the bundle`);
   assert.ok(inputs.includes("src/build-time.ts"));
   assert.doesNotMatch(outputFiles[0]!.text, /child_process|import\.meta/);
   // A browser, or a Worker without nodejs_compat: no `process` to reach Node through.

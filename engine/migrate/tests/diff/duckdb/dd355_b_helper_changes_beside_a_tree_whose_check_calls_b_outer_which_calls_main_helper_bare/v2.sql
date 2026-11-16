@@ -1,1 +1,0 @@
-create schema b; create macro b.helper() as 20; create macro helper() as 1; create macro b.outer() as helper(); create table pages (id integer primary key, parent_id integer references pages (id), n integer default 0 check (n < b.outer()));
