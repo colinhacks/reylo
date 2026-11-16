@@ -853,6 +853,7 @@ impl<'a> Engine<'a> {
         // The parameters cast to `nullable(…)`, by the number the rewrite gave each.
         let marked: HashSet<i32> = rewritten.order.iter().enumerate().filter(|(_, name)| marked.contains(name)).map(|(k, _)| k as i32 + 1).collect();
         crate::errors::prefetch(&rewritten.sql, self.host);
+        crate::capabilities::prefetch(&rewritten.sql, self.host);
         let parsed = match analyze::analyze(&rewritten.sql) {
             Ok(p) => Some(p),
             // A statement of a kind the analysis does not read (DDL, a session setting, EXPLAIN)
@@ -1088,6 +1089,7 @@ impl<'a> Engine<'a> {
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            capabilities: None,
             read_only: false,
             notes: Vec::new(),
             tables: None,
@@ -1206,6 +1208,7 @@ impl<'a> Engine<'a> {
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            capabilities: None,
             read_only: false,
             notes: Vec::new(),
             tables: None,

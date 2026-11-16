@@ -51,6 +51,7 @@ test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as rey
     kind: "select",
     comment: "One user, by id",
     params: [{ name: "id", type: { kind: "integer", bits: 64 } }],
+    capabilities: { tables: { users: "read" } },
     diagnostics: [],
   });
   assert.equal(result.kind, "table");
@@ -92,6 +93,85 @@ test("analyze reads Postgres, its server's version, comments and the server's ow
   }
 });
 
+test("analyze says what a SQLite statement may do: the tables it reaches, through views, foreign keys and triggers", async () => {
+  const url = `file:${sqliteFile(`
+    create table users (id integer primary key autoincrement, name text not null);
+    create table posts (id integer primary key, author_id integer not null references users on delete cascade, title text not null);
+    create table likes (post_id integer not null references posts, at text);
+    create table audit (what text);
+    create view titles as select p.title, u.name from posts p join users u on u.id = p.author_id;
+    create trigger audit_likes after insert on likes begin insert into audit (what) values ('like'); end;
+  `)}`;
+  const [read, view, inserted, deleted, triggered, begin, pragma, ddl] = await same(url, [
+    "select id, name from users where id = :id",
+    "select title, name from titles",
+    "insert into users (name) values (:name) returning id",
+    "delete from users where id = :id",
+    "insert into likes (post_id) values (:post)",
+    "begin",
+    "pragma foreign_keys = on",
+    "create table more (id integer primary key)",
+  ]);
+  assert.deepEqual(read!.capabilities, { tables: { users: "read" } });
+  // A view reads the tables it is made of.
+  assert.deepEqual(view!.capabilities, { tables: { posts: "read", titles: "read", users: "read" } });
+  // An AUTOINCREMENT table's insert counts in sqlite_sequence.
+  assert.deepEqual(inserted!.capabilities, { tables: { sqlite_sequence: "write", users: "write" } });
+  // A foreign key's ON DELETE CASCADE deletes from the table that refers, whose own key's check reads the next.
+  assert.deepEqual(deleted!.capabilities, { tables: { likes: "read", posts: "write", users: "write" } });
+  // A trigger's body is not read: any table.
+  assert.deepEqual(triggered!.capabilities, { tables: "unknown", ddl: true, session: true, external: true });
+  assert.deepEqual(begin!.capabilities, { tables: {}, transaction: true });
+  assert.deepEqual(pragma!.capabilities, { tables: {}, ddl: true, session: true });
+  assert.deepEqual(ddl!.capabilities, { tables: "unknown", ddl: true });
+});
+
+test("analyze says what a Postgres statement may do: the tables it reaches, and what it does beyond their rows", { skip: pgLive }, async () => {
+  const db = await postgresDatabase("reylo_analyze_api_capabilities", `
+    create table users (id int8 primary key generated always as identity, email text not null);
+    create table posts (id int8 primary key generated always as identity, author_id int8 not null references users on delete cascade, title text not null);
+    create table jobs (id int8 primary key, done bool not null default false);
+    create table audit (what text);
+    create view titles as select p.title, u.email from posts p join users u on u.id = p.author_id;
+    create function log_job() returns trigger language plpgsql as $$ begin insert into audit (what) values ('job'); return new; end $$;
+    create trigger jobs_audit after update on jobs for each row execute function log_job();
+    create sequence tickets;
+  `);
+  try {
+    const [read, view, inserted, deleted, locked, triggered, ticket, set, begin, notify, ddl] = await same(db.url, [
+      "select id, email from users where id = :id",
+      "select title, email from titles",
+      "insert into users (email) values (:email) returning id",
+      "delete from users where id = :id",
+      "select id from jobs where not done for update",
+      "update jobs set done = true where id = :id",
+      "select nextval('tickets') as n",
+      "select set_config('app.user', :user::text, false)",
+      "begin",
+      "select pg_notify('jobs', :what::text)",
+      "create table more (id int primary key)",
+    ]);
+    assert.deepEqual(read!.capabilities, { tables: { "public.users": "read" } });
+    // A view reads the tables it is made of.
+    assert.deepEqual(view!.capabilities, { tables: { "public.posts": "read", "public.titles": "read", "public.users": "read" } });
+    // An identity column's sequence is written by the insert.
+    assert.deepEqual(inserted!.capabilities, { tables: { "public.users": "write", "public.users_id_seq": "write" } });
+    // ON DELETE CASCADE deletes from the table that refers, and the key's check locks the rows it reads.
+    assert.deepEqual(deleted!.capabilities, { tables: { "public.posts": "write", "public.users": "write" } });
+    assert.deepEqual(locked!.capabilities, { tables: { "public.jobs": "readlock" } });
+    // A trigger's body is not read: any table, and anything a function may do but end the transaction.
+    assert.deepEqual(triggered!.capabilities, { tables: "unknown", ddl: true, session: true, external: true });
+    assert.deepEqual(ticket!.capabilities, { tables: { "public.tickets": "write" } });
+    assert.deepEqual(set!.capabilities, { tables: {}, session: true });
+    assert.deepEqual(begin!.capabilities, { tables: {}, transaction: true });
+    assert.deepEqual(notify!.capabilities, { tables: {}, external: true });
+    // DDL sets off any event trigger, whose code is not read.
+    assert.deepEqual(ddl!.capabilities, { tables: "unknown", ddl: true, session: true, external: true });
+  } finally {
+    await db.drop();
+  }
+});
+
 test("analyze reads the catalog as it stands at each call, though calls share a connection", { skip: pgLive }, async () => {
   const db = await postgresDatabase("reylo_analyze_api_fresh", "create table notes (id int primary key, body text)");
   try {
@@ -115,6 +195,47 @@ test("analyze reads MySQL, its server's version and the server's own error codes
     assert.equal(user!.result.cardinality, "at_most_one");
     assert.deepEqual(user!.result.columns.map((c) => [c.name, c.nullable ?? false, c.comment]), [["id", false, undefined], ["email", false, undefined], ["bio", true, "Shown on the profile page"]]);
     assert.deepEqual(missing!.diagnostics.map((d) => d.code), ["1054"]);
+  } finally {
+    await db.drop();
+  }
+});
+
+test("analyze says what a MySQL statement may do: the tables it reaches, and what it does beyond their rows", { skip: mysqlLive }, async () => {
+  const db = await mysqlDatabase("reylo_analyze_api_capabilities", `
+    create table users (id bigint primary key auto_increment, email varchar(255) not null);
+    create table posts (id bigint primary key auto_increment, author_id bigint not null, title text not null, foreign key (author_id) references users (id) on delete cascade);
+    create table jobs (id bigint primary key, done bool not null default false);
+    create table audit (what text);
+    create view titles as select p.title, u.email from posts p join users u on u.id = p.author_id;
+    create trigger jobs_audit after update on jobs for each row insert into audit (what) values ('job');
+    create view claimed as select id, get_lock(concat('job ', id), 0) as got from jobs;
+  `);
+  try {
+    const [read, view, deleted, locked, triggered, set, ddl, claim] = await same(db.url, [
+      "select id, email from users where id = :id",
+      "select title, email from titles",
+      "delete from users where id = :id",
+      "select id from jobs where not done for update",
+      "update jobs set done = true where id = :id",
+      "set @user = 1",
+      "create table more (id int primary key)",
+      "select id, got from claimed",
+    ]);
+    const name = db.url.split("/").pop()!.split("?")[0]!;
+    const t = (table: string) => `${name}.${table}`;
+    assert.deepEqual(read!.capabilities, { tables: { [t("users")]: "read" } });
+    // A view reads the tables it is made of.
+    assert.deepEqual(view!.capabilities, { tables: { [t("posts")]: "read", [t("titles")]: "read", [t("users")]: "read" } });
+    // ON DELETE CASCADE deletes from the table that refers.
+    assert.deepEqual(deleted!.capabilities, { tables: { [t("posts")]: "write", [t("users")]: "write" } });
+    assert.deepEqual(locked!.capabilities, { tables: { [t("jobs")]: "readlock" } });
+    // A trigger's body is not read: any table.
+    assert.deepEqual(triggered!.capabilities, { tables: "unknown", ddl: true, session: true, external: true });
+    assert.deepEqual(set!.capabilities, { tables: {}, session: true });
+    // DDL commits the open transaction.
+    assert.deepEqual(ddl!.capabilities, { tables: "unknown", ddl: true, transaction: true });
+    // A view's call to GET_LOCK leaves a named lock on the session.
+    assert.deepEqual(claim!.capabilities, { tables: { [t("claimed")]: "read", [t("jobs")]: "read" }, session: true });
   } finally {
     await db.drop();
   }
