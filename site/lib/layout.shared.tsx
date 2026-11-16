@@ -40,8 +40,7 @@ export const pageGroups = [
       { title: 'Intro', href: '/' },
       { title: 'Usage with TypeScript', href: '/typescript' },
       { title: 'Usage with Rust', href: '/rust' },
-      { title: 'Inference', href: '/inference' },
-      { title: 'CLI', href: '/cli' },
+      { title: 'Inference engine', href: '/inference' },
       { title: 'Migrations', href: '/migrations' },
       { title: 'Comparison', href: '/compare' },
       { title: 'FAQ', href: '/faq' },
@@ -64,7 +63,7 @@ export const pageGroups = [
     label: 'Reference',
     items: [
       { title: '.reylo.yaml', href: '/configuration', code: true },
-      { title: 'Type Defs', href: '/typedefs' },
+      { title: 'CLI', href: '/cli' },
       { title: 'Postgres', href: '/postgres' },
       { title: 'MySQL', href: '/mysql' },
       { title: 'SQLite', href: '/sqlite' },

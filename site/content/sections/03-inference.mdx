@@ -23,7 +23,7 @@ select id, name, email from users where id = :id::int
 
 </InferenceCard>
 
-Each card shows the types in TypeScript, in Rust, or as the [type descriptor](/typedefs) the [CLI](/cli) prints: pick one at the top of any card.
+Each card shows the types in TypeScript or in Rust: pick one at the top of any card.
 
 Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next check sees the new schema: a dropped column fails in the statement that names it, and in the code that reads it.
 
@@ -1579,3 +1579,16 @@ from input, json_each(input.events) as e
 ```
 
 </InferenceCard>
+
+## `reylo analyze`
+
+To see what Reylo infers without writing any code, run `reylo analyze` from a shell:
+
+```terminal
+Usage: reylo analyze <file.sql | directory | 'glob' | -> ... [--url <url>] [--format yaml | json]
+       reylo analyze --sql <statement> [--url <url>] [--format yaml | json]
+```
+
+- It reads a file, a directory of `.sql` files, a glob in quotes, or `-` for one statement on standard input; `--sql` takes a statement in place of files.
+- It prints each statement's parameters, columns, nullability and cardinality, as YAML or, with `--format json`, one line of JSON per statement.
+- The database is the project's, or `--url`. It exits with 1 when any statement has a diagnostic, and with 2 when it can't reach the database or read the statements.
