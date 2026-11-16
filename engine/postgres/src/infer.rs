@@ -3812,7 +3812,7 @@ fn written_returning_here(sql: &str, trust: &Trust, columns: &Columns) -> Option
     let withs = Withs::default().with(with.as_ref(), columns);
     let level = Level::of(&from, &withs, columns);
     let name = relation.alias.as_ref().map_or_else(|| relation.relname.clone(), |a| a.aliasname.clone());
-    let target = if relation.schemaname.is_empty() { relation.relname.clone() } else { format!("{}.{}", relation.schemaname, relation.relname) };
+    let target = crate::analyze::relation_name(&relation.schemaname, &relation.relname);
     let string = |node: &Node| last_string(std::slice::from_ref(node));
     // The target's column a reference reads, where it reads the target relation.
     let target_column = |c: &protobuf::ColumnRef| -> Option<String> {

@@ -27,6 +27,7 @@ merge_update_insert.sql: many () -> { note: text(¬NUL), action: text(¬NUL) }
 partition_insert.sql: one () -> { note: text(¬NUL)? }
 partition_moved.sql: many () -> { note: text(¬NUL)? }
 partition_plain.sql: one () -> { note: text(¬NUL)? }
+quoted_name.sql: one () -> { note: text(¬NUL) }
 rule_insert.sql: many () -> { note: text(¬NUL)? }
 star_in_row.sql: at_most_one () -> { note: text(¬NUL)?, label: text(¬NUL)? }
 star_in_values.sql: one () -> { note: text(¬NUL)?, label: text(¬NUL)? }

@@ -33,3 +33,4 @@ insert into gen values (1, null);
 create extension file_fdw;
 create server fs foreign data wrapper file_fdw;
 create foreign table ft (id int, note text) server fs options (program 'true');
+create table "Mixed.Case" (id int primary key, note text);
