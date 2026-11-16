@@ -1,0 +1,5 @@
+cast_parameter.sql: many (note: text(¬NUL)) -> { note: text(¬NUL)? }
+string_literal.sql: one () -> { note: text(¬NUL) }
+typed_value.sql: one () -> { note: text(¬NUL)?, n: int8 }
+user_cast.sql: one () -> { note: text(¬NUL)? }
+user_cast_update.sql: many () -> { note: text(¬NUL)? }

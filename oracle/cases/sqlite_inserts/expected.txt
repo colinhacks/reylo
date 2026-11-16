@@ -3,7 +3,7 @@ insert_declared_ignore.sql: at_most_one (k: text(UTF-8, ill-formed)?) -> { id: I
 insert_second_conflict.sql: at_most_one (id: int64, name: text(UTF-8, ill-formed)) -> { id: INTEGER }
 insert_select.sql: none (1: text(UTF-8, ill-formed)?, 2: NUMERIC(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)) -> {  }
 insert_select_compound.sql: many (a: int64, b: text(UTF-8, ill-formed)) -> { name: TEXT(text(UTF-8, ill-formed) | bytes), k: INTEGER(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)? }
-insert_select_returning.sql: many (meta: text(UTF-8, ill-formed)?, d: int64, n: int64) -> { name: TEXT(text(UTF-8, ill-formed) | bytes), meta: TEXT(text(UTF-8, ill-formed) | bytes)?, k: INTEGER(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)? }
+insert_select_returning.sql: many (meta: text(UTF-8, ill-formed)?, d: int64, n: int64) -> { name: TEXT(text(UTF-8, ill-formed) | bytes), meta: TEXT(text(UTF-8, ill-formed) | bytes)?, k: INTEGER(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes) }
 insert_view.sql: at_most_one (name: unknown) -> { name: unknown? }
 numeric_column.sql: many (ready: NUMERIC(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)) -> { name: TEXT(text(UTF-8, ill-formed) | bytes) }
 values_alone.sql: many (p: float(11,52), q: int64) -> { column1: int64, column2: text(UTF-8, ill-formed, 'a' | 'c')?, column3: float(11,52) }

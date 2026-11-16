@@ -49,7 +49,7 @@ impl Columns {
         self.0.insert(relation.into(), columns);
     }
 
-    fn of(&self, relation: &str) -> Option<&Vec<String>> {
+    pub(crate) fn of(&self, relation: &str) -> Option<&Vec<String>> {
         self.0.get(relation)
     }
 

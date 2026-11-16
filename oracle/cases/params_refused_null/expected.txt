@@ -2,5 +2,5 @@ coalesced.sql: at_most_one (nickname: text(¬NUL)?, email: text(¬NUL)?, id: int
 insert_select.sql: one (id: int4, email: public.required_email(¬NUL), nickname: text(¬NUL), note: text(¬NUL)?, tag: public.present_text(¬NUL)) -> { id: int4 }
 insert_values.sql: one (id: int4, email: public.required_email(¬NUL), nickname: text(¬NUL), tag: public.present_text(¬NUL)) -> { id: int4 }
 row_value.sql: at_most_one (email: public.required_email(¬NUL), nickname: text(¬NUL), id: int4) -> { id: int4 }
-update_set.sql: at_most_one (email: public.required_email(¬NUL), nickname: text(¬NUL), tag: public.present_text(¬NUL), note: text(¬NUL), id: int4) -> { email: text(¬NUL)?, nickname: text(¬NUL)? }
+update_set.sql: at_most_one (email: public.required_email(¬NUL), nickname: text(¬NUL), tag: public.present_text(¬NUL), note: text(¬NUL), id: int4) -> { email: text(¬NUL), nickname: text(¬NUL) }
 upsert.sql: one (id: int4, email: text(¬NUL), nickname: text(¬NUL), tag: text(¬NUL), note: text(¬NUL)?) -> { id: int4 }

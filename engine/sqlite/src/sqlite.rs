@@ -290,7 +290,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     diagnostics.extend(constant_keys(sql, lexed, &t));
     // The parameters cast to `nullable(…)`, by the `?n` the tree names each by.
     let nullable_params: HashSet<String> = lexed.params.iter().enumerate().filter(|(_, name)| marked.contains(name)).map(|(k, _)| format!("?{}", k + 1)).collect();
-    let a = Analyzer { tree: &t, extras, skipping: &skipping, nullable_params, level: std::cell::RefCell::new(Level::default()), shapes: std::cell::RefCell::new(HashMap::new()), recursion: std::cell::RefCell::new(Vec::new()), settled: std::cell::RefCell::new(HashMap::new()) };
+    let a = Analyzer { tree: &t, extras, skipping: &skipping, nullable_values: nullable_params.clone(), nullable_params, written: std::cell::RefCell::new(HashSet::new()), level: std::cell::RefCell::new(Level::default()), shapes: std::cell::RefCell::new(HashMap::new()), recursion: std::cell::RefCell::new(Vec::new()), settled: std::cell::RefCell::new(HashMap::new()) };
+    let a = Analyzer { nullable_values: a.bare_nullable().into_iter().chain(a.nullable_params.iter().cloned()).collect(), ..a };
     // A command (DDL, a PRAGMA, a transaction's control) has no tree to read: SQLite's prepare
     // says what it takes and returns, and nothing says where a column comes from, so each is of
     // no known type and may be NULL. One that returns no rows runs as a write does.
@@ -965,6 +966,13 @@ struct Analyzer<'a> {
     /// with the bare ones written whole to a column that may hold NULL ([`Analyzer::params`]),
     /// every other one is a non-null value, as on Postgres and MySQL.
     nullable_params: HashSet<String>,
+    /// The parameters (`?n`) whose value may be NULL: those of `nullable_params`, and each one
+    /// that is, bare, the whole value written to a column that may hold NULL, which the caller may
+    /// pass NULL for ([`Analyzer::bare_nullable`]).
+    nullable_values: HashSet<String>,
+    /// The target's columns (lowercase) the statement writes a non-null value to in every row its
+    /// RETURNING reads ([`Analyzer::written_non_null`]).
+    written: std::cell::RefCell<HashSet<String>>,
     /// What the WHERE and the grouping of the SELECT arm whose columns are being typed prove.
     level: std::cell::RefCell<Level>,
     /// The JSON each constructor builds, by its node ([`Analyzer::shape`]).
@@ -1264,6 +1272,8 @@ impl Analyzer<'_> {
         let t = self.tree;
         let kind = t.dml.as_ref().map(|d| if d.kind == "upsert" { "insert".to_string() } else { d.kind.clone() }).unwrap_or_else(|| if t.statement.is_some() { "select".into() } else { String::new() });
         let facts: Vec<Fact> = if let Some(returning) = &t.returning {
+            let written = self.written_non_null();
+            *self.written.borrow_mut() = written;
             returning.iter().map(|c| self.type_of(&c.expr, &Vec::new())).collect()
         } else if let (Some(sel), None) = (&t.statement, &t.dml) {
             (0..sel.columns.len()).map(|i| self.select_column(sel, i, &Vec::new())).collect()
@@ -1533,6 +1543,18 @@ impl Analyzer<'_> {
 
     /// A column reference: through the cursor to a subquery's column, or the table column itself.
     fn column_ref(&self, n: &Node, scope: &ScopeStack) -> Fact {
+        // RETURNING's read of a column the statement wrote a non-null value to in every row it
+        // returns: SQLite computes an UPDATE's values before its BEFORE triggers run and loads
+        // again only the columns the UPDATE leaves alone, no trigger can assign NEW, and RETURNING
+        // reports the row before any AFTER trigger runs. A view's INSTEAD OF trigger is no table.
+        if n.register && !n.view && !n.generated && n.column.as_ref().is_some_and(|c| self.written.borrow().contains(&c.to_ascii_lowercase())) {
+            let aff = n.affinity.as_deref().unwrap_or(&n.aff);
+            let ty = match &n.declared {
+                Some(declared) if !n.rowid => column_type(declared, aff, n.strict),
+                _ => affinity_type(aff),
+            };
+            return Fact { ty, non_null: true };
+        }
         // A strict WHERE test on the column, or on any column of its outer-joined item, keeps
         // its NULL (or the item's null extension) out of every returned row.
         let (narrowed, reduced, lone) = {
@@ -1602,7 +1624,7 @@ impl Analyzer<'_> {
             "blob" => Fact::new("blob", true),
             "null" => Fact::unknown(),
             // A parameter is a non-null value unless the statement means to take NULL for it.
-            "variable" => Fact { ty: Ty::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
+            "variable" => Fact { ty: Ty::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_values.contains(name)) },
             "function" => {
                 self.aggregated(n, || self.call(n, scope))
             }
@@ -2172,6 +2194,80 @@ impl Analyzer<'_> {
         let out = f(&inner);
         self.level.replace(outer);
         out
+    }
+
+    // ---- written values ----------------------------------------------------------------------
+
+    /// The target's columns (lowercase) an INSERT, an upsert or an UPDATE with a RETURNING writes
+    /// a non-null value to in every row it returns: each value of every row an INSERT writes to
+    /// the column, its VALUES or its SELECT's column, and each value every DO UPDATE of an upsert
+    /// assigns it (a DO NOTHING returns no row), or each value an UPDATE's SET assigns it, all of
+    /// them non-null. A column a write leaves out takes its default, or keeps what the row held,
+    /// and `excluded.<column>` proves nothing here.
+    fn written_non_null(&self) -> HashSet<String> {
+        let t = self.tree;
+        let (Some(dml), Some(_)) = (&t.dml, &t.returning) else { return HashSet::new() };
+        let scope: ScopeStack = Vec::new();
+        let non_null = |known: HashMap<String, bool>| -> HashSet<String> { known.into_iter().filter(|(_, n)| *n).map(|(c, _)| c).collect() };
+        let assigned = |items: &[tree::SetItem]| -> HashSet<String> {
+            let mut known: HashMap<String, bool> = HashMap::new();
+            for item in items {
+                let Some(column) = &item.column else { continue };
+                *known.entry(column.to_ascii_lowercase()).or_insert(true) &= self.type_of(&item.expr, &scope).non_null;
+            }
+            non_null(known)
+        };
+        match dml.kind.as_str() {
+            "update" => assigned(&dml.set),
+            "insert" | "upsert" => {
+                let mut known: HashMap<String, bool> = HashMap::new();
+                for (i, column) in dml.columns.iter().enumerate() {
+                    let Some(column) = column else { continue };
+                    let fact = match (&dml.values, &t.statement) {
+                        (Some(values), _) => values.get(i).map(|v| self.type_of(v, &scope)),
+                        (None, Some(sel)) => Some(self.select_column(sel, i, &scope)),
+                        (None, None) => None,
+                    };
+                    *known.entry(column.to_ascii_lowercase()).or_insert(true) &= fact.is_some_and(|f| f.non_null);
+                }
+                let mut written = non_null(known);
+                for upsert in dml.upserts.iter().filter(|u| u.do_update) {
+                    let updated = assigned(&upsert.set);
+                    written.retain(|c| updated.contains(c));
+                }
+                written
+            }
+            _ => HashSet::new(),
+        }
+    }
+
+    /// The parameters that are, bare, with no cast, the whole value written to a column that may
+    /// hold NULL, and to no column that refuses it: the caller may pass NULL for each
+    /// ([`Analyzer::params`]), so the value written may be NULL.
+    fn bare_nullable(&self) -> HashSet<String> {
+        let t = self.tree;
+        let Some(dml) = &t.dml else { return HashSet::new() };
+        let mut fills: HashMap<String, bool> = HashMap::new();
+        let mut fill = |v: &Node, column: Option<&str>| {
+            let (Some(name), Some(column)) = (v.name.as_ref().filter(|_| v.op == "variable"), column) else { return };
+            let Some(target) = self.table_column(&dml.table, column) else { return };
+            let refuses = target.non_null || self.checked_not_null(&dml.table, column);
+            *fills.entry(name.clone()).or_insert(true) &= !refuses;
+        };
+        if let (Some(sel), "insert" | "upsert") = (&t.statement, dml.kind.as_str()) {
+            if sel.prior.is_none() {
+                for (i, v) in sel.columns.iter().map(|c| &c.expr).enumerate().chain(sel.rows.iter().flat_map(|row| row.iter().enumerate())) {
+                    fill(v, dml.columns.get(i).and_then(|c| c.as_deref()));
+                }
+            }
+        }
+        for (i, v) in dml.values.iter().flatten().enumerate() {
+            fill(v, dml.columns.get(i).and_then(|c| c.as_deref()));
+        }
+        for item in dml.set.iter().chain(dml.upserts.iter().flat_map(|u| u.set.iter())) {
+            fill(&item.expr, item.column.as_deref());
+        }
+        fills.into_iter().filter(|(_, nullable)| *nullable).map(|(name, _)| name).collect()
     }
 
     // ---- parameters --------------------------------------------------------------------------
@@ -3497,6 +3593,34 @@ mod tests {
     fn col(a: &Analysis, name: &str) -> (String, bool) {
         let c = a.columns.iter().find(|c| c.name == name).unwrap_or_else(|| panic!("no column {name}"));
         (affinity_of(&c.ty).unwrap_or("unknown").to_string(), c.nullable)
+    }
+
+    #[test]
+    fn returning_reads_a_value_the_statement_wrote_to_the_row() {
+        let nullable = |sql: &str| analysis(sql).columns.iter().map(|c| c.nullable).collect::<Vec<_>>();
+        // A literal, an expression of written values and a parameter the caller cannot pass NULL
+        // for are values; a column the INSERT leaves out takes its default.
+        assert_eq!(nullable("insert into users (name, email, score) values ('a', upper(:e), 1.5) returning email, score, avatar, upper(email) as loud"), [false, false, true, false]);
+        // A bare parameter written to a column that may hold NULL may be NULL.
+        assert_eq!(nullable("insert into users (name, email) values ('a', :e) returning email"), [true]);
+        assert_eq!(nullable("update users set email = :e returning email"), [true]);
+        // Every row of a VALUES list, and the SELECT that feeds an INSERT, must write a value.
+        assert_eq!(nullable("insert into users (name, email) values ('a', 'x'), ('b', null) returning email"), [true]);
+        assert_eq!(nullable("insert into users (name, email) values ('a', 'x'), ('b', 'y') returning email"), [false]);
+        assert_eq!(nullable("insert into users (name, email) select name, email from users returning email"), [true]);
+        assert_eq!(nullable("insert into users (name, email) select name, name from users returning email"), [false]);
+        // An UPDATE writes what its SET does, from the row it changes; a column it leaves out keeps
+        // what the row held.
+        assert_eq!(nullable("update users set email = 'x', score = coalesce(score, 0) where id = 1 returning email, score, avatar"), [false, false, true]);
+        assert_eq!(nullable("update users set email = name returning email"), [false]);
+        assert_eq!(nullable("update users set email = score returning email"), [true]);
+        // An upsert's DO UPDATE must write one too, where a DO NOTHING returns no row.
+        assert_eq!(nullable("insert into users (id, name, email) values (1, 'a', 'x') on conflict (id) do update set email = 'y' returning email"), [false]);
+        assert_eq!(nullable("insert into users (id, name, email) values (1, 'a', 'x') on conflict (id) do update set name = 'b' returning email"), [true]);
+        assert_eq!(nullable("insert into users (id, name, email) values (1, 'a', 'x') on conflict (id) do nothing returning email"), [false]);
+        // A DELETE returns the row as it was, and a column read elsewhere than the row is the table's.
+        assert_eq!(nullable("delete from users where id = 1 returning email"), [true]);
+        assert_eq!(nullable("update users set email = 'x' returning (select email from users where id = 2) as other"), [true]);
     }
 
     fn param(a: &Analysis, name: &str) -> String {

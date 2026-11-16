@@ -505,6 +505,9 @@ pub struct Plan {
     pub star: bool,
     /// `SELECT <the leaves> FROM <the statement's FROM>`, when an expression reads a column.
     pub leaves: Option<String>,
+    /// Each leaf as the statement writes it, in order, before a RETURNING's old or new row is
+    /// read as the target relation's.
+    pub sources: Vec<Node>,
     /// A set operation at the top of the statement; nothing else in the plan is set then.
     pub set_op: Option<SetOp>,
 }
@@ -675,7 +678,7 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     let rows = Rows::of(top).map(|rows| (rows, Level::of(&from, &withs, columns)));
     let froms = (dialect == Dialect::Postgres).then(|| vec![Level::of(&from, &withs, columns)]);
     let fields = row_fields(&serde_json::to_value(&parsed.protobuf).unwrap_or_default());
-    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows, fields: Some(&fields), lockstep: targets_lockstep(top, &targets, dialect, trust) };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), sources: Vec::new(), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows, fields: Some(&fields), lockstep: targets_lockstep(top, &targets, dialect, trust) };
     let scope = match top {
         NodeEnum::SelectStmt(s) if dialect == Dialect::Postgres && !grouped => Some(Scope::of(s, &mut reader)),
         _ => None,
@@ -738,6 +741,7 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
         }
     }
     let leaves = reader.leaves.unwrap_or_default();
+    plan.sources = reader.sources;
     if !leaves.is_empty() {
         // Every row the select list reads passed the WHERE, so the probe filters by it too: its
         // strict tests narrow the leaves and reduce outer joins there as they do here.
@@ -1429,7 +1433,7 @@ fn array_elements(node: &Node) -> Option<Vec<&Node>> {
 /// rows may have ([`row_fields`]), `None` where the caller does not see the whole statement, and
 /// `arg_type` gives the type of a column an argument reads where the caller knows it.
 pub fn aggregates(expr: &Node, dialect: Dialect, trust: &Trust, level: Option<&Level>, fields: Option<&HashSet<String>>, arg_type: &dyn Fn(&Node) -> Option<u32>) -> bool {
-    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields, lockstep: false }.aggregates(expr, true, level, arg_type)
+    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, sources: Vec::new(), grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields, lockstep: false }.aggregates(expr, true, level, arg_type)
 }
 
 /// The aggregates the rules read that no built-in of takes a row on every server Reylo supports
@@ -1596,6 +1600,9 @@ struct Reader<'a> {
     rows: Option<&'a (Rows, Level)>,
     /// The column references read so far, in leaf order; `None` where a reference proves nothing.
     leaves: Option<Vec<Node>>,
+    /// Each of `leaves` as the statement writes it, before a RETURNING's old or new row is read as
+    /// the target relation's.
+    sources: Vec<Node>,
     /// Whether the expressions belong to a SELECT with a plain `GROUP BY`, where no group is empty.
     grouped: bool,
     /// The columns, as written, that cannot be NULL where the reader stands: inside a CASE arm
@@ -1666,6 +1673,7 @@ impl Reader<'_> {
                 let read = match self.leaves.as_mut() {
                     Some(leaves) if !is_star(expr) => {
                         leaves.push(leaf);
+                        self.sources.push(expr.clone());
                         Expr::Leaf(leaves.len() - 1)
                     }
                     Some(_) => Expr::Unknown,
@@ -2236,7 +2244,7 @@ impl Reader<'_> {
             Some(outside) => level.within(outside.clone()),
             None => level,
         };
-        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause, fields: self.fields, lockstep: false };
+        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, sources: Vec::new(), grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause, fields: self.fields, lockstep: false };
         let value = inner_reader.read(inner);
         if array {
             // Its elements are the subquery's values: arrays of arrays where they are arrays
@@ -2630,7 +2638,7 @@ impl Items<'_> {
                     })
                 });
                 let query = cte.and_then(|cte| {
-                    let body = cte.ctequery.as_deref().and_then(as_select)?;
+                    let body = cte.ctequery.as_deref()?;
                     // A WITH query's body sees the queries before it, and in a recursive WITH
                     // every one: a later query's name, or its own, is a table's there.
                     let scope = self.with.map(|w| {
@@ -2649,7 +2657,14 @@ impl Items<'_> {
                     names.extend(own.into_iter().skip(names.len()));
                     // SEARCH adds its sequence column, CYCLE its mark and its path.
                     let extra = usize::from(cte.search_clause.is_some()) + 2 * usize::from(cte.cycle_clause.is_some());
-                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled, known: None, ordinality: None, lateral: false, around: None, extra })
+                    // An INSERT, an UPDATE or a MERGE is settled as the statement it is: its
+                    // RETURNING list reads what it wrote ([`written_returning`]).
+                    let sql = match body.node.as_ref()? {
+                        NodeEnum::SelectStmt(body) => arm_text(self.version, body, scope.as_ref())?,
+                        NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::MergeStmt(_) => write_text(self.version, body, scope.as_ref())?,
+                        _ => return None,
+                    };
+                    Some(ItemQuery { sql, columns: names, with: Some(cte.ctename.clone()), nulled, known: None, ordinality: None, lateral: false, around: None, extra })
                 });
                 let name = Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone()));
                 if cte.is_none() {
@@ -3483,7 +3498,7 @@ fn holds_current_row(options: i32) -> bool {
 /// A bare `VALUES (…), (…)` arm: a column is non-null when it is in every row.
 fn values_plan(s: &SelectStmt, dialect: Dialect, trust: &Trust, columns: &Columns) -> Plan {
     let withs = Withs::default().with(s.with_clause.as_ref(), columns);
-    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None, lockstep: false };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, sources: Vec::new(), grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None, lockstep: false };
     let mut rows: Vec<Vec<Expr>> = Vec::new();
     for row in &s.values_lists {
         let Some(NodeEnum::List(list)) = row.node.as_ref() else { return Plan::default() };
@@ -3525,6 +3540,25 @@ fn arm_text(version: i32, arm: &SelectStmt, with: Option<&protobuf::WithClause>)
             stmt_len: 0,
         }],
     };
+    crate::stack::deparse(&result).ok()
+}
+
+/// An INSERT, an UPDATE or a MERGE as a statement of its own, with the WITH clause around it,
+/// whose queries it may read; `None` for one with a WITH clause of its own as well.
+fn write_text(version: i32, statement: &Node, with: Option<&protobuf::WithClause>) -> Option<String> {
+    let mut statement = statement.clone();
+    let own = match statement.node.as_mut()? {
+        NodeEnum::InsertStmt(s) => &mut s.with_clause,
+        NodeEnum::UpdateStmt(s) => &mut s.with_clause,
+        NodeEnum::MergeStmt(s) => &mut s.with_clause,
+        _ => return None,
+    };
+    match (&own, with) {
+        (None, _) => *own = with.cloned(),
+        (Some(_), Some(_)) => return None,
+        (Some(_), None) => {}
+    }
+    let result = ParseResult { version, stmts: vec![RawStmt { stmt: Some(Box::new(statement)), stmt_location: 0, stmt_len: 0 }] };
     crate::stack::deparse(&result).ok()
 }
 
@@ -3600,7 +3634,7 @@ fn write_narrowing_here(sql: &str, trust: &Trust, columns: &Columns) -> Option<W
     let withs = Withs::default().with(with.as_ref(), columns);
     let level = Level::of(&from, &withs, columns);
     let target = relation.alias.as_ref().map_or_else(|| relation.relname.clone(), |a| a.aliasname.clone());
-    let mut reader = Reader { dialect: Dialect::Postgres, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None, lockstep: false };
+    let mut reader = Reader { dialect: Dialect::Postgres, trust, columns, withs, rows: None, leaves: None, sources: Vec::new(), grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None, lockstep: false };
     let scope = Scope::over(&from, filter, &mut reader);
     // The reference's claim, and whose column it reads.
     let mut narrowed = |c: &protobuf::ColumnRef| -> Option<WriteRead> {
@@ -3644,6 +3678,356 @@ fn write_narrowing_here(sql: &str, trust: &Trust, columns: &Columns) -> Option<W
     }
     let target = if relation.schemaname.is_empty() { relation.relname.clone() } else { format!("{}.{}", relation.schemaname, relation.relname) };
     Some(WriteNarrowing { target, update, assigned, columns: out })
+}
+
+/// What a column a value a write gives a column reads is, as far as the value's nullability goes
+/// ([`written_returning`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum WrittenLeaf {
+    /// The target's column of this name in the row the write changes, as the row held it before:
+    /// an UPDATE's or a MERGE's target row, or the row an upsert's DO UPDATE finds in its way.
+    Target(String),
+    /// `excluded.<column>`: the row an upsert proposed to insert.
+    Excluded(String),
+    /// Column `n` of the SELECT an INSERT reads its rows from ([`WrittenReturning::select`]).
+    Selected(usize),
+    /// Anything else, which proves nothing: a column of a relation the write joins in or of a
+    /// MERGE's source, a whole row.
+    Other,
+}
+
+/// One value a write gives a column: what the rules read it as, with what each of its leaves reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WrittenValue {
+    pub claim: Expr,
+    pub leaves: Vec<WrittenLeaf>,
+    /// Whether the value has a type of its own, which an assignment cast turns into the column's:
+    /// anything but a string literal or a bare parameter, which the server reads as the column's
+    /// type, and the same column of `excluded`.
+    pub cast: bool,
+}
+
+/// What an INSERT, an UPDATE or a MERGE writes to the columns its RETURNING list reads of the row
+/// it wrote ([`written_returning`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WrittenReturning {
+    /// The target relation, as the statement names it (`users`, `app.users`).
+    pub target: String,
+    /// The row events (`TRIGGER_ROW_INSERT`, `_UPDATE`, `_DELETE` as bits) on which a trigger or a
+    /// rule may act on the statement's rows: a row an UPDATE moves to another partition is deleted
+    /// from one and inserted into the other.
+    pub events: i32,
+    /// Per result column, the target's column whose new value it reads, for certain; `None` for
+    /// every other.
+    pub columns: Vec<Option<String>>,
+    /// Per way the statement inserts a row it returns (its own rows, a MERGE's INSERT action), the
+    /// values it may write to each column it writes. A column a way leaves out takes its default.
+    pub inserts: Vec<HashMap<String, Vec<WrittenValue>>>,
+    /// The same per way it updates one (an UPDATE's SET, an upsert's DO UPDATE, a MERGE's UPDATE
+    /// action). A column a way leaves out keeps what the row held.
+    pub updates: Vec<HashMap<String, Vec<WrittenValue>>>,
+    /// The SELECT an INSERT reads its rows from, as a statement of its own: with the INSERT's
+    /// WITH clause, which it may read.
+    pub select: Option<String>,
+    /// What the RETURNING list's expressions need ([`plan`]), and per leaf of it, the target's
+    /// column whose new value it reads, for certain: an expression reads a column the statement
+    /// wrote a value to as that value.
+    pub plan: Plan,
+    pub leaf_columns: Vec<Option<String>>,
+}
+
+impl WrittenReturning {
+    /// The target's columns the statement writes a non-null value to in every row it returns, each
+    /// with whether one of those values may reach it through an assignment cast. `not_null` says
+    /// which of the target's columns hold a value in every row of it, and `selected` which columns
+    /// of the INSERT's SELECT do.
+    pub fn non_null(&self, not_null: &dyn Fn(&str) -> bool, selected: &dyn Fn(usize) -> bool) -> HashMap<String, bool> {
+        let holds = |value: &WrittenValue, excluded: &dyn Fn(&str) -> bool| {
+            let leaves: Vec<DescribedColumn> = value
+                .leaves
+                .iter()
+                .map(|leaf| {
+                    let non_null = match leaf {
+                        WrittenLeaf::Target(column) => not_null(column),
+                        WrittenLeaf::Excluded(column) => excluded(column),
+                        WrittenLeaf::Selected(i) => selected(*i),
+                        WrittenLeaf::Other => false,
+                    };
+                    DescribedColumn { name: String::new(), type_oid: oid::UNKNOWN, typmod: -1, type_name: String::new(), nullable: !non_null, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
+                })
+                .collect();
+            resolve(&value.claim, Some(&leaves)).non_null
+        };
+        // The columns every way writes a non-null value to, each with whether a value is cast.
+        let every = |ways: &[HashMap<String, Vec<WrittenValue>>], excluded: &dyn Fn(&str) -> bool| -> Option<HashMap<String, bool>> {
+            let mut ways = ways.iter().map(|way| -> HashMap<String, bool> {
+                way.iter().filter(|(_, values)| !values.is_empty() && values.iter().all(|v| holds(v, excluded))).map(|(column, values)| (column.clone(), values.iter().any(|v| v.cast))).collect()
+            });
+            let first = ways.next()?;
+            Some(ways.fold(first, |known, way| known.into_iter().filter_map(|(column, cast)| way.get(&column).map(|other| (column.clone(), cast || *other))).collect()))
+        };
+        let inserted = every(&self.inserts, &|_| false);
+        // `excluded` is the row an upsert's one insert proposed, as it wrote it.
+        let proposed = inserted.clone().unwrap_or_default();
+        let updated = every(&self.updates, &|column| proposed.contains_key(column));
+        match (inserted, updated) {
+            (Some(inserted), Some(updated)) => inserted.into_iter().filter_map(|(column, cast)| updated.get(&column).map(|other| (column.clone(), cast || *other))).collect(),
+            (Some(only), None) | (None, Some(only)) => only,
+            (None, None) => HashMap::new(),
+        }
+    }
+}
+
+/// What an INSERT, an UPDATE or a MERGE writes to the columns its RETURNING list reads of the row
+/// it wrote: per result column that is the target's column in the new row (bare, by the target's
+/// name, or by the new row's, and each column a `*` shows), and per way the statement writes a row
+/// it returns, each value it writes to each column ([`WrittenReturning`]). A MERGE that may delete
+/// returns the deleted row's values as they were, so it reads nothing here; an upsert's DO NOTHING,
+/// and a MERGE's, return no row. A column written in part (`tags[1]`, `point.x`), `DEFAULT`, and a
+/// column of a row a subquery assigns (`SET (a, b) = (SELECT …)`) are written nothing the rules
+/// read. Whether a trigger, a rule, a cast or anything else changes the value on its way to the
+/// row is the caller's to rule out. `None` for any other statement.
+pub fn written_returning(sql: &str, trust: &Trust, columns: &Columns) -> Option<WrittenReturning> {
+    crate::stack::run(|| written_returning_here(sql, trust, columns))
+}
+
+fn written_returning_here(sql: &str, trust: &Trust, columns: &Columns) -> Option<WrittenReturning> {
+    use crate::cardinality::{TRIGGER_ROW_DELETE, TRIGGER_ROW_INSERT, TRIGGER_ROW_UPDATE};
+    let parsed = crate::stack::parse(sql).ok()?;
+    let version = parsed.protobuf.version;
+    let top = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref())?;
+    let relation = match top {
+        NodeEnum::InsertStmt(s) => s.relation.as_ref()?,
+        NodeEnum::UpdateStmt(s) => s.relation.as_ref()?,
+        NodeEnum::MergeStmt(s) => s.relation.as_ref()?,
+        _ => return None,
+    };
+    let (targets, from, with) = top_context(top)?;
+    if targets.is_empty() || target_named_by_with(top, with.as_ref()) {
+        return None;
+    }
+    let rows = Rows::of(top)?;
+    let withs = Withs::default().with(with.as_ref(), columns);
+    let level = Level::of(&from, &withs, columns);
+    let name = relation.alias.as_ref().map_or_else(|| relation.relname.clone(), |a| a.aliasname.clone());
+    let target = if relation.schemaname.is_empty() { relation.relname.clone() } else { format!("{}.{}", relation.schemaname, relation.relname) };
+    let string = |node: &Node| last_string(std::slice::from_ref(node));
+    // The target's column a reference reads, where it reads the target relation.
+    let target_column = |c: &protobuf::ColumnRef| -> Option<String> {
+        let fields: Vec<String> = c.fields.iter().map(string).collect::<Option<_>>()?;
+        match fields.as_slice() {
+            [item, column] if *item == name => Some(column.clone()),
+            [column] if level.reader_of(column).as_deref() == Some(name.as_str()) => Some(column.clone()),
+            _ => None,
+        }
+    };
+    // A reference as one to the target relation, and whether it reads the new row: `old.x` reads
+    // the row before the write, which no value written says anything of, and `new.x` the
+    // target's row after it. A bare name is a column before it is a row.
+    let as_target = |c: &protobuf::ColumnRef| -> (Option<protobuf::ColumnRef>, bool) {
+        let row = if c.fields.len() > 1 { c.fields.first().and_then(string).and_then(|first| rows.row(&first)) } else { None };
+        let read = match row {
+            Some(_) => rows.read(c, &|_| false).map(|(read, _)| read),
+            None => Some(c.clone()),
+        };
+        (read, row != Some(false))
+    };
+    // The result columns that read the new row's column of the target.
+    let mut out = Vec::new();
+    for t in &targets {
+        let Some(NodeEnum::ResTarget(rt)) = t.node.as_ref() else { return None };
+        let val = rt.val.as_deref()?;
+        let Some(NodeEnum::ColumnRef(c)) = val.node.as_ref() else {
+            // `(row).*` is as many columns as the row's type has.
+            if expands(val) {
+                return None;
+            }
+            out.push(None);
+            continue;
+        };
+        let (c, new) = as_target(c);
+        if is_star(val) {
+            // A MERGE's `*` shows the source's columns before the target's, which the FROM's
+            // order does not.
+            if c.as_ref().is_none_or(|c| c.fields.len() == 1) && matches!(top, NodeEnum::MergeStmt(_)) {
+                return None;
+            }
+            for column in star_columns(&c?, &level)? {
+                out.push(target_column(&column).filter(|_| new));
+            }
+            continue;
+        }
+        out.push(c.as_ref().filter(|_| new).and_then(target_column));
+    }
+    let mut reader = Reader { dialect: Dialect::Postgres, trust, columns, withs: withs.clone(), rows: None, leaves: Some(Vec::new()), sources: Vec::new(), grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None, lockstep: false };
+    // One value as the rules read it. `excluded` says whether `excluded.<column>` is the row an
+    // upsert proposed, and `own` names the column the value is written to.
+    let mut value = |node: &Node, excluded: bool, own: &str| -> Option<WrittenValue> {
+        if matches!(node.node.as_ref(), Some(NodeEnum::SetToDefault(_))) {
+            return None;
+        }
+        reader.leaves = Some(Vec::new());
+        let claim = reader.read(node);
+        let leaves = reader.leaves.take().unwrap_or_default();
+        let leaves: Vec<WrittenLeaf> = leaves
+            .iter()
+            .map(|leaf| {
+                let Some(NodeEnum::ColumnRef(c)) = leaf.node.as_ref() else { return WrittenLeaf::Other };
+                let fields: Option<Vec<String>> = c.fields.iter().map(string).collect();
+                match fields.as_deref() {
+                    Some([item, column]) if excluded && item == "excluded" && name != "excluded" => WrittenLeaf::Excluded(column.clone()),
+                    _ => target_column(c).map_or(WrittenLeaf::Other, WrittenLeaf::Target),
+                }
+            })
+            .collect();
+        let cast = match node.node.as_ref() {
+            Some(NodeEnum::AConst(c)) => !matches!(c.val, Some(protobuf::a_const::Val::Sval(_))),
+            Some(NodeEnum::ParamRef(_)) => false,
+            Some(NodeEnum::ColumnRef(c)) if excluded => c.fields.iter().map(string).collect::<Option<Vec<String>>>().is_none_or(|f| f.len() != 2 || f[0] != "excluded" || f[1] != own),
+            _ => true,
+        };
+        Some(WrittenValue { claim, leaves, cast })
+    };
+    // A way's values by column, each column with the value written to it whole, `excluded` read as
+    // the proposed row where `excluded` says. A column written once with no value the rules read
+    // (`DEFAULT`, or nothing at all) is one the way says nothing of.
+    let mut way = |written: Vec<(String, Option<&Node>)>, excluded: bool| -> HashMap<String, Vec<WrittenValue>> {
+        let mut way: HashMap<String, Vec<WrittenValue>> = HashMap::new();
+        let mut unread: HashSet<String> = HashSet::new();
+        for (column, node) in written {
+            match node.and_then(|node| value(node, excluded, &column)) {
+                Some(written) => way.entry(column).or_default().push(written),
+                None => {
+                    unread.insert(column);
+                }
+            }
+        }
+        way.retain(|column, _| !unread.contains(column));
+        way
+    };
+    let table: Option<Vec<String>> = columns.of(&target).cloned();
+    // The columns rows are inserted into, those a list names or the table's in order, each with
+    // whether it is written whole, not in part (`tags[1]`, `point.x`).
+    let insert_names = |names: &[Node]| -> Option<Vec<(String, bool)>> {
+        if names.is_empty() {
+            return Some(table.clone()?.into_iter().map(|c| (c, true)).collect());
+        }
+        names.iter().map(|n| match n.node.as_ref() {
+            Some(NodeEnum::ResTarget(rt)) => Some((rt.name.clone(), rt.indirection.is_empty())),
+            _ => None,
+        }).collect()
+    };
+    let mut inserts = Vec::new();
+    let mut updates = Vec::new();
+    let mut select = None;
+    let events = match top {
+        NodeEnum::InsertStmt(s) => {
+            let source = s.select_stmt.as_deref().and_then(|n| n.node.as_ref());
+            match source {
+                // `DEFAULT VALUES` writes no column.
+                None => inserts.push(HashMap::new()),
+                Some(NodeEnum::SelectStmt(v)) if !v.values_lists.is_empty() => {
+                    let lists: Vec<&[Node]> = v.values_lists.iter().filter_map(|l| match l.node.as_ref() {
+                        Some(NodeEnum::List(l)) => Some(l.items.as_slice()),
+                        _ => None,
+                    }).collect();
+                    if lists.len() != v.values_lists.len() {
+                        return None;
+                    }
+                    inserts.push(way(rows_written(&insert_names(&s.cols)?, &lists), false));
+                }
+                // Any other SELECT: column `n` of its rows is written to the `n`th column.
+                Some(NodeEnum::SelectStmt(v)) => {
+                    let names = insert_names(&s.cols)?;
+                    let selected: HashMap<String, Vec<WrittenValue>> = names
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, whole))| *whole)
+                        .map(|(i, (column, _))| (column.clone(), vec![WrittenValue { claim: Expr::Leaf(0), leaves: vec![WrittenLeaf::Selected(i)], cast: true }]))
+                        .collect();
+                    inserts.push(selected);
+                    // The SELECT reads the INSERT's WITH queries; one with a WITH clause of its own
+                    // and the INSERT's too is left unread rather than merged.
+                    let mut statement = (**v).clone();
+                    if statement.with_clause.is_none() {
+                        statement.with_clause = s.with_clause.clone();
+                    } else if s.with_clause.is_some() {
+                        return None;
+                    }
+                    let result = ParseResult { version, stmts: vec![RawStmt { stmt: Some(Box::new(Node { node: Some(NodeEnum::SelectStmt(Box::new(statement))) })), stmt_location: 0, stmt_len: 0 }] };
+                    select = crate::stack::deparse(&result).ok();
+                }
+                _ => return None,
+            }
+            match s.on_conflict_clause.as_deref() {
+                Some(c) if c.action == protobuf::OnConflictAction::OnconflictUpdate as i32 => {
+                    updates.push(way(assignments(&c.target_list), true));
+                    TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE
+                }
+                _ => TRIGGER_ROW_INSERT,
+            }
+        }
+        NodeEnum::UpdateStmt(s) => {
+            updates.push(way(assignments(&s.target_list), false));
+            TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE | TRIGGER_ROW_DELETE
+        }
+        NodeEnum::MergeStmt(s) => {
+            for clause in &s.merge_when_clauses {
+                let Some(NodeEnum::MergeWhenClause(c)) = clause.node.as_ref() else { return None };
+                match protobuf::CmdType::try_from(c.command_type).ok()? {
+                    protobuf::CmdType::CmdUpdate => updates.push(way(assignments(&c.target_list), false)),
+                    // `INSERT DEFAULT VALUES` has no values and writes no column.
+                    protobuf::CmdType::CmdInsert if c.values.is_empty() => inserts.push(HashMap::new()),
+                    protobuf::CmdType::CmdInsert => inserts.push(way(rows_written(&insert_names(&c.target_list)?, &[c.values.as_slice()]), false)),
+                    protobuf::CmdType::CmdNothing => {}
+                    _ => return None,
+                }
+            }
+            TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE | TRIGGER_ROW_DELETE
+        }
+        _ => return None,
+    };
+    let plan = plan_here(sql, Dialect::Postgres, trust, columns);
+    let leaf_columns = plan
+        .sources
+        .iter()
+        .map(|leaf| match leaf.node.as_ref() {
+            Some(NodeEnum::ColumnRef(c)) => match as_target(c) {
+                (Some(c), true) => target_column(&c),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    Some(WrittenReturning { target, events, columns: out, inserts, updates, select, plan, leaf_columns })
+}
+
+/// Each row's value per column of `names`, `None` for a column written in part, and for one the
+/// row leaves out, which takes its default.
+fn rows_written<'a>(names: &[(String, bool)], rows: &[&'a [Node]]) -> Vec<(String, Option<&'a Node>)> {
+    rows.iter().flat_map(|row| names.iter().enumerate().map(move |(i, (column, whole))| (column.clone(), row.get(i).filter(|_| *whole)))).collect()
+}
+
+/// The assignments of a SET list, each column with the value written to it whole: `None` for a
+/// column written in part (`tags[1]`, `point.x`), and for one a subquery's row assigns (`SET (a, b)
+/// = (SELECT …)`), which may find no row.
+fn assignments(list: &[Node]) -> Vec<(String, Option<&Node>)> {
+    list.iter()
+        .filter_map(|item| match item.node.as_ref() {
+            Some(NodeEnum::ResTarget(rt)) => Some(rt),
+            _ => None,
+        })
+        .map(|rt| {
+            let val = rt.val.as_deref().filter(|_| rt.indirection.is_empty()).and_then(|val| match val.node.as_ref() {
+                Some(NodeEnum::MultiAssignRef(m)) => match m.source.as_deref().and_then(|s| s.node.as_ref()) {
+                    Some(NodeEnum::RowExpr(r)) => usize::try_from(m.colno - 1).ok().and_then(|i| r.args.get(i)),
+                    _ => None,
+                },
+                _ => Some(val),
+            });
+            (rt.name.clone(), val)
+        })
+        .collect()
 }
 
 /// Whether the top SELECT has a `*` in its target list that a test of its WHERE or of an inner
@@ -4159,6 +4543,71 @@ mod tests {
         assert_eq!(found("DELETE FROM todos USING tags WHERE name = 'a' RETURNING name").columns, [None]);
         assert!(write_narrowing("SELECT 1", &Trust::default(), &columns).is_none());
         assert!(write_narrowing("INSERT INTO todos (title) VALUES ('a') RETURNING title", &Trust::default(), &columns).is_none());
+    }
+
+    #[test]
+    fn a_writes_values_say_what_its_returning_reads_of_the_row_it_wrote() {
+        let columns: Columns = [("todos", vec!["id", "owner_id", "title", "n"]), ("owners", vec!["id", "name"])].into_iter().collect();
+        // `$2` is bare and written to a column that may hold NULL; every other parameter is a value.
+        let trust = Trust { non_null_params: true, nullable_params: [2].into_iter().collect(), ..Default::default() };
+        let found = |sql: &str| written_returning(sql, &trust, &columns).unwrap();
+        let some = |c: &str| Some(c.to_string());
+        // The target's columns written a non-null value, each with whether one may be cast; `id`
+        // is the one column that holds a value in every row of the table, and the SELECT that
+        // feeds an INSERT has its second column non-null.
+        let written = |sql: &str| {
+            let mut out: Vec<(String, bool)> = found(sql).non_null(&|c| c == "id", &|i| i == 1).into_iter().collect();
+            out.sort();
+            out
+        };
+        let w = |pairs: &[(&str, bool)]| pairs.iter().map(|(c, cast)| (c.to_string(), *cast)).collect::<Vec<_>>();
+        // The new row's columns, by any name, and none of the old row's.
+        let i = found("INSERT INTO todos (id, title, n) VALUES (1, 'a', now()) RETURNING title, n AS at, owner_id, new.title AS t, old.title AS o, *");
+        assert_eq!(i.columns, [some("title"), some("n"), some("owner_id"), some("title"), None, some("id"), some("owner_id"), some("title"), some("n")]);
+        assert_eq!(found("INSERT INTO todos AS x (id) VALUES (1) RETURNING WITH (NEW AS a, OLD AS b) a.title, b.title, x.n, a.*, b.*").columns, [some("title"), None, some("n"), some("id"), some("owner_id"), some("title"), some("n"), None, None, None, None]);
+        // An expression's leaves, each by the column it reads of the new row.
+        let e = found("UPDATE todos t SET title = 'a' RETURNING upper(title) AS up, old.title || new.title AS both, t.title || owner_id::text AS joined, title");
+        assert_eq!(e.leaf_columns, [some("title"), None, some("title"), some("title"), some("owner_id")]);
+        // A string literal and a bare parameter are read as the column's type; anything else may be cast.
+        assert_eq!(written("INSERT INTO todos (id, title, n) VALUES (1, 'a', now()) RETURNING title"), w(&[("id", true), ("n", true), ("title", false)]));
+        assert_eq!(written("INSERT INTO todos (title, n) VALUES ($1, $3::int8) RETURNING title"), w(&[("n", true), ("title", false)]));
+        // A parameter the caller may pass NULL for, `DEFAULT`, NULL, and a column a row leaves out
+        // write nothing; every row of a VALUES list must write a value.
+        assert_eq!(written("INSERT INTO todos (title, n, owner_id) VALUES ($2, DEFAULT, NULL) RETURNING title"), w(&[]));
+        assert_eq!(written("INSERT INTO todos (title, n) VALUES ('a', 1), ('b', $2) RETURNING title"), w(&[("title", false)]));
+        assert_eq!(written("INSERT INTO todos VALUES (1, 2, 'a') RETURNING title"), w(&[("id", true), ("owner_id", true), ("title", false)]));
+        assert_eq!(written("INSERT INTO todos DEFAULT VALUES RETURNING title"), w(&[]));
+        assert_eq!(written("INSERT INTO todos (title[1], n) VALUES ('a', 1) RETURNING title"), w(&[("n", true)]));
+        // An upsert writes its row and, where it conflicts, what its DO UPDATE sets: `excluded` is
+        // the row it proposed, and the row in its way holds what the table's constraints say.
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = excluded.title RETURNING title"), w(&[("title", false)]));
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = excluded.n RETURNING title"), w(&[]));
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET n = 1 RETURNING title"), w(&[]));
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = todos.title RETURNING title"), w(&[]));
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET title = todos.id::text, id = excluded.id RETURNING title"), w(&[("id", true), ("title", true)]));
+        assert_eq!(written("INSERT INTO todos (id, title) VALUES (1, 'a') ON CONFLICT (id) DO NOTHING RETURNING title"), w(&[("id", true), ("title", false)]));
+        // An UPDATE writes what its SET does, from the row it changes and what it joins in.
+        assert_eq!(written("UPDATE todos SET title = coalesce(title, ''), n = owners.name FROM owners WHERE owners.id = todos.owner_id RETURNING title, n"), w(&[("title", true)]));
+        assert_eq!(written("UPDATE todos SET (title, n) = ('a', 1) RETURNING title"), w(&[("n", true), ("title", false)]));
+        assert_eq!(written("UPDATE todos SET (title, n) = (SELECT 'a', 1) RETURNING title"), w(&[]));
+        assert_eq!(written("UPDATE todos SET title = 'a', title[1] = 'b' RETURNING title"), w(&[]));
+        assert_eq!(found("UPDATE todos SET n = 1 FROM owners RETURNING name, title, id").columns, [None, some("title"), None]);
+        // A MERGE writes what each action that returns a row does; one that may delete returns the
+        // deleted row as it was, and its `*` shows the source's columns first.
+        let merge = "MERGE INTO todos t USING owners o ON t.owner_id = o.id WHEN MATCHED AND o.name = 'x' THEN DO NOTHING WHEN MATCHED THEN UPDATE SET title = 'a' WHEN NOT MATCHED THEN INSERT (id, title) VALUES (o.id, 'b')";
+        assert_eq!(found(&format!("{merge} RETURNING t.title, new.title, title, o.name")).columns, [some("title"), some("title"), some("title"), None]);
+        assert_eq!(written(&format!("{merge} RETURNING t.title")), w(&[("title", false)]));
+        assert_eq!(written("MERGE INTO todos t USING owners o ON t.owner_id = o.id WHEN NOT MATCHED BY SOURCE THEN UPDATE SET title = o.name RETURNING t.title"), w(&[]));
+        assert!(written_returning("MERGE INTO todos t USING owners o ON t.owner_id = o.id WHEN MATCHED THEN DELETE WHEN NOT MATCHED THEN INSERT (id, title) VALUES (o.id, 'b') RETURNING t.title", &trust, &columns).is_none());
+        assert!(written_returning(&format!("{merge} RETURNING *"), &trust, &columns).is_none());
+        // An INSERT's SELECT writes its columns in order, and is read as a statement of its own.
+        let s = found("WITH x AS (SELECT 1 AS id, 'a' AS name) INSERT INTO todos (id, title) SELECT id, name FROM x RETURNING title");
+        assert_eq!(s.select.as_deref(), Some("WITH x AS (SELECT 1 AS id, 'a' AS name) SELECT id, name FROM x"));
+        assert_eq!(written("INSERT INTO todos (id, title) SELECT id, name FROM owners RETURNING title"), w(&[("title", true)]));
+        // Nothing for a DELETE, a SELECT, or a write to a WITH query's name.
+        assert!(written_returning("DELETE FROM todos RETURNING title", &trust, &columns).is_none());
+        assert!(written_returning("SELECT 1", &trust, &columns).is_none());
+        assert!(written_returning("WITH todos AS (SELECT 1) INSERT INTO todos (title) VALUES ('a') RETURNING title", &trust, &columns).is_none());
     }
 
     #[test]
@@ -4833,10 +5282,12 @@ mod tests {
         assert_eq!(reads("SELECT u.name, p.title, name FROM users u JOIN posts p ON p.user_id = u.id"), vec![ItemRead::Table, ItemRead::Table, ItemRead::Other]);
         assert_eq!(reads("SELECT public.users.id FROM public.users"), vec![ItemRead::Other]);
         assert_eq!(reads("SELECT x.id FROM public.users x"), vec![ItemRead::Table]);
-        // A WITH query of that name is no table, whatever its statement reads; an expression
-        // and a `*` read no one column.
+        // A WITH query of that name is no table, whatever its statement reads, and a write's is
+        // the rows it returns; an expression and a `*` read no one column.
         assert_eq!(reads("WITH users AS (SELECT 1 AS id UNION SELECT 2) SELECT users.id FROM users"), vec![ItemRead::Column { item: 0, column: "id".into() }]);
-        assert_eq!(reads("WITH w AS (INSERT INTO t DEFAULT VALUES RETURNING id) SELECT w.id FROM w"), vec![ItemRead::Other]);
+        assert_eq!(reads("WITH w AS (INSERT INTO t DEFAULT VALUES RETURNING id) SELECT w.id FROM w"), vec![ItemRead::Column { item: 0, column: "id".into() }]);
+        assert_eq!(item_reads("WITH v AS (SELECT 1 AS id), w AS (UPDATE t SET n = v.id FROM v RETURNING t.id) SELECT w.id FROM w").unwrap().1[0].sql, "WITH v AS (SELECT 1 AS id) UPDATE t SET n = v.id FROM v RETURNING t.id");
+        assert_eq!(reads("WITH w AS (DELETE FROM t RETURNING id) SELECT w.id FROM w"), vec![ItemRead::Other]);
         assert_eq!(reads("SELECT u.id + 1, u.* FROM users u"), vec![ItemRead::Other, ItemRead::TableStar]);
         assert_eq!(reads("SELECT * FROM users u JOIN posts p ON p.user_id = u.id"), vec![ItemRead::TableStar]);
         assert_eq!(reads("WITH a AS (SELECT 1 AS x) SELECT * FROM a, users"), vec![ItemRead::Star { item: None }]);
