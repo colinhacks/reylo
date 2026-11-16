@@ -147,11 +147,14 @@ jobs:
       - name: Stage the platform packages and reylo on npm
         env:
           VERSION: ${{ steps.version.outputs.version }}
+        # npm refuses a prerelease without a dist-tag, and one under `latest` would reach every `npm install reylo`, so a prerelease goes under its first identifier (0.8.0-beta.1 under `beta`) and a release under `latest`, npm's default
         run: |
+          tag=()
+          case "$VERSION" in *-*) pre="${VERSION#*-}"; tag=(--tag "${pre%%.*}") ;; esac
           for platform in $(jq -r '.[].platform' npm/platforms.json); do
-            bash .github/scripts/npm-stage-publish.sh "dist/engine-$platform" --provenance --access public
+            bash .github/scripts/npm-stage-publish.sh "dist/engine-$platform" --provenance --access public ${tag[@]+"${tag[@]}"}
           done
-          bash .github/scripts/npm-stage-publish.sh dist/reylo --provenance --access public
+          bash .github/scripts/npm-stage-publish.sh dist/reylo --provenance --access public ${tag[@]+"${tag[@]}"}
 
       - name: Check whether npm serves every version
         id: served
@@ -289,15 +292,21 @@ jobs:
             echo "v$VERSION was already released; its notes are rewritten from this dispatch"
             exit 0
           fi
+          # a prerelease is marked one, and never takes the repository's Latest from the release before it
+          prerelease=()
+          case "$VERSION" in *-*) prerelease=(--prerelease --latest=false) ;; esac
           gh release create "v$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "v$VERSION" \
             --notes-file "$RUNNER_TEMP/release_notes.md" \
+            ${prerelease[@]+"${prerelease[@]}"} \
             "$RUNNER_TEMP"/assets/*
 
       # reylo.dev serves the `release` branch, so the docs describe what npm serves: it moves to the release's tagged commit, past any docs fix cherry-picked onto the previous release, which main holds too. It moves after the GitHub release exists, since the site's build fetches the playground's engine from the release of its version (site/scripts/playground-engine.ts). It follows the tag, not this run's commit, since a dispatch that only rewrites a release's notes runs on a main that may hold unreleased changes. Where `release` already holds the tag (that dispatch, or a re-run of this job), it is left as it is, docs fixes cherry-picked onto it since included; the shallow checkout can't tell, so GitHub's compare does. The tag is a lightweight one, so `ls-remote` names its commit.
+      # A prerelease leaves reylo.dev on the docs of the release npm's `latest` serves.
       - name: Move the docs to the release
+        if: ${{ !contains(needs.stage.outputs.version, '-') }}
         env:
           VERSION: ${{ needs.stage.outputs.version }}
           RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
