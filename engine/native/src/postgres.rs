@@ -268,7 +268,10 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<Started, Value> {
             }
             // The TLS settings are read only here, so a certificate file named for TLS that the
             // connection never asks for cannot stop it.
-            let tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
+            let mut tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
+            // Postgres 17 and later refuse a direct TLS connection (`sslnegotiation=direct`) that
+            // offers no ALPN protocol `postgresql`; libpq 17 offers it in either negotiation.
+            tls.alpn_protocols = vec![b"postgresql".to_vec()];
             let (client, connection) = config.connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls)).await.map_err(|e| failure(&e))?;
             return Ok(started(client, connection));
         };
