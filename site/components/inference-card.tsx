@@ -8,8 +8,8 @@ import { DialectSwitch } from './dialect-tabs';
  * The inference cards: a statement with the types Reylo infers for it, in one card of
  * labelled rows, Schema (where the example needs one), Query, Params and Returns, every row
  * visible at once, scannable without a click on a tab. Each switch sits on the line of what it
- * changes: the database on the Query row's, the language (TypeScript, Rust or the type descriptor,
- * Type Defs) on the Params and Returns band's. The page writes `<InferenceCard>` around a schema
+ * changes: the database on the Query row's, the language (TypeScript or Rust) on the
+ * Params and Returns band's. The page writes `<InferenceCard>` around a schema
  * block and a statement; lib/remark-mapper.ts fills it with a panel per dialect, the rows read off
  * the statement's captured module, which follow the page's dialect and language choices.
  */
@@ -92,7 +92,7 @@ export function LanguagePanel({ value, children }: { value: LanguageName; childr
   return <Variant value={value}>{children}</Variant>;
 }
 
-/** TypeScript | Rust | Type Defs over a block whose panels follow the page's language choice, as Inference's Primitives. */
+/** TypeScript | Rust over a block whose panels follow the page's language choice, as Inference's Primitives. */
 export function LanguageSwitch() {
   return (
     <div className="reylo-language-switch">

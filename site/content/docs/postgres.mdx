@@ -144,11 +144,6 @@ In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)):
 A type that is not yet written fails to compile and says to cast it to `text`. The decimal, date and uuid types are those of the features you turn on ([Install](/rust#install)), and a value its Rust type can't hold, such as `infinity` in a `date`, is an error when the row is read, never a changed value.
 
 </LanguagePanel>
-<LanguagePanel value="Type Defs">
-
-Each type's descriptor is under [Type descriptors](#type-descriptors).
-
-</LanguagePanel>
 </LanguagePanels>
 
 In TypeScript, each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
