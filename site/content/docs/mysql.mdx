@@ -611,6 +611,8 @@ const callbackPool = mysqlCallbacks.createPool(process.env.DATABASE_URL);
 await getUser.run(callbackPool, { id: 1 });
 ```
 
+Reylo runs each query through the `execute()` method of `mysql2`, which prepares the statement first. Cloudflare Hyperdrive refuses prepared statements, so through Hyperdrive use [`mariadb`](#mariadb).
+
 ### `mariadb`
 
 The `mariadb` driver works with a MySQL server, as the others do: the type check refuses a MariaDB server. It takes only a `mariadb://` URL, which Reylo reads as MySQL. Pass a pool or a connection, from the promise API or the callback API, or a connection taken from a pool, which can run a transaction:
@@ -631,6 +633,25 @@ await conn.release();
 
 const callbackPool = mariadbCallbacks.createPool(process.env.DATABASE_URL);
 await getUser.run(callbackPool, { id: 1 });
+```
+
+Reylo runs each query through its `query()` method, which prepares nothing, so it also works through Cloudflare Hyperdrive, in a Worker with Node's APIs (a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag). Connect it with the fields of the binding:
+
+```ts twoslash tab="worker.ts"
+/// <reference types="@cloudflare/workers-types" />
+// ---cut---
+import mariadb from "mariadb";
+import getUser from "./my_get_user.sql";
+
+export default {
+  async fetch(request: Request, env: { HYPERDRIVE: Hyperdrive }) {
+    const { host, port, user, password, database } = env.HYPERDRIVE;
+    const conn = await mariadb.createConnection({ host, port, user, password, database });
+    const row = await getUser.run(conn, { id: 1 });
+    await conn.end();
+    return Response.json(row);
+  },
+};
 ```
 
 ### PlanetScale

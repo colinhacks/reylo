@@ -142,7 +142,15 @@ function fixRows(rows: Record<string, unknown>[], fixes: (readonly [string, Fix]
 export async function mysql2(m: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
   // mysql2's compiled parser refuses a field named `__proto__` even for an array row, and its interpreted one (`disableEval`, from 3.15) reads it.
   const proto = columns?.some(([name]) => name === "__proto__") ? { disableEval: true } : {};
-  const [result, fields] = await m.execute({ sql: text, ...MYSQL2_OPTIONS, ...proto, typeCast: needsCast(m, columns) ? mysql2Cast : true }, values);
+  let answer: [unknown, unknown];
+  try {
+    answer = await m.execute({ sql: text, ...MYSQL2_OPTIONS, ...proto, typeCast: needsCast(m, columns) ? mysql2Cast : true }, values);
+  } catch (e) {
+    // execute() prepares every statement, which Cloudflare Hyperdrive refuses ("Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages"); mariadb's query() prepares nothing.
+    if (e instanceof Error && /COM_STMT_PREPARE/.test(e.message)) throw new Error(`reylo cannot run a mysql statement through mysql2 here: ${e.message}. mysql2's execute(), which Reylo runs, prepares every statement, and this server, as Cloudflare Hyperdrive does, refuses prepared statements. Connect with the mariadb driver instead, whose query() Reylo runs without them.`, { cause: e });
+    throw e;
+  }
+  const [result, fields] = answer;
   if (!Array.isArray(result)) return [];
   if (!result.length) return result;
   const described = (fields ?? []) as Mysql2Column[];
