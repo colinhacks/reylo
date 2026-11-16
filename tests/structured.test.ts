@@ -289,8 +289,7 @@ returning email, name`);
 });
 
 test("Postgres: rows that leave out different keys go in one insert, each such row with its column's default copied from the catalog, a sequence advancing only for those rows", { skip: pgLive }, async () => {
-  const require = createRequire(join(DRIVERS, "postgres", "package.json"));
-  const postgres = require("postgres");
+  const postgres = driver("postgres");
   const admin = postgres(PG, { max: 1, onnotice: () => {} });
   const name = `reylo_structured_mixed_${process.pid}`;
   await admin.unsafe(`drop database if exists ${name}`);
@@ -345,7 +344,7 @@ test("Postgres: rows that leave out different keys go in one insert, each such r
     assert.equal(stored[2].tag, "given");
     assert.equal(stored[2].created, "2026-03-08 02:30:00");
     // node-postgres binds the same statement.
-    const pg = require("pg");
+    const pg = driver("pg");
     const client = new pg.Client(url.href);
     await client.connect();
     try {

@@ -29,7 +29,7 @@
 import { civilFromDays, coerce, DecodeError, elementKind, isRowKind, numbersInJson, scalarKind, textDecoder, utf8, withFraction, withinDimensions, type Columns, type Decoder, type JsonNumbers, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { lastOfEach, rowOf, type RowBuilder } from "./row.ts";
-import { arrayLiteral, asByteaHex, isJsonValue, isTime, jsonText, jsonValue, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { arrayLiteral, asByteaHex, isJsonValue, jsonText, jsonValue, postgresText, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
 import { readPostgresError } from "./query-error.ts";
 
 type AnyClient = Record<string, any>;
@@ -936,9 +936,15 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
     // serializer would write a value as JSON, but a client Drizzle wraps has that serializer
     // replaced by one that passes the value through (drizzle-orm/postgres-js), and a
     // transaction shows neither. Bun.sql serializes the value itself.
+    // postgres.js 4 serializes the values of a statement with an untyped parameter (a number,
+    // null) by the types the server described for it, a value declared `unknown` too: JSON text
+    // went through the jsonb serializer and was stored as a JSON string from the statement's second
+    // run, and an array literal for a `jsonb[]` went through its element's on the first. So where
+    // the statement has inputs, every parameter goes to postgres.js as the text Postgres reads,
+    // declared `unknown`, and postgres.js never learns its types. postgres.js 3 sends such a value
+    // as it is either way. A query without inputs gets its values as they are, as on every driver.
     const bun = typeof c.commitDistributed === "function";
-    const asText = typeof c.typed === "function" && !bun;
-    const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i), query.dialect) ? c.typed(v, 705) : v));
+    const mapped = bun ? bound.map((v, i) => (isJsonParam(v, i) ? { toJSON: () => jsonValue(v) } : v)) : query.inputs ? bound.map((v, i) => c.typed(postgresText(query, names[i]!, v), 705)) : bound;
     if (!bun) return await postgresJs(c, text, mapped, query.columns, query.row);
     return (await bunRaw(c, text, mapped, query.columns, query.row)) ?? bunRows(await c.unsafe(text, mapped), query.columns, true);
   }
