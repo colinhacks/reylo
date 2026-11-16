@@ -264,14 +264,19 @@ A value its Rust type cannot hold, such as Postgres's `infinity` in a `date`, is
 
 A mistake in a statement or its parameters fails to compile, where it is.
 
-A statement the database refuses fails at its string, with the database's own error:
+A statement the database refuses fails at its string, with the database's own error and the line and column it points at:
 
 ```text
 error: column "nme" does not exist (42703)
+       at src/main.rs:2:16
  --> src/main.rs:1:16
   |
-1 | #[reylo::query("select id, nme from users where id = :id::int")]
-  |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+1 |   #[reylo::query("
+  |  ________________^
+2 | |     select id, nme
+3 | |     from users where id = :id::int
+4 | | ")]
+  | |_^
 ```
 
 A misspelt, missing or mistyped parameter is Rust's own error on the struct:
@@ -360,8 +365,7 @@ fn main() {
     reylo_build::rust_sqlx()
         .input("src/queries")
         .out("queries.rs")
-        .run()
-        .unwrap();
+        .run();
 }
 ```
 
@@ -372,3 +376,10 @@ mod queries {
 ```
 
 A build script writes only into Cargo's `OUT_DIR`, so this writes one file, and every build that changes a `.sql` file needs the database.
+
+A statement the database refuses fails the build with Cargo's own error, at its file, line and column:
+
+```text
+error: app@0.1.0: src/queries/get_user.sql:1:12: column "nme" does not exist (42703)
+error: build script logged errors
+```
