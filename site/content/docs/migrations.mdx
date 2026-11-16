@@ -5,6 +5,10 @@ description: Put your schema in schema.sql, and Reylo Migrate writes, checks and
 
 <p className="dk-subheader">Put your schema in a SQL file, and Reylo Migrate writes the migrations</p>
 
+You keep the schema you want in `schema.sql`. Each command moves a change one step: `reylo migrate new` writes it into a migration, and `reylo migrate dev` runs the migrations on your database:
+
+<MigrationsDiagram />
+
 Reylo Migrate is separate from Reylo's `.sql` imports: each works without the other, and your own migration tool works just as well.
 
 <Features>
@@ -58,8 +62,6 @@ Supports Postgres, MySQL, SQLite and DuckDB, with one set of commands.
 
 </Feature>
 </Features>
-
-<MigrationsDiagram caption="Your schema, migrations and database, and the commands that move a change between them" />
 
 ## Basic usage
 

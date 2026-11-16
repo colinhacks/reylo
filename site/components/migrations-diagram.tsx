@@ -178,7 +178,8 @@ function Figure({ without, narrow }: { without?: Without; narrow: boolean }) {
 
   // down: the cards, and between them one row of chips or two, a row 28px in from each card
   const gap1 = narrow ? 92 : 72, gap2 = narrow || noSchema ? 92 : 72;
-  const ty = 12, th = 46, my = ty + th + gap1, mh = 86, by = my + mh + gap2, bh = 46;
+  // the migrations' card holds two lines, 22px apart, at the one-line cards' insets
+  const ty = 12, th = 46, my = ty + th + gap1, mh = 68, by = my + mh + gap2, bh = 46;
   const H = by + bh + 12;
   const g1 = ty + th, g2 = my + mh;
   const newY = narrow ? g1 + gap1 - 28 : g1 + gap1 / 2;
@@ -202,11 +203,10 @@ function Figure({ without, narrow }: { without?: Without; narrow: boolean }) {
       </Gone>
 
       <Card x={x0} y={my} h={mh} />
-      <Title x={x0} y={my + 27} icon={icons.folder} name="migrations/" />
-      <line x1={x0} x2={x1} y1={my + 43.5} y2={my + 43.5} style={{ stroke: color.border }} />
+      <Title x={x0} y={my + 28} icon={icons.folder} name="migrations/" />
       <Gone off={noLock}>
-        {noLock && <rect x={x0 + 5.5} y={my + 48.5} width={CARD_W - 11} height={mh - 54} rx={6} style={{ fill: 'none', stroke: color.border, strokeDasharray: '4 3' }} />}
-        <Title x={x0} y={my + 70} icon={icons.lock} name="reylo-lock.yaml" struck={noLock} />
+        {noLock && <rect x={x0 + 5.5} y={my + 36.5} width={CARD_W - 11} height={24} rx={6} style={{ fill: 'none', stroke: color.border, strokeDasharray: '4 3' }} />}
+        <Title x={x0} y={my + 50} icon={icons.lock} name="reylo-lock.yaml" struck={noLock} />
       </Gone>
 
       <Card x={x0} y={by} h={bh} />
