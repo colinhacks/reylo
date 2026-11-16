@@ -467,6 +467,62 @@ test("Bun.sql: its values are given their kinds after the fact", async () => {
   assert.deepEqual(await execute(bun, probe, { id: 1 }), [{ ...bunRow, day: "2024-01-15T00:00:00.000000Z", wall: "2024-01-15T10:30:00.120000Z", old: "-000043-03-15T12:00:00.000000Z", far: "+012345-06-01T12:00:00.000000Z", at: "2024-01-15T08:30:00.000000Z", ints: [1, 2] }]);
 });
 
+test("Bun.sql 1.4.4 on Postgres: .raw()'s binary and text forms give the same rows, with every microsecond and year", async () => {
+  // Each column's oid, its binary form as Postgres 18 sent it through Bun 1.4.4's .raw(), and its text.
+  const cells: [name: string, oid: number, binary: string, text: string][] = [
+    ["n", 23, "000004d2", "1234"],
+    ["ok", 16, "01", "t"],
+    ["f8", 701, "3ff8000000000000", "1.5"],
+    ["f4", 700, "3f8ccccd", "1.1"],
+    ["bytes", 17, "01ff", "\\x01ff"],
+    ["bounded", 1007, "00000001000000010000001700000002000000000000000400000001ffffffff", "[0:1]={1,NULL}"],
+    ["grid", 1021, "0000000200000000000002bc00000002000000010000000200000001000000043fc00000000000044000000000000004404000000000000440800000", "{{1.5,2},{3,4}}"],
+    ["midnight", 1083, "000000141dd76000", "24:00:00"],
+    ["price", 1700, "0002000040000001000c1388", "-12.5"],
+    ["nan", 1700, "00000000c0000000", "NaN"],
+    ["small", 1700, "0001fffe0000000604b0", "0.000012"],
+    ["far", 1114, "0380e70b913b8000", "10000-01-01 00:00:00"],
+    ["bc", 1114, "ff1fb57638929000", "0002-06-01 12:00:00 BC"],
+    ["at", 1184, "0002ea5dbb16f580", "2026-01-02 03:04:05.123456+00"],
+    ["forever", 1184, "7fffffffffffffff", "infinity"],
+  ];
+  // Bun's .raw() hands over each value as a Buffer.
+  const bytes = (hex: string) => Buffer.from(hex, "hex");
+  const query = (raw: () => Promise<unknown[]>) => Object.assign(Promise.resolve([] as unknown[]), { raw });
+  const client = (prepare: boolean) => ({
+    options: { prepare },
+    commitDistributed: async () => {},
+    unsafe: (_text: string, params: unknown[]) =>
+      query(async () => {
+        // Bun's rule: binary with parameters on a client that prepares, text otherwise.
+        const binary = prepare && params.length > 0;
+        const row = cells.map(([, , b, t]) => (binary ? bytes(b) : Buffer.from(t)));
+        return Object.assign([row], { columns: cells.map(([name, type]) => ({ name, type, table: 0, number: 0 })) });
+      }),
+  });
+  const g = globalThis as { Bun?: unknown };
+  const before = g.Bun;
+  g.Bun = { version: "1.4.4" };
+  try {
+    const fromBinary = await execute(client(true), probe, { id: 1 });
+    const fromText = await execute(client(false), probe, { id: 1 });
+    assert.deepEqual(fromBinary, fromText);
+    assert.deepEqual(fromBinary, [{
+      n: 1234, ok: true, f8: 1.5, f4: 1.1, bytes: Buffer.of(1, 255), bounded: [1, null], grid: [[1.5, 2], [3, 4]], midnight: "24:00:00",
+      price: "-12.5", nan: "NaN", small: "0.000012", far: "+010000-01-01T00:00:00.000000", bc: "-000001-06-01T12:00:00.000000", at: "2026-01-02T03:04:05.123456Z", forever: "infinity",
+    }]);
+    // A value whose length is not its type's binary form is refused, not misread.
+    const odd = { ...client(true), unsafe: () => query(async () => Object.assign([[Buffer.of(0, 1, 2)]], { columns: [{ name: "n", type: 23, table: 0, number: 0 }] })) };
+    await assert.rejects(async () => execute(odd, probe, { id: 1 }), /Column "n" came from Bun\.sql in 3 bytes, which is not the binary form of its type \(oid 23\)/);
+    // Bun before 1.4.4 keeps its own decoding, which Reylo converts.
+    g.Bun = { version: "1.4.3" };
+    const old = { ...client(true), unsafe: async () => [{ at: new Date("2026-01-02T03:04:05.123Z") }] };
+    assert.deepEqual(await execute(old, { ...probe, columns: [["at", "timestamptz"]] }, { id: 1 }), [{ at: "2026-01-02T03:04:05.123000Z" }]);
+  } finally {
+    g.Bun = before;
+  }
+});
+
 test("a Postgres array column holds one dimension, and an array the statement builds of arrays the levels it declares", async () => {
   // Bun.sql parses an array's text itself, nested arrays included, which the run time is given.
   const client = (rows: Record<string, unknown>[]) => ({ unsafe: async () => rows.map((r) => ({ ...r })), commitDistributed: async () => {} });

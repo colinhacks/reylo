@@ -439,7 +439,7 @@ function daysFromCivil(y: number, m: number, d: number): number {
 }
 
 /** The date `days` after 1970-01-01, the inverse of `daysFromCivil`. */
-function civilFromDays(days: number): [number, number, number] {
+export function civilFromDays(days: number): [number, number, number] {
   const z = days + 719468;
   const era = Math.floor(z / 146097);
   const doe = z - era * 146097;
