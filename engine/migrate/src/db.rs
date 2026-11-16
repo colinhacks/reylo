@@ -489,8 +489,10 @@ impl Server {
                             Some(l) if !l.is_empty() => format!(" {} {}", if provider == "icu" { "icu_locale" } else { "builtin_locale" }, literal(l)),
                             _ => String::new(),
                         };
-                        // `locale_provider` is Postgres 15's: before it, every database is libc's.
-                        let provider = if version >= 150000 { format!(" locale_provider {provider}{locale}") } else { String::new() };
+                        // `locale_provider` is Postgres 15's: before it, every database is libc's. The
+                        // statement runs on the shadows' server, which `shadow_url` may make another.
+                        let shadow_version: i64 = pg_rows(&admin, "select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
+                        let provider = if shadow_version >= 150000 { format!(" locale_provider {provider}{locale}") } else { String::new() };
                         format!(
                             " template template0 encoding {} lc_collate {} lc_ctype {}{provider}",
                             literal(m.text("enc")),
