@@ -19,11 +19,13 @@
   $dir = if ($env:REYLO_INSTALL_DIR) { $env:REYLO_INSTALL_DIR } else { Join-Path $HOME '.local\bin' }
   $version = if ($env:REYLO_VERSION) { $env:REYLO_VERSION -replace '^v', '' } else { '' }
 
-  # The machine's own architecture, which an x64 PowerShell emulated on arm64 does not report as its own.
-  $arch = try { [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $env:PROCESSOR_ARCHITECTURE }
+  # The machine's own architecture, from the system's environment: a process emulated as x64 on arm64,
+  # as Windows PowerShell 5.1 can be, sees AMD64 in its own environment and in .NET's OSArchitecture.
+  $arch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
+  if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
   $cpu = switch ($arch) {
-    { $_ -in 'X64', 'AMD64' } { 'x64' }
-    { $_ -in 'Arm64', 'ARM64' } { 'arm64' }
+    'AMD64' { 'x64' }
+    'ARM64' { 'arm64' }
     default { throw "reylo install: no build for $arch; reylo is built for x64 and arm64" }
   }
   $asset = "reylo-win32-$cpu.tar.gz"

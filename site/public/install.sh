@@ -55,6 +55,10 @@ elif command -v wget > /dev/null 2>&1; then
 else
   fail "needs curl or wget to download the release"
 fi
+# Some minimal images, Amazon Linux 2023's among them, carry no tar.
+for tool in tar gzip; do
+  command -v "$tool" > /dev/null 2>&1 || fail "needs $tool to unpack the release; install it first (dnf install $tool, apt-get install $tool)"
+done
 if command -v sha256sum > /dev/null 2>&1; then
   sha256() { sha256sum "$1" | cut -d' ' -f1; }
 elif command -v shasum > /dev/null 2>&1; then

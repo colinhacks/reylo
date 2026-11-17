@@ -104,7 +104,7 @@ case "$platform" in
 
   linux-*)
     # Each image as it comes, but for curl, which Debian's slim image lacks and install.sh needs one
-    # of (or wget); Debian 11's security updates have moved to archive.debian.org, where apt is sent
+    # of (or wget), and tar, which Amazon Linux's lacks; Debian 11's security updates have moved to archive.debian.org, where apt is sent
     # when the usual mirror no longer has them. The host's network, so a server of the run's own on
     # 127.0.0.1 is reachable.
     for image in $(jq -r '.[]' <<< "$images"); do
@@ -115,6 +115,8 @@ case "$platform" in
           get() { apt-get update -qq > /dev/null && apt-get install -y -qq --no-install-recommends curl ca-certificates > /dev/null; }
           get || { sed -i "s|deb.debian.org/debian-security|archive.debian.org/debian-security|" /etc/apt/sources.list && get; }
         fi
+        # Amazon Linux 2023 has no tar, which install.sh refuses to go on without.
+        command -v tar > /dev/null || dnf install -y -q tar gzip > /dev/null
         REYLO_INSTALL_DIR=/tmp/reylo sh site/public/install.sh
         sh .github/scripts/channels-smoke.sh /tmp/reylo/reylo "$0"
       ' "$version" > "$work/out" || { cat "$work/out"; exit 1; }
