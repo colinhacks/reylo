@@ -1,8 +1,10 @@
 [package]
 name = "reylo-engine"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Reylo's analysis engine for a Rust host: each database's engine behind a feature, the replay loop that runs an analysis to its end, and the answers to the engine's needs over tokio-postgres, rusqlite or mysql_async."
 
 [features]
@@ -15,10 +17,10 @@ rusqlite = ["sqlite", "dep:rusqlite"]
 mysql_async = ["mysql", "dep:mysql_async"]
 
 [dependencies]
-reylo-engine-core = { path = "../core" }
-reylo-engine-postgres = { path = "../postgres", optional = true }
-reylo-engine-sqlite = { path = "../sqlite", optional = true }
-reylo-engine-mysql = { path = "../mysql", optional = true }
+reylo-engine-core.workspace = true
+reylo-engine-postgres = { workspace = true, optional = true }
+reylo-engine-sqlite = { workspace = true, optional = true }
+reylo-engine-mysql = { workspace = true, optional = true }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 # `with-serde_json-1`: a `json` or `jsonb` column reads as its value, as the answers of the server-side
 # extension come back.

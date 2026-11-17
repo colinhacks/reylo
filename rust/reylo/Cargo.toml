@@ -1,12 +1,14 @@
 [package]
-name = "reylo-sqlx"
-version = "0.0.0"
+name = "reylo"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "SQL typed by Reylo's engine at compile time, run on sqlx: #[reylo::query(\"…\")] mod name {} on Postgres, MySQL and SQLite."
 
 [dependencies]
-reylo-macros = { path = "../reylo-macros" }
+reylo-macros.workspace = true
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

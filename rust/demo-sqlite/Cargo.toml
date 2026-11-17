@@ -16,6 +16,6 @@ path = "src/main.rs"
 required-features = ["live"]
 
 [dependencies]
-reylo = { package = "reylo-sqlx", path = "../reylo", default-features = false, features = ["sqlite"] }
+reylo = { workspace = true, features = ["sqlite"] }
 sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

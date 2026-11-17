@@ -20,7 +20,7 @@ The `.sql` loader hosts it: [src/engine.ts](../src/engine.ts) runs the `reylo` b
 ## Building
 
 - `engine/build.sh --prepare` prepares the patched `pg_query` copy (`postgres/.patched/`), the SQLite amalgamation (`sqlite/.sqlite/`) and the patched tokio-postgres (`wasip2/.patched/`). Every cargo command in the workspace needs it first.
-- `cargo build --release -p reylo` builds the binary into `target/release/reylo`, which the loader's tests and the labs run; `nub run build` at the root packages it for this machine into `dist/`, which the examples link.
+- `cargo build --release -p reylo-cli` builds the binary into `target/release/reylo`, which the loader's tests and the labs run; `nub run build` at the root packages it for this machine into `dist/`, which the examples link.
 - `cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-engine-native -p reylo-migrate -p reylo -p reylo-oracle` runs the engine's native tests (the oracle's dependency gives `reylo-engine` its client features). The migrations' tests build schemas on the servers `REYLO_TEST_PG` and `REYLO_TEST_MYSQL` name, and skip each database whose variable is unset.
 - `engine/build.sh` builds the playground's component into `target/playground/postgres/`. It needs wasi-sdk 34, a toolchain with the `wasm32-wasip2` target (rustup's has it; Homebrew's `rustc` does not) and jco from the root's install (`nub install`).
 

@@ -74,17 +74,20 @@ function sourceHash(crate: string): bigint {
   return hash;
 }
 
-/** `reylo_engine_core::fingerprint::combine` of core's hash and the database crate's: FNV-1a over their little-endian bytes. */
+/** The crates of its own a database's engine builds on, whose hashes its fingerprint combines after its own: MySQL's copy of `sqlparser`. */
+const BUILDS_ON: Record<string, string[]> = { mysql: ["mysql/vendor/sqlparser"] };
+
+/** `reylo_engine_core::fingerprint::combine` of core's hash, the database crate's and each crate it builds on: FNV-1a over their little-endian bytes. */
 function fingerprint(database: string): string {
-  const parts = Buffer.alloc(16);
-  parts.writeBigUInt64LE(sourceHash(join(ENGINE, "core")), 0);
-  parts.writeBigUInt64LE(sourceHash(join(ENGINE, database)), 8);
+  const crates = ["core", database, ...(BUILDS_ON[database] ?? [])];
+  const parts = Buffer.alloc(8 * crates.length);
+  crates.forEach((crate, i) => parts.writeBigUInt64LE(sourceHash(join(ENGINE, crate)), 8 * i));
   return fnv(0xcbf29ce484222325n, parts, false).toString(16).padStart(16, "0");
 }
 
 for (const database of ["postgres", "sqlite", "mysql"] as const) {
   test(`the ${database} engine is the build of the engine's sources`, async () => {
     const { binary, fingerprint: built } = await engine(database);
-    assert.equal(built, fingerprint(database), `${binary} was built from other sources than engine/core and engine/${database}: build it again with cargo build --release -p reylo`);
+    assert.equal(built, fingerprint(database), `${binary} was built from other sources than engine/core and engine/${database}: build it again with cargo build --release -p reylo-cli`);
   });
 }

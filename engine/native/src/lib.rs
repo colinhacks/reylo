@@ -15,6 +15,11 @@ use serde_json::{json, Value};
 use std::future::Future;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+/// The hash of the sources that connect to Postgres and MySQL and read their answers (`build.rs`),
+/// which the migrations' cache keys its replays by.
+#[doc(hidden)]
+pub const SOURCE_HASH: &str = env!("REYLO_ENGINE_NATIVE_HASH");
+
 /// The project file, `.reylo.yaml`, and the database it names, as every frontend reads them.
 pub mod project;
 #[cfg(feature = "mysql")]

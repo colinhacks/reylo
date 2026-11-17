@@ -79,5 +79,5 @@ export function nativeBinary(): string {
   const built = ["release", "debug"].map((profile) => join(checkout, profile, exe)).filter((path) => existsSync(path));
   if (built.length) return (found = built.reduce((a, b) => (statSync(b).mtimeMs > statSync(a).mtimeMs ? b : a)));
   const why = pkg ? `${pkg} is not installed (an install with --no-optional, or --omit=optional, leaves it out)` : `reylo ships no binary for ${key}`;
-  throw new Error(`reylo's engine, the reylo executable, is missing: ${why}. Install reylo again on a supported platform (${Object.keys(PLATFORM_PACKAGES).join(", ")}), or set REYLO_ENGINE_PATH to a reylo executable; in a checkout of reylo's repository, cargo build --release -p reylo builds one.`);
+  throw new Error(`reylo's engine, the reylo executable, is missing: ${why}. Install reylo again on a supported platform (${Object.keys(PLATFORM_PACKAGES).join(", ")}), or set REYLO_ENGINE_PATH to a reylo executable; in a checkout of reylo's repository, cargo build --release -p reylo-cli builds one.`);
 }

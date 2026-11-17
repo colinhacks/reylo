@@ -258,7 +258,7 @@ fn crate_options(package: &Path) -> Options {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|d| d["rename"].as_str().unwrap_or(d["name"].as_str().unwrap_or_default()) == "reylo" || matches!(d["name"].as_str(), Some("reylo" | "reylo-sqlx")))
+        .filter(|d| d["rename"].as_str().unwrap_or(d["name"].as_str().unwrap_or_default()) == "reylo" || d["name"].as_str() == Some("reylo"))
         .flat_map(|d| d["features"].as_array().into_iter().flatten().filter_map(Value::as_str))
         .collect();
     let has = |name: &str| features.contains(&name);

@@ -1,8 +1,10 @@
 [package]
 name = "reylo-macros"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "The attribute #[reylo::query(\"…\")] mod name {}: the statement typed by Reylo's engine at compile time, against the project's database or reylo/.cache/ where it cannot be reached, and expanded to Query, Row and run on sqlx."
 
 [lib]
@@ -19,7 +21,7 @@ bigdecimal = []
 
 [dependencies]
 # The statement's analysis, and the module's items from it.
-reylo-codegen = { path = "../reylo-codegen", default-features = false, features = ["analyze"] }
+reylo-codegen = { workspace = true, features = ["analyze"] }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
