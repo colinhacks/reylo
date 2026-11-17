@@ -1238,11 +1238,17 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
             };
             literal_contradiction(ty, &shown).map(|why| format!("{why} at {at}"))
         }
-        // A row value inside a document is an object of its fields, each key there.
+        // A row value inside a document is an object of its fields, each key there but an optional
+        // one's, as SQL Server leaves out a key whose value is NULL.
         Kind::Struct(record) if !written_as_text(ty) => {
             let Some(obj) = json.as_object() else { return Some(format!("holds {json} at {at}, typed an object")) };
             for f in &record.fields {
-                let Some(v) = obj.get(&f.name) else { return Some(format!("has no key {path}.{}", f.name)) };
+                let Some(v) = obj.get(&f.name) else {
+                    if f.optional {
+                        continue;
+                    }
+                    return Some(format!("has no key {path}.{}", f.name));
+                };
                 // A null where the field's own schema admits one is the column's value.
                 if v.is_null() && !f.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, v)) {
                     if !f.nullable {
@@ -1251,6 +1257,25 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
                     continue;
                 }
                 if let Some(why) = json_contradiction(&f.ty, v, &format!("{path}.{}", f.name)) {
+                    return Some(why);
+                }
+            }
+            None
+        }
+        // A tuple inside a document is a JSON array of its elements in order, each of its own type.
+        Kind::Tuple(t) if t.optional_elements.is_empty() && t.rest.is_none() => {
+            let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed a tuple")) };
+            if items.len() != t.elements.len() {
+                return Some(format!("holds {} elements at {at}, typed a tuple of {}", items.len(), t.elements.len()));
+            }
+            for (i, (item, slot)) in items.iter().zip(&t.elements).enumerate() {
+                if item.is_null() {
+                    if !slot.nullable {
+                        return Some(format!("has a null element at {path}[{i}], typed non-null"));
+                    }
+                    continue;
+                }
+                if let Some(why) = json_contradiction(&slot.ty, item, &format!("{path}[{i}]")) {
                     return Some(why);
                 }
             }
@@ -1293,6 +1318,10 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
 /// structures it: a bit string, pgvector's vectors, the geometric types and the network types
 /// (the spec's facts on what Postgres writes inside its own JSON).
 fn written_as_text(ty: &Type) -> bool {
+    // SQL Server's `bit` is a truth value, written as `true` or `false`.
+    if matches!(ty.kind, Kind::Boolean(_)) {
+        return false;
+    }
     let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
     matches!(name, "bit" | "varbit" | "vector" | "halfvec" | "sparsevec" | "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "inet" | "cidr")
 }

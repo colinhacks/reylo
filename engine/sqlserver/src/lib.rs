@@ -14,6 +14,7 @@ pub mod api;
 pub mod batch;
 pub mod cardinality;
 pub mod host;
+pub mod json;
 pub mod nulls;
 pub mod params;
 pub mod sqlserver;

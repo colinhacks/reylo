@@ -116,6 +116,11 @@ test("inside a document an oid is its text, a geometry its GeoJSON, and an exten
   for (const name of ["vector", "halfvec", "sparsevec", "geography", "cube", "seg", "isbn", "semver", "ulid", "point"]) assert.equal(renderType(pg(name), true, "postgres"), "string", name);
 });
 
+test("inside a JSON document a key that may be absent is optional, as SQL Server's for json leaves out a NULL one", () => {
+  const row = record([field("id", { kind: "integer", bits: 32, label: "int" } as EngineType), field("body", { kind: "text", label: "nvarchar" } as EngineType, false, true), field("flag", { kind: "boolean", label: "bit" } as EngineType)]);
+  assert.equal(renderType(doc({ kind: "array", element: { type: row } } as EngineType), false, "sqlserver"), "{ id: number; body?: string; flag: boolean }[]");
+});
+
 test("a composite with no columns is an empty object", () => {
   assert.equal(renderType(record([], "public.empty"), true), "Record<never, never>");
   assert.equal(renderType(record([], "public.empty"), false), "Record<never, never>");

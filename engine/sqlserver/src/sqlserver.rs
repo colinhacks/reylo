@@ -22,7 +22,7 @@ use crate::types::Described;
 use reylo_engine_core::analysis::ResultTarget;
 use reylo_engine_core::fresh::Tables;
 use reylo_engine_core::host::as_bool;
-use reylo_engine_core::types::{Cardinality, StatementKind, Type};
+use reylo_engine_core::types::{Cardinality, Slot, StatementKind, Type};
 use serde_json::{json, Value};
 use sqlparser::ast::{Expr, FromTable, ObjectName, OutputClause, Query, SelectItem, SetExpr, Statement, TableFactor, TableObject, TableWithJoins};
 
@@ -148,6 +148,10 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         probe.insert_str(0, &f.prelude);
     }
     let probe = plan.probe.as_ref().map(|probe| host.query(FIRST_RESULT_SET, vec![json!(probe), declared.clone()], Scope::Statement));
+    // The JSON its columns build, and the probes that type its values ([`crate::json`]).
+    let json_plan = parsed.map(crate::json::plan).unwrap_or_default();
+    let prelude = found.map(|f| f.prelude.as_str()).unwrap_or_default();
+    let json_probes: Vec<_> = json_plan.probes.iter().map(|p| host.query(FIRST_RESULT_SET, vec![json!(format!("{prelude}{p}")), declared.clone()], Scope::Statement)).collect();
     let keys = parsed.map(|s| crate::cardinality::keys(s, host));
     // A written table's columns are read where the engine follows every statement: one it does not,
     // as a `use`, may move the batch to another database's tables.
@@ -158,6 +162,11 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         Some(p) => Some(p?),
         None => None,
     };
+    // A probe the server refused types its values as nothing.
+    let mut json_described: Vec<Option<Vec<Described1>>> = Vec::new();
+    for p in json_probes {
+        json_described.push(p?.ok().filter(|rows| rows.iter().all(|r| r.get(13).is_none_or(Value::is_null))).map(|rows| rows.iter().filter(|r| !r.first().and_then(as_bool).unwrap_or(false)).map(described_column).collect()));
+    }
     let keys = match keys {
         Some(k) => Some(k?),
         None => None,
@@ -186,7 +195,17 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     let columns: Vec<Column> = described
         .iter()
         .enumerate()
-        .map(|(i, c)| Column::new(c.name.clone(), crate::types::of(&c.ty), c.nullable && !never_null.get(i).copied().unwrap_or(false)))
+        .map(|(i, c)| {
+            let nullable = c.nullable && !never_null.get(i).copied().unwrap_or(false);
+            match json_plan.columns.get(i).cloned().flatten() {
+                // A document the statement builds: what it holds, and NULL only where the shape may be.
+                Some(shape) => {
+                    let (content, _) = crate::json::resolve(&shape, &json_described);
+                    Column::new(c.name.clone(), Type::json_of(Slot::new(content, false)), nullable && shape.nullable())
+                }
+                None => Column::new(c.name.clone(), crate::types::of(&c.ty), nullable),
+            }
+        })
         .collect();
     let nullable: std::collections::HashSet<String> = all.iter().enumerate().flat_map(|(i, s)| crate::params::nullable(s, &rewritten.order, columns_written.get(i))).collect();
     let params: Vec<Param> = lexed

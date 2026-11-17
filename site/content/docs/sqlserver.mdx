@@ -139,7 +139,7 @@ Each column can be null unless Reylo can tell it never is ([Inference](/inferenc
 - **The server's description.** Reylo starts from whether SQL Server describes each column as nullable, which it does for any expression it can't prove, such as `upper(name)`.
 - **Expressions over columns that are never null**, such as `upper(u.name)`, `len(name)`, `total * 2` and `concat(name, '!')`, are never null, with SQL Server's `ANSI_WARNINGS` on, as `mssql` sets it: an overflow then fails rather than give `NULL`.
 - **A `where` test** makes its column non-null, even across a `left join`: `where o.total > @min` rules out a missing order.
-- **`count(*)`, `row_number()` and `rank()`** are never null, and a `max` or `min` of a column that is never null isn't either, in a group.
+- **Counts and rankings**, `count(*)`, `row_number()` and `rank()`, are never null, and a `max` or `min` of a column that is never null isn't either, in a group.
 
 ```ts twoslash tab="main.ts"
 import usersWithOrders from "./ss_users_with_orders.sql";
@@ -159,7 +159,7 @@ left join orders o on o.user_id = u.id
 Reylo infers how many rows a query returns from its keys, aggregates and `top`:
 
 - **A key**: `where id = @id` on a primary key or a unique key returns at most one row. A key column SQL Server converts to compare it doesn't count, such as a `varchar` key compared with a number, since `'01'` and `'1'` both equal `1`.
-- **`top 1`** or `top (1)` returns at most one row.
+- **A `top 1`** or `top (1)` returns at most one row.
 - **An aggregate** with no `group by` returns exactly one row, or at most one with a `having`, an `offset` or a `top` that may be 0.
 - **A write with `output`** returns what it outputs: one row for an `insert … values` of one row, at most one where a unique index ignores duplicates, and any number for an `update`, a `delete` or a `merge`. A write with no `output` returns nothing, or the rows a trigger on its table returns.
 
@@ -239,6 +239,36 @@ where placed_at > @since
 - **A batch returns one result set.** A file whose batch may return two is an error, and `.run()` throws where a procedure returns a second.
 - **A `set ansi_warnings off`**, or another option Reylo's rules rest on turned off, leaves the statements after it with SQL Server's types alone.
 
+## JSON [#json]
+
+A subquery that ends in `for json path` is typed as the array it builds, and `.run()` returns it parsed:
+
+```ts twoslash tab="main.ts"
+import ordersByUser from "./ss_orders_by_user.sql";
+
+const users = await ordersByUser.run(db);
+//    ^?
+```
+
+```sql tab="ss_orders_by_user.sql" dialect="sqlserver"
+select u.id, u.name,
+  isnull((
+    select o.id, o.total, o.ships_on
+    from orders o
+    where o.user_id = u.id
+    order by o.id
+    for json path
+  ), '[]') as orders
+from users u
+```
+
+- **A NULL value leaves its key out** of the object, so a nullable column's key is optional; `include_null_values` writes it as `null` instead.
+- **Over no rows the subquery is NULL.** Wrap it in `isnull(…, '[]')` for an empty array.
+- **A name with dots**, as `o.total as [amount.value]`, nests its last part in objects named by the others.
+- **One object** instead of an array comes from `without_array_wrapper`, where the subquery returns at most one row, as with `top 1`, and `root('name')` wraps the whole in an object of that key.
+- **Inside a document**, a nested `for json` subquery, `json_query(…)` of one, and SQL Server 2022's `json_object('id': o.id, …)` and `json_array(…)` are written as the JSON they build. A decimal is a JSON number, a `bit` is `true` or `false`, and a date, a time and binary data are strings.
+- **Joined tables under `for json auto`** nest by rules of their own, so such a document is any JSON; over one table it is typed as `path` is.
+
 ## Database errors
 
 With [`.try()`](/typescript#try), an error SQL Server raised comes back as `{ error }`:
@@ -315,5 +345,5 @@ What Reylo can't type on SQL Server, and what to do instead:
 | A parameter used twice, as in `@name is null or name = @name`, which SQL Server can't describe | Read it once into a variable: `declare @n nvarchar(100) = @name; select … from users where @n is null or name = @n` |
 | `rows(…)` and `row(…)` parameters | A parameter per value |
 | An interactive, device-code or password sign-in with Microsoft Entra ID | `az login`, then `authentication=ActiveDirectoryAzureCli` |
-| JSON the query builds with `for json` | It is a `string`: parse it yourself |
+| A statement that ends in `for json`, which SQL Server sends as text split over several rows | Select it as a subquery: `select (select … for json path) as rows` |
 | The Rust crate, whose sqlx has no SQL Server driver | The npm package `reylo` |

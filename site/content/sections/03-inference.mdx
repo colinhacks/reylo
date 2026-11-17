@@ -207,6 +207,7 @@ In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an 
 | `time` | `string` |
 | `datetime2`, `datetime`, `smalldatetime` | `string`, as `2026-10-20T10:00:00.123` |
 | `datetimeoffset` | `string`, with the offset it was written with, as `2026-10-20T10:00:00.123+05:30` |
+| A `for json` subquery, `json_object(…)`, `json_array(…)` | [the object or array it builds](#json) |
 
 </LanguagePanel>
 <LanguagePanel value="Rust">
@@ -808,6 +809,19 @@ select
   ) as recent_posts
 ```
 
+```sql file="dashboard.sql" dialect="sqlserver"
+-- the latest posts
+with recent as (select top (@limit::int) id, title from posts order by id desc)
+select
+  (select count(*) from users) as user_count,
+  (select count(*) from posts) as post_count,
+  isnull((
+    select r.id, r.title
+    from recent r
+    for json path
+  ), '[]') as recent_posts
+```
+
 </InferenceCard>
 
 A lateral join runs its subquery once per row, here each user's latest post, or null for a user with none:
@@ -1002,11 +1016,23 @@ where p.published_at > :since
 group by u.id
 ```
 
+```sql file="inferred_user_posts.sql" dialect="sqlserver"
+declare @from datetimeoffset(3) = @since;
+select u.name,
+  isnull((
+    select p.id, p.title from posts p
+    where p.user_id = u.id and p.published_at > @from
+    for json path
+  ), '[]') as posts
+from users u
+where exists (select 1 from posts p where p.user_id = u.id and p.published_at > @from)
+```
+
 </InferenceCard>
 
 ## Nested fetching
 
-Fetch each row's related rows with a subquery. Postgres collects them into an array of rows, MySQL and SQLite into JSON, and Reylo types every field:
+Fetch each row's related rows with a subquery. Postgres collects them into an array of rows, MySQL and SQLite into JSON, SQL Server with `for json path`, and Reylo types every field:
 
 <InferenceCard>
 
@@ -1075,6 +1101,28 @@ select u.id, u.name,
   ) as latest_post
 from users u
 where u.id = :id::int
+```
+
+```sql file="users_with_posts.sql" dialect="sqlserver"
+select u.id, u.name,
+  -- every post, as an array
+  isnull((
+    select p.id, p.title
+    from posts p
+    where p.user_id = u.id
+    order by p.id
+    for json path
+  ), '[]') as posts,
+  -- the latest post, or null
+  (
+    select top 1 p.id, p.title
+    from posts p
+    where p.user_id = u.id
+    order by p.published_at desc
+    for json path, without_array_wrapper
+  ) as latest_post
+from users u
+where u.id = @id
 ```
 
 </InferenceCard>

@@ -185,6 +185,19 @@ fn query(q: &Query, statement: &Statement, keys: Option<&Keys>, variables: &[(St
     (first(c), reason)
 }
 
+/// Whether a query returns at most one row on its face, whatever its keys: no `FROM`, an aggregate
+/// with no `GROUP BY`, or `TOP 1` or `FETCH NEXT 1 ROWS ONLY`.
+pub(crate) fn at_most_one_row(q: &Query, s: &Select) -> bool {
+    if s.from.is_empty() || top_one(s) || fetch_one(q) {
+        return true;
+    }
+    let grouped = !matches!(&s.group_by, GroupByExpr::Expressions(e, m) if e.is_empty() && m.is_empty());
+    !grouped && s.projection.iter().any(|item| match item {
+        sqlparser::ast::SelectItem::UnnamedExpr(e) | sqlparser::ast::SelectItem::ExprWithAlias { expr: e, .. } => aggregates(e),
+        _ => false,
+    })
+}
+
 /// Whether the expression calls an aggregate outside a window. One with a subquery is not read: the
 /// visit reaches into it, and its aggregates are its own.
 fn aggregates(e: &Expr) -> bool {

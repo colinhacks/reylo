@@ -225,6 +225,9 @@ function fraction(d: Date, scale: number): string {
 /** A column's value as its representation, by the SQL type its metadata names. */
 function decodeValue(v: unknown, column: MssqlColumn, kind: Kind | undefined, name: string): unknown {
   if (v === null || v === undefined) return null;
+  // A document: one the statement built with `for json`, `json_object` or `json_array`, which the
+  // server sends as its text, or a `json` column.
+  if (kind === "json" && typeof v === "string") return JSON.parse(v);
   const type = column.type?.declaration?.toLowerCase();
   const scale = column.scale ?? 7;
   switch (type) {

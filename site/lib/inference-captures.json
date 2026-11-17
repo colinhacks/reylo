@@ -5808,6 +5808,86 @@
         }
       }
     },
+    "dashboard.sql": {
+      "b7cccbd1fdcce127": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "limit",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "user_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "post_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "recent_posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-16",
+                                "ill_formed": true,
+                                "size": {
+                                  "unit": "code_unit",
+                                  "max": 200
+                                },
+                                "label": "nvarchar"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
     "get_user.sql": {
       "2533cdf8d435fa96": {
         "descriptor": {
@@ -6218,6 +6298,84 @@
                 "type": {
                   "kind": "boolean",
                   "label": "bit"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_user_posts.sql": {
+      "32444824d386905d": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "zoned_datetime",
+                "tick": "1/1000",
+                "offset_only": true,
+                "label": "datetimeoffset"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-16",
+                                "ill_formed": true,
+                                "size": {
+                                  "unit": "code_unit",
+                                  "max": 200
+                                },
+                                "label": "nvarchar"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]
@@ -6804,6 +6962,126 @@
                   },
                   "label": "nvarchar"
                 }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "users_with_posts.sql": {
+      "18ded8abd43e4415": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-16",
+                                "ill_formed": true,
+                                "size": {
+                                  "unit": "code_unit",
+                                  "max": 200
+                                },
+                                "label": "nvarchar"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "name": "latest_post",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "struct",
+                      "fields": [
+                        {
+                          "name": "id",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 32,
+                            "label": "int"
+                          }
+                        },
+                        {
+                          "name": "title",
+                          "type": {
+                            "kind": "text",
+                            "encoding": "UTF-16",
+                            "ill_formed": true,
+                            "size": {
+                              "unit": "code_unit",
+                              "max": 200
+                            },
+                            "label": "nvarchar"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                "nullable": true
               }
             ]
           }

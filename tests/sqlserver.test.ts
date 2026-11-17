@@ -173,6 +173,27 @@ test("SQL Server: each parameter is bound as the server typed it, and comes back
   }
 });
 
+test("SQL Server: the JSON for json and json_object build is typed as what they write, and .run() returns it parsed", { skip: sqlserverLive, timeout: 120_000 }, async () => {
+  const db = await sqlserverDatabase("reylo_sqlserver_json", SCHEMA, { decimalAsString: true });
+  try {
+    const root = project(db.url);
+    const sql = "select t.id, (select u.id, u.label, u.flag, u.amount as [money.amount] from t u where u.id = t.id for json path) as rows, json_object('id': t.id, 'title': t.title) as o from t order by t.id";
+    const out = await declarations(root, { "json.sql": sql });
+    // A NULL leaves its key out of a for json object, and json_object writes it as null.
+    const { row } = types(out["json.sql"]!);
+    assert.match(row, /rows: \{ id: number; label\?: string; flag: boolean; money\?: \{ amount\?: number \} \}\[\] \| null/);
+    assert.match(row, /o: \{ id: number; title: string \| null \}/);
+    const q = await built(root, "json", sql);
+    const rows = plain(await q.run(db.pool, {})) as { rows: { id: number; flag: boolean; label?: string }[]; o: unknown }[];
+    assert.deepEqual(rows[0]!.rows, [{ id: 1, label: "hello", flag: true, money: { amount: 12345678.1234 } }]);
+    assert.deepEqual([rows[1]!.rows[0]!.id, rows[1]!.rows[0]!.flag, "label" in rows[1]!.rows[0]!], [2, false, false]);
+    assert.deepEqual(rows[0]!.o, { id: 1, title: "héllo 😀" });
+    assert.deepEqual(rows[1]!.o, { id: 2, title: null });
+  } finally {
+    await db.drop();
+  }
+});
+
 test("SQL Server: a batch is typed by its result statement, with its own variables, and an exec by its procedure's first result set", { skip: sqlserverLive, timeout: 120_000 }, async () => {
   const db = await sqlserverDatabase("reylo_sqlserver_batches", `${SCHEMA}\nGO\ncreate procedure dbo.flags @min int as select id, flag from t where id >= @min order by id;`, { decimalAsString: true });
   try {
