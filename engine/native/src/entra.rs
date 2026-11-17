@@ -93,19 +93,38 @@ impl Entra {
 }
 
 /// The process's credentials, by `Entra::key`.
-fn credentials() -> &'static Mutex<HashMap<String, Vec<Arc<dyn TokenCredential>>>> {
-    static CREDENTIALS: OnceLock<Mutex<HashMap<String, Vec<Arc<dyn TokenCredential>>>>> = OnceLock::new();
+/// One credential of a method's chain, and how long its answer may take.
+#[derive(Clone)]
+struct Link {
+    credential: Arc<dyn TokenCredential>,
+    wait: Option<Duration>,
+}
+
+/// The credentials a method tries, in order, and why each of the default chain's that could not be
+/// made was passed over.
+#[derive(Clone)]
+struct Chain {
+    links: Vec<Link>,
+    passed_over: Vec<String>,
+}
+
+fn credentials() -> &'static Mutex<HashMap<String, Chain>> {
+    static CREDENTIALS: OnceLock<Mutex<HashMap<String, Chain>>> = OnceLock::new();
     CREDENTIALS.get_or_init(Default::default)
 }
 
+fn link(credential: Arc<dyn TokenCredential>) -> Link {
+    Link { credential, wait: None }
+}
+
 /// The credentials a method tries, in order.
-fn made(method: &Entra) -> azure_core::Result<Vec<Arc<dyn TokenCredential>>> {
+fn made(method: &Entra) -> azure_core::Result<Chain> {
     let managed = |id: Option<&String>| {
         let mut options = ManagedIdentityCredentialOptions::default();
         options.user_assigned_id = id.cloned().map(UserAssignedId::ClientId);
         ManagedIdentityCredential::new(Some(options)).map(|c| c as Arc<dyn TokenCredential>)
     };
-    let one = |c: Arc<dyn TokenCredential>| vec![c];
+    let one = |c: Arc<dyn TokenCredential>| Chain { links: vec![link(c)], passed_over: Vec::new() };
     Ok(match method {
         Entra::AzureCli => one(AzureCliCredential::new(None)?),
         Entra::ManagedIdentity(id) => one(managed(id.as_ref())?),
@@ -113,22 +132,24 @@ fn made(method: &Entra) -> azure_core::Result<Vec<Arc<dyn TokenCredential>>> {
         Entra::ServicePrincipal { tenant, client_id, secret } => one(ClientSecretCredential::new(tenant, client_id.clone(), Secret::new(secret.clone()), None)?),
         Entra::Default => {
             let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
-            let mut chain: Vec<Arc<dyn TokenCredential>> = Vec::new();
-            // A service principal or a workload identity the environment names only in part is
-            // passed over, as the next in the chain may still sign in.
+            let mut chain = Chain { links: Vec::new(), passed_over: Vec::new() };
+            // A credential that cannot be made here (a service principal or a workload identity the
+            // environment names only in part, a managed identity of a kind the crate does not take,
+            // as Cloud Shell's) is passed over, as the next in the chain may still sign in.
+            let mut add = |name: &str, made: azure_core::Result<Arc<dyn TokenCredential>>, wait: Option<Duration>| match made {
+                Ok(credential) => chain.links.push(Link { credential, wait }),
+                Err(e) => chain.passed_over.push(format!("{name}: {e}")),
+            };
             if let (Some(tenant), Some(client_id), Some(secret)) = (env("AZURE_TENANT_ID"), env("AZURE_CLIENT_ID"), env("AZURE_CLIENT_SECRET")) {
-                if let Ok(c) = ClientSecretCredential::new(&tenant, client_id, Secret::new(secret), None) {
-                    chain.push(c);
-                }
+                add("the environment's service principal", ClientSecretCredential::new(&tenant, client_id, Secret::new(secret), None).map(|c| c as Arc<dyn TokenCredential>), None);
             }
             if env("AZURE_FEDERATED_TOKEN_FILE").is_some() {
-                if let Ok(c) = WorkloadIdentityCredential::new(None) {
-                    chain.push(c);
-                }
+                add("the workload identity", WorkloadIdentityCredential::new(None).map(|c| c as Arc<dyn TokenCredential>), None);
             }
-            chain.push(AzureCliCredential::new(None)?);
-            chain.push(AzureDeveloperCliCredential::new(None)?);
-            chain.push(managed(None)?);
+            add("the Azure CLI", AzureCliCredential::new(None).map(|c| c as Arc<dyn TokenCredential>), None);
+            add("the Azure Developer CLI", AzureDeveloperCliCredential::new(None).map(|c| c as Arc<dyn TokenCredential>), None);
+            // Off Azure, nothing answers the managed identity's endpoint.
+            add("the host's managed identity", managed(None), Some(MANAGED_IDENTITY_TIMEOUT));
             chain
         }
     })
@@ -148,21 +169,18 @@ pub async fn token(method: &Entra) -> Result<String, String> {
             }
         }
     };
-    let mut failures = Vec::new();
-    let last = chain.len().saturating_sub(1);
-    for (k, credential) in chain.iter().enumerate() {
+    let mut failures = chain.passed_over.clone();
+    for Link { credential, wait } in &chain.links {
         let attempt = credential.get_token(&[SCOPE], None);
-        // The managed identity ends `ActiveDirectoryDefault`'s chain, and off Azure nothing answers it.
-        let answer = if *method == Entra::Default && k == last {
-            match tokio::time::timeout(MANAGED_IDENTITY_TIMEOUT, attempt).await {
+        let answer = match wait {
+            Some(wait) => match tokio::time::timeout(*wait, attempt).await {
                 Ok(answer) => answer,
                 Err(_) => {
-                    failures.push(format!("the host's managed identity gave no answer within {} seconds", MANAGED_IDENTITY_TIMEOUT.as_secs()));
+                    failures.push(format!("the host's managed identity gave no answer within {} seconds", wait.as_secs()));
                     continue;
                 }
-            }
-        } else {
-            attempt.await
+            },
+            None => attempt.await,
         };
         match answer {
             Ok(token) => return Ok(token.token.secret().to_string()),
@@ -204,10 +222,15 @@ mod tests {
         let az = dir.join("az");
         std::fs::write(&az, "#!/bin/sh\necho \"$*\" > \"$(dirname \"$0\")/asked\"\necho '{\"accessToken\": \"a-token\", \"expires_on\": 4102444800, \"tokenType\": \"Bearer\"}'\n").unwrap();
         std::fs::set_permissions(&az, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // No other test of this crate reads PATH or runs a program.
+        // No other test of this crate reads PATH or the identity's variables, or runs a program.
         std::env::set_var("PATH", format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default()));
         assert_eq!(token(&Entra::AzureCli).await, Ok("a-token".to_string()));
         assert_eq!(std::fs::read_to_string(dir.join("asked")).unwrap().trim(), "account get-access-token -o json --scope https://database.windows.net/.default");
+        // A managed identity the crate cannot make, as Cloud Shell's, leaves the rest of the
+        // default chain to sign in.
+        std::env::set_var("MSI_ENDPOINT", "http://localhost:50342/oauth2/token");
+        std::env::remove_var("MSI_SECRET");
+        assert_eq!(token(&Entra::Default).await, Ok("a-token".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
