@@ -86,7 +86,7 @@ mise_check() {
   mise="$(command -v mise || echo "$work/bin/mise")"
   [ -x "$mise" ] || mise="$HOME/scoop/shims/mise.exe"
   mkdir -p "$work/mise-project"
-  printf '[tools]\n"github:colinhacks/reylo" = "%s"\n' "$version" > "$work/mise-project/mise.toml"
+  printf '[tools]\n"github:reylosql/reylo" = "%s"\n' "$version" > "$work/mise-project/mise.toml"
   (cd "$work/mise-project" && "$mise" trust --yes mise.toml && "$mise" install && sh "$smoke" "$("$mise" which reylo)" "$version")
   done_
 }

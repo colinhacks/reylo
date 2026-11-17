@@ -1,4 +1,4 @@
-# Installs the reylo command on Windows, from the binaries a GitHub release of colinhacks/reylo
+# Installs the reylo command on Windows, from the binaries a GitHub release of reylosql/reylo
 # carries, each checked against the release's SHA256SUMS before it is installed.
 #
 #   irm https://reylo.dev/install.ps1 | iex
@@ -15,7 +15,7 @@
   # Windows PowerShell 5.1 starts without TLS 1.2, which GitHub requires.
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-  $repo = 'colinhacks/reylo'
+  $repo = 'reylosql/reylo'
   $dir = if ($env:REYLO_INSTALL_DIR) { $env:REYLO_INSTALL_DIR } else { Join-Path $HOME '.local\bin' }
   $version = if ($env:REYLO_VERSION) { $env:REYLO_VERSION -replace '^v', '' } else { '' }
 

@@ -8,10 +8,10 @@
 <p align="center">Import <code>.sql</code> files into your TypeScript code with full type inference</p>
 
 <p align="center">
-  <a href="https://github.com/colinhacks/reylo/actions/workflows/test.yml"><img src="https://github.com/colinhacks/reylo/actions/workflows/test.yml/badge.svg?branch=main" alt="test status" /></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/github/license/colinhacks/reylo?style=flat" alt="License: MIT" /></a>
-  <a href="https://www.npmjs.com/package/reylo"><img src="https://img.shields.io/github/v/release/colinhacks/reylo?label=npm" alt="npm version" /></a>
-  <a href="https://github.com/colinhacks/reylo"><img src="https://img.shields.io/github/stars/colinhacks/reylo" alt="GitHub stars" /></a>
+  <a href="https://github.com/reylosql/reylo/actions/workflows/test.yml"><img src="https://github.com/reylosql/reylo/actions/workflows/test.yml/badge.svg?branch=main" alt="test status" /></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/github/license/reylosql/reylo?style=flat" alt="License: MIT" /></a>
+  <a href="https://www.npmjs.com/package/reylo"><img src="https://img.shields.io/github/v/release/reylosql/reylo?label=npm" alt="npm version" /></a>
+  <a href="https://github.com/reylosql/reylo"><img src="https://img.shields.io/github/stars/reylosql/reylo" alt="GitHub stars" /></a>
 </p>
 
 <div align="center">
@@ -113,12 +113,12 @@ To make `.sql` imports work at run time too, load Reylo where your code runs. On
 node --env-file=.env --import reylo/register main.ts
 ```
 
-For Bun, Nub, Vite, Next.js, esbuild, webpack, Rspack, Cloudflare Workers and Jest, add [the plugin for your setup](https://reylo.dev/#plugins), or copy its complete [example project](https://github.com/colinhacks/reylo/tree/main/examples). To see the types as you type, set up [your editor](https://reylo.dev/#editors).
+For Bun, Nub, Vite, Next.js, esbuild, webpack, Rspack, Cloudflare Workers and Jest, add [the plugin for your setup](https://reylo.dev/#plugins), or copy its complete [example project](https://github.com/reylosql/reylo/tree/main/examples). To see the types as you type, set up [your editor](https://reylo.dev/#editors).
 
 To give your coding agent Reylo's rules for writing and running queries, install its skill:
 
 ```sh
-npx skills add colinhacks/reylo --skill using-reylo
+npx skills add reylosql/reylo --skill using-reylo
 ```
 
 ## Usage

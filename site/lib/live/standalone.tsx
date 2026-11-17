@@ -79,7 +79,7 @@ function Play({ page }: { page: Page }) {
     const table = page.catalog.tables[0]?.name;
     return { analyze: `${location.origin}/api/analyze`, schema: `${location.origin}/api/schema`, against: "your project's database", example: table ? `select * from ${table}` : 'select 1' };
   }, [page]);
-  return <PlayApp data={data} connect={connect} theme={theme} labels={labels} home="https://reylo.dev" github="https://github.com/colinhacks/reylo" api={api} about={about} />;
+  return <PlayApp data={data} connect={connect} theme={theme} labels={labels} home="https://reylo.dev" github="https://github.com/reylosql/reylo" api={api} about={about} />;
 }
 
 const root = createRoot(document.getElementById('root')!);
