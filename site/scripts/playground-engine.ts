@@ -25,7 +25,7 @@ import { engineDir } from '../lib/live/engine-dir.ts';
 const site = path.resolve(import.meta.dirname, '..');
 const root = path.dirname(site);
 const out = engineDir(site);
-const REPOSITORY = 'colinhacks/reylo';
+const REPOSITORY = 'reylosql/reylo';
 const ASSET = 'reylo-playground-postgres.tar.gz';
 const SUMS = 'SHA256SUMS';
 const BUILT = path.join(root, 'target', 'playground', 'postgres');

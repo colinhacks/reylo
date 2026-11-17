@@ -391,7 +391,7 @@ Reylo can write each query's module to a file instead.
 reylo generate rust-sqlx
 ```
 
-It writes a `.rs` file beside each `.sql` file of the crate, holding what `#[reylo::query]` would: `Query`, `Row` and `.run()`. The `reylo` command comes with Reylo's npm package, so `npx reylo generate rust-sqlx` runs it with nothing installed.
+It writes a `.rs` file beside each `.sql` file of the crate, holding what `#[reylo::query]` would: `Query`, `Row` and `.run()`. The `reylo` command is one binary, installed with Homebrew, Scoop, mise or a script ([Install](/cli#install)); with Node, `npx reylo generate rust-sqlx` runs it with nothing installed.
 
 ```text
 src/

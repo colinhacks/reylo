@@ -29,7 +29,7 @@ diff -ru a/Cargo.toml b/Cargo.toml
 -license = "MIT/Apache-2.0"
 -repository = "https://github.com/prisma/tiberius"
 +license = "MIT OR Apache-2.0"
-+repository = "https://github.com/colinhacks/reylo"
++repository = "https://github.com/reylosql/reylo"
 +include = ["src/**/*.rs", "README.md", "LICENSE-MIT.txt", "LICENSE-APACHE.txt"]
  
  [package.metadata.docs.rs]

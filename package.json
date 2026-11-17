@@ -8,9 +8,9 @@
   "homepage": "https://reylo.dev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/colinhacks/reylo.git"
+    "url": "git+https://github.com/reylosql/reylo.git"
   },
-  "bugs": "https://github.com/colinhacks/reylo/issues",
+  "bugs": "https://github.com/reylosql/reylo/issues",
   "type": "module",
   "engines": {
     "node": ">=24"

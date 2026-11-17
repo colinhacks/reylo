@@ -29,6 +29,40 @@ Flags:
   --version                Print the version
 ```
 
+## Install
+
+Outside a JavaScript project, install the command on its own. It is one binary, with no Node and nothing else to install beside it:
+
+```bash Homebrew
+brew install reylosql/tap/reylo
+```
+
+```bash curl
+curl -fsSL https://reylo.dev/install.sh | sh
+```
+
+```powershell PowerShell
+irm https://reylo.dev/install.ps1 | iex
+```
+
+```bash Scoop
+scoop bucket add reylo https://github.com/reylosql/scoop-bucket
+scoop install reylo
+```
+
+```bash Docker
+docker run --rm -v "$PWD:/work" ghcr.io/reylosql/reylo migrate status
+```
+
+Each installs the latest release, checked against its published checksums. To pin a version in a project, name it in mise's `mise.toml`, which every developer and CI job then installs with `mise install`:
+
+```toml title="mise.toml"
+[tools]
+"github:reylosql/reylo" = "0.8.0"
+```
+
+The scripts take a version too, as `REYLO_VERSION=0.8.0`, and the image a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
+
 ## `reylo analyze`
 
 Prints what Reylo infers for each statement, as data.
