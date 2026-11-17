@@ -838,7 +838,7 @@ Once you write it, `reylo migrate dev` records it without running it again. A `s
 
 Rebuilds your development database from your migrations.
 
-It drops everything on the database, with its rows, empties the history, and runs every migration as `reylo migrate dev` runs them. A platform's own objects stay, such as Supabase's `auth.users`, and so do the extensions your migrations don't create:
+It first checks your migration files and the lock as `reylo migrate dev` does, and changes nothing where they fail. Then it drops everything on the database, with its rows, empties the history, and runs every migration as `reylo migrate dev` runs them. A platform's own objects stay, such as Supabase's `auth.users`, and so do the extensions your migrations don't create:
 
 ```terminal
 $ reylo db reset
