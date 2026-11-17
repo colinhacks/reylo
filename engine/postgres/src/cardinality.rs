@@ -3465,10 +3465,11 @@ fn value_type(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&proto
 /// integers are the wider integer (`int2 + int4` is `int4`, either side `int8` is `int8`), an
 /// untyped side taking the other's type. Only a name the trust check read and no user or
 /// extension defined, and only where no function of theirs converts a built-in type implicitly,
-/// which a built-in's candidate may run on its operand.
+/// which a built-in's candidate may run on its operand. The operands here are of built-in types or
+/// untyped, so a cast of theirs from a type of theirs reaches none of them.
 fn built_in_result(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&protobuf::Node) -> Option<u32>) -> Option<u32> {
     const INTEGERS: &[u32] = &[oid::INT2, oid::INT4, oid::INT8];
-    let built_in = |name: &str| !catalog.user_operators.contains(name) && catalog.overloads.as_ref().is_some_and(|o| !o.0.casts_implicitly());
+    let built_in = |name: &str| !catalog.user_operators.contains(name) && catalog.overloads.as_ref().is_some_and(|o| !o.0.casts_built_in_implicitly());
     match value.node.as_ref()? {
         NodeEnum::FuncCall(f) => {
             let name = infer::builtin_name(&f.funcname)?;

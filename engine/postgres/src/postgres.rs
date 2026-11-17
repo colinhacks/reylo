@@ -259,7 +259,13 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 ///   such a key. An enum's, or a domain's over one, is the built-in `=(anyenum, anyenum)` where no
 ///   `=` of a user's takes the enum, exactly, through a domain over it or by a polymorphic
 ///   argument, and no implicit cast converts it.
-/// - `implicit`: a built-in type a user's implicit cast function converts to a built-in type.
+/// - `implicit`: a type a user's implicit cast function converts to a built-in type: a built-in
+///   one, by its base type or its elements as the server reads them, or a type of a user's, a
+///   composite, an enum or an extension's, as the cast names it.
+/// - `through`: a function name (the second column) every built-in overload of which takes each
+///   argument as it is, of any type (`anyelement`, `anyarray`, `anynonarray`, `anyenum`,
+///   `anyrange`, `anymultirange`, `"any"`, `record`, `record[]`), so no implicit cast runs on one:
+///   the `anycompatible` family, which converts its arguments to a common type, is not one.
 /// - `rows`: every built-in type that is a row (the third column): a catalog's row type, `record`,
 ///   or a domain over a row type. `scalars`: every type of a user's that is no row and no array (the
 ///   third column): a base type, an enum, a range, a multirange, or a domain over one of them. A
@@ -394,6 +400,13 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     UNION ALL SELECT 'implicit', NULL, NULL, s.s::pg_catalog.int8, NULL FROM sources s \
     WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\" AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
     AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (c.castsource OPERATOR(pg_catalog.=) s.b OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT a.e FROM arrays a WHERE a.t OPERATOR(pg_catalog.=) s.b))) \
+    UNION ALL SELECT 'implicit', NULL, NULL, c.castsource::pg_catalog.int8, NULL FROM pg_catalog.pg_cast c \
+    WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\" AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
+    AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND c.castsource OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid \
+    UNION ALL SELECT 'through', p.proname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_proc p \
+    WHERE p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[]) GROUP BY p.proname \
+    HAVING NOT pg_catalog.bool_or(EXISTS (SELECT 1 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i \
+    WHERE NOT (p.proargtypes[i] OPERATOR(pg_catalog.=) ANY ('{2283,2277,2776,3500,3831,4537,2276,2249,2287}'::pg_catalog.oid[])))) \
     UNION ALL SELECT 'type', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
     WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND t.typname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[]) \
     UNION ALL SELECT 'cast', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
