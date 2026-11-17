@@ -254,9 +254,10 @@ fn lost(message: &str) -> Value {
 /// knows it from any other local process's, and carries no TLS, which libpq does not use over a
 /// Unix socket either.
 async fn connect(url: &str, bridge: Option<&str>) -> Result<Started, Value> {
-    let Parsed { mut config, check, root, identity } = parse(url, &|key| std::env::var(key).ok()).map_err(|message| json!({ "status": "error", "message": message }))?;
-    let identity = identity.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password });
+    let Parsed { mut config, check, root, identity: client_cert } = parse(url, &|key| std::env::var(key).ok()).map_err(|message| json!({ "status": "error", "message": message }))?;
+    let identity = client_cert.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password });
     let timeout = config.get_connect_timeout().copied().unwrap_or(CONNECT_TIMEOUT) + Duration::from_secs(1);
+    let each = bridge.is_none().then(|| config.clone());
     let opening = async {
         let Some(token) = bridge else {
             // With no TLS to ask for (`sslmode=disable`, or a Unix socket) no TLS connector is made:
@@ -293,12 +294,113 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<Started, Value> {
         // each statement: about 2.6 seconds, where running them takes 50 milliseconds. A server
         // without the setting refuses it, and then there is nothing to turn off.
         let _ = started.client.batch_execute("set jit = off").await;
-        Ok(started)
+        Ok::<Started, Value>(started)
     };
     match tokio::time::timeout(timeout, connecting).await {
         Err(_) => Err(json!({ "status": "unreachable", "message": "no answer within the connect timeout" })),
+        Ok(Err(answer)) if answer["status"] == "unreachable" => {
+            let Some(config) = each else { return Err(answer) };
+            let tls = match config.get_ssl_mode() {
+                SslMode::Disable => None,
+                _ => tls::config(check, root.as_deref(), client_cert.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password })).ok().map(|mut tls| {
+                    tls.alpn_protocols = vec![b"postgresql".to_vec()];
+                    tls
+                }),
+            };
+            Err(tokio::time::timeout(timeout, each_address(&config, tls)).await.ok().flatten().unwrap_or(answer))
+        }
         Ok(result) => result,
     }
+}
+
+/// What each address of the URL's hosts answers on its own, once a connection to all of them failed.
+/// tokio-postgres tries every address and keeps only the last one's error, so an address the network
+/// cannot route, as an IPv6 address from a build machine with no IPv6 route, can hide what another
+/// address's server answered: a refused login, a TLS setting, a database that does not exist. A
+/// server's answer comes first, then each address that answered nothing; `None` where there is only
+/// one address, whose error the connection already reported, or where one connects now.
+async fn each_address(config: &Config, tls: Option<rustls::ClientConfig>) -> Option<Value> {
+    use tokio_postgres::config::Host;
+    use tokio_postgres::tls::MakeTlsConnect;
+    let ports = config.get_ports();
+    let mut targets = Vec::new();
+    for i in 0..config.get_hosts().len().max(config.get_hostaddrs().len()) {
+        let port = ports.get(i).or(ports.first()).copied().unwrap_or(5432);
+        let name = match config.get_hosts().get(i) {
+            Some(Host::Tcp(name)) => Some(name.clone()),
+            // A Unix socket is one address, which the connection's own error already names.
+            Some(_) => return None,
+            None => None,
+        };
+        match (config.get_hostaddrs().get(i), &name) {
+            (Some(addr), _) => targets.push((name.clone().unwrap_or_else(|| addr.to_string()), Ok(std::net::SocketAddr::new(*addr, port)))),
+            (None, Some(host)) => match tokio::net::lookup_host((host.as_str(), port)).await {
+                Ok(addrs) => targets.extend(addrs.map(|addr| (host.clone(), Ok(addr)))),
+                Err(e) => targets.push((host.clone(), Err(format!("cannot resolve {host}: {e}")))),
+            },
+            (None, None) => return None,
+        }
+    }
+    if targets.len() < 2 {
+        return None;
+    }
+    let wait = config.get_connect_timeout().copied().unwrap_or(CONNECT_TIMEOUT);
+    let (mut answered, mut silent) = (Vec::new(), Vec::new());
+    for (name, addr) in targets {
+        let addr = match addr {
+            Ok(addr) => addr,
+            Err(message) => {
+                silent.push(message);
+                continue;
+            }
+        };
+        let stream = match tokio::time::timeout(wait, tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(e)) => {
+                silent.push(format!("{addr}: error connecting to server: {e}"));
+                continue;
+            }
+            Err(_) => {
+                silent.push(format!("{addr}: no answer within the connect timeout"));
+                continue;
+            }
+        };
+        let _ = stream.set_nodelay(true);
+        let result = match &tls {
+            None => config.connect_raw(stream, tokio_postgres::NoTls).await.map(|_| ()),
+            Some(tls) => {
+                let connect = MakeTlsConnect::<tokio::net::TcpStream>::make_tls_connect(&mut tokio_postgres_rustls::MakeRustlsConnect::new(tls.clone()), &name).unwrap_or_else(|never| match never {});
+                config.connect_raw(stream, connect).await.map(|_| ())
+            }
+        };
+        match result {
+            // It connects now, so the connection's own error is the one to report.
+            Ok(()) => return None,
+            Err(e) if network(&e) => silent.push(format!("{addr}: {}", failure(&e)["message"].as_str().unwrap_or_default())),
+            Err(e) => answered.push((addr, failure(&e))),
+        }
+    }
+    let mut messages: Vec<String> = answered.iter().map(|(addr, answer)| format!("{addr}: {}", answer["message"].as_str().unwrap_or_default())).collect();
+    messages.extend(silent);
+    let mut out = answered.into_iter().next().map_or_else(|| json!({ "status": "unreachable" }), |(_, answer)| answer);
+    out["message"] = json!(messages.join("; "));
+    Some(out)
+}
+
+/// Whether a connection failed before any server answered it: an I/O error on the way (a refused
+/// or unroutable address, a reset), not a server's error, a TLS failure or an authentication step.
+fn network(e: &tokio_postgres::Error) -> bool {
+    if e.as_db_error().is_some() || tls::failed(e) {
+        return false;
+    }
+    let mut source = std::error::Error::source(e);
+    while let Some(s) = source {
+        if s.is::<std::io::Error>() {
+            return true;
+        }
+        source = s.source();
+    }
+    false
 }
 
 /// A connection just opened, and what the server reported as it started, which costs no round trip.

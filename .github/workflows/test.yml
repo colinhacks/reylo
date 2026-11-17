@@ -202,10 +202,21 @@ jobs:
       REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
       REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
       REYLO_TEST_SQLSERVER: sqlserver://sa:Rx-${{ github.run_id }}-pw@127.0.0.1:14333/master?encrypt=true&trustServerCertificate=true
+      REYLO_TEST_PG_TLS: postgres://postgres:reylo@127.0.0.1:55434/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # A Postgres that takes TLS and asks for a password, as a hosted one does, for the test of channel
+      # binding, which needs both. A service cannot take the server's flags, so it is started here; the
+      # image's own snake-oil certificate serves, since the test checks no certificate.
+      - name: Start a Postgres over TLS
+        run: |
+          docker run -d --name reylo-pg-tls -p 55434:5432 -e POSTGRES_PASSWORD=reylo postgres:18 \
+            -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+          for _ in $(seq 60); do docker exec reylo-pg-tls pg_isready -h 127.0.0.1 -U postgres > /dev/null && exit 0; sleep 1; done
+          docker logs reylo-pg-tls
+          exit 1
       - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
         with:
           nub-version: "0.9.6"

@@ -324,6 +324,10 @@ pub enum Expr {
     /// The inner expression, which proves non-null only where it holds no `jsonb` value for
     /// certain: the argument of a cast to a number or a boolean ([`POSTGRES_JSONB_NULL_CASTS`]).
     NotJsonb(Box<Expr>),
+    /// The inner array read whole, a column, cast to a number or a boolean array: a JSON null
+    /// among its elements becomes NULL, so they are non-null only where none is `jsonb`
+    /// ([`items_nullable`]). The array itself, and its type, are the inner one's.
+    NotJsonbItems(Box<Expr>),
     /// The inner expression, which cannot be NULL where it is read: a column inside a CASE arm
     /// that runs only where it is not NULL. Its type is the inner one's.
     Narrowed(Box<Expr>),
@@ -906,6 +910,7 @@ pub fn resolve(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> Fact {
             Fact { non_null: fact.non_null && !may_be_jsonb(inner, leaves), ..fact }
         }
         Expr::Narrowed(inner) => Fact { non_null: true, ..resolve(inner, leaves) },
+        Expr::NotJsonbItems(inner) => resolve(inner, leaves),
         Expr::JsonPath { .. } => match json_read(expr, leaves) {
             Some(read) => Fact { non_null: read.non_null, type_oid: Some(read.type_oid) },
             None => NOTHING,
@@ -1034,7 +1039,7 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
         None => match expr {
             Expr::NonNull(_) | Expr::Array { .. } => false,
             Expr::Unknown | Expr::Unread(_) | Expr::Leaf(_) | Expr::Row(..) => true,
-            Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => may_be_jsonb(inner, leaves),
+            Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::NotJsonbItems(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => may_be_jsonb(inner, leaves),
             Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(|o| may_be_jsonb(o, leaves)),
             // `->` and `#>` give the column's own JSON; `->>` and `#>>` text.
             Expr::JsonPath { text, .. } => !text,
@@ -1053,16 +1058,26 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
 /// type oids are arrays ([`DescribedColumn::nullable_items`]). Only an array the statement builds
 /// says anything: `Some(true)` when an element may be NULL (`ARRAY[nickname]`, `array_agg(u.email)`
 /// over a LEFT JOIN, a literal that spells NULL), `Some(false)` when every element is proven
-/// non-null. A column's array, a function's, `ARRAY(SELECT …)`, an element that is itself an
-/// array (`array_agg(tags)` is two-dimensional, its elements the tags') and one that reads a
-/// column the leaf probe does not ([`Expr::Unread`]) say nothing: `None`. A `CASE`, a `coalesce`
-/// or an operator over arrays may return any operand's elements.
+/// non-null. A column's array says what the leaf probe says of its elements, which a CHECK
+/// settles. A function's array, `ARRAY(SELECT …)`, an element that is itself an array
+/// (`array_agg(tags)` is two-dimensional, its elements the tags') and one that reads a column the
+/// leaf probe does not ([`Expr::Unread`]) say nothing: `None`. A `CASE`, a `coalesce` or an
+/// operator over arrays may return any operand's elements.
 pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> bool) -> Option<bool> {
     match expr {
         Expr::Array { items, .. } => array_items(items, leaves, is_array),
         Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => items_nullable(inner, leaves, is_array),
+        // A JSON null among the elements becomes NULL in the cast, which a CHECK that keeps out
+        // SQL NULL lets through.
+        Expr::NotJsonbItems(inner) => match items_nullable(inner, leaves, is_array) {
+            Some(false) if may_hold_jsonb_items(inner, leaves) => None,
+            items => items,
+        },
         Expr::Every(operands, _) | Expr::Any(operands, _) => join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array))),
-        Expr::NonNull(_) | Expr::Unknown | Expr::Unread(_) | Expr::Leaf(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
+        // A column's array holds what the leaf probe says of its elements, which a CHECK settles
+        // (`array_position(tags, NULL) IS NULL`), so `coalesce(tags, '{}')` keeps it.
+        Expr::Leaf(i) => leaves.and_then(|l| l.get(*i)).and_then(|c| c.nullable_items),
+        Expr::NonNull(_) | Expr::Unknown | Expr::Unread(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
         // A user's overload may return any elements.
         Expr::Call(call) => match (call.fact(leaves), &call.claim) {
             (None, _) | (Some(_), Claim::NonNull(_)) => None,
@@ -1102,7 +1117,7 @@ impl Nesting {
 pub fn nesting(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> Option<bool>) -> Option<Nesting> {
     let nested = match expr {
         Expr::Array { items, .. } => items_nesting(items, leaves, is_array),
-        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => nesting(inner, leaves, is_array),
+        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::NotJsonbItems(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => nesting(inner, leaves, is_array),
         Expr::Call(call) => match (call.fact(leaves), &call.claim) {
             (Some(_), Claim::Array(_)) => items_nesting(&call.args, leaves, is_array),
             _ => None,
@@ -1159,7 +1174,7 @@ fn array_items(items: &[Expr], leaves: Option<&[DescribedColumn]>, is_array: &dy
 fn reads_unread(expr: &Expr) -> bool {
     match expr {
         Expr::Unread(_) => true,
-        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => reads_unread(inner),
+        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::NotJsonbItems(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => reads_unread(inner),
         Expr::JsonPath { base, .. } => reads_unread(base),
         Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(reads_unread),
         Expr::Array { items, .. } => items.iter().any(reads_unread),
@@ -1368,9 +1383,17 @@ pub(crate) fn set_calls(target: &Node, trust: &Trust) -> usize {
     serde_json::to_value(target).map_or(2, |v| walk(&v, trust))
 }
 
+/// Whether an array's elements may be `jsonb` values: its type is `jsonb[]`, or one a database
+/// defined, which may be a domain over it, or the rules name no type for it.
+fn may_hold_jsonb_items(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
+    resolve(expr, leaves).type_oid.is_none_or(|ty| ty == oid::JSONB_ARRAY || ty >= FIRST_USER_OID)
+}
+
 /// An array cast to a number or a boolean array, whose elements a JSON null among them makes
 /// NULL: every element the array is built from, read as one that is non-null only where it holds
-/// no `jsonb` value for certain ([`Expr::NotJsonb`]). The array itself is as it was.
+/// no `jsonb` value for certain ([`Expr::NotJsonb`]), and an array read whole (a column) as one
+/// whose elements are non-null only where none is `jsonb` ([`Expr::NotJsonbItems`]). The array
+/// itself is as it was.
 fn elements_not_jsonb(expr: Expr) -> Expr {
     match expr {
         Expr::Array { non_null, items } => Expr::Array {
@@ -1406,6 +1429,7 @@ fn elements_not_jsonb(expr: Expr) -> Expr {
             t.otherwise = elements_not_jsonb(t.otherwise);
             Expr::Trusted(t)
         }
+        leaf @ Expr::Leaf(_) => Expr::NotJsonbItems(Box::new(leaf)),
         other => other,
     }
 }
@@ -4172,7 +4196,7 @@ fn reads_leaf(expr: &Expr) -> bool {
         Expr::Leaf(_) | Expr::Row(..) => true,
         Expr::Nullable(inner) => reads_leaf(inner),
         Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(reads_leaf),
-        Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => reads_leaf(inner),
+        Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::NotJsonbItems(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => reads_leaf(inner),
         Expr::JsonPath { base, .. } => reads_leaf(base),
         Expr::Array { items, .. } => items.iter().any(reads_leaf),
         Expr::NonNull(_) | Expr::Unknown | Expr::Unread(_) => false,
