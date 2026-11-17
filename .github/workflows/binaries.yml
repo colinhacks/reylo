@@ -172,3 +172,13 @@ jobs:
             docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w "$image" .github/scripts/with-node.sh node .github/scripts/install-check.ts packages "$PLATFORM"
             echo "::endgroup::"
           done
+
+  # The same binaries through every way to install the reylo command without npm (channels.yml): packed as the release will carry them, served on each runner, and installed and run there, so a release whose installers fail stages nothing.
+  channels:
+    needs: build
+    if: ${{ !inputs.platform }}
+    uses: ./.github/workflows/channels.yml
+    permissions:
+      contents: read
+    with:
+      artifacts: true
