@@ -10,9 +10,10 @@ import { engine, reason, Unreachable } from "../src/engine.ts";
 import { hostUrl } from "../src/host-url.ts";
 import { nativeBinary } from "../src/native.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
-import { PG, MYSQL, pgLive, postgresDatabase } from "./helpers.ts";
+import { PG, PG_TLS, MYSQL, pgLive, postgresDatabase } from "./helpers.ts";
 
 const noPg = !PG && "REYLO_TEST_PG names no server";
+const noPgTls = !PG_TLS && "REYLO_TEST_PG_TLS names no server";
 const noMysql = !MYSQL && "REYLO_TEST_MYSQL names no server";
 // Node listens on no Unix socket on Windows, where a path names a named pipe.
 const noUnixSockets = process.platform === "win32" && "Node opens no Unix socket on Windows";
@@ -46,6 +47,27 @@ test("the engine reports a connection the server refuses as Unreachable, on Post
     assert.ok(e instanceof Unreachable, `${dialect}: expected Unreachable, got ${e}`);
     assert.match(e.message, /refused/i, dialect);
   }
+});
+
+test("a Postgres URL that requires channel binding signs in over TLS, as a hosted Postgres's URLs ask", { skip: noPgTls }, async () => {
+  // SCRAM's channel binding ties the password exchange to the TLS connection by the hash of the
+  // server's certificate; `channel_binding=require` alone asks for TLS too.
+  for (const query of ["sslmode=require&channel_binding=require", "channel_binding=require"]) {
+    const c = await (await engine("postgres")).open(`${PG_TLS}?${query}`);
+    assert.deepEqual((await c.analyze("select 1 as x")).columns.map((col) => col.name), ["x"], query);
+    await c.close();
+  }
+});
+
+test("a connection that fails at every address reports what a server answered, not only the last address's error", { skip: noPg }, async () => {
+  // The server answers first, and an address that refuses the connection comes last: tokio-postgres
+  // keeps only the last address's error, which alone would read as a network problem.
+  const { username, host } = new URL(PG!);
+  const [r] = await Promise.allSettled([(await engine("postgres")).open(`postgres://${username}@${host},127.0.0.1:1/reylo_no_such_database`)]);
+  assert.equal(r!.status, "rejected");
+  const message = reason((r as PromiseRejectedResult).reason);
+  assert.match(message, /^[^;]*database "reylo_no_such_database" does not exist/);
+  assert.match(message, /127\.0\.0\.1:1: error connecting to server/);
 });
 
 test("analyses waiting on a server that never answers fail together, at the one connect timeout", { timeout: 30_000 }, async () => {

@@ -154,6 +154,12 @@ group by c.relname
 order by c.relname;
 ```
 
+Prisma writes `timestamp(3)` again for every `DateTime` added later without `@db.Timestamptz`, so a check in CI keeps new ones out:
+
+```sh
+! grep -nE '^[[:space:]]+[[:alnum:]_]+[[:space:]]+DateTime\??([[:space:]]|$)' prisma/schema.prisma | grep -v '@db.Timestamptz'
+```
+
 ### `@updatedAt`
 
 Set `"updatedAt"` with a trigger on each table that has one:
