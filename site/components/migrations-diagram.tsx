@@ -15,9 +15,9 @@ const sans = 'var(--font-text), ui-sans-serif, system-ui, sans-serif';
 type Without = 'schema' | 'lock';
 
 const labels: Record<'full' | Without, string> = {
-  full: 'How the migration commands move between schema.sql, the migrations and the database. reylo migrate new writes a migration from schema.sql into the migrations folder, whose reylo-lock.yaml records their order. reylo migrate dev and reylo migrate deploy run the migrations on the database. Off to the sides, skipping the migrations: reylo migrate init writes schema.sql from an existing database, and reylo db push changes the database straight from schema.sql.',
+  full: 'How the migration commands move between schema.sql, the migrations and the database. reylo migrate new writes a migration from schema.sql into the migrations folder, whose reylo.lock records their order. reylo migrate dev and reylo migrate deploy run the migrations on the database. Off to the sides, skipping the migrations: reylo migrate init writes schema.sql from an existing database, and reylo db push changes the database straight from schema.sql.',
   schema: 'The same diagram without schema.sql: the file is deleted, so reylo migrate init and reylo db push, which touch it, are grayed out. reylo migrate new still writes the next migration, now from the database, up into the migrations folder, beside reylo migrate dev and reylo migrate deploy, which run the migrations on the database.',
-  lock: 'The same diagram without the lock: reylo-lock.yaml is deleted and grayed out, and the migrations run in name order. Every command remains.',
+  lock: 'The same diagram without the lock: reylo.lock is deleted and grayed out, and the migrations run in name order. Every command remains.',
 };
 
 // Geist Mono's advance is 0.6em, so a label's width is known without measuring it.
@@ -206,7 +206,7 @@ function Figure({ without, narrow }: { without?: Without; narrow: boolean }) {
       <Title x={x0} y={my + 28} icon={icons.folder} name="migrations/" />
       <Gone off={noLock}>
         {noLock && <rect x={x0 + 5.5} y={my + 36.5} width={CARD_W - 11} height={24} rx={6} style={{ fill: 'none', stroke: color.border, strokeDasharray: '4 3' }} />}
-        <Title x={x0} y={my + 50} icon={icons.lock} name="reylo-lock.yaml" struck={noLock} />
+        <Title x={x0} y={my + 50} icon={icons.lock} name="reylo.lock" struck={noLock} />
       </Gone>
 
       <Card x={x0} y={by} h={bh} />

@@ -243,13 +243,28 @@ fn home_of(project: &reylo_engine_native::project::Project) -> PathBuf {
     project.root.join(project.config.dir.as_deref().unwrap_or("reylo"))
 }
 
+/// Why a project whose files are in `home` (`shown` as its messages write it) can't have its
+/// migrations read: it holds the lock under its name before 0.8.0, `reylo-lock.yaml`, alone or
+/// beside `reylo.lock`, which `reylo migrate` refuses too. Read as no lock, it would run the
+/// migrations in name order.
+pub fn old_lock(home: &Path, shown: &str) -> Option<String> {
+    if !home.join("reylo-lock.yaml").is_file() {
+        return None;
+    }
+    Some(if home.join("reylo.lock").is_file() {
+        format!("{shown}/reylo-lock.yaml and {shown}/reylo.lock are both here: {shown}/reylo.lock is the lock, and {shown}/reylo-lock.yaml its name before 0.8.0, so keep {shown}/reylo.lock and delete the other, with git rm {shown}/reylo-lock.yaml")
+    } else {
+        format!("{shown}/reylo-lock.yaml is the lock's old name: rename it to {shown}/reylo.lock, with git mv {shown}/reylo-lock.yaml {shown}/reylo.lock")
+    })
+}
+
 /// The files a statement's analysis depends on beside the statement, which a build script names
 /// to Cargo so that a change to one runs it again: the project file, the `.env` files, and the
 /// schema and migrations in the project's `reylo/` directory, each where it exists.
 pub fn watched(dir: &Path) -> Vec<PathBuf> {
     let Ok(project) = reylo_engine_native::project::Project::resolve(dir, std::env::vars().collect()) else { return Vec::new() };
     let home = home_of(&project);
-    let own = [home.join("schema.sql"), home.join("migrations"), home.join("reylo-lock.yaml")];
+    let own = [home.join("schema.sql"), home.join("migrations"), home.join("reylo.lock")];
     project.file.iter().cloned().chain(project.env_files().iter().cloned()).chain(own).filter(|p| p.exists()).collect()
 }
 
@@ -486,5 +501,25 @@ fn write_entry(cache: &Path, file: &Path, entry: &Value) {
     })();
     if written.is_err() {
         let _ = fs::remove_file(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::old_lock;
+
+    #[test]
+    fn the_lock_under_its_old_name_is_refused_alone_or_beside_the_lock() {
+        let home = std::env::temp_dir().join(format!("reylo-codegen-old-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert_eq!(old_lock(&home, "reylo"), None);
+        std::fs::write(home.join("reylo.lock"), "migrations:\n").unwrap();
+        assert_eq!(old_lock(&home, "reylo"), None);
+        std::fs::rename(home.join("reylo.lock"), home.join("reylo-lock.yaml")).unwrap();
+        assert_eq!(old_lock(&home, "reylo").as_deref(), Some("reylo/reylo-lock.yaml is the lock's old name: rename it to reylo/reylo.lock, with git mv reylo/reylo-lock.yaml reylo/reylo.lock"));
+        std::fs::write(home.join("reylo.lock"), "migrations:\n").unwrap();
+        assert!(old_lock(&home, "reylo").is_some_and(|e| e.starts_with("reylo/reylo-lock.yaml and reylo/reylo.lock are both here: ") && e.ends_with("with git rm reylo/reylo-lock.yaml")));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }
