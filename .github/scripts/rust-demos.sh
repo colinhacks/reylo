@@ -13,7 +13,7 @@ pg=${REYLO_TEST_PG:?REYLO_TEST_PG names the Postgres server}
 mysql=${REYLO_TEST_MYSQL:?REYLO_TEST_MYSQL names the MySQL server}
 server=${pg%/*}
 
-psql "$pg" -v ON_ERROR_STOP=1 -q -c 'drop database if exists rust_demo' -c 'create database rust_demo' -c 'drop database if exists rust_docs' -c 'create database rust_docs'
+psql "$pg" -v ON_ERROR_STOP=1 -q -c 'drop database if exists rust_demo' -c 'create database rust_demo' -c 'drop database if exists rust_docs' -c 'create database rust_docs' -c 'drop database if exists rust_docs_migrate' -c 'create database rust_docs_migrate'
 psql "$server/rust_demo" -v ON_ERROR_STOP=1 -q -f rust/demo-reylo/schema.sql
 psql "$server/rust_docs" -v ON_ERROR_STOP=1 -q -f rust/demo-docs/schema.sql
 mysql_client() {
@@ -33,7 +33,7 @@ echo '::group::demo-reylo, on Postgres'
 DATABASE_URL="$server/rust_demo" cargo run -q -p demo-reylo --features live
 echo '::endgroup::'
 echo '::group::demo-docs, the docs site'"'"'s snippets'
-DATABASE_URL="$server/rust_docs" cargo run -q -p demo-docs --features live
+DATABASE_URL="$server/rust_docs" MIGRATE_URL="$server/rust_docs_migrate" cargo run -q -p demo-docs --features live
 echo '::endgroup::'
 echo '::group::demo-mysql, on MySQL'
 DATABASE_URL="$mysql/rust_demo" cargo run -q -p demo-mysql --features live

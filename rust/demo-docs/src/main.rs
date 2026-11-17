@@ -152,5 +152,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rows = published::Query.run(&pool).await?;
     let _: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> = rows[0].published_at;
     println!("dates       {rows:?}");
+
+    // Migrations (rust.mdx), on a database of their own, whose `reylo/migrations` are the demo's.
+    let pool = PgPool::connect(&std::env::var("MIGRATE_URL")?).await?;
+    // ran: Vec<String>, the names of the migrations it ran
+    let ran = reylo::migrate!().run(&pool).await?;
+    let _: &Vec<String> = &ran;
+    let status = reylo::migrate!().status(&pool).await?;
+    if !status.is_current() {
+        eprintln!("{status}");
+    }
+    assert!(status.is_current() && ran == ["20260101000000_notes.sql"]);
+    println!("migrations  {ran:?}");
     Ok(())
 }
