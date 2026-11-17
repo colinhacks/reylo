@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn the_lock_under_its_old_name_is_refused_alone_or_beside_the_lock() {
-        let home = std::env::temp_dir().join(format!("reylo-codegen-old-lock-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("reylo-build-old-lock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         assert_eq!(old_lock(&home, "reylo"), None);

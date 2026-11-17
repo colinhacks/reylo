@@ -124,7 +124,7 @@ fn migrations() -> syn::Result<TokenStream2> {
             quote!(::core::option::Option::None)
         }
     };
-    if let Some(error) = reylo_codegen::analysis::old_lock(&home, &shown) {
+    if let Some(error) = reylo_build::analysis::old_lock(&home, &shown) {
         return Err(syn::Error::new(span, error));
     }
     let lock = included(home.join("reylo.lock"));
