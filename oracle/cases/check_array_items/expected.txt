@@ -1,5 +1,6 @@
 beside_union.sql: many () -> { tags: text(¬NUL)[], u: text(¬NUL)?[] }
 casts.sql: many () -> { wrapped: (public.wrap{ v: text(¬NUL)? }?)[]?, points: public.score[]? }
+coalesced.sql: many () -> { literal: int4[], built: int4[], cast: int4[], domain: text(¬NUL)[], unchecked: text(¬NUL)?[], null_fallback: int4?[] }
 columns.sql: at_most_one (id: int4) -> { tags: text(¬NUL)[], scores: int4[]?, l: text(¬NUL)[]?, loose: text(¬NUL)?[]?, other: text(¬NUL)?[]? }
 filtered.sql: many () -> { tags: text(¬NUL)[], scores: int4[] }
 grids.sql: many () -> { cells: int4[]? }

@@ -1053,16 +1053,20 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
 /// type oids are arrays ([`DescribedColumn::nullable_items`]). Only an array the statement builds
 /// says anything: `Some(true)` when an element may be NULL (`ARRAY[nickname]`, `array_agg(u.email)`
 /// over a LEFT JOIN, a literal that spells NULL), `Some(false)` when every element is proven
-/// non-null. A column's array, a function's, `ARRAY(SELECT …)`, an element that is itself an
-/// array (`array_agg(tags)` is two-dimensional, its elements the tags') and one that reads a
-/// column the leaf probe does not ([`Expr::Unread`]) say nothing: `None`. A `CASE`, a `coalesce`
-/// or an operator over arrays may return any operand's elements.
+/// non-null. A column's array says what the leaf probe says of its elements, which a CHECK
+/// settles. A function's array, `ARRAY(SELECT …)`, an element that is itself an array
+/// (`array_agg(tags)` is two-dimensional, its elements the tags') and one that reads a column the
+/// leaf probe does not ([`Expr::Unread`]) say nothing: `None`. A `CASE`, a `coalesce` or an
+/// operator over arrays may return any operand's elements.
 pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> bool) -> Option<bool> {
     match expr {
         Expr::Array { items, .. } => array_items(items, leaves, is_array),
         Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => items_nullable(inner, leaves, is_array),
         Expr::Every(operands, _) | Expr::Any(operands, _) => join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array))),
-        Expr::NonNull(_) | Expr::Unknown | Expr::Unread(_) | Expr::Leaf(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
+        // A column's array holds what the leaf probe says of its elements, which a CHECK settles
+        // (`array_position(tags, NULL) IS NULL`), so `coalesce(tags, '{}')` keeps it.
+        Expr::Leaf(i) => leaves.and_then(|l| l.get(*i)).and_then(|c| c.nullable_items),
+        Expr::NonNull(_) | Expr::Unknown | Expr::Unread(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
         // A user's overload may return any elements.
         Expr::Call(call) => match (call.fact(leaves), &call.claim) {
             (None, _) | (Some(_), Claim::NonNull(_)) => None,
