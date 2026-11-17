@@ -27,7 +27,7 @@ import { lastOfEach, namesInResult, rowOf } from "./row.ts";
 import { bigInteger, coerce, DecodeError, describe, truth, utf8, withFraction, type Columns, type Kind } from "./values.ts";
 import { bunRows } from "./decode.ts";
 import { readMysqlError } from "./query-error.ts";
-import { lexPlaceholders } from "./lex.ts";
+import { lexPlaceholders, type MysqlText } from "./lex.ts";
 import type { AnyClient as Client, Bound, QueryModule, Runtime } from "./execute.ts";
 
 type AnyClient = Record<string, any>;
@@ -93,7 +93,7 @@ function wallClock(s: string, decimals: number, type: number): string {
 }
 
 /** The app's settings, where mysql2 shows them: a promise Pool's, Connection's or PoolConnection's. */
-type Mysql2Config = { typeCast?: unknown; decimalNumbers?: boolean; jsonStrings?: boolean; queryFormat?: unknown };
+type Mysql2Config = { typeCast?: unknown; decimalNumbers?: boolean; jsonStrings?: boolean; queryFormat?: unknown; charsetNumber?: number };
 const configOf = (m: AnyClient): Mysql2Config | undefined => m.pool?.config?.connectionConfig ?? m.connection?.config;
 
 /**
@@ -155,9 +155,11 @@ function fixRows(rows: Record<string, unknown>[], fixes: (readonly [string, Fix]
 // value into the statement itself, at the placeholders its own lexer finds, and sends the text
 // with no values, so mysql2's escaping and placeholder scan decide nothing. A string is quoted
 // with each quote doubled, which every sql_mode reads the same way; a backslash is the one
-// character two modes read differently, so a statement with a string holding one first reads its
-// session's sql_mode, on the connection it then runs on, rather than trusting the server's
-// NO_BACKSLASH_ESCAPES status flag, which can be stale after a stored routine changes sql_mode.
+// character two modes read differently, in a value and in the statement's own text, so a statement
+// where either holds one first reads its session's sql_mode, on the connection it then runs on,
+// rather than trusting the server's NO_BACKSLASH_ESCAPES status flag, which can be stale after a
+// stored routine changes sql_mode. A charset that writes another character with a backslash's
+// byte is refused, and so is the app's queryFormat, which would rewrite the statement.
 
 /** The pools and connections whose server refused a prepared statement: their statements go through query() from then on. */
 const refusesPrepares = new WeakSet<object>();
@@ -172,6 +174,13 @@ const hexOf = (bytes: Uint8Array) => {
   for (const byte of bytes) hex += (byte < 16 ? "0" : "") + byte.toString(16);
   return hex;
 };
+
+/**
+ * mysql2's charset numbers (its charset_encodings.js, past 1024 as well) whose encodings write a
+ * character other than a backslash with the byte 0x5c, as SJIS writes `¥`: the server reads that
+ * byte as a backslash, which would escape a quote Reylo wrote.
+ */
+const BACKSLASH_BYTE_CHARSETS = new Set([1, 13, 28, 84, 87, 88, 95, 96, 248, 249, 250]);
 
 /** A string literal for a session that reads a backslash as an escape (`escapes`) or as itself. */
 function stringLiteral(s: string, escapes: boolean): string {
@@ -200,15 +209,17 @@ function mysqlLiteral(v: unknown, m: AnyClient, escapes: boolean): string {
     case "string":
       return stringLiteral(v, escapes);
   }
-  if (v instanceof Uint8Array) return `X'${hexOf(v)}'`;
+  // `_binary`, since MySQL reads two bare hex literals in a bitwise operator as numbers.
+  if (v instanceof Uint8Array) return `_binary X'${hexOf(v)}'`;
   // A Date in the connection's timezone, as execute() binds one; its text holds no quote or backslash.
   if (v instanceof Date) return m.escape(v);
   return stringLiteral(JSON.stringify(v), escapes);
 }
 
-/** `text` with each `?` replaced by its value's literal. */
-function inlineMysql(text: string, values: unknown[], m: AnyClient, escapes: boolean): string {
-  const marks = lexPlaceholders(text, "mysql").placeholders.filter((p) => text[p.start] === "?");
+/** `text` with each `?` replaced by its value's literal, the placeholders found as the session reads the text. */
+function inlineMysql(text: string, values: unknown[], m: AnyClient, mode: MysqlText): string {
+  const escapes = mode.backslashEscapes;
+  const marks = lexPlaceholders(text, "mysql", mode).placeholders.filter((p) => text[p.start] === "?");
   if (marks.length !== values.length) throw new TypeError(`reylo found ${marks.length} placeholders for ${values.length} values in this MySQL statement.`);
   let out = "";
   let at = 0;
@@ -219,22 +230,27 @@ function inlineMysql(text: string, values: unknown[], m: AnyClient, escapes: boo
   return out + text.slice(at);
 }
 
+const DEFAULT_MODE: MysqlText = { backslashEscapes: true, ansiQuotes: false };
+
 /** Field names mysql2's compiled parsers refuse (helpers.js, privateObjectProps), which a string written into the text names an unaliased column. */
 const PRIVATE_NAMES = new Set(["__proto__", "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__"]);
 
-/** The statement through query(), its values written in; a string holding a backslash reads the session's sql_mode first, on the connection the statement then runs on. */
+/** The statement through query(), its values written in; where the text or a value holds a backslash, the session's sql_mode is read first, on the connection the statement then runs on. */
 async function mysql2Query(m: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<[unknown, unknown]> {
-  if (typeof configOf(m)?.queryFormat === "function") throw new Error("reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo runs mysql2's query(), which passes every statement through the app's queryFormat. Connect without a queryFormat, or with the mariadb driver.");
+  const config = configOf(m);
+  if (typeof config?.queryFormat === "function") throw new Error("reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo runs mysql2's query(), which passes every statement through the app's queryFormat. Connect without a queryFormat, or with the mariadb driver.");
+  if (config?.charsetNumber !== undefined && BACKSLASH_BYTE_CHARSETS.has(config.charsetNumber % 1024)) throw new Error("reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo writes the values into the statement, which this connection's charset can write with a backslash byte that is not a backslash (as SJIS writes ¥). Connect with utf8mb4, or with the mariadb driver.");
   const proto = columns?.some(([name]) => name === "__proto__") || values.some((v) => typeof v === "string" && PRIVATE_NAMES.has(v)) ? { disableEval: true } : {};
-  const options = { ...MYSQL2_OPTIONS, ...proto, typeCast: mysql2TextCast };
-  if (!values.some((v) => textOf(v)?.includes("\\"))) return await m.query({ sql: inlineMysql(text, values, m, true), ...options });
+  const options = { ...MYSQL2_OPTIONS, ...proto, namedPlaceholders: false, typeCast: mysql2TextCast };
+  if (!text.includes("\\") && !values.some((v) => textOf(v)?.includes("\\"))) return await m.query({ sql: inlineMysql(text, values, m, DEFAULT_MODE), ...options });
   // A promise Pool hands out a PoolConnection, so that the probe and the statement share one session.
   const pooled = typeof m.getConnection === "function" && typeof m.release !== "function" ? await m.getConnection() : undefined;
   const conn = pooled ?? m;
   try {
-    const [rows] = await conn.query({ sql: "select @@session.sql_mode", rowsAsArray: true, typeCast: true });
-    const escapes = !String(rows[0][0]).split(",").includes("NO_BACKSLASH_ESCAPES");
-    return await conn.query({ sql: inlineMysql(text, values, m, escapes), ...options });
+    const [rows] = await conn.query({ sql: "select @@session.sql_mode", rowsAsArray: true, nestTables: false, namedPlaceholders: false, typeCast: true });
+    const sqlMode = String(rows[0][0]).split(",");
+    const mode = { backslashEscapes: !sqlMode.includes("NO_BACKSLASH_ESCAPES"), ansiQuotes: sqlMode.includes("ANSI_QUOTES") };
+    return await conn.query({ sql: inlineMysql(text, values, m, mode), ...options });
   } finally {
     pooled?.release();
   }

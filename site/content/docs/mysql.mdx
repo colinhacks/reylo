@@ -614,7 +614,7 @@ await getUser.run(callbackPool, { id: 1 });
 Reylo runs each query through the `execute()` method of `mysql2`, which prepares the statement first. Where the server refuses prepared statements, as Cloudflare Hyperdrive does, Reylo writes the values into the statement itself and runs it through `query()`, which prepares nothing:
 
 - A `FLOAT` column comes back with the 6 significant digits MySQL sends as text, so `1.100000023841858` reads as `1.1`.
-- An app's `queryFormat` would rewrite each statement, so it is refused there.
+- An app's `queryFormat` would rewrite each statement, so it is refused there, and so is a connection whose charset writes another character with a backslash's byte, as SJIS writes `¥`.
 
 ### `mariadb`
 

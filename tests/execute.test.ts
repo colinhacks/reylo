@@ -493,6 +493,7 @@ test("mysql: where a server refuses mysql2's prepared statements, as Cloudflare 
   await execute(pool, my, { id: 2.5, name: "C:\\" });
   sqlMode = "STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES";
   await execute(pool, my, { id: 3, name: "C:\\" });
+  await execute(pool, my, { id: 4, name: new Uint8Array([1, 2]) });
   assert.equal(executes, 1);
   assert.deepEqual(sent, [
     "select 1 as id, 'it''s' as name, 1 as again",
@@ -500,7 +501,11 @@ test("mysql: where a server refuses mysql2's prepared statements, as Cloudflare 
     "select 2.5e0 as id, 'C:\\\\' as name, 2.5e0 as again",
     "select @@session.sql_mode",
     "select 3 as id, 'C:\\' as name, 3 as again",
+    "select 4 as id, _binary X'0102' as name, 4 as again",
   ]);
+  // A charset that writes another character with a backslash's byte (SJIS's ¥) would escape a quote Reylo wrote.
+  const sjis = { ...pool, pool: { config: { connectionConfig: { charsetNumber: 13 } } } };
+  await assert.rejects(async () => execute(sjis, my, { id: 1, name: "ada" }), (e: Error) => e.message.startsWith("reylo cannot run a mysql statement through mysql2 here:") && e.message.includes("as SJIS writes ¥"));
   // The app's queryFormat would rewrite every statement query() sends.
   const formatted = { ...pool, pool: { config: { connectionConfig: { queryFormat: (sql: string) => sql } } } };
   await assert.rejects(async () => execute(formatted, my, { id: 1, name: "ada" }), (e: Error) => e.message === "reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo runs mysql2's query(), which passes every statement through the app's queryFormat. Connect without a queryFormat, or with the mariadb driver.");
@@ -555,20 +560,42 @@ test("mysql: through a server that refuses prepared statements, as Cloudflare Hy
   const u = new URL(MYSQL!);
   const connection = { host: "127.0.0.1", port: proxy.port, user: decodeURIComponent(u.username) || "root", password: decodeURIComponent(u.password), database: new URL(own.url).pathname.slice(1) };
   const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select name from users where id = :id", params: ["id"] };
-  const byName: QueryModule<"mysql"> = { dialect: "mysql", sql: "select id from users where name = :name", params: ["name"] };
+  const byName: QueryModule<"mysql"> = { dialect: "mysql", sql: "select id from users where name = :name -- :note", params: ["name"] };
+  const bits: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :a | :b as n", params: ["a", "b"] };
+  // As the engine compiles it on a server in NO_BACKSLASH_ESCAPES, where the literal ends at its second quote.
+  const slash: QueryModule<"mysql"> = { dialect: "mysql", sql: "select '\\' as slash, :id as n", params: ["id"], text: "select '\\' as slash, ? as n", order: ["id"] };
   const mysql2 = driver("mysql2/promise");
   try {
-    for (const client of [await mysql2.createConnection(connection), mysql2.createPool({ ...connection, connectionLimit: 1 }), await driver("mariadb").createConnection(connection), driver("mariadb").createPool({ ...connection, connectionLimit: 1 })]) {
+    const clients: [string, () => Promise<ReturnType<typeof driver>>][] = [
+      ["mysql2", () => mysql2.createConnection(connection)],
+      ["mysql2", async () => mysql2.createPool({ ...connection, connectionLimit: 1 })],
+      ["mysql2", async () => mysql2.createPool({ ...connection, connectionLimit: 1, namedPlaceholders: true, nestTables: true })],
+      ["mariadb", () => driver("mariadb").createConnection(connection)],
+      ["mariadb", async () => driver("mariadb").createPool({ ...connection, connectionLimit: 1 })],
+    ];
+    for (const [name, open] of clients) {
+      const client = await open();
       try {
         for (const mode of ["", "NO_BACKSLASH_ESCAPES"]) {
           await client.query(`set session sql_mode = '${mode}'`);
           assert.deepEqual(plain((await execute(client, q, { id: 1 })) as object[]), [{ name: "Ada" }]);
           assert.deepEqual(plain((await execute(client, byName, { name: "C:\\dir\\ it's" })) as object[]), [{ id: 2 }]);
           assert.deepEqual(plain((await execute(client, byName, { name: "x\\' or 1=1 -- " })) as object[]), []);
+          const [bitwise] = (await execute(client, bits, { a: new Uint8Array([1, 2]), b: new Uint8Array([3, 4]) })) as { n: Uint8Array }[];
+          assert.deepEqual([...bitwise!.n], [3, 6]);
+          // mariadb's own placeholder scan reads the literal as it would in the default mode.
+          if (mode && name === "mysql2") assert.deepEqual(plain((await execute(client, slash, { id: 7 })) as object[]), [{ slash: "\\", n: 7n }]);
         }
       } finally {
         await client.end();
       }
+    }
+    // SJIS writes ¥ with a backslash's byte, so the values are not written into its statements.
+    const sjis = await mysql2.createConnection({ ...connection, charset: "SJIS" });
+    try {
+      await assert.rejects(async () => execute(sjis, byName, { name: "¥' or 1=1 -- " }), (e: Error) => e.message.includes("as SJIS writes ¥"));
+    } finally {
+      await sjis.end();
     }
   } finally {
     await proxy.close();
