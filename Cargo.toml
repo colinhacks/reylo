@@ -39,7 +39,7 @@ members = [
 # reylo's version, which the engine reports on ping and the npm package `reylo` must equal, and every
 # crate published from here takes.
 [workspace.package]
-version = "0.8.0-beta.0"
+version = "0.8.0"
 license = "MIT"
 repository = "https://github.com/reylosql/reylo"
 homepage = "https://reylo.dev"
@@ -47,16 +47,16 @@ homepage = "https://reylo.dev"
 # The crates of this workspace, each by path and by the version crates.io knows it at. The two copies
 # of upstream crates keep their own versions, which change only with what they copy.
 [workspace.dependencies]
-reylo-engine-build = { path = "engine/build-support", version = "=0.8.0-beta.0" }
-reylo-engine-core = { path = "engine/core", version = "=0.8.0-beta.0" }
-reylo-engine-postgres = { path = "engine/postgres", version = "=0.8.0-beta.0" }
-reylo-engine-sqlite = { path = "engine/sqlite", version = "=0.8.0-beta.0" }
-reylo-engine-mysql = { path = "engine/mysql", version = "=0.8.0-beta.0" }
-reylo-engine = { path = "engine/native", version = "=0.8.0-beta.0", default-features = false }
-reylo-migrate = { path = "engine/migrate", version = "=0.8.0-beta.0", default-features = false }
-reylo-macros = { path = "rust/reylo-macros", version = "=0.8.0-beta.0" }
-reylo = { path = "rust/reylo", version = "=0.8.0-beta.0", default-features = false }
-reylo-build = { path = "rust/reylo-build", version = "=0.8.0-beta.0", default-features = false }
+reylo-engine-build = { path = "engine/build-support", version = "=0.8.0" }
+reylo-engine-core = { path = "engine/core", version = "=0.8.0" }
+reylo-engine-postgres = { path = "engine/postgres", version = "=0.8.0" }
+reylo-engine-sqlite = { path = "engine/sqlite", version = "=0.8.0" }
+reylo-engine-mysql = { path = "engine/mysql", version = "=0.8.0" }
+reylo-engine = { path = "engine/native", version = "=0.8.0", default-features = false }
+reylo-migrate = { path = "engine/migrate", version = "=0.8.0", default-features = false }
+reylo-macros = { path = "rust/reylo-macros", version = "=0.8.0" }
+reylo = { path = "rust/reylo", version = "=0.8.0", default-features = false }
+reylo-build = { path = "rust/reylo-build", version = "=0.8.0", default-features = false }
 pg_query = { package = "reylo-pg-query", path = "engine/postgres/.patched/pg_query", version = "=18.0.0" }
 sqlparser = { package = "reylo-sqlparser", path = "engine/mysql/vendor/sqlparser", version = "=0.63.0", default-features = false }
 
