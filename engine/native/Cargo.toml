@@ -8,7 +8,8 @@ homepage.workspace = true
 description = "Reylo's analysis engine for a Rust host: each database's engine behind a feature, the replay loop that runs an analysis to its end, the answers to the engine's needs over tokio-postgres, rusqlite or mysql_async, and the engine as a program that opens its own connections."
 
 [features]
-default = ["postgres", "mysql", "sqlite"]
+# None by default: a host names the databases it reads.
+default = []
 # Each database: its engine, the answers to its needs over its client, and its program.
 postgres = ["dep:reylo-engine-postgres", "tls", "dep:tokio-postgres", "dep:tokio-postgres-rustls"]
 mysql = ["dep:reylo-engine-mysql", "tls", "dep:mysql_async"]

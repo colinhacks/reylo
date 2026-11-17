@@ -9,7 +9,9 @@
 //! answers to its needs over its client (tokio-postgres, rusqlite or mysql_async) with an `analyze`
 //! that runs a statement's whole replay on it ([`clients`]), and its program. A host that answers the
 //! engine its own way implements [`Answerer`] or [`AsyncAnswerer`] and calls [`replay::run`] or
-//! [`replay::run_async`] with its database's engine.
+//! [`replay::run_async`] with its database's engine, from [`engines`]
+//! (`replay::run_async::<reylo_engine::engines::postgres::Postgres, _>`): the module of a database's
+//! name at the crate's root, `reylo_engine::postgres`, is its program.
 //!
 //! ```ignore
 //! let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls).await?;

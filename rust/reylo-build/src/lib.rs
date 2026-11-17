@@ -1,12 +1,6 @@
-//! Reylo's Rust modules. A build script writes them into Cargo's `OUT_DIR` with [`rust_sqlx`], so
-//! that no generated file is committed:
-//!
-//! ```no_run
-//! // build.rs
-//! fn main() {
-//!     reylo_build::rust_sqlx().input("src/queries").out("queries.rs").run();
-//! }
-//! ```
+//! Reylo's Rust modules. A build script writes them into Cargo's `OUT_DIR` with `rust_sqlx()` (the
+//! `generate` feature, a default one), so that no generated file is committed, and the crate
+//! includes the file:
 //!
 //! ```ignore
 //! // src/main.rs
@@ -41,11 +35,14 @@ mod types;
 /// A statement's analysis, from the project's database or `reylo/.cache/`.
 #[cfg(feature = "analyze")]
 pub mod analysis;
-/// The `.sql` files a path, a directory or a glob names.
+/// The `.sql` files a path, a directory or a glob names, for `reylo generate rust-sqlx`.
 #[cfg(feature = "generate")]
+#[doc(hidden)]
 pub mod files;
-/// The modules written to files.
+/// The modules written to files, as `reylo generate rust-sqlx` writes them; a build script's are
+/// `rust_sqlx()`'s.
 #[cfg(feature = "generate")]
+#[doc(hidden)]
 pub mod generate;
 /// The modules a build script writes.
 #[cfg(feature = "generate")]
