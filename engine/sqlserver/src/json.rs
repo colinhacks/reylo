@@ -246,6 +246,15 @@ impl Builder {
                     // result is text, written as a value.
                     "isnull" | "coalesce" if args.len() == 2 && (top || name == "isnull") => {
                         let (first, empty) = (arg(args[0])?, arg(args[1])?);
+                        // Inside a document a `without_array_wrapper` subquery stays text, and so
+                        // does `isnull` of it.
+                        let mut inner = &first;
+                        while let Expr::Nested(e) = inner {
+                            inner = e;
+                        }
+                        if !top && matches!(inner, Expr::Subquery(q) if is_for_json(q) && unwrapped(q)) {
+                            return Some(Json::Text { nullable: text(&empty).is_none() });
+                        }
                         let mut s = self.shape(&first, level, probe, true)?;
                         match (&mut s, text(&empty).as_deref()) {
                             (Json::Array { .. }, Some("[]")) => {}
@@ -463,13 +472,15 @@ mod tests {
 
     #[test]
     fn reads_what_sql_server_writes_inside_a_document() {
-        let p = planned("select (select u.id, (select top 1 p.title from posts p for json path, without_array_wrapper) as first, json_query((select top 1 p.title from posts p for json path, without_array_wrapper)) as promoted, isnull((select p.id from posts p for json path), '[]') as wrapped from users u for json path) as doc, json_query(json_object('child': json_object('id': 1)), '$.child') as child, json_query(json_object('id': 1), '$') as whole, isnull((select top 1 id from t for json path, without_array_wrapper), '{}') as fallback from t");
+        let p = planned("select (select u.id, (select top 1 p.title from posts p for json path, without_array_wrapper) as first, json_query((select top 1 p.title from posts p for json path, without_array_wrapper)) as promoted, isnull((select p.id from posts p for json path), '[]') as wrapped, isnull((select top 1 p.id from posts p for json path, without_array_wrapper), '{}') as unwrapped from users u for json path) as doc, json_query(json_object('child': json_object('id': 1)), '$.child') as child, json_query(json_object('id': 1), '$') as whole, isnull((select top 1 id from t for json path, without_array_wrapper), '{}') as fallback from t");
         let Some(Json::Array { items, .. }) = &p.columns[0] else { panic!("{:?}", p.columns[0]) };
         let Json::Object { keys, .. } = items.as_ref() else { panic!() };
         // Unwrapped, it is text; through json_query, the object; through isnull, the array.
         assert!(matches!(keys[1].value, Json::Text { nullable: true }));
         assert!(matches!(keys[2].value, Json::Object { nullable: true, .. }));
         assert!(matches!(keys[3].value, Json::Array { nullable: false, .. }));
+        // isnull of an unwrapped subquery stays text there, never NULL.
+        assert!(matches!(keys[4].value, Json::Text { nullable: false }));
         // A path picks part of the document, which may be missing.
         assert!(matches!(p.columns[1], Some(Json::Any { nullable: true })));
         assert!(matches!(p.columns[2], Some(Json::Object { nullable: false, .. })));
