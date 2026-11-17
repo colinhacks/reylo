@@ -118,6 +118,8 @@ jobs:
           VERSION: ${{ needs.assets.outputs.version }}
           IMAGES: ${{ toJSON(matrix.images) }}
           REYLO_DOWNLOAD_URL: ${{ needs.assets.outputs.url }}
+          # mise reads the release from GitHub's API, which limits a runner's anonymous requests
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           [ -n "$REYLO_DOWNLOAD_URL" ] || unset REYLO_DOWNLOAD_URL
           .github/scripts/channels-check.sh "$PLATFORM" assets "$VERSION" "$IMAGES"

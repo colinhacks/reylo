@@ -3,7 +3,8 @@
 # (.github/scripts/channels-smoke.sh): on macOS, install.sh and the Homebrew formula; on Linux,
 # install.sh in each of the platform's images (npm/platforms.json), the Homebrew formula on glibc and
 # the container image on musl; on Windows, install.ps1 under PowerShell 7 and Windows PowerShell 5.1,
-# and the Scoop manifest. channels.yml runs it on each platform's own runner.
+# and the Scoop manifest; and mise on each runner, on a published release. channels.yml runs it on
+# each platform's own runner.
 #
 #   .github/scripts/channels-check.sh <platform> <assets> <version> [<images>]
 #
@@ -39,9 +40,11 @@ fi
 step() { echo "::group::$*"; }
 done_() { echo "::endgroup::"; }
 
-# install.sh must say it installed this platform's build, so a glibc check that fell back to musl fails.
+# An installer's output, shown, which must say it installed this platform's build, so a glibc check
+# that fell back to musl fails.
 installed() {
-  grep -F "Installed reylo $version ($platform)" || { echo "::error::install.sh did not install reylo $version for $platform"; exit 1; }
+  cat "$1"
+  grep -qF "Installed reylo $version ($platform)" "$1" || { echo "::error::the installer did not install reylo $version for $platform"; exit 1; }
 }
 
 homebrew() {
@@ -68,28 +71,54 @@ homebrew() {
   done_
 }
 
+# mise, from the release's own assets on GitHub through its github: backend, pinned in a project's
+# mise.toml as a Rust project would pin it. Only on a published release, which mise reads from GitHub.
+mise_check() {
+  [ -z "${REYLO_DOWNLOAD_URL:-}" ] || return 0
+  step "mise"
+  if ! command -v mise > /dev/null; then
+    case "$platform" in
+      win32-*) "$HOME/scoop/shims/scoop.cmd" install mise ;;
+      *) curl -fsSL https://mise.run | MISE_INSTALL_PATH="$work/bin/mise" sh ;;
+    esac
+  fi
+  local mise
+  mise="$(command -v mise || echo "$work/bin/mise")"
+  [ -x "$mise" ] || mise="$HOME/scoop/shims/mise.exe"
+  mkdir -p "$work/mise-project"
+  printf '[tools]\n"github:colinhacks/reylo" = "%s"\n' "$version" > "$work/mise-project/mise.toml"
+  (cd "$work/mise-project" && "$mise" trust --yes mise.toml && "$mise" install && sh "$smoke" "$("$mise" which reylo)" "$version")
+  done_
+}
+
 case "$platform" in
   darwin-*)
     step "install.sh"
-    REYLO_INSTALL_DIR="$work/sh" sh site/public/install.sh | tee /dev/stderr | installed
+    REYLO_INSTALL_DIR="$work/sh" sh site/public/install.sh > "$work/out" || { cat "$work/out"; exit 1; }
+    installed "$work/out"
     sh "$smoke" "$work/sh/reylo" "$version"
     done_
     homebrew
+    mise_check
     ;;
 
   linux-*)
     # Each image as it comes, but for curl, which Debian's slim image lacks and install.sh needs one
-    # of (or wget). The host's network, so a server of the run's own on 127.0.0.1 is reachable.
+    # of (or wget); Debian 11's security updates have moved to archive.debian.org, where apt is sent
+    # when the usual mirror no longer has them. The host's network, so a server of the run's own on
+    # 127.0.0.1 is reachable.
     for image in $(jq -r '.[]' <<< "$images"); do
       step "install.sh in $image"
       docker run --rm --network host -v "$PWD:/w" -w /w -e REYLO_VERSION -e REYLO_DOWNLOAD_URL "$image" sh -c '
         set -e
         if ! command -v curl > /dev/null && ! command -v wget > /dev/null; then
-          apt-get update -qq > /dev/null && apt-get install -y -qq --no-install-recommends curl ca-certificates > /dev/null
+          get() { apt-get update -qq > /dev/null && apt-get install -y -qq --no-install-recommends curl ca-certificates > /dev/null; }
+          get || { sed -i "s|deb.debian.org/debian-security|archive.debian.org/debian-security|" /etc/apt/sources.list && get; }
         fi
         REYLO_INSTALL_DIR=/tmp/reylo sh site/public/install.sh
         sh .github/scripts/channels-smoke.sh /tmp/reylo/reylo "$0"
-      ' "$version" | tee /dev/stderr | installed
+      ' "$version" > "$work/out" || { cat "$work/out"; exit 1; }
+      installed "$work/out"
       done_
     done
     case "$platform" in
@@ -106,10 +135,15 @@ case "$platform" in
         [ "$got" = "reylo $version" ] || { echo "::error::the image's reylo --version printed '$got'"; exit 1; }
         mkdir -p "$work/db" && : > "$work/db/app.db"
         docker run --rm -v "$work/db:/work" reylo-check run "create table users (id integer primary key, email text not null) strict" --url sqlite:app.db
-        docker run --rm -v "$work/db:/work" reylo-check analyze --sql "select 1 as one, email from users" --url sqlite:app.db --format json | tee /dev/stderr | grep -q '"cardinality":"many"'
+        docker run --rm -v "$work/db:/work" reylo-check analyze --sql "select 1 as one, email from users" --url sqlite:app.db --format json > "$work/out"
+        cat "$work/out"
+        grep -q '"cardinality":"many"' "$work/out"
         done_
         ;;
-      *) homebrew ;;
+      *)
+        homebrew
+        mise_check
+        ;;
     esac
     ;;
 
@@ -118,7 +152,8 @@ case "$platform" in
     for shell in pwsh powershell; do
       step "install.ps1 under $shell"
       REYLO_INSTALL_DIR="$(cygpath -w "$work/$shell")" REYLO_NO_MODIFY_PATH=1 \
-        "$shell" -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -Raw site/public/install.ps1 | Invoke-Expression" | tee /dev/stderr | installed
+        "$shell" -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -Raw site/public/install.ps1 | Invoke-Expression" > "$work/out" || { cat "$work/out"; exit 1; }
+      installed "$work/out"
       sh "$smoke" "$work/$shell/reylo.exe" "$version"
       done_
     done
@@ -127,6 +162,7 @@ case "$platform" in
     "$HOME/scoop/shims/scoop.cmd" install "$(cygpath -w "$assets/bucket/reylo.json")"
     sh "$smoke" "$HOME/scoop/shims/reylo.exe" "$version"
     done_
+    mise_check
     ;;
 
   *)
