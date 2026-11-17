@@ -83,3 +83,8 @@ docker buildx build --platform linux/amd64,linux/arm64 --file .github/docker/Doc
   --build-arg VERSION="$version" "${tags[@]}" --push "$work/image"
 docker logout ghcr.io > /dev/null
 echo "pushed ${tags[*]}"
+
+# GHCR may create a package private on its first push, and only its settings page makes it public.
+if ! docker manifest inspect "$image:$version" > /dev/null 2>&1; then
+  echo "::warning::$image:$version is not pullable without signing in; make the package public at https://github.com/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${GITHUB_REPOSITORY#*/}/settings"
+fi
