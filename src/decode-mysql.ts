@@ -158,8 +158,9 @@ function fixRows(rows: Record<string, unknown>[], fixes: (readonly [string, Fix]
 // character two modes read differently, in a value and in the statement's own text, so a statement
 // where either holds one first reads its session's sql_mode, on the connection it then runs on,
 // rather than trusting the server's NO_BACKSLASH_ESCAPES status flag, which can be stale after a
-// stored routine changes sql_mode. A charset that writes another character with a backslash's
-// byte is refused, and so is the app's queryFormat, which would rewrite the statement.
+// stored routine changes sql_mode. A value holding a character outside ASCII is refused on a
+// connection whose charset is not UTF-8, and so is the app's queryFormat, which would rewrite the
+// statement.
 
 /** The pools and connections whose server refused a prepared statement: their statements go through query() from then on. */
 const refusesPrepares = new WeakSet<object>();
@@ -176,11 +177,15 @@ const hexOf = (bytes: Uint8Array) => {
 };
 
 /**
- * mysql2's charset numbers (its charset_encodings.js, past 1024 as well) whose encodings write a
- * character other than a backslash with the byte 0x5c, as SJIS writes `¥`: the server reads that
- * byte as a backslash, which would escape a quote Reylo wrote.
+ * The collations of utf8mb4 and utf8mb3 that every mysql2 from 2.3 on encodes as UTF-8
+ * (charset_encodings.js). UTF-8 writes a character outside ASCII with no ASCII byte; another
+ * encoding can write one with a quote's or a backslash's byte (SJIS writes `¥` as 0x5c, and
+ * Node's latin1 and ascii keep a character's low byte, so `Ŝ` is 0x5c and `ħ` is 0x27), which the
+ * server would read as that character after Reylo had escaped the value. Every client charset
+ * writes ASCII the same way.
  */
-const BACKSLASH_BYTE_CHARSETS = new Set([1, 13, 28, 84, 87, 88, 95, 96, 248, 249, 250]);
+const UTF8_COLLATIONS: readonly (readonly [number, number])[] = [[33, 33], [45, 46], [76, 76], [83, 83], [192, 215], [223, 247], [255, 271], [273, 275], [277, 294], [296, 298], [300, 300], [303, 305]];
+const isUtf8 = (charsetNumber: number) => UTF8_COLLATIONS.some(([from, to]) => charsetNumber >= from && charsetNumber <= to);
 
 /** A string literal for a session that reads a backslash as an escape (`escapes`) or as itself. */
 function stringLiteral(s: string, escapes: boolean): string {
@@ -239,7 +244,7 @@ const PRIVATE_NAMES = new Set(["__proto__", "__defineGetter__", "__defineSetter_
 async function mysql2Query(m: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<[unknown, unknown]> {
   const config = configOf(m);
   if (typeof config?.queryFormat === "function") throw new Error("reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo runs mysql2's query(), which passes every statement through the app's queryFormat. Connect without a queryFormat, or with the mariadb driver.");
-  if (config?.charsetNumber !== undefined && BACKSLASH_BYTE_CHARSETS.has(config.charsetNumber % 1024)) throw new Error("reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo writes the values into the statement, which this connection's charset can write with a backslash byte that is not a backslash (as SJIS writes ¥). Connect with utf8mb4, or with the mariadb driver.");
+  if (config?.charsetNumber !== undefined && !isUtf8(config.charsetNumber) && values.some((v) => /[^\x00-\x7f]/.test(textOf(v) ?? ""))) throw new Error("reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo writes the values into the statement, and this connection's charset is not UTF-8, so a character outside ASCII in a value could reach the server as a quote or a backslash (as SJIS writes ¥). Connect with utf8mb4, or with the mariadb driver.");
   const proto = columns?.some(([name]) => name === "__proto__") || values.some((v) => typeof v === "string" && PRIVATE_NAMES.has(v)) ? { disableEval: true } : {};
   const options = { ...MYSQL2_OPTIONS, ...proto, namedPlaceholders: false, typeCast: mysql2TextCast };
   if (!text.includes("\\") && !values.some((v) => textOf(v)?.includes("\\"))) return await m.query({ sql: inlineMysql(text, values, m, DEFAULT_MODE), ...options });

@@ -503,9 +503,12 @@ test("mysql: where a server refuses mysql2's prepared statements, as Cloudflare 
     "select 3 as id, 'C:\\' as name, 3 as again",
     "select 4 as id, _binary X'0102' as name, 4 as again",
   ]);
-  // A charset that writes another character with a backslash's byte (SJIS's ¥) would escape a quote Reylo wrote.
-  const sjis = { ...pool, pool: { config: { connectionConfig: { charsetNumber: 13 } } } };
-  await assert.rejects(async () => execute(sjis, my, { id: 1, name: "ada" }), (e: Error) => e.message.startsWith("reylo cannot run a mysql statement through mysql2 here:") && e.message.includes("as SJIS writes ¥"));
+  // A charset other than UTF-8 can write a character outside ASCII with a quote's or a backslash's byte (SJIS's ¥, latin1's Ŝ): such a value is refused, and ASCII runs.
+  for (const charsetNumber of [13, 8]) {
+    const other = { ...pool, pool: { config: { connectionConfig: { charsetNumber } } } };
+    assert.deepEqual(await execute(other, my, { id: 1, name: "ada" }), [{ id: 1, name: "ada", again: 1 }]);
+    await assert.rejects(async () => execute(other, my, { id: 1, name: "¥' or 1=1 -- " }), (e: Error) => e.message.startsWith("reylo cannot run a mysql statement through mysql2 here:") && e.message.includes("is not UTF-8"));
+  }
   // The app's queryFormat would rewrite every statement query() sends.
   const formatted = { ...pool, pool: { config: { connectionConfig: { queryFormat: (sql: string) => sql } } } };
   await assert.rejects(async () => execute(formatted, my, { id: 1, name: "ada" }), (e: Error) => e.message === "reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo runs mysql2's query(), which passes every statement through the app's queryFormat. Connect without a queryFormat, or with the mariadb driver.");
@@ -590,12 +593,15 @@ test("mysql: through a server that refuses prepared statements, as Cloudflare Hy
         await client.end();
       }
     }
-    // SJIS writes ¥ with a backslash's byte, so the values are not written into its statements.
-    const sjis = await mysql2.createConnection({ ...connection, charset: "SJIS" });
-    try {
-      await assert.rejects(async () => execute(sjis, byName, { name: "¥' or 1=1 -- " }), (e: Error) => e.message.includes("as SJIS writes ¥"));
-    } finally {
-      await sjis.end();
+    // SJIS writes ¥ with a backslash's byte, and latin1 and ascii keep a character's low byte (Ŝ is a backslash's, ħ a quote's): ASCII runs, and a value outside it is refused.
+    for (const [charset, attack] of [["SJIS", "¥' or 1=1 -- "], ["LATIN1", "\u015c' or 1=1 -- "], ["ASCII", "x\u0127 or 1=1 -- "]] as const) {
+      const other = await mysql2.createConnection({ ...connection, charset });
+      try {
+        assert.deepEqual(plain((await execute(other, q, { id: 1 })) as object[]), [{ name: "Ada" }]);
+        await assert.rejects(async () => execute(other, byName, { name: attack }), (e: Error) => e.message.includes("is not UTF-8"));
+      } finally {
+        await other.end();
+      }
     }
   } finally {
     await proxy.close();
