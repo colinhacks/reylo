@@ -97,6 +97,12 @@ for crate in "${crates[@]}"; do
   fi
   if $trust; then
     existing=$(api "https://crates.io/api/v1/trusted_publishing/github_configs?crate=$crate")
+    # Any other configuration for release.yml would let it publish from outside the `crates`
+    # environment, so it goes.
+    for stale in $(python3 -c 'import json, sys; print(" ".join(str(c["id"]) for c in json.load(sys.stdin)["github_configs"] if c["workflow_filename"] == "release.yml" and c["environment"] != "crates"))' <<<"$existing"); do
+      api -f -X DELETE -o /dev/null "https://crates.io/api/v1/trusted_publishing/github_configs/$stale"
+      echo "  removed $crate's trusted publisher $stale, which named no environment or another"
+    done
     if python3 -c 'import json, sys; sys.exit(0 if any(c["workflow_filename"] == "release.yml" and c["environment"] == "crates" for c in json.load(sys.stdin)["github_configs"]) else 1)' <<<"$existing"; then
       echo "  release.yml publishes $crate already"
     else
