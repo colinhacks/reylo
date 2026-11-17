@@ -349,7 +349,7 @@ macro_rules! assert_has {
 }
 
 /// Runs a test on a thread with the stack `reylo` runs on, its main thread's 8 MiB: in a debug build, a
-/// scenario's own frames and SQL Server's client together pass a test thread's 2 MiB.
+/// scenario's frames pass a test thread's 2 MiB.
 fn on_a_main_thread_stack<F: std::future::Future<Output = ()>>(test: impl FnOnce() -> F + Send) {
     std::thread::scope(|s| {
         let thread = std::thread::Builder::new().stack_size(8 << 20).spawn_scoped(s, || tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime").block_on(test()));
@@ -361,17 +361,23 @@ fn on_a_main_thread_stack<F: std::future::Future<Output = ()>>(test: impl FnOnce
 macro_rules! for_each_dialect {
     ($($scenario:ident),* $(,)?) => {$(
         mod $scenario {
-            #[tokio::test(flavor = "current_thread")]
-            async fn postgres() {
-                if let Some(p) = super::P::new(super::Dialect::Postgres).await { let url = p.url.clone(); super::$scenario(p).await; super::forget(&url).await }
+            #[test]
+            fn postgres() {
+                super::on_a_main_thread_stack(|| async {
+                    if let Some(p) = super::P::new(super::Dialect::Postgres).await { let url = p.url.clone(); super::$scenario(p).await; super::forget(&url).await }
+                })
             }
-            #[tokio::test(flavor = "current_thread")]
-            async fn mysql() {
-                if let Some(p) = super::P::new(super::Dialect::Mysql).await { super::$scenario(p).await }
+            #[test]
+            fn mysql() {
+                super::on_a_main_thread_stack(|| async {
+                    if let Some(p) = super::P::new(super::Dialect::Mysql).await { super::$scenario(p).await }
+                })
             }
-            #[tokio::test(flavor = "current_thread")]
-            async fn sqlite() {
-                if let Some(p) = super::P::new(super::Dialect::Sqlite).await { super::$scenario(p).await }
+            #[test]
+            fn sqlite() {
+                super::on_a_main_thread_stack(|| async {
+                    if let Some(p) = super::P::new(super::Dialect::Sqlite).await { super::$scenario(p).await }
+                })
             }
             #[test]
             fn sqlserver() {
@@ -2643,9 +2649,11 @@ async fn create_drafts_one_migration_cached_or_not(mut p: P) {
 
 macro_rules! on {
     ($dialect:ident, $($scenario:ident),* $(,)?) => {$(
-        #[tokio::test(flavor = "current_thread")]
-        async fn $scenario() {
-            if let Some(p) = P::new(Dialect::$dialect).await { let url = p.url.clone(); adversarial::$scenario(p).await; forget(&url).await }
+        #[test]
+        fn $scenario() {
+            on_a_main_thread_stack(|| async {
+                if let Some(p) = P::new(Dialect::$dialect).await { let url = p.url.clone(); adversarial::$scenario(p).await; forget(&url).await }
+            })
         }
     )*};
 }
@@ -2713,47 +2721,53 @@ on!(
     a_schemas_table_is_never_read_as_a_renamed_tables_column,
 );
 
-#[tokio::test(flavor = "current_thread")]
-async fn a_sqlite_numeric_column_made_integer_needs_no_drop() {
-    let mut p = P::new(Dialect::Sqlite).await.unwrap();
-    p.file("20261027100000_t.sql", "create table t (id integer primary key, v real);");
-    assert_eq!(p.migrate().await, 0, "{}", p.peek());
-    // SQLite keeps 1.5 in an INTEGER column, so nothing is lost.
-    p.schema("create table t (id integer primary key, v integer);");
-    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "ints", &Default::default(), log).await).await, 0, "{}", p.peek());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn wipe_keeps_full_text_and_rtree_tables_whole() {
-    let mut p = P::new(Dialect::Sqlite).await.unwrap();
-    p.file("20261027100000_docs.sql", "create virtual table docs using fts5(body);");
-    p.file("20261027110000_box.sql", "create virtual table box using rtree(id, x0, x1);");
-    p.file("20261027120000_notes.sql", "create table notes (id integer primary key, body text); create virtual table bare using fts5(body, content=''); create virtual table indexed using fts5(body, content='notes', content_rowid='id');");
-    let schema = "create virtual table docs using fts5(body); create virtual table box using rtree(id, x0, x1); create table notes (id integer primary key, body text); create virtual table bare using fts5(body, content=''); create virtual table indexed using fts5(body, content='notes', content_rowid='id');";
-    p.schema(schema);
-    assert_eq!(p.migrate().await, 0, "{}", p.peek());
-    p.exec("insert into docs values ('hello world'); insert into box values (1, 0, 1); insert into bare values ('hello'); insert into notes values (1, 'hello'); insert into indexed (rowid, body) values (1, 'hello')").await;
-    p.output();
-    assert_eq!(p.run(async |o, log| reylo_migrate::db_wipe(o, false, log).await).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"Deleted every row of 5 tables");
-    assert!(p.rows("select rowid from bare where bare match 'hello'").await.is_empty(), "a contentless index is emptied");
-    assert!(p.rows("select rowid from indexed where indexed match 'hello'").await.is_empty(), "an external-content index is emptied with its content");
-    assert!(p.rows("select * from docs").await.is_empty() && p.rows("select * from box").await.is_empty());
-    // Each still works: their own tables were emptied by them, not under them.
-    p.exec("insert into docs values ('again'); insert into box values (2, 0, 1)").await;
-    assert_eq!(p.rows("select * from docs where docs match 'again'").await.len(), 1);
-    assert_eq!(p.rows("select id from box where x0 <= 0.5 and x1 >= 0.5").await.len(), 1);
-    assert_eq!(p.migrate().await, 0, "{}", p.peek());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_database_whose_default_collation_differs() {
-    if let Some(mut p) = P::with_create(Dialect::Mysql, "character set utf8mb4 collate utf8mb4_unicode_ci").await {
-        p.schema("create table t (name varchar(10));");
-        p.file("20261027100000_t.sql", "create table t (name varchar(10));");
-        assert_eq!(p.migrate().await, 0, "the shadows must take the target's default collation:\n{}", p.peek());
+#[test]
+fn a_sqlite_numeric_column_made_integer_needs_no_drop() {
+    on_a_main_thread_stack(|| async {
+        let mut p = P::new(Dialect::Sqlite).await.unwrap();
+        p.file("20261027100000_t.sql", "create table t (id integer primary key, v real);");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
-    }
+        // SQLite keeps 1.5 in an INTEGER column, so nothing is lost.
+        p.schema("create table t (id integer primary key, v integer);");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "ints", &Default::default(), log).await).await, 0, "{}", p.peek());
+    })
+}
+
+#[test]
+fn wipe_keeps_full_text_and_rtree_tables_whole() {
+    on_a_main_thread_stack(|| async {
+        let mut p = P::new(Dialect::Sqlite).await.unwrap();
+        p.file("20261027100000_docs.sql", "create virtual table docs using fts5(body);");
+        p.file("20261027110000_box.sql", "create virtual table box using rtree(id, x0, x1);");
+        p.file("20261027120000_notes.sql", "create table notes (id integer primary key, body text); create virtual table bare using fts5(body, content=''); create virtual table indexed using fts5(body, content='notes', content_rowid='id');");
+        let schema = "create virtual table docs using fts5(body); create virtual table box using rtree(id, x0, x1); create table notes (id integer primary key, body text); create virtual table bare using fts5(body, content=''); create virtual table indexed using fts5(body, content='notes', content_rowid='id');";
+        p.schema(schema);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into docs values ('hello world'); insert into box values (1, 0, 1); insert into bare values ('hello'); insert into notes values (1, 'hello'); insert into indexed (rowid, body) values (1, 'hello')").await;
+        p.output();
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_wipe(o, false, log).await).await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"Deleted every row of 5 tables");
+        assert!(p.rows("select rowid from bare where bare match 'hello'").await.is_empty(), "a contentless index is emptied");
+        assert!(p.rows("select rowid from indexed where indexed match 'hello'").await.is_empty(), "an external-content index is emptied with its content");
+        assert!(p.rows("select * from docs").await.is_empty() && p.rows("select * from box").await.is_empty());
+        // Each still works: their own tables were emptied by them, not under them.
+        p.exec("insert into docs values ('again'); insert into box values (2, 0, 1)").await;
+        assert_eq!(p.rows("select * from docs where docs match 'again'").await.len(), 1);
+        assert_eq!(p.rows("select id from box where x0 <= 0.5 and x1 >= 0.5").await.len(), 1);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    })
+}
+
+#[test]
+fn a_database_whose_default_collation_differs() {
+    on_a_main_thread_stack(|| async {
+        if let Some(mut p) = P::with_create(Dialect::Mysql, "character set utf8mb4 collate utf8mb4_unicode_ci").await {
+            p.schema("create table t (name varchar(10));");
+            p.file("20261027100000_t.sql", "create table t (name varchar(10));");
+            assert_eq!(p.migrate().await, 0, "the shadows must take the target's default collation:\n{}", p.peek());
+            assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        }
+    })
 }
 
 mod adversarial {
@@ -3552,13 +3566,15 @@ create trigger kids_note after insert on kids begin update parents set name = na
 
 // reylo run on a SQLite file that isn't there refuses, as the migrations' commands do, rather than
 // make an empty database at a mistyped path.
-#[tokio::test(flavor = "current_thread")]
-async fn reylo_run_refuses_a_file_that_is_not_there() {
-    let Some(mut p) = P::new(Dialect::Sqlite).await else { return };
-    let url = format!("sqlite:{}", p.dir.join("prod.sqlitee").display());
-    let items = [("create".to_string(), "create table audit (seen timestamp)".to_string())];
-    let code = p.run(async |o, log| reylo_migrate::run_sql(&url, &o.root, &items, log).await).await;
-    assert_eq!(code, 1, "{}", p.peek());
-    assert_has!(p.output(), r"✗ No SQLite database at [^\n]*\n\nNothing was changed\.");
-    assert!(!p.dir.join("prod.sqlitee").exists(), "a file was made");
+#[test]
+fn reylo_run_refuses_a_file_that_is_not_there() {
+    on_a_main_thread_stack(|| async {
+        let Some(mut p) = P::new(Dialect::Sqlite).await else { return };
+        let url = format!("sqlite:{}", p.dir.join("prod.sqlitee").display());
+        let items = [("create".to_string(), "create table audit (seen timestamp)".to_string())];
+        let code = p.run(async |o, log| reylo_migrate::run_sql(&url, &o.root, &items, log).await).await;
+        assert_eq!(code, 1, "{}", p.peek());
+        assert_has!(p.output(), r"✗ No SQLite database at [^\n]*\n\nNothing was changed\.");
+        assert!(!p.dir.join("prod.sqlitee").exists(), "a file was made");
+    })
 }
