@@ -101,12 +101,13 @@ impl P {
             lock: self.dir.join(reylo_migrate::lock::LOCK),
             cache: self.dir.join(".cache"),
             root: self.dir.clone(),
+            embedded: None,
         }
     }
 
     async fn run<'a, F>(&mut self, f: F) -> i32
     where
-        F: AsyncFnOnce(&Options, &mut dyn FnMut(&str)) -> Result<i32, reylo_migrate::Error>,
+        F: AsyncFnOnce(&Options, reylo_migrate::commands::Log<'_>) -> Result<i32, reylo_migrate::Error>,
     {
         if !self.strict {
             self.relock();

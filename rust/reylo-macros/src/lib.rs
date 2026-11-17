@@ -77,6 +77,56 @@ fn expand(sql: &LitStr, module: ItemMod) -> TokenStream2 {
     }
 }
 
+/// The project's migrations, its lock and its `schema.sql`, compiled into the crate:
+/// `reylo::migrate!().run(&pool)` runs `reylo migrate deploy` with them, and `.status(&pool)`
+/// `reylo migrate status`. Each file is included as it stands at the build, so Cargo compiles the
+/// crate again when one changes, the lock among them, which `reylo migrate dev` writes when it adds
+/// a migration.
+#[proc_macro]
+pub fn migrate(input: TokenStream) -> TokenStream {
+    if !input.is_empty() {
+        let input = TokenStream2::from(input);
+        return syn::Error::new_spanned(input, "reylo::migrate!() takes nothing: it reads the migrations of the project's reylo/ directory, or of the one .reylo.yaml's `dir` names").to_compile_error().into();
+    }
+    migrations().unwrap_or_else(|e| e.to_compile_error()).into()
+}
+
+fn migrations() -> syn::Result<TokenStream2> {
+    let span = proc_macro2::Span::call_site();
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(span, "CARGO_MANIFEST_DIR is not set"))?;
+    let (root, home) = reylo_codegen::analysis::home(std::path::Path::new(&manifest)).map_err(|e| syn::Error::new(span, e))?;
+    // As messages show the project's paths, `reylo/migrations` on every platform.
+    let shown = home.strip_prefix(&root).unwrap_or(&home).to_string_lossy().replace('\\', "/");
+    let shown = if shown.is_empty() { ".".to_string() } else { shown };
+    let dir = home.join("migrations");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Err(syn::Error::new(span, format!("there is no {}/migrations directory ({}): reylo migrate init makes one", shown, dir.display())));
+    };
+    let mut files: Vec<(String, std::path::PathBuf)> = entries.filter_map(Result::ok).filter(|e| e.path().is_file()).map(|e| (e.file_name().to_string_lossy().into_owned(), e.path())).filter(|(name, _)| !name.starts_with('.')).collect();
+    files.sort();
+    // Each migration with its text; any other file by its name alone, which deploy and status name
+    // as a stray, as they do on the command line.
+    let files = files.iter().map(|(name, path)| {
+        if name.ends_with(".sql") {
+            let path = path.to_string_lossy();
+            quote!((#name, ::core::include_str!(#path)))
+        } else {
+            quote!((#name, ""))
+        }
+    });
+    let included = |path: std::path::PathBuf| {
+        if path.is_file() {
+            let path = path.to_string_lossy().into_owned();
+            quote!(::core::option::Option::Some(::core::include_str!(#path)))
+        } else {
+            quote!(::core::option::Option::None)
+        }
+    };
+    let lock = included(home.join("reylo-lock.yaml"));
+    let schema = included(home.join("schema.sql"));
+    Ok(quote!(::reylo::migrate::Migrator::__new(#shown, &[#(#files),*], #lock, #schema)))
+}
+
 /// The files a statement's types depend on beside it: the project's `schema.sql` and lock, and its
 /// project file. Each is included in the expansion, which has cargo compile the crate again when
 /// one changes, so a statement is typed against the schema a `reylo db push` or `reylo migrate dev`

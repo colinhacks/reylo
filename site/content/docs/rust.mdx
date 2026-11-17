@@ -54,6 +54,7 @@ reylo = { version = "0.8", features = [
   "chrono",        # dates and times as chrono's types; or "time"
   "uuid",          # uuid as uuid::Uuid
   "rust_decimal",  # numeric as rust_decimal::Decimal; or "bigdecimal"
+  "migrate",       # the default; reylo::migrate!(), which runs your migrations
 ] }
 ```
 
@@ -63,7 +64,7 @@ On sqlx 0.8, turn off Reylo's default features and turn on `sqlx_0_8`:
 
 ```toml title="Cargo.toml"
 [dependencies]
-reylo = { version = "0.8", default-features = false, features = ["sqlx_0_8", "postgres", "chrono"] }
+reylo = { version = "0.8", default-features = false, features = ["sqlx_0_8", "postgres", "migrate", "chrono"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
 ```
 
@@ -523,3 +524,51 @@ A statement the database refuses fails the build with Cargo's own error, at its 
 error: app@0.1.0: src/queries/get_user.sql:1:12: column "nme" does not exist (42703)
 error: build script logged errors
 ```
+
+## Migrations
+
+Run your migrations from the app, as it starts.
+
+```rust title="src/main.rs"
+let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+
+// ran: Vec<String>, the names of the migrations it ran
+let ran = reylo::migrate!().run(&pool).await?;
+```
+
+The macro compiles your project's migrations into the crate, with their lock and `reylo/schema.sql`. Then `.run()` does what `reylo migrate deploy` does, on the pool's database: it runs each locked migration the database hasn't, in order, each in a transaction with its row in the history table.
+
+It refuses, running nothing, where the [command](/migrations#commands) would: on a draft the lock doesn't list yet, a migration edited since the database ran it, or a schema changed by hand since the last deploy. Its error says why, with the fix, as the command prints it.
+
+On MySQL, the migrations run with the server's own `sql_mode` and time zone, as the command line runs them, rather than the ones sqlx sets for your queries.
+
+### Status
+
+To check the database without changing it, call `.status()`:
+
+```rust
+let status = reylo::migrate!().status(&pool).await?;
+if !status.is_current() {
+    eprintln!("{status}");
+}
+```
+
+It lists each migration with whether the database ran it, and prints as `reylo migrate status` does.
+
+### In development
+
+While you write migrations, `reylo migrate dev` runs each one, so by the time the app starts there's nothing left to run.
+
+A draft it hasn't locked yet stops `.run()`, with that command as the fix.
+
+### Several instances
+
+Instances that start at once run each migration once.
+
+A deploy holds a lock on the database while it runs, and so does the command line's.
+
+### Rebuilds
+
+The app runs the migrations it was built with.
+
+The crate compiles again when one of them, the lock or `reylo/schema.sql` changes, and `reylo migrate dev` writes the lock as it adds one.
