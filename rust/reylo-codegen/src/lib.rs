@@ -259,6 +259,9 @@ pub fn module(dialect: Dialect, options: Options, analysis: &Value, span: Span, 
     let text = analysis["rewritten"]["sql"].as_str().unwrap_or_default().to_string();
     let query = quote!(::reylo::sqlx::query::<#db>(SQL) #(#binds)*);
     let cardinality = analysis["cardinality"].as_str();
+    // sqlx 0.8 binds a borrowed value for the life of the query, so a stream of rows lives no longer
+    // than the text it was given.
+    let outlives = borrows.then(|| quote!('a: 'e,));
     let (out, run, stream) = if columns.is_empty() {
         (quote!(u64), quote!(::core::result::Result::Ok(#query.execute(db).await?.rows_affected())), quote!())
     } else {
@@ -280,6 +283,7 @@ pub fn module(dialect: Dialect, options: Options, analysis: &Value, span: Span, 
                     #[allow(dead_code)]
                     pub fn stream<'e, 'c: 'e, E>(&self, db: E) -> ::reylo::__private::BoxStream<'e, ::reylo::sqlx::Result<Row>>
                     where
+                        #outlives
                         E: 'e + ::reylo::sqlx::Executor<'c, Database = #db>,
                     {
                         ::reylo::__private::rows(#query.fetch(db), __reylo_decode)

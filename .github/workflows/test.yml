@@ -322,18 +322,33 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 53306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 60
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
       REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
+      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - run: engine/build.sh --prepare
-      - run: .github/scripts/rust-package-check.sh
+      - name: Build projects from the packed crates, on sqlx 0.9 and 0.8
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: .github/scripts/rust-package-check.sh
       - if: always()
         run: sccache --show-stats
 
