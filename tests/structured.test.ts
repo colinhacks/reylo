@@ -238,6 +238,12 @@ test("Postgres: a rows insert keeps the array's order and exact 64-bit ids, a ke
     } finally {
       await client.end();
     }
+    // Rows with no default to copy are read whole as json, to the same values as jsonb: exact 64-bit ids, a JSON member, nulls.
+    const whole = await built(root, url.href, "insert_events_whole", `insert into events :events::rows(id int8 not null, ts timestamptz not null, amount numeric(12,2), meta jsonb('{"type": "object"}')) returning id, status, amount, meta`);
+    assert.deepEqual(plain(await whole.run(sql, { events: [{ id: 9007199254740995n, ts: "2026-10-20T10:00:00Z", amount: "2.50", meta: { b: [1, 2], a: 'x"y' } }, { id: 4, ts: "2026-10-20T11:00:00Z", amount: null, meta: null }] })), [
+      { id: 9007199254740995n, status: "new", amount: "2.50", meta: { a: 'x"y', b: [1, 2] } },
+      { id: 4n, status: "new", amount: null, meta: null },
+    ]);
     // The array's order is the insert's, and RETURNING follows it.
     const users = await built(root, url.href, "insert_users", "insert into users :users::rows(email text not null, name text not null) returning id, email");
     const many = Array.from({ length: 1000 }, (_, i) => ({ email: `u${i}@x`, name: `n${1000 - i}` }));
@@ -289,8 +295,7 @@ returning email, name`);
 });
 
 test("Postgres: rows that leave out different keys go in one insert, each such row with its column's default copied from the catalog, a sequence advancing only for those rows", { skip: pgLive }, async () => {
-  const require = createRequire(join(DRIVERS, "postgres", "package.json"));
-  const postgres = require("postgres");
+  const postgres = driver("postgres");
   const admin = postgres(PG, { max: 1, onnotice: () => {} });
   const name = `reylo_structured_mixed_${process.pid}`;
   await admin.unsafe(`drop database if exists ${name}`);
@@ -345,7 +350,7 @@ test("Postgres: rows that leave out different keys go in one insert, each such r
     assert.equal(stored[2].tag, "given");
     assert.equal(stored[2].created, "2026-03-08 02:30:00");
     // node-postgres binds the same statement.
-    const pg = require("pg");
+    const pg = driver("pg");
     const client = new pg.Client(url.href);
     await client.connect();
     try {

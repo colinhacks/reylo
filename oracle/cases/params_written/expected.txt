@@ -3,6 +3,6 @@ other_schema.sql: none (id: int4, body: text(¬NUL)?, title: text(¬NUL), slug: 
 qualified_insert.sql: none (id: int4, name: text(¬NUL), email: text(¬NUL)?, score: numeric?) -> {  }
 qualified_update.sql: none (email: text(¬NUL)?, name: text(¬NUL), id: int4) -> {  }
 row_value.sql: at_most_one (name: text(¬NUL), email: text(¬NUL)?, id: int4) -> { name: text(¬NUL), email: text(¬NUL)? }
-row_value_cast.sql: at_most_one (name: text(¬NUL), email: text(¬NUL), n: int4, id: int4) -> { name: text(¬NUL), email: text(¬NUL)?, n: int4? }
+row_value_cast.sql: at_most_one (name: text(¬NUL), email: text(¬NUL), n: int4, id: int4) -> { name: text(¬NUL), email: text(¬NUL), n: int4 }
 same_name.sql: none (other_name: text(¬NUL)?, name: text(¬NUL)) -> {  }
 upsert_row_value.sql: one (id: int4, email: text(¬NUL), score: numeric) -> { email: text(¬NUL)?, score: numeric? }

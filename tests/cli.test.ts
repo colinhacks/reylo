@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,7 +113,7 @@ test("reylo migrate init starts a project, and needs nothing in the project file
   assert.match(refused.err, /no reylo\/ directory here: start one with reylo migrate init, or set dir in \.reylo\.yaml/);
   const init = reylo(root, ["migrate", "init"]);
   assert.equal(init.status, 0, init.err + init.out);
-  assert.match(init.out, /^✓ Started reylo\/ from \S+\n  reylo\/\n  ├── schema\.sql +this database's schema\n  ├── migrations\/\n  │   └── init\.sql +the same, recorded as run here\n  └── reylo-lock\.yaml +the order the migrations run in\n$/);
+  assert.match(init.out, /^✓ Started reylo\/ from \S+\n  reylo\/\n  ├── schema\.sql +this database's schema\n  ├── migrations\/\n  │   └── init\.sql +the same, recorded as run here\n  └── reylo\.lock +the order the migrations run in\n$/);
   assert.equal(existsSync(join(root, ".reylo.yaml")), false);
   // With no more than that, every command runs on it.
   for (const args of [["migrate", "status"], ["migrate", "deploy", "--dry-run"], ["migrate", "deploy"], ["migrate", "history", "push"], ["migrate", "history", "pull"], ["db", "introspect"]]) {
@@ -130,6 +130,51 @@ test("reylo migrate init starts a project, and needs nothing in the project file
   const again = reylo(root, ["migrate", "init"]);
   assert.equal(again.status, 1);
   assert.match(again.out, /^✗ This project has started already \(reylo\/schema\.sql exists\)\n/);
+});
+
+/** Every command that reads or writes the lock. */
+const LOCK_COMMANDS = [["migrate", "init"], ["migrate", "new", "x"], ["migrate", "status"], ["migrate", "dev"], ["migrate", "deploy"], ["migrate", "deploy", "--dry-run"], ["migrate", "lock"], ["migrate", "history", "push"], ["migrate", "history", "pull"], ["db", "push"], ["db", "reset"]];
+
+/** A project `reylo migrate init` started, with its lock moved to its name before 0.8.0, and what each command must leave of it. */
+function oldLockProject() {
+  const root = project();
+  assert.equal(reylo(root, ["migrate", "init"]).status, 0);
+  const lock = readFileSync(join(root, "reylo", "reylo.lock"), "utf8");
+  rmSync(join(root, "reylo", "reylo.lock"));
+  writeFileSync(join(root, "reylo", "reylo-lock.yaml"), lock);
+  const files = () => readdirSync(join(root, "reylo"), { recursive: true }).map(String).filter((f) => !f.startsWith(".cache")).sort();
+  return { root, lock, files };
+}
+
+test("every command that reads or writes the lock refuses it under its old name, rather than run with no lock", () => {
+  const { root, files } = oldLockProject();
+  const before = files();
+  for (const args of LOCK_COMMANDS) {
+    const r = reylo(root, args);
+    assert.equal(r.status, 1, `${args.join(" ")}: ${r.err}${r.out}`);
+    assert.match(r.out, /^✗ reylo\/reylo-lock\.yaml is the lock's old name: it is reylo\/reylo\.lock now\n[\s\S]*\n  Rename it:\n    git mv reylo\/reylo-lock\.yaml reylo\/reylo\.lock\n\nNothing was changed\.\n$/, args.join(" "));
+    assert.deepEqual(files(), before, args.join(" "));
+  }
+  const json = JSON.parse(reylo(root, ["migrate", "deploy", "--json"]).out) as { ok: boolean; problems: { code: string; fixes: { commands: string[] }[] }[] };
+  assert.equal(json.ok, false);
+  assert.deepEqual(json.problems.map((p) => [p.code, p.fixes[0]!.commands]), [["lock-old-name", ["git mv reylo/reylo-lock.yaml reylo/reylo.lock"]]]);
+  // Renamed, it is the lock.
+  renameSync(join(root, "reylo", "reylo-lock.yaml"), join(root, "reylo", "reylo.lock"));
+  const status = reylo(root, ["migrate", "status"]);
+  assert.equal(status.status, 0, status.err + status.out);
+});
+
+test("every command that reads or writes the lock refuses a project that holds it under both names", () => {
+  const { root, lock, files } = oldLockProject();
+  writeFileSync(join(root, "reylo", "reylo.lock"), lock);
+  const before = files();
+  for (const args of LOCK_COMMANDS) {
+    const r = reylo(root, args);
+    assert.equal(r.status, 1, `${args.join(" ")}: ${r.err}${r.out}`);
+    assert.match(r.out, /^✗ reylo\/reylo-lock\.yaml and reylo\/reylo\.lock are both here\n[\s\S]*\n    git rm reylo\/reylo-lock\.yaml\n\nNothing was changed\.\n$/, args.join(" "));
+    assert.deepEqual(files(), before, args.join(" "));
+  }
+  assert.equal((JSON.parse(reylo(root, ["migrate", "status", "--json"]).out) as { problems: { code: string }[] }).problems[0]!.code, "lock-old-name");
 });
 
 test("reylo migrate init starts no project in the home directory, and passes over a package.json there", () => {

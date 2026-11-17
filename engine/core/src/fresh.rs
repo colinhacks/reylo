@@ -202,9 +202,25 @@ pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<
     Some(Some(Fresh { query, rows: kept, inserts, defaults }))
 }
 
-/// A table's name as Postgres's `to_regclass` reads it, each part quoted, so its case holds.
+/// A table's name as Postgres's `to_regclass` reads it, each part quoted, so its case holds. A part
+/// of `name` is bare or in double quotes, a quote inside doubled, and a dot between quotes is part
+/// of its name.
 fn quoted(name: &str) -> String {
-    name.split('.').map(|p| format!("\"{}\"", p.replace('"', "\"\""))).collect::<Vec<_>>().join(".")
+    let (mut parts, mut part, mut inside) = (Vec::new(), String::new(), false);
+    let mut chars = name.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if inside && chars.peek() == Some(&'"') => {
+                part.push('"');
+                chars.next();
+            }
+            '"' => inside = !inside,
+            '.' if !inside => parts.push(std::mem::take(&mut part)),
+            c => part.push(c),
+        }
+    }
+    parts.push(part);
+    parts.iter().map(|p| format!("\"{}\"", p.replace('"', "\"\""))).collect::<Vec<_>>().join(".")
 }
 
 /// The names the statement writes outside its strings and comments, lowercased (a quoted name
@@ -273,5 +289,14 @@ mod tests {
     #[test]
     fn a_table_name_keeps_its_case() {
         assert_eq!(quoted("app.Events"), "\"app\".\"Events\"");
+        assert_eq!(quoted("app.\"Events\""), "\"app\".\"Events\"");
+    }
+
+    #[test]
+    fn a_dot_inside_quotes_is_part_of_the_name() {
+        assert_eq!(quoted("\"a.b\""), "\"a.b\"");
+        assert_eq!(quoted("public.\"a.b\""), "\"public\".\"a.b\"");
+        assert_eq!(quoted("\"say \"\"hi\"\".x\""), "\"say \"\"hi\"\".x\"");
+        assert_eq!(quoted("a.b"), "\"a\".\"b\"");
     }
 }

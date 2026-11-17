@@ -83,6 +83,11 @@ impl Database for Mysql {
     fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
         crate::errors::read_only(analysis, host)
     }
+
+    /// What running the statement may do: the tables it reaches, and what it does beyond their rows.
+    fn capabilities(analysis: &Analysis, host: &Host) -> Lazy<Option<reylo_engine_core::types::Capabilities>> {
+        crate::capabilities::capabilities(analysis, host)
+    }
 }
 
 #[cfg(test)]

@@ -159,6 +159,7 @@ export function descriptor(sql: string, dialect: Database, version: string, a: A
       ...(a.cardinality === "many" && a.unique?.length && { unique: a.unique }),
       ...(a.cardinality === "many" && a.order?.length && { order: a.order }),
     },
+    ...(a.capabilities !== undefined && { capabilities: a.capabilities }),
     diagnostics: [...a.diagnostics, ...untyped].map((d) => {
       const start = utf16(sql, d.start);
       return { message: d.message, start, end: Math.max(utf16(sql, d.start + d.length), start), ...(d.server_code !== undefined && { code: d.server_code }) };

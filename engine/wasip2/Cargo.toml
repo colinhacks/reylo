@@ -35,7 +35,6 @@ serde_json = "1"
 wit-bindgen = "0.63"
 
 [patch.crates-io]
-pg_query = { path = "../postgres/.patched/pg_query" }
 tokio-postgres = { path = ".patched/tokio-postgres" }
 
 [profile.release]

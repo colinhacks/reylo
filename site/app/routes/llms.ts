@@ -1,11 +1,12 @@
 import { apiMarkdown, REYLO_API } from '@/lib/live/api-docs';
+import { SHOW_RUST } from '@/lib/languages';
 import { markdownOf } from '@/lib/markdown';
 
 // Every page as Markdown, for a coding agent or a language model (https://llmstxt.org), in the
 // sidebar's order, each as its own Markdown file holds it
 // (lib/markdown.ts), then the playground's API (/play/api.md). Written to build/client/llms.txt at
-// build time.
-const PAGES = ['', 'typescript', 'rust', 'inference', 'migrate', 'compare', 'cli', 'faq', 'd1', 'durable-objects', 'hyperdrive', 'nextjs', 'neon', 'supabase', 'planetscale', 'turso', 'deployment', 'prisma', 'configuration', 'postgres', 'mysql', 'sqlite'];
+// build time. The Rust page only while the docs show Rust (lib/languages.ts).
+const PAGES = ['', 'typescript', ...(SHOW_RUST ? ['rust'] : []), 'inference', 'migrate', 'compare', 'cli', 'faq', 'd1', 'durable-objects', 'hyperdrive', 'nextjs', 'neon', 'supabase', 'planetscale', 'turso', 'deployment', 'prisma', 'configuration', 'postgres', 'mysql', 'sqlite'];
 
 export async function loader() {
   const { playData } = await import('@/lib/live/play-data');

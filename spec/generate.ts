@@ -70,7 +70,8 @@ function members(s: Schema, indent: string): string[] {
     const key = /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
     out.push(`${comment(prop.description as string | undefined, indent)}${indent}${key}${required.has(name) ? "" : "?"}: ${type(prop, indent)};`);
   }
-  if (s.additionalProperties !== undefined && s.additionalProperties !== false) out.push(`${indent}[keyword: string]: ${type(s.additionalProperties as Schema, indent)};`);
+  // A key is named by its `propertyNames` title where it has one, as a table of capabilities names a table.
+  if (s.additionalProperties !== undefined && s.additionalProperties !== false) out.push(`${indent}[${((s.propertyNames as Schema | undefined)?.title as string | undefined) ?? "keyword"}: string]: ${type(s.additionalProperties as Schema, indent)};`);
   return out;
 }
 

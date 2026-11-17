@@ -78,14 +78,16 @@ try {
   step("The nine packages, published to it");
   const tarballs = readdirSync(packs).filter((f) => f.endsWith(".tgz")).sort();
   if (tarballs.length !== 9) throw new Error(`${packs} holds ${tarballs.length} packages, not reylo and its eight engines: ${tarballs.join(", ")}`);
+  const version = tarballs.find((f) => f.startsWith("reylo-"))!.replace(/^reylo-/, "").replace(/\.tgz$/, "");
+  // npm refuses a prerelease without a dist-tag, so one goes under its first identifier, as the release stages it (0.8.0-beta.1 under beta).
+  const tag = version.includes("-") ? ["--tag", version.slice(version.indexOf("-") + 1).split(".")[0]!] : [];
   // The engines before reylo, as the release stages them.
   for (const tgz of [...tarballs.filter((f) => !f.startsWith("reylo-")), ...tarballs.filter((f) => f.startsWith("reylo-"))]) {
-    run("npm", ["publish", join(packs, tgz), "--userconfig", npmrc, "--provenance=false"]);
+    run("npm", ["publish", join(packs, tgz), "--userconfig", npmrc, "--provenance=false", ...tag]);
     console.log(`published ${tgz}`);
   }
 
   step("npm install reylo, in a fresh project");
-  const version = tarballs.find((f) => f.startsWith("reylo-"))!.replace(/^reylo-/, "").replace(/\.tgz$/, "");
   const project = join(root, "project");
   mkdirSync(project);
   writeFileSync(join(project, "package.json"), JSON.stringify({ name: "check", private: true, type: "module", dependencies: { reylo: version } }, null, 2));

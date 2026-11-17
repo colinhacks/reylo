@@ -17,7 +17,10 @@ use serde_json::Value;
 /// `{called}` the words it calls as functions, which a stored function of any schema may answer to,
 /// since a call may name the schema; `{cascades}` whether a row it writes may change a key
 /// another table's foreign key refers to. One row `('open', why)` for each trigger and stored
-/// function that may run, and one `('name', code, field, name)` for each name an error may carry.
+/// function that may run, for each written table whose triggers the session cannot see (it holds no
+/// TRIGGER privilege there, and `information_schema` shows a table's triggers only to one that
+/// does), for each view whose tables it cannot see and each view of a table of another schema, and
+/// one `('name', code, field, name)` for each name an error may carry.
 /// What a write reaches: the written tables, a view's tables, and, where `{cascades}`, the tables a
 /// foreign key's action writes in turn.
 const ERRORS_QUERY: &str = "with recursive w(t) as ( \
@@ -31,6 +34,14 @@ const ERRORS_QUERY: &str = "with recursive w(t) as ( \
     select 'open' as kind, 'trigger' as code, cast(g.trigger_name as char) as field, cast(null as char) as name from information_schema.triggers g join w on g.event_object_table = w.t where g.event_object_schema = database() \
     union all select 'open', 'function', cast(p.routine_name as char), null from information_schema.routines p where p.routine_type = 'FUNCTION' and lower(p.routine_name) in ({called}) \
     union all select 'open', 'view', cast(v.table_name as char), null from information_schema.view_routine_usage v join rel on v.table_name = rel.t where v.table_schema = database() \
+    union all select 'open', 'hidden triggers', cast(w.t as char), null from w where not exists ( \
+      select 1 from information_schema.user_privileges p where p.privilege_type = 'TRIGGER' and p.grantee = concat('''', substring_index(current_user(), '@', 1), '''@''', substring_index(current_user(), '@', -1), '''') \
+      union all select 1 from information_schema.schema_privileges p where p.privilege_type = 'TRIGGER' and p.table_schema = database() and p.grantee = concat('''', substring_index(current_user(), '@', 1), '''@''', substring_index(current_user(), '@', -1), '''') \
+      union all select 1 from information_schema.table_privileges p where p.privilege_type = 'TRIGGER' and p.table_schema = database() and p.table_name = w.t and p.grantee = concat('''', substring_index(current_user(), '@', 1), '''@''', substring_index(current_user(), '@', -1), '''')) \
+    union all select 'open', 'hidden view', cast(r.t as char), null from r join information_schema.tables t on t.table_schema = database() and t.table_name = r.t \
+      where t.table_type = 'VIEW' and not exists (select 1 from information_schema.view_table_usage u where u.view_schema = database() and u.view_name = r.t) \
+    union all select 'open', 'view of another schema', cast(u.view_name as char), null from information_schema.view_table_usage u join rel on u.view_name = rel.t \
+      where u.view_schema = database() and u.table_schema <> database() \
     union all select 'name', k.code, k.field, k.name from ( \
       select 'ER_DUP_ENTRY' as code, 'key' as field, cast(concat(s.table_name, '.', s.index_name) as char) as name from information_schema.statistics s join w on s.table_name = w.t where s.table_schema = database() and s.non_unique = 0 \
       union all select 'ER_DUP_ENTRY_WITH_KEY_NAME', 'key', cast(concat(s.table_name, '.', s.index_name) as char) from information_schema.statistics s join w on s.table_name = w.t where s.table_schema = database() and s.non_unique = 0 \
@@ -52,7 +63,7 @@ fn literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-fn list<'a>(names: impl Iterator<Item = &'a str>) -> String {
+pub(crate) fn list<'a>(names: impl Iterator<Item = &'a str>) -> String {
     let literals: Vec<String> = names.map(literal).collect();
     if literals.is_empty() { "null".to_string() } else { literals.join(", ") }
 }
@@ -103,7 +114,7 @@ const CHANGES_SOMETHING: [&str; 4] = ["get_lock", "release_lock", "release_all_l
 /// One row per view a read of `{read}` reaches, the tables of a view of another schema among what it
 /// reaches: its definition as the server normalizes it, NULL where this session may not read it or
 /// it is of another schema, which [`ERRORS_QUERY`] does not look into.
-const VIEWS_QUERY: &str = "with recursive r(s, t) as ( \
+pub(crate) const VIEWS_QUERY: &str = "with recursive r(s, t) as ( \
       select table_schema, table_name from information_schema.tables where table_schema = database() and table_name in ({read}) \
       union select u.table_schema, u.table_name from information_schema.view_table_usage u join r on u.view_schema = r.s and u.view_name = r.t) \
     select case when v.table_schema = database() then cast(v.view_definition as char) end from r \

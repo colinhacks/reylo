@@ -25,13 +25,13 @@ star_using.sql: many (n: text(¬NUL)) -> { id: int8, note: text(¬NUL)?, total: 
 star_where.sql: many (n: text(¬NUL)) -> { id: int8, note: text(¬NUL), total: numeric?, user_id: int8? } key (id)
 update_assigned.sql: many (n: text(¬NUL)) -> { note: text(¬NUL)? }
 update_from.sql: many () -> { author_id: int8 }
-update_generated.sql: many () -> { g: int8?, a: int8? }
+update_generated.sql: many () -> { g: int8?, a: int8 }
 update_moves_partition.sql: many () -> { v: text(¬NUL)? }
 update_old.sql: many (n: text(¬NUL)) -> { before: text(¬NUL)?, after: text(¬NUL)? }
 update_rule.sql: many () -> { v: text(¬NUL)? }
-update_star.sql: many () -> { id: int8, note: text(¬NUL), total: numeric?, user_id: int8, id: int8, name: text(¬NUL), nickname: text(¬NUL) } !! reylo14: Columns 1 and 5 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+update_star.sql: many () -> { id: int8, note: text(¬NUL), total: numeric, user_id: int8, id: int8, name: text(¬NUL), nickname: text(¬NUL) } !! reylo14: Columns 1 and 5 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
 update_trigger.sql: many () -> { v: text(¬NUL)? }
-update_where.sql: many (n: text(¬NUL)) -> { note: text(¬NUL), total: numeric? }
+update_where.sql: many (n: text(¬NUL)) -> { note: text(¬NUL), total: numeric }
 with_twice_left.sql: many () -> { id: int8, total: numeric? } key (id)
 with_twice_nulled.sql: many () -> { id: int8? }
 with_twice_sub.sql: many () -> { id: int8 } key (id)

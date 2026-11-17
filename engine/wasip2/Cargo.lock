@@ -1265,22 +1265,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pg_query"
-version = "18.0.0"
-dependencies = [
- "bindgen 0.66.1",
- "cc",
- "fs_extra",
- "glob",
- "itertools 0.10.5",
- "prost",
- "prost-build",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1530,7 +1514,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reylo-engine"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "mysql_async",
  "reylo-engine-core",
@@ -1544,11 +1528,11 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-build"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 
 [[package]]
 name = "reylo-engine-core"
-version = "0.8.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "libc",
  "reylo-engine-build",
@@ -1559,21 +1543,22 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-mysql"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "reylo-engine-build",
  "reylo-engine-core",
+ "reylo-sqlparser",
  "serde",
  "serde_json",
- "sqlparser",
 ]
 
 [[package]]
 name = "reylo-engine-native"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "mysql_async",
  "reylo-engine",
+ "reylo-engine-build",
  "reylo-engine-core",
  "rusqlite",
  "rustls",
@@ -1588,21 +1573,21 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-postgres"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
- "pg_query",
  "prost",
  "reylo-engine-build",
  "reylo-engine-core",
+ "reylo-pg-query",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "reylo-engine-sqlite"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "cc",
  "reylo-engine-build",
@@ -1620,6 +1605,30 @@ dependencies = [
  "serde_json",
  "tokio",
  "wit-bindgen 0.63.0",
+]
+
+[[package]]
+name = "reylo-pg-query"
+version = "18.0.0"
+dependencies = [
+ "bindgen 0.66.1",
+ "cc",
+ "fs_extra",
+ "glob",
+ "itertools 0.10.5",
+ "prost",
+ "prost-build",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "reylo-sqlparser"
+version = "0.63.0"
+dependencies = [
+ "log",
+ "reylo-engine-build",
 ]
 
 [[package]]
@@ -2000,13 +2009,6 @@ dependencies = [
  "js-sys",
  "rsqlite-vfs",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "sqlparser"
-version = "0.63.0"
-dependencies = [
- "log",
 ]
 
 [[package]]

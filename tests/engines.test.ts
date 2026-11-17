@@ -65,7 +65,7 @@ test("an engine of another version than reylo is refused, naming both versions a
   await withEngine(path, () =>
     assert.rejects(engine("postgres"), (e: Error) => {
       assert.ok(e instanceof MissingEngine);
-      assert.equal(e.message, `reylo ${VERSION} runs with its engine at ${VERSION}, and ${path} is 9.9.9: install reylo again, point REYLO_ENGINE_PATH at the engine of reylo ${VERSION}, or in a checkout of reylo's repository build it with cargo build --release -p reylo`);
+      assert.equal(e.message, `reylo ${VERSION} runs with its engine at ${VERSION}, and ${path} is 9.9.9: install reylo again, point REYLO_ENGINE_PATH at the engine of reylo ${VERSION}, or in a checkout of reylo's repository build it with cargo build --release -p reylo-cli`);
       return true;
     }),
   );

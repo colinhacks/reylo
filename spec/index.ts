@@ -413,6 +413,8 @@ export interface StatementDescriptor {
   params: Param[];
   /** What the statement returns, a table: a row of columns per row, and its cardinality. A statement that returns one value is still a row of one column, which keeps the column's name. A row is an object keyed by its columns' names, which keeps only the last of two with one name, so a statement whose result repeats a name (`select a.id, b.id`) has a diagnostic at each later column of it, asking for another name with `as`. The name the database gives a column stands: Postgres calls `select 1`'s `?column?`. */
   result: TableType;
+  /** What running the statement may do, an upper bound: a flag it lacks, or a table it does not name, is something it cannot do, so a statement whose tables are all `read` and that has no flag only reads. Absent, nothing is said. */
+  capabilities?: Capabilities;
   /** What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns. */
   diagnostics: Diagnostic[];
 }
@@ -457,3 +459,20 @@ export interface Dialect {
   name: string;
   version: string;
 }
+
+/** What running a statement may do: the tables it touches, and four kinds of effect beyond their rows. */
+export interface Capabilities {
+  /** Each table the statement touches, qualified as a `label` is (`public.posts`), with the most it may do to its rows, through a view, a partition, a foreign key's action or a sequence's default too; `unknown` where it may touch tables the analysis cannot name, as through a function or a trigger whose body it does not read. */
+  tables: { [table: string]: Access; } | "unknown";
+  /** Creates, alters or drops what the database defines, or changes who may use it: `CREATE`, `ALTER`, `DROP`, `GRANT`. */
+  ddl?: true;
+  /** Begins or ends a transaction: `BEGIN`, `COMMIT`, `SAVEPOINT`, and MySQL's DDL, which commits. */
+  transaction?: true;
+  /** Leaves state on the connection after it: `SET`, a temporary table, a session's advisory lock, `PREPARE`, `LISTEN`, MySQL's `USE`, a SQLite `PRAGMA` or `ATTACH`. */
+  session?: true;
+  /** Reaches past the connection and the data: the server's settings (`ALTER SYSTEM`, `SET GLOBAL`), another session (`NOTIFY`, ending a backend), a file or the network. */
+  external?: true;
+}
+
+/** The most a statement may do to a table's rows, each covering the ones before it: `read`; `readlock`, which reads them and locks them until its transaction ends (`FOR UPDATE`, `LOCK TABLE`); and `write`, which inserts, updates or deletes them. */
+export type Access = "read" | "readlock" | "write";

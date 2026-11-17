@@ -123,7 +123,7 @@ impl Schema {
 
 /// Statements that change an object in place from one definition to another, or None where it
 /// cannot be and is replaced.
-pub trait Alterer {
+pub trait Alterer: Send {
     fn alter(&self, from: &Object, to: &Object) -> Option<Vec<String>>;
     /// Statements that rename a column in place, keeping its rows.
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
@@ -295,21 +295,7 @@ fn with_owned<'a>(schema: &'a Schema, id: &'a str) -> Vec<&'a str> {
     out
 }
 
-/// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`.
-pub fn last_written(name: &str) -> String {
-    let mut quote: Option<char> = None;
-    let mut at = 0;
-    for (k, ch) in name.char_indices() {
-        match quote {
-            Some(q) if ch == q => quote = None,
-            Some(_) => {}
-            None if ch == '"' || ch == '`' => quote = Some(ch),
-            None if ch == '.' => at = k + 1,
-            None => {}
-        }
-    }
-    name[at..].to_string()
-}
+pub use crate::sql::last_written;
 
 /// `text` with the name `old` (a table's) written `new` wherever it stands as a name or as the start
 /// of one (`users` in `users_pkey`, `nextval('users_id_seq')`), ignoring case.

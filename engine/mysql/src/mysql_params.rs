@@ -508,7 +508,7 @@ fn refuses_null(clause: &str, column: &str) -> bool {
 /// schema is left out, since the facts are read from the current one; a write that names one, or
 /// that writes through something that is no table, lists nothing it writes.
 pub(crate) fn tables(statement: &Statement) -> Tables {
-    let mut walk = Walk { tables: Vec::new() };
+    let mut walk = Walk { tables: Vec::new(), by_schema: false };
     walk.statement(statement, &Env::default());
     let target = |relation: &TableFactor| match relation {
         TableFactor::Table { name, .. } => table_name(name),
@@ -748,6 +748,16 @@ struct Env {
 struct Walk {
     /// Each table of the current schema a FROM item reads, as the statement names it.
     tables: Vec<String>,
+    /// A FROM item names a table by its schema (`db.t`), which `tables` leaves out.
+    by_schema: bool,
+}
+
+/// Whether a FROM item of the statement names a table by its schema (`db.t`, its own schema's
+/// included), which [`tables`] leaves out.
+pub(crate) fn reads_by_schema(statement: &Statement) -> bool {
+    let mut walk = Walk { tables: Vec::new(), by_schema: false };
+    walk.statement(statement, &Env::default());
+    walk.by_schema
 }
 
 impl Walk {
@@ -874,6 +884,7 @@ impl Walk {
             TableFactor::Table { name, .. } => {
                 // A WITH query in scope is what a bare name in FROM reads, whatever table shares it.
                 let table = table_name(name).map(|t| t.to_ascii_lowercase());
+                self.by_schema |= table.is_none();
                 if !table.is_some_and(|t| env.ctes.contains(&t)) {
                     self.tables.extend(table_name(name));
                 }

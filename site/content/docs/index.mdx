@@ -1,6 +1,6 @@
 ---
 title: Reylo
-description: Reylo is an engine that infers type information from SQL queries, read from your live database. TypeScript and Rust use its types as you write, and its CLI writes and runs your migrations.
+description: Reylo is an engine that infers type information from SQL queries, read from your live database. <Rust>TypeScript and Rust use</Rust><NoRust>TypeScript uses</NoRust> its types as you write, and its CLI writes and runs your migrations.
 ---
 
 <p className="dk-subheader hero">An engine that infers the types of your SQL queries</p>
@@ -140,11 +140,11 @@ Reylo reads all of this from your live database, which checks the query without 
 - 🎯 **Checked against your database** — a misspelled column is a compile error
 - 🤖 **Agent-friendly** — DRY code is more maintainable for agents
 - 🧩 **Postgres, MySQL and SQLite** — Neon, PlanetScale, Cloudflare D1, Turso and more
-- 🔌 **Your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](/typescript#run) in TypeScript, sqlx in Rust
+- 🔌 **Your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](/typescript#run) in TypeScript<Rust>, sqlx in Rust</Rust>
 
 </div>
 
-You use it from TypeScript or Rust, and its `reylo` command also writes and runs your migrations.
+You use it from TypeScript<Rust> or Rust</Rust>, and its `reylo` command also writes and runs your migrations.
 
 ### TypeScript
 
@@ -172,6 +172,7 @@ author?.
 
 [Usage with TypeScript](/typescript) covers the setup.
 
+<Rust>
 ### Rust
 
 An attribute macro types each statement as your crate compiles, and runs it on sqlx:
@@ -195,6 +196,7 @@ author.
 </Completion>
 
 [Usage with Rust](/rust) covers the setup.
+</Rust>
 
 ### Migrations
 

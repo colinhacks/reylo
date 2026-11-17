@@ -365,6 +365,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            capabilities: None,
             read_only: false,
             notes: Vec::new(),
             tables: None,
@@ -599,6 +600,8 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        // A table named by its schema is one the walk of the catalog does not reach.
+        capabilities: read.as_ref().filter(|r| crate::mysql_params::reads_by_schema(r)).map(|_| crate::capabilities::by_schema()),
         read_only: false,
         notes: Vec::new(),
         // From the tree as the session reads the statement, also where it reads some part of it

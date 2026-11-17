@@ -12,6 +12,7 @@
 pub mod analyze;
 pub mod bodies;
 pub mod api;
+pub mod capabilities;
 pub mod cardinality;
 #[cfg(test)]
 mod catalog_queries;

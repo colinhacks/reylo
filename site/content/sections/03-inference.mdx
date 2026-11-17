@@ -23,7 +23,9 @@ select id, name, email from users where id = :id::int
 
 </InferenceCard>
 
+<Rust>
 Each card shows the types in TypeScript or in Rust: pick one at the top of any card.
+</Rust>
 
 Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next check sees the new schema: a dropped column fails in the statement that names it, and in the code that reads it.
 
@@ -77,9 +79,12 @@ One per statement, with the `file` it was read from:
 | `comment` | The prose in comments before the statement |
 | `params` | Each parameter, in order: its `name`, its `type`, and `nullable` and `optional` where they hold |
 | `result` | The rows: their `columns`, each with a `name` and a `type`, and the `cardinality` |
+| `capabilities` | What running the statement may do: the tables it touches, and what it does beyond their rows |
 | `diagnostics` | What the database reports, each with a `message` and its `start` and `end` |
 
 The `cardinality` is how many rows the statement returns: `one`, `at_most_one`, `many`, or `none` for a write without `returning`.
+
+The `capabilities` name each table the statement touches, as `read`, `readlock` or `write`, and set a flag where it may do more: `ddl`, `transaction`, `session` or `external`. A statement whose tables are all `read`, with no flag, only reads, so it can run again after a lost connection, or on a replica.
 
 ### Types
 
@@ -96,7 +101,7 @@ Each `type` is a Reylo Type Def: an object whose `kind` names it, with fields th
 
 ## Primitives [#primitives]
 
-Each SQL type has one TypeScript type, the same on every driver, and one Rust type.
+Each SQL type has one TypeScript type, the same on every driver<Rust>, and one Rust type</Rust>.
 
 In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
 
@@ -827,6 +832,26 @@ values (:name, :email::text)
 on conflict (email) do update
   set name = excluded.name
 returning id, name
+```
+
+</InferenceCard>
+
+A column the write sets to a value that is never null returns that value, so it isn't null either:
+
+<InferenceCard>
+
+```sql file="returned_values.sql" dialect="postgres"
+update users
+set email = :email::text
+where id = :id
+returning email
+```
+
+```sql file="returned_values.sql" dialect="sqlite"
+update users
+set email = :email::text
+where id = :id
+returning email
 ```
 
 </InferenceCard>

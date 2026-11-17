@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { arrayLiteral } from "../src/execute.ts";
@@ -100,9 +99,10 @@ test("postgres: every client gets an array for a SQL array parameter as its lite
     assert.ok(!Array.isArray(data));
     assert.equal(JSON.stringify(data), '[1,{"a":"b"}]');
   }
-  // postgres.js (typed() beside unsafe()), whose JSON serializer Drizzle replaces with one that passes the value through.
+  // postgres.js (typed() beside unsafe()), whose JSON serializer Drizzle replaces with one that passes the value through,
+  // gets every parameter as its text declared unknown, since one is.
   await execute(postgresJsSql((_, values) => void seen.push(values)), typed, typedValues);
-  assert.deepEqual(seen.at(-1), ['{"1","3"}', "ada", { value: '[1,{"a":"b"}]', type: 705 }]);
+  assert.deepEqual(seen.at(-1), [{ value: '{"1","3"}', type: 705 }, { value: "ada", type: 705 }, { value: '[1,{"a":"b"}]', type: 705 }]);
 });
 
 // Every kind of JSON value, null, and a jsonb[] parameter, whose elements are JSON values.
@@ -225,7 +225,7 @@ test("a query without inputs, defined by hand or built before them, binds every 
   const hand: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :ids::int[] = :ids::int[]", params: ["ids"], inputs: { ids: { type: array(pgType("int4")) } } };
   seen.length = 0;
   await execute(sql, hand, { ids: [2] });
-  assert.deepEqual(seen, [['{"2"}']]);
+  assert.deepEqual(seen, [[{ value: '{"2"}', type: 705 }]]);
 });
 
 test("a Date for any date or time parameter, and a string without its zone for a timestamptz one, is refused before the statement runs", async () => {
@@ -270,7 +270,7 @@ test("postgres: postgres.js, which binds a date or time string through new Date(
   const bun = { unsafe, typed, commitDistributed: async () => {} };
   await execute(bun, q, values);
   assert.deepEqual(seen, [
-    [{ value: "2026-01-02 03:04:05.006", type: 705 }, { value: "infinity", type: 705 }, { value: "2026-01-02 03:04:05 America/New_York", type: 705 }, { value: "1970-01-01T00:00:00Z", type: 705 }, "ada"],
+    [{ value: "2026-01-02 03:04:05.006", type: 705 }, { value: "infinity", type: 705 }, { value: "2026-01-02 03:04:05 America/New_York", type: 705 }, { value: "1970-01-01T00:00:00Z", type: 705 }, { value: "ada", type: 705 }],
     ["2026-01-02 03:04:05.006", "infinity", "2026-01-02 03:04:05 America/New_York", "1970-01-01T00:00:00Z", "ada"],
   ]);
 });
@@ -399,7 +399,7 @@ test("postgres: Neon's neon() before 1.0 is called with (text, values)", async (
 // postgres.js on a throwaway server (REYLO_TEST_PG), in a database of its own; the driver is lab/drivers'.
 
 test("postgres.js: a statement with parameters is prepared on its connection and run again from there, unless the client was made with prepare: false", { skip: pgLive }, async () => {
-  const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
+  const postgres = driver("postgres");
   const own = await postgresDatabase("reylo_execute_prepare");
   const url = new URL(own.url);
   const prepared = own.sql;
@@ -425,6 +425,32 @@ test("postgres.js: a statement with parameters is prepared on its connection and
     assert.deepEqual(await prepared.begin(async (tx: never) => (await execute(tx, q, { id: 1 }), statements(tx))), [{ statement: text, runs: "3" }]);
   } finally {
     await unprepared.end();
+    await own.drop();
+  }
+});
+
+test("postgres.js: JSON and array parameters beside an untyped one reach the server as written on every run, in a transaction too", { skip: pgLive }, async () => {
+  // postgres.js 4 serializes the values of such a statement by the types the server described for
+  // it: the JSON text was stored as a JSON string from the second run, and the jsonb[] literal was
+  // refused as a malformed array from the first.
+  const own = await postgresDatabase("reylo_execute_typed_again");
+  const q: QueryModule<"postgres"> = {
+    dialect: "postgres",
+    sql: "select (:doc::jsonb)::text as doc, (:docs::jsonb[])::text as docs, (:flags::bool[])::text as flags, (:days::date[])::text as days, (:raw::bytea[])::text as raw, :id::int as id",
+    params: ["doc", "docs", "flags", "days", "raw", "id"],
+    inputs: { doc: { type: { kind: "json" } }, docs: { type: array({ kind: "json" }) }, flags: { type: array(pgType("bool")) }, days: { type: array(pgType("date")) }, raw: { type: array(pgType("bytea")) } },
+  };
+  const values = { doc: [1, "a"], docs: [{ a: 1 }, 2], flags: [true, false], days: ["2026-01-02"], raw: [new Uint8Array([1, 2])] };
+  const expected = { doc: '[1, "a"]', docs: '{"{\\"a\\": 1}",2}', flags: "{t,f}", days: "{2026-01-02}", raw: '{"\\\\x0102"}' };
+  const runs = async (c: any) => {
+    const out: unknown[] = [];
+    for (const id of [1, null, 3]) out.push(...(await execute(c, q, { ...values, id })).map(({ id: _, ...r }: any) => r));
+    return out;
+  };
+  try {
+    assert.deepEqual(await runs(own.sql), Array(3).fill(expected));
+    assert.deepEqual(await own.sql.begin((tx: never) => runs(tx)), Array(3).fill(expected));
+  } finally {
     await own.drop();
   }
 });
@@ -836,6 +862,43 @@ test("sqlite: sqlite3's callback all(), its errors, and the sqlite package's pro
 
 test("sqlite: Bun.sql's SQLite adapter, which has unsafe() and no prepare()", async () => {
   assert.deepEqual(await execute({ unsafe: async () => [row], commitDistributed: async () => {} }, lite, { id: 1, name: "ada" }), [row]);
+});
+
+test("sqlite: a BigInt outside 64 bits, which bun:sqlite and Bun.sql wrap and sqlite3 binds as NULL, is refused before any client is called; Turso's engine's 2^63 too, and only on Turso", async () => {
+  const calls: unknown[][] = [];
+  const bun = { unsafe: async (_: string, values: unknown[]) => (calls.push(values), [row]), commitDistributed: async () => {} };
+  const db = new DatabaseSync(":memory:");
+  const outside = /^TypeError: Parameter "id" is 9223372036854775808, outside the 64-bit integers SQLite holds \(-2\^63 to 2\^63 - 1\), so no SQLite driver binds it exactly\.$/;
+  await assert.rejects(Promise.resolve().then(() => execute(bun, lite, { id: 2n ** 63n, name: "ada" })), outside);
+  await assert.rejects(Promise.resolve().then(() => execute(bun, lite, { id: -(2n ** 63n) - 1n, name: "ada" })), /is -9223372036854775809, outside the 64-bit integers/);
+  assert.throws(() => execute(db, lite, { id: 2n ** 63n, name: "ada" }), outside);
+  assert.equal(calls.length, 0);
+  // The ends of the range bind as they are.
+  await execute(bun, lite, { id: 2n ** 63n - 1n, name: "ada" });
+  await execute(bun, lite, { id: -(2n ** 63n), name: "ada" });
+  assert.deepEqual(calls.map((v) => v[0]), [2n ** 63n - 1n, -(2n ** 63n)]);
+  // Turso's engine binds the whole number 2^63 as 2^63 - 1, through its compat Database (with
+  // batch() from 0.7, without before) and its promise API alike; any other driver binds the REAL,
+  // the libsql package's Database among them, which has maxWriteReplicationIndex() as Turso's has,
+  // and sync(), which no Database of Turso's has.
+  const tursoRefusal = /^TypeError: Parameter "id" is 2\^63 \(9223372036854775808\), which Turso's engine binds as 2\^63 - 1 \(9223372036854775807\), so it would store another number\.$/;
+  const statement = () => ({ reader: true, safeIntegers: () => {}, all: (...values: unknown[]) => (calls.push(values), [row]), close: () => {} });
+  const compat = { prepare: statement, batch: () => [], exec: () => {}, maxWriteReplicationIndex: () => {} };
+  const compat06 = { prepare: statement, exec: () => {}, maxWriteReplicationIndex: () => {} };
+  const libsql = { prepare: statement, exec: () => {}, maxWriteReplicationIndex: () => {}, sync: () => {} };
+  const turso = { prepare: () => ({ ...statement(), all: async (...values: unknown[]) => (calls.push(values), [row]) }), connect: async () => {}, maxWriteReplicationIndex: () => {}, exec: async () => {} };
+  const q = defineQuery<{ id: number; name: string }, unknown, "many", "sqlite">({ dialect: "sqlite", sql: lite.sql, params: lite.params });
+  assert.throws(() => q.runSync(compat, { id: 2 ** 63, name: "ada" }), tursoRefusal);
+  assert.throws(() => q.runSync(compat06, { id: 2 ** 63, name: "ada" }), tursoRefusal);
+  await assert.rejects(Promise.resolve().then(() => q.run(turso, { id: 2 ** 63, name: "ada" })), tursoRefusal);
+  assert.deepEqual(q.runSync(compat, { id: 2 ** 62, name: "ada" }), [row]);
+  assert.deepEqual(q.runSync(libsql, { id: 2 ** 63, name: "ada" }), [row]);
+  assert.equal(calls.at(-1)![0], 2 ** 63);
+  await execute(bun, lite, { id: 2 ** 63, name: "ada" });
+  assert.equal(calls.at(-1)![0], 2 ** 63);
+  // A Standard Query's encode binds as .run() does, so it refuses the same BigInt.
+  assert.throws(() => q["~standard"].query.encode({ id: 2n ** 64n as never, name: "ada" }), /is 18446744073709551616, outside the 64-bit integers SQLite holds/);
+  assert.deepEqual(q["~standard"].query.encode({ id: 2n ** 63n - 1n as never, name: "ada" }), [2n ** 63n - 1n, "ada", 2n ** 63n - 1n]);
 });
 
 test("the driver's own error comes through unchanged", async () => {

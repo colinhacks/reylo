@@ -1,8 +1,10 @@
 [package]
 name = "reylo-macros"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "The attribute #[reylo::query(\"…\")] mod name {}: the statement typed by Reylo's engine at compile time, against the project's database or reylo/.cache/ where it cannot be reached, and expanded to Query, Row and run on sqlx."
 
 [lib]
@@ -11,6 +13,10 @@ proc-macro = true
 # Which Rust types the macro writes for dates and times, uuids and decimals: `reylo`'s features of
 # the same names turn these on beside sqlx's support for the types.
 [features]
+# The databases the macro can analyze a statement on: each builds that database's engine and client.
+postgres = ["reylo-codegen/postgres"]
+mysql = ["reylo-codegen/mysql"]
+sqlite = ["reylo-codegen/sqlite"]
 chrono = []
 time = []
 uuid = []
@@ -19,7 +25,9 @@ bigdecimal = []
 
 [dependencies]
 # The statement's analysis, and the module's items from it.
-reylo-codegen = { path = "../reylo-codegen", default-features = false, features = ["analyze"] }
+reylo-codegen = { workspace = true, features = ["analyze"] }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
+# The analysis, as the engine writes it.
+serde_json = "1"

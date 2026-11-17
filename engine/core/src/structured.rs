@@ -17,9 +17,11 @@
 //!   array's order (`wiki/bulk-insert.md`, Order);
 //! - anywhere else, a table, named by the alias written after it or else by the parameter.
 //!
-//! Each dialect reads the JSON with its own reader: `jsonb_to_record` on Postgres, `json_each` on
-//! SQLite, `JSON_TABLE` with `ERROR ON ERROR` on every column on MySQL (which otherwise turns a
-//! value it cannot read into NULL without a warning; `wiki/structured-params/verify.md`).
+//! Each dialect reads the JSON with its own reader: `json_to_record` and `json_to_recordset` on
+//! Postgres (an insert that copies a default reads each element as `jsonb`, which its key tests
+//! read), `json_each` on SQLite, `JSON_TABLE` with `ERROR ON ERROR` on every column on MySQL (which
+//! otherwise turns a value it cannot read into NULL without a warning;
+//! `wiki/structured-params/verify.md`).
 //!
 //! A key a row leaves out takes its column's default. On Postgres and SQLite the insert reads,
 //! for each member whose key may be left out, the row's value where it has the key and else the
@@ -1321,11 +1323,16 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
                     w.member(k, &format!("{} {}", q(&m.name), m.ty));
                 }
             };
+            // The rows are read as `json`, which Postgres only validates, rather than `jsonb`, which
+            // it parses into a tree with every object's keys sorted: on 10,000 rows of 16 columns
+            // that parse alone took 32 ms against 7, and the insert 63 ms against 91 end to end.
+            // The values read are the same for every type; a `json` member keeps the text as sent.
             let reader = |w: &mut Writer| {
-                w.push(if found.one { "jsonb_to_record(" } else { "jsonb_to_recordset(" });
+                w.push(if found.one { "json_to_record(" } else { "json_to_recordset(" });
                 w.placeholder(placeholder);
-                w.push("::jsonb)");
+                w.push("::json)");
             };
+            let copies = (0..ms.len()).any(|k| copied_at(found, k).is_some());
             if found.insert {
                 // A member whose key a row may leave out reads, for such a row, the default copied
                 // from the catalog; `->` tells a missing key (SQL NULL) from a JSON null.
@@ -1344,7 +1351,7 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
                 w.list(ms.iter().map(|m| q(&m.name)).collect(), &mut lists);
                 w.push(") SELECT ");
                 w.list(select, &mut lists);
-                if found.one && (0..ms.len()).any(|k| copied_at(found, k).is_some()) {
+                if found.one && copies {
                     // The object itself, which the key tests read.
                     w.push(" FROM (SELECT ");
                     w.placeholder(placeholder);
@@ -1352,12 +1359,25 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
                     coldefs(&mut w);
                     w.push(")");
                 } else if found.one {
-                    w.push(" FROM jsonb_to_record(");
-                    w.placeholder(placeholder);
-                    w.push(&format!("::jsonb) AS {alias}("));
+                    w.push(" FROM ");
+                    reader(&mut w);
+                    w.push(&format!(" AS {alias}("));
                     coldefs(&mut w);
                     w.push(")");
+                } else if !copies {
+                    // The row's number decides the order the rows are inserted in.
+                    w.push(" FROM ROWS FROM (");
+                    reader(&mut w);
+                    w.push(" AS (");
+                    coldefs(&mut w);
+                    w.push(&format!(")) WITH ORDINALITY AS {alias}("));
+                    for m in ms {
+                        w.push(&format!("{}, ", q(&m.name)));
+                    }
+                    w.push(&format!("\"reylo.n\") ORDER BY {alias}.\"reylo.n\""));
                 } else {
+                    // The key tests read each element, which `jsonb` gives them without parsing it
+                    // again for each key, as `json` would (106 ms against 141 for 10,000 rows).
                     // The element's number decides the order the rows are inserted in.
                     w.push(" FROM jsonb_array_elements(");
                     w.placeholder(placeholder);
@@ -2486,17 +2506,17 @@ mod tests {
         let e = expand(sql, found, Dialect::Postgres, &Server::default());
         assert_eq!(
             e.sql,
-            "insert into events (\"id\", \"status\") SELECT \"events\".\"id\", \"events\".\"status\" FROM jsonb_array_elements(:events::jsonb) WITH ORDINALITY AS \"reylo.e\"(\"reylo.v\", \"reylo.n\"), jsonb_to_record(\"reylo.e\".\"reylo.v\") AS \"events\"(\"id\" int8, \"status\" text) ORDER BY \"reylo.e\".\"reylo.n\" on conflict (id) do nothing returning id"
+            "insert into events (\"id\", \"status\") SELECT \"events\".\"id\", \"events\".\"status\" FROM ROWS FROM (json_to_recordset(:events::json) AS (\"id\" int8, \"status\" text)) WITH ORDINALITY AS \"events\"(\"id\", \"status\", \"reylo.n\") ORDER BY \"events\".\"reylo.n\" on conflict (id) do nothing returning id"
         );
         let sql = "select e.id from :events::rows(id int8 not null, note text) e";
         let e = expand(sql, find(sql, Dialect::Postgres, &Server::default()).unwrap(), Dialect::Postgres, &Server::default());
-        assert_eq!(e.sql, "select e.id from (SELECT \"reylo.r\".\"id\", \"reylo.r\".\"note\" FROM jsonb_to_recordset(:events::jsonb) AS \"reylo.r\"(\"id\" int8, \"note\" text) WHERE \"reylo.r\".\"id\" IS NOT NULL) AS e");
+        assert_eq!(e.sql, "select e.id from (SELECT \"reylo.r\".\"id\", \"reylo.r\".\"note\" FROM json_to_recordset(:events::json) AS \"reylo.r\"(\"id\" int8, \"note\" text) WHERE \"reylo.r\".\"id\" IS NOT NULL) AS e");
         let sql = "select * from :events::rows(note text)";
         let e = expand(sql, find(sql, Dialect::Postgres, &Server::default()).unwrap(), Dialect::Postgres, &Server::default());
-        assert_eq!(e.sql, "select * from jsonb_to_recordset(:events::jsonb) AS \"events\"(\"note\" text)");
+        assert_eq!(e.sql, "select * from json_to_recordset(:events::json) AS \"events\"(\"note\" text)");
         let sql = "insert into users :user::row(email text not null)";
         let e = expand(sql, find(sql, Dialect::Postgres, &Server::default()).unwrap(), Dialect::Postgres, &Server::default());
-        assert_eq!(e.sql, "insert into users (\"email\") SELECT \"user\".\"email\" FROM jsonb_to_record(:user::jsonb) AS \"user\"(\"email\" text)");
+        assert_eq!(e.sql, "insert into users (\"email\") SELECT \"user\".\"email\" FROM json_to_record(:user::json) AS \"user\"(\"email\" text)");
     }
 
     #[test]
@@ -2693,7 +2713,7 @@ mod tests {
         assert_eq!(&sql[s..t], "status? text not null");
         let ret = e.sql.find("returning").unwrap();
         assert_eq!(e.to_author(ret).0, sql.find("returning").unwrap());
-        let reader = e.sql.find("jsonb_array_elements").unwrap();
+        let reader = e.sql.find("json_to_recordset").unwrap();
         let (s, t) = e.to_author(reader);
         assert_eq!(&sql[s..t], ":events::rows");
     }

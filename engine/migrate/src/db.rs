@@ -6,8 +6,11 @@
 //! leaves a shadow nobody holds, which the next run drops before it builds its own.
 
 use crate::{Dialect, Error};
+#[cfg(feature = "cli")]
 use mysql_async::prelude::Queryable;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 /// One row, every value as text (Postgres's booleans as `t` and `f`), as its columns name them.
 #[derive(Clone, Debug, Default)]
@@ -17,6 +20,11 @@ pub struct Row {
 }
 
 impl Row {
+    /// A row of `values`, in the order `columns` names them; a host's [`Session`] builds its rows so.
+    pub fn new(columns: Vec<String>, values: Vec<Option<String>>) -> Row {
+        Row { columns, values }
+    }
+
     pub fn get(&self, name: &str) -> Option<&str> {
         let at = self.columns.iter().position(|c| c == name)?;
         self.values[at].as_deref()
@@ -35,11 +43,34 @@ impl Row {
 }
 
 pub enum Db {
+    #[cfg(feature = "cli")]
     Postgres(tokio_postgres::Client),
+    #[cfg(feature = "cli")]
     Mysql(mysql_async::Conn),
+    #[cfg(feature = "cli")]
     Sqlite(rusqlite::Connection),
+    /// A database the host holds the connection to, as a Rust app's own pool through
+    /// `reylo::migrate!()`.
+    Host(Box<dyn Session>),
 }
 
+/// A future a [`Session`] answers with.
+pub type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
+
+/// One connection a host holds to the database deploy and status run on: each statement run as
+/// written, every value of a row as text (a boolean as `t` or `true`), as [`Db::rows`] reads them.
+/// The connection is the same one for the whole run, since the run's lock is the session's.
+pub trait Session: Send {
+    fn dialect(&self) -> Dialect;
+    /// The rows of the statements in `sql`.
+    fn rows<'a>(&'a mut self, sql: &'a str) -> Answer<'a, Vec<Row>>;
+    /// Runs `sql`: one statement or several.
+    fn exec<'a>(&'a mut self, sql: &'a str) -> Answer<'a, ()>;
+    /// Runs one statement with text parameters, `$1` on Postgres and `?` elsewhere.
+    fn exec_with<'a>(&'a mut self, sql: &'a str, params: &'a [&'a str]) -> Answer<'a, ()>;
+}
+
+#[cfg(feature = "cli")]
 pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
     match e.as_db_error() {
         Some(d) => {
@@ -53,6 +84,7 @@ pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
     }
 }
 
+#[cfg(feature = "cli")]
 pub(crate) fn mysql_error(e: mysql_async::Error) -> Error {
     match e {
         mysql_async::Error::Server(s) => Error(s.message),
@@ -60,10 +92,12 @@ pub(crate) fn mysql_error(e: mysql_async::Error) -> Error {
     }
 }
 
+#[cfg(feature = "cli")]
 pub(crate) fn sqlite_error(e: rusqlite::Error) -> Error {
     Error(e.to_string())
 }
 
+#[cfg(feature = "cli")]
 fn mysql_text(value: &mysql_async::Value) -> Option<String> {
     use mysql_async::Value::*;
     match value {
@@ -105,6 +139,7 @@ pub fn sqlite_path(url: &str, base: &Path) -> String {
 }
 
 /// The rows of `sql` over Postgres's simple protocol, every value as text.
+#[cfg(feature = "cli")]
 pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Result<Vec<Row>, Error> {
     let mut out = Vec::new();
     for message in client.simple_query(sql).await.map_err(pg_error)? {
@@ -119,16 +154,19 @@ pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Resul
 
 /// A connection to the Postgres database a URL names, as the engine opens one (its TLS, timeout and
 /// failure messages), without the server version it reports.
+#[cfg(feature = "cli")]
 pub(crate) async fn open_postgres(url: &str) -> Result<tokio_postgres::Client, Error> {
     reylo_engine_native::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
 }
 
 /// A connection to the MySQL database a URL names, as the engine opens one.
+#[cfg(feature = "cli")]
 pub(crate) async fn open_mysql(url: &str) -> Result<mysql_async::Conn, Error> {
     reylo_engine_native::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
 }
 
 impl Db {
+    #[cfg(feature = "cli")]
     pub async fn connect(url: &str, base: &Path) -> Result<Db, Error> {
         match Dialect::of_url(url)? {
             Dialect::Postgres => Ok(Db::Postgres(crate::db::open_postgres(url).await?)),
@@ -139,9 +177,13 @@ impl Db {
 
     pub fn dialect(&self) -> Dialect {
         match self {
+            #[cfg(feature = "cli")]
             Db::Postgres(_) => Dialect::Postgres,
+            #[cfg(feature = "cli")]
             Db::Mysql(_) => Dialect::Mysql,
+            #[cfg(feature = "cli")]
             Db::Sqlite(_) => Dialect::Sqlite,
+            Db::Host(session) => session.dialect(),
         }
     }
 
@@ -149,7 +191,10 @@ impl Db {
     /// protocol), every value as text.
     pub async fn rows(&mut self, sql: &str) -> Result<Vec<Row>, Error> {
         match self {
+            Db::Host(session) => session.rows(sql).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => pg_rows(client, sql).await,
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => {
                 let rows: Vec<mysql_async::Row> = conn.query(sql).await.map_err(mysql_error)?;
                 Ok(rows
@@ -161,6 +206,7 @@ impl Db {
                     })
                     .collect())
             }
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => {
                 let mut statement = conn.prepare(sql).map_err(sqlite_error)?;
                 let columns: Vec<String> = statement.column_names().into_iter().map(String::from).collect();
@@ -190,8 +236,12 @@ impl Db {
     /// Runs `sql` as written: one statement or several.
     pub async fn exec(&mut self, sql: &str) -> Result<(), Error> {
         match self {
+            Db::Host(session) => session.exec(sql).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => client.batch_execute(sql).await.map_err(pg_error),
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => conn.query_drop(sql).await.map_err(mysql_error),
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute_batch(sql).map_err(sqlite_error),
         }
     }
@@ -211,19 +261,24 @@ impl Db {
     /// Runs one statement with text parameters, `$1` on Postgres and `?` elsewhere.
     pub async fn exec_with(&mut self, sql: &str, params: &[&str]) -> Result<(), Error> {
         match self {
+            Db::Host(session) => session.exec_with(sql, params).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => {
                 let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params.iter().map(|p| p as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
                 client.execute(sql, &params).await.map(|_| ()).map_err(pg_error)
             }
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => {
                 let values: Vec<mysql_async::Value> = params.iter().map(|p| mysql_async::Value::from(*p)).collect();
                 conn.exec_drop(sql, mysql_async::Params::Positional(values)).await.map_err(mysql_error)
             }
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute(sql, rusqlite::params_from_iter(params.iter())).map(|_| ()).map_err(sqlite_error),
         }
     }
 
     pub async fn close(self) {
+        #[cfg(feature = "cli")]
         if let Db::Mysql(conn) = self {
             let _ = conn.disconnect().await;
         }
@@ -231,8 +286,8 @@ impl Db {
 
     /// The parameter marker for the `n`th parameter.
     pub fn param(&self, n: usize) -> String {
-        match self {
-            Db::Postgres(_) => format!("${n}"),
+        match self.dialect() {
+            Dialect::Postgres => format!("${n}"),
             _ => "?".into(),
         }
     }
@@ -401,7 +456,13 @@ pub struct Shadow {
     pub name: String,
 }
 
+/// Where shadows are made: the target's server, or the one `shadow_url` names. Without the `cli`
+/// feature there is none: deploy and status make no shadow.
+#[cfg(not(feature = "cli"))]
+pub enum Server {}
+
 /// Where shadows are made: the target's server, or the one `shadow_url` names.
+#[cfg(feature = "cli")]
 pub enum Server {
     Postgres {
         admin: tokio_postgres::Client,
@@ -440,8 +501,10 @@ pub enum Server {
     Sqlite,
 }
 
+#[cfg(feature = "cli")]
 const PG_LISTS: &[&str] = &["search_path", "temp_tablespaces", "local_preload_libraries", "session_preload_libraries"];
 
+#[cfg(feature = "cli")]
 impl Server {
     /// The server shadows are made on: `shadow_url`'s, else the target's. A shadow is made like the
     /// target, which `target` is connected to.
@@ -466,9 +529,14 @@ impl Server {
                     return Err(Error(format!("cannot connect to the server's postgres or template1 database to create shadow databases: {last}")));
                 };
                 let version: i64 = target.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
-                let locale = if version >= 170000 { "datlocale" } else { "daticulocale" };
+                // The locale provider is Postgres 15's, and the locale `datlocale` from 17 and
+                // `daticulocale` in 15 and 16: read through `to_jsonb`, a column the server lacks is
+                // null, and a database before 15 is libc's.
                 let props = |filter: &str| {
-                    format!("select pg_encoding_to_char(encoding) as enc, datcollate as collate, datctype as ctype, datlocprovider as provider, {locale} as locale from pg_database where {filter}")
+                    format!(
+                        "select pg_encoding_to_char(encoding) as enc, datcollate as collate, datctype as ctype, coalesce(to_jsonb(d) ->> 'datlocprovider', 'c') as provider,
+                          coalesce(to_jsonb(d) ->> 'datlocale', to_jsonb(d) ->> 'daticulocale') as locale from pg_database d where {filter}"
+                    )
                 };
                 let mine = target.rows(&props("datname = current_database()")).await?.into_iter().next();
                 let template = pg_rows(&admin, &props("datname = 'template1'")).await?.into_iter().next();
@@ -484,8 +552,12 @@ impl Server {
                             Some(l) if !l.is_empty() => format!(" {} {}", if provider == "icu" { "icu_locale" } else { "builtin_locale" }, literal(l)),
                             _ => String::new(),
                         };
+                        // `locale_provider` is Postgres 15's: before it, every database is libc's. The
+                        // statement runs on the shadows' server, which `shadow_url` may make another.
+                        let shadow_version: i64 = pg_rows(&admin, "select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
+                        let provider = if shadow_version >= 150000 { format!(" locale_provider {provider}{locale}") } else { String::new() };
                         format!(
-                            " template template0 encoding {} lc_collate {} lc_ctype {} locale_provider {provider}{locale}",
+                            " template template0 encoding {} lc_collate {} lc_ctype {}{provider}",
                             literal(m.text("enc")),
                             literal(m.text("collate")),
                             literal(m.text("ctype"))
@@ -741,6 +813,7 @@ impl Server {
 /// Ends a Postgres shadow's session, and waits up to a second for its server process to go: a
 /// database with a session left cannot be dropped, renamed or copied without the server's own wait
 /// for it, a tenth of a second at a time.
+#[cfg(feature = "cli")]
 pub(crate) async fn pg_close(admin: &tokio_postgres::Client, db: Db, name: &str) {
     drop(db);
     for _ in 0..200 {

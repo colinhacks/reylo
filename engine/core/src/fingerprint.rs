@@ -59,12 +59,13 @@ pub const fn as_str(hex: &'static [u8; 16]) -> &'static str {
 }
 
 /// A database's fingerprint, from its own source hash: `fingerprint!("REYLO_ENGINE_POSTGRES_HASH")`
-/// in the database crate, whose build script set that variable.
+/// in the database crate, whose build script set that variable, then the hash of each crate of its
+/// own it builds on, which that crate's build script took (the MySQL engine's copy of `sqlparser`).
 #[macro_export]
 macro_rules! fingerprint {
-    ($var:literal) => {{
+    ($var:literal $(, $part:expr)* $(,)?) => {{
         const OWN: u64 = $crate::fingerprint::parse_hex(env!($var));
-        const HEX: [u8; 16] = $crate::fingerprint::combine(&[$crate::fingerprint::SOURCE_HASH, OWN]);
+        const HEX: [u8; 16] = $crate::fingerprint::combine(&[$crate::fingerprint::SOURCE_HASH, OWN $(, $part)*]);
         $crate::fingerprint::as_str(&HEX)
     }};
 }

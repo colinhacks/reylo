@@ -55,6 +55,57 @@ pub mod users_by_mood {}
 #[reylo::query("update users set nickname = :nickname where id = :id")]
 pub mod set_nickname {}
 
+/// A column a CHECK limits to a list of values: an enum of them.
+#[reylo::query("select id, status from posts order by id")]
+pub mod post_statuses {}
+
+/// A plain enum of the crate's own, with nothing on it for Reylo: a query's module names it for a
+/// column or a parameter, and matches its variants by name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PostStatus {
+    Draft,
+    Published,
+}
+
+/// The crate's enum for a column, the rest of the row as the module types it.
+#[reylo::query("select id, title, status from posts where id = :id")]
+pub mod get_post {
+    #[derive(Debug)]
+    pub struct Row {
+        pub status: crate::queries::PostStatus,
+    }
+}
+
+/// The crate's enum for a parameter.
+#[reylo::query("update posts set status = :status where id = :id")]
+pub mod set_post_status {
+    pub struct Params {
+        pub status: crate::queries::PostStatus,
+    }
+}
+
+/// The crate's enum for a Postgres enum type, its variants filled in from the database.
+#[reylo::reflect("public.mood")]
+#[derive(Debug, PartialEq)]
+pub enum Mood {}
+
+/// The crate's enum for a column a CHECK lists values for: the database says it is a column.
+#[reylo::reflect("posts.status")]
+#[derive(Debug, PartialEq)]
+pub enum Publication {}
+
+/// The crate's own struct as the whole row: the mood cast to the crate's enum.
+#[derive(Debug)]
+pub struct UserMood {
+    pub id: i32,
+    pub mood: Option<Mood>,
+}
+
+#[reylo::query("select id, mood from users order by id")]
+pub mod user_moods {
+    pub use crate::queries::UserMood as Row;
+}
+
 // A trait of the crate's own on a generated row, from outside its module.
 impl std::fmt::Display for get_user::Row {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

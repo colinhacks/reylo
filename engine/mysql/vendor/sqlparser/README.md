@@ -6,6 +6,8 @@ The manifest leaves out the crate's development dependencies, its optional depen
 
 ## What this copy changes
 
+It publishes to crates.io as `reylo-sqlparser`, whose library is still `sqlparser`, so that the MySQL engine builds from crates.io, and its `build.rs` hands the hash of its sources to the engine's fingerprint as `SOURCE_HASH`.
+
 The engine reads a query, INSERT (or REPLACE), UPDATE or DELETE, and parses nothing else, and its only dialect is MySQL's. The copy is cut to that, which takes the MySQL engine's artifact from 2.67 to 1.69 MB with every analysis unchanged. Each file it changes says so under its license header.
 
 - `Statement` keeps the variants `Query`, `Insert`, `Update` and `Delete`, and is `#[non_exhaustive]`. Every match arm, parse function, conversion and dialect hook that named another variant is gone, and so is what only they used: through `SetExpr`, which can hold a `Statement`, every DDL type was reachable from a query, with its printing, cloning, comparing and dropping.

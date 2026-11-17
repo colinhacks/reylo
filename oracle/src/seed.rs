@@ -510,6 +510,28 @@ fn refuses_null(e: &tokio_postgres::Error) -> bool {
     matches!(e.code(), Some(c) if *c == SqlState::NOT_NULL_VIOLATION || *c == SqlState::CHECK_VIOLATION)
 }
 
+/// Each user table's rows written and scans begun in the current transaction, by its name
+/// qualified by its schema as capabilities name it (each part bare where it is lowercase letters,
+/// digits and underscores not starting with a digit, else in double quotes: `public."a.b"`), as
+/// `pg_stat_xact_user_tables` counts them: a run's own are the counts after it less those before.
+async fn table_activity(client: &Client) -> Result<HashMap<String, (i64, i64)>, String> {
+    let ident = |part: &str| format!("(case when {part}::text ~ '^[a-z_][a-z0-9_]*$' then {part}::text else '\"' || replace({part}::text, '\"', '\"\"') || '\"' end)");
+    let messages = client
+        .simple_query(&format!("select {} || '.' || {}, n_tup_ins + n_tup_upd + n_tup_del, coalesce(seq_scan, 0) + coalesce(idx_scan, 0) from pg_catalog.pg_stat_xact_user_tables", ident("schemaname"), ident("relname")))
+        .await
+        .map_err(|e| message(&e))?;
+    Ok(messages
+        .iter()
+        .filter_map(|m| match m {
+            tokio_postgres::SimpleQueryMessage::Row(r) => {
+                let number = |i: usize| r.get(i).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+                Some((r.get(0)?.to_string(), (number(1), number(2))))
+            }
+            _ => None,
+        })
+        .collect())
+}
+
 fn message(e: &tokio_postgres::Error) -> String {
     e.as_db_error().map(|d| format!("{} ({})", d.message(), d.code().code())).unwrap_or_else(|| e.to_string())
 }
@@ -575,11 +597,15 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                 } else {
                     None
                 };
+                // Where the capabilities name every table, each run is held to them: a table it
+                // writes rows of is one they say it writes, and a table it scans one they name.
+                let named = analysis["capabilities"]["tables"].as_object().cloned();
                 for values in assignments(&bound.pools) {
                     let text = text_of(&values);
                     // The savepoint goes first on its own: a statement that does not parse fails
                     // the whole query text it is sent in, a savepoint written before it included.
                     client.batch_execute("SAVEPOINT q").await.map_err(|e| message(&e))?;
+                    let before = if named.is_some() { table_activity(client).await? } else { HashMap::new() };
                     let messages = match client.simple_query(&text).await {
                         Ok(m) => m,
                         Err(e) => {
@@ -639,6 +665,18 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                             continue;
                         }
                     };
+                    if let Some(named) = &named {
+                        let after = table_activity(client).await?;
+                        for (table, &(written, scanned)) in &after {
+                            let (was_written, was_scanned) = before.get(table).copied().unwrap_or((0, 0));
+                            let access = named.get(table).and_then(Value::as_str);
+                            if written > was_written && access != Some("write") {
+                                problems.push(format!("{file}: capabilities say {} of {table}, and the run wrote {} of its rows with ({})", access.unwrap_or("nothing"), written - was_written, values.join(", ")));
+                            } else if scanned > was_scanned && access.is_none() {
+                                problems.push(format!("{file}: capabilities name no {table}, and the run scanned it with ({})", values.join(", ")));
+                            }
+                        }
+                    }
                     client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
                     tally.ran += 1;
                     let rows: Vec<&tokio_postgres::SimpleQueryRow> = messages.iter().filter_map(|m| match m {

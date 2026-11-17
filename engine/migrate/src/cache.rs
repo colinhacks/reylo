@@ -18,7 +18,9 @@
 //! text reads the session's sequence or random state, no shadow starts from a copy. `REYLO_NO_CACHE=1`
 //! turns it off.
 
-use crate::db::{literal, pg_close, pg_error, pg_rows, random_name, with_database, Db, Server, Shadow};
+use crate::db::{literal, random_name, with_database, Db, Server, Shadow};
+#[cfg(feature = "cli")]
+use crate::db::{pg_close, pg_error, pg_rows};
 use crate::{Dialect, Error};
 use regex::Regex;
 use std::cell::Cell;
@@ -161,11 +163,15 @@ fn code_digest(source: &str) -> String {
 
 /// This build's code, as far as it decides what a replay ends in or what the catalog reads: the
 /// version, and the sources that make shadows, run their steps, connect to their servers and read
-/// their catalogs. A development build edited between two runs keys its caches anew.
+/// their catalogs, the last two the native engine's (its `SOURCE_HASH`). Each is this crate's own,
+/// so that a build from its package keys its caches as one in the repository does. A development
+/// build edited between two runs keys its caches anew.
+#[cfg(feature = "cli")]
 static CODE: LazyLock<Hash> = LazyLock::new(|| {
     let mut h = Sha256::new();
     for source in [
-        include_str!("../../../Cargo.toml"),
+        env!("CARGO_PKG_VERSION"),
+        reylo_engine_native::SOURCE_HASH,
         include_str!("../Cargo.toml"),
         include_str!("lib.rs"),
         include_str!("cache.rs"),
@@ -174,8 +180,6 @@ static CODE: LazyLock<Hash> = LazyLock::new(|| {
         include_str!("db.rs"),
         include_str!("sql.rs"),
         include_str!("catalog.rs"),
-        include_str!("../../native/src/postgres.rs"),
-        include_str!("../../native/src/mysql.rs"),
     ] {
         h.part(source.as_bytes());
     }
@@ -236,6 +240,7 @@ static SESSION_STATE: LazyLock<[Regex; 3]> = LazyLock::new(|| {
     ]
 });
 
+#[cfg(feature = "cli")]
 pub(crate) struct Cache {
     d: Dialect,
     base: Hash,
@@ -254,6 +259,7 @@ fn now_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
 
+#[cfg(feature = "cli")]
 impl Cache {
     /// The cache for shadows made on `server` for the target at `url`, or None where it is off or
     /// what decides a replay cannot all be read. `texts` are every step's SQL the run may replay.
@@ -461,6 +467,7 @@ impl Cache {
 }
 
 /// Everything about the server a replay's outcome turns on, beside the steps.
+#[cfg(feature = "cli")]
 async fn server_state(server: &mut Server) -> Result<String, Error> {
     match server {
         Server::Postgres { admin, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, schema_grants, .. } => {
@@ -574,6 +581,7 @@ pub(crate) async fn snapshot(db: &mut Db) -> Result<String, Error> {
 }
 
 /// Copies the main database of `from` over that of `to`, page by page, as SQLite's backup API does.
+#[cfg(feature = "cli")]
 fn sqlite_backup(from: &rusqlite::Connection, to: &rusqlite::Connection) -> Result<(), Error> {
     use rusqlite::ffi;
     // SAFETY: both handles are open connections that outlive the backup, which is finished before
@@ -668,19 +676,23 @@ fn parse_meta(text: Option<&str>) -> Option<BTreeMap<String, u128>> {
     Some(v["targets"].as_object()?.iter().filter_map(|(k, at)| Some((k.clone(), at.as_u64()? as u128))).collect())
 }
 
+#[cfg(feature = "cli")]
 async fn try_lock(admin: &tokio_postgres::Client, name: &str, which: u8) -> bool {
     pg_rows(admin, &format!("select pg_try_advisory_lock(hashtextextended('{name}', {which})) as ok")).await.ok().and_then(|r| r.first().map(|r| r.flag("ok"))).unwrap_or(false)
 }
 
+#[cfg(feature = "cli")]
 async fn unlock(admin: &tokio_postgres::Client, name: &str, which: u8) {
     let _ = admin.batch_execute(&format!("select pg_advisory_unlock(hashtextextended('{name}', {which}))")).await;
 }
 
+#[cfg(feature = "cli")]
 async fn caches(admin: &tokio_postgres::Client) -> Result<Vec<(String, Option<BTreeMap<String, u128>>)>, Error> {
     let rows = pg_rows(admin, &format!(r"select datname, shobj_description(oid, 'pg_database') as meta from pg_database where datname like '{}%'", CACHE_PREFIX.replace('_', r"\_"))).await?;
     Ok(rows.iter().map(|r| (r.text("datname").to_string(), parse_meta(r.get("meta")))).collect())
 }
 
+#[cfg(feature = "cli")]
 async fn drop_cache(admin: &tokio_postgres::Client, name: &str) -> bool {
     if !try_lock(admin, name, 0).await {
         return false;
@@ -690,6 +702,7 @@ async fn drop_cache(admin: &tokio_postgres::Client, name: &str) -> bool {
     dropped
 }
 
+#[cfg(feature = "cli")]
 async fn write_meta(admin: &tokio_postgres::Client, name: &str, targets: &BTreeMap<String, u128>) {
     if try_lock(admin, name, 1).await {
         let list: Vec<(String, u128)> = targets.iter().map(|(k, v)| (k.clone(), *v)).collect();
@@ -700,6 +713,7 @@ async fn write_meta(admin: &tokio_postgres::Client, name: &str, targets: &BTreeM
 
 /// Marks `used` as used by `target` now, then keeps the target's newest `KEEP` and the server's
 /// newest `KEEP_ON_SERVER`; a cache no target keeps is dropped.
+#[cfg(feature = "cli")]
 async fn evict(admin: &tokio_postgres::Client, target: &str, used: &[String]) -> Result<(), Error> {
     let now = now_ms();
     let mut all = caches(admin).await?;
@@ -732,6 +746,7 @@ async fn evict(admin: &tokio_postgres::Client, target: &str, used: &[String]) ->
 
 /// Drops the caches no run will use: one whose comment is missing (a run cut off between making it
 /// and marking it) or that no target used for a week.
+#[cfg(feature = "cli")]
 pub(crate) async fn sweep(server: &mut Server) -> Result<(), Error> {
     let Server::Postgres { admin, .. } = server else { return Ok(()) };
     let now = now_ms();
@@ -749,6 +764,7 @@ pub(crate) async fn sweep(server: &mut Server) -> Result<(), Error> {
 
 /// Forgets `url`'s target: its marks go, and every cache no other target keeps is dropped. For a
 /// test, or a target that is dropped.
+#[cfg(feature = "cli")]
 pub async fn forget(url: &str) -> Result<(), Error> {
     if Dialect::of_url(url)? != Dialect::Postgres {
         return Ok(());

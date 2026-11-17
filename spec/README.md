@@ -64,6 +64,7 @@ Where vendors' tables for a name differ, it stands for the widest of them, so a 
      - the `null` kind stands only in a nullable slot;
      - a struct with `extra` has a field, since one with none is a map;
      - a tuple has an element or an optional one;
+     - a table of capabilities names each table it lists;
      - a table's columns are never optional, and `unique` and `order` appear only where its cardinality is `many`, each naming its columns, and `order` each once;
      - a UUID's versions are 1 to 8, in order, each once;
      - a field's `default` appears only beside `optional`;

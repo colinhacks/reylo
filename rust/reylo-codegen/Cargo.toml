@@ -1,27 +1,33 @@
 [package]
 name = "reylo-codegen"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "A statement's analysis as the Rust items of its module, Query, Row and run on sqlx: what #[reylo::query] expands to, and what reylo generate rust-sqlx and reylo-build write to files."
 
 [features]
-default = ["generate"]
-# A statement's analysis, read from the project's database or from reylo/.cache/.
-analyze = ["dep:reylo-engine-native", "dep:reylo-engine", "dep:rusqlite", "dep:sha2", "dep:tokio", "dep:tokio-postgres", "dep:mysql_async"]
+default = ["generate", "postgres", "mysql", "sqlite"]
+# A statement's analysis, read from the project's database or from reylo/.cache/: the project file and
+# the cache. Each database's engine and client come with the feature of its name.
+analyze = ["dep:reylo-engine-native", "dep:reylo-engine", "dep:sha2", "dep:tokio"]
+postgres = ["analyze", "reylo-engine/tokio-postgres", "reylo-engine-native/postgres", "dep:tokio-postgres"]
+mysql = ["analyze", "reylo-engine/mysql_async", "reylo-engine-native/mysql", "dep:mysql_async"]
+sqlite = ["analyze", "reylo-engine/rusqlite", "dep:rusqlite"]
 # The modules written to files: the inputs found, the items formatted as Rust source.
 generate = ["analyze", "dep:glob", "dep:prettyplease"]
 
 [dependencies]
 # The type descriptor's kinds, and the analysis's columns and parameters.
-reylo-engine-core = { path = "../../engine/core" }
+reylo-engine-core.workspace = true
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "visit-mut"] }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 # The connection the engine's own program opens: the URL read as the loader reads it, TLS included.
-reylo-engine-native = { path = "../../engine/native", default-features = false, features = ["postgres", "mysql"], optional = true }
-reylo-engine = { path = "../../engine/facade", features = ["tokio-postgres", "rusqlite", "mysql_async"], optional = true }
+reylo-engine-native = { workspace = true, optional = true }
+reylo-engine = { workspace = true, optional = true }
 rusqlite = { version = "0.39", features = ["bundled"], optional = true }
 sha2 = { version = "0.10", optional = true }
 # The same features as the oracle's, so the workspace builds one tokio.

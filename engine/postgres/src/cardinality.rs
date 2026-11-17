@@ -251,17 +251,13 @@ fn with_names(s: &SelectStmt) -> Vec<String> {
     s.with_clause.iter().flat_map(|w| w.ctes.iter().filter_map(cte_name).cloned()).collect()
 }
 
-/// The oid of the relation named in the text column `$name`, as the server resolves the name the
-/// statement writes: through the search path when unqualified, and each part quoted, so a name
-/// that needs quotes (`"Users"`) resolves as written.
+/// The oid of the relation named in the text column `$name`, a name as
+/// [`crate::analyze::relation_name`] writes it, which the server resolves as it does the name the
+/// statement writes: through the search path when unqualified, and each quoted part as written,
+/// so `"Users"` keeps its case and `"a.b"` its dot.
 macro_rules! relation_named {
     ($name:literal) => {
-        concat!(
-            "pg_catalog.to_regclass(CASE WHEN pg_catalog.strpos(", $name, ", '.'::pg_catalog.text) OPERATOR(pg_catalog.>) 0 \
-      THEN ((pg_catalog.quote_ident(pg_catalog.split_part(", $name, ", '.'::pg_catalog.text, 1)) OPERATOR(pg_catalog.||) '.'::pg_catalog.text) \
-        OPERATOR(pg_catalog.||) pg_catalog.quote_ident(pg_catalog.split_part(", $name, ", '.'::pg_catalog.text, 2))) \
-      ELSE pg_catalog.quote_ident(", $name, ") END)::pg_catalog.oid"
-        )
+        concat!("pg_catalog.to_regclass(", $name, ")::pg_catalog.oid")
     };
 }
 
@@ -1696,11 +1692,7 @@ impl<'a> From<'a> {
                 let relname = rv.get("relname").and_then(Value::as_str).unwrap_or_default().to_string();
                 let schema = rv.get("schemaname").and_then(Value::as_str).unwrap_or_default();
                 let renamed = rv.get("alias").and_then(|a| a.get("colnames")).and_then(Value::as_array).is_some_and(|c| !c.is_empty());
-                let relation = if schema.is_empty() {
-                    (!ctes.contains(&relname) && !own.contains(&relname)).then(|| relname.clone())
-                } else {
-                    Some(format!("{schema}.{relname}"))
-                };
+                let relation = (!schema.is_empty() || (!ctes.contains(&relname) && !own.contains(&relname))).then(|| crate::analyze::relation_name(schema, &relname));
                 out.push((alias(rv).unwrap_or(relname), relation.filter(|_| !renamed)));
             } else if let Some(j) = node.get("JoinExpr") {
                 for side in ["larg", "rarg"] {
@@ -2060,7 +2052,7 @@ fn aliases_here(sql: &str) -> std::collections::HashMap<String, String> {
                     let relname = rv.get("relname").and_then(Value::as_str).unwrap_or_default().to_string();
                     let schema = rv.get("schemaname").and_then(Value::as_str).unwrap_or_default();
                     let alias = rv.get("alias").and_then(|a| a.get("aliasname")).and_then(Value::as_str).map_or_else(|| relname.clone(), String::from);
-                    let relation = if schema.is_empty() { relname } else { format!("{schema}.{relname}") };
+                    let relation = crate::analyze::relation_name(schema, &relname);
                     out.entry(alias).and_modify(|known| {
                         if known.as_deref() != Some(relation.as_str()) {
                             *known = None;
@@ -3353,11 +3345,7 @@ fn cte_name(cte: &protobuf::Node) -> Option<&String> {
 /// The name a relation goes by in the catalog the proof reads: schema-qualified when the
 /// statement qualifies it, so `archive.users` never takes the keys of the `users` on the path.
 fn catalog_name(rv: &protobuf::RangeVar) -> String {
-    if rv.schemaname.is_empty() {
-        rv.relname.clone()
-    } else {
-        format!("{}.{}", rv.schemaname, rv.relname)
-    }
+    crate::analyze::relation_name(&rv.schemaname, &rv.relname)
 }
 
 /// Whether `column = value` restricts `relation` the way its unique index does, so the key it
@@ -3465,10 +3453,11 @@ fn value_type(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&proto
 /// integers are the wider integer (`int2 + int4` is `int4`, either side `int8` is `int8`), an
 /// untyped side taking the other's type. Only a name the trust check read and no user or
 /// extension defined, and only where no function of theirs converts a built-in type implicitly,
-/// which a built-in's candidate may run on its operand.
+/// which a built-in's candidate may run on its operand. The operands here are of built-in types or
+/// untyped, so a cast of theirs from a type of theirs reaches none of them.
 fn built_in_result(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&protobuf::Node) -> Option<u32>) -> Option<u32> {
     const INTEGERS: &[u32] = &[oid::INT2, oid::INT4, oid::INT8];
-    let built_in = |name: &str| !catalog.user_operators.contains(name) && catalog.overloads.as_ref().is_some_and(|o| !o.0.casts_implicitly());
+    let built_in = |name: &str| !catalog.user_operators.contains(name) && catalog.overloads.as_ref().is_some_and(|o| !o.0.casts_built_in_implicitly());
     match value.node.as_ref()? {
         NodeEnum::FuncCall(f) => {
             let name = infer::builtin_name(&f.funcname)?;

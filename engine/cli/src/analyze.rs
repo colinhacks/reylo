@@ -208,6 +208,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
                 comment: None,
                 params: Vec::new(),
                 result: ResultRows::new(Cardinality::Many, Vec::new(), Vec::new(), Vec::new()),
+                capabilities: None,
                 diagnostics: vec![Diagnostic { message, start: 0, end: utf16_offset(&input.sql, input.sql.len()), code: None }],
             },
         };

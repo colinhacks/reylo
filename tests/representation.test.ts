@@ -10,7 +10,7 @@ import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { renderType } from "../src/render.ts";
 import { defineQuery } from "../src/index.ts";
-import { DRIVERS, PG, MYSQL, INDEX, sqliteWasmCopy } from "./helpers.ts";
+import { DRIVERS, PG, MYSQL, INDEX, driver, sqliteWasmCopy } from "./helpers.ts";
 
 // Reylo's one representation per SQL type (src/values.ts), on the real drivers, each set up by the
 // app against it: the module a build step writes, run on each, must give the same rows, and each
@@ -86,7 +86,7 @@ const PG_ROWS = [
 
 test("Postgres: one row on every driver, however the app set its driver up; the app's own queries keep its settings", { skip: pgLive, timeout: 120_000 }, async () => {
   const pg = require("pg");
-  const postgres = require("postgres");
+  const postgres = driver("postgres");
   const pgPromise = require("pg-promise");
   const { PGlite } = require("@electric-sql/pglite");
   const admin = new pg.Client(PG);

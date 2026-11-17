@@ -15,10 +15,12 @@ use std::path::{Path, PathBuf};
 fn main() {
     reylo_engine_build::emit("REYLO_ENGINE_POSTGRES_HASH", &["build.rs", "src", "csrc", "vendor"]);
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let crate_dir = root.join(".patched/pg_query");
+    // The parser crate's directory, which its `links` key hands to this script: in this repository
+    // `.patched/pg_query`, from crates.io the package itself.
+    let crate_dir = PathBuf::from(env::var("DEP_REYLO_PG_QUERY_ROOT").expect("reylo-pg-query names its directory (DEP_REYLO_PG_QUERY_ROOT)"));
     let lib = crate_dir.join("libpg_query");
     if !lib.exists() {
-        panic!("{} is missing: run `engine/build.sh --prepare`", lib.display());
+        panic!("{} is missing: in Reylo's repository, run `engine/build.sh --prepare`", lib.display());
     }
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let defs = Defs::read(&lib, &crate_dir.join("src/protobuf.rs"));
