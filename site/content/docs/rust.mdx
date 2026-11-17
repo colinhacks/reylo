@@ -276,7 +276,7 @@ let row = author_json::Query { id: 1 }.run(&pool).await?.expect("ada");
 let author = row.author.0;
 ```
 
-A JSON column a JSON Schema `CHECK` holds is typed by what the schema admits, in sqlx's `Json` too: an object is a struct of its properties, with an `Option` for each one the schema doesn't require. Where the schema admits keys it doesn't name, the struct keeps them in `additional_properties`, so nothing is lost when you write a value back.
+A JSON column a JSON Schema `CHECK` holds is typed by what the schema admits, in sqlx's `Json` too: an object is a struct of its properties, with an `Option` for each one the schema doesn't require. Where the schema admits keys it doesn't name, the struct keeps them in `additional_properties`, so nothing is lost when you write a value back. A value the schema admits that its Rust type can't hold, such as an integer written as `1.0` or one beyond the range of `i64`, fails `.run()` with an error, never reading as another value.
 
 Any other JSON is a `serde_json::Value`, and so is JSON no one Rust type holds, such as a union of a string and a number. A decimal inside JSON the statement builds fails to compile, since no Rust number reads it exactly: cast it to text inside the JSON.
 
