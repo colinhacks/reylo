@@ -44,13 +44,13 @@ export function HeroActions({ agentPrompt }: { agentPrompt?: string }) {
     <div className="hero-actions not-prose">
       <p className="hero-badges">
         <a href="https://opensource.org/licenses/MIT">
-          <img src="https://img.shields.io/github/license/colinhacks/reylo" alt="License: MIT" height={20} />
+          <img src="https://img.shields.io/github/license/reylosql/reylo" alt="License: MIT" height={20} />
         </a>
         <a href="https://www.npmjs.com/package/reylo">
           <img src="https://img.shields.io/npm/v/reylo" alt="npm version" height={20} />
         </a>
         <a href={githubUrl}>
-          <img src="https://img.shields.io/github/stars/colinhacks/reylo" alt="GitHub stars" height={20} />
+          <img src="https://img.shields.io/github/stars/reylosql/reylo" alt="GitHub stars" height={20} />
         </a>
       </p>
       <CopyAgentPrompt text={agentPrompt} />

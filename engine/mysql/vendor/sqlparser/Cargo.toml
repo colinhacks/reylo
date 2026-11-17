@@ -31,7 +31,7 @@ keywords = [
     "parser",
 ]
 license = "Apache-2.0"
-repository = "https://github.com/colinhacks/reylo"
+repository = "https://github.com/reylosql/reylo"
 
 [features]
 # Upstream's features, kept as names so the `cfg`s in the sources stay known. The engine builds

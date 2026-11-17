@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the reylo command on macOS or Linux, from the binaries a GitHub release of colinhacks/reylo
+# Installs the reylo command on macOS or Linux, from the binaries a GitHub release of reylosql/reylo
 # carries, each checked against the release's SHA256SUMS before it is installed.
 #
 #   curl -fsSL https://reylo.dev/install.sh | sh
@@ -13,7 +13,7 @@ set -eu
 
 # The whole script is one function, called on its last line, so that a download cut short runs nothing.
 main() {
-  repo=colinhacks/reylo
+  repo=reylosql/reylo
   dir="${REYLO_INSTALL_DIR:-$HOME/.local/bin}"
   version="${REYLO_VERSION:-}"
   version="${version#v}"

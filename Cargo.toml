@@ -43,7 +43,7 @@ members = [
 [workspace.package]
 version = "0.8.0-beta.0"
 license = "MIT"
-repository = "https://github.com/colinhacks/reylo"
+repository = "https://github.com/reylosql/reylo"
 homepage = "https://reylo.dev"
 
 # The crates of this workspace, each by path and by the version crates.io knows it at. The two copies

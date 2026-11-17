@@ -2,7 +2,7 @@
 
 name: Release on npm
 on:
-  # Dispatch only, and deliberately so, as zod and nub release. A `workflow_dispatch` needs a GitHub session or token carrying write access; a stolen git push credential carries neither, so it cannot start a release by landing a commit or cutting a tag. That is the shape of the 2026-09-21 nubjs/nub compromise, where a stolen push credential cut a tag and 18 packages published unattended. A version bump on main is therefore inert: a maintainer runs `gh workflow run release.yml -R colinhacks/reylo -f notes="$(cat notes.md)"`, approves the npm environment, and then approves each staged version on npm with 2FA.
+  # Dispatch only, and deliberately so, as zod and nub release. A `workflow_dispatch` needs a GitHub session or token carrying write access; a stolen git push credential carries neither, so it cannot start a release by landing a commit or cutting a tag. That is the shape of the 2026-09-21 nubjs/nub compromise, where a stolen push credential cut a tag and 18 packages published unattended. A version bump on main is therefore inert: a maintainer runs `gh workflow run release.yml -R reylosql/reylo -f notes="$(cat notes.md)"`, approves the npm environment, and then approves each staged version on npm with 2FA.
   #
   # Everything the release needs is given at dispatch: the commit is the one dispatched, the version comes from its `package.json` (every package moves at reylo's version, which `scripts/build.ts` enforces), and the release notes are the required `notes` input. A run's inputs are fixed for its whole life, so the notes survive the approval wait and any re-run of a job.
   #
@@ -10,7 +10,7 @@ on:
   #
   # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after a maintainer approved the run.
   #
-  # This runs in the public repository, colinhacks/reylo. npm's trusted publishers name that repository, this file and the `npm` environment, and provenance needs a public source repository.
+  # This runs in the public repository, reylosql/reylo. npm's trusted publishers name that repository, this file and the `npm` environment, and provenance needs a public source repository.
   workflow_dispatch:
     inputs:
       notes:
@@ -40,7 +40,7 @@ jobs:
         env:
           PRIVATE: ${{ github.event.repository.private }}
         run: |
-          [ "$PRIVATE" = "false" ] || { echo "::error::release.yml runs in the public repository, colinhacks/reylo; $GITHUB_REPOSITORY is private"; exit 1; }
+          [ "$PRIVATE" = "false" ] || { echo "::error::release.yml runs in the public repository, reylosql/reylo; $GITHUB_REPOSITORY is private"; exit 1; }
 
       - name: Refuse a release without notes
         env:
@@ -205,7 +205,7 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: write
-      # the container image, ghcr.io/colinhacks/reylo
+      # the container image, ghcr.io/reylosql/reylo
       packages: write
     steps:
       # THE HUMAN GATE. The run resumes on the environment approval, which says nothing about npm, so the tag and the GitHub release wait here until the registry serves every version; nothing public ever describes a version npm did not ship. The loop also absorbs the automated review npm runs once a version is approved, which held zod 4.5.0 for 16 minutes, 4.5.3 for 25 and 4.6.0 for 116; none of those is an upper bound. If the approval comes later, re-run this job.
@@ -293,7 +293,7 @@ jobs:
             ${prerelease[@]+"${prerelease[@]}"} \
             "$RUNNER_TEMP"/assets/*
 
-      # The package managers, from the release's own assets, before reylo.dev's docs move to describe them: the Homebrew formula into reylosql/homebrew-tap and the Scoop manifest into reylosql/scoop-bucket, each with that repository's deploy key, which only this environment holds, and only when this version is the latest release; and the container image to ghcr.io/colinhacks/reylo with the job's token. Running it again publishes the same files and tags (.github/scripts/channels-publish.sh).
+      # The package managers, from the release's own assets, before reylo.dev's docs move to describe them: the Homebrew formula into reylosql/homebrew-tap and the Scoop manifest into reylosql/scoop-bucket, each with that repository's deploy key, which only this environment holds, and only when this version is the latest release; and the container image to ghcr.io/reylosql/reylo with the job's token. Running it again publishes the same files and tags (.github/scripts/channels-publish.sh).
       - name: Publish to Homebrew, Scoop and GHCR
         env:
           VERSION: ${{ needs.stage.outputs.version }}

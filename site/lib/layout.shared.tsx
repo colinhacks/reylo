@@ -1,4 +1,4 @@
-export const githubUrl = 'https://github.com/colinhacks/reylo';
+export const githubUrl = 'https://github.com/reylosql/reylo';
 
 /** The docs site's address: reylo.dev, which every other Reylo domain redirects to (wiki/docs-site.md). */
 export const siteUrl = 'https://reylo.dev';

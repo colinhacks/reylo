@@ -17,7 +17,7 @@ on:
         description: Install the binaries of the calling run, rather than a release's
         type: boolean
         default: true
-  # A release's own assets, from GitHub, as a user's install reads them: `gh workflow run channels.yml -R colinhacks/reylo -f release=v0.8.0`.
+  # A release's own assets, from GitHub, as a user's install reads them: `gh workflow run channels.yml -R reylosql/reylo -f release=v0.8.0`.
   workflow_dispatch:
     inputs:
       release:

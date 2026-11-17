@@ -15,7 +15,7 @@ version="${1:?usage: channels.sh <version> <SHA256SUMS> <out> [<base url>]}"
 sums="${2:?usage: channels.sh <version> <SHA256SUMS> <out> [<base url>]}"
 out="${3:?usage: channels.sh <version> <SHA256SUMS> <out> [<base url>]}"
 version="${version#v}"
-base="${4:-https://github.com/colinhacks/reylo/releases/download/v$version}"
+base="${4:-https://github.com/reylosql/reylo/releases/download/v$version}"
 base="${base%/}"
 
 desc="Infer types for SQL queries from the database itself"
@@ -32,7 +32,7 @@ mkdir -p "$out/Formula" "$out/bucket"
 # Homebrew: macOS and Linux, each on Apple silicon or arm64 and on Intel. Linux takes the glibc
 # build, which starts on glibc 2.28, as Homebrew's own glibc and every distribution it supports have.
 cat > "$out/Formula/reylo.rb" << EOF
-# Written by colinhacks/reylo's release workflow (.github/scripts/channels.sh) for each release.
+# Written by reylosql/reylo's release workflow (.github/scripts/channels.sh) for each release.
 class Reylo < Formula
   desc "$desc"
   homepage "https://reylo.dev"
@@ -94,11 +94,11 @@ jq -n \
       arm64: { url: $arm64, hash: $arm64sha }
     },
     bin: "reylo.exe",
-    checkver: { github: "https://github.com/colinhacks/reylo" },
+    checkver: { github: "https://github.com/reylosql/reylo" },
     autoupdate: {
       architecture: {
-        "64bit": { url: "https://github.com/colinhacks/reylo/releases/download/v$version/reylo-win32-x64.tar.gz" },
-        arm64: { url: "https://github.com/colinhacks/reylo/releases/download/v$version/reylo-win32-arm64.tar.gz" }
+        "64bit": { url: "https://github.com/reylosql/reylo/releases/download/v$version/reylo-win32-x64.tar.gz" },
+        arm64: { url: "https://github.com/reylosql/reylo/releases/download/v$version/reylo-win32-arm64.tar.gz" }
       },
       hash: { url: "$baseurl/SHA256SUMS" }
     }
