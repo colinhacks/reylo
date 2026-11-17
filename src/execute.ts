@@ -567,6 +567,14 @@ function statement(query: QueryModule, params: ParamsInput) {
   // Every MySQL and SQLite driver binds JSON text as text, which the database reads as JSON (a
   // structured parameter's is written already).
   if (query.dialect !== "postgres") bound.values = bound.values.map((v, i) => (isJsonValue(query, bound.names[i]!, v) && query.inputs?.[bound.names[i]!]?.members === undefined ? jsonText(v) : v));
+  // SQLite holds an INTEGER in 64 bits, so a BigInt outside them has no exact form there.
+  // better-sqlite3, node:sqlite, libSQL, Turso's engine and SQLite Wasm refuse one, but bun:sqlite
+  // and Bun.sql keep its low 64 bits where the statement reads numbers (2^63 was stored as -2^63,
+  // and 2^64 + 5 as 5), and sqlite3 binds any BigInt as NULL.
+  if (query.dialect === "sqlite")
+    bound.values.forEach((v, i) => {
+      if (typeof v === "bigint" && (v >= 2n ** 63n || v < -(2n ** 63n))) throw new ParameterError(`Parameter "${bound.names[i]}" is ${v}, outside the 64-bit integers SQLite holds (-2^63 to 2^63 - 1), so no SQLite driver binds it exactly.`);
+    });
   // The comment naming the file goes on last, after a structured parameter's lists are written.
   bound.text = sentText(query, bound.text);
   return bound;
