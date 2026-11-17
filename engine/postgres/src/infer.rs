@@ -578,10 +578,11 @@ impl Trust {
     }
 
     /// Whether a call of `name` is the built-in only for some operands' types: a user or an
-    /// extension defined the name, or an implicit cast between built-in types by a function of
-    /// theirs, which a built-in's candidate may run on its operand.
+    /// extension defined the name, or an implicit cast by a function of theirs into a built-in
+    /// type, from a built-in type or from one of theirs, which a built-in's candidate may run on
+    /// its operand, unless every built-in of the name takes its arguments as they are.
     pub(crate) fn checked(&self, name: &str) -> bool {
-        !self.builtin(name) || self.overloads.as_ref().is_some_and(|o| o.0.casts_implicitly())
+        !self.builtin(name) || self.overloads.as_ref().is_some_and(|o| o.0.casts_implicitly() && !o.0.passes_through(name))
     }
 
     /// Whether a call a strict claim rests on is the built-in only for some operands' types: a

@@ -1,0 +1,17 @@
+builtin_control.sql: many () -> { r: text(¬NUL), l: text(¬NUL)?, k: bool, f: text(¬NUL) }
+enum_like.sql: many () -> { v: bool? }
+enum_replace.sql: many () -> { v: text(¬NUL)? }
+insert_returning.sql: one () -> { v: varchar(≤20, ¬NUL)? }
+left_column.sql: many () -> { v: text(¬NUL)? }
+length_column.sql: many () -> { v: int4? }
+like_cast.sql: one () -> { v: bool? }
+like_column.sql: many () -> { v: bool? }
+pass_through.sql: one () -> { a: (public.boxed{ v: int4? })[]?, j: jsonb?, n: int8 }
+repeat_column.sql: many () -> { v: text(¬NUL)? }
+replace_cast.sql: one () -> { v: text(¬NUL)? }
+replace_column.sql: many () -> { v: text(¬NUL)? }
+split_part_column.sql: many () -> { v: text(¬NUL)? }
+strpos_column.sql: many () -> { v: int4? }
+substr_column.sql: many () -> { v: text(¬NUL)? }
+upper_column.sql: many () -> { v: text(¬NUL)? }
+where_predicate.sql: many () -> { g: public.tagged{ v: int4? }? }
