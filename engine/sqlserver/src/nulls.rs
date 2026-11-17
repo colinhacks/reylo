@@ -267,6 +267,21 @@ fn never_null_by(e: &Expr, g: Grouping, column: &mut dyn FnMut(&Expr) -> bool) -
             otherwise && results.iter().all(|r| *r)
         }
         Expr::Function(f) => function(f, g, column),
+        Expr::Subquery(q) => one_count(q),
+        _ => false,
+    }
+}
+
+/// Whether a scalar subquery is a count over its rows with no `GROUP BY`, `HAVING`, `TOP`,
+/// `OFFSET` or `FETCH`: it returns exactly one row, and a count is never NULL.
+fn one_count(q: &Query) -> bool {
+    let SetExpr::Select(s) = q.body.as_ref() else { return false };
+    let grouped = !matches!(&s.group_by, GroupByExpr::Expressions(e, m) if e.is_empty() && m.is_empty());
+    if grouped || s.having.is_some() || s.top.is_some() || q.limit_clause.is_some() || q.fetch.is_some() || q.for_clause.is_some() || s.projection.len() != 1 {
+        return false;
+    }
+    match &s.projection[0] {
+        SelectItem::UnnamedExpr(Expr::Function(f)) | SelectItem::ExprWithAlias { expr: Expr::Function(f), .. } => matches!(name_of(f).as_str(), "count" | "count_big") && f.over.is_none() && f.filter.is_none(),
         _ => false,
     }
 }
