@@ -14,7 +14,9 @@ Reylo runs queries on Turso. Turso Cloud runs libSQL, a fork of SQLite, so every
 | Turso Cloud | `@libsql/client`, with `.run()` |
 | Turso's own engine | `@tursodatabase/database`, with `.run()`, and `.runSync()` on its compat `Database` |
 | SQLite versions | Reylo's 3.53, and the SQLite of each driver your `package.json` lists: 3.45.1 for `@libsql/client` |
+<Rust>
 | Rust | Types against the same local file; sqlx has no libSQL client, so its queries can't run on Turso Cloud |
+</Rust>
 
 <Details summary="View the schema behind the examples" id="schema">
 
