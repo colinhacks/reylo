@@ -6,7 +6,7 @@ on:
   #
   # Everything the release needs is given at dispatch: the commit is the one dispatched, the version comes from its `package.json` (every package moves at reylo's version, which `scripts/build.ts` enforces), and the release notes are the required `notes` input. A run's inputs are fixed for its whole life, so the notes survive the approval wait and any re-run of a job.
   #
-  # One run builds the `reylo` binary on each platform of npm/platforms.json (`build`, a job per platform on a runner of its architecture), installs each through every channel that does without npm (`channels`, channels.yml), then two release jobs. `stage` puts the nine versions in npm's staged queue: the eight platform packages `@reylosql/engine-<platform>`, each holding its platform's binary, then reylo, which names them as optional dependencies at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. The GitHub release carries the same eight binaries as assets, and the docs site's playground engine (`playground`), which no commit holds; `finish` then publishes the Homebrew formula, the Scoop manifest and the container image from those assets. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
+  # One run builds the `reylo` binary on each platform of npm/platforms.json (`build`, a job per platform on a runner of its architecture), and installs each through every channel that does without npm (binaries.yml calls channels.yml), then two release jobs. `stage` puts the nine versions in npm's staged queue: the eight platform packages `@reylosql/engine-<platform>`, each holding its platform's binary, then reylo, which names them as optional dependencies at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. The GitHub release carries the same eight binaries as assets, and the docs site's playground engine (`playground`), which no commit holds; `finish` then publishes the Homebrew formula, the Scoop manifest and the container image from those assets. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
   #
   # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after a maintainer approved the run.
   #
@@ -87,15 +87,8 @@ jobs:
           path: ${{ runner.temp }}/playground/reylo-playground-postgres.tar.gz
           if-no-files-found: error
 
-  # Every way to install the reylo command without npm (install.sh and install.ps1, the Homebrew formula, the Scoop manifest, the container image), installed from the binaries `build` made, served as the release will carry them, and run on each platform. `finish` publishes the formula, the manifest and the image once the release is out, so a release whose installers fail stages nothing.
-  channels:
-    needs: build
-    uses: ./.github/workflows/channels.yml
-    permissions:
-      contents: read
-
   stage:
-    needs: [preflight, test, build, playground, channels]
+    needs: [preflight, test, build, playground]
     runs-on: ubuntu-latest
     name: Stage on npm
     # a required reviewer approves every run, and the environment only deploys main; npm's trusted publishers are bound to it so no other branch or workflow can even stage. The environment is the first of two gates — the second is the 2FA approval of each staged version, which this job cannot perform.

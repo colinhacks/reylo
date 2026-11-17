@@ -8,9 +8,9 @@ name: channels
 # from a release's SHA256SUMS, and the container image, .github/docker/Dockerfile. release.yml
 # publishes the formula, the manifest and the image once a release is out.
 on:
-  # release.yml, before it stages anything: the binaries this run built (binaries.yml's `engine-<platform>`
-  # artifacts), packed as the release will carry them and served on each runner's 127.0.0.1, so a
-  # release whose installers fail stages nothing.
+  # binaries.yml, on a pull request that changes the binary and within each release, before anything
+  # is staged: the binaries that run built (its `engine-<platform>` artifacts), packed as the release
+  # will carry them and served on each runner's 127.0.0.1.
   workflow_call:
     inputs:
       artifacts:
@@ -40,7 +40,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: channels-${{ github.event.pull_request.number || github.run_id }}
+  # A run's own binaries and a release's assets are separate checks of the same pull request, so neither cancels the other.
+  group: channels-${{ inputs.artifacts && 'run' || 'release' }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
