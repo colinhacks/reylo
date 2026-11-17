@@ -10,8 +10,10 @@
 //! - the result always comes where its statement is at the batch's top level, after no `return`;
 //!   elsewhere, in a branch or a loop, it may not come, so a row count of one is at most one;
 //! - its rules read it where no `set` before it turns off an option they rest on (`ansi_warnings`,
-//!   `arithabort`, `concat_null_yields_null`, `ansi_nulls`), with every `declare` before it, which
-//!   the probe of its columns needs ([`crate::nulls`]).
+//!   `arithabort`, `concat_null_yields_null`, `ansi_nulls`), and no statement the engine does not
+//!   follow comes before it, as a `use` that moves the batch to another database, whose tables the
+//!   rules would not be reading; with every `declare` before it, which the probe of its columns
+//!   needs ([`crate::nulls`]).
 //!
 //! A batch the parser does not read, or one with a statement the engine does not follow, is typed by
 //! the server's describe alone.
@@ -181,7 +183,7 @@ pub struct Found<'a> {
     /// Whether the result comes whenever the batch runs.
     pub sure: bool,
     /// Whether the rules read the statement: a `select` or a write, after no `set` that turns off an
-    /// option they rest on.
+    /// option they rest on and no statement the engine does not follow.
     pub narrows: bool,
     /// The batch's `declare`s before the statement, each with its `;`, which a probe of its
     /// columns starts with.
@@ -307,7 +309,7 @@ pub fn flatten(statements: &[Statement]) -> Vec<&Statement> {
 }
 
 fn found<'a>(statement: &'a Statement, conditional: bool, readable: bool, w: &mut Walk<'a>) {
-    w.results.push(Found { statement, sure: !conditional && !w.returned, narrows: readable && !w.options_off, prelude: w.prelude.clone(), variables: w.variables.clone() });
+    w.results.push(Found { statement, sure: !conditional && !w.returned, narrows: readable && !w.options_off && !w.unknown, prelude: w.prelude.clone(), variables: w.variables.clone() });
 }
 
 fn block_statements(c: &ConditionalStatements) -> &[Statement] {
@@ -362,6 +364,9 @@ mod tests {
         assert_eq!(results("if @f = 1 return; select id from orders")[0].1, false);
         // An option the rules rest on, turned off, stops them reading the statement.
         assert_eq!(results("set ansi_warnings off; select n + 1 as m from t")[0].2, false);
+        // So does a statement the engine does not follow, as a `use` of another database.
+        assert_eq!(results("use otherdb; select n + 1 as m from dbo.t where id = @id")[0].2, false);
+        assert_eq!(results("select n + 1 as m from dbo.t where id = @id; use otherdb")[0].2, true);
         // A write with an output, and a procedure.
         assert_eq!(results("update t set a = 1 output inserted.a where id = @p_1").len(), 1);
         assert_eq!(results("exec dbo.find @id = @p_1")[0].2, false);

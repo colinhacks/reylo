@@ -149,7 +149,10 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     }
     let probe = plan.probe.as_ref().map(|probe| host.query(FIRST_RESULT_SET, vec![json!(probe), declared.clone()], Scope::Statement));
     let keys = parsed.map(|s| crate::cardinality::keys(s, host));
-    let written: Vec<_> = all.iter().map(|s| crate::params::columns(s, host)).collect();
+    // A written table's columns are read where the engine follows every statement: one it does not,
+    // as a `use`, may move the batch to another database's tables.
+    let followed = read.as_ref().is_some_and(|r| r.understood);
+    let written: Vec<_> = if followed { all.iter().map(|s| crate::params::columns(s, host)).collect() } else { Vec::new() };
     let described = described?;
     let probe = match probe {
         Some(p) => Some(p?),
@@ -185,7 +188,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         .enumerate()
         .map(|(i, c)| Column::new(c.name.clone(), crate::types::of(&c.ty), c.nullable && !never_null.get(i).copied().unwrap_or(false)))
         .collect();
-    let nullable: std::collections::HashSet<String> = all.iter().zip(&columns_written).flat_map(|(s, w)| crate::params::nullable(s, &rewritten.order, Some(w))).collect();
+    let nullable: std::collections::HashSet<String> = all.iter().enumerate().flat_map(|(i, s)| crate::params::nullable(s, &rewritten.order, columns_written.get(i))).collect();
     let params: Vec<Param> = lexed
         .params
         .iter()
@@ -210,7 +213,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
             }
         }
         _ if columns.is_empty() => (Cardinality::None, None),
-        (None, Some(_), _) => (Cardinality::Many, Some("the rows come from a procedure, or from a statement after a set that turns off ansi_warnings, which nothing bounds".into())),
+        (None, Some(_), _) => (Cardinality::Many, Some("the rows come from a procedure, from a statement after a set that turns off ansi_warnings, or from one after a statement the engine does not follow, as a use, which nothing bounds".into())),
         (_, None, Some(r)) if r.understood => (Cardinality::Many, Some("each branch of an if returns rows of its own, which nothing bounds together".into())),
         (_, None, Some(_)) => (Cardinality::Many, Some("the batch holds a statement the engine does not follow, so nothing bounds its rows".into())),
         _ => (Cardinality::Many, Some("the engine could not parse the batch, so nothing bounds its rows".into())),
@@ -607,6 +610,29 @@ mod tests {
         let go = analyzed("create table t (a int)\ngo\nselect a from t", &none);
         assert_eq!((go.diagnostics[0].start, go.diagnostics[0].message.as_str()), (23, GO));
         assert_eq!(go_line("select 'a\ngo\n' as x", &lex::lex("select 'a\ngo\n' as x", Dialect::Sqlserver).unwrap()), None);
+    }
+
+    #[test]
+    fn a_result_after_a_use_keeps_the_server_s_types() {
+        // After a `use`, the batch reads another database's tables, so nothing is asked of the
+        // connection's own: no probe of the columns, no key and no written table's columns.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let a = analyzed("use otherdb; insert into dbo.log (id) values (@id); select n + 1 as n from dbo.t where id = @id2", &|sql, _| {
+            asked.borrow_mut().push(sql.to_string());
+            if sql == UNDECLARED {
+                return Ok(vec![vec![json!(1), json!("@p_1"), json!(56), json!("int"), json!(4), json!(10), json!(0)], vec![json!(2), json!("@p_2"), json!(56), json!("int"), json!(4), json!(10), json!(0)]]);
+            }
+            if sql == FIRST_RESULT_SET {
+                return Ok(vec![column("n", true, "int", 4, 10, 0)]);
+            }
+            Ok(vec![])
+        });
+        assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+        assert!(a.columns[0].nullable);
+        assert_eq!(a.cardinality, Cardinality::Many);
+        let asked = asked.borrow();
+        assert_eq!(asked.iter().filter(|q| *q == FIRST_RESULT_SET).count(), 1, "{asked:?}");
+        assert!(!asked.iter().any(|q| q == crate::cardinality::UNIQUE_KEYS || q == crate::params::TABLE_COLUMNS), "{asked:?}");
     }
 
     #[test]
