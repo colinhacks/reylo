@@ -21,3 +21,4 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures-util = { version = "0.3", default-features = false }

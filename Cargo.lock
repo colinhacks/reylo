@@ -519,6 +519,7 @@ dependencies = [
 name = "demo-docs"
 version = "0.0.0"
 dependencies = [
+ "futures-util",
  "reylo-sqlx",
  "sqlx",
  "tokio",
@@ -537,6 +538,7 @@ dependencies = [
 name = "demo-reylo"
 version = "0.0.0"
 dependencies = [
+ "futures-util",
  "reylo-sqlx",
  "serde",
  "serde_json",
@@ -2054,6 +2056,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "reylo-codegen",
+ "serde_json",
  "syn 2.0.119",
 ]
 
@@ -2098,6 +2101,8 @@ version = "0.0.0"
 dependencies = [
  "bigdecimal",
  "chrono",
+ "futures-core",
+ "futures-util",
  "reylo-macros",
  "rust_decimal",
  "serde",

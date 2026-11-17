@@ -3,10 +3,15 @@
 //! sqlx, on the caller's own pool, connection or transaction:
 //! `get_user::Params { id: 2 }.run(&pool)` returns what the statement's cardinality says, so a key
 //! lookup is an `Option<get_user::Row>` and a `count(*)` one `Row`, with no fetch method chosen.
+//!
+//! Each database enum a query reads or binds is an enum in its module, which implements [`Enum`];
+//! `#[reylo::enum_type("…")]` makes one of the crate's own enums one too.
 
-pub use reylo_macros::query;
+pub use reylo_macros::{enum_type, query};
 
+mod enums;
 mod exact;
+pub use enums::{Enum, UnexpectedRow};
 pub use exact::Exact;
 
 // What the expansion names, so that a crate needs no dependency of its own on them.
@@ -16,6 +21,69 @@ pub use sqlx;
 
 #[doc(hidden)]
 pub mod __private {
+    use futures_util::TryStreamExt;
+
+    pub use futures_core::stream::BoxStream;
+
+    /// Whether two enums are the same database enum, in a constant: the same type, and the same
+    /// values in the same order.
+    pub const fn same_enum(a_type: &str, a_labels: &[&str], b_type: &str, b_labels: &[&str]) -> bool {
+        if !same_str(a_type, b_type) || a_labels.len() != b_labels.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < a_labels.len() {
+            if !same_str(a_labels[i], b_labels[i]) {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    const fn same_str(a: &str, b: &str) -> bool {
+        let (a, b) = (a.as_bytes(), b.as_bytes());
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < a.len() {
+            if a[i] != b[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// A column's value as one of an enum's variants, or the error that names the column and the
+    /// value, which is no value of the enum.
+    pub fn from_label<T: crate::Enum>(label: &str, column: &str) -> sqlx::Result<T> {
+        T::from_label(label).ok_or_else(|| sqlx::Error::ColumnDecode {
+            index: column.to_string(),
+            source: format!("{label:?} is no value of the enum Reylo inferred for the column ({})", T::LABELS.join(", ")).into(),
+        })
+    }
+
+    /// The statement's one row: none is sqlx's `RowNotFound`, and a second an [`crate::UnexpectedRow`].
+    pub async fn exactly_one<R>(rows: BoxStream<'_, sqlx::Result<R>>, sql: &'static str) -> sqlx::Result<R> {
+        at_most_one(rows, sql).await?.ok_or(sqlx::Error::RowNotFound)
+    }
+
+    /// The statement's row if it returned one; a second is an [`crate::UnexpectedRow`].
+    pub async fn at_most_one<R>(mut rows: BoxStream<'_, sqlx::Result<R>>, sql: &'static str) -> sqlx::Result<Option<R>> {
+        let Some(first) = rows.try_next().await? else { return Ok(None) };
+        if rows.try_next().await?.is_some() {
+            return Err(sqlx::Error::Decode(Box::new(crate::UnexpectedRow { sql })));
+        }
+        Ok(Some(first))
+    }
+
+    /// The statement's rows, each decoded as it arrives.
+    pub fn rows<'e, R: Send + 'e, T: Send + 'e>(rows: BoxStream<'e, sqlx::Result<R>>, decode: fn(&R) -> sqlx::Result<T>) -> BoxStream<'e, sqlx::Result<T>> {
+        Box::pin(rows.and_then(move |row| std::future::ready(decode(&row))))
+    }
+
     /// Whether two texts are the same, in a constant: a module `reylo generate rust-sqlx` wrote
     /// holds this check of its `.sql` file against the text it was written from. A carriage return
     /// before a line feed is passed over, so a checkout that writes lines as CRLF, as git does on

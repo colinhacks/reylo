@@ -10,6 +10,10 @@ reylo-macros = { path = "../reylo-macros" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The rows a statement returns, read one at a time: `.run()` stops at a second row its
+# cardinality allows none of, and `.stream()` hands them on as they arrive.
+futures-core = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 # The calendar arithmetic of `Exact`, at the versions sqlx's own support for them takes.
 chrono = { version = "0.4", optional = true, default-features = false, features = ["serde"] }
 time = { version = "0.3", optional = true, features = ["serde"] }

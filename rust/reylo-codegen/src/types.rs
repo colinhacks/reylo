@@ -7,17 +7,44 @@
 //! and years chrono cannot write), the column is decoded through `reylo::Exact`, which refuses
 //! what the type cannot hold when it is read; no value is ever changed. Where no Rust type holds
 //! the values at all, the expansion fails at the statement and says how to cast it.
+//!
+//! A database enum is a Rust enum, which implements `reylo::Enum`: a Postgres enum type, decoded
+//! and bound by the enum's own sqlx impls, and a list of values (a `CHECK` constraint's, a MySQL
+//! `ENUM`'s, or one the statement names), read as text and bound as its value. Each enum and each
+//! struct the module holds is named once every one is known, so that two of them, or one and
+//! `Row`, `Params`, `Query` or an item of the crate's own, never take the same name
+//! ([`Types::finish`]).
 
+use crate::names;
 use crate::{Dates, Decimals, Dialect, Options};
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::{Ident, Span, TokenStream as TokenStream2, TokenTree};
 use quote::{format_ident, quote};
 use reylo_engine_core::types::{Kind, Type};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// How a value is decoded into its Rust type: as sqlx decodes it, or, for a `Leaf` marked
-/// `exact`, through `reylo::Exact`, inside any `Option` and `Vec` around it.
+/// How a value at the bottom of a column's or a parameter's type is read and written.
+#[derive(Clone)]
+pub enum Leaf {
+    /// As sqlx decodes and encodes its type.
+    Plain,
+    /// Decoded through `reylo::Exact`, which refuses what the type cannot hold.
+    Exact,
+    /// One of a list of values: decoded as text and read as the enum's variant, bound as its value.
+    Label,
+}
+
+/// An enum the module holds, as a column's or a parameter's value: its name in the module (a
+/// stand-in until [`Types::finish`] names it), and its values in the database's order.
+#[derive(Clone)]
+pub struct EnumRef {
+    pub ident: Ident,
+    pub labels: Vec<String>,
+}
+
+/// A column's or a parameter's Rust type: an `Option` where it may be null, a `Vec` for an array.
+#[derive(Clone)]
 pub enum Shape {
-    Leaf { ty: TokenStream2, exact: bool },
+    Leaf { ty: TokenStream2, leaf: Leaf, enumeration: Option<EnumRef> },
     Option(Box<Shape>),
     Vec(Box<Shape>),
 }
@@ -41,7 +68,8 @@ impl Shape {
     /// The type sqlx decodes the column into.
     pub fn decode_ty(&self) -> TokenStream2 {
         match self {
-            Shape::Leaf { ty, exact: true } => quote!(::reylo::Exact<#ty>),
+            Shape::Leaf { ty, leaf: Leaf::Exact, .. } => quote!(::reylo::Exact<#ty>),
+            Shape::Leaf { leaf: Leaf::Label, .. } => quote!(::std::string::String),
             Shape::Leaf { ty, .. } => ty.clone(),
             Shape::Option(s) => {
                 let t = s.decode_ty();
@@ -54,30 +82,106 @@ impl Shape {
         }
     }
 
-    fn exact(&self) -> bool {
+    /// The enum at the bottom of the type, if there is one.
+    pub fn enumeration(&self) -> Option<&EnumRef> {
         match self {
-            Shape::Leaf { exact, .. } => *exact,
-            Shape::Option(s) | Shape::Vec(s) => s.exact(),
+            Shape::Leaf { enumeration, .. } => enumeration.as_ref(),
+            Shape::Option(s) | Shape::Vec(s) => s.enumeration(),
         }
     }
 
-    /// `decoded`, of the decode type, as the field's type.
-    pub fn unwrap(&self, decoded: TokenStream2) -> TokenStream2 {
-        if !self.exact() {
-            return decoded;
+    /// Whether a value of the decode type is already the field's value.
+    pub fn decoded_as_is(&self) -> bool {
+        match self {
+            Shape::Leaf { leaf, .. } => matches!(leaf, Leaf::Plain),
+            Shape::Option(s) | Shape::Vec(s) => s.decoded_as_is(),
+        }
+    }
+
+    /// `v`, of the decode type, as the field's value, inside a function that returns sqlx's
+    /// `Result`: a value that is none of a list's values is an error naming the column.
+    pub fn decode(&self, v: TokenStream2, column: &str) -> TokenStream2 {
+        if self.decoded_as_is() {
+            return v;
         }
         match self {
-            Shape::Leaf { .. } => quote!(#decoded.0),
+            Shape::Leaf { leaf: Leaf::Exact, .. } => quote!(#v.0),
+            Shape::Leaf { ty, leaf: Leaf::Label, .. } => quote!(::reylo::__private::from_label::<#ty>(&#v, #column)?),
+            Shape::Leaf { .. } => v,
             Shape::Option(s) => {
-                let inner = s.unwrap(quote!(v));
-                quote!(#decoded.map(|v| #inner))
+                let inner = s.decode(quote!(v), column);
+                quote!(match #v { ::core::option::Option::Some(v) => ::core::option::Option::Some(#inner), ::core::option::Option::None => ::core::option::Option::None })
             }
             Shape::Vec(s) => {
-                let inner = s.unwrap(quote!(v));
-                quote!(#decoded.into_iter().map(|v| #inner).collect::<::std::vec::Vec<_>>())
+                let inner = s.decode(quote!(v), column);
+                quote!({ let mut out = ::std::vec::Vec::new(); for v in #v { out.push(#inner); } out })
             }
         }
     }
+
+    /// The value sqlx binds for `v`, a reference to the field's value: a list's value is bound as
+    /// the text it is.
+    pub fn encode(&self, v: TokenStream2) -> TokenStream2 {
+        self.encode_leaves(v, &|leaf, ty, v| match leaf {
+            Leaf::Label => quote!(<#ty as ::reylo::Enum>::label(*#v)),
+            _ => quote!(::core::clone::Clone::clone(#v)),
+        })
+    }
+
+    /// `v`, a reference to a value of this shape, with `f` given each value at the bottom by
+    /// reference, as a value to bind.
+    pub fn encode_leaves(&self, v: TokenStream2, f: &dyn Fn(&Leaf, &TokenStream2, TokenStream2) -> TokenStream2) -> TokenStream2 {
+        match self {
+            Shape::Leaf { ty, leaf, .. } => f(leaf, ty, v),
+            Shape::Option(s) => {
+                let inner = s.encode_leaves(quote!(v), f);
+                quote!(match #v { ::core::option::Option::Some(v) => ::core::option::Option::Some(#inner), ::core::option::Option::None => ::core::option::Option::None })
+            }
+            Shape::Vec(s) => {
+                let inner = s.encode_leaves(quote!(v), f);
+                quote!((#v).iter().map(|v| #inner).collect::<::std::vec::Vec<_>>())
+            }
+        }
+    }
+
+    /// `v`, an owned value of this shape, with `f` applied to each value at the bottom.
+    pub fn map_leaves(&self, v: TokenStream2, f: &dyn Fn(TokenStream2) -> TokenStream2) -> TokenStream2 {
+        match self {
+            Shape::Leaf { .. } => f(v),
+            Shape::Option(s) => {
+                let inner = s.map_leaves(quote!(v), f);
+                quote!(match #v { ::core::option::Option::Some(v) => ::core::option::Option::Some(#inner), ::core::option::Option::None => ::core::option::Option::None })
+            }
+            Shape::Vec(s) => {
+                let inner = s.map_leaves(quote!(v), f);
+                quote!(#v.into_iter().map(|v| #inner).collect::<::std::vec::Vec<_>>())
+            }
+        }
+    }
+
+    /// The type at the bottom of `written`, a type the crate wrote for a value of this shape: the
+    /// `X` of `Option<X>` where this is an `Option`, and of `Vec<X>` where it is a `Vec`.
+    pub fn leaf_of(&self, written: &syn::Type, name: &str) -> syn::Result<syn::Type> {
+        match self {
+            Shape::Leaf { .. } => Ok(written.clone()),
+            Shape::Option(s) => s.leaf_of(&generic_arg(written, "Option", name, "may be null: write its type as `Option<…>`")?, name),
+            Shape::Vec(s) => s.leaf_of(&generic_arg(written, "Vec", name, "is an array: write its type as `Vec<…>`")?, name),
+        }
+    }
+}
+
+/// `X` in `written` as `Outer<X>`, or the error that says how to write it.
+fn generic_arg(written: &syn::Type, outer: &str, name: &str, hint: &str) -> syn::Result<syn::Type> {
+    if let syn::Type::Path(p) = written {
+        if let Some(last) = p.path.segments.last().filter(|s| s.ident == outer) {
+            if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
+                if let [syn::GenericArgument::Type(inner)] = args.args.iter().collect::<Vec<_>>()[..] {
+                    return Ok(inner.clone());
+                }
+            }
+        }
+    }
+    Err(syn::Error::new_spanned(written, format!("{name} {hint}")))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,28 +190,101 @@ enum Use {
     Param,
 }
 
-/// The Rust types of one statement, and the items they need: an enum per Postgres enum type, a
-/// struct per JSON object the statement builds.
+/// An item the module holds, waiting for its name: its stand-in, the name it takes where no other
+/// item wants it, and the one it takes where another does.
+struct Named {
+    stand_in: Ident,
+    base: String,
+    fallback: String,
+}
+
+/// A Postgres enum type a generated file declares once, in its schema's module, for every query
+/// of the file that reads or binds it.
+pub struct SharedEnum {
+    /// The type, as `public.mood`.
+    pub qualified: String,
+    /// The schema's module and the enum's name in it.
+    pub schema: String,
+    pub name: String,
+    /// The enum and its impls, under its name.
+    pub tokens: TokenStream2,
+}
+
+/// The items a statement's types need, named.
+pub struct Finished {
+    pub items: Vec<TokenStream2>,
+    pub shared: Vec<SharedEnum>,
+    names: HashMap<String, Ident>,
+}
+
+impl Finished {
+    /// `tokens` with every stand-in for an item's name replaced by its name.
+    pub fn named(&self, tokens: TokenStream2) -> TokenStream2 {
+        tokens
+            .into_iter()
+            .map(|tree| match tree {
+                TokenTree::Ident(ident) => match self.names.get(&ident.to_string()) {
+                    Some(name) => TokenTree::Ident(Ident::new(&name.to_string(), ident.span())),
+                    None => TokenTree::Ident(ident),
+                },
+                TokenTree::Group(group) => {
+                    let mut inner = proc_macro2::Group::new(group.delimiter(), self.named(group.stream()));
+                    inner.set_span(group.span());
+                    TokenTree::Group(inner)
+                }
+                other => other,
+            })
+            .collect()
+    }
+}
+
+/// The Rust types of one statement, and the items they need: an enum per database enum, a struct
+/// per JSON object the statement builds.
 pub struct Types {
     dialect: Dialect,
     options: Options,
     /// Each domain the statement's types are named by, with its base type's name.
     domains: BTreeMap<String, String>,
     span: Span,
+    /// Whether a Postgres enum type is declared once for a whole generated file, rather than here.
+    shared: bool,
     items: Vec<TokenStream2>,
-    enums: HashMap<String, proc_macro2::Ident>,
+    shared_enums: Vec<SharedEnum>,
+    /// Each enum already written, by its type (`type:public.mood`) or its values (`list:…`).
+    enums: HashMap<String, EnumRef>,
+    named: Vec<Named>,
     /// Whether every type written so far has a serde form, so the row can derive `Serialize`.
     pub serialize: bool,
 }
 
 impl Types {
-    pub fn new(dialect: Dialect, options: Options, domains: BTreeMap<String, String>, span: Span) -> Types {
-        Types { dialect, options, domains, span, items: Vec::new(), enums: HashMap::new(), serialize: true }
+    pub fn new(dialect: Dialect, options: Options, domains: BTreeMap<String, String>, span: Span, shared: bool) -> Types {
+        Types { dialect, options, domains, span, shared, items: Vec::new(), shared_enums: Vec::new(), enums: HashMap::new(), named: Vec::new(), serialize: true }
     }
 
-    /// The enums and structs the expansion declares beside its `Row`.
-    pub fn items(&self) -> &[TokenStream2] {
-        &self.items
+    /// The items, each named: a name another item, `Row`, `Params`, `Query` or one of `taken` (the
+    /// names the crate's own items in the module have) would also take is the item's fallback
+    /// (`PublicMood`, `KindValues`, `AuthorObject`), and two fallbacks that meet are an error.
+    pub fn finish(self, taken: &BTreeSet<String>) -> syn::Result<Finished> {
+        let mut reserved: BTreeSet<String> = taken.clone();
+        reserved.extend(["Row", "Params", "Query"].map(String::from));
+        let mut wanted: HashMap<&str, usize> = HashMap::new();
+        for n in &self.named {
+            *wanted.entry(n.base.as_str()).or_default() += 1;
+        }
+        let mut names = HashMap::new();
+        let mut given: BTreeMap<String, &Named> = BTreeMap::new();
+        for n in &self.named {
+            let name = if wanted[n.base.as_str()] == 1 && !reserved.contains(&n.base) { &n.base } else { &n.fallback };
+            if reserved.contains(name) || given.contains_key(name) {
+                return Err(syn::Error::new(self.span, format!("two of the types this statement needs would both be named {name}: give one of its columns or parameters another name with `as`")));
+            }
+            given.insert(name.clone(), n);
+            names.insert(n.stand_in.to_string(), format_ident!("{}", name));
+        }
+        let finished = Finished { items: Vec::new(), shared: Vec::new(), names };
+        let items = self.items.into_iter().map(|t| finished.named(t)).collect();
+        Ok(Finished { items, shared: self.shared_enums, ..finished })
     }
 
     /// A column's Rust type, `Option` where it may be null.
@@ -116,17 +293,20 @@ impl Types {
         Ok(if nullable { Shape::Option(Box::new(shape)) } else { shape })
     }
 
-    /// A parameter's Rust type, which sqlx encodes; the caller wraps a nullable one.
-    pub fn param(&mut self, t: &Type, label: &str) -> syn::Result<TokenStream2> {
-        Ok(self.value(t, label, Use::Param)?.ty())
+    /// A parameter's Rust type, `Option` where it may be null; text is borrowed, a `&'a str`.
+    pub fn param(&mut self, t: &Type, nullable: bool, label: &str) -> syn::Result<(Shape, bool)> {
+        let (shape, borrowed) = if self.is_string(t) {
+            (Shape::Leaf { ty: quote!(&'a str), leaf: Leaf::Plain, enumeration: None }, true)
+        } else {
+            (self.value(t, label, Use::Param)?, false)
+        };
+        Ok((if nullable { Shape::Option(Box::new(shape)) } else { shape }, borrowed))
     }
 
-    /// Whether the type's values are a `String`, so that a parameter of it takes a `&str` too.
-    pub fn is_string(&self, t: &Type) -> bool {
+    /// Whether the type's values are text, so that a parameter of it takes a `&str`.
+    fn is_string(&self, t: &Type) -> bool {
         match (&t.kind, self.dialect) {
             (Kind::Text(_), _) => true,
-            // A CHECK's list or a MySQL ENUM is its base type's values; a Postgres enum type is a Rust enum.
-            (Kind::Enum(e), _) => !self.is_enum(t) && self.is_string(&e.ty),
             (Kind::Union(_), Dialect::Sqlite) => t.label.as_deref().is_some_and(|n| !is_bool(n) && affinity(n) == Affinity::Text),
             _ => false,
         }
@@ -139,12 +319,34 @@ impl Types {
                 return Ok(Shape::Vec(Box::new(if a.element.nullable { Shape::Option(Box::new(element)) } else { element })));
             }
         }
+        if let Kind::Enum(e) = &t.kind {
+            if self.is_postgres_enum(t) {
+                let reference = self.postgres_enum(t)?;
+                return Ok(Shape::Leaf { ty: { let i = &reference.ident; quote!(#i) }, leaf: Leaf::Plain, enumeration: Some(reference) });
+            }
+            // A list of text values a CHECK, a MySQL ENUM or the statement names (`case … then 'a'
+            // else 'b' end`): an enum read from its text. A single value, as a literal column, is text.
+            if self.is_text_list(&e.ty) && e.values.len() >= 2 {
+                let reference = self.list_enum(&e.values, label);
+                return Ok(Shape::Leaf { ty: { let i = &reference.ident; quote!(#i) }, leaf: Leaf::Label, enumeration: Some(reference) });
+            }
+        }
         let (ty, exact) = match self.dialect {
             Dialect::Postgres => self.postgres(t, label)?,
             Dialect::Sqlite => self.sqlite(t, label)?,
             Dialect::Mysql => self.mysql(t, label)?,
         };
-        Ok(Shape::Leaf { ty, exact: exact && at == Use::Column })
+        Ok(Shape::Leaf { ty, leaf: if exact && at == Use::Column { Leaf::Exact } else { Leaf::Plain }, enumeration: None })
+    }
+
+    /// Whether a list's values are text, which a Rust enum can stand for.
+    fn is_text_list(&self, base: &Type) -> bool {
+        match &base.kind {
+            Kind::Text(_) => true,
+            Kind::Enum(e) => self.is_text_list(&e.ty),
+            Kind::Union(_) => self.dialect == Dialect::Sqlite && self.is_string(base),
+            _ => false,
+        }
     }
 
     /// An array sqlx decodes as a `Vec` of its elements: one the statement builds, or a Postgres
@@ -174,8 +376,7 @@ impl Types {
             },
             Kind::Float(f) => (float(f.exponent_bits, f.mantissa_bits), false),
             Kind::Decimal(_) => (self.decimal(label)?, false),
-            Kind::Enum(_) if self.is_enum(t) => (self.postgres_enum(t)?, false),
-            // A list a CHECK or a literal names: its base type's values.
+            // A list of values of another type than text: its base type's values.
             Kind::Enum(e) => self.postgres(&e.ty, label)?,
             Kind::Text(_) => (quote!(::std::string::String), false),
             Kind::Bytes(_) if name.is_empty() || name == "bytea" => (quote!(::std::vec::Vec<u8>), false),
@@ -252,7 +453,7 @@ impl Types {
             },
             Kind::Float(f) => (float(f.exponent_bits, f.mantissa_bits), false),
             Kind::Decimal(_) => (self.decimal(label)?, false),
-            // An ENUM is its value, and a SET its elements joined by commas, as MySQL sends them.
+            // A SET is its elements joined by commas, as MySQL sends them.
             Kind::Text(_) | Kind::Enum(_) => (quote!(::std::string::String), false),
             Kind::Array(_) if name == "set" => (quote!(::std::string::String), false),
             Kind::Bytes(_) => (quote!(::std::vec::Vec<u8>), false),
@@ -279,92 +480,63 @@ impl Types {
 
     /// A Postgres enum type, as against text whose values a CHECK or a constant lists, or a
     /// domain over text: an enum type is named by its schema and is no domain.
-    fn is_enum(&self, t: &Type) -> bool {
+    fn is_postgres_enum(&self, t: &Type) -> bool {
         matches!(&t.kind, Kind::Enum(_))
             && self.dialect == Dialect::Postgres
             && t.label.as_deref().is_some_and(|n| n.contains('.') && !self.domains.contains_key(n))
     }
 
+    /// An item's stand-in name, until [`Types::finish`] names it.
+    fn name(&mut self, base: String, fallback: String) -> Ident {
+        let stand_in = format_ident!("__reylo_item_{}", self.named.len());
+        self.named.push(Named { stand_in: stand_in.clone(), base, fallback });
+        stand_in
+    }
+
     /// A Postgres enum as a Rust enum, a variant per value, which sqlx decodes from the value's
     /// text and encodes to it; the type's name finds its oid at run time.
-    fn postgres_enum(&mut self, t: &Type) -> syn::Result<TokenStream2> {
+    fn postgres_enum(&mut self, t: &Type) -> syn::Result<EnumRef> {
         let name = t.label.clone().unwrap_or_default();
-        if let Some(ident) = self.enums.get(&name) {
-            return Ok(quote!(#ident));
+        if let Some(reference) = self.enums.get(&format!("type:{name}")) {
+            return Ok(reference.clone());
         }
-        let Kind::Enum(e) = &t.kind else { unreachable!("is_enum checked the kind") };
-        let values = e.values.clone();
-        let (schema, short) = name.rsplit_once('.').unwrap_or(("", &name));
-        // A type's name as a Rust one: `Self`, or a name that starts with a digit, takes a prefix.
-        let mut type_name = pascal(&short.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>());
-        if type_name.is_empty() || type_name == "Self" || type_name.starts_with(|c: char| c.is_ascii_digit()) {
-            type_name = format!("Enum{type_name}");
-        }
-        let ident = format_ident!("{}", type_name);
-        let mut variants: Vec<proc_macro2::Ident> = Vec::new();
-        for value in &values {
-            let mut variant = pascal(&value.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>());
-            if variant.is_empty() || variant.starts_with(|c: char| c.is_ascii_digit()) {
-                variant = format!("V{variant}");
-            }
-            if variant == "Self" {
-                variant.push('_');
-            }
-            while variants.iter().any(|v| *v == variant) {
-                variant.push('_');
-            }
-            variants.push(format_ident!("{}", variant));
-        }
-        if variants.is_empty() {
+        let Kind::Enum(e) = &t.kind else { unreachable!("is_postgres_enum checked the kind") };
+        if e.values.is_empty() {
             return Err(syn::Error::new(self.span, format!("the enum {name} has no values")));
         }
-        let array = if schema.is_empty() { format!("_{short}") } else { format!("{schema}._{short}") };
-        let short = short.to_string();
-        let message = format!("is no value of {name}");
-        self.items.push(quote!(
-            #[derive(::core::fmt::Debug, ::core::clone::Clone, ::core::marker::Copy, ::core::cmp::PartialEq, ::core::cmp::Eq, ::core::hash::Hash)]
-            pub enum #ident { #(#variants,)* }
-            impl #ident {
-                /// The value the database stores.
-                pub const fn label(self) -> &'static str {
-                    match self { #(#ident::#variants => #values,)* }
+        let (schema, short) = name.rsplit_once('.').unwrap_or(("", &name));
+        let base = names::type_name(short);
+        let ident = self.name(base.clone(), format!("{}{base}", names::type_name(schema)));
+        let schema_module = self.shared.then(|| module_name(schema)).flatten();
+        match schema_module {
+            Some(module) => {
+                let shared_name = format_ident!("{}", base);
+                let module_ident = syn::parse_str::<Ident>(&module).map_err(|e| syn::Error::new(self.span, e.to_string()))?;
+                self.items.push(quote!(pub use __reylo_shared_root::#module_ident::#shared_name as #ident;));
+                if !self.shared_enums.iter().any(|s| s.qualified == name) {
+                    self.shared_enums.push(SharedEnum { qualified: name.clone(), schema: module, name: base, tokens: postgres_enum_tokens(&shared_name, &name, &e.values) });
                 }
             }
-            impl ::reylo::serde::Serialize for #ident {
-                fn serialize<S: ::reylo::serde::Serializer>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error> {
-                    serializer.serialize_str(self.label())
-                }
-            }
-            impl ::reylo::sqlx::Type<::reylo::sqlx::Postgres> for #ident {
-                fn type_info() -> ::reylo::sqlx::postgres::PgTypeInfo {
-                    ::reylo::sqlx::postgres::PgTypeInfo::with_name(#name)
-                }
-                fn compatible(ty: &::reylo::sqlx::postgres::PgTypeInfo) -> bool {
-                    let found = ::reylo::sqlx::TypeInfo::name(ty);
-                    found == #short || found == #name
-                }
-            }
-            impl ::reylo::sqlx::postgres::PgHasArrayType for #ident {
-                fn array_type_info() -> ::reylo::sqlx::postgres::PgTypeInfo {
-                    ::reylo::sqlx::postgres::PgTypeInfo::with_name(#array)
-                }
-            }
-            impl<'r> ::reylo::sqlx::Decode<'r, ::reylo::sqlx::Postgres> for #ident {
-                fn decode(value: ::reylo::sqlx::postgres::PgValueRef<'r>) -> ::core::result::Result<Self, ::reylo::sqlx::error::BoxDynError> {
-                    match <&str as ::reylo::sqlx::Decode<'r, ::reylo::sqlx::Postgres>>::decode(value)? {
-                        #(#values => ::core::result::Result::Ok(#ident::#variants),)*
-                        other => ::core::result::Result::Err(::std::format!("{other:?} {}", #message).into()),
-                    }
-                }
-            }
-            impl<'q> ::reylo::sqlx::Encode<'q, ::reylo::sqlx::Postgres> for #ident {
-                fn encode_by_ref(&self, buf: &mut ::reylo::sqlx::postgres::PgArgumentBuffer) -> ::core::result::Result<::reylo::sqlx::encode::IsNull, ::reylo::sqlx::error::BoxDynError> {
-                    <&str as ::reylo::sqlx::Encode<'q, ::reylo::sqlx::Postgres>>::encode_by_ref(&self.label(), buf)
-                }
-            }
-        ));
-        self.enums.insert(name, ident.clone());
-        Ok(quote!(#ident))
+            None => self.items.push(postgres_enum_tokens(&ident, &name, &e.values)),
+        }
+        let reference = EnumRef { ident, labels: e.values.clone() };
+        self.enums.insert(format!("type:{name}"), reference.clone());
+        Ok(reference)
+    }
+
+    /// A list of values as a Rust enum named after the column or parameter it first types, read
+    /// from text and bound as text. Two that list the same values in the same order are one enum.
+    fn list_enum(&mut self, values: &[String], label: &str) -> EnumRef {
+        let key = format!("list:{}", values.join("\u{0}"));
+        if let Some(reference) = self.enums.get(&key) {
+            return reference.clone();
+        }
+        let base = names::type_name(label);
+        let ident = self.name(base.clone(), format!("{base}Values"));
+        self.items.push(enum_tokens(&ident, "", values, quote!()));
+        let reference = EnumRef { ident, labels: values.to_vec() };
+        self.enums.insert(key, reference.clone());
+        reference
     }
 
     /// A JSON column: the shape the statement built, field by field, else any JSON.
@@ -405,7 +577,8 @@ impl Types {
                 quote!(::std::vec::Vec<#element>)
             }
             Kind::Struct(r) => {
-                let ident = format_ident!("{}", pascal(label));
+                let base = names::type_name(label);
+                let ident = self.name(base.clone(), format!("{base}Object"));
                 let mut fields = Vec::new();
                 for f in &r.fields {
                     let key = f.name.clone();
@@ -466,6 +639,125 @@ impl Types {
     }
 }
 
+/// An enum of `values` named `ident`, with `reylo::Enum` (of the Postgres type `type_name`, or of
+/// no type for a list), an inherent `label`, serde's `Serialize` as its value, and `more`.
+pub fn enum_tokens(ident: &Ident, type_name: &str, values: &[String], more: TokenStream2) -> TokenStream2 {
+    let variants: Vec<Ident> = names::variants(values).iter().map(|v| format_ident!("{}", v)).collect();
+    let trait_impl = enum_impl(ident, type_name, values);
+    quote!(
+        #[allow(non_camel_case_types)]
+        #[derive(::core::fmt::Debug, ::core::clone::Clone, ::core::marker::Copy, ::core::cmp::PartialEq, ::core::cmp::Eq, ::core::hash::Hash)]
+        pub enum #ident { #(#variants,)* }
+        impl #ident {
+            /// The value the database stores.
+            #[allow(dead_code)]
+            pub const fn label(self) -> &'static str {
+                match self { #(#ident::#variants => #values,)* }
+            }
+        }
+        #trait_impl
+        impl ::reylo::serde::Serialize for #ident {
+            fn serialize<S: ::reylo::serde::Serializer>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error> {
+                serializer.serialize_str(::reylo::Enum::label(*self))
+            }
+        }
+        #more
+    )
+}
+
+/// `reylo::Enum` for the enum `ident` of `values`, whose variants are named by [`names::variants`].
+pub fn enum_impl(ident: &Ident, type_name: &str, values: &[String]) -> TokenStream2 {
+    let variants: Vec<Ident> = names::variants(values).iter().map(|v| format_ident!("{}", v)).collect();
+    quote!(
+        impl ::reylo::Enum for #ident {
+            const TYPE: &'static str = #type_name;
+            const LABELS: &'static [&'static str] = &[#(#values),*];
+            fn label(self) -> &'static str {
+                match self { #(#ident::#variants => #values,)* }
+            }
+            fn from_label(label: &str) -> ::core::option::Option<Self> {
+                match label {
+                    #(#values => ::core::option::Option::Some(#ident::#variants),)*
+                    _ => ::core::option::Option::None,
+                }
+            }
+        }
+    )
+}
+
+/// A Postgres enum type `name` as the Rust enum `ident`, with sqlx's impls, which find the type
+/// by its name at run time.
+pub fn postgres_enum_tokens(ident: &Ident, name: &str, values: &[String]) -> TokenStream2 {
+    enum_tokens(ident, name, values, postgres_impls(ident, name))
+}
+
+/// sqlx's impls for the enum `ident` of the Postgres enum type `name`: decoded from its value's
+/// text, encoded as it, and the type found by its name at run time.
+pub fn postgres_impls(ident: &Ident, name: &str) -> TokenStream2 {
+    let (schema, short) = name.rsplit_once('.').unwrap_or(("", name));
+    let array = if schema.is_empty() { format!("_{short}") } else { format!("{schema}._{short}") };
+    let message = format!("is no value of {name}");
+    quote!(
+        impl ::reylo::sqlx::Type<::reylo::sqlx::Postgres> for #ident {
+            fn type_info() -> ::reylo::sqlx::postgres::PgTypeInfo {
+                ::reylo::sqlx::postgres::PgTypeInfo::with_name(#name)
+            }
+            fn compatible(ty: &::reylo::sqlx::postgres::PgTypeInfo) -> bool {
+                let found = ::reylo::sqlx::TypeInfo::name(ty);
+                found == #short || found == #name
+            }
+        }
+        impl ::reylo::sqlx::postgres::PgHasArrayType for #ident {
+            fn array_type_info() -> ::reylo::sqlx::postgres::PgTypeInfo {
+                ::reylo::sqlx::postgres::PgTypeInfo::with_name(#array)
+            }
+        }
+        impl<'r> ::reylo::sqlx::Decode<'r, ::reylo::sqlx::Postgres> for #ident {
+            fn decode(value: ::reylo::sqlx::postgres::PgValueRef<'r>) -> ::core::result::Result<Self, ::reylo::sqlx::error::BoxDynError> {
+                let text = <&str as ::reylo::sqlx::Decode<'r, ::reylo::sqlx::Postgres>>::decode(value)?;
+                <#ident as ::reylo::Enum>::from_label(text).ok_or_else(|| ::std::format!("{text:?} {}", #message).into())
+            }
+        }
+        impl<'q> ::reylo::sqlx::Encode<'q, ::reylo::sqlx::Postgres> for #ident {
+            fn encode_by_ref(&self, buf: &mut ::reylo::sqlx::postgres::PgArgumentBuffer) -> ::core::result::Result<::reylo::sqlx::encode::IsNull, ::reylo::sqlx::error::BoxDynError> {
+                <&str as ::reylo::sqlx::Encode<'q, ::reylo::sqlx::Postgres>>::encode_by_ref(&::reylo::Enum::label(*self), buf)
+            }
+        }
+    )
+}
+
+/// sqlx's impls for the enum `ident` of a list of text values on `db` (`Postgres`, `MySql` or
+/// `Sqlite`): decoded from text, a value outside the list an error, and encoded as text.
+pub fn text_impls(ident: &Ident, db: &TokenStream2) -> TokenStream2 {
+    quote!(
+        impl ::reylo::sqlx::Type<::reylo::sqlx::#db> for #ident {
+            fn type_info() -> <::reylo::sqlx::#db as ::reylo::sqlx::Database>::TypeInfo {
+                <str as ::reylo::sqlx::Type<::reylo::sqlx::#db>>::type_info()
+            }
+            fn compatible(ty: &<::reylo::sqlx::#db as ::reylo::sqlx::Database>::TypeInfo) -> bool {
+                <str as ::reylo::sqlx::Type<::reylo::sqlx::#db>>::compatible(ty)
+            }
+        }
+        impl<'r> ::reylo::sqlx::Decode<'r, ::reylo::sqlx::#db> for #ident {
+            fn decode(value: <::reylo::sqlx::#db as ::reylo::sqlx::Database>::ValueRef<'r>) -> ::core::result::Result<Self, ::reylo::sqlx::error::BoxDynError> {
+                let text = <&str as ::reylo::sqlx::Decode<'r, ::reylo::sqlx::#db>>::decode(value)?;
+                <#ident as ::reylo::Enum>::from_label(text).ok_or_else(|| ::std::format!("{text:?} is none of the values {}", <#ident as ::reylo::Enum>::LABELS.join(", ")).into())
+            }
+        }
+        impl<'q> ::reylo::sqlx::Encode<'q, ::reylo::sqlx::#db> for #ident {
+            fn encode_by_ref(&self, buf: &mut <::reylo::sqlx::#db as ::reylo::sqlx::Database>::ArgumentBuffer) -> ::core::result::Result<::reylo::sqlx::encode::IsNull, ::reylo::sqlx::error::BoxDynError> {
+                <&str as ::reylo::sqlx::Encode<'q, ::reylo::sqlx::#db>>::encode_by_ref(&::reylo::Enum::label(*self), buf)
+            }
+        }
+    )
+}
+
+/// A schema's name as a Rust module's, written raw where it is a keyword; none where it is no name.
+fn module_name(schema: &str) -> Option<String> {
+    let valid = !schema.is_empty() && schema.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !schema.starts_with(|c: char| c.is_ascii_digit()) && !matches!(schema, "self" | "Self" | "super" | "crate" | "_");
+    valid.then(|| if syn::parse_str::<Ident>(schema).is_ok() { schema.to_string() } else { format!("r#{schema}") })
+}
+
 /// The smallest Rust float whose exponent and mantissa are both at least these widths.
 fn float(exponent_bits: u32, mantissa_bits: u32) -> TokenStream2 {
     if exponent_bits <= 8 && mantissa_bits <= 23 {
@@ -509,8 +801,4 @@ fn affinity(declared: &str) -> Affinity {
 fn is_bool(declared: &str) -> bool {
     let d = declared.trim().to_ascii_lowercase();
     d == "bool" || d == "boolean"
-}
-
-fn pascal(name: &str) -> String {
-    name.split('_').filter(|s| !s.is_empty()).map(|s| s[..1].to_uppercase() + &s[1..]).collect()
 }

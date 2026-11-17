@@ -108,7 +108,7 @@ In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)):
 | `DECIMAL`, `SUM(…)`, `AVG(…)`, `/` | `rust_decimal::Decimal` or `bigdecimal::BigDecimal` |
 | `FLOAT`, `DOUBLE` | `f32`, `f64` |
 | `CHAR`, `VARCHAR`, `TEXT` | `String` |
-| `ENUM` | `String` |
+| `ENUM` | an enum the module holds |
 | `SET` | `String`, its labels joined by commas |
 | `DATE` | `chrono::NaiveDate`, or `time::Date` |
 | `DATETIME`, `TIMESTAMP` | `chrono::NaiveDateTime` or `time::PrimitiveDateTime`; `chrono::DateTime<Utc>` or `time::OffsetDateTime` |

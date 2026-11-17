@@ -21,3 +21,4 @@ required-features = ["live"]
 reylo = { package = "reylo-sqlx", path = "../reylo", features = ["chrono", "uuid"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures-util = { version = "0.3", default-features = false }
