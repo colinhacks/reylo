@@ -248,6 +248,7 @@ create view open_orders as select id, user_id, total from orders where status = 
 - **A statement after an `alter table … add`** that reads the new column goes in a later batch, since SQL Server compiles a batch before it runs it.
 - **A file runs in one transaction**, which SQL Server's DDL joins, so a file that fails leaves nothing behind.
 - **A constraint SQL Server named itself**, such as a primary key written without a name, is dropped by looking its name up as the migration runs, since every database it's made in names it differently.
+- **A system-versioned table** is made and dropped with its history table, which a plan never touches on its own.
 
 ## Limits
 

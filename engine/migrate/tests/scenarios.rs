@@ -348,6 +348,15 @@ macro_rules! assert_has {
     }};
 }
 
+/// Runs a test on a thread with the stack `reylo` runs on, its main thread's 8 MiB: in a debug build, a
+/// scenario's own frames and SQL Server's client together pass a test thread's 2 MiB.
+fn on_a_main_thread_stack<F: std::future::Future<Output = ()>>(test: impl FnOnce() -> F + Send) {
+    std::thread::scope(|s| {
+        let thread = std::thread::Builder::new().stack_size(8 << 20).spawn_scoped(s, || tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime").block_on(test()));
+        thread.expect("a test thread").join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
 /// One test per dialect for each scenario, `<scenario>::postgres` and so on.
 macro_rules! for_each_dialect {
     ($($scenario:ident),* $(,)?) => {$(
@@ -364,9 +373,11 @@ macro_rules! for_each_dialect {
             async fn sqlite() {
                 if let Some(p) = super::P::new(super::Dialect::Sqlite).await { super::$scenario(p).await }
             }
-            #[tokio::test(flavor = "current_thread")]
-            async fn sqlserver() {
-                if let Some(p) = super::P::new(super::Dialect::Sqlserver).await { let url = p.url.clone(); super::$scenario(p).await; super::forget(&url).await }
+            #[test]
+            fn sqlserver() {
+                super::on_a_main_thread_stack(|| async {
+                    if let Some(p) = super::P::new(super::Dialect::Sqlserver).await { let url = p.url.clone(); super::$scenario(p).await; super::forget(&url).await }
+                })
             }
         }
     )*};

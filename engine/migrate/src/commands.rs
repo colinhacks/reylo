@@ -1802,7 +1802,8 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
             .map(|r| format!("`{}`", r.text("n").replace('`', "``")))
             .collect(),
         Dialect::Sqlserver => db
-            .rows(&format!("select quotename(schema_name(schema_id)) + '.' + quotename(name) as n from sys.tables where is_ms_shipped = 0 and name <> N'{HISTORY_TABLE}'"))
+            // A system-versioned table's history is its own, and refuses a delete.
+            .rows(&format!("select quotename(schema_name(schema_id)) + '.' + quotename(name) as n from sys.tables where is_ms_shipped = 0 and temporal_type <> 1 and name <> N'{HISTORY_TABLE}'"))
             .await?
             .iter()
             .map(|r| r.text("n").to_string())

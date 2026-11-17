@@ -232,14 +232,32 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         s.add(Object { id, kind: Some(Kind::Type), def: def.clone(), create: vec![format!("create type {name} {def}")], drop: vec![format!("drop type {name}")], deps: schema_dep(r.text("s")), ..Object::default() });
     }
 
-    // Tables, by object id.
+    // Tables, by object id. A system-versioned table's history table is its own, made and dropped
+    // with it, and no object of its own.
     let mut owners: BTreeMap<String, Owner> = BTreeMap::new();
-    for r in db.rows(&format!("select convert(nvarchar(20), object_id) as oid, schema_name(schema_id) as s, name from sys.tables where is_ms_shipped = 0 and name <> N'{history}'")).await? {
+    let mut versioned: BTreeMap<String, String> = BTreeMap::new();
+    for r in db
+        .rows(&format!(
+            "select convert(nvarchar(20), t.object_id) as oid, schema_name(t.schema_id) as s, t.name, t.temporal_type as temporal, object_schema_name(t.history_table_id) as hs, object_name(t.history_table_id) as hn
+            from sys.tables t where t.is_ms_shipped = 0 and t.name <> N'{history}' and t.temporal_type <> 1"
+        ))
+        .await?
+    {
         let name = ctx.name(r.text("s"), r.text("name"));
         let id = format!("table {name}");
         objects.insert(r.text("oid").to_string(), id.clone());
-        s.add(Object { id: id.clone(), kind: Some(Kind::Table), deps: schema_dep(r.text("s")), ..Object::default() });
+        let def = if r.text("temporal") == "2" { format!("system versioned, history {}", ctx.name(r.text("hs"), r.text("hn"))) } else { String::new() };
+        if !def.is_empty() {
+            // SQL Server takes a history table by its two-part name alone.
+            versioned.insert(r.text("oid").to_string(), format!("{}.{}", ident(r.text("hs")), ident(r.text("hn"))));
+        }
+        s.add(Object { id: id.clone(), kind: Some(Kind::Table), def, deps: schema_dep(r.text("s")), ..Object::default() });
         owners.insert(r.text("oid").to_string(), Owner { name, id, columns: BTreeMap::new(), table_type: false });
+    }
+    // Each versioned table's period, its start and end columns.
+    let mut periods: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for r in db.rows("select convert(nvarchar(20), object_id) as oid, col_name(object_id, start_column_id) as start, col_name(object_id, end_column_id) as finish from sys.periods").await? {
+        periods.insert(r.text("oid").to_string(), (r.text("start").to_string(), r.text("finish").to_string()));
     }
     for (oid, (name, id, _)) in &table_types {
         owners.insert(oid.clone(), Owner { name: name.clone(), id: id.clone(), columns: BTreeMap::new(), table_type: true });
@@ -253,7 +271,8 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
             "select convert(nvarchar(20), c.object_id) as oid, c.column_id as cid, c.name, type_name(c.user_type_id) as type, schema_name(ty.schema_id) as type_schema, ty.is_user_defined as user_defined,
               convert(nvarchar(20), c.user_type_id) as tid, c.max_length, c.precision, c.scale, c.is_nullable as nullable, c.collation_name as collation, c.is_sparse as sparse, c.is_rowguidcol as is_rowguid,
               c.is_identity as is_identity, convert(nvarchar(40), ic.seed_value) as seed, convert(nvarchar(40), ic.increment_value) as increment,
-              cc.definition as computed, cc.is_persisted as persisted, d.name as default_name, d.definition as default_def, d.is_system_named as default_system, convert(nvarchar(20), d.object_id) as default_oid
+              cc.definition as computed, cc.is_persisted as persisted, d.name as default_name, d.definition as default_def, d.is_system_named as default_system, convert(nvarchar(20), d.object_id) as default_oid,
+              c.generated_always_type as generated, c.is_hidden as hidden
             from sys.columns c join sys.objects o on o.object_id = c.object_id join sys.types ty on ty.user_type_id = c.user_type_id
             left join sys.identity_columns ic on ic.object_id = c.object_id and ic.column_id = c.column_id
             left join sys.computed_columns cc on cc.object_id = c.object_id and cc.column_id = c.column_id
@@ -306,6 +325,15 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
             }
             if r.flag("is_rowguid") {
                 special.push("rowguidcol".to_string());
+            }
+            // A system-versioned table's period columns, which the server fills.
+            match r.text("generated") {
+                "1" => special.push("generated always as row start".to_string()),
+                "2" => special.push("generated always as row end".to_string()),
+                _ => {}
+            }
+            if r.flag("hidden") {
+                special.push("hidden".to_string());
             }
             let special = special.join(" ");
             (format!("{ty}{}{special} {nullable}", if special.is_empty() { "" } else { " " }), ty, special)
@@ -564,6 +592,9 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
     for (oid, owner) in &owners {
         let mut parts = lines.remove(oid).unwrap_or_default();
         parts.extend(inline_constraints.remove(oid).unwrap_or_default());
+        if let Some((start, finish)) = periods.get(oid) {
+            parts.push(format!("period for system_time ({}, {})", ident(start), ident(finish)));
+        }
         let body = format!("(\n  {}\n)", parts.join(",\n  "));
         if owner.table_type {
             let deps: BTreeSet<String> = owner.columns.values().flat_map(|c| column_deps.get(c).cloned().unwrap_or_default()).filter(|d| !d.starts_with("column ")).collect();
@@ -574,8 +605,17 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
             continue;
         }
         if let Some(t) = s.objects.get_mut(&owner.id) {
-            t.create = vec![format!("create table {} {body}", owner.name)];
-            t.drop = vec![format!("drop table {}", owner.name)];
+            match versioned.get(oid) {
+                // SQL Server refuses to drop a table while it keeps its history, which goes with it.
+                Some(history) => {
+                    t.create = vec![format!("create table {} {body}\nwith (system_versioning = on (history_table = {history}))", owner.name)];
+                    t.drop = vec![format!("alter table {} set (system_versioning = off)", owner.name), format!("drop table {}", owner.name), format!("drop table {history}")];
+                }
+                None => {
+                    t.create = vec![format!("create table {} {body}", owner.name)];
+                    t.drop = vec![format!("drop table {}", owner.name)];
+                }
+            }
         }
     }
 
