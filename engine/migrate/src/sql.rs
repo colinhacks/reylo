@@ -587,6 +587,18 @@ pub fn changes_data(statement: &Statement) -> bool {
     DATA.is_match(&head(statement, 1))
 }
 
+/// A SQL Server plan's batch separator: a statement of its own, written as the line `GO`.
+pub const GO: &str = "GO";
+
+/// A plan's statement as a script writes it: ended with `;`, but for a `GO` line, which ends nothing.
+pub fn ended(statement: &str) -> String {
+    if statement == GO {
+        GO.to_string()
+    } else {
+        format!("{};", statement.trim_end().trim_end_matches(';'))
+    }
+}
+
 /// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`, and
 /// `[Accounts]` of `app.[Accounts]`.
 pub fn last_written(name: &str) -> String {

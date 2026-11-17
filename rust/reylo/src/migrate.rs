@@ -136,7 +136,8 @@ enum Kept {
 
 async fn keep(db: &mut Db) -> Result<Kept, reylo_migrate::Error> {
     match db.dialect() {
-        Dialect::Postgres => Ok(Kept::Nothing),
+        // sqlx has no SQL Server driver, so no session here is one.
+        Dialect::Postgres | Dialect::Sqlserver => Ok(Kept::Nothing),
         Dialect::Mysql => {
             let rows = db.rows("select @@session.sql_mode as mode, @@session.time_zone as zone").await?;
             let row = rows.first().cloned().unwrap_or_default();

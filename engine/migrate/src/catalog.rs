@@ -1139,6 +1139,13 @@ async fn sqlite(db: &mut Db) -> Result<Vec<String>, Error> {
 // already writes every definition from the catalog views, with the names SQL Server chose for
 // constraints left out, so two databases made from one file read the same.
 
+#[cfg(not(feature = "cli"))]
+async fn sqlserver(_: &mut Db) -> Result<Vec<String>, Error> {
+    // An app's connection is never SQL Server's, since sqlx has no driver for it.
+    Err(Error("SQL Server's schema is read by the reylo command".into()))
+}
+
+#[cfg(feature = "cli")]
 async fn sqlserver(db: &mut Db) -> Result<Vec<String>, Error> {
     let schema = crate::diff::sqlserver::read(db).await?;
     Ok(schema

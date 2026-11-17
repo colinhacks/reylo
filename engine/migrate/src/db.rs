@@ -50,7 +50,9 @@ pub enum Db {
     #[cfg(feature = "cli")]
     Sqlite(rusqlite::Connection),
     #[cfg(feature = "cli")]
-    Sqlserver(reylo_engine_native::sqlserver::Conn),
+    // Boxed, as tiberius's client is larger than every other connection, and every future of a run
+    // holds a `Db`.
+    Sqlserver(Box<reylo_engine_native::sqlserver::Conn>),
     /// A database the host holds the connection to, as a Rust app's own pool through
     /// `reylo::migrate!()`.
     Host(Box<dyn Session>),
@@ -231,7 +233,7 @@ impl Db {
             Dialect::Postgres => Ok(Db::Postgres(crate::db::open_postgres(url).await?)),
             Dialect::Mysql => Ok(Db::Mysql(crate::db::open_mysql(url).await?)),
             Dialect::Sqlite => Ok(Db::Sqlite(rusqlite::Connection::open(sqlite_path(url, base)).map_err(sqlite_error)?)),
-            Dialect::Sqlserver => Ok(Db::Sqlserver(open_sqlserver(url).await?)),
+            Dialect::Sqlserver => Ok(Db::Sqlserver(Box::new(open_sqlserver(url).await?))),
         }
     }
 
@@ -588,7 +590,7 @@ pub enum Server {
     Sqlite,
     Sqlserver {
         /// A connection to `master`, which creates and drops the shadows and holds each one's lock.
-        admin: reylo_engine_native::sqlserver::Conn,
+        admin: Box<reylo_engine_native::sqlserver::Conn>,
         url: String,
         /// The target database's collation, which every column created without its own takes.
         collation: Option<String>,
@@ -737,7 +739,7 @@ impl Server {
             }
             Dialect::Sqlite => Ok(Server::Sqlite),
             Dialect::Sqlserver => {
-                let admin = open_sqlserver(&with_database(server_url, "master")).await?;
+                let admin = Box::new(open_sqlserver(&with_database(server_url, "master")).await?);
                 let collation = target.rows("select cast(collation_name as nvarchar(128)) as c from sys.databases where name = db_name()").await?.first().and_then(|r| r.get("c").map(String::from));
                 Ok(Server::Sqlserver { admin, url: server_url.to_string(), collation })
             }
@@ -780,7 +782,7 @@ impl Server {
                     sqlserver_unlock(admin, &name).await;
                     return Err(e);
                 }
-                let db = Db::Sqlserver(open_sqlserver(&with_database(url, &name)).await?);
+                let db = Db::Sqlserver(Box::new(open_sqlserver(&with_database(url, &name)).await?));
                 Ok(Shadow { db, name })
             }
         }

@@ -143,6 +143,7 @@ async fn unlock(db: &mut Db) -> Result<(), Error> {
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_unlock(hashtextextended('reylo_migrate', 0))").await,
         Dialect::Mysql => db.exec("do release_lock(concat('reylo_migrate_', left(sha1(coalesce(database(), '')), 32)))").await,
+        Dialect::Sqlserver => db.exec("exec sp_releaseapplock @Resource = N'reylo_migrate', @LockOwner = 'Session'").await,
         // The file's lock is released with the file, which the run dropped.
         Dialect::Sqlite => Ok(()),
     }
@@ -3647,15 +3648,26 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
     }
 }
 
+/// SQL Server's schema as the statements that make it, having no dump tool: the diff engine's plan
+/// from an empty database to this one.
+#[cfg(feature = "cli")]
+async fn sqlserver_dump(db: &mut Db) -> Result<String, Error> {
+    let target = crate::diff::read(db).await?;
+    let alterer = crate::diff::alterer(db).await?;
+    let plan = crate::diff::plan(&crate::diff::Schema::default(), &target, alterer.as_ref());
+    Ok(crate::diff::sqlserver::written(&plan.statements))
+}
+
+/// Without the command line's diff engine nothing writes SQL Server's schema; an app's connection is
+/// never SQL Server's, since sqlx has no driver for it.
+#[cfg(not(feature = "cli"))]
+async fn sqlserver_dump(_: &mut Db) -> Result<String, Error> {
+    Err(Error("SQL Server's schema is written by the reylo command".into()))
+}
+
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
     match db.dialect() {
-        // No dump tool: the plan from an empty database to this one.
-        Dialect::Sqlserver => {
-            let target = crate::diff::read(db).await?;
-            let alterer = crate::diff::alterer(db).await?;
-            let plan = crate::diff::plan(&crate::diff::Schema::default(), &target, alterer.as_ref());
-            Ok(crate::diff::sqlserver::written(&plan.statements))
-        }
+        Dialect::Sqlserver => sqlserver_dump(db).await,
         Dialect::Postgres => {
             let version: i64 = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
             let mut args: Vec<String> = ["--schema-only", "--no-publications", "--no-subscriptions", "--no-security-labels", "--no-tablespaces"].map(String::from).to_vec();
@@ -3886,7 +3898,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
     let d = db.dialect();
     let expect = crate::catalog::without_comments(expect);
     let expect = &expect[..];
-    let statements: Vec<String> = plan.iter().filter(|s| !s.starts_with("--")).map(|s| crate::diff::ended(s)).chain(then.iter().cloned()).collect();
+    let statements: Vec<String> = plan.iter().filter(|s| !s.starts_with("--")).map(|s| crate::sql::ended(s)).chain(then.iter().cloned()).collect();
     let differs = |now: &[String]| describe_diff("this database", now, "the target", expect);
     if d == Dialect::Mysql || statements.iter().any(|s| runs_alone(s, d)) {
         for s in &statements {
