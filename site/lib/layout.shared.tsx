@@ -1,3 +1,5 @@
+import { SHOW_RUST } from './languages.ts';
+
 export const githubUrl = 'https://github.com/reylosql/reylo';
 
 /** The docs site's address: reylo.dev, which every other Reylo domain redirects to (wiki/docs-site.md). */
@@ -31,7 +33,8 @@ export const docsTitle = (title: string) => `${title} — Reylo`;
 
 /**
  * The list of pages in the left column, by group, and the links away from the docs at its foot:
- * first what holds for every language, then each language's own pages, then the reference.
+ * first what holds for every language, then each language's own pages, then the reference. The Rust
+ * page only while the docs show Rust (lib/languages.ts).
  */
 export const pageGroups = [
   {
@@ -39,7 +42,7 @@ export const pageGroups = [
     items: [
       { title: 'Intro', href: '/' },
       { title: 'Usage with TypeScript', href: '/typescript' },
-      { title: 'Usage with Rust', href: '/rust' },
+      ...(SHOW_RUST ? [{ title: 'Usage with Rust', href: '/rust' }] : []),
       { title: 'Inference', href: '/inference' },
       { title: 'CLI', href: '/cli' },
       { title: 'Migrations', href: '/migrations' },

@@ -1,17 +1,17 @@
 ---
 title: Postgres
-description: How Reylo types SQL queries on Postgres. Each column's type in TypeScript and Rust, null values, row counts, parameters, drivers and limits.
+description: How Reylo types SQL queries on Postgres. Each column's type in TypeScript<Rust> and Rust</Rust>, null values, row counts, parameters, drivers and limits.
 ---
 
 <p className="dk-subheader">How Reylo types queries on Postgres</p>
 
-[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript and Rust. This page covers how it types and runs queries on Postgres: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>. This page covers how it types and runs queries on Postgres: column types, null values, row counts, parameters and drivers.
 
 | | |
 | --- | --- |
 | Postgres versions | 14 to 18 |
 | Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url). Connect directly or through a pooler in session mode, not one in transaction mode such as PgBouncer's. |
-| Drivers | In TypeScript, postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, and Knex over `pg` ([Drivers](#drivers)); in Rust, sqlx |
+| Drivers | <Rust>In TypeScript, </Rust>postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, and Knex over `pg` ([Drivers](#drivers))<Rust>; in Rust, sqlx</Rust> |
 | Type checking | Reylo's engine connects to Postgres itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -71,7 +71,7 @@ Reylo sends the query to the live database [prepared](https://www.postgresql.org
 
 ## Data types
 
-Each Postgres type has one TypeScript type and one Rust type.
+Each Postgres type has one TypeScript type<Rust> and one Rust type</Rust>.
 
 <LanguageSwitch />
 

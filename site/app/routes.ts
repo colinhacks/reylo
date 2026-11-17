@@ -1,11 +1,13 @@
 import { readdirSync } from 'node:fs';
 import { route, type RouteConfig } from '@react-router/dev/routes';
+import { builtPage } from '../lib/rust-content.ts';
 
 // The pages, at / and /<dialect> (content/docs), each page's Markdown, at /index.md and
 // /<dialect>.md, the page a missing address gets, and the files beside them, each rendered to a
-// file at build time (react-router.config.ts).
+// file at build time (react-router.config.ts). The Rust page is one only while the docs show Rust
+// (lib/languages.ts).
 const markdown = readdirSync('content/docs')
-  .filter((name) => name.endsWith('.mdx'))
+  .filter(builtPage)
   .map((name) => `${name.slice(0, -'.mdx'.length)}.md`);
 
 export default [
