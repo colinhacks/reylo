@@ -169,6 +169,9 @@ impl sqlparser::dialect::Dialect for SessionDialect {
     fn parse_infix(&self, parser: &mut Parser, expr: &Expr, precedence: u8) -> Option<Result<Expr, sqlparser::parser::ParserError>> {
         MySqlDialect {}.parse_infix(parser, expr, precedence)
     }
+    fn get_next_precedence(&self, parser: &Parser) -> Option<Result<u8, sqlparser::parser::ParserError>> {
+        MySqlDialect {}.get_next_precedence(parser)
+    }
     fn parse_statement(&self, parser: &mut Parser) -> Option<Result<Statement, sqlparser::parser::ParserError>> {
         MySqlDialect {}.parse_statement(parser)
     }

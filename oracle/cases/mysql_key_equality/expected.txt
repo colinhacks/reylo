@@ -90,7 +90,7 @@ int_decimal_literal.sql: at_most_one () -> { id: int }
 int_distinct.sql: at_most_one (id: int32) -> { name: varchar(≤20) }
 int_div.sql: at_most_one (a: int32, b: int32) -> { id: int }
 int_division.sql: at_most_one (a: int32, b: int32) -> { id: int }
-int_double_ampersand.sql: many (id: int32) -> { id: int }
+int_double_ampersand.sql: at_most_one (id: int32) -> { id: int }
 int_float_literal.sql: at_most_one () -> { id: int }
 int_for_update.sql: at_most_one (id: int32) -> { id: int }
 int_hex_literal.sql: many () -> { id: int }
