@@ -2,5 +2,5 @@
 //! `reylo-sqlserver` serves requests line by line, and `reylo-sqlserver call` answers the one request
 //! on standard input.
 fn main() {
-    reylo_engine_native::main(reylo_engine_native::sqlserver::Sqlserver::default());
+    reylo_engine::main(reylo_engine::sqlserver::Sqlserver::default());
 }

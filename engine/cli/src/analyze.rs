@@ -2,11 +2,11 @@
 //! project names, as the type check reads it: a YAML document per statement, or with
 //! `--format json` one line of JSON per statement.
 
-use reylo_engine_native::project::{self, Project};
+use reylo_engine::project::{self, Project};
 use reylo_engine_core::api::{utf16_offset, Analysis};
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::types::{Cardinality, DialectVersion, Diagnostic, Kind, ResultRows, StatementDescriptor};
-use reylo_engine_native::Failure;
+use reylo_engine::Failure;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,20 +44,20 @@ struct Input {
 
 /// One database's statements, over one connection.
 enum Session {
-    Postgres(reylo_engine_native::postgres::Session),
-    Mysql(reylo_engine_native::mysql::Session),
-    Sqlite(reylo_engine_native::sqlite::Session),
-    Sqlserver(reylo_engine_native::sqlserver::Session),
+    Postgres(reylo_engine::postgres::Session),
+    Mysql(reylo_engine::mysql::Session),
+    Sqlite(reylo_engine::sqlite::Session),
+    Sqlserver(reylo_engine::sqlserver::Session),
 }
 
 impl Session {
     /// `base` is the directory a relative SQLite path is read from.
     async fn open(dialect: &str, url: &str, base: &Path) -> Result<Session, Failure> {
         Ok(match dialect {
-            "postgres" => Session::Postgres(reylo_engine_native::postgres::Session::open(url).await?),
-            "mysql" => Session::Mysql(reylo_engine_native::mysql::Session::open(url).await?),
-            "sqlserver" => Session::Sqlserver(reylo_engine_native::sqlserver::Session::open(url).await?),
-            _ => Session::Sqlite(reylo_engine_native::sqlite::Session::open(&project::sqlite_path(url, base).map_err(|why| Failure::Error(format!("Cannot read the SQLite URL {url}: {why}.")))?)?),
+            "postgres" => Session::Postgres(reylo_engine::postgres::Session::open(url).await?),
+            "mysql" => Session::Mysql(reylo_engine::mysql::Session::open(url).await?),
+            "sqlserver" => Session::Sqlserver(reylo_engine::sqlserver::Session::open(url).await?),
+            _ => Session::Sqlite(reylo_engine::sqlite::Session::open(&project::sqlite_path(url, base).map_err(|why| Failure::Error(format!("Cannot read the SQLite URL {url}: {why}.")))?)?),
         })
     }
 
@@ -305,7 +305,7 @@ fn read_inputs(path: &str, cwd: &Path) -> Result<Vec<Input>, String> {
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut sql).map_err(|e| format!("cannot read standard input: {e}"))?;
         return Ok(vec![Input { file: None, sql }]);
     }
-    reylo_codegen::files::sql_files(path, cwd)?
+    reylo_build::files::sql_files(path, cwd)?
         .into_iter()
         .map(|file| {
             let sql = std::fs::read_to_string(&file).map_err(|e| format!("cannot read {}: {e}", shown(cwd, &file)))?;

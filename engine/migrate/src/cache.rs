@@ -171,7 +171,7 @@ static CODE: LazyLock<Hash> = LazyLock::new(|| {
     let mut h = Sha256::new();
     for source in [
         env!("CARGO_PKG_VERSION"),
-        reylo_engine_native::SOURCE_HASH,
+        reylo_engine::SOURCE_HASH,
         include_str!("../Cargo.toml"),
         include_str!("lib.rs"),
         include_str!("cache.rs"),

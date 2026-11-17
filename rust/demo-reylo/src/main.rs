@@ -56,7 +56,9 @@ async fn main() -> Result<(), sqlx::Error> {
     let rows = post_statuses::Query.run(&pool).await?;
     let status: post_statuses::Status = rows[0].status;
     assert_eq!(status, post_statuses::Status::Draft);
-    println!("12. CHECK list  {rows:?} ({})", status.label());
+    let reflected: Publication = status.cast();
+    assert_eq!(reflected, Publication::Draft);
+    println!("12. CHECK list  {rows:?} ({}, {reflected:?})", status.label());
 
     let post = get_post::Query { id: 1 }.run(&pool).await?.expect("hello");
     let own: PostStatus = post.status;

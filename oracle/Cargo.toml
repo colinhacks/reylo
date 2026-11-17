@@ -11,9 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 reylo-engine-core.workspace = true
-reylo-engine = { workspace = true, features = ["tokio-postgres", "rusqlite", "mysql_async", "tiberius"] }
-# SQL Server's connection as the `reylo` binary opens it (tiberius over TLS), and the values its runs return.
-reylo-engine-native = { workspace = true, features = ["sqlserver"] }
+reylo-engine = { workspace = true, features = ["postgres", "mysql", "sqlite", "sqlserver"] }
+# The values a SQL Server statement's runs return, over the connection the engine opens.
 tiberius = { workspace = true, features = ["tds73", "rustls"] }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 # The same features as Reylo Framework's, so the two share one build of each in the workspace's target.

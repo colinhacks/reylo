@@ -7,7 +7,7 @@
 
 use proc_macro2::Span;
 use quote::ToTokens;
-use reylo_codegen::{Dates, Decimals, Dialect, Options};
+use reylo_build::{Dates, Decimals, Dialect, Options};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
@@ -28,7 +28,7 @@ fn main() {
             Some("sqlite") => Dialect::Sqlite,
             other => panic!("no dialect {other:?}"),
         };
-        let answer = match reylo_codegen::items(dialect, options, &input["analysis"], Span::call_site()) {
+        let answer = match reylo_build::items(dialect, options, &input["analysis"], Span::call_site()) {
             Ok(tokens) => {
                 let (params, returns) = shown(syn::parse2(tokens).expect("the items parse"));
                 json!({ "key": key, "params": params, "returns": returns })

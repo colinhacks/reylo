@@ -5,14 +5,41 @@ edition = "2021"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Writes the modules of reylo generate rust-sqlx from a build script, into Cargo's OUT_DIR: each .sql file's Query, Row and run on sqlx, typed by Reylo's engine."
+description = "Reylo's Rust modules: a statement's analysis as Query, Row and run on sqlx, which #[reylo::query] expands to, reylo generate rust-sqlx writes to files, and a build script writes into Cargo's OUT_DIR."
 
 [features]
-# The databases the build script can analyze a statement on, as `reylo`'s features of the same names.
-default = ["postgres"]
-postgres = ["reylo-codegen/postgres"]
-mysql = ["reylo-codegen/mysql"]
-sqlite = ["reylo-codegen/sqlite"]
+# A build script's modules (`rust_sqlx()`), on Postgres.
+default = ["generate", "postgres"]
+# A statement's analysis, read from the project's database or from reylo/.cache/: the project file and
+# the cache. Each database's engine and client come with the feature of its name, as `reylo`'s
+# features of the same names.
+analyze = ["dep:reylo-engine", "dep:sha2", "dep:tokio"]
+postgres = ["analyze", "reylo-engine/postgres", "dep:tokio-postgres"]
+mysql = ["analyze", "reylo-engine/mysql", "dep:mysql_async"]
+sqlite = ["analyze", "reylo-engine/sqlite", "dep:rusqlite"]
+# The modules written to files, by `reylo generate rust-sqlx` or a build script: the inputs found, the
+# items formatted as Rust source.
+generate = ["analyze", "dep:glob", "dep:prettyplease"]
 
 [dependencies]
-reylo-codegen = { workspace = true, features = ["generate"] }
+# The type descriptor's kinds, and the analysis's columns and parameters.
+reylo-engine-core.workspace = true
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "visit-mut"] }
+serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
+# The engine and the connection its own program opens: the URL read as the loader reads it, TLS
+# included.
+reylo-engine = { workspace = true, optional = true }
+rusqlite = { version = "0.39", features = ["bundled"], optional = true }
+sha2 = { version = "0.10", optional = true }
+# The same features as the oracle's, so the workspace builds one tokio.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs", "io-util", "process"], optional = true }
+tokio-postgres = { version = "0.7", optional = true }
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust"], optional = true }
+glob = { version = "0.3", optional = true }
+prettyplease = { version = "0.2", optional = true }
+
+[dev-dependencies]
+# The docs' renderer (examples/docs.rs) prints the items as Rust source.
+prettyplease = "0.2"

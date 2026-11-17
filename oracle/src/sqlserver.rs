@@ -1,6 +1,6 @@
 //! The SQL Server half: the host the engine's replay asks, and the seeding and the runs.
 //!
-//! The host is the native program's own connection (`reylo_engine_native::sqlserver`, tiberius over
+//! The host is the native program's own connection (`reylo_engine::sqlserver`, tiberius over
 //! TLS), and the engine's needs are its two describe queries, `sp_describe_undeclared_parameters`
 //! and `sys.dm_exec_describe_first_result_set`, which it runs on the case's database. A case runs
 //! in a database of its own, made on the server `--sqlserver-url` (or `ORACLE_SQLSERVER_URL`) names,
@@ -28,7 +28,7 @@
 use crate::seed::{assignments, contradiction, key_repeats, length_contradiction, out_of_order, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use reylo_engine::AnswerCache;
 use reylo_engine_core::types::{Kind, SizeUnit, Type};
-use reylo_engine_native::sqlserver::Conn;
+use reylo_engine::sqlserver::Conn;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -63,13 +63,13 @@ pub async fn connect(url: &str) -> Result<Server, String> {
     if port_of(url) == Some(1433) {
         return Err("port 1433 is SQL Server's own; the oracle runs only on a throwaway server on another port".into());
     }
-    let (admin, version) = reylo_engine_native::sqlserver::open(&with_database(url, "master")).await.map_err(|f| f.to_string())?;
+    let (admin, version) = reylo_engine::sqlserver::open(&with_database(url, "master")).await.map_err(|f| f.to_string())?;
     let version = version.split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0);
     Ok(Server { admin, url: url.to_string(), version })
 }
 
 async fn session(url: &str) -> Result<Conn, String> {
-    let (mut conn, _) = reylo_engine_native::sqlserver::open(url).await.map_err(|f| f.to_string())?;
+    let (mut conn, _) = reylo_engine::sqlserver::open(url).await.map_err(|f| f.to_string())?;
     exec(&mut conn, "set xact_abort off").await?;
     Ok(conn)
 }

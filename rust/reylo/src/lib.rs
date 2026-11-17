@@ -5,9 +5,9 @@
 //! lookup is an `Option<get_user::Row>` and a `count(*)` one `Row`, with no fetch method chosen.
 //!
 //! Each database enum a query reads or binds is an enum in its module, which implements [`Enum`];
-//! `#[reylo::enum_type("…")]` makes one of the crate's own enums one too.
+//! `#[reylo::reflect("…")]` makes one of the crate's own enums one too.
 
-pub use reylo_macros::{enum_type, query};
+pub use reylo_macros::{query, reflect};
 
 #[cfg(feature = "migrate")]
 pub mod migrate;

@@ -671,7 +671,7 @@ const SQLSERVER_FINGERPRINT = `select @@version + ' ' + convert(varchar(64), has
     union all select concat_ws(' ', 'i', object_schema_name(i.object_id), object_name(i.object_id), i.name, i.is_unique, i.has_filter, i.is_disabled, ic.key_ordinal, ic.is_included_column, col_name(ic.object_id, ic.column_id)) from sys.indexes i join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id join sys.objects o on o.object_id = i.object_id where o.is_ms_shipped = 0
     union all select concat_ws(' ', 'm', object_schema_name(m.object_id), object_name(m.object_id), convert(varchar(64), hashbytes('SHA2_256', m.definition), 2)) from sys.sql_modules m join sys.objects o on o.object_id = m.object_id where o.is_ms_shipped = 0
   ) t`;
-/** Each dialect's schema fingerprint query. The Rust crate keeps copies (rust/reylo-codegen/src/fingerprint-*.sql), which tests/rust-fingerprints.test.ts holds to these. */
+/** Each dialect's schema fingerprint query. The Rust crate keeps copies (rust/reylo-build/src/fingerprint-*.sql), which tests/rust-fingerprints.test.ts holds to these. */
 export const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   postgres: POSTGRES_FINGERPRINT,
   sqlserver: SQLSERVER_FINGERPRINT,

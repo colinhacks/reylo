@@ -1,5 +1,5 @@
 //! The databases `reylo migrate` works on: the target, through the connection code the type check
-//! uses (`reylo-engine-native`), and the shadows it builds beside it. A shadow is a scratch database
+//! uses (`reylo-engine`), and the shadows it builds beside it. A shadow is a scratch database
 //! on the target's own server (`create database`), so it has the target's engine, version and
 //! extensions; SQLite's live in memory. The connection that creates a shadow holds a session lock
 //! named after it for the whole run, and the lock dies with the session, so a run that is killed
@@ -52,7 +52,7 @@ pub enum Db {
     #[cfg(feature = "cli")]
     // Boxed, as tiberius's client is larger than every other connection, and every future of a run
     // holds a `Db`.
-    Sqlserver(Box<reylo_engine_native::sqlserver::Conn>),
+    Sqlserver(Box<reylo_engine::sqlserver::Conn>),
     /// A database the host holds the connection to, as a Rust app's own pool through
     /// `reylo::migrate!()`.
     Host(Box<dyn Session>),
@@ -90,7 +90,7 @@ fn sqlserver_text(value: &tiberius::ColumnData<'_>) -> Option<String> {
 
 /// The rows of every result set of a SQL Server batch, every value as text.
 #[cfg(feature = "cli")]
-async fn sqlserver_rows(client: &mut reylo_engine_native::sqlserver::Conn, sql: &str) -> Result<Vec<Row>, Error> {
+async fn sqlserver_rows(client: &mut reylo_engine::sqlserver::Conn, sql: &str) -> Result<Vec<Row>, Error> {
     let results = client.simple_query(sql).await.map_err(sqlserver_error)?.into_results().await.map_err(sqlserver_error)?;
     Ok(results
         .into_iter()
@@ -105,8 +105,8 @@ async fn sqlserver_rows(client: &mut reylo_engine_native::sqlserver::Conn, sql: 
 
 /// A connection to the SQL Server database a URL names, as the engine opens one.
 #[cfg(feature = "cli")]
-pub(crate) async fn open_sqlserver(url: &str) -> Result<reylo_engine_native::sqlserver::Conn, Error> {
-    reylo_engine_native::sqlserver::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
+pub(crate) async fn open_sqlserver(url: &str) -> Result<reylo_engine::sqlserver::Conn, Error> {
+    reylo_engine::sqlserver::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
 }
 
 /// A SQL Server name in brackets, `]` doubled.
@@ -217,13 +217,13 @@ pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Resul
 /// failure messages), without the server version it reports.
 #[cfg(feature = "cli")]
 pub(crate) async fn open_postgres(url: &str) -> Result<tokio_postgres::Client, Error> {
-    reylo_engine_native::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
+    reylo_engine::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
 }
 
 /// A connection to the MySQL database a URL names, as the engine opens one.
 #[cfg(feature = "cli")]
 pub(crate) async fn open_mysql(url: &str) -> Result<mysql_async::Conn, Error> {
-    reylo_engine_native::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
+    reylo_engine::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
 }
 
 impl Db {
@@ -590,7 +590,7 @@ pub enum Server {
     Sqlite,
     Sqlserver {
         /// A connection to `master`, which creates and drops the shadows and holds each one's lock.
-        admin: Box<reylo_engine_native::sqlserver::Conn>,
+        admin: Box<reylo_engine::sqlserver::Conn>,
         url: String,
         /// The target database's collation, which every column created without its own takes.
         collation: Option<String>,
@@ -600,7 +600,7 @@ pub enum Server {
 /// Everything about a SQL Server a replay's outcome turns on, beside its steps: its version and
 /// collation, the login the shadows are made as, and the server's principals a grant may name.
 #[cfg(feature = "cli")]
-pub(crate) async fn sqlserver_state(admin: &mut reylo_engine_native::sqlserver::Conn) -> Result<String, Error> {
+pub(crate) async fn sqlserver_state(admin: &mut reylo_engine::sqlserver::Conn) -> Result<String, Error> {
     let rows = sqlserver_rows(
         admin,
         "select concat_ws(char(10), @@version, cast(serverproperty('Collation') as nvarchar(128)), suser_sname(),
@@ -612,19 +612,19 @@ pub(crate) async fn sqlserver_state(admin: &mut reylo_engine_native::sqlserver::
 
 /// Takes the application lock `name` for the session, at once: whether it was granted.
 #[cfg(feature = "cli")]
-async fn sqlserver_lock(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) -> Result<bool, Error> {
+async fn sqlserver_lock(admin: &mut reylo_engine::sqlserver::Conn, name: &str) -> Result<bool, Error> {
     let rows = sqlserver_rows(admin, &format!("declare @r int; exec @r = sp_getapplock @Resource = N'{name}', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; select @r as r")).await?;
     Ok(rows.first().and_then(|r| r.text("r").parse::<i64>().ok()).is_some_and(|r| r >= 0))
 }
 
 #[cfg(feature = "cli")]
-async fn sqlserver_unlock(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) {
+async fn sqlserver_unlock(admin: &mut reylo_engine::sqlserver::Conn, name: &str) {
     let _ = sqlserver_rows(admin, &format!("exec sp_releaseapplock @Resource = N'{name}', @LockOwner = 'Session'")).await;
 }
 
 /// Drops a SQL Server database, its other sessions ended first.
 #[cfg(feature = "cli")]
-async fn sqlserver_drop(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) -> Result<(), Error> {
+async fn sqlserver_drop(admin: &mut reylo_engine::sqlserver::Conn, name: &str) -> Result<(), Error> {
     let db = bracket(name);
     sqlserver_rows(admin, &format!("if db_id(N'{name}') is not null begin alter database {db} set single_user with rollback immediate; drop database {db}; end")).await.map(|_| ())
 }

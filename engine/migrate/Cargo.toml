@@ -14,10 +14,10 @@ default = ["cli"]
 # writes a migration from a change to schema.sql, over Postgres's parser. Without it, deploy and
 # status run on a database a host connects (`db::Session`), as a Rust app's `reylo::migrate!()` does,
 # and nothing else is built.
-cli = ["dep:reylo-engine-native", "dep:pg_query", "dep:prost", "dep:rusqlite", "dep:tokio-postgres", "dep:mysql_async", "dep:tiberius"]
+cli = ["dep:reylo-engine", "dep:pg_query", "dep:prost", "dep:rusqlite", "dep:tokio-postgres", "dep:mysql_async", "dep:tiberius"]
 
 [dependencies]
-reylo-engine-native = { workspace = true, features = ["postgres", "mysql", "sqlite", "sqlserver"], optional = true }
+reylo-engine = { workspace = true, features = ["postgres", "mysql", "sqlite", "sqlserver"], optional = true }
 # Postgres 18's parser (`reylo-pg-query`, the workspace's), which reads `schema.sql` for the text each
 # object was declared with; prost's recursion limit lifted, as the Postgres engine lifts it, so a
 # deeply nested declaration decodes.

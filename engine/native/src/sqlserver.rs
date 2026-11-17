@@ -10,8 +10,8 @@
 //! Microsoft Entra ID's, as `authentication=` names it (`crate::entra`).
 
 use crate::{Failure, Program};
-use reylo_engine::clients::tiberius::{self as answers};
-use reylo_engine::{AnswerCache, ReplayError};
+use crate::clients::tiberius::{self as answers};
+use crate::{AnswerCache, ReplayError};
 use reylo_engine_core::api::{Analysis, NoDescribe};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -102,7 +102,7 @@ pub async fn open(url: &str) -> Result<(Conn, String), Failure> {
 
 impl Program for Sqlserver {
     fn call(&self, request: &str) -> String {
-        reylo_engine_core::api::call::<reylo_engine::sqlserver::Sqlserver>(request)
+        reylo_engine_core::api::call::<crate::engines::sqlserver::Sqlserver>(request)
     }
 
     async fn serve(&mut self, request: &Value) -> Option<Value> {

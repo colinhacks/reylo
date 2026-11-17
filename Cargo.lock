@@ -2434,7 +2434,19 @@ dependencies = [
 name = "reylo-build"
 version = "0.8.0-beta.0"
 dependencies = [
- "reylo-codegen",
+ "glob",
+ "mysql_async",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "reylo-engine",
+ "reylo-engine-core",
+ "rusqlite",
+ "serde_json",
+ "sha2 0.10.9",
+ "syn 2.0.119",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]
@@ -2443,9 +2455,9 @@ version = "0.8.0-beta.0"
 dependencies = [
  "flate2",
  "regex",
- "reylo-codegen",
+ "reylo-build",
+ "reylo-engine",
  "reylo-engine-core",
- "reylo-engine-native",
  "reylo-migrate",
  "serde_json",
  "serde_yaml",
@@ -2456,31 +2468,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "reylo-codegen"
-version = "0.8.0-beta.0"
-dependencies = [
- "glob",
- "mysql_async",
- "prettyplease",
- "proc-macro2",
- "quote",
- "reylo-engine",
- "reylo-engine-core",
- "reylo-engine-native",
- "rusqlite",
- "serde_json",
- "sha2 0.10.9",
- "syn 2.0.119",
- "tokio",
- "tokio-postgres",
-]
-
-[[package]]
 name = "reylo-engine"
 version = "0.8.0-beta.0"
 dependencies = [
+ "azure_core",
+ "azure_identity",
  "futures-io",
  "mysql_async",
+ "reqwest",
+ "reylo-engine-build",
  "reylo-engine-core",
  "reylo-engine-mysql",
  "reylo-engine-postgres",
@@ -2488,8 +2484,15 @@ dependencies = [
  "reylo-engine-sqlserver",
  "reylo-tiberius",
  "rusqlite",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
  "serde_json",
+ "tokio",
  "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tokio-util",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -2516,30 +2519,6 @@ dependencies = [
  "reylo-sqlparser",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "reylo-engine-native"
-version = "0.8.0-beta.0"
-dependencies = [
- "azure_core",
- "azure_identity",
- "mysql_async",
- "reqwest",
- "reylo-engine",
- "reylo-engine-build",
- "reylo-engine-core",
- "reylo-tiberius",
- "rusqlite",
- "rustls",
- "rustls-pki-types",
- "rustls-platform-verifier",
- "serde_json",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "tokio-util",
- "webpki-roots",
 ]
 
 [[package]]
@@ -2584,7 +2563,7 @@ version = "0.8.0-beta.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "reylo-codegen",
+ "reylo-build",
  "serde_json",
  "syn 2.0.119",
 ]
@@ -2597,7 +2576,7 @@ dependencies = [
  "mysql_async",
  "prost",
  "regex",
- "reylo-engine-native",
+ "reylo-engine",
  "reylo-pg-query",
  "reylo-tiberius",
  "rusqlite",
@@ -2619,7 +2598,6 @@ dependencies = [
  "regex",
  "reylo-engine",
  "reylo-engine-core",
- "reylo-engine-native",
  "reylo-tiberius",
  "rusqlite",
  "serde_json",

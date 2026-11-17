@@ -9,8 +9,8 @@
 use crate::{Failure, Program};
 use mysql_async::prelude::Queryable;
 use mysql_async::{ClientIdentity, Conn, Opts, OptsBuilder, SslOpts};
-use reylo_engine::clients::mysql_async::{self as answers, Describe};
-use reylo_engine::{AnswerCache, ReplayError};
+use crate::clients::mysql_async::{self as answers, Describe};
+use crate::{AnswerCache, ReplayError};
 use reylo_engine_core::api::Analysis;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -99,7 +99,7 @@ impl Session {
 
 impl Program for Mysql {
     fn call(&self, request: &str) -> String {
-        reylo_engine_core::api::call::<reylo_engine::mysql::Mysql>(request)
+        reylo_engine_core::api::call::<crate::engines::mysql::Mysql>(request)
     }
 
     async fn serve(&mut self, request: &Value) -> Option<Value> {
@@ -169,7 +169,7 @@ impl Program for Mysql {
     }
 }
 
-/// A query's rows, each value as mysql2 reads it (`reylo_engine::clients::mysql_async::decoded`).
+/// A query's rows, each value as mysql2 reads it (`crate::clients::mysql_async::decoded`).
 async fn rows(conn: &mut Conn, text: String) -> mysql_async::Result<Vec<Vec<Value>>> {
     let mut result = conn.query_iter(text).await?;
     let types: Vec<u8> = result.columns_ref().iter().map(|c| c.column_type() as u8).collect();
