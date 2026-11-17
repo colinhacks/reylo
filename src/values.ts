@@ -1248,13 +1248,14 @@ export function refuseTruth(column: string, shown: string): never {
 }
 
 /**
- * A Date a driver handed back must hold a time. Bun.sql decodes a date, timestamp or timestamptz
- * that no Date holds as an Invalid Date: one past 275760 AD, a MySQL zero date, and before 1.4.4
- * one before 1 AD (its infinities come as the numbers ±Infinity). So an Invalid Date is a value the
- * driver lost, and Reylo refuses it rather than return a wrong one.
+ * A Date a driver handed back must hold a time. Bun.sql decodes a date, timestamp or timestamptz it
+ * cannot read into a Date as an Invalid Date: a MySQL date with a zero month or day, one after the
+ * last day a Date holds (13 September 275760), and before 1.4.4 one before 1 AD (its infinities
+ * come as the numbers ±Infinity). So an Invalid Date is a value the driver lost, and Reylo refuses
+ * it rather than return a wrong one.
  */
 function validDate(d: Date, column: string): void {
-  if (Number.isNaN(d.getTime())) throw new DecodeError(`Column "${column}": the driver returned an Invalid Date, which is how Bun.sql decodes a date or timestamp that a JavaScript Date cannot hold (past the year 275760, a MySQL zero date, and before Bun 1.4.4 one before 1 AD). Reylo refuses it rather than return a wrong value.`);
+  if (Number.isNaN(d.getTime())) throw new DecodeError(`Column "${column}": the driver returned an Invalid Date, which is how Bun.sql decodes a date or timestamp it cannot read into a JavaScript Date (a MySQL date with a zero month or day, one after 13 September 275760, and before Bun 1.4.4 one before 1 AD). Reylo refuses it rather than return a wrong value.`);
 }
 
 /**
