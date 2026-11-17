@@ -9,10 +9,13 @@ description = "Reylo's engine as a native program per database: JSON requests on
 
 [features]
 default = ["postgres", "mysql", "sqlite", "sqlserver"]
-postgres = ["reylo-engine/tokio-postgres", "dep:tokio-postgres", "dep:tokio-postgres-rustls"]
-mysql = ["reylo-engine/mysql_async", "dep:mysql_async"]
+postgres = ["tls", "reylo-engine/tokio-postgres", "dep:tokio-postgres", "dep:tokio-postgres-rustls"]
+mysql = ["tls", "reylo-engine/mysql_async", "dep:mysql_async"]
 sqlite = ["reylo-engine/rusqlite", "dep:rusqlite"]
-sqlserver = ["reylo-engine/tiberius", "dep:tiberius", "dep:tokio-util", "dep:azure_core", "dep:azure_identity", "dep:reqwest"]
+# tiberius makes its own TLS connection; the program installs rustls's ring provider for it.
+sqlserver = ["reylo-engine/tiberius", "dep:tiberius", "dep:tokio-util", "dep:rustls", "dep:azure_core", "dep:azure_identity", "dep:reqwest"]
+# TLS over rustls, for the databases a URL reaches over the network.
+tls = ["dep:rustls", "dep:rustls-pki-types", "dep:rustls-platform-verifier", "dep:webpki-roots"]
 
 [[bin]]
 name = "reylo-postgres"
@@ -55,15 +58,15 @@ tokio-util = { version = "0.7", features = ["compat"], optional = true }
 azure_core = { version = "1", default-features = false, features = ["reqwest", "tokio"], optional = true }
 azure_identity = { version = "1", default-features = false, features = ["tokio"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"], optional = true }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pki-types = { version = "1", features = ["std"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-pki-types = { version = "1", features = ["std"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-rustls-platform-verifier = "0.6"
+rustls-platform-verifier = { version = "0.6", optional = true }
 
 # The WebAssembly component (engine/wasip2) has no operating system's certificate store.
 [target.'cfg(target_family = "wasm")'.dependencies]
-webpki-roots = "1"
+webpki-roots = { version = "1", optional = true }

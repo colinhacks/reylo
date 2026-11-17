@@ -13,6 +13,10 @@ proc-macro = true
 # Which Rust types the macro writes for dates and times, uuids and decimals: `reylo`'s features of
 # the same names turn these on beside sqlx's support for the types.
 [features]
+# The databases the macro can analyze a statement on: each builds that database's engine and client.
+postgres = ["reylo-codegen/postgres"]
+mysql = ["reylo-codegen/mysql"]
+sqlite = ["reylo-codegen/sqlite"]
 chrono = []
 time = []
 uuid = []

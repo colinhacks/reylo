@@ -32,7 +32,9 @@ if (args[0] === "play") {
     if (child.exitCode === null && child.signalCode === null) child.kill(signal);
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, forward);
-  child = spawn(binary, args, { stdio: "inherit", windowsHide: true });
+  // The package pins the binary's version itself, so the binary runs as it is, even in a Rust
+  // project whose Cargo.lock locks the reylo crate at another (engine/cli/src/matched.rs).
+  child = spawn(binary, args, { stdio: "inherit", windowsHide: true, env: { ...process.env, REYLO_VERSION_MATCHED: "1" } });
   child.on("error", (e) => {
     console.error(`reylo: cannot start ${binary}: ${e.message}`);
     process.exit(1);
