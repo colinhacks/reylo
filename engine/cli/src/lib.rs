@@ -28,7 +28,7 @@ mod analyze;
 mod matched;
 mod yaml;
 
-use reylo_engine_native::project::{self, Project};
+use reylo_engine::project::{self, Project};
 use reylo_migrate::Options;
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -415,7 +415,7 @@ fn generate_command(args: &[String]) -> i32 {
         eprintln!("reylo generate: no generator {generator}: the one there is is rust-sqlx (reylo generate --help)");
         return 2;
     }
-    let mut builder = reylo_codegen::generate::rust_sqlx();
+    let mut builder = reylo_build::generate::rust_sqlx();
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
         if arg == "--out" || arg == "-o" {
@@ -487,9 +487,9 @@ fn run_command(args: &[String]) -> Result<i32, String> {
 fn engine_command(args: &[String]) -> i32 {
     let call = args.get(1).map(String::as_str) == Some("call");
     match args.first().map(String::as_str) {
-        Some("postgres") => reylo_engine_native::serve(reylo_engine_native::postgres::Postgres::default(), call),
-        Some("mysql") => reylo_engine_native::serve(reylo_engine_native::mysql::Mysql::default(), call),
-        Some("sqlite") => reylo_engine_native::serve(reylo_engine_native::sqlite::Sqlite::default(), call),
+        Some("postgres") => reylo_engine::serve(reylo_engine::postgres::Postgres::default(), call),
+        Some("mysql") => reylo_engine::serve(reylo_engine::mysql::Mysql::default(), call),
+        Some("sqlite") => reylo_engine::serve(reylo_engine::sqlite::Sqlite::default(), call),
         other => {
             eprintln!("reylo engine: name a database: postgres, mysql or sqlite{}", other.map(|o| format!(" (not {o})")).unwrap_or_default());
             return 2;

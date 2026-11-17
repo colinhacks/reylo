@@ -1,5 +1,5 @@
 //! The databases `reylo migrate` works on: the target, through the connection code the type check
-//! uses (`reylo-engine-native`), and the shadows it builds beside it. A shadow is a scratch database
+//! uses (`reylo-engine`), and the shadows it builds beside it. A shadow is a scratch database
 //! on the target's own server (`create database`), so it has the target's engine, version and
 //! extensions; SQLite's live in memory. The connection that creates a shadow holds a session lock
 //! named after it for the whole run, and the lock dies with the session, so a run that is killed
@@ -156,13 +156,13 @@ pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Resul
 /// failure messages), without the server version it reports.
 #[cfg(feature = "cli")]
 pub(crate) async fn open_postgres(url: &str) -> Result<tokio_postgres::Client, Error> {
-    reylo_engine_native::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
+    reylo_engine::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
 }
 
 /// A connection to the MySQL database a URL names, as the engine opens one.
 #[cfg(feature = "cli")]
 pub(crate) async fn open_mysql(url: &str) -> Result<mysql_async::Conn, Error> {
-    reylo_engine_native::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
+    reylo_engine::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
 }
 
 impl Db {

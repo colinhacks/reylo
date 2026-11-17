@@ -1,17 +1,18 @@
 [package]
-name = "reylo-engine-native"
+name = "reylo-engine"
 version.workspace = true
 edition = "2021"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Reylo's engine as a native program per database: JSON requests on standard input, one answer per line on standard output. It answers what the WebAssembly engine answers, and opens its own connection to the database to analyze a statement to its end."
+description = "Reylo's analysis engine for a Rust host: each database's engine behind a feature, the replay loop that runs an analysis to its end, the answers to the engine's needs over tokio-postgres, rusqlite or mysql_async, and the engine as a program that opens its own connections."
 
 [features]
 default = ["postgres", "mysql", "sqlite"]
-postgres = ["tls", "reylo-engine/tokio-postgres", "dep:tokio-postgres", "dep:tokio-postgres-rustls"]
-mysql = ["tls", "reylo-engine/mysql_async", "dep:mysql_async"]
-sqlite = ["reylo-engine/rusqlite", "dep:rusqlite"]
+# Each database: its engine, the answers to its needs over its client, and its program.
+postgres = ["dep:reylo-engine-postgres", "tls", "dep:tokio-postgres", "dep:tokio-postgres-rustls"]
+mysql = ["dep:reylo-engine-mysql", "tls", "dep:mysql_async"]
+sqlite = ["dep:reylo-engine-sqlite", "dep:rusqlite"]
 # TLS over rustls, for the databases a URL reaches over the network.
 tls = ["dep:rustls", "dep:rustls-pki-types", "dep:rustls-platform-verifier", "dep:webpki-roots"]
 
@@ -34,11 +35,15 @@ required-features = ["sqlite"]
 reylo-engine-build.workspace = true
 
 [dependencies]
-reylo-engine.workspace = true
 reylo-engine-core.workspace = true
+reylo-engine-postgres = { workspace = true, optional = true }
+reylo-engine-sqlite = { workspace = true, optional = true }
+reylo-engine-mysql = { workspace = true, optional = true }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 tokio = { version = "1", features = ["rt", "io-std", "io-util", "net", "time"] }
-tokio-postgres = { version = "0.7", optional = true }
+# `with-serde_json-1`: a `json` or `jsonb` column reads as its value, as the answers of the server-side
+# extension come back.
+tokio-postgres = { version = "0.7", optional = true, features = ["with-serde_json-1"] }
 tokio-postgres-rustls = { version = "0.13", optional = true }
 # TLS over rustls and ring, as the Postgres program's.
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"], optional = true }

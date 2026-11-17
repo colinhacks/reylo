@@ -14,9 +14,9 @@ proc-macro = true
 # the same names turn these on beside sqlx's support for the types.
 [features]
 # The databases the macro can analyze a statement on: each builds that database's engine and client.
-postgres = ["reylo-codegen/postgres"]
-mysql = ["reylo-codegen/mysql"]
-sqlite = ["reylo-codegen/sqlite"]
+postgres = ["reylo-build/postgres"]
+mysql = ["reylo-build/mysql"]
+sqlite = ["reylo-build/sqlite"]
 chrono = []
 time = []
 uuid = []
@@ -25,7 +25,7 @@ bigdecimal = []
 
 [dependencies]
 # The statement's analysis, and the module's items from it.
-reylo-codegen = { workspace = true, features = ["analyze"] }
+reylo-build = { workspace = true, features = ["analyze"] }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
