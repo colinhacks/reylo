@@ -65,6 +65,8 @@ test("the runtime's lexer agrees with the engine's", async () => {
     ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite"],
     ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite"],
     ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite"],
+    ["select [a]]:b] as x, N'it''s @y', @@rowcount, @p, @g.STDistance(@h), @a$b#c, $action -- @v\n /* @u */ from [t]", "sqlserver"],
+    ["select [n:m], :p, geography::Point(:lat, 1, 4326) from t", "sqlserver"],
   ];
   for (const [sql, dialect] of statements) {
     const ours = lexPlaceholders(sql, dialect);

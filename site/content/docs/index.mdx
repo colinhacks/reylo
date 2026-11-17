@@ -129,6 +129,36 @@ create table events (
 ) strict;
 ```
 
+```sql file="schema.sql" tab="SQL Server" tab-group="dialect"
+create table users (
+  id int identity(1, 1) primary key,          -- at most one row per id
+  name nvarchar(100) not null,                -- name: string
+  email nvarchar(255) unique,                 -- email: string | null
+  role varchar(10) not null default 'member'  -- role: string
+    check (role in ('admin', 'member')),
+  tags nvarchar(max) not null default '[]'    -- tags: string, JSON text
+    check (isjson(tags) = 1),
+  created_at datetimeoffset(3)                -- created_at: string
+    not null default sysdatetimeoffset()
+);
+
+create table posts (
+  id int identity(1, 1) primary key,
+  user_id int not null references users (id),
+  title nvarchar(200) not null,
+  body nvarchar(max),
+  published_at datetimeoffset(3)
+);
+
+create table events (
+  id int identity(1, 1) primary key,
+  kind varchar(10) not null
+    check (kind in ('click', 'key')),
+  payload nvarchar(max) not null
+    check (isjson(payload) = 1)
+);
+```
+
 </Details>
 
 Reylo reads all of this from your live database, which checks the query without running it. Reylo is the perfect option for the agent era:

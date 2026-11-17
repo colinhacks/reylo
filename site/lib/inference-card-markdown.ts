@@ -1,5 +1,5 @@
 import { toAgentMarkdown } from 'docs-kit/remark-sections';
-import { hashOf, INFERENCE_CARD, readModules, type Dialect, type Modules } from './remark-mapper.ts';
+import { hashOf, INFERENCE_CARD, nativeText, readModules, type Dialect, type Modules } from './remark-mapper.ts';
 import { DIALECTS } from './dialects.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
 
@@ -20,11 +20,12 @@ function cardMarkdown(body: string, modules: Modules): string {
   const statements = new Map<Dialect, { name: string; text: string }>();
   for (const [, meta = '', text = ''] of body.matchAll(FENCE)) {
     const dialect = metaOf(meta, 'dialect') ?? 'all';
-    const dialects = dialect === 'all' ? ALL : [dialect as Dialect];
+    const dialects = dialect === 'all' ? ALL : (dialect.split(',').map((d) => d.trim()) as Dialect[]);
     if (/(?:^|\s)schema(?:\s|$)/.test(meta)) for (const d of dialects) schemas.set(d, text);
     else {
       const name = metaOf(meta, 'file');
-      if (name) for (const d of dialects) statements.set(d, { name, text });
+      // A statement shared with SQL Server is written there with `@name` (lib/remark-mapper.ts).
+      if (name) for (const d of dialects) statements.set(d, { name, text: d === 'sqlserver' && dialects.length > 1 ? nativeText(text) : text });
     }
   }
   const name = (d: Dialect) => DIALECTS.find((n) => n.toLowerCase() === d)!;

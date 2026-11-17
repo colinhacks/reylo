@@ -460,8 +460,10 @@ const before = existsSync(capturesFile) ? (JSON.parse(readFileSync(capturesFile,
 const keyOf = (c: { dialect: string; name: string; hash: string }) => `${c.dialect}\0${c.name}\0${c.hash}`;
 const rust = new Map<string, InferenceCapture['rust']>();
 const renderer = process.env.REYLO_DOCS_RUST;
+// The Rust crate types no SQL Server statement, since sqlx has no SQL Server driver.
+for (const c of inference) if (c.dialect === 'sqlserver') rust.set(keyOf(c), { error: 'The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver.' });
 if (renderer) {
-  const input = inference.map((c) => JSON.stringify({ key: keyOf(c), dialect: c.dialect, analysis: c.raw })).join('\n');
+  const input = inference.filter((c) => c.dialect !== 'sqlserver').map((c) => JSON.stringify({ key: keyOf(c), dialect: c.dialect, analysis: c.raw })).join('\n');
   const run = spawnSync(renderer, [], { input, encoding: 'utf8', maxBuffer: 1 << 28 });
   if (run.status !== 0) fail(`REYLO_DOCS_RUST (${renderer}) exited ${run.status}: ${run.stderr}`);
   for (const line of run.stdout.split('\n').filter(Boolean)) {

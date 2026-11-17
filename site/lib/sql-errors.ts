@@ -99,7 +99,7 @@ const metaOf = (meta: string, name: string) => new RegExp(`(?:^|\\s)${name}="([^
 function exampleMarkdown(fence: string, meta: string, text: string, captured: Errors): string {
   const name = metaOf(meta, 'tab') ?? metaOf(meta, 'file') ?? metaOf(meta, 'title');
   const dialect = metaOf(meta, 'dialect') ?? 'postgres';
-  const dialects = (dialect === 'all' ? Object.keys(DIALECT_NAME) : [dialect]) as (keyof Errors)[];
+  const dialects = (dialect === 'all' ? Object.keys(DIALECT_NAME) : dialect.split(',')) as (keyof Errors)[];
   const hash = hashOf(text);
   const lines: { dialects: string[]; text: string }[] = [];
   for (const d of dialects) {

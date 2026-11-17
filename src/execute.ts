@@ -823,7 +823,8 @@ function dateText(d: Date): string {
  * the authoritative one, and the two agree on every statement the fallback is meant for.
  * Postgres numbers each distinct parameter once; MySQL has only `?`, and better-sqlite3 reads
  * SQLite's `?NNN` as a named parameter, so both get one `?` per placeholder and a repeated name is
- * repeated in the binding order.
+ * repeated in the binding order; SQL Server's driver binds by name, so each placeholder there is
+ * `@p_n`, its place in the binding order.
  */
 export function compile(query: QueryModule): { text: string; order: readonly string[] } {
   if (query.text && query.order) return { text: query.text, order: query.order };
@@ -835,8 +836,8 @@ export function compile(query: QueryModule): { text: string; order: readonly str
   const order: string[] = [];
   for (const p of placeholders) {
     const index = indexOf(query, p);
-    text += query.sql.slice(last, p.start) + (numbered ? `$${index + 1}` : "?");
     order.push(p.name);
+    text += query.sql.slice(last, p.start) + (numbered ? `$${index + 1}` : query.dialect === "sqlserver" ? `@p_${order.length}` : "?");
     last = p.end;
   }
   return { text: text + query.sql.slice(last), order: numbered ? query.params : order };

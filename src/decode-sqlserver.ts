@@ -147,6 +147,10 @@ function mssqlType(types: MssqlTypes, t: EngineType, v: unknown): unknown {
       return types.DateTimeOffset?.(scale ?? 7);
     case "xml":
       return types.Xml?.();
+    // A JSON parameter is its text, which the statement reads as an nvarchar(max).
+    case "json":
+    case "jsonb":
+      return types.NVarChar?.(max);
     default:
       return undefined;
   }

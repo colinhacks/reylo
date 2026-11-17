@@ -3709,339 +3709,6 @@
         }
       }
     },
-    "my_null_aggregates.sql": {
-      "9bcb463399ce9925": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "user_id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int"
-                }
-              },
-              {
-                "name": "order_ids",
-                "type": {
-                  "kind": "json",
-                  "content": {
-                    "type": {
-                      "kind": "array",
-                      "element": {
-                        "type": {
-                          "kind": "integer",
-                          "bits": 64,
-                          "label": "bigint"
-                        }
-                      }
-                    }
-                  },
-                  "label": "json"
-                }
-              },
-              {
-                "name": "last_ships_on",
-                "type": {
-                  "kind": "date",
-                  "label": "date"
-                },
-                "nullable": true
-              },
-              {
-                "name": "spent",
-                "type": {
-                  "kind": "decimal",
-                  "label": "decimal"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    user_id: i32,\n    order_ids: Json<Vec<i64>>,\n    last_ships_on: Option<chrono::NaiveDate>,\n    spent: rust_decimal::Decimal,\n}>"
-        }
-      }
-    },
-    "my_null_columns.sql": {
-      "454fac5f9df30c85": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "size": {
-                    "max": 100
-                  },
-                  "label": "varchar"
-                }
-              },
-              {
-                "name": "email",
-                "type": {
-                  "kind": "text",
-                  "size": {
-                    "max": 255
-                  },
-                  "label": "varchar"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ name: String, email: Option<String> }>"
-        }
-      }
-    },
-    "my_null_expressions.sql": {
-      "2324d9ca957cd47a": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                }
-              },
-              {
-                "name": "shout",
-                "type": {
-                  "kind": "text",
-                  "label": "varchar"
-                },
-                "nullable": true
-              },
-              {
-                "name": "shout_or_empty",
-                "type": {
-                  "kind": "text",
-                  "label": "varchar"
-                }
-              },
-              {
-                "name": "half",
-                "type": {
-                  "kind": "decimal",
-                  "label": "decimal"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    n: i64,\n    shout: Option<String>,\n    shout_or_empty: String,\n    half: Option<rust_decimal::Decimal>,\n}>"
-        }
-      }
-    },
-    "my_null_left_join.sql": {
-      "56f847eb1efd2795": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "size": {
-                    "max": 100
-                  },
-                  "label": "varchar"
-                }
-              },
-              {
-                "name": "total",
-                "type": {
-                  "kind": "decimal",
-                  "precision": 12,
-                  "min_scale": 2,
-                  "max_scale": 2,
-                  "label": "decimal"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    name: String,\n    total: Option<rust_decimal::Decimal>,\n}>"
-        }
-      }
-    },
-    "my_null_rollup.sql": {
-      "eedaad54f2c18ce5": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "role",
-                "type": {
-                  "kind": "text",
-                  "label": "char"
-                },
-                "nullable": true
-              },
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ role: Option<String>, n: i64 }>"
-        }
-      }
-    },
-    "my_null_subqueries.sql": {
-      "46a7b60df152cd28": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 32,
-                  "label": "int"
-                }
-              },
-              {
-                "name": "orders",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ id: i32, orders: i64 }>"
-        }
-      }
-    },
-    "my_null_where.sql": {
-      "858542e6fb70c0ea": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "text",
-                  "size": {
-                    "max": 100
-                  },
-                  "label": "varchar"
-                }
-              },
-              {
-                "name": "total",
-                "type": {
-                  "kind": "decimal",
-                  "precision": 12,
-                  "min_scale": 2,
-                  "max_scale": 2,
-                  "label": "decimal"
-                }
-              },
-              {
-                "name": "ships_on",
-                "type": {
-                  "kind": "date",
-                  "label": "date"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    name: String,\n    total: rust_decimal::Decimal,\n    ships_on: chrono::NaiveDate,\n}>"
-        }
-      }
-    },
-    "my_null_window.sql": {
-      "de8a6efc68976fc5": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "bigint"
-                }
-              },
-              {
-                "name": "running_total",
-                "type": {
-                  "kind": "decimal",
-                  "label": "decimal"
-                }
-              },
-              {
-                "name": "last_ships_on",
-                "type": {
-                  "kind": "date",
-                  "label": "date"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    id: i64,\n    running_total: rust_decimal::Decimal,\n    last_ships_on: Option<chrono::NaiveDate>,\n}>"
-        }
-      }
-    },
     "my_param_insert.sql": {
       "f8eac0fdbf26948f": {
         "descriptor": {
@@ -5368,280 +5035,6 @@
         }
       }
     },
-    "lite_null_aggregates.sql": {
-      "112d75ab478aa14a": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "one",
-            "columns": [
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                }
-              },
-              {
-                "name": "top",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "{ n: i64, top: Option<i64> }"
-        }
-      }
-    },
-    "lite_null_columns.sql": {
-      "c9b5edf5fe5027e0": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "union",
-                  "members": [
-                    {
-                      "kind": "text",
-                      "encoding": "UTF-8",
-                      "ill_formed": true
-                    },
-                    {
-                      "kind": "bytes"
-                    }
-                  ],
-                  "label": "TEXT"
-                }
-              },
-              {
-                "name": "nick",
-                "type": {
-                  "kind": "union",
-                  "members": [
-                    {
-                      "kind": "text",
-                      "encoding": "UTF-8",
-                      "ill_formed": true
-                    },
-                    {
-                      "kind": "bytes"
-                    }
-                  ],
-                  "label": "TEXT"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ name: String, nick: Option<String> }>"
-        }
-      }
-    },
-    "lite_null_expressions.sql": {
-      "6eea65f3d26b1534": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "shout",
-                "type": {
-                  "kind": "text",
-                  "encoding": "UTF-8",
-                  "ill_formed": true
-                },
-                "nullable": true
-              },
-              {
-                "name": "label",
-                "type": {
-                  "kind": "text",
-                  "encoding": "UTF-8",
-                  "ill_formed": true
-                }
-              },
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                }
-              },
-              {
-                "name": "per_id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    shout: Option<String>,\n    label: String,\n    n: i64,\n    per_id: Option<i64>,\n}>"
-        }
-      }
-    },
-    "lite_null_left_join.sql": {
-      "634223530b55bda3": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "union",
-                  "members": [
-                    {
-                      "kind": "text",
-                      "encoding": "UTF-8",
-                      "ill_formed": true
-                    },
-                    {
-                      "kind": "bytes"
-                    }
-                  ],
-                  "label": "TEXT"
-                }
-              },
-              {
-                "name": "total_cents",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "INTEGER"
-                },
-                "nullable": true
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{ name: String, total_cents: Option<i64> }>"
-        }
-      }
-    },
-    "lite_null_where.sql": {
-      "dba2411ada397c59": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "name",
-                "type": {
-                  "kind": "union",
-                  "members": [
-                    {
-                      "kind": "text",
-                      "encoding": "UTF-8",
-                      "ill_formed": true
-                    },
-                    {
-                      "kind": "bytes"
-                    }
-                  ],
-                  "label": "TEXT"
-                }
-              },
-              {
-                "name": "total_cents",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "INTEGER"
-                }
-              },
-              {
-                "name": "ships_on",
-                "type": {
-                  "kind": "text",
-                  "encoding": "UTF-8",
-                  "ill_formed": true,
-                  "label": "TEXT"
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    name: String,\n    total_cents: i64,\n    ships_on: String,\n}>"
-        }
-      }
-    },
-    "lite_null_window.sql": {
-      "74cb5a017e666df1": {
-        "descriptor": {
-          "params": [],
-          "result": {
-            "kind": "table",
-            "cardinality": "many",
-            "columns": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64,
-                  "label": "INTEGER"
-                }
-              },
-              {
-                "name": "previous_total",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                },
-                "nullable": true
-              },
-              {
-                "name": "n",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                }
-              },
-              {
-                "name": "largest_total",
-                "type": {
-                  "kind": "integer",
-                  "bits": 64
-                }
-              }
-            ]
-          }
-        },
-        "rust": {
-          "params": "pub struct Query;",
-          "returns": "Vec<{\n    id: i64,\n    previous_total: Option<i64>,\n    n: i64,\n    largest_total: i64,\n}>"
-        }
-      }
-    },
     "lite_param_insert.sql": {
       "9806599e4a2375c0": {
         "descriptor": {
@@ -6264,6 +5657,1126 @@
         "rust": {
           "params": "pub struct Query;",
           "returns": "Vec<{\n    id: i64,\n    title: String,\n    n: i64,\n    prev: Option<String>,\n}>"
+        }
+      }
+    }
+  },
+  "sqlserver": {
+    "create_users.sql": {
+      "74f5ab5f2b96eacf": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "users",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "email": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "get_user.sql": {
+      "2533cdf8d435fa96": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 255
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_create_user.sql": {
+      "68b96c4743ee7370": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "label": "nvarchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_post_count.sql": {
+      "17b098b89924254c": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_posts_by_user.sql": {
+      "4733fccdab91299e": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_published_titles.sql": {
+      "4986df0dcb3da6b2": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "zoned_datetime",
+                "tick": "1/10000000",
+                "offset_only": true,
+                "label": "datetimeoffset"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_rename_user.sql": {
+      "2c710d52afa4d371": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "size": {
+                  "unit": "code_unit",
+                  "max": 100
+                },
+                "label": "nvarchar"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_search_users.sql": {
+      "df62f75ff6ffd13f": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "q",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "label": "nvarchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_user_by_email.sql": {
+      "19550320f6addf3f": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "label": "nvarchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_user_flags.sql": {
+      "05ec67ee254c5288": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "text",
+                "encoding": "windows-1252",
+                "size": {
+                  "unit": "byte",
+                  "max": 10
+                },
+                "label": "varchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 255
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "has_posts",
+                "type": {
+                  "kind": "boolean",
+                  "label": "bit"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_user_titles.sql": {
+      "63d76f5ad11dda40": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_users.sql": {
+      "e3d2a9535f381777": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "text",
+                "encoding": "windows-1252",
+                "size": {
+                  "unit": "byte",
+                  "max": 10
+                },
+                "label": "varchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "lateral_joins.sql": {
+      "04cce01415a59d93": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              },
+              {
+                "name": "published_at",
+                "type": {
+                  "kind": "zoned_datetime",
+                  "tick": "1/1000",
+                  "offset_only": true,
+                  "label": "datetimeoffset"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "post_total.sql": {
+      "5f02df84293e7b54": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "record_click.sql": {
+      "6b5ff1ad636d53fe": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "payload",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    },
+                    "y": {
+                      "type": "integer"
+                    },
+                    "button": {
+                      "enum": [
+                        "left",
+                        "right"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y"
+                  ],
+                  "additionalProperties": true,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "record_events.sql": {
+      "ee7c7faedca006a3": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "events",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "click"
+                            ]
+                          },
+                          "x": {
+                            "type": "integer"
+                          },
+                          "y": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "x",
+                          "y"
+                        ],
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "key"
+                            ]
+                          },
+                          "code": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "code"
+                        ],
+                        "additionalProperties": true
+                      }
+                    ]
+                  },
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "record_order.sql": {
+      "6a7c3ab7c4adc940": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "order",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "customer": {
+                      "type": "string"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sku": {
+                            "type": "string"
+                          },
+                          "qty": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "sku",
+                          "qty"
+                        ],
+                        "additionalProperties": true
+                      },
+                      "minItems": 1
+                    },
+                    "shipping": {
+                      "enum": [
+                        "standard",
+                        "express"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "customer",
+                    "items"
+                  ],
+                  "additionalProperties": true,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "rollups.sql": {
+      "77581083bec65a2f": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "user_id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                },
+                "nullable": true
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "search_posts.sql": {
+      "a179260593b7c882": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "filters",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "q": {
+                      "type": "string"
+                    },
+                    "author_id": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "enum": [
+                        "published",
+                        "draft",
+                        "all"
+                      ]
+                    },
+                    "sort": {
+                      "enum": [
+                        "newest",
+                        "oldest",
+                        "title"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "author",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "sort_users.sql": {
+      "4fd373f305f651cb": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "sort",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "label": "nvarchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "users_by_ids.sql": {
+      "653ee610c6075376": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "ids",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "window_functions.sql": {
+      "2af3718689994aa3": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              },
+              {
+                "name": "prev",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
         }
       }
     }

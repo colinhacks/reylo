@@ -7,6 +7,7 @@ import type { Plugin } from 'vite';
 import { pageFiles } from './page-files.ts';
 import { isErrorExample, renderErrors } from './sql-errors.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
+import { lexPlaceholders } from '../../src/lex.ts';
 
 export { pageFiles };
 
@@ -74,9 +75,9 @@ export type MdNode = {
 type Code = MdNode & { type: 'code'; value: string };
 
 /** The dialects of the main page's examples, whose code tabs and switch name them in this order. */
-export const DIALECTS = ['Postgres', 'MySQL', 'SQLite'] as const;
-/** A database's name: the main page's, and SQL Server's, which its own page alone shows. */
-export type DialectName = (typeof DIALECTS)[number] | 'SQL Server';
+export const DIALECTS = ['Postgres', 'MySQL', 'SQLite', 'SQL Server'] as const;
+/** A database's name, as the page's tabs and switches show it. */
+export type DialectName = (typeof DIALECTS)[number];
 export type Dialect = 'postgres' | 'mysql' | 'sqlite' | 'sqlserver';
 const DIALECT_OF: Record<string, Dialect> = { postgres: 'postgres', mysql: 'mysql', sqlite: 'sqlite', sqlserver: 'sqlserver', 'sql server': 'sqlserver' };
 export const DIALECT_NAME: Record<Dialect, DialectName> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite', sqlserver: 'SQL Server' };
@@ -120,6 +121,36 @@ export type Block = {
 /** The key a statement's module has in lib/sql-modules.json, under its dialect and file name. */
 export const hashOf = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 16);
 
+/**
+ * A statement written once for every dialect as SQL Server's examples show it, each `:name` in
+ * T-SQL's own `@name` (the rule for examples in AGENTS.md); the block itself where it has none.
+ */
+export function nativeText(sql: string): string {
+  const colon = lexPlaceholders(sql, 'sqlserver').placeholders.filter((p) => sql[p.start] === ':');
+  for (const p of colon.reverse()) sql = `${sql.slice(0, p.start)}@${sql.slice(p.start + 1)}`;
+  return sql;
+}
+function nativeCopy(code: Code): Code {
+  const value = nativeText(code.value);
+  return value === code.value ? code : { ...code, value, data: { ...code.data } };
+}
+
+/**
+ * A statement written once for several dialects whose SQL Server copy differs (`nativeCopy`) shows
+ * a panel per dialect, in a <DialectTabs follow> that follows the page's dialect choice, so that a
+ * reader on SQL Server reads `@name`. Runs last, once the blocks' meta attributes are gone.
+ */
+function showNative(blocks: Block[]) {
+  for (const block of blocks) {
+    if (block.dialect !== 'sqlserver' || block.from !== 'meta' || block.group?.type !== 'code' || block.node === block.group || isErrorExample(block.group)) continue;
+    const code = block.group as Code;
+    const at = block.parent.children!.indexOf(code);
+    if (at < 0) continue;
+    const panels = blocks.filter((b) => b.group === code).map((b) => jsx('Dialect', [['value', DIALECT_NAME[b.dialect]]], [b.node === code ? { ...code, data: { ...code.data } } : b.node]));
+    block.parent.children!.splice(at, 1, jsx('DialectTabs', [['follow', null]], panels));
+  }
+}
+
 /** A Fumadocs meta attribute, such as `title="main.ts"`. */
 const attribute = (meta: string | null | undefined, name: string) => new RegExp(`(?:^|\\s)${name}=(?:"([^"]*)"|'([^']*)'|(\\S+))`).exec(meta ?? '')?.slice(1).find((v) => v !== undefined);
 
@@ -145,24 +176,27 @@ export function collect(tree: MdNode): Block[] {
           .findLast((a) => a.type === 'mdxJsxFlowElement' && (a.name === 'Dialect' || a.name === 'Tab') && dialectOf(attr(a, 'value')));
         const panelDialect = panel && dialectOf(attr(panel, 'value'));
         const metaDialect = attribute(code.meta, 'dialect');
-        const every = metaDialect === 'all';
-        if (metaDialect !== undefined && !every && !dialectOf(metaDialect)) throw new Error(`${where(code)}: dialect="${metaDialect}" names no dialect; write postgres, mysql, sqlite, sqlserver or all.`);
+        // `all`, or a list (`postgres,mysql,sqlite`): the same statement in each of them.
+        const shares = metaDialect === 'all' ? DIALECTS.map((d) => DIALECT_OF[d.toLowerCase()]!) : metaDialect?.includes(',') ? metaDialect.split(',').map((d) => dialectOf(d.trim())) : undefined;
+        const every = shares !== undefined;
+        if (metaDialect !== undefined && (every ? shares.includes(undefined) : !dialectOf(metaDialect))) throw new Error(`${where(code)}: dialect="${metaDialect}" names no dialect; write postgres, mysql, sqlite, sqlserver, a list of them or all.`);
         const dialect = tabDialect ?? panelDialect ?? dialectOf(metaDialect) ?? 'postgres';
         const name = attribute(code.meta, 'title') ?? attribute(code.meta, 'file') ?? (tab && !tabDialect ? tab : undefined);
         const card = node.name === INFERENCE_CARD ? node : undefined;
         const shared = { node: code, parent: node, name, line: code.position?.start.line ?? 0, hash: hashOf(code.value), ...(card && { inferenceCard: true }) };
         // In a card, a dialect's statement is analyzed against the card's schema for that dialect, and
         // its module is keyed by both texts.
-        const local = (d: Dialect) => {
+        const local = (d: Dialect, text = code.value) => {
           const schema = card && cardSchema(card, d);
-          return schema === undefined ? {} : { schema, hash: hashOf(`${schema}\n\0\n${code.value}`) };
+          return schema === undefined ? {} : { schema, hash: hashOf(`${schema}\n\0\n${text}`) };
         };
         // The same statement in every dialect: one block per dialect, grouped as a code-tab group
-        // of dialects is, so that an import of it expands into a panel per dialect.
+        // of dialects is, so that an import of it expands into a panel per dialect. SQL Server's
+        // writes each placeholder in T-SQL's own `@name` (`nativeCopy`).
         if (every)
-          for (const each of DIALECTS) {
-            const d = DIALECT_OF[each.toLowerCase()]!;
-            blocks.push({ ...shared, ...local(d), order: blocks.length, dialect: d, from: 'meta', group: code });
+          for (const d of shares as Dialect[]) {
+            const own = d === 'sqlserver' && !isErrorExample(code) ? nativeCopy(code) : code;
+            blocks.push({ ...shared, node: own, hash: hashOf(own.value), ...local(d, own.value), order: blocks.length, dialect: d, from: 'meta', group: code });
           }
         else
           blocks.push({
@@ -443,7 +477,7 @@ function mergeDialectFiles(blocks: Block[]) {
   for (const block of blocks) {
     // The file is the tab's label without its dialect: `users.sql` of `users.sql (MySQL)`, and
     // `main.ts` of `main.ts (MySQL)` where the TypeScript differs per dialect too.
-    const label = /^(.+) \((Postgres|MySQL|SQLite)\)$/.exec(block.node.data?.tab ?? '');
+    const label = /^(.+) \((Postgres|MySQL|SQLite|SQL Server)\)$/.exec(block.node.data?.tab ?? '');
     if (!label || !block.group || block.group.name !== 'CodeBlockTabs' || block.from !== 'meta' || dialectOf(label[2]) !== block.dialect) continue;
     const files = groups.get(block.group) ?? new Map<string, Block[]>();
     files.set(label[1]!, [...(files.get(label[1]!) ?? []), block]);
@@ -614,5 +648,6 @@ export function remarkMapper() {
     }
     // The dialect and the file name are read (and `play`, by lib/live/inference.ts); Shiki and Twoslash do not know the attributes.
     for (const { node } of blocks) if (node.meta) node.meta = node.meta.replace(/(?:^|\s)(?:dialect|file|strict|play)=(?:"[^"]*"|'[^']*'|\S+)/g, '').trim();
+    showNative(blocks);
   };
 }

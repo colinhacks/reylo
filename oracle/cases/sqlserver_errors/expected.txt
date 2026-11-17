@@ -1,5 +1,5 @@
 bare_decimal_cast.sql: many (x: unknown) -> {  } !! reylo20: SQL Server's `decimal` with no precision and scale is `decimal(18, 0)`, which drops a value's fraction: write its precision and scale, as in `::decimal(10, 2)`.
-batch.sql: many () -> {  } !! reylo10: A typed .sql file holds one statement and this one holds several, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+batch.sql: many () -> {  } !! reylo10: A typed .sql file holds one statement, and this one is part of a batch: write the statement alone, with its values as @name parameters.
 exec.sql: many () -> {  } !! reylo10: EXEC runs a stored procedure, whose result sets SQL Server describes only from its first statement and Reylo cannot bound, so a typed .sql file holds no EXEC: select from a view or an inline table-valued function instead.
 missing.sql: many () -> {  } !! reylo6: Invalid column name 'nope'.
 rows_param.sql: many (ids: unknown) -> {  } !! reylo20: SQL Server takes no rows(…) or row(…) parameter yet: pass each value as a parameter of its own.

@@ -1,12 +1,13 @@
-// Placeholder lexing for the runtime loader: finds `:name` (and SQLite's `@name` and `$name`), and
-// the dialect's own positional form (`$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite),
+// Placeholder lexing for the runtime loader: finds `:name` (and SQLite's `@name` and `$name`, and
+// SQL Server's `@name`), and the dialect's own positional form (`$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite),
 // outside strings and comments, and returns the binding order. A name may be dotted
 // (`:auth.user_id`); each segment starts like a name, so `arr[1:2]` is a slice, and on Postgres a
 // colon that opens a subscript is a slice with no lower bound (`tags[:n]`). MySQL text is read
 // as a session in the default `sql_mode` reads it: a backslash in a string escapes the character
 // after it, `"` quotes a string, `#` starts a line comment, and `--` does only before a space or
-// a control character. SQL Server's `[name]` is a quoted name, in which `]]` is one `]`, and it has
-// no `?`. This is the provisional JavaScript version of the engine's lexer; the Rust
+// a control character. SQL Server's `[name]` is a quoted name, in which `]]` is one `]`, its `@name`
+// a name as T-SQL writes one (no dots; `@`, `#` and `$` may follow its first letter), its `@@name` a
+// function, and it has no `?`. This is the provisional JavaScript version of the engine's lexer; the Rust
 // engine owns the authoritative one (dollar quoting, E'' strings, nested comments, array slices,
 // MySQL's other modes).
 export type Placeholder = { name: string; start: number; end: number };
@@ -52,6 +53,14 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
     // A colon that opens a Postgres subscript is a slice with no lower bound, since no expression
     // starts with a colon there; an array constructor's `[` follows `array` or another `[`.
     if (ch === ":" && last === "subscript" && dialect === "postgres") { i += 1; last = "other"; continue; }
+    if (ch === "@" && dialect === "sqlserver") {
+      // SQL Server's `@@rowcount` and its like are functions.
+      if (next === "@") { i += 2 + /^[A-Za-z0-9_]*/.exec(sql.slice(i + 2))![0].length; last = "operand"; continue; }
+      if (next !== undefined && /[A-Za-z_]/.test(next) && !(i > 0 && /[A-Za-z0-9_]/.test(sql[i - 1]!))) {
+        const m = /^[A-Za-z_][A-Za-z0-9_@#$]*/.exec(sql.slice(i + 1))!;
+        push(m[0], i, i + 1 + m[0].length); i += 1 + m[0].length; last = "operand"; continue;
+      }
+    }
     // `arr[lo:hi]` is a slice: a name character before the colon means it opens nothing. SQLite's
     // own `@name` and `$name` are named placeholders there too.
     if ((ch === ":" || (dialect === "sqlite" && (ch === "@" || ch === "$"))) && next !== undefined && /[A-Za-z_]/.test(next) && !(i > 0 && /[A-Za-z0-9_]/.test(sql[i - 1]!))) {

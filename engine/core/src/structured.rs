@@ -490,8 +490,8 @@ fn cast_around(written: &str, dialect: Dialect, spot: Spot, server: &Server) -> 
 /// one of that name, and to its type of the same values for the others (`::text` is
 /// `nvarchar(max)`, `::boolean` is `bit`, `::timestamptz` is `datetimeoffset(7)`). A type whose
 /// SQL Server default would cut a value is refused: `decimal` alone is `decimal(18, 0)`, which drops
-/// a fraction, and `varchar` alone is `varchar(30)`. A JSON parameter is the bare placeholder: its
-/// value is its text, which SQL Server's JSON functions read.
+/// a fraction, and `varchar` alone is `varchar(30)`. A JSON parameter is its text, an
+/// `nvarchar(max)`, which SQL Server's JSON functions read and a JSON column takes.
 fn sqlserver_cast(written: &str) -> Result<Option<(String, String)>, String> {
     let cast = |t: &str| Ok(Some(("CAST(".to_string(), format!(" AS {t})"))));
     if written.ends_with("[]") {
@@ -525,7 +525,7 @@ fn sqlserver_cast(written: &str) -> Result<Option<(String, String)>, String> {
         "timestamptz" | "datetimeoffset" => sized("datetimeoffset", "(7)"),
         "binary" if !modifiers.is_empty() => cast(&format!("binary{modifiers}")),
         "bytea" | "blob" | "binary" | "varbinary" => sized("varbinary", "(max)"),
-        "json" | "jsonb" => Ok(None),
+        "json" | "jsonb" => cast("nvarchar(max)"),
         _ => Err(format!("SQL Server has no type `{written}` to cast to: write one of its types, as in `::int`, `::decimal(10, 2)`, `::nvarchar(100)`, `::datetime2` or `::uniqueidentifier`.")),
     }
 }
@@ -1338,7 +1338,8 @@ fn text_member(m: &Member) -> bool {
 /// What the expansion writes for `found`, standing where the author put it.
 pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server) -> Lowered {
     // A typed JSON parameter is the dialect's JSON parameter, its schema left out: Postgres
-    // receives `$1::jsonb`, MySQL `cast(? as json)` and SQLite `?` (wiki/typed-json-params.md).
+    // receives `$1::jsonb`, MySQL `cast(? as json)`, SQLite `?` and SQL Server its text, as
+    // `CAST(@p_1 AS nvarchar(max))` (wiki/typed-json-params.md).
     if let Some(cast) = &found.plain {
         let (before, after) = cast.around.clone().unwrap_or_default();
         return Lowered { placeholder: (before.len(), before.len() + placeholder.len()), text: format!("{before}{placeholder}{after}"), members: Vec::new(), lists: Vec::new() };
@@ -1349,7 +1350,10 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
             // MariaDB has no `CAST(… AS JSON)`.
             Dialect::Mysql if server.mariadb => ("JSON_COMPACT(", ")"),
             Dialect::Mysql => ("cast(", " as json)"),
-            Dialect::Sqlite | Dialect::Sqlserver => ("", ""),
+            Dialect::Sqlite => ("", ""),
+            // Its text, which SQL Server's JSON functions read and a JSON column takes; bare, SQL
+            // Server can't tell its type where nothing else does, as in a `with`'s select list.
+            Dialect::Sqlserver => ("CAST(", " AS nvarchar(max))"),
         };
         let text = format!("{before}{placeholder}{after}");
         return Lowered { placeholder: (before.len(), before.len() + placeholder.len()), text, members: Vec::new(), lists: Vec::new() };
@@ -1782,8 +1786,8 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
                 }
                 // SQLite's `json(?)` takes JSON text, and the parameter is a JSON value, written
                 // as its text as every MySQL and SQLite JSON parameter is.
-                // MariaDB's JSON_COMPACT(?) takes it as text too.
-                if (dialect == Dialect::Sqlite || server.mariadb) && matches!(cast.written.as_str(), "json" | "jsonb") {
+                // MariaDB's JSON_COMPACT(?) takes it as text too, and SQL Server's nvarchar(max).
+                if (dialect == Dialect::Sqlite || dialect == Dialect::Sqlserver || server.mariadb) && matches!(cast.written.as_str(), "json" | "jsonb") {
                     p.ty = Type::json();
                 }
             }

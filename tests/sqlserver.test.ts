@@ -90,6 +90,9 @@ test("SQL Server: a select of every type is typed from the server, and runs on m
       row: "{ id: number; flag: boolean; tiny: number | null; small: number | null; big: bigint | null; amount: string | null; price: string | null; ratio: number | null; single: number | null; code: string | null; label: string | null; title: string | null; body: string | null; raw: Uint8Array | null; uid: string | null; day: string | null; at: string | null; stamp: string | null; zoned: string | null; legacy: string | null; minute: string | null }",
     });
     const q = await built(root, "row", sql);
+    // T-SQL's own `@name` is a placeholder too, bound by the same name.
+    const native = await built(root, "native", "select id, flag, big from t where id = @id");
+    assert.deepEqual(plain(await native.run(db.pool, { id: 1 })), { id: 1, flag: true, big: 9007199254740993n });
     if (await exactDriver(db)) {
       assert.deepEqual(plain(await q.run(db.pool, { id: 1 })), ROW_1);
       assert.deepEqual(plain(await q.run(db.pool, { id: 2 })), ROW_2);

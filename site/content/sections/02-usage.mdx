@@ -597,7 +597,29 @@ await db.transaction(async (trx) => {
 
 #### SQL Server [#sqlserver-drivers]
 
-Pass an `mssql` pool, transaction or request, as on the [SQL Server page](/sqlserver#driver).
+```ts twoslash tab="mssql" dialect="sqlserver"
+import sql from "mssql";
+import createUser from "./create_user.sql";
+import getUser from "./get_user.sql";
+
+const db = await new sql.ConnectionPool({
+  server: "localhost",
+  database: "app",
+  user: "reylo",
+  password: process.env.DB_PASSWORD,
+  // decimals as their exact text (SQL Server page)
+  options: { decimalAsString: true },
+}).connect();
+
+const user = await getUser.run(db, { id: 1 });
+
+// two inserts in one transaction: both land, or neither
+const tx = new sql.Transaction(db);
+await tx.begin();
+await createUser.run(tx, { name: "Ada" });
+await createUser.run(tx, { name: "Grace" });
+await tx.commit();
+```
 
 ### `.runSync()`
 
@@ -666,6 +688,19 @@ if (result.error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
 }
 ```
 
+```ts twoslash tab="main.ts (SQL Server)" dialect="sqlserver"
+import createUser from "./create_user.sql";
+
+const result = await createUser.try(db, {
+  name: "Ada",
+  email: "ada@example.com",
+});
+if (result.error?.number === 2627) {
+  result.error.constraint;
+  //           ^?
+}
+```
+
 ```sql tab="create_user.sql" dialect="all"
 insert into users (name, email) values (:name, :email)
 ```
@@ -683,7 +718,7 @@ When the query runs none of your own code, such as a trigger or a function you w
 
 - Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say.
 - The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
-- On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
+- On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL, SQLite and SQL Server keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
 
 ### `.readOnly`
 

@@ -7,6 +7,7 @@ in_list.sql: many (a: int, b: int) -> { id: int }
 is_null.sql: many (name: nvarchar(≤100 units, UTF-16, ill-formed)) -> { id: int }
 like.sql: many (pattern: nvarchar(≤4000 units, UTF-16, ill-formed)) -> { id: int }
 math.sql: many (amount: decimal(38,19)) -> { order_id: bigint, n: int }
+native.sql: many (min: decimal(38,19), before: datetimeoffset(offset), status: varchar(≤10 bytes, windows-1252)) -> { id: bigint }
 nullable_insert.sql: none (id: int, email: nvarchar(≤200 units, UTF-16, ill-formed), name: nvarchar(≤100 units, UTF-16, ill-formed)?, credit: money(19,4, -922337203685477.5808..922337203685477.5807)?) -> {  }
 repeated.sql: many (name: unknown) -> {  } !! reylo3: The parameter :name appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :name::<type> as name) select … from input
 top_param.sql: many (n: bigint) -> { id: int }

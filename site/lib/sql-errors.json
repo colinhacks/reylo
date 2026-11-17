@@ -53,5 +53,23 @@
         }
       ]
     }
+  },
+  "sqlserver": {
+    "get_user.sql": {
+      "7f8d7c6f516750df": [
+        {
+          "start": {
+            "line": 1,
+            "column": 1
+          },
+          "end": {
+            "line": 3,
+            "column": 20
+          },
+          "source": "reylo(6)",
+          "message": "Invalid column name 'nmae'."
+        }
+      ]
+    }
   }
 }

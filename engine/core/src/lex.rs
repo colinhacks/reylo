@@ -1,17 +1,19 @@
 //! Placeholders, read off the raw statement text.
 //!
 //! One named form works in every dialect, `:name`, which is also the form mysql2's
-//! `namedPlaceholders` and SQLite accept; SQLite's own `@name` and `$name` are named placeholders
-//! there too. Beside them a statement may use its database's own positional form instead, never
+//! `namedPlaceholders` and SQLite accept; a database's own named form works there too: SQLite's
+//! `@name` and `$name`, and SQL Server's `@name`. Beside them a statement may use its database's own positional form instead, never
 //! both: `$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite. A form the database does not
 //! have is refused where the database would misread it: SQLite takes `$1` for a parameter named
 //! `$1`, and a Postgres `$name` outside a dollar quote is a syntax error, so each is an error that
 //! says what to write; MySQL's `@name` is a user variable and `$` a character of its identifiers,
 //! so both stay text there, as `@` (an operator) does on Postgres. SQL Server has no positional
-//! form: `:name` alone, while its `@name` is a variable or an argument and its `$` starts a money
-//! literal or a pseudo-column (`$action`), so both stay text, and a `?` is an error. A parameter's name drops the
+//! form, and a `?` is an error; its `@name` is a name as T-SQL writes one (no dots, and `@`, `#`
+//! and `$` may follow its first letter), its `@@name` a function, and its `$` starts a money
+//! literal or a pseudo-column (`$action`), so that stays text. A parameter's name drops the
 //! prefix: `:id`, `@id` and `$id` are `id`, and `$2` and `?2` are both `2`. SQLite reads `:id` and
-//! `@id` as two parameters, so the named placeholders of one statement share one prefix. A bare `?` takes the number after the largest one so far, as SQLite numbers it, so `?, ?`
+//! `@id` as two parameters, so the named placeholders of one statement share one prefix, and so
+//! do SQL Server's. A bare `?` takes the number after the largest one so far, as SQLite numbers it, so `?, ?`
 //! is `1`, `2`. Each parameter appears once in a statement, so that one place types it: a value
 //! needed twice is selected once in a `with` and read from there, and every later use of a name
 //! is an error at its place ([`repeated`]); a bare `?` is a parameter of its own. A name may be
@@ -467,6 +469,21 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 }
             }
             b'@' => match b.get(i + 1) {
+                // SQL Server's `@@rowcount` and its like are functions.
+                Some(&b'@') if sqlserver => {
+                    i = name_end(b, i + 2);
+                    last = Last::Operand;
+                }
+                Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) && sqlserver && named == Named::Dialect => {
+                    let mut end = i + 1;
+                    while end < b.len() && (is_name_char(b[end]) || matches!(b[end], b'@' | b'#' | b'$')) {
+                        end += 1;
+                    }
+                    one_prefix(sql, &mut first_named, i, end)?;
+                    push(sql[i + 1..end].to_string(), i, end, &mut params);
+                    i = end;
+                    last = Last::Operand;
+                }
                 Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) && sqlite_named => {
                     let end = dotted_name_end(b, i + 1);
                     one_prefix(sql, &mut first_named, i, end)?;
@@ -484,7 +501,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
             },
             // SQL Server has no `?`: its driver binds by name.
             b'?' if sqlserver => {
-                return Err(LexError { message: "SQL Server has no ? placeholder; write :name".into(), offset: i });
+                return Err(LexError { message: "SQL Server has no ? placeholder; write @name".into(), offset: i });
             }
             b'?' if dialect != Dialect::Postgres => {
                 if b.get(i + 1).is_some_and(u8::is_ascii_digit) && dialect == Dialect::Mysql {
@@ -830,20 +847,29 @@ mod tests {
 
     #[test]
     fn sql_server_text_and_placeholders() {
-        // `:name` alone; `@name`, `@@rowcount`, `$action`, a money literal and a static method's
-        // `::` are T-SQL's own.
-        let sql = "merge t using s on t.id = s.id when matched then update set v = :v output $action, inserted.[a:b], @@rowcount, @x, $12.50, geography::Point(:lat, 1, 4326);";
+        // `:name` and T-SQL's own `@name`; `@@rowcount`, `$action`, a money literal and a static
+        // method's `::` are T-SQL's own.
+        let sql = "merge t using s on t.id = s.id when matched then update set v = :v output $action, inserted.[a:b], @@rowcount, $12.50, geography::Point(:lat, 1, 4326);";
         assert_eq!(names(sql, Dialect::Sqlserver), ["v", "lat"]);
+        assert_eq!(names(&sql.replace(":v", "@v").replace(":lat", "@lat"), Dialect::Sqlserver), ["v", "lat"]);
+        // A T-SQL name may hold `@`, `#` and `$` after its first letter, and has no dots.
+        assert_eq!(names("select @a$b#c, @g.STDistance(@h) from t", Dialect::Sqlserver), ["a$b#c", "g", "h"]);
+        // One statement keeps one prefix.
+        assert_eq!(lex("select @a, :b", Dialect::Sqlserver).unwrap_err().message, ":b and @a have different prefixes; write every named parameter of a statement with one prefix, here @b");
         // A bracketed name is text, `]]` inside it a `]`; a string is text, and `e'…'` escapes nothing.
         assert_eq!(names("select [a]]:b] as x, N'it''s :y', e'\\' as z, :p from [t]", Dialect::Sqlserver), ["p"]);
         assert_eq!(lex("select [a]] from t", Dialect::Sqlserver).unwrap_err().offset, 7);
-        assert_eq!(lex("select ? from t", Dialect::Sqlserver).unwrap_err().message, "SQL Server has no ? placeholder; write :name");
+        assert_eq!(lex("select ? from t", Dialect::Sqlserver).unwrap_err().message, "SQL Server has no ? placeholder; write @name");
         // The driver binds by name, so each parameter is `@p_n` in binding order.
         let sql = "select id from users where email = :email and org = :org.id";
         let rewritten = rewrite(sql, &lex(sql, Dialect::Sqlserver).unwrap(), Dialect::Sqlserver.binds());
         assert_eq!(rewritten.sql, "select id from users where email = @p_1 and org = @p_2");
         assert_eq!(rewritten.order, ["email", "org.id"]);
         assert_eq!(rewritten.to_original(rewritten.sql.find("@p_2").unwrap()), sql.find(":org").unwrap());
+        let sql = "select id from users where email = @email and org_id = @org_id";
+        let rewritten = rewrite(sql, &lex(sql, Dialect::Sqlserver).unwrap(), Dialect::Sqlserver.binds());
+        assert_eq!(rewritten.sql, "select id from users where email = @p_1 and org_id = @p_2");
+        assert_eq!(rewritten.order, ["email", "org_id"]);
     }
 
     #[test]

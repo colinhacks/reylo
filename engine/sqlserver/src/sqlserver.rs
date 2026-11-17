@@ -71,9 +71,16 @@ fn no_lexed() -> Lexed {
 }
 
 pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
-    let lexed = match lex::lex(sql, Dialect::Sqlserver) {
+    let lexed = lex::lex(sql, Dialect::Sqlserver);
+    let empty = no_lexed();
+    // A batch or an `exec` is refused by its first word, before what its text holds: an `@name`
+    // in one is a variable or a procedure's argument, which the lexer reads as a placeholder.
+    if let Some(message) = refused_word(&lex::first_word(sql, lexed.as_ref().unwrap_or(&empty))) {
+        return Some(crate::analysis::bare(sql, &empty, Dialect::Sqlserver, vec![whole(sql, message, 10, None)]));
+    }
+    let lexed = match lexed {
         Ok(lexed) => lexed,
-        Err(e) => return Some(crate::analysis::bare(sql, &no_lexed(), Dialect::Sqlserver, vec![Diagnostic { message: e.message, start: e.offset, length: 1, code: 1, server_code: None }])),
+        Err(e) => return Some(crate::analysis::bare(sql, &empty, Dialect::Sqlserver, vec![Diagnostic { message: e.message, start: e.offset, length: 1, code: 1, server_code: None }])),
     };
     let refuse = |d: Vec<Diagnostic>| Some(crate::analysis::bare(sql, &lexed, Dialect::Sqlserver, d));
     let repeated = crate::analysis::repeated(sql, &lexed);
@@ -100,7 +107,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         _ if several_unseparated(&rewritten.sql) => return refuse(vec![whole(sql, lex::several_statements(), 10, None)]),
         _ => None,
     };
-    if let Some(message) = refused_word(&lex::first_word(sql, &lexed)).or_else(|| parsed.as_ref().and_then(refused)) {
+    if let Some(message) = parsed.as_ref().and_then(refused) {
         return refuse(vec![whole(sql, message, 10, None)]);
     }
     // The first round: each parameter's type, and the collation one of a character type takes.
@@ -214,7 +221,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
 }
 
 const EXEC: &str = "EXEC runs a stored procedure, whose result sets SQL Server describes only from its first statement and Reylo cannot bound, so a typed .sql file holds no EXEC: select from a view or an inline table-valued function instead.";
-const BATCH: &str = "A typed .sql file holds one statement, and this one is part of a batch: write the statement alone, with its values as :name parameters.";
+const BATCH: &str = "A typed .sql file holds one statement, and this one is part of a batch: write the statement alone, with its values as @name parameters.";
 
 /// Why a statement is not one the analysis reads, by its first word, which needs no parse: a
 /// stored procedure's and a batch's result sets are the server's to describe and nothing's to

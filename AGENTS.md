@@ -50,6 +50,8 @@ A maintainer may keep local notes beside this file, which are never committed; w
 
 The live tests in these files skip without both test databases ([JavaScript](#javascript)). A change a user of Reylo would notice also updates the docs and the skill, `skills/using-reylo/SKILL.md`, in the same pull request.
 
+Every dialect takes Reylo's `:name` placeholder, and its database's own named form wherever the database has one: SQLite's `@name` and `$name`, and SQL Server's `@name`. A new dialect does the same, and the docs' examples write each database's own form where it has one.
+
 The engine, crate by crate:
 
 - **Postgres**, `engine/postgres/src/`: `postgres.rs` (the analysis, round by round), `infer.rs` (expression columns' types and nullability), `cardinality.rs` (how many rows a statement returns), `jsonshape.rs` (nested JSON shapes), `levels.rs` (which query an aggregate belongs to), `returning.rs`, `analyze.rs` (parse-tree facts: the statement's kind, locking, the tables it reads and writes, and which parameters may be null, as through `coalesce`), `pgtypes.rs` (the type registry: each catalog type as a type descriptor), `stack.rs` (how deeply a statement may nest), `extension.rs` (the handshake with a server-side extension), `bodies.rs` (a statement with the bodies of the SQL functions it calls in place, whose analysis narrows the statement's own). The parser is `pg_query` (libpg_query, Postgres 18), patched from `engine/postgres/vendor/` into `engine/postgres/.patched/` by the prepare step.
@@ -174,3 +176,4 @@ Run what CI runs before you push. A failing check's log: `gh pr checks <number> 
 - A frontmatter `description:` carries no inline code.
 - A docs page and each of its sections open with one short sentence, alone, to the point; what more it needs follows in its own paragraph or the example.
 - Prose in the docs never opens a sentence with inline code, writes a method as `.run()` (never a bare `run`), says Reylo infers a type (never that it proves one), and says "cardinality" for how many rows a query returns.
+- An example's parameters are written in its database's own named form where it has one (`@name` on SQL Server), and as `:name` where it has none.
