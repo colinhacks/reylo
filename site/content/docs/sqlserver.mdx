@@ -258,6 +258,9 @@ With [`.try()`](/typescript#try), an error SQL Server raised comes back as `{ er
 Reylo runs SQL Server queries on `mssql`. Pass `.run()` a `ConnectionPool`, a `Transaction` or a `Request`:
 
 ```ts twoslash tab="main.ts"
+// tedious's decimalAsString, until a release of tedious declares it (tediousjs/tedious#1839)
+declare module "mssql" { interface IOptions { decimalAsString?: boolean } }
+// ---cut---
 import sql from "mssql";
 import getUser from "./ss_get_user.sql";
 

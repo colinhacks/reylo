@@ -598,6 +598,9 @@ await db.transaction(async (trx) => {
 #### SQL Server [#sqlserver-drivers]
 
 ```ts twoslash tab="mssql" dialect="sqlserver"
+// tedious's decimalAsString, until a release of tedious declares it (tediousjs/tedious#1839)
+declare module "mssql" { interface IOptions { decimalAsString?: boolean } }
+// ---cut---
 import sql from "mssql";
 import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
