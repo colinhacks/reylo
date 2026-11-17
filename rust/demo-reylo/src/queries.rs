@@ -85,9 +85,14 @@ pub mod set_post_status {
 }
 
 /// The crate's enum for a Postgres enum type, its variants filled in from the database.
-#[reylo::enum_type("public.mood")]
+#[reylo::reflect("public.mood")]
 #[derive(Debug, PartialEq)]
 pub enum Mood {}
+
+/// The crate's enum for a column a CHECK lists values for: the database says it is a column.
+#[reylo::reflect("posts.status")]
+#[derive(Debug, PartialEq)]
+pub enum Publication {}
 
 /// The crate's own struct as the whole row: the mood cast to the crate's enum.
 #[derive(Debug)]

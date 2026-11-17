@@ -226,11 +226,10 @@ pub mod get_member {
 
 A variant your enum lacks, or one it has beyond the database's values, fails to compile. A `Params` with some of the fields gives parameters your types the same way.
 
-To make your own struct the whole row, name it `Row` in the module. Each field takes its column through `Into`, and an enum field through `.cast()`, so its enum needs `#[reylo::enum_type]`:
+To make your own struct the whole row, name it `Row` in the module. Each field takes its column through `Into`, and an enum field through `.cast()`, so its enum needs `#[reylo::reflect]`:
 
 ```rust
-#[reylo::enum_type("public.user_role")]
-#[derive(Debug, PartialEq)]
+#[reylo::reflect("public.user_role")]
 pub enum UserRole {} // filled in: Admin, Member
 
 pub struct Member { pub id: i32, pub name: String, pub role: UserRole }
@@ -241,7 +240,7 @@ pub mod find_member {
 }
 ```
 
-The attribute checks an enum's variants against the database's values, or fills in an empty one. For a column whose `CHECK` lists its values, name the column, as `#[reylo::enum_type(column = "posts.status")]`.
+The attribute checks an enum's variants against the database's values, or fills in an empty one. It takes a Postgres enum type, or a column whose `CHECK` or MySQL `ENUM` lists its values, as `#[reylo::reflect("posts.status")]`.
 
 ### Methods
 

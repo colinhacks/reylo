@@ -844,7 +844,7 @@ pub fn enum_impl(ident: &Ident, type_name: &str, values: &[String]) -> TokenStre
     let hash = proc_macro2::Literal::u64_suffixed(enum_hash(type_name, values));
     quote!(
         impl ::reylo::Enum for #ident {
-            type Id = ::reylo::EnumId<{ #hash }>;
+            type Id = ::reylo::EnumId<#hash>;
             const TYPE: &'static str = #type_name;
             const LABELS: &'static [&'static str] = &[#(#values),*];
             fn label(self) -> &'static str {

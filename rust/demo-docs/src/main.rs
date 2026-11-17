@@ -56,8 +56,7 @@ pub mod get_member {
     }
 }
 
-#[reylo::enum_type("public.user_role")]
-#[derive(Debug, PartialEq)]
+#[reylo::reflect("public.user_role")]
 pub enum UserRole {} // filled in: Admin, Member
 
 pub struct Member { pub id: i32, pub name: String, pub role: UserRole }
@@ -138,8 +137,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let role: Role = member.role;
     let found = find_member::Query { id: 1 }.run(&pool).await?.expect("ada");
     let (_, _, whole): (i32, String, UserRole) = (found.id, found.name, found.role);
-    assert_eq!((role, whole), (Role::Member, UserRole::Admin));
-    println!("own types   {role:?} {whole:?}");
+    assert_eq!((role, whole.label()), (Role::Member, "admin"));
+    println!("own types   {role:?} {}", whole.label());
 
     let contact = get_contact::Query { id: 2 }.run(&pool).await?.expect("bob");
     println!("methods     {}", contact.label());
