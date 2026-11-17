@@ -541,15 +541,120 @@ impl Types {
         reference
     }
 
-    /// A JSON column: the shape the statement built, field by field, else any JSON.
+    /// A JSON column: the shape the statement built, field by field, or the values the JSON Schema
+    /// a CHECK holds it to admits, else any JSON.
     fn json_column(&mut self, j: &reylo_engine_core::types::JsonType, label: &str) -> syn::Result<TokenStream2> {
-        Ok(match &j.content {
-            Some(content) => {
-                let ty = self.json_value(&content.ty, content.nullable, label)?;
-                quote!(::reylo::sqlx::types::Json<#ty>)
-            }
+        let ty = match (&j.content, &j.schema) {
+            (Some(content), _) => Some(self.json_value(&content.ty, content.nullable, label)?),
+            (None, Some(schema)) => self.schema_value(schema, label)?,
+            (None, None) => None,
+        };
+        Ok(match ty {
+            Some(ty) => quote!(::reylo::sqlx::types::Json<#ty>),
             None => quote!(::reylo::serde_json::Value),
         })
+    }
+
+    /// The Rust type of the values a canonical JSON Schema admits (the vocabulary
+    /// `schema_type::type_schema` writes), as serde reads them, `Option` where one may be null:
+    /// `None` where only `serde_json::Value` holds them all, as a union of several kinds or a
+    /// tuple does.
+    fn schema_value(&mut self, schema: &serde_json::Value, label: &str) -> syn::Result<Option<TokenStream2>> {
+        Ok(self.schema_parts(schema, label)?.map(|(ty, null)| if null { quote!(::core::option::Option<#ty>) } else { ty }))
+    }
+
+    /// [`Types::schema_value`] as its type and whether the value may be null.
+    fn schema_parts(&mut self, schema: &serde_json::Value, label: &str) -> syn::Result<Option<(TokenStream2, bool)>> {
+        let mut members = Vec::new();
+        let mut null = false;
+        schema_members(schema, &mut members, &mut null);
+        let [member] = members.as_slice() else { return Ok(None) };
+        let ty = match member {
+            SchemaMember::Any => None,
+            SchemaMember::Literals(values) => {
+                if values.iter().all(|v| v.is_string()) {
+                    Some(quote!(::std::string::String))
+                } else if values.iter().all(|v| v.is_i64()) {
+                    Some(quote!(i64))
+                } else if values.iter().all(|v| v.is_number()) {
+                    Some(quote!(f64))
+                } else if values.iter().all(|v| v.is_boolean()) {
+                    Some(quote!(bool))
+                } else {
+                    None
+                }
+            }
+            SchemaMember::Kind("string", _) => Some(quote!(::std::string::String)),
+            SchemaMember::Kind("integer", _) => Some(quote!(i64)),
+            SchemaMember::Kind("number", _) => Some(quote!(f64)),
+            SchemaMember::Kind("boolean", _) => Some(quote!(bool)),
+            // A tuple has no one element type.
+            SchemaMember::Kind("array", m) if m.contains_key("prefixItems") => None,
+            SchemaMember::Kind("array", m) => {
+                let element = match m.get("items") {
+                    Some(items) => self.schema_value(items, &format!("{label}_item"))?,
+                    None => None,
+                };
+                let element = element.unwrap_or_else(|| quote!(::reylo::serde_json::Value));
+                Some(quote!(::std::vec::Vec<#element>))
+            }
+            SchemaMember::Kind("object", m) => self.schema_object(m, label)?,
+            SchemaMember::Kind(..) => None,
+        };
+        Ok(ty.map(|ty| (ty, null)))
+    }
+
+    /// An object a JSON Schema describes: a struct of its properties, each one the object may
+    /// leave out an `Option`; with the keys it doesn't name, where it admits others, kept in
+    /// `additional_properties`, so that a value read and written back loses none. One that names
+    /// no property is a map.
+    fn schema_object(&mut self, m: &serde_json::Map<String, serde_json::Value>, label: &str) -> syn::Result<Option<TokenStream2>> {
+        let empty = serde_json::Map::new();
+        let properties = m.get("properties").and_then(|p| p.as_object()).unwrap_or(&empty);
+        let required: BTreeSet<&str> = m.get("required").and_then(|r| r.as_array()).into_iter().flatten().filter_map(|k| k.as_str()).collect();
+        let additional = m.get("additionalProperties").unwrap_or(&serde_json::Value::Bool(true));
+        let closed = *additional == serde_json::Value::Bool(false);
+        if properties.is_empty() {
+            let value = match additional {
+                serde_json::Value::Bool(_) => None,
+                schema => self.schema_value(schema, &format!("{label}_value"))?,
+            };
+            let value = value.unwrap_or_else(|| quote!(::reylo::serde_json::Value));
+            return Ok(Some(quote!(::std::collections::BTreeMap<::std::string::String, #value>)));
+        }
+        let mut idents = BTreeSet::new();
+        let mut fields = Vec::new();
+        for (key, property) in properties {
+            // A key that is no Rust name, or two that read as one, leave the object untyped.
+            let Some(field) = json_key_ident(key) else { return Ok(None) };
+            if !idents.insert(field.to_string()) {
+                return Ok(None);
+            }
+            let (inner, null) = self.schema_parts(property, &format!("{label}_{key}"))?.unwrap_or_else(|| (quote!(::reylo::serde_json::Value), false));
+            fields.push(if required.contains(key.as_str()) {
+                let ty = if null { quote!(::core::option::Option<#inner>) } else { inner };
+                quote!(#[serde(rename = #key)] pub #field: #ty)
+            } else {
+                // A key the object may leave out reads as None, and None leaves it out.
+                quote!(#[serde(rename = #key, default, skip_serializing_if = "::core::option::Option::is_none")] pub #field: ::core::option::Option<#inner>)
+            });
+        }
+        if !closed {
+            let mut rest = String::from("additional_properties");
+            while idents.contains(&rest) {
+                rest.push('_');
+            }
+            let rest = format_ident!("{}", rest);
+            fields.push(quote!(#[serde(flatten)] pub #rest: ::reylo::serde_json::Map<::std::string::String, ::reylo::serde_json::Value>));
+        }
+        let base = names::type_name(label);
+        let ident = self.name(base.clone(), format!("{base}Object"));
+        self.items.push(quote!(
+            #[derive(::core::fmt::Debug, ::core::clone::Clone, ::core::cmp::PartialEq, ::reylo::serde::Serialize, ::reylo::serde::Deserialize)]
+            #[serde(crate = "::reylo::serde")]
+            pub struct #ident { #(#fields,)* }
+        ));
+        Ok(Some(quote!(#ident)))
     }
 
     /// A value inside a JSON document, typed by the SQL value the database wrote it from, as serde
@@ -597,9 +702,10 @@ impl Types {
                 ));
                 quote!(#ident)
             }
-            Kind::Json(inner) => match &inner.content {
-                Some(content) => self.json_value(&content.ty, content.nullable, label)?,
-                None => quote!(::reylo::serde_json::Value),
+            Kind::Json(inner) => match (&inner.content, &inner.schema) {
+                (Some(content), _) => self.json_value(&content.ty, content.nullable, label)?,
+                (None, Some(schema)) => self.schema_value(schema, label)?.unwrap_or_else(|| quote!(::reylo::serde_json::Value)),
+                (None, None) => quote!(::reylo::serde_json::Value),
             },
             _ => quote!(::reylo::serde_json::Value),
         };
@@ -639,6 +745,71 @@ impl Types {
         let hint = if hint.is_empty() { String::new() } else { format!(": {hint}") };
         syn::Error::new(self.span, format!("{label}: Reylo has no Rust type for {what} yet{hint}"))
     }
+}
+
+/// One kind of value a canonical JSON Schema admits, besides null.
+enum SchemaMember<'a> {
+    /// A `type`, with the keywords beside it (`items`, `properties`, …).
+    Kind(&'a str, &'a serde_json::Map<String, serde_json::Value>),
+    /// An `enum`'s values.
+    Literals(Vec<&'a serde_json::Value>),
+    /// Any value, as `true` or `{}` admit.
+    Any,
+}
+
+/// The kinds `schema` admits, an `anyOf`'s and a `type` list's each one, into `members`, and
+/// whether it admits null into `null`.
+fn schema_members<'a>(schema: &'a serde_json::Value, members: &mut Vec<SchemaMember<'a>>, null: &mut bool) {
+    let serde_json::Value::Object(m) = schema else {
+        // `false` admits nothing, and `true` anything.
+        if *schema != serde_json::Value::Bool(false) {
+            members.push(SchemaMember::Any);
+        }
+        return;
+    };
+    if let Some(serde_json::Value::Array(all)) = m.get("anyOf") {
+        for s in all {
+            schema_members(s, members, null);
+        }
+        return;
+    }
+    if let Some(serde_json::Value::Array(values)) = m.get("enum") {
+        *null |= values.iter().any(|v| v.is_null());
+        let values: Vec<_> = values.iter().filter(|v| !v.is_null()).collect();
+        if !values.is_empty() {
+            members.push(SchemaMember::Literals(values));
+        }
+        return;
+    }
+    let kinds: Vec<&str> = match m.get("type") {
+        Some(serde_json::Value::String(kind)) => vec![kind],
+        Some(serde_json::Value::Array(kinds)) => kinds.iter().filter_map(|k| k.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    if kinds.is_empty() {
+        members.push(SchemaMember::Any);
+    }
+    for kind in kinds {
+        if kind == "null" {
+            *null = true;
+        } else {
+            members.push(SchemaMember::Kind(kind, m));
+        }
+    }
+}
+
+/// A JSON object's key as a struct field: the key itself where it is a Rust name, else with each
+/// character no Rust name holds written `_` (`font-size` as `font_size`); `None` for a key that
+/// leaves nothing to name.
+fn json_key_ident(key: &str) -> Option<Ident> {
+    let mut name: String = key.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        name.insert(0, '_');
+    }
+    if name.is_empty() || name.chars().all(|c| c == '_') || matches!(name.as_str(), "self" | "Self" | "super" | "crate") {
+        return None;
+    }
+    Some(syn::parse_str::<Ident>(&name).unwrap_or_else(|_| Ident::new_raw(&name, Span::call_site())))
 }
 
 /// An enum of `values` named `ident`, with `reylo::Enum` (of the Postgres type `type_name`, or of
@@ -818,4 +989,62 @@ fn affinity(declared: &str) -> Affinity {
 fn is_bool(declared: &str) -> bool {
     let d = declared.trim().to_ascii_lowercase();
     d == "bool" || d == "boolean"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reylo_engine_core::types::JsonType;
+    use serde_json::json;
+
+    /// A Postgres jsonb column a CHECK holds to `schema` (in the canonical vocabulary the engine
+    /// writes), as its Rust type and the items it declares, each as Rust source.
+    fn checked(schema: serde_json::Value) -> (String, Vec<String>) {
+        let t = Type { kind: Kind::Json(JsonType { content: None, schema: Some(schema) }), label: Some("jsonb".into()), comment: None };
+        let mut types = Types::new(Dialect::Postgres, Options::default(), BTreeMap::new(), Span::call_site(), false);
+        let shape = types.column(&t, false, "prefs").unwrap();
+        let finished = types.finish(&BTreeSet::new()).unwrap();
+        let normal = |t: TokenStream2| t.to_string().replace(' ', "");
+        (normal(finished.named(shape.ty())), finished.items.into_iter().map(normal).collect())
+    }
+
+    #[test]
+    fn a_checked_object_reads_as_a_struct_of_its_properties() {
+        let (ty, items) = checked(json!({
+            "type": "object",
+            "properties": { "theme": { "enum": ["dark", "light"] }, "font_size": { "type": "integer" }, "tab-width": { "type": ["integer", "null"] } },
+            "required": ["theme", "font_size"],
+            "additionalProperties": false,
+        }));
+        assert_eq!(ty, "::reylo::sqlx::types::Json<Prefs>");
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert!(item.contains("pubstructPrefs{"), "{item}");
+        assert!(item.contains("#[serde(rename=\"theme\")]pubtheme:::std::string::String"), "{item}");
+        assert!(item.contains("#[serde(rename=\"font_size\")]pubfont_size:i64"), "{item}");
+        // Left out, or null: the one Option either way.
+        assert!(item.contains("#[serde(rename=\"tab-width\",default,skip_serializing_if=\"::core::option::Option::is_none\")]pubtab_width:::core::option::Option<i64>"), "{item}");
+        assert!(!item.contains("additional_properties"), "{item}");
+    }
+
+    #[test]
+    fn an_object_that_admits_other_keys_keeps_them() {
+        let (_, items) = checked(json!({ "type": "object", "properties": { "a": { "type": "string" } }, "required": ["a"], "additionalProperties": true }));
+        assert!(items[0].contains("#[serde(flatten)]pubadditional_properties:::reylo::serde_json::Map<::std::string::String,::reylo::serde_json::Value>"), "{}", items[0]);
+    }
+
+    #[test]
+    fn arrays_maps_and_nullable_values() {
+        assert_eq!(checked(json!({ "type": "array", "items": { "type": "string" } })).0, "::reylo::sqlx::types::Json<::std::vec::Vec<::std::string::String>>");
+        assert_eq!(checked(json!({ "type": "object", "additionalProperties": { "type": "number" } })).0, "::reylo::sqlx::types::Json<::std::collections::BTreeMap<::std::string::String,f64>>");
+        assert_eq!(checked(json!({ "type": ["boolean", "null"] })).0, "::reylo::sqlx::types::Json<::core::option::Option<bool>>");
+        assert_eq!(checked(json!({ "anyOf": [{ "type": "object", "properties": { "x": { "type": "integer" } }, "required": ["x"], "additionalProperties": false }, { "type": "null" }] })).0, "::reylo::sqlx::types::Json<::core::option::Option<Prefs>>");
+    }
+
+    #[test]
+    fn what_no_one_rust_type_holds_stays_any_json() {
+        for schema in [json!({}), json!({ "type": ["string", "integer"] }), json!({ "type": "array", "prefixItems": [{ "type": "string" }] }), json!({ "enum": ["a", 1] })] {
+            assert_eq!(checked(schema.clone()).0, "::reylo::serde_json::Value", "{schema}");
+        }
+    }
 }

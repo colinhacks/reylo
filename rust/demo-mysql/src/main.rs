@@ -36,6 +36,10 @@ mod add_post {}
 #[reylo::query("update users set nickname = :nickname where id = :id")]
 mod set_nickname {}
 
+/// A JSON column a CHECK holds to a JSON Schema: a struct of what the schema admits.
+#[reylo::query("select prefs from settings where user_id = :id")]
+mod get_prefs {}
+
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
     let pool = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL").expect("DATABASE_URL names the demo database")).await?;
@@ -81,5 +85,10 @@ async fn main() -> Result<(), sqlx::Error> {
     let renamed: u64 = set_nickname::Query { nickname: Some("b"), id: 2 }.run(&mut *tx).await?;
     tx.rollback().await?;
     println!("9. writes       {added} added, {renamed} renamed");
+
+    let prefs: reylo::sqlx::types::Json<get_prefs::Prefs> = get_prefs::Query { id: 2 }.run(&pool).await?.expect("bob").prefs;
+    let (theme, font_size, tabs): (&String, i64, &Option<Vec<String>>) = (&prefs.theme, prefs.font_size, &prefs.tabs);
+    assert_eq!((theme.as_str(), font_size, tabs), ("light", 12, &None));
+    println!("10. json schema {:?}", prefs.0);
     Ok(())
 }

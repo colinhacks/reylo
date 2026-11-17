@@ -276,7 +276,9 @@ let row = author_json::Query { id: 1 }.run(&pool).await?.expect("ada");
 let author = row.author.0;
 ```
 
-Any other JSON is a `serde_json::Value`. A decimal inside JSON fails to compile, since no Rust number reads it exactly: cast it to text inside the JSON.
+A JSON column a JSON Schema `CHECK` holds is typed by what the schema admits, in sqlx's `Json` too: an object is a struct of its properties, with an `Option` for each one the schema doesn't require. Where the schema admits keys it doesn't name, the struct keeps them in `additional_properties`, so nothing is lost when you write a value back.
+
+Any other JSON is a `serde_json::Value`, and so is JSON no one Rust type holds, such as a union of a string and a number. A decimal inside JSON the statement builds fails to compile, since no Rust number reads it exactly: cast it to text inside the JSON.
 
 ### Types
 
@@ -295,7 +297,7 @@ Each SQL type has one Rust type.
 | An enum, or `text` a `CHECK` lists values for | an enum the module holds |
 | `bytea` | `Vec<u8>` |
 | `uuid` | `uuid::Uuid` |
-| `json`, `jsonb` | `serde_json::Value`, or sqlx's `Json` of a struct of the object the statement builds |
+| `json`, `jsonb` | `serde_json::Value`, or sqlx's `Json` of what the statement builds or a JSON Schema `CHECK` admits |
 | `date` | `chrono::NaiveDate`, or `time::Date` |
 | `time` | `chrono::NaiveTime`, or `time::Time` |
 | `timestamp` | `chrono::NaiveDateTime`, or `time::PrimitiveDateTime` |
@@ -317,7 +319,7 @@ Each SQL type has one Rust type.
 | `CHAR`, `VARCHAR`, `TEXT`, `SET` | `String` |
 | `ENUM` | an enum the module holds |
 | `BINARY`, `VARBINARY`, `BLOB` | `Vec<u8>` |
-| `JSON` | `serde_json::Value`, or sqlx's `Json` of a struct of the object the statement builds |
+| `JSON` | `serde_json::Value`, or sqlx's `Json` of what the statement builds or a JSON Schema `CHECK` admits |
 | `DATE` | `chrono::NaiveDate`, or `time::Date` |
 | `DATETIME` | `chrono::NaiveDateTime`, or `time::PrimitiveDateTime` |
 | `TIMESTAMP` | `chrono::DateTime<Utc>`, or `time::OffsetDateTime` |
