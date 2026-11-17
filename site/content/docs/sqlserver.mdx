@@ -213,6 +213,32 @@ select @n::int + 1 as next, cast(@label as nvarchar(40)) as label
 
 Reylo writes `::int` as SQL Server's `cast(… as int)`. A `::text` is `nvarchar(max)`, `::boolean` is `bit`, and `::timestamptz` is `datetimeoffset`.
 
+## Batches
+
+A file can hold a T-SQL batch: variables, a table variable, `if`, `while`, several statements and `exec`:
+
+```ts twoslash tab="main.ts"
+import recentByDays from "./ss_recent_by_days.sql";
+
+const recent = await recentByDays.run(db, { days: 7 });
+//    ^?
+```
+
+```sql tab="ss_recent_by_days.sql" dialect="sqlserver"
+declare @since datetime2(3) = dateadd(day, -@days, sysdatetime());
+
+select id, total, placed_at
+from orders
+where placed_at > @since
+```
+
+- **Parameters** are the `@name`s the batch doesn't declare, as `sp_executesql` reads it: `@days` here, while `@since` is a variable. An argument's name in an `exec`, as in `exec dbo.find_user @id = @id`, is the procedure's own.
+- **The result** is the statement that returns rows: a `select`, or a write with `output`. SQL Server types it across every path through the batch, and Reylo narrows its nullability and its cardinality as for a statement alone, with a variable the batch declares as one value of its type, so `where id = @key` matches a key as a parameter does.
+- **A result in a branch** of an `if`, or after a `return`, may not come, so one row is at most one. Where each branch of an `if` returns rows, the types are SQL Server's alone.
+- **An `exec`** is typed by its procedure's first result set, and returns an array.
+- **A batch returns one result set.** A file whose batch may return two is an error, and `.run()` throws where a procedure returns a second.
+- **A `set ansi_warnings off`**, or another option Reylo's rules rest on turned off, leaves the statements after it with SQL Server's types alone.
+
 ## Database errors
 
 With [`.try()`](/typescript#try), an error SQL Server raised comes back as `{ error }`:
@@ -280,9 +306,10 @@ What Reylo can't type on SQL Server, and what to do instead:
 
 | Limit | Instead |
 | --- | --- |
-| A file of several statements, a batch with variables (`declare`), or `exec` | One statement per file: a `select`, or an `insert`, `update`, `delete` or `merge` with `output` |
-| A temporary table | A common table expression, or a table of your schema |
-| A parameter used twice, as in `@name is null or name = @name`, which SQL Server can't describe | Read it once in a `with`: `with input as (select @name::nvarchar(100) as name) select … from users, input where input.name is null or users.name = input.name` |
+| A batch that returns several result sets | A file for each result set |
+| A temporary table, which SQL Server describes in no batch | A table variable: `declare @t table (id int)` |
+| A cursor | A `select`, into a table variable where the batch reads the rows in steps |
+| A parameter used twice, as in `@name is null or name = @name`, which SQL Server can't describe | Read it once into a variable: `declare @n nvarchar(100) = @name; select … from users where @n is null or name = @n` |
 | `rows(…)` and `row(…)` parameters | A parameter per value |
 | An interactive, device-code or password sign-in with Microsoft Entra ID | `az login`, then `authentication=ActiveDirectoryAzureCli` |
 | JSON the query builds with `for json` | It is a `string`: parse it yourself |

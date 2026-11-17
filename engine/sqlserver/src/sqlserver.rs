@@ -8,10 +8,11 @@
 //! many rows it returns ([`crate::cardinality`]) and which parameters may be null
 //! ([`crate::params`]).
 //!
-//! A statement is one `SELECT`, `INSERT`, `UPDATE`, `DELETE` or `MERGE`, its rows the `SELECT`'s or
-//! the `OUTPUT` clause's. A batch (`DECLARE`, `IF`, several statements) and `EXEC` are refused:
-//! the server describes only the first result set of either, and nothing the engine reads bounds
-//! it.
+//! A file is a batch: one `SELECT`, `INSERT`, `UPDATE`, `DELETE` or `MERGE`, its rows the
+//! `SELECT`'s or the `OUTPUT` clause's, or several statements with variables, `IF`, `WHILE` and
+//! `EXEC`, whose result is the one statement that makes rows ([`crate::batch`]). The server
+//! describes a batch's first result set across every path through it, and the engine's rules read
+//! the statement that makes it as they read a statement alone.
 
 use crate::api::{Analysis, Column, Diagnostic, Param, Scope};
 use crate::dialect::Dialect;
@@ -24,11 +25,6 @@ use reylo_engine_core::host::as_bool;
 use reylo_engine_core::types::{Cardinality, StatementKind, Type};
 use serde_json::{json, Value};
 use sqlparser::ast::{Expr, FromTable, ObjectName, OutputClause, Query, SelectItem, SetExpr, Statement, TableFactor, TableObject, TableWithJoins};
-use sqlparser::dialect::MsSqlDialect;
-use sqlparser::parser::Parser;
-
-/// The statements the analysis reads ([`lex::one_statement`]).
-const KINDS: &[&str] = &["select", "with", "insert", "update", "delete", "merge"];
 
 /// The parameters' types, deduced from where each stands: one row per parameter, its name in
 /// column 1 and its type in columns 3 to 6 (`suggested_system_type_name`, `suggested_max_length`,
@@ -71,24 +67,25 @@ fn no_lexed() -> Lexed {
 }
 
 pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
-    let lexed = lex::lex(sql, Dialect::Sqlserver);
-    let empty = no_lexed();
-    // A batch or an `exec` is refused by its first word, before what its text holds: an `@name`
-    // in one is a variable or a procedure's argument, which the lexer reads as a placeholder.
-    if let Some(message) = refused_word(&lex::first_word(sql, lexed.as_ref().unwrap_or(&empty))) {
-        return Some(crate::analysis::bare(sql, &empty, Dialect::Sqlserver, vec![whole(sql, message, 10, None)]));
-    }
-    let lexed = match lexed {
+    let lexed = match lex::lex(sql, Dialect::Sqlserver) {
         Ok(lexed) => lexed,
-        Err(e) => return Some(crate::analysis::bare(sql, &empty, Dialect::Sqlserver, vec![Diagnostic { message: e.message, start: e.offset, length: 1, code: 1, server_code: None }])),
+        Err(e) => return Some(crate::analysis::bare(sql, &no_lexed(), Dialect::Sqlserver, vec![Diagnostic { message: e.message, start: e.offset, length: 1, code: 1, server_code: None }])),
     };
     let refuse = |d: Vec<Diagnostic>| Some(crate::analysis::bare(sql, &lexed, Dialect::Sqlserver, d));
-    let repeated = crate::analysis::repeated(sql, &lexed);
+    // A batch reads a value twice through a variable, which the parameter's one use declares.
+    let repeated: Vec<Diagnostic> = crate::analysis::repeated(sql, &lexed)
+        .into_iter()
+        .map(|mut d| {
+            let written = &sql[d.start..d.start + d.length];
+            d.message = format!("The parameter {written} appears more than once; use each parameter once, and to read it twice, read it into a variable first, as in: declare @v <type> = {written}");
+            d
+        })
+        .collect();
     if !repeated.is_empty() {
         return refuse(repeated);
     }
-    if let Err(message) = lex::one_statement(sql, &lexed, KINDS) {
-        return refuse(vec![whole(sql, message, 10, None)]);
+    if let Some(at) = go_line(sql, &lexed) {
+        return refuse(vec![Diagnostic { message: GO.into(), start: at, length: 2, code: 10, server_code: None }]);
     }
     let rewritten = lex::rewrite(sql, &lexed, Target::AtNumbered);
     // The author's text for each `@p_n` the server's messages name.
@@ -101,15 +98,21 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         }
         out
     };
-    let parsed = match Parser::parse_sql(&MsSqlDialect {}, &rewritten.sql) {
-        Ok(mut statements) if statements.len() == 1 => statements.pop(),
-        Ok(statements) if statements.len() > 1 => return refuse(vec![whole(sql, lex::several_statements(), 10, None)]),
-        _ if several_unseparated(&rewritten.sql) => return refuse(vec![whole(sql, lex::several_statements(), 10, None)]),
-        _ => None,
-    };
-    if let Some(message) = parsed.as_ref().and_then(refused) {
+    // The batch's statements, and the one whose rows are the result ([`crate::batch`]).
+    let statements = crate::batch::parse(&rewritten.sql);
+    let read = statements.as_deref().map(crate::batch::read);
+    if let Some(r) = read.as_ref().filter(|r| r.per_run > 1) {
+        return refuse(vec![whole(sql, format!("{SEVERAL_RESULTS} This one may return {}.", if r.per_run > 2 { r.per_run.to_string() } else { "two or more".into() }), 10, None)]);
+    }
+    // The statement that makes the result set, where one alone does: where each branch of an `if`
+    // makes one, the server's describe types them together, and the rules read neither.
+    let found = read.as_ref().filter(|r| r.results.len() == 1).and_then(|r| r.results.first());
+    // The statement the rules read: the result's, where they may.
+    let parsed: Option<&Statement> = found.filter(|f| f.narrows).map(|f| f.statement);
+    if let Some(message) = found.and_then(|f| refused(f.statement)) {
         return refuse(vec![whole(sql, message, 10, None)]);
     }
+    let all: Vec<&Statement> = statements.as_deref().map(crate::batch::flatten).unwrap_or_default();
     // The first round: each parameter's type, and the collation one of a character type takes.
     let deduced: Deduced = if rewritten.order.is_empty() {
         Vec::new()
@@ -140,10 +143,13 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     // computed columns read ([`crate::nulls`]), the unique keys of the tables its row count turns
     // on ([`crate::cardinality`]), and the columns of the table it writes ([`crate::params`]).
     let described = host.query(FIRST_RESULT_SET, vec![json!(rewritten.sql), declared.clone()], Scope::Statement);
-    let plan = parsed.as_ref().map(crate::nulls::plan).unwrap_or_default();
+    let mut plan = parsed.map(crate::nulls::plan).unwrap_or_default();
+    if let (Some(probe), Some(f)) = (plan.probe.as_mut(), found) {
+        probe.insert_str(0, &f.prelude);
+    }
     let probe = plan.probe.as_ref().map(|probe| host.query(FIRST_RESULT_SET, vec![json!(probe), declared.clone()], Scope::Statement));
-    let keys = parsed.as_ref().map(|s| crate::cardinality::keys(s, host));
-    let written = parsed.as_ref().map(|s| crate::params::columns(s, host));
+    let keys = parsed.map(|s| crate::cardinality::keys(s, host));
+    let written: Vec<_> = all.iter().map(|s| crate::params::columns(s, host)).collect();
     let described = described?;
     let probe = match probe {
         Some(p) => Some(p?),
@@ -153,29 +159,33 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         Some(k) => Some(k?),
         None => None,
     };
-    let written = match written {
-        Some(w) => Some(w?),
-        None => None,
-    };
+    let mut columns_written = Vec::new();
+    for w in written {
+        columns_written.push(w?);
+    }
     let rows = match described {
         Ok(rows) => rows,
         Err(e) => return refuse(vec![whole(sql, authored(&e.message), 6, e.code.clone())]),
     };
     if let Some(row) = rows.iter().find(|r| !r.get(13).is_none_or(Value::is_null)) {
-        let message = authored(row.get(14).and_then(as_str).unwrap_or("the server could not describe the statement"));
         let code = row.get(13).map(|c| c.to_string().trim_matches('"').to_string());
+        let message = authored(row.get(14).and_then(as_str).unwrap_or("the server could not describe the statement"));
+        let message = match code.as_deref().and_then(undescribed) {
+            Some(how) => format!("{} {how}", message.trim_end()),
+            None => message,
+        };
         return refuse(vec![whole(sql, message, 6, code)]);
     }
     let described: Vec<Described1> = rows.iter().filter(|r| !r.first().and_then(as_bool).unwrap_or(false)).map(described_column).collect();
     // A probe the server refused narrows nothing.
     let probed: Option<Vec<bool>> = probe.and_then(|p| p.ok()).filter(|rows| rows.iter().all(|r| r.get(13).is_none_or(Value::is_null))).map(|rows| rows.iter().filter(|r| !r.first().and_then(as_bool).unwrap_or(false)).map(|r| r.get(3).and_then(as_bool).unwrap_or(true)).collect());
-    let never_null = crate::nulls::never_null(parsed.as_ref(), &plan, probed.as_deref(), described.len());
+    let never_null = crate::nulls::never_null(parsed, &plan, probed.as_deref(), described.len());
     let columns: Vec<Column> = described
         .iter()
         .enumerate()
         .map(|(i, c)| Column::new(c.name.clone(), crate::types::of(&c.ty), c.nullable && !never_null.get(i).copied().unwrap_or(false)))
         .collect();
-    let nullable = parsed.as_ref().map(|s| crate::params::nullable(s, &rewritten.order, written.as_ref())).unwrap_or_default();
+    let nullable: std::collections::HashSet<String> = all.iter().zip(&columns_written).flat_map(|(s, w)| crate::params::nullable(s, &rewritten.order, Some(w))).collect();
     let params: Vec<Param> = lexed
         .params
         .iter()
@@ -184,13 +194,28 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
             Param { nullable: nullable.contains(name), ..Param::new(name.clone(), ty) }
         })
         .collect();
-    let kind = parsed.as_ref().and_then(kind);
-    let (cardinality, reason) = match &parsed {
-        Some(statement) => crate::cardinality::of(statement, keys.as_ref(), columns.len()),
-        None if columns.is_empty() => (Cardinality::None, None),
-        None => (Cardinality::Many, Some("the engine could not parse the statement, so nothing bounds its rows".into())),
+    // A batch of one statement is that statement's kind; a batch of several is of none of them.
+    let kind = match statements.as_deref() {
+        Some([one]) => kind(one),
+        Some(_) => Some(StatementKind::Other),
+        None => None,
     };
-    let targets = parsed.as_ref().and_then(result_targets);
+    let (cardinality, reason) = match (parsed, found, &read) {
+        (Some(statement), Some(f), _) => {
+            let (cardinality, reason) = crate::cardinality::of(statement, keys.as_ref(), columns.len(), &f.variables);
+            match cardinality {
+                // A result that may not come is at most one row where its statement returns one.
+                Cardinality::One if !f.sure => (Cardinality::AtMostOne, Some("the statement that returns the row may not run, as in a branch of an if".into())),
+                _ => (cardinality, reason),
+            }
+        }
+        _ if columns.is_empty() => (Cardinality::None, None),
+        (None, Some(_), _) => (Cardinality::Many, Some("the rows come from a procedure, or from a statement after a set that turns off ansi_warnings, which nothing bounds".into())),
+        (_, None, Some(r)) if r.understood => (Cardinality::Many, Some("each branch of an if returns rows of its own, which nothing bounds together".into())),
+        (_, None, Some(_)) => (Cardinality::Many, Some("the batch holds a statement the engine does not follow, so nothing bounds its rows".into())),
+        _ => (Cardinality::Many, Some("the engine could not parse the batch, so nothing bounds its rows".into())),
+    };
+    let targets = found.and_then(|f| result_targets(f.statement));
     let mut analysis = Analysis {
         kind,
         comment: None,
@@ -211,44 +236,17 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         fresh: None,
         errors: None,
         capabilities: None,
-        read_only: parsed.as_ref().is_some_and(read_only),
+        read_only: statements.is_some() && all.iter().all(|s| read_only(s)),
         notes: Vec::new(),
-        tables: parsed.as_ref().map(tables),
+        tables: statements.as_ref().map(|_| all_tables(&all)),
         domains: Default::default(),
     };
     crate::analysis::names(sql, Dialect::Sqlserver, &mut analysis, targets.as_deref(), &|_| None);
     Some(analysis)
 }
 
-const EXEC: &str = "EXEC runs a stored procedure, whose result sets SQL Server describes only from its first statement and Reylo cannot bound, so a typed .sql file holds no EXEC: select from a view or an inline table-valued function instead.";
-const BATCH: &str = "A typed .sql file holds one statement, and this one is part of a batch: write the statement alone, with its values as @name parameters.";
-
-/// Why a statement is not one the analysis reads, by its first word, which needs no parse: a
-/// stored procedure's and a batch's result sets are the server's to describe and nothing's to
-/// bound.
-/// Whether the text is two statements with no `;` between them, which T-SQL takes (`select 1
-/// select 2`) and the parser does not: one statement read whole, then a word that starts another
-/// and a statement read from there. Where the parser stops at a clause it doesn't read, such as
-/// `with rollup`, what follows reads as no statement.
-fn several_unseparated(sql: &str) -> bool {
-    use sqlparser::tokenizer::Token;
-    const STARTS: &[&str] = &["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "WITH", "EXEC", "EXECUTE", "DECLARE", "SET", "IF", "WHILE", "BEGIN", "CREATE", "ALTER", "DROP", "TRUNCATE", "PRINT", "RETURN", "THROW", "RAISERROR", "WAITFOR", "USE"];
-    let dialect = MsSqlDialect {};
-    let Ok(mut parser) = Parser::new(&dialect).try_with_sql(sql) else { return false };
-    if parser.parse_statement().is_err() {
-        return false;
-    }
-    while parser.consume_token(&Token::SemiColon) {}
-    matches!(parser.peek_token().token, Token::Word(w) if STARTS.contains(&w.value.to_ascii_uppercase().as_str())) && parser.parse_statement().is_ok()
-}
-
-fn refused_word(word: &str) -> Option<String> {
-    match word {
-        "exec" | "execute" => Some(EXEC.into()),
-        "declare" | "set" | "if" | "while" | "begin" => Some(BATCH.into()),
-        _ => None,
-    }
-}
+const GO: &str = "A typed .sql file is one batch, and a GO line separates two, which a driver does not send: leave it out, and the statements run as one batch.";
+const SEVERAL_RESULTS: &str = "Reylo types a batch's first result set, and a typed .sql file returns one: a select that returns rows, or a write with an output, in each path through the batch.";
 
 /// Why a statement is not one the analysis reads, by what its tree is.
 fn refused(statement: &Statement) -> Option<String> {
@@ -256,11 +254,21 @@ fn refused(statement: &Statement) -> Option<String> {
         Statement::Query(q) if q.for_clause.as_ref().is_some_and(|f| !matches!(f, sqlparser::ast::ForClause::Browse)) => {
             Some("SQL Server sends a top-level FOR JSON's or FOR XML's text in pieces, which drivers join differently: select it as a column instead, as in select (select … for json path) as doc.".into())
         }
-        Statement::Query(_) | Statement::Insert(_) | Statement::Update(_) | Statement::Delete(_) | Statement::Merge(_) => None,
-        Statement::Execute { .. } => Some(EXEC.into()),
-        Statement::Declare { .. } | Statement::Set(_) | Statement::If(_) | Statement::While(_) => Some(BATCH.into()),
         _ => None,
     }
+}
+
+/// What to write instead of a batch the server's describe refused, by its error: a temporary table
+/// (11525, 11526), branches whose result sets differ (11509 to 11512), SQL built at run time (11513,
+/// 11514), a cursor (11527).
+fn undescribed(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "11525" | "11526" => "SQL Server describes no batch that fills a temporary table: use a table variable, as in declare @t table (id int).",
+        "11509" | "11510" | "11511" | "11512" => "Return the same columns from every branch, or put each in a file of its own.",
+        "11513" | "11514" => "Name what the SQL built at run time returns, as in exec (@sql) with result sets ((id int, name nvarchar(100))).",
+        "11527" => "Read the rows with a select, into a table variable where the batch needs them in steps.",
+        _ => return None,
+    })
 }
 
 /// Whether the server's error says it could not deduce a parameter's type: in this context
@@ -309,6 +317,40 @@ fn described_column(row: &Vec<Value>) -> Described1 {
     }
 }
 
+/// The offset of a line that holds `GO` alone, outside text, as tools that run scripts read one.
+fn go_line(sql: &str, lexed: &Lexed) -> Option<usize> {
+    let mut at = 0;
+    for line in sql.split_inclusive('\n') {
+        let word = line.trim();
+        let start = at + (line.len() - line.trim_start().len());
+        at += line.len();
+        let in_text = lexed.opaque.iter().any(|&(s, e)| s <= start && start < e);
+        if !in_text && word.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("go")) && word.split_whitespace().nth(1).is_none_or(|w| w.bytes().all(|c| c.is_ascii_digit())) {
+            return Some(start);
+        }
+    }
+    None
+}
+
+/// The tables every statement of the batch reads and writes.
+fn all_tables(statements: &[&Statement]) -> Tables {
+    let mut out = Tables::default();
+    for statement in statements {
+        let t = tables(statement);
+        for name in t.read {
+            if !out.read.contains(&name) {
+                out.read.push(name);
+            }
+        }
+        for name in t.write {
+            if !out.write.contains(&name) {
+                out.write.push(name);
+            }
+        }
+    }
+    out
+}
+
 /// The kind of statement the tree is.
 fn kind(statement: &Statement) -> Option<StatementKind> {
     Some(match statement {
@@ -325,6 +367,8 @@ fn kind(statement: &Statement) -> Option<StatementKind> {
 fn read_only(statement: &Statement) -> bool {
     match statement {
         Statement::Query(q) => !selects_into(q),
+        // A batch's declarations, its own settings and its messages write nothing.
+        Statement::Declare { .. } | Statement::Set(_) | Statement::Print(_) | Statement::Return(_) | Statement::Throw(_) | Statement::RaisError { .. } => true,
         _ => false,
     }
 }
@@ -490,6 +534,8 @@ fn factor_tables(f: &TableFactor, named: &mut Vec<String>, inner: &mut Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlparser::dialect::MsSqlDialect;
+    use sqlparser::parser::Parser;
     use reylo_engine_core::api::Answers;
     use reylo_engine_core::host::Host as CoreHost;
 
@@ -554,12 +600,13 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_and_exec_are_refused() {
+    fn a_batch_returns_one_result_set_and_has_no_go_line() {
         let none = |_: &str, _: &[Value]| -> Result<Vec<Vec<Value>>, crate::api::DbError> { panic!("nothing is asked") };
-        assert!(analyzed("exec dbo.search @term = :t", &none).diagnostics[0].message.starts_with("EXEC runs a stored procedure"));
-        assert!(analyzed("select 1 select 2", &none).diagnostics[0].message.starts_with("A typed .sql file holds one statement and this one holds several"));
-        assert!(several_unseparated("select 1 as a select 2 as b"));
-        assert!(!several_unseparated("select n, count(*) as c from f group by n with rollup"));
+        assert!(analyzed("select 1 as a select 2 as b", &none).diagnostics[0].message.starts_with("Reylo types a batch's first result set, and a typed .sql file returns one"));
+        assert!(analyzed("select 1 as a; if @f = 1 select 2 as b", &none).diagnostics[0].message.ends_with("This one may return two or more."));
+        let go = analyzed("create table t (a int)\ngo\nselect a from t", &none);
+        assert_eq!((go.diagnostics[0].start, go.diagnostics[0].message.as_str()), (23, GO));
+        assert_eq!(go_line("select 'a\ngo\n' as x", &lex::lex("select 'a\ngo\n' as x", Dialect::Sqlserver).unwrap()), None);
     }
 
     #[test]

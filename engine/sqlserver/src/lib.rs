@@ -11,6 +11,7 @@
 //! describe is two of them.
 
 pub mod api;
+pub mod batch;
 pub mod cardinality;
 pub mod host;
 pub mod nulls;

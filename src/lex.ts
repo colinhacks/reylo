@@ -32,6 +32,8 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
   // What was read last, past whitespace and comments: an operand (a name other than `array`, a
   // number, a quoted name, a placeholder, `)` or `]`), the `[` of a subscript after one, or other.
   let last: "other" | "operand" | "subscript" = "other";
+  // A SQL Server batch's own variables and an `exec`'s argument names, read once where an `@name` is met.
+  let tsql: { declared: Set<string>; args: Set<number> } | undefined;
   while (i < sql.length) {
     const ch = sql[i]!;
     const next = sql[i + 1];
@@ -58,7 +60,10 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
       if (next === "@") { i += 2 + /^[A-Za-z0-9_]*/.exec(sql.slice(i + 2))![0].length; last = "operand"; continue; }
       if (next !== undefined && /[A-Za-z_]/.test(next) && !(i > 0 && /[A-Za-z0-9_]/.test(sql[i - 1]!))) {
         const m = /^[A-Za-z_][A-Za-z0-9_@#$]*/.exec(sql.slice(i + 1))!;
-        push(m[0], i, i + 1 + m[0].length); i += 1 + m[0].length; last = "operand"; continue;
+        // A variable the batch declares, or an argument's name in an `exec`, is T-SQL's own.
+        tsql ??= tsqlVariables(sql);
+        if (!tsql.declared.has(m[0].toLowerCase()) && !tsql.args.has(i)) push(m[0], i, i + 1 + m[0].length);
+        i += 1 + m[0].length; last = "operand"; continue;
       }
     }
     // `arr[lo:hi]` is a slice: a name character before the colon means it opens nothing. SQLite's
@@ -92,6 +97,68 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
 }
 
 /** Whether a parameter name is a position: a number, where a name starts with a letter or `_`. */
+/** The words that start a T-SQL statement, which end a `declare`'s list or an `exec`'s arguments where no `;` does. */
+const TSQL_STARTS = new Set(["select", "insert", "update", "delete", "merge", "set", "if", "else", "while", "exec", "execute", "begin", "end", "declare", "return", "print", "throw", "raiserror", "with", "open", "fetch", "close", "deallocate", "waitfor", "goto", "break", "continue", "truncate", "create", "alter", "drop", "commit", "rollback", "save", "use"]);
+
+/**
+ * The names a T-SQL batch gives `@` that are no placeholder (the engine's `tsql_variables` in
+ * engine/core/src/lex.rs): the variables it declares, lowercased, and the offsets of the argument
+ * names an `exec` passes by name.
+ */
+function tsqlVariables(sql: string): { declared: Set<string>; args: Set<number> } {
+  const declared = new Set<string>();
+  const args = new Set<number>();
+  let mode: "none" | "declare" | "exec" = "none";
+  let expect = false;
+  let depth = 0;
+  let i = 0;
+  while (i < sql.length) {
+    const ch = sql[i]!;
+    if (ch === "'" || ch === '"' || ch === "[") {
+      const close = ch === "[" ? "]" : ch;
+      i += 1;
+      while (i < sql.length) {
+        if (sql[i] === close) { if (sql[i + 1] === close) { i += 2; continue; } break; }
+        i += 1;
+      }
+      i += 1; continue;
+    }
+    if (ch === "-" && sql[i + 1] === "-") { const end = sql.indexOf("\n", i); i = end === -1 ? sql.length : end; continue; }
+    if (ch === "/" && sql[i + 1] === "*") {
+      let nest = 0;
+      while (i < sql.length) {
+        if (sql[i] === "/" && sql[i + 1] === "*") { nest += 1; i += 2; }
+        else if (sql[i] === "*" && sql[i + 1] === "/") { nest -= 1; i += 2; if (nest === 0) break; }
+        else i += 1;
+      }
+      continue;
+    }
+    if (ch === "(") { depth += 1; i += 1; continue; }
+    if (ch === ")") { depth = Math.max(0, depth - 1); i += 1; continue; }
+    if (ch === ";" && depth === 0) { mode = "none"; i += 1; continue; }
+    if (ch === "," && depth === 0) { if (mode === "declare") expect = true; i += 1; continue; }
+    if (ch === "@" && sql[i + 1] === "@") { i += 2; continue; }
+    if (ch === "@" && /[A-Za-z_]/.test(sql[i + 1] ?? "")) {
+      const name = /^[A-Za-z_][A-Za-z0-9_@#$]*/.exec(sql.slice(i + 1))![0];
+      const end = i + 1 + name.length;
+      if (depth === 0 && mode === "declare" && expect) { declared.add(name.toLowerCase()); expect = false; }
+      else if (depth === 0 && mode === "exec" && /^\s*=(?!=)/.test(sql.slice(end))) args.add(i);
+      i = end; continue;
+    }
+    if (/[A-Za-z_]/.test(ch) && !(i > 0 && /[A-Za-z0-9_]/.test(sql[i - 1]!))) {
+      const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(i))![0];
+      const lower = word.toLowerCase();
+      if (depth === 0 && TSQL_STARTS.has(lower)) {
+        mode = lower === "declare" ? "declare" : lower === "exec" || lower === "execute" ? "exec" : "none";
+        expect = mode === "declare";
+      }
+      i += word.length; continue;
+    }
+    i += 1;
+  }
+  return { declared, args };
+}
+
 export function isPositional(name: string): boolean {
   return /^\d+$/.test(name);
 }

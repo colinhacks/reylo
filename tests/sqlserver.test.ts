@@ -173,14 +173,37 @@ test("SQL Server: each parameter is bound as the server typed it, and comes back
   }
 });
 
+test("SQL Server: a batch is typed by its result statement, with its own variables, and an exec by its procedure's first result set", { skip: sqlserverLive, timeout: 120_000 }, async () => {
+  const db = await sqlserverDatabase("reylo_sqlserver_batches", `${SCHEMA}\nGO\ncreate procedure dbo.flags @min int as select id, flag from t where id >= @min order by id;`, { decimalAsString: true });
+  try {
+    const root = project(db.url);
+    const batch = "declare @from int = @start + 1, @to int = 100\ndeclare @seen table (id int not null)\ninsert into @seen (id) select id from t where id >= @from\nselect id, flag from t where id = @from and id in (select id from @seen) and id < @to";
+    const branch = "if @wanted = 1 select id, label from t where id = 1";
+    const out = await declarations(root, { "batch.sql": batch, "branch.sql": branch, "proc.sql": "exec dbo.flags @min = @min" });
+    // @start is a parameter; @from, @to and @seen are the batch's own. The lookup by key returns at most one row.
+    assert.deepEqual(types(out["batch.sql"]!), { params: "{ start: number }", row: "{ id: number; flag: boolean }" });
+    assert.match(out["batch.sql"]!, /"maybeOne"/);
+    // A branch's row may not come, so one row is at most one.
+    assert.match(out["branch.sql"]!, /"maybeOne"/);
+    assert.match(out["proc.sql"]!, /"many"/);
+    const b = await built(root, "batch", batch);
+    assert.deepEqual(plain(await b.run(db.pool, { start: 0 })), { id: 1, flag: true });
+    const e = await built(root, "proc", "exec dbo.flags @min = @min");
+    assert.deepEqual(plain(await e.run(db.pool, { min: 2 })), [{ id: 2, flag: false }]);
+  } finally {
+    await db.drop();
+  }
+});
+
 test("SQL Server: a statement the server refuses is a diagnostic at its place, and .try() reads a failed run as a QueryError with its number and constraint", { skip: sqlserverLive, timeout: 120_000 }, async () => {
   const db = await sqlserverDatabase("reylo_sqlserver_errors", SCHEMA, { decimalAsString: true });
   try {
     const root = project(db.url);
-    const out = await transform(root, { "missing.sql": "select nope from t", "batch.sql": "declare @x int = 1; select @x as x", "exec.sql": "exec sp_who" });
+    const out = await transform(root, { "missing.sql": "select nope from t", "two.sql": "select 1 as a select 2 as b", "go.sql": "select 1 as a\nGO\nselect 2 as b", "temp.sql": "create table #x (id int); insert #x values (1); select id from #x" });
     assert.match(out["missing.sql"]!.diagnostics[0]!.messageText, /Invalid column name 'nope'/);
-    assert.match(out["batch.sql"]!.diagnostics[0]!.messageText, /one statement/);
-    assert.match(out["exec.sql"]!.diagnostics[0]!.messageText, /procedure/i);
+    assert.match(out["two.sql"]!.diagnostics[0]!.messageText, /Reylo types a batch's first result set, and a typed \.sql file returns one/);
+    assert.match(out["go.sql"]!.diagnostics[0]!.messageText, /leave it out/);
+    assert.match(out["temp.sql"]!.diagnostics[0]!.messageText, /use a table variable/);
     const insert = await built(root, "dupe", "insert into t (id, flag) values (:id, 0)");
     await assert.rejects(insert.run(db.pool, { id: 1 }), (e: any) => e.name === "RequestError" && e.number === 2627);
     const { error } = await insert.try(db.pool, { id: 1 });

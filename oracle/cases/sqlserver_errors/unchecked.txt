@@ -1,6 +1,4 @@
 bare_decimal_cast.sql: the engine refused it
-batch.sql: the engine refused it
-exec.sql: the engine refused it
 missing.sql: the engine refused it
 rows_param.sql: the engine refused it
 two_statements.sql: the engine refused it

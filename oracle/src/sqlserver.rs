@@ -700,7 +700,8 @@ fn run_text(rewritten: &str, decls: &[String], values: &[String]) -> String {
 }
 
 enum Outcome {
-    Rows(Vec<Vec<ColumnData<'static>>>),
+    /// The first result set's rows, and how many result sets the run returned.
+    Rows(Vec<Vec<ColumnData<'static>>>, usize),
     Failed(String, u32),
     TimedOut,
 }
@@ -713,7 +714,10 @@ async fn run_one(conn: &mut Conn, sql: &str, timeout_ms: u64) -> Outcome {
     match tokio::time::timeout(Duration::from_millis(timeout_ms), work).await {
         Err(_) => Outcome::TimedOut,
         Ok(Err(e)) => Outcome::Failed(message(&e), code(&e)),
-        Ok(Ok(results)) => Outcome::Rows(results.into_iter().next().unwrap_or_default().into_iter().map(|row| row.into_iter().collect()).collect()),
+        Ok(Ok(results)) => {
+            let sets = results.len();
+            Outcome::Rows(results.into_iter().next().unwrap_or_default().into_iter().map(|row| row.into_iter().collect()).collect(), sets)
+        }
     }
 }
 
@@ -811,7 +815,11 @@ pub async fn check(url: &str, statements: &[(String, String, Value)], timeout_ms
                         }
                         tallies[k].fail(why);
                     }
-                    Outcome::Rows(rows) => {
+                    Outcome::Rows(rows, sets) => {
+                        // A batch's analysis types its first result set, and refuses one that may return more.
+                        if sets > 1 {
+                            problems.push(format!("{file}: typed as one result set, returned {sets} with ({shown})"));
+                        }
                         tallies[k].ran += 1;
                         if (cardinality == "at_most_one" && rows.len() > 1) || (cardinality == "one" && rows.len() != 1) || (cardinality == "none" && !rows.is_empty()) {
                             problems.push(format!("{file}: proven {cardinality}, returned {} rows with ({shown})", rows.len()));

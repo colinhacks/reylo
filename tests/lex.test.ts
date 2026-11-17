@@ -67,6 +67,7 @@ test("the runtime's lexer agrees with the engine's", async () => {
     ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite"],
     ["select [a]]:b] as x, N'it''s @y', @@rowcount, @p, @g.STDistance(@h), @a$b#c, $action -- @v\n /* @u */ from [t]", "sqlserver"],
     ["select [n:m], :p, geography::Point(:lat, 1, 4326) from t", "sqlserver"],
+    ["declare @since datetime2 = dateadd(day, -@days, sysutcdatetime()), @t table (id int)\nselect @N = count(*) from @t where id > @min\nexec dbo.find @id = @id, @Since = @since -- @x\n", "sqlserver"],
   ];
   for (const [sql, dialect] of statements) {
     const ours = lexPlaceholders(sql, dialect);

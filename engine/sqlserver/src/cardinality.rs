@@ -11,6 +11,8 @@
 //!   column's type rather than the other way round. A column converted to the value's type
 //!   compares as its conversion does, which can make two keys equal: `'01'` and `'1'` both equal
 //!   `1`, two `bigint`s one `float`, and `'ß'` the `N'ss'` a SQL collation keeps apart.
+//!   A variable the batch declared is such a value, of its declared type, where the statement
+//!   assigns no variable as it runs (`update … set @n = @n + 1`).
 //!   A common table expression named like a table is no table.
 //! - A write returns its `OUTPUT` rows, one per row it writes: an INSERT of one VALUES row or of
 //!   DEFAULT VALUES returns one, or at most one where a unique index ignores duplicates. A write
@@ -130,7 +132,8 @@ pub fn keys(statement: &Statement, host: &Host) -> Lazy<Keys> {
 
 /// The statement's cardinality, and why it is no tighter where only the engine's reading bounds it.
 /// `columns` is how many columns the server described.
-pub fn of(statement: &Statement, keys: Option<&Keys>, columns: usize) -> (Cardinality, Option<String>) {
+/// `variables` are the batch's variables declared before the statement, each with its type's name.
+pub fn of(statement: &Statement, keys: Option<&Keys>, columns: usize, variables: &[(String, String)]) -> (Cardinality, Option<String>) {
     if columns == 0 {
         return (Cardinality::None, None);
     }
@@ -138,14 +141,14 @@ pub fn of(statement: &Statement, keys: Option<&Keys>, columns: usize) -> (Cardin
     // A unique index that ignores duplicates drops the row, and its OUTPUT with it.
     let one_insert = || if keys.is_some_and(|k| !k.ignores_duplicates) { Cardinality::One } else { Cardinality::AtMostOne };
     match statement {
-        Statement::Query(q) => query(q, statement, keys),
+        Statement::Query(q) => query(q, statement, keys, variables),
         Statement::Insert(i) if returns_output(&i.output) => match i.source.as_deref().map(|s| s.body.as_ref()) {
             None => (one_insert(), None),
             Some(SetExpr::Values(v)) if v.rows.len() == 1 => (one_insert(), None),
             _ => (Cardinality::Many, None),
         },
-        Statement::Update(u) if returns_output(&u.output) => lookup(statement, keys),
-        Statement::Delete(d) if returns_output(&d.output) => lookup(statement, keys),
+        Statement::Update(u) if returns_output(&u.output) => lookup(statement, keys, variables),
+        Statement::Delete(d) if returns_output(&d.output) => lookup(statement, keys, variables),
         Statement::Merge(m) if returns_output(&m.output) => (Cardinality::Many, None),
         // A write that outputs nothing of its own, yet whose first result set the server described:
         // the rows a trigger on its table returns.
@@ -154,7 +157,7 @@ pub fn of(statement: &Statement, keys: Option<&Keys>, columns: usize) -> (Cardin
     }
 }
 
-fn query(q: &Query, statement: &Statement, keys: Option<&Keys>) -> (Cardinality, Option<String>) {
+fn query(q: &Query, statement: &Statement, keys: Option<&Keys>, variables: &[(String, String)]) -> (Cardinality, Option<String>) {
     let Some(s) = lone_select(q) else { return (Cardinality::Many, None) };
     if s.into.is_some() {
         return (Cardinality::None, None);
@@ -178,7 +181,7 @@ fn query(q: &Query, statement: &Statement, keys: Option<&Keys>) -> (Cardinality,
     }) {
         return (first(if s.having.is_some() { Cardinality::AtMostOne } else { Cardinality::One }), None);
     }
-    let (c, reason) = lookup(statement, keys);
+    let (c, reason) = lookup(statement, keys, variables);
     (first(c), reason)
 }
 
@@ -256,7 +259,7 @@ fn fetch_one(q: &Query) -> bool {
 }
 
 /// At most one row where the statement's one table is looked up by a whole unique key.
-fn lookup(statement: &Statement, keys: Option<&Keys>) -> (Cardinality, Option<String>) {
+fn lookup(statement: &Statement, keys: Option<&Keys>, variables: &[(String, String)]) -> (Cardinality, Option<String>) {
     let Some((TableFactor::Table { name, alias, args: None, .. }, Some(selection))) = lookup_table(statement) else { return (Cardinality::Many, None) };
     let Some(keys) = keys else { return (Cardinality::Many, None) };
     if is_cte(statement, name) {
@@ -265,7 +268,10 @@ fn lookup(statement: &Statement, keys: Option<&Keys>) -> (Cardinality, Option<St
     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| name.0.last().map(|p| p.to_string().trim_matches(|c| c == '[' || c == ']').to_string()));
     let mut equal: Vec<(String, &Expr)> = Vec::new();
     pinned(selection, qualifier.as_deref(), &mut equal);
-    let found = keys.keys.iter().any(|key| !key.is_empty() && key.iter().all(|c| equal.iter().any(|(name, value)| *name == c.name && keeps_column(c, value))));
+    // An UPDATE that sets a variable changes it row by row, so the WHERE may read it as another value.
+    let assigns = matches!(statement, Statement::Update(u) if u.assignments.iter().any(|a| a.target.to_string().starts_with('@')));
+    let variables = if assigns { &[] } else { variables };
+    let found = keys.keys.iter().any(|key| !key.is_empty() && key.iter().all(|c| equal.iter().any(|(name, value)| *name == c.name && keeps_column(c, value, variables))));
     if found {
         (Cardinality::AtMostOne, None)
     } else {
@@ -305,7 +311,7 @@ fn column_of(e: &Expr, qualifier: Option<&str>) -> Option<String> {
 
 /// The type of a value a key column is compared with, where it is one value for the whole
 /// statement: a parameter, which SQL Server types from the comparison itself, so as the column; a
-/// literal; or a cast of either.
+/// variable the batch declared, of its declared type; a literal; or a cast of any of them.
 #[derive(Debug, PartialEq)]
 enum ValueType {
     /// A parameter standing alone: SQL Server gives it the column's type.
@@ -313,11 +319,12 @@ enum ValueType {
     Named(String),
 }
 
-fn value_type(e: &Expr) -> Option<ValueType> {
+fn value_type(e: &Expr, variables: &[(String, String)]) -> Option<ValueType> {
     use sqlparser::ast::Value as V;
     match e {
-        Expr::Nested(inner) => value_type(inner),
+        Expr::Nested(inner) => value_type(inner, variables),
         Expr::Identifier(i) if i.value.starts_with("@p_") => Some(ValueType::Column),
+        Expr::Identifier(i) if i.value.starts_with('@') && !i.value.starts_with("@@") => declared(&i.value, variables).map(|ty| ValueType::Named(ty.to_string())),
         Expr::Value(v) => Some(ValueType::Named(
             match &v.value {
                 V::SingleQuotedString(_) => "varchar",
@@ -330,11 +337,24 @@ fn value_type(e: &Expr) -> Option<ValueType> {
             }
             .into(),
         )),
-        Expr::UnaryOp { op: sqlparser::ast::UnaryOperator::Minus | sqlparser::ast::UnaryOperator::Plus, expr } => match value_type(expr)? {
+        Expr::UnaryOp { op: sqlparser::ast::UnaryOperator::Minus | sqlparser::ast::UnaryOperator::Plus, expr } => match value_type(expr, variables)? {
             ValueType::Named(t) if matches!(t.as_str(), "int" | "numeric" | "float") => Some(ValueType::Named(t)),
             _ => None,
         },
-        Expr::Cast { data_type, expr, .. } if value_type(expr).is_some() => Some(ValueType::Named(data_type.to_string().split('(').next().unwrap_or_default().trim().to_ascii_lowercase())),
+        Expr::Cast { data_type, expr, .. } if value_type(expr, variables).is_some() => Some(ValueType::Named(data_type.to_string().split('(').next().unwrap_or_default().trim().to_ascii_lowercase())),
+        _ => None,
+    }
+}
+
+/// A variable's declared type: by its name as written, else by the one name that matches it in any
+/// case, as a case-insensitive collation matches it.
+fn declared<'a>(name: &str, variables: &'a [(String, String)]) -> Option<&'a str> {
+    if let Some((_, ty)) = variables.iter().rev().find(|(n, _)| n == name) {
+        return Some(ty);
+    }
+    let mut matching = variables.iter().filter(|(n, _)| n.eq_ignore_ascii_case(name));
+    match (matching.next(), matching.next()) {
+        (Some((_, ty)), None) => Some(ty),
         _ => None,
     }
 }
@@ -358,8 +378,8 @@ fn family(ty: &str) -> &'static str {
 /// Whether comparing the key column with the value keeps the column as it is (the value is
 /// converted to the column's type, or the column widened without two of its values meeting), so
 /// that a unique key still matches one row.
-fn keeps_column(column: &KeyColumn, value: &Expr) -> bool {
-    let Some(value) = value_type(value) else { return false };
+fn keeps_column(column: &KeyColumn, value: &Expr, variables: &[(String, String)]) -> bool {
+    let Some(value) = value_type(value, variables) else { return false };
     let ValueType::Named(ty) = value else { return true };
     match (family(&column.ty), family(&ty)) {
         ("string", "string") | ("unicode", "string" | "unicode") => true,
@@ -385,9 +405,14 @@ mod tests {
     use sqlparser::parser::Parser;
 
     fn typed(sql: &str, keys: &[&[(&str, &str)]], collation: Option<&str>) -> Cardinality {
+        declared_as(sql, keys, collation, &[])
+    }
+
+    fn declared_as(sql: &str, keys: &[&[(&str, &str)]], collation: Option<&str>, variables: &[(&str, &str)]) -> Cardinality {
         let s = Parser::parse_sql(&MsSqlDialect {}, sql).unwrap().pop().unwrap();
         let keys = Keys { keys: keys.iter().map(|k| k.iter().map(|(c, t)| KeyColumn { name: c.to_string(), ty: t.to_string(), collation: collation.map(String::from) }).collect()).collect(), ignores_duplicates: false };
-        of(&s, Some(&keys), 1).0
+        let variables: Vec<(String, String)> = variables.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect();
+        of(&s, Some(&keys), 1, &variables).0
     }
 
     /// Keys of int columns.
@@ -447,12 +472,26 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_variable_is_one_value_of_its_type() {
+        let id = [("id", "int")];
+        assert_eq!(declared_as("select a from t where id = @n", &[&id], None, &[("@n", "bigint")]), Cardinality::AtMostOne);
+        assert_eq!(declared_as("select a from t where id = @N", &[&id], None, &[("@n", "int")]), Cardinality::AtMostOne);
+        // A variable of a type the column converts to, one the batch never declared, and one an
+        // UPDATE sets as it runs.
+        assert_eq!(declared_as("select a from t where id = @n", &[&id], None, &[("@n", "float")]), Cardinality::AtMostOne);
+        assert_eq!(declared_as("select a from t where id = @n", &[&id], None, &[("@n", "nvarchar")]), Cardinality::Many);
+        assert_eq!(declared_as("select a from t where id = @m", &[&id], None, &[("@n", "int")]), Cardinality::Many);
+        assert_eq!(declared_as("update t set @n = a, a = 1 output inserted.a where id = @n", &[&id], None, &[("@n", "int")]), Cardinality::Many);
+        assert_eq!(declared_as("update t set a = 1 output inserted.a where id = @n", &[&id], None, &[("@n", "int")]), Cardinality::AtMostOne);
+    }
+
+    #[test]
     fn bounds_writes_by_their_output() {
         let s = Parser::parse_sql(&MsSqlDialect {}, "insert into t (a) values (@p_1)").unwrap().pop().unwrap();
-        assert_eq!(of(&s, None, 0).0, Cardinality::None);
+        assert_eq!(of(&s, None, 0, &[]).0, Cardinality::None);
         assert_eq!(card("insert into t (a) output inserted.id values (@p_1)", &[]), Cardinality::One);
         let s = Parser::parse_sql(&MsSqlDialect {}, "insert into t (a) output inserted.id values (@p_1)").unwrap().pop().unwrap();
-        assert_eq!(of(&s, Some(&Keys { keys: Vec::new(), ignores_duplicates: true }), 1).0, Cardinality::AtMostOne);
+        assert_eq!(of(&s, Some(&Keys { keys: Vec::new(), ignores_duplicates: true }), 1, &[]).0, Cardinality::AtMostOne);
         assert_eq!(card("insert into t (a) output inserted.id values (1), (2)", &[]), Cardinality::Many);
         assert_eq!(card("update t set a = 1 output inserted.a where id = @p_1", &[&["id"]]), Cardinality::AtMostOne);
         assert_eq!(card("delete from t output deleted.a where a = @p_1", &[&["id"]]), Cardinality::Many);
@@ -460,6 +499,6 @@ mod tests {
         // described a result.
         assert_eq!(card("delete from t where id = @p_1", &[&["id"]]), Cardinality::Many);
         let s = Parser::parse_sql(&MsSqlDialect {}, "delete from t where id = @p_1").unwrap().pop().unwrap();
-        assert_eq!(of(&s, None, 0).0, Cardinality::None);
+        assert_eq!(of(&s, None, 0, &[]).0, Cardinality::None);
     }
 }

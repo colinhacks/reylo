@@ -350,6 +350,9 @@ async function runSqlserver(c: Client, query: QueryModule<"sqlserver">, { text, 
   });
   request.arrayRowMode = true;
   const result = await request.query(text);
+  // The type is the batch's first result set's: one a procedure sends after it has no type here.
+  const sets: number = result?.recordsets?.length ?? 0;
+  if (sets > 1) throw new TypeError(`${query.source ?? "The statement"} returned ${sets} result sets, and Reylo types a batch's first alone: return the others from files of their own.`);
   const rows: unknown[][] = result?.recordset ?? [];
   const meta: MssqlColumn[] = result?.columns?.[0] ?? [];
   const columns: Columns = query.columns ?? meta.map((m) => [m.name, "unknown"] as const);
