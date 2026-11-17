@@ -26,8 +26,16 @@ echo "$crates"
 flags=$(awk '{ printf "-p %s ", $1 }' <<<"$crates")
 
 echo '::group::cargo package, each crate built from its tarball'
+# The SQLite engine's package carries the amalgamation the prepare step writes into its ignored
+# `.sqlite/`, and cargo counts an ignored file a package includes as uncommitted. So the tree git
+# tracks must be clean, untracked files included, and `--allow-dirty` admits the prepared files alone.
+if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+  echo 'the working tree has changes git has not committed:' >&2
+  git status --porcelain --untracked-files=all >&2
+  exit 1
+fi
 # shellcheck disable=SC2086
-cargo package --locked $flags
+cargo package --locked --allow-dirty $flags
 echo '::endgroup::'
 
 project=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/reylo-fresh.XXXXXX")
