@@ -404,9 +404,10 @@ function sqliteWasmValues(names: readonly string[], values: unknown[]): unknown[
 
 /** The rows of a synchronous client: a Durable Object's SQL storage, whose exec() refuses a BigInt ("Cannot convert a BigInt value to a number"), SQLite Wasm's oo1 Database (`runSqliteWasm`), or a database with prepare() (`runSyncSqlite`). */
 function runSqliteSync(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): unknown[] | Promise<unknown[]> {
-  // Turso's compat Database has maxWriteReplicationIndex() beside batch(); the libsql package's
-  // Database has the first alone, and binds 2^63 as a REAL.
-  if (typeof c.maxWriteReplicationIndex === "function" && typeof c.batch === "function") tursoValues(names, values);
+  // Every Database of Turso's has maxWriteReplicationIndex(), and its compat Database has no sync()
+  // (nor batch() before 0.7); the libsql package's Database has both of the first two, and binds
+  // 2^63 as a REAL.
+  if (typeof c.maxWriteReplicationIndex === "function" && typeof c.sync !== "function") tursoValues(names, values);
   if (isDurableObjectSql(c)) return runDurableObject(c, text, values.map((v, i) => numberOrDigits(v, query.inputs?.[names[i]!]?.type, "durable-object")), query.columns);
   if (isSqliteWasm(c)) return runSqliteWasm(c, text, sqliteWasmValues(names, values), query.columns);
   return runSyncSqlite(c, text, values, query.columns);

@@ -877,16 +877,19 @@ test("sqlite: a BigInt outside 64 bits, which bun:sqlite and Bun.sql wrap and sq
   await execute(bun, lite, { id: 2n ** 63n - 1n, name: "ada" });
   await execute(bun, lite, { id: -(2n ** 63n), name: "ada" });
   assert.deepEqual(calls.map((v) => v[0]), [2n ** 63n - 1n, -(2n ** 63n)]);
-  // Turso's engine binds the whole number 2^63 as 2^63 - 1, through its compat Database and its
-  // promise API alike; any other driver binds the REAL, the libsql package's Database among them,
-  // which has maxWriteReplicationIndex() as Turso's has, but no batch().
+  // Turso's engine binds the whole number 2^63 as 2^63 - 1, through its compat Database (with
+  // batch() from 0.7, without before) and its promise API alike; any other driver binds the REAL,
+  // the libsql package's Database among them, which has maxWriteReplicationIndex() as Turso's has,
+  // and sync(), which no Database of Turso's has.
   const tursoRefusal = /^TypeError: Parameter "id" is 2\^63 \(9223372036854775808\), which Turso's engine binds as 2\^63 - 1 \(9223372036854775807\), so it would store another number\.$/;
   const statement = () => ({ reader: true, safeIntegers: () => {}, all: (...values: unknown[]) => (calls.push(values), [row]), close: () => {} });
   const compat = { prepare: statement, batch: () => [], exec: () => {}, maxWriteReplicationIndex: () => {} };
+  const compat06 = { prepare: statement, exec: () => {}, maxWriteReplicationIndex: () => {} };
   const libsql = { prepare: statement, exec: () => {}, maxWriteReplicationIndex: () => {}, sync: () => {} };
   const turso = { prepare: () => ({ ...statement(), all: async (...values: unknown[]) => (calls.push(values), [row]) }), connect: async () => {}, maxWriteReplicationIndex: () => {}, exec: async () => {} };
   const q = defineQuery<{ id: number; name: string }, unknown, "many", "sqlite">({ dialect: "sqlite", sql: lite.sql, params: lite.params });
   assert.throws(() => q.runSync(compat, { id: 2 ** 63, name: "ada" }), tursoRefusal);
+  assert.throws(() => q.runSync(compat06, { id: 2 ** 63, name: "ada" }), tursoRefusal);
   await assert.rejects(Promise.resolve().then(() => q.run(turso, { id: 2 ** 63, name: "ada" })), tursoRefusal);
   assert.deepEqual(q.runSync(compat, { id: 2 ** 62, name: "ada" }), [row]);
   assert.deepEqual(q.runSync(libsql, { id: 2 ** 63, name: "ada" }), [row]);
