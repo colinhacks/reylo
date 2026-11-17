@@ -419,7 +419,7 @@ if (errors.length) {
 
 // The inference cards' other languages (lib/remark-mapper.ts): each statement's type descriptor, its
 // parameters and result as `reylo analyze` writes them, and its Rust types, as `#[reylo::query]`
-// writes them, from the renderer `REYLO_DOCS_RUST` names (reylo-codegen's `docs` example). Without
+// writes them, from the renderer `REYLO_DOCS_RUST` names (reylo-build's `docs` example). Without
 // it, the Rust types the file already holds are kept.
 type InferenceCapture = { descriptor: { params: unknown; result: unknown }; rust?: { params: string; returns: string } | { error: string } };
 const capturesFile = path.join(site, 'lib', 'inference-captures.json');

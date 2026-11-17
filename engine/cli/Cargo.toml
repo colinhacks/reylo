@@ -15,10 +15,10 @@ path = "src/main.rs"
 
 [dependencies]
 reylo-engine-core.workspace = true
-reylo-engine-native = { workspace = true, features = ["postgres", "mysql", "sqlite"] }
+reylo-engine = { workspace = true, features = ["postgres", "mysql", "sqlite"] }
 reylo-migrate = { workspace = true, features = ["cli"] }
 # reylo generate: each .sql file's module, and the .sql files a path, a directory or a glob names.
-reylo-codegen = { workspace = true, features = ["generate", "postgres", "mysql", "sqlite"] }
+reylo-build = { workspace = true, features = ["generate", "postgres", "mysql", "sqlite"] }
 regex = "1"
 # In a Rust project that locks another version of the `reylo` crate, that version's release binary,
 # fetched over HTTPS once, checked against the release's SHA256SUMS and unpacked (src/matched.rs).

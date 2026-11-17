@@ -29,7 +29,7 @@
 //! The run time is sqlx's: the query runs on the caller's sqlx pool, connection or transaction.
 //! Postgres, SQLite and MySQL, whichever the URL's scheme names.
 
-use reylo_codegen::{Dates, Decimals, Dialect, Options, Overrides, Partial, PartialField, RowOverride};
+use reylo_build::{Dates, Decimals, Dialect, Options, Overrides, Partial, PartialField, RowOverride};
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -61,7 +61,7 @@ fn expand(sql: &LitStr, module: ItemMod) -> TokenStream2 {
     // for the two structs keep the crate's own items in the module from adding errors of their own.
     let body = items(sql, &overrides).unwrap_or_else(|e| {
         let error = e.to_compile_error();
-        let stand_ins = reylo_codegen::stand_ins(&overrides);
+        let stand_ins = reylo_build::stand_ins(&overrides);
         quote!(#error #stand_ins)
     });
     let tracked = tracked();
@@ -96,7 +96,7 @@ pub fn migrate(input: TokenStream) -> TokenStream {
 fn migrations() -> syn::Result<TokenStream2> {
     let span = proc_macro2::Span::call_site();
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(span, "CARGO_MANIFEST_DIR is not set"))?;
-    let (root, home) = reylo_codegen::analysis::home(std::path::Path::new(&manifest)).map_err(|e| syn::Error::new(span, e))?;
+    let (root, home) = reylo_build::analysis::home(std::path::Path::new(&manifest)).map_err(|e| syn::Error::new(span, e))?;
     // As messages show the project's paths, `reylo/migrations` on every platform.
     let shown = home.strip_prefix(&root).unwrap_or(&home).to_string_lossy().replace('\\', "/");
     let shown = if shown.is_empty() { ".".to_string() } else { shown };
@@ -124,7 +124,7 @@ fn migrations() -> syn::Result<TokenStream2> {
             quote!(::core::option::Option::None)
         }
     };
-    if let Some(error) = reylo_codegen::analysis::old_lock(&home, &shown) {
+    if let Some(error) = reylo_build::analysis::old_lock(&home, &shown) {
         return Err(syn::Error::new(span, error));
     }
     let lock = included(home.join("reylo.lock"));
@@ -139,7 +139,7 @@ fn migrations() -> syn::Result<TokenStream2> {
 /// shown in an editor would show what it holds.
 fn tracked() -> Vec<LitStr> {
     let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else { return Vec::new() };
-    reylo_codegen::analysis::watched(std::path::Path::new(&manifest))
+    reylo_build::analysis::watched(std::path::Path::new(&manifest))
         .into_iter()
         .filter(|path| path.is_file() && !path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".env")))
         .map(|path| LitStr::new(&path.to_string_lossy(), proc_macro2::Span::call_site()))
@@ -235,7 +235,7 @@ fn item_name(item: &Item) -> Option<String> {
 fn items(sql: &LitStr, overrides: &Overrides) -> syn::Result<TokenStream2> {
     let span = sql.span();
     let (dialect, analysis) = analyze(sql, &sql.value())?;
-    Ok(reylo_codegen::module(dialect, options(), &analysis, span, overrides, false)?.tokens)
+    Ok(reylo_build::module(dialect, options(), &analysis, span, overrides, false)?.tokens)
 }
 
 /// The analysis of `text`, which the literal `at` holds: the engine's diagnostics as errors at the
@@ -243,7 +243,7 @@ fn items(sql: &LitStr, overrides: &Overrides) -> syn::Result<TokenStream2> {
 fn analyze(at: &LitStr, text: &str) -> syn::Result<(Dialect, serde_json::Value)> {
     let span = at.span();
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(span, "CARGO_MANIFEST_DIR is not set"))?;
-    let (dialect, analysis) = reylo_codegen::analysis::analyze(std::path::Path::new(&manifest), text).map_err(|message| syn::Error::new(span, message))?;
+    let (dialect, analysis) = reylo_build::analysis::analyze(std::path::Path::new(&manifest), text).map_err(|message| syn::Error::new(span, message))?;
     if let Some(diagnostics) = analysis["diagnostics"].as_array().filter(|d| !d.is_empty()) {
         let each = diagnostics.iter().map(|d| (d["message"].as_str().unwrap_or("the statement cannot be analyzed"), d["start"].as_u64().map_or(0, |s| s as usize)));
         return Err(refused(at, each));
@@ -264,7 +264,7 @@ fn refused<'a>(sql: &LitStr, diagnostics: impl Iterator<Item = (&'a str, usize)>
         if offset == 0 || file.is_empty() {
             return syn::Error::new(sql.span(), message);
         }
-        let (line, column) = reylo_codegen::place::in_literal(&literal, start.line(), start.column(), offset);
+        let (line, column) = reylo_build::place::in_literal(&literal, start.line(), start.column(), offset);
         syn::Error::new(sql.span(), format!("{message}\nat {file}:{line}:{column}"))
     });
     let mut error = errors.next().expect("a diagnostic");
@@ -338,7 +338,7 @@ enum Lookup {
 
 fn lookup(at: &LitStr, sql: &str) -> syn::Result<Lookup> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(at.span(), "CARGO_MANIFEST_DIR is not set"))?;
-    let (dialect, analysis) = reylo_codegen::analysis::analyze(std::path::Path::new(&manifest), sql).map_err(|message| syn::Error::new(at.span(), message))?;
+    let (dialect, analysis) = reylo_build::analysis::analyze(std::path::Path::new(&manifest), sql).map_err(|message| syn::Error::new(at.span(), message))?;
     if let Some(diagnostics) = analysis["diagnostics"].as_array().filter(|d| !d.is_empty()) {
         return Ok(Lookup::Refused(diagnostics.iter().map(|d| d["message"].as_str().unwrap_or("the statement cannot be analyzed").to_string()).collect()));
     }
@@ -384,7 +384,7 @@ fn expand_enum(at: &LitStr, mut item: ItemEnum) -> syn::Result<TokenStream2> {
     let type_name = if is_type { label.to_string() } else { String::new() };
 
     // The variants: the values' names, the crate's own checked against them.
-    let wanted = reylo_codegen::variants(&values);
+    let wanted = reylo_build::variants(&values);
     if let Some(v) = item.variants.iter().find(|v| !matches!(v.fields, syn::Fields::Unit)) {
         return Err(syn::Error::new_spanned(&v.fields, "a database enum's variants hold no fields"));
     }
@@ -418,16 +418,16 @@ fn expand_enum(at: &LitStr, mut item: ItemEnum) -> syn::Result<TokenStream2> {
     item.attrs.push(syn::parse_quote!(#[allow(non_camel_case_types)]));
 
     let ident = &item.ident;
-    let trait_impl = reylo_codegen::enum_impl(ident, &type_name, &values);
+    let trait_impl = reylo_build::enum_impl(ident, &type_name, &values);
     let sqlx = if is_type {
-        reylo_codegen::postgres_impls(ident, &type_name)
+        reylo_build::postgres_impls(ident, &type_name)
     } else {
         let db = match dialect {
             Dialect::Postgres => quote!(Postgres),
             Dialect::Mysql => quote!(MySql),
             Dialect::Sqlite => quote!(Sqlite),
         };
-        reylo_codegen::text_impls(ident, &db)
+        reylo_build::text_impls(ident, &db)
     };
     Ok(quote!(#item #trait_impl #sqlx))
 }

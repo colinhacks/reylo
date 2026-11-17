@@ -6,8 +6,8 @@
 //! engine's.
 
 use crate::Program;
-use reylo_engine::clients::rusqlite::{self as answers, Answers, Describe};
-use reylo_engine::{AnswerCache, Answerer};
+use crate::clients::rusqlite::{self as answers, Answers, Describe};
+use crate::{AnswerCache, Answerer};
 use rusqlite::{Connection as Db, OpenFlags};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -51,7 +51,7 @@ impl Session {
     pub fn open(path: &str) -> Result<Session, crate::Failure> {
         let file = File::new(path);
         file.open().map_err(|e| crate::Failure::Unreachable(e.to_string()))?;
-        Ok(Session { connection: Connection { file, answers: AnswerCache::until_cleared() }, version: reylo_engine::sqlite::sqlite_tree::version().to_string() })
+        Ok(Session { connection: Connection { file, answers: AnswerCache::until_cleared() }, version: crate::engines::sqlite::sqlite_tree::version().to_string() })
     }
 
     pub fn analyze(&mut self, sql: &str) -> Result<reylo_engine_core::api::Analysis, crate::Failure> {
@@ -62,7 +62,7 @@ impl Session {
 
 impl Program for Sqlite {
     fn call(&self, request: &str) -> String {
-        reylo_engine_core::api::call::<reylo_engine::sqlite::Sqlite>(request)
+        reylo_engine_core::api::call::<crate::engines::sqlite::Sqlite>(request)
     }
 
     async fn serve(&mut self, request: &Value) -> Option<Value> {
@@ -77,7 +77,7 @@ impl Program for Sqlite {
                     Ok(_) => {
                         self.next += 1;
                         self.connections.insert(self.next, Connection { file, answers: AnswerCache::until_cleared() });
-                        json!({ "status": "opened", "conn": self.next, "version": reylo_engine::sqlite::sqlite_tree::version() })
+                        json!({ "status": "opened", "conn": self.next, "version": crate::engines::sqlite::sqlite_tree::version() })
                     }
                     // A file that cannot be opened is a database that cannot be reached: a build runs on `reylo/.cache/`.
                     Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),

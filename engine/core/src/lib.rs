@@ -1,7 +1,7 @@
 //! What every database's analysis engine shares. A host hands in one JSON request and gets one
 //! JSON response back ([`api::call`]); everything that touches a database happens on the host's
 //! side, so the engine is pure, and a host that holds no connection of its own answers its needs
-//! through the clients `reylo-engine` carries (`engine/facade`, `engine/native`).
+//! through the clients `reylo-engine` carries (`engine/native`).
 //!
 //! Each database is a crate of its own over this one (`reylo-engine-postgres`,
 //! `reylo-engine-sqlite`, `reylo-engine-mysql`), which implements [`database::Database`], and each

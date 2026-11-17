@@ -7,8 +7,8 @@
 
 use crate::tls::{self, Check};
 use crate::{Failure, Program};
-use reylo_engine::clients::tokio_postgres::{self as answers, Describe};
-use reylo_engine::{AnswerCache, AsyncAnswerer, ReplayError};
+use crate::clients::tokio_postgres::{self as answers, Describe};
+use crate::{AnswerCache, AsyncAnswerer, ReplayError};
 use reylo_engine_core::api::Analysis;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -152,7 +152,7 @@ impl Session {
 
 impl Program for Postgres {
     fn call(&self, request: &str) -> String {
-        reylo_engine_core::api::call::<reylo_engine::postgres::Postgres>(request)
+        reylo_engine_core::api::call::<crate::engines::postgres::Postgres>(request)
     }
 
     async fn serve(&mut self, request: &Value) -> Option<Value> {
