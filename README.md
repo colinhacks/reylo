@@ -118,7 +118,7 @@ For Bun, Nub, Vite, Next.js, esbuild, webpack, Rspack, Cloudflare Workers and Je
 To give your coding agent Reylo's rules for writing and running queries, install its skill:
 
 ```sh
-npx skills add reylosql/reylo --skill using-reylo
+npx skills add reylosql/reylo --skill reylo
 ```
 
 ## Usage

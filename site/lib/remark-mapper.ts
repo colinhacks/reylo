@@ -4,7 +4,9 @@ import path from 'node:path';
 import { createProcessor } from '@mdx-js/mdx';
 import { remarkCodeTab } from 'fumadocs-core/mdx-plugins';
 import type { Plugin } from 'vite';
+import { SHOW_RUST } from './languages.ts';
 import { pageFiles } from './page-files.ts';
+import { rustContent } from './rust-content.ts';
 import { isErrorExample, renderErrors } from './sql-errors.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
 import { lexPlaceholders } from '../../src/lex.ts';
@@ -349,10 +351,10 @@ const jsx = (name: string, attributes: [string, string | null][], children: MdNo
   children,
 });
 
-/** A file's tree as Fumadocs has it when this plugin runs: MDX parsed, then code tabs grouped. */
+/** A file's tree as Fumadocs has it when this plugin runs: its Rust content left out where the docs leave Rust out (lib/rust-content.ts), MDX parsed, then code tabs grouped. */
 export function parsePage(file: string): MdNode {
   // fumadocs-mdx takes the frontmatter off before it parses; blank lines keep the line numbers.
-  const text = readFileSync(file, 'utf8').replace(/^---\n[\s\S]*?\n---\n/, (m) => '\n'.repeat(m.split('\n').length - 1));
+  const text = rustContent(readFileSync(file, 'utf8')).replace(/^---\n[\s\S]*?\n---\n/, (m) => '\n'.repeat(m.split('\n').length - 1));
   const processor = createProcessor();
   const tree = processor.parse(text) as unknown as MdNode;
   (remarkCodeTab as unknown as (this: unknown) => (tree: MdNode) => void).call(processor)(tree);
@@ -562,11 +564,12 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
         jsx('InferenceCardRow', [['label', 'Params']], [codeNode('ts', params ? formatType(params, width) : 'void')]),
         jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('ts', formatType(resultType(row, cardinality), width))]),
       ];
-      // The same statement as `#[reylo::query]` types it.
+      // The same statement as `#[reylo::query]` types it, where the docs show Rust (lib/languages.ts).
       const captured = captures[dialect]?.[block.name!]?.[block.hash];
-      if (captured === undefined) throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no type descriptor for the ${DIALECT_NAME[dialect]} statement ${block.name} of this inference card; run \`nub run capture\` in site/ (with the scratch databases running and REYLO_DOCS_RUST naming the Rust renderer), then build again.`);
-      const rust =
-        captured.rust === undefined
+      if (SHOW_RUST && captured === undefined) throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no type descriptor for the ${DIALECT_NAME[dialect]} statement ${block.name} of this inference card; run \`nub run capture\` in site/ (with the scratch databases running and REYLO_DOCS_RUST naming the Rust renderer), then build again.`);
+      const rust = !SHOW_RUST || captured === undefined
+        ? []
+        : captured.rust === undefined
           ? (() => {
               throw new Error(`${page}:${block.line}: lib/inference-captures.json holds no Rust types for the ${DIALECT_NAME[dialect]} statement ${block.name}; run \`nub run capture\` with REYLO_DOCS_RUST naming the Rust renderer.`);
             })()
@@ -580,7 +583,7 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
       rows.push(
         jsx('InferenceLanguages', [], [
           jsx('InferenceLanguage', [['value', 'TypeScript']], [jsx('InferenceCardTypes', [], typescript)]),
-          jsx('InferenceLanguage', [['value', 'Rust']], [jsx('InferenceCardTypes', [], rust)]),
+          ...(SHOW_RUST ? [jsx('InferenceLanguage', [['value', 'Rust']], [jsx('InferenceCardTypes', [], rust)])] : []),
         ]),
       );
       return jsx('Dialect', [['value', DIALECT_NAME[dialect]]], rows);

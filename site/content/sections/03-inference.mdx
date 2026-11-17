@@ -23,13 +23,15 @@ select id, name, email from users where id = :id::int
 
 </InferenceCard>
 
+<Rust>
 Each card shows the types in TypeScript, in Rust, or as the [type descriptor](/typedefs) the [CLI](/cli) prints: pick one at the top of any card.
+</Rust>
 
 Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next check sees the new schema: a dropped column fails in the statement that names it, and in the code that reads it.
 
 ## Primitives [#primitives]
 
-Each SQL type has one TypeScript type, the same on every driver, and one Rust type.
+Each SQL type has one TypeScript type, the same on every driver<Rust>, and one Rust type</Rust>.
 
 In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
 
