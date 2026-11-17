@@ -53,7 +53,7 @@ A host that builds before it migrates, such as Vercel, starts with no `reylo/.ca
 </Accordion>
 <Accordion title="Why are dates strings, and 64-bit integers bigints?" id="faq-value-types">
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](/inference#primitives).
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](/inference#primitives), and [`js.codecs`](/configuration#jscodecs) gives a family another, such as Temporal's.
 
 </Accordion>
 <Accordion title="How do I add observability to my queries?" id="faq-observability">

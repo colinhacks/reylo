@@ -155,3 +155,48 @@ The server where [migrations](/migrations) build their shadow databases, for a d
 # the default is the database's own server
 shadow_url: ${SHADOW_URL}
 ```
+
+## `js.codecs`
+
+The TypeScript type `.run()` gives a family of values, and that its parameters take. A family you leave out keeps [its default](/inference#primitives):
+
+```yaml title=".reylo.yaml"
+js:
+  codecs:
+    decimal: decimal.js  # or bignumber.js, big.js, number, or string (the default)
+    bytes: string  # base64, or Uint8Array (the default)
+    date: Temporal.PlainDate  # or string (the default)
+    time: Temporal.PlainTime  # or string (the default)
+    datetime: Temporal.PlainDateTime  # or string (the default)
+    instant: Temporal.Instant  # or string (the default)
+    duration: Temporal.Duration  # or string (the default)
+    set: Array  # or Set (the default)
+    vector: TypedArray  # or number[] (the default)
+    geometry: GeoJSON  # or the database's encoding (the default)
+    inet: ip-address  # or string (the default)
+```
+
+| Family | Postgres | MySQL | SQLite |
+| --- | --- | --- | --- |
+| `decimal` | `numeric` | `DECIMAL` | |
+| `bytes` | `bytea` | `BINARY`, `VARBINARY`, `BLOB` | `BLOB` |
+| `date` | `date` | `DATE` | a column declared `DATE` |
+| `time` | `time` | | a column declared `TIME` |
+| `datetime` | `timestamp` | `DATETIME`, `TIMESTAMP` | a column declared `DATETIME` or `TIMESTAMP` |
+| `instant` | `timestamptz` | | |
+| `duration` | `interval` | `TIME` | |
+| `set` | | `SET` | |
+| `vector` | pgvector's `vector`, `halfvec` | `VECTOR` | |
+| `geometry` | PostGIS's `geometry`, `geography` | `GEOMETRY` | |
+| `inet` | `inet`, `cidr` | | |
+
+- Every codec is exact. A number refuses a decimal a double cannot hold, and a Temporal class refuses a value it has no form for, such as Postgres's `infinity` or an interval of one month less a day, so the error names the column instead of returning a wrong value.
+- A parameter takes the codec's type: a `Temporal.Instant` where the column is an `instant`, so a row goes back in as it came out.
+- A decimal library, named by its package, makes each decimal a value of its class, from your own install of it beside the `.sql` file. For big.js, also install `@types/big.js`. Since big.js has no `NaN` or infinity, it refuses a `numeric` that holds one.
+- A decimal library rounds its own arithmetic as you set it: decimal.js rounds to 20 significant digits unless you raise its `precision`.
+- A vector is a `Float32Array`, or a `Float16Array` for a `halfvec`, which needs TypeScript's `es2025` lib. Sent as JSON, a typed array is an object of its indexes, so spread it into an array first.
+- A geometry is a GeoJSON geometry with its SRID as `srid`, typed by `@types/geojson`, which you install. A parameter without an `srid` takes the column's. GeoJSON has no M coordinates or curves, so a geometry with either is refused.
+- A network address is an `Address4` or `Address6` from your own install of ip-address. Sent as JSON, one is an object of its fields, so send its `.address`.
+- A codec reaches every value Reylo decodes: an array's elements, a Postgres row value's fields, and the members of a structured parameter. A value inside JSON the query builds keeps its JSON type.
+- A 64-bit integer is always a `bigint`, its one exact type. Cast it in the query where you want a `number` or text, as `count(*)::int`.
+- A Temporal codec needs a runtime with a global `Temporal`, and TypeScript's `esnext` lib.
