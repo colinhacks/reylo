@@ -230,12 +230,25 @@ fn locate(manifest: &Path) -> Result<Located, String> {
     Ok(located)
 }
 
+/// The project of the crate at `dir`, as `reylo migrate` resolves it: its directory, and the
+/// directory of its own files (`reylo`, or the one the project file's `dir` names), where its
+/// migrations, lock and `schema.sql` are.
+pub fn home(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let project = reylo_engine_native::project::Project::resolve(dir, std::env::vars().collect())?;
+    let home = home_of(&project);
+    Ok((project.root, home))
+}
+
+fn home_of(project: &reylo_engine_native::project::Project) -> PathBuf {
+    project.root.join(project.config.dir.as_deref().unwrap_or("reylo"))
+}
+
 /// The files a statement's analysis depends on beside the statement, which a build script names
 /// to Cargo so that a change to one runs it again: the project file, the `.env` files, and the
 /// schema and migrations in the project's `reylo/` directory, each where it exists.
 pub fn watched(dir: &Path) -> Vec<PathBuf> {
     let Ok(project) = reylo_engine_native::project::Project::resolve(dir, std::env::vars().collect()) else { return Vec::new() };
-    let home = project.root.join(project.config.dir.as_deref().unwrap_or("reylo"));
+    let home = home_of(&project);
     let own = [home.join("schema.sql"), home.join("migrations"), home.join("reylo-lock.yaml")];
     project.file.iter().cloned().chain(project.env_files().iter().cloned()).chain(own).filter(|p| p.exists()).collect()
 }

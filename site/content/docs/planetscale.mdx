@@ -29,7 +29,7 @@ create table users (
 
 ## Drivers
 
-Run your queries with PlanetScale's serverless driver, `@planetscale/database` 1.x, or with `mysql2`, or in Rust with sqlx.
+Run your queries with PlanetScale's serverless driver, `@planetscale/database` 1.x, or with `mysql2`<Rust>, or in Rust with sqlx</Rust>.
 
 ### `@planetscale/database`
 
@@ -87,6 +87,7 @@ PlanetScale's connection string for Node ends with an `ssl` setting, which `mysq
 DATABASE_URL=mysql://…/app?ssl={"rejectUnauthorized":true}
 ```
 
+<Rust>
 ### sqlx
 
 In Rust, pass an sqlx pool, or the transaction `.begin()` gives:
@@ -114,6 +115,7 @@ Write MySQL's own `ssl-mode` in the connection string, which sqlx and Reylo both
 ```sh title=".env"
 DATABASE_URL=mysql://…/app?ssl-mode=VERIFY_IDENTITY
 ```
+</Rust>
 
 ### Drizzle
 

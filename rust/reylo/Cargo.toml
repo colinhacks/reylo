@@ -31,12 +31,22 @@ time = { version = "0.3", optional = true, features = ["serde"] }
 uuid = { version = "1.12", optional = true, features = ["serde"] }
 rust_decimal = { version = "1.36", optional = true, default-features = false, features = ["serde"] }
 bigdecimal = { version = "0.4", optional = true, default-features = false, features = ["serde"] }
+# `reylo::migrate!()`: `reylo migrate deploy` and `reylo migrate status` run from the app, on its
+# pool, as the command line's own code without the clients, shadows and diff engine it carries.
+reylo-migrate = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The command line's deploy and status, which tests/migrate.rs holds the app's against.
+reylo-migrate = { workspace = true, features = ["cli"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [features]
-default = ["sqlx_0_9", "postgres"]
+default = ["sqlx_0_9", "postgres", "migrate"]
 # The sqlx the queries run on, one of the two: its 0.9 releases, or its 0.8 releases.
 sqlx_0_9 = ["dep:sqlx"]
 sqlx_0_8 = ["dep:sqlx08"]
+# `reylo::migrate!()`, which runs the project's migrations from the app.
+migrate = ["dep:reylo-migrate"]
 # The databases the queries run on: each turns on sqlx's driver for it, and the macro's engine and
 # client for it. SQLite is on sqlx 0.9 alone, since sqlx 0.8's SQLite links an older libsqlite3-sys
 # than the one the macro's own SQLite client takes, and Cargo builds one per project.
