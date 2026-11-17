@@ -33,6 +33,7 @@ pub mod oid {
     pub const NUMERIC: u32 = 1700;
     pub const UNKNOWN: u32 = 705;
     pub const JSONB: u32 = 3802;
+    pub const JSONB_ARRAY: u32 = 3807;
     pub const RECORD: u32 = 2249;
     pub const RECORD_ARRAY: u32 = 2287;
 }

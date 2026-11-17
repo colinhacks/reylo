@@ -5,6 +5,7 @@ columns.sql: at_most_one (id: int4) -> { tags: text(¬NUL)[], scores: int4[]?, l
 filtered.sql: many () -> { tags: text(¬NUL)[], scores: int4[] }
 grids.sql: many () -> { cells: int4[]? }
 json.sql: many () -> { doc: jsonb { tags: text(¬NUL)[] } }
+jsonb_cast.sql: many () -> { bare: int4?[]?, coalesced: int4?[], kept: jsonb[] }
 left_join.sql: many () -> { tags: text(¬NUL)[]? }
 returning.sql: one (id: int4, tags: text(¬NUL)?[]) -> { tags: text(¬NUL)[] }
 row.sql: many () -> { doc: jsonb { id: int4, tags: text(¬NUL)[], scores: int4[]?, l: text(¬NUL)[]?, loose: text(¬NUL)?[]?, other: text(¬NUL)?[]? } }
