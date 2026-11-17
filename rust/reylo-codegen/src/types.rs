@@ -307,6 +307,8 @@ impl Types {
     fn is_string(&self, t: &Type) -> bool {
         match (&t.kind, self.dialect) {
             (Kind::Text(_), _) => true,
+            // A list of one text value stays text; a list of more is an enum, a Postgres enum type too.
+            (Kind::Enum(e), _) => e.values.len() < 2 && !self.is_postgres_enum(t) && self.is_text_list(&e.ty),
             (Kind::Union(_), Dialect::Sqlite) => t.label.as_deref().is_some_and(|n| !is_bool(n) && affinity(n) == Affinity::Text),
             _ => false,
         }
@@ -668,8 +670,10 @@ pub fn enum_tokens(ident: &Ident, type_name: &str, values: &[String], more: Toke
 /// `reylo::Enum` for the enum `ident` of `values`, whose variants are named by [`names::variants`].
 pub fn enum_impl(ident: &Ident, type_name: &str, values: &[String]) -> TokenStream2 {
     let variants: Vec<Ident> = names::variants(values).iter().map(|v| format_ident!("{}", v)).collect();
+    let hash = proc_macro2::Literal::u64_suffixed(enum_hash(type_name, values));
     quote!(
         impl ::reylo::Enum for #ident {
+            type Id = ::reylo::EnumId<{ #hash }>;
             const TYPE: &'static str = #type_name;
             const LABELS: &'static [&'static str] = &[#(#values),*];
             fn label(self) -> &'static str {
@@ -683,6 +687,19 @@ pub fn enum_impl(ident: &Ident, type_name: &str, values: &[String]) -> TokenStre
             }
         }
     )
+}
+
+/// FNV-1a over the type's name and each value, each ended by a zero byte: the same for every Rust
+/// enum of one database enum, so it names the database enum as a type (`reylo::EnumId`).
+pub fn enum_hash(type_name: &str, values: &[String]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in std::iter::once(type_name).chain(values.iter().map(String::as_str)) {
+        for byte in part.bytes().chain([0]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    hash
 }
 
 /// A Postgres enum type `name` as the Rust enum `ident`, with sqlx's impls, which find the type

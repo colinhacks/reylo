@@ -7,13 +7,17 @@
 ///
 /// Each query module writes its own enum for each one it reads or binds, and `#[reylo::enum_type]`
 /// makes a crate's own enum one. [`Enum::cast`] turns a value of one into the same value of another,
-/// and fails to compile where the two are not the same database enum.
+/// and fails to type-check where the two are not the same database enum: [`Enum::Id`] names the
+/// database enum as a type, so `cargo check` and the editor see the mismatch too.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not one of Reylo's enums",
     label = "a database enum's value goes here",
     note = "write `#[reylo::enum_type(\"<schema>.<type>\")]` on `{Self}`, or name the column in a partial `pub struct Row {{ … }}` in the query's module, which matches the enum's variants by name"
 )]
 pub trait Enum: Copy + 'static {
+    /// The database enum the values are of, as a type: [`EnumId`] of a hash of [`Enum::TYPE`] and
+    /// [`Enum::LABELS`], the same for every Rust enum of the same database enum.
+    type Id: 'static;
     /// The Postgres enum type the values are of, as `public.job_status`; empty for a list of values
     /// a `CHECK` constraint, a MySQL `ENUM` or the statement names.
     const TYPE: &'static str;
@@ -33,7 +37,7 @@ pub trait Enum: Copy + 'static {
     /// let next = next_job::Query.run(&pool).await?.unwrap();
     /// set_status::Query { status: next.status.cast(), id: next.id }.run(&pool).await?;
     /// ```
-    fn cast<T: Enum>(self) -> T {
+    fn cast<T: Enum<Id = Self::Id>>(self) -> T {
         const {
             assert!(
                 crate::__private::same_enum(Self::TYPE, Self::LABELS, T::TYPE, T::LABELS),
@@ -46,6 +50,10 @@ pub trait Enum: Copy + 'static {
         }
     }
 }
+
+/// A database enum as a type: the hash of its type and its values, which [`Enum::Id`] names.
+#[doc(hidden)]
+pub struct EnumId<const HASH: u64>;
 
 /// A statement returned a second row where Reylo inferred it returns one row, or at most one:
 /// `.run()` returns it as `sqlx::Error::Decode`. It means a statement's cardinality was inferred

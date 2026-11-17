@@ -11,7 +11,7 @@ pub use reylo_macros::{enum_type, query};
 
 mod enums;
 mod exact;
-pub use enums::{Enum, UnexpectedRow};
+pub use enums::{Enum, EnumId, UnexpectedRow};
 pub use exact::Exact;
 
 // What the expansion names, so that a crate needs no dependency of its own on them.
