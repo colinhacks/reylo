@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 reylo-engine-core.workspace = true
 reylo-engine-native = { workspace = true, features = ["postgres", "mysql", "sqlite"] }
-reylo-migrate.workspace = true
+reylo-migrate = { workspace = true, features = ["cli"] }
 # reylo generate: each .sql file's module, and the .sql files a path, a directory or a glob names.
 reylo-codegen = { workspace = true, features = ["generate", "postgres", "mysql", "sqlite"] }
 regex = "1"

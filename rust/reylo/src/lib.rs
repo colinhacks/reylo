@@ -9,6 +9,13 @@
 
 pub use reylo_macros::{enum_type, query};
 
+#[cfg(feature = "migrate")]
+pub mod migrate;
+/// The project's migrations, compiled in: `reylo::migrate!().run(&pool)` runs `reylo migrate deploy`
+/// from the app, and `.status(&pool)` `reylo migrate status` ([`migrate::Migrator`]).
+#[cfg(feature = "migrate")]
+pub use reylo_macros::migrate;
+
 mod enums;
 mod exact;
 pub use enums::{Enum, EnumId, UnexpectedRow};

@@ -203,6 +203,7 @@ fn settings(args: &Args) -> Result<Options, String> {
         lock: home.join(reylo_migrate::lock::LOCK),
         cache: home.join(".cache"),
         root: project.root.clone(),
+        embedded: None,
     })
 }
 
@@ -353,7 +354,7 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
 
 /// Runs one command of `reylo migrate` or `reylo db`, its flags checked; `db introspect`'s SQL goes to
 /// `sql`, for the caller to print.
-fn run_group(command: &str, parsed: &Args, log: &mut dyn FnMut(&str), sql: &mut Option<String>) -> Result<i32, String> {
+fn run_group(command: &str, parsed: &Args, log: reylo_migrate::commands::Log<'_>, sql: &mut Option<String>) -> Result<i32, String> {
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     let opts = settings(parsed)?;
     // The home directory is no project's (project.rs), so nothing makes one there.
