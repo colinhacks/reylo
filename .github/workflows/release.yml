@@ -6,7 +6,7 @@ on:
   #
   # Everything the release needs is given at dispatch: the commit is the one dispatched, the version comes from its `package.json` (every package moves at reylo's version, which `scripts/build.ts` enforces), and the release notes are the required `notes` input. A run's inputs are fixed for its whole life, so the notes survive the approval wait and any re-run of a job.
   #
-  # One run builds the `reylo` binary on each platform of npm/platforms.json (`build`, a job per platform on a runner of its architecture), then two release jobs. `stage` puts the nine versions in npm's staged queue: the eight platform packages `@reylosql/engine-<platform>`, each holding its platform's binary, then reylo, which names them as optional dependencies at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. The GitHub release carries the same eight binaries as assets, and the docs site's playground engine (`playground`), which no commit holds. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
+  # One run builds the `reylo` binary on each platform of npm/platforms.json (`build`, a job per platform on a runner of its architecture), and installs each through every channel that does without npm (binaries.yml calls channels.yml), then two release jobs. `stage` puts the nine versions in npm's staged queue: the eight platform packages `@reylosql/engine-<platform>`, each holding its platform's binary, then reylo, which names them as optional dependencies at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. The GitHub release carries the same eight binaries as assets, and the docs site's playground engine (`playground`), which no commit holds; `finish` then publishes the Homebrew formula, the Scoop manifest and the container image from those assets. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
   #
   # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after a maintainer approved the run.
   #
@@ -205,6 +205,8 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: write
+      # the container image, ghcr.io/colinhacks/reylo
+      packages: write
     steps:
       # THE HUMAN GATE. The run resumes on the environment approval, which says nothing about npm, so the tag and the GitHub release wait here until the registry serves every version; nothing public ever describes a version npm did not ship. The loop also absorbs the automated review npm runs once a version is approved, which held zod 4.5.0 for 16 minutes, 4.5.3 for 25 and 4.6.0 for 116; none of those is an upper bound. If the approval comes later, re-run this job.
       - name: Wait for npm to serve every version
@@ -246,19 +248,7 @@ jobs:
           name: playground-postgres
           path: ${{ runner.temp }}/assets
       - name: Pack the binaries
-        env:
-          PLATFORMS: ${{ needs.build.outputs.matrix }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/assets"
-          for platform in $(jq -r '.include[].platform' <<< "$PLATFORMS"); do
-            dir="$RUNNER_TEMP/binaries/engine-$platform"
-            exe=reylo
-            case "$platform" in win32-*) exe=reylo.exe ;; esac
-            [ -f "$dir/$exe" ] || { echo "::error::the build left no $exe for $platform"; exit 1; }
-            chmod 755 "$dir/$exe"
-            tar -czf "$RUNNER_TEMP/assets/reylo-$platform.tar.gz" -C "$dir" "$exe"
-          done
-          (cd "$RUNNER_TEMP/assets" && sha256sum reylo-*.tar.gz > SHA256SUMS && cat SHA256SUMS)
+        run: .github/scripts/pack-binaries.sh "$RUNNER_TEMP/binaries" "$RUNNER_TEMP/assets"
 
       # the job token cannot create a tag or move `release`, so both are pushed with the deploy key the rulesets exempt, and the key file is gone when each step ends, however it ends; nothing is installed in this job, so no dependency's script ever runs while the key is on disk
       - name: Tag the release
@@ -302,6 +292,15 @@ jobs:
             --notes-file "$RUNNER_TEMP/release_notes.md" \
             ${prerelease[@]+"${prerelease[@]}"} \
             "$RUNNER_TEMP"/assets/*
+
+      # The package managers, from the release's own assets, before reylo.dev's docs move to describe them: the Homebrew formula into reylosql/homebrew-tap and the Scoop manifest into reylosql/scoop-bucket, each with that repository's deploy key, which only this environment holds, and only when this version is the latest release; and the container image to ghcr.io/colinhacks/reylo with the job's token. Running it again publishes the same files and tags (.github/scripts/channels-publish.sh).
+      - name: Publish to Homebrew, Scoop and GHCR
+        env:
+          VERSION: ${{ needs.stage.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_KEY: ${{ secrets.HOMEBREW_TAP_KEY }}
+          SCOOP_BUCKET_KEY: ${{ secrets.SCOOP_BUCKET_KEY }}
+        run: .github/scripts/channels-publish.sh "$VERSION"
 
       # reylo.dev serves the `release` branch, so the docs describe what npm serves: it moves to the release's tagged commit, past any docs fix cherry-picked onto the previous release, which main holds too. It moves after the GitHub release exists, since the site's build fetches the playground's engine from the release of its version (site/scripts/playground-engine.ts). It follows the tag, not this run's commit, since a dispatch that only rewrites a release's notes runs on a main that may hold unreleased changes. Where `release` already holds the tag (that dispatch, or a re-run of this job), it is left as it is, docs fixes cherry-picked onto it since included; the shallow checkout can't tell, so GitHub's compare does. The tag is a lightweight one, so `ls-remote` names its commit.
       # A prerelease leaves reylo.dev on the docs of the release npm's `latest` serves.
