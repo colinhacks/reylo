@@ -23,13 +23,13 @@
 //! fails at its string with the database's error, and the file, line and column inside the string
 //! it points at.
 //!
-//! `#[reylo::enum_type("public.job_kind")]` on an enum of the crate's own checks its variants
+//! `#[reylo::reflect("public.job_kind")]` on an enum of the crate's own checks its variants
 //! against the database enum's values, or fills an empty one, and makes it a `reylo::Enum`.
 //!
 //! The run time is sqlx's: the query runs on the caller's sqlx pool, connection or transaction.
 //! Postgres, SQLite and MySQL, whichever the URL's scheme names.
 
-use reylo_codegen::{Dates, Decimals, Dialect, Options, Overrides, Partial, PartialField, RowOverride};
+use reylo_build::{Dates, Decimals, Dialect, Options, Overrides, Partial, PartialField, RowOverride};
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -61,7 +61,7 @@ fn expand(sql: &LitStr, module: ItemMod) -> TokenStream2 {
     // for the two structs keep the crate's own items in the module from adding errors of their own.
     let body = items(sql, &overrides).unwrap_or_else(|e| {
         let error = e.to_compile_error();
-        let stand_ins = reylo_codegen::stand_ins(&overrides);
+        let stand_ins = reylo_build::stand_ins(&overrides);
         quote!(#error #stand_ins)
     });
     let tracked = tracked();
@@ -96,7 +96,7 @@ pub fn migrate(input: TokenStream) -> TokenStream {
 fn migrations() -> syn::Result<TokenStream2> {
     let span = proc_macro2::Span::call_site();
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(span, "CARGO_MANIFEST_DIR is not set"))?;
-    let (root, home) = reylo_codegen::analysis::home(std::path::Path::new(&manifest)).map_err(|e| syn::Error::new(span, e))?;
+    let (root, home) = reylo_build::analysis::home(std::path::Path::new(&manifest)).map_err(|e| syn::Error::new(span, e))?;
     // As messages show the project's paths, `reylo/migrations` on every platform.
     let shown = home.strip_prefix(&root).unwrap_or(&home).to_string_lossy().replace('\\', "/");
     let shown = if shown.is_empty() { ".".to_string() } else { shown };
@@ -124,7 +124,10 @@ fn migrations() -> syn::Result<TokenStream2> {
             quote!(::core::option::Option::None)
         }
     };
-    let lock = included(home.join("reylo-lock.yaml"));
+    if let Some(error) = reylo_build::analysis::old_lock(&home, &shown) {
+        return Err(syn::Error::new(span, error));
+    }
+    let lock = included(home.join("reylo.lock"));
     let schema = included(home.join("schema.sql"));
     Ok(quote!(::reylo::migrate::Migrator::__new(#shown, &[#(#files),*], #lock, #schema)))
 }
@@ -136,7 +139,7 @@ fn migrations() -> syn::Result<TokenStream2> {
 /// shown in an editor would show what it holds.
 fn tracked() -> Vec<LitStr> {
     let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else { return Vec::new() };
-    reylo_codegen::analysis::watched(std::path::Path::new(&manifest))
+    reylo_build::analysis::watched(std::path::Path::new(&manifest))
         .into_iter()
         .filter(|path| path.is_file() && !path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".env")))
         .map(|path| LitStr::new(&path.to_string_lossy(), proc_macro2::Span::call_site()))
@@ -231,18 +234,18 @@ fn item_name(item: &Item) -> Option<String> {
 
 fn items(sql: &LitStr, overrides: &Overrides) -> syn::Result<TokenStream2> {
     let span = sql.span();
-    let (dialect, analysis) = analyze(sql, &sql.value(), true)?;
-    Ok(reylo_codegen::module(dialect, options(), &analysis, span, overrides, false)?.tokens)
+    let (dialect, analysis) = analyze(sql, &sql.value())?;
+    Ok(reylo_build::module(dialect, options(), &analysis, span, overrides, false)?.tokens)
 }
 
-/// The analysis of `text`, which the literal `at` stands for: the engine's diagnostics as errors at
-/// the literal, each placed inside it where `text` is the literal's own.
-fn analyze(at: &LitStr, text: &str, placed: bool) -> syn::Result<(Dialect, serde_json::Value)> {
+/// The analysis of `text`, which the literal `at` holds: the engine's diagnostics as errors at the
+/// literal, each placed inside it.
+fn analyze(at: &LitStr, text: &str) -> syn::Result<(Dialect, serde_json::Value)> {
     let span = at.span();
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(span, "CARGO_MANIFEST_DIR is not set"))?;
-    let (dialect, analysis) = reylo_codegen::analysis::analyze(std::path::Path::new(&manifest), text).map_err(|message| syn::Error::new(span, message))?;
+    let (dialect, analysis) = reylo_build::analysis::analyze(std::path::Path::new(&manifest), text).map_err(|message| syn::Error::new(span, message))?;
     if let Some(diagnostics) = analysis["diagnostics"].as_array().filter(|d| !d.is_empty()) {
-        let each = diagnostics.iter().map(|d| (d["message"].as_str().unwrap_or("the statement cannot be analyzed"), if placed { d["start"].as_u64().map_or(0, |s| s as usize) } else { 0 }));
+        let each = diagnostics.iter().map(|d| (d["message"].as_str().unwrap_or("the statement cannot be analyzed"), d["start"].as_u64().map_or(0, |s| s as usize)));
         return Err(refused(at, each));
     }
     Ok((dialect, analysis))
@@ -261,7 +264,7 @@ fn refused<'a>(sql: &LitStr, diagnostics: impl Iterator<Item = (&'a str, usize)>
         if offset == 0 || file.is_empty() {
             return syn::Error::new(sql.span(), message);
         }
-        let (line, column) = reylo_codegen::place::in_literal(&literal, start.line(), start.column(), offset);
+        let (line, column) = reylo_build::place::in_literal(&literal, start.line(), start.column(), offset);
         syn::Error::new(sql.span(), format!("{message}\nat {file}:{line}:{column}"))
     });
     let mut error = errors.next().expect("a diagnostic");
@@ -292,21 +295,29 @@ fn options() -> Options {
     }
 }
 
-/// One of the crate's enums as a database enum's values: `#[reylo::enum_type("public.job_kind")]`
-/// names a Postgres enum type, and `#[reylo::enum_type(column = "events.kind")]` a column whose
-/// values a `CHECK` constraint or a MySQL `ENUM` lists. The variants are the values' names, as a
-/// query's module names them; an enum with none is given them all.
+/// One of the crate's enums as a database enum: `#[reylo::reflect("public.job_kind")]` names a
+/// Postgres enum type, and `#[reylo::reflect("events.kind")]` a column whose values a `CHECK`
+/// constraint or a MySQL `ENUM` lists; the database says which. A name that is both is the type,
+/// and the column is written with its schema (`public.events.kind`). The variants are the values'
+/// names, as a query's module names them; an enum with none is given them all. It goes on an enum:
+/// a struct would reflect a table's row, which it does not write.
 #[proc_macro_attribute]
-pub fn enum_type(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let item = syn::parse_macro_input!(item as ItemEnum);
-    let named = match syn::parse::<LitStr>(attr.clone()) {
-        Ok(name) => Ok(Named::Type(name)),
-        Err(_) => syn::parse::<syn::MetaNameValue>(attr).and_then(|m| match (&m.path, &m.value) {
-            (p, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. })) if p.is_ident("column") => Ok(Named::Column(s.clone())),
-            _ => Err(syn::Error::new_spanned(&m, "name the enum type, `#[reylo::enum_type(\"public.job_kind\")]`, or a column whose values a CHECK or an ENUM lists, `#[reylo::enum_type(column = \"events.kind\")]`")),
-        }),
+pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
+    // The item stays beside an error, so that its uses do not fail too.
+    let name = match syn::parse::<LitStr>(attr) {
+        Ok(name) => name,
+        Err(e) => {
+            let error = syn::Error::new(e.span(), "name the database enum, as `#[reylo::reflect(\"public.job_kind\")]`, or a column whose values a CHECK or an ENUM lists, as `#[reylo::reflect(\"events.kind\")]`").to_compile_error();
+            let item = TokenStream2::from(item);
+            return quote!(#item #error).into();
+        }
     };
-    match named.and_then(|named| expand_enum(named, item.clone())) {
+    let item = syn::parse_macro_input!(item as Item);
+    let Item::Enum(item) = item else {
+        let error = syn::Error::new_spanned(&item, "`#[reylo::reflect]` goes on an enum, whose variants are the database enum's values").to_compile_error();
+        return quote!(#item #error).into();
+    };
+    match expand_enum(&name, item.clone()) {
         Ok(tokens) => tokens.into(),
         Err(e) => {
             let error = e.to_compile_error();
@@ -315,41 +326,65 @@ pub fn enum_type(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-enum Named {
-    Type(LitStr),
-    Column(LitStr),
+/// What the database says of a statement written to read what a `reflect` names.
+enum Lookup {
+    /// A list of values.
+    Found(Dialect, serde_json::Value),
+    /// A value of another type, which the label names.
+    Other(String),
+    /// The database's errors, as for a type that does not exist.
+    Refused(Vec<String>),
 }
 
-fn expand_enum(named: Named, mut item: ItemEnum) -> syn::Result<TokenStream2> {
+fn lookup(at: &LitStr, sql: &str) -> syn::Result<Lookup> {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(at.span(), "CARGO_MANIFEST_DIR is not set"))?;
+    let (dialect, analysis) = reylo_build::analysis::analyze(std::path::Path::new(&manifest), sql).map_err(|message| syn::Error::new(at.span(), message))?;
+    if let Some(diagnostics) = analysis["diagnostics"].as_array().filter(|d| !d.is_empty()) {
+        return Ok(Lookup::Refused(diagnostics.iter().map(|d| d["message"].as_str().unwrap_or("the statement cannot be analyzed").to_string()).collect()));
+    }
+    let ty = &analysis["columns"][0]["type"];
+    if ty["kind"].as_str() == Some("enum") {
+        return Ok(Lookup::Found(dialect, analysis));
+    }
+    Ok(Lookup::Other(ty["label"].as_str().or(ty["kind"].as_str()).unwrap_or_default().to_string()))
+}
+
+fn expand_enum(at: &LitStr, mut item: ItemEnum) -> syn::Result<TokenStream2> {
     if !item.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(&item.generics, "a database enum's Rust enum takes no generics"));
     }
-    let (at, sql) = match &named {
-        Named::Type(name) => (name, format!("select cast(null as {}) as value", name.value())),
-        Named::Column(column) => {
-            let path = column.value();
-            let Some((table, name)) = path.rsplit_once('.') else {
-                return Err(syn::Error::new_spanned(column, "name the column with its table, as `events.kind`"));
+    // The name as a type, then as a column; a type wins where the name is both.
+    let path = at.value();
+    let as_type = lookup(at, &format!("select cast(null as {path}) as value"));
+    let as_column = path.rsplit_once('.').map(|(table, column)| lookup(at, &format!("select {column} as value from {table}")));
+    let (dialect, analysis) = match (as_type, as_column) {
+        (Ok(Lookup::Found(dialect, analysis)), _) | (_, Some(Ok(Lookup::Found(dialect, analysis)))) => (dialect, analysis),
+        (Err(e), _) | (_, Some(Err(e))) => return Err(e),
+        (Ok(as_type), as_column) => {
+            // Neither is a list: what the database said of each, since either may be what was meant.
+            let said = |what: &str, found: Lookup| match found {
+                Lookup::Refused(messages) => format!("\nas {what}: {}", messages.join("; ")),
+                Lookup::Other(label) if label.is_empty() => format!("\nas {what}: it lists no values"),
+                Lookup::Other(label) => format!("\nas {what}: `{label}`, which lists no values"),
+                Lookup::Found(..) => unreachable!(),
             };
-            (column, format!("select {name} as value from {table}"))
+            let mut message = format!("{path} is no list of values: name a Postgres enum type, or a column a CHECK (… in (…)) or a MySQL ENUM lists values for, with its table, as `events.kind`");
+            message += &said("a type", as_type);
+            if let Some(Ok(as_column)) = as_column {
+                message += &said("a column", as_column);
+            }
+            return Err(syn::Error::new_spanned(at, message));
         }
     };
-    let (dialect, analysis) = analyze(at, &sql, false).map_err(|e| match &named {
-        Named::Type(_) => syn::Error::new_spanned(at, format!("{e}\nMySQL and SQLite have no enum types: for a column whose values a CHECK or an ENUM lists, write `#[reylo::enum_type(column = \"table.column\")]`")),
-        Named::Column(_) => e,
-    })?;
     let ty = &analysis["columns"][0]["type"];
-    let values: Vec<String> = match (ty["kind"].as_str(), ty["values"].as_array()) {
-        (Some("enum"), Some(values)) => values.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-        _ => return Err(syn::Error::new_spanned(at, format!("{} holds no list of values: name a Postgres enum type, or a column a CHECK (… in (…)) or a MySQL ENUM lists values for", at.value()))),
-    };
+    let values: Vec<String> = ty["values"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
     let label = ty["label"].as_str().unwrap_or_default();
     let domains = analysis.get("domains").and_then(|d| d.as_object());
     let is_type = dialect == Dialect::Postgres && label.contains('.') && !domains.is_some_and(|d| d.contains_key(label));
     let type_name = if is_type { label.to_string() } else { String::new() };
 
     // The variants: the values' names, the crate's own checked against them.
-    let wanted = reylo_codegen::variants(&values);
+    let wanted = reylo_build::variants(&values);
     if let Some(v) = item.variants.iter().find(|v| !matches!(v.fields, syn::Fields::Unit)) {
         return Err(syn::Error::new_spanned(&v.fields, "a database enum's variants hold no fields"));
     }
@@ -383,16 +418,16 @@ fn expand_enum(named: Named, mut item: ItemEnum) -> syn::Result<TokenStream2> {
     item.attrs.push(syn::parse_quote!(#[allow(non_camel_case_types)]));
 
     let ident = &item.ident;
-    let trait_impl = reylo_codegen::enum_impl(ident, &type_name, &values);
+    let trait_impl = reylo_build::enum_impl(ident, &type_name, &values);
     let sqlx = if is_type {
-        reylo_codegen::postgres_impls(ident, &type_name)
+        reylo_build::postgres_impls(ident, &type_name)
     } else {
         let db = match dialect {
             Dialect::Postgres => quote!(Postgres),
             Dialect::Mysql => quote!(MySql),
             Dialect::Sqlite => quote!(Sqlite),
         };
-        reylo_codegen::text_impls(ident, &db)
+        reylo_build::text_impls(ident, &db)
     };
     Ok(quote!(#item #trait_impl #sqlx))
 }

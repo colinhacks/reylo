@@ -21,4 +21,4 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [build-dependencies]
-reylo-build.workspace = true
+reylo-build = { workspace = true, features = ["generate", "postgres"] }

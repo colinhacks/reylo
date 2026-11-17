@@ -1,8 +1,8 @@
 # One Cargo workspace over the engine (`engine/`: `reylo-engine-core`, what every database shares;
 # `reylo-engine-postgres`, `reylo-engine-sqlite` and `reylo-engine-mysql`, one per
-# database; `reylo-engine-build`, their build scripts' source hash; `reylo-engine`, the
-# facade a Rust host links; `reylo-engine-native`, the program that connects each database's engine
-# to its database; and `reylo-cli`, the `reylo` binary that serves them all, `engine/cli`), the Rust
+# database; `reylo-engine-build`, their build scripts' source hash; `reylo-engine`, what a Rust host
+# links, each database's engine with its client, and the program that connects it to its database
+# (`engine/native`); and `reylo-cli`, the `reylo` binary that serves them all, `engine/cli`), the Rust
 # crate and its macro (`rust/`) and the soundness oracle (`oracle/`). One lockfile, one `target/`.
 # The component crate, `engine/wasip2`, is a workspace of its own (its Cargo.toml says why).
 #
@@ -19,7 +19,6 @@ resolver = "2"
 members = [
   "engine/build-support",
   "engine/core",
-  "engine/facade",
   "engine/native",
   "engine/migrate",
   "engine/cli",
@@ -29,7 +28,6 @@ members = [
   "oracle",
   "rust/reylo",
   "rust/reylo-macros",
-  "rust/reylo-codegen",
   "rust/reylo-build",
   "rust/demo-reylo",
   "rust/demo-sqlite",
@@ -54,13 +52,11 @@ reylo-engine-core = { path = "engine/core", version = "=0.8.0" }
 reylo-engine-postgres = { path = "engine/postgres", version = "=0.8.0" }
 reylo-engine-sqlite = { path = "engine/sqlite", version = "=0.8.0" }
 reylo-engine-mysql = { path = "engine/mysql", version = "=0.8.0" }
-reylo-engine = { path = "engine/facade", version = "=0.8.0" }
-reylo-engine-native = { path = "engine/native", version = "=0.8.0", default-features = false }
+reylo-engine = { path = "engine/native", version = "=0.8.0", default-features = false }
 reylo-migrate = { path = "engine/migrate", version = "=0.8.0", default-features = false }
-reylo-codegen = { path = "rust/reylo-codegen", version = "=0.8.0", default-features = false }
 reylo-macros = { path = "rust/reylo-macros", version = "=0.8.0" }
 reylo = { path = "rust/reylo", version = "=0.8.0", default-features = false }
-reylo-build = { path = "rust/reylo-build", version = "=0.8.0" }
+reylo-build = { path = "rust/reylo-build", version = "=0.8.0", default-features = false }
 pg_query = { package = "reylo-pg-query", path = "engine/postgres/.patched/pg_query", version = "=18.0.0" }
 sqlparser = { package = "reylo-sqlparser", path = "engine/mysql/vendor/sqlparser", version = "=0.63.0", default-features = false }
 

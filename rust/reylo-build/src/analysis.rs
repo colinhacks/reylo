@@ -1,7 +1,7 @@
 //! A statement's analysis at compile time: from `reylo/.cache/` when its entry matches the database's
 //! schema, else from the engine replayed against the database, else, where the database cannot be
 //! reached or no URL names it, from the newest entry `reylo/.cache/` holds for the statement. The
-//! connection is the engine's own (`reylo_engine_native`), which reads the URL as the loader does,
+//! connection is the engine's own (`reylo_engine`), which reads the URL as the loader does,
 //! TLS included.
 //!
 //! The cache is the TypeScript loader's (`src/analyze.ts`): the same file names, the same entry and
@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use std::sync::{MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(any(feature = "postgres", feature = "mysql"))]
-use reylo_engine_native::Failure;
+use reylo_engine::Failure;
 #[cfg(feature = "postgres")]
 use tokio_postgres::Client;
 
@@ -122,11 +122,11 @@ impl Dialect {
     fn fingerprint(self) -> Option<&'static str> {
         match self {
             #[cfg(feature = "postgres")]
-            Dialect::Postgres => Some(reylo_engine::postgres::FINGERPRINT),
+            Dialect::Postgres => Some(reylo_engine::engines::postgres::FINGERPRINT),
             #[cfg(feature = "sqlite")]
-            Dialect::Sqlite => Some(reylo_engine::sqlite::FINGERPRINT),
+            Dialect::Sqlite => Some(reylo_engine::engines::sqlite::FINGERPRINT),
             #[cfg(feature = "mysql")]
-            Dialect::Mysql => Some(reylo_engine::mysql::FINGERPRINT),
+            Dialect::Mysql => Some(reylo_engine::engines::mysql::FINGERPRINT),
             #[allow(unreachable_patterns)]
             _ => None,
         }
@@ -215,13 +215,13 @@ static LOCATED: Mutex<Vec<(PathBuf, Instant, Located)>> = Mutex::new(Vec::new())
 
 /// The project of the crate at `manifest`: `.reylo.yaml` where the crate has one above it, its
 /// `direct_url`, the `.env` files and `DATABASE_URL`, resolved as `reylo analyze` resolves them
-/// (`reylo_engine_native::project`).
+/// (`reylo_engine::project`).
 fn locate(manifest: &Path) -> Result<Located, String> {
     let mut held = LOCATED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((_, _, located)) = held.iter().find(|(m, at, _)| m == manifest && at.elapsed() < URL_TTL) {
         return Ok(located.clone());
     }
-    let project = reylo_engine_native::project::Project::resolve(manifest, std::env::vars().collect())?;
+    let project = reylo_engine::project::Project::resolve(manifest, std::env::vars().collect())?;
     let url = project.type_check_url()?.map(|(url, _)| url);
     let cache = project.root.join(project.config.dir.as_deref().unwrap_or("reylo")).join(".cache");
     let located = Located { root: project.root.clone(), cache, url, missing: project.missing_url() };
@@ -234,22 +234,37 @@ fn locate(manifest: &Path) -> Result<Located, String> {
 /// directory of its own files (`reylo`, or the one the project file's `dir` names), where its
 /// migrations, lock and `schema.sql` are.
 pub fn home(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
-    let project = reylo_engine_native::project::Project::resolve(dir, std::env::vars().collect())?;
+    let project = reylo_engine::project::Project::resolve(dir, std::env::vars().collect())?;
     let home = home_of(&project);
     Ok((project.root, home))
 }
 
-fn home_of(project: &reylo_engine_native::project::Project) -> PathBuf {
+fn home_of(project: &reylo_engine::project::Project) -> PathBuf {
     project.root.join(project.config.dir.as_deref().unwrap_or("reylo"))
+}
+
+/// Why a project whose files are in `home` (`shown` as its messages write it) can't have its
+/// migrations read: it holds the lock under its name before 0.8.0, `reylo-lock.yaml`, alone or
+/// beside `reylo.lock`, which `reylo migrate` refuses too. Read as no lock, it would run the
+/// migrations in name order.
+pub fn old_lock(home: &Path, shown: &str) -> Option<String> {
+    if !home.join("reylo-lock.yaml").is_file() {
+        return None;
+    }
+    Some(if home.join("reylo.lock").is_file() {
+        format!("{shown}/reylo-lock.yaml and {shown}/reylo.lock are both here: {shown}/reylo.lock is the lock, and {shown}/reylo-lock.yaml its name before 0.8.0, so keep {shown}/reylo.lock and delete the other, with git rm {shown}/reylo-lock.yaml")
+    } else {
+        format!("{shown}/reylo-lock.yaml is the lock's old name: rename it to {shown}/reylo.lock, with git mv {shown}/reylo-lock.yaml {shown}/reylo.lock")
+    })
 }
 
 /// The files a statement's analysis depends on beside the statement, which a build script names
 /// to Cargo so that a change to one runs it again: the project file, the `.env` files, and the
 /// schema and migrations in the project's `reylo/` directory, each where it exists.
 pub fn watched(dir: &Path) -> Vec<PathBuf> {
-    let Ok(project) = reylo_engine_native::project::Project::resolve(dir, std::env::vars().collect()) else { return Vec::new() };
+    let Ok(project) = reylo_engine::project::Project::resolve(dir, std::env::vars().collect()) else { return Vec::new() };
     let home = home_of(&project);
-    let own = [home.join("schema.sql"), home.join("migrations"), home.join("reylo-lock.yaml")];
+    let own = [home.join("schema.sql"), home.join("migrations"), home.join("reylo.lock")];
     project.file.iter().cloned().chain(project.env_files().iter().cloned()).chain(own).filter(|p| p.exists()).collect()
 }
 
@@ -295,7 +310,7 @@ async fn postgres(cache: &Path, queries: &Path, sql: &str, session: &mut Session
 #[cfg(feature = "postgres")]
 async fn postgres_client<'c>(conn: &'c mut Option<Client>, url: &str) -> Result<&'c Client, Failure> {
     if conn.as_ref().map_or(true, Client::is_closed) {
-        *conn = Some(reylo_engine_native::postgres::open(url).await?.0);
+        *conn = Some(reylo_engine::postgres::open(url).await?.0);
     }
     Ok(conn.as_ref().expect("connected above"))
 }
@@ -367,7 +382,7 @@ async fn mysql_fingerprint(conn: &mut Option<mysql_async::Conn>, url: &str) -> R
 #[cfg(feature = "mysql")]
 async fn mysql_conn<'c>(conn: &'c mut Option<mysql_async::Conn>, url: &str) -> Result<&'c mut mysql_async::Conn, Failure> {
     if conn.is_none() {
-        *conn = Some(reylo_engine_native::mysql::open(url).await?.0);
+        *conn = Some(reylo_engine::mysql::open(url).await?.0);
     }
     Ok(conn.as_mut().expect("connected above"))
 }
@@ -375,7 +390,7 @@ async fn mysql_conn<'c>(conn: &'c mut Option<mysql_async::Conn>, url: &str) -> R
 #[cfg(feature = "sqlite")]
 fn sqlite(root: &Path, cache: &Path, queries: &Path, url: &str, sql: &str) -> Result<Value, String> {
     let statement = statement_key(Dialect::Sqlite, sql).expect("the feature builds the engine");
-    let path = PathBuf::from(reylo_engine_native::project::sqlite_path(url, root).map_err(|why| format!("Cannot read the SQLite URL {url}: {why}."))?);
+    let path = PathBuf::from(reylo_engine::project::sqlite_path(url, root).map_err(|why| format!("Cannot read the SQLite URL {url}: {why}."))?);
     let server = path.to_string_lossy().to_string();
     // A file that is gone is a database that cannot be reached: the entries are used as they are.
     if !path.exists() {
@@ -486,5 +501,25 @@ fn write_entry(cache: &Path, file: &Path, entry: &Value) {
     })();
     if written.is_err() {
         let _ = fs::remove_file(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::old_lock;
+
+    #[test]
+    fn the_lock_under_its_old_name_is_refused_alone_or_beside_the_lock() {
+        let home = std::env::temp_dir().join(format!("reylo-build-old-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert_eq!(old_lock(&home, "reylo"), None);
+        std::fs::write(home.join("reylo.lock"), "migrations:\n").unwrap();
+        assert_eq!(old_lock(&home, "reylo"), None);
+        std::fs::rename(home.join("reylo.lock"), home.join("reylo-lock.yaml")).unwrap();
+        assert_eq!(old_lock(&home, "reylo").as_deref(), Some("reylo/reylo-lock.yaml is the lock's old name: rename it to reylo/reylo.lock, with git mv reylo/reylo-lock.yaml reylo/reylo.lock"));
+        std::fs::write(home.join("reylo.lock"), "migrations:\n").unwrap();
+        assert!(old_lock(&home, "reylo").is_some_and(|e| e.starts_with("reylo/reylo-lock.yaml and reylo/reylo.lock are both here: ") && e.ends_with("with git rm reylo/reylo-lock.yaml")));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

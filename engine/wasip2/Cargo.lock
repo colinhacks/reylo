@@ -1517,13 +1517,20 @@ name = "reylo-engine"
 version = "0.8.0"
 dependencies = [
  "mysql_async",
+ "reylo-engine-build",
  "reylo-engine-core",
  "reylo-engine-mysql",
  "reylo-engine-postgres",
  "reylo-engine-sqlite",
  "rusqlite",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
  "serde_json",
+ "tokio",
  "tokio-postgres",
+ "tokio-postgres-rustls",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1550,25 +1557,6 @@ dependencies = [
  "reylo-sqlparser",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "reylo-engine-native"
-version = "0.8.0"
-dependencies = [
- "mysql_async",
- "reylo-engine",
- "reylo-engine-build",
- "reylo-engine-core",
- "rusqlite",
- "rustls",
- "rustls-pki-types",
- "rustls-platform-verifier",
- "serde_json",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "webpki-roots",
 ]
 
 [[package]]
@@ -1600,8 +1588,8 @@ dependencies = [
 name = "reylo-engine-wasip2"
 version = "0.0.0"
 dependencies = [
+ "reylo-engine",
  "reylo-engine-build",
- "reylo-engine-native",
  "serde_json",
  "tokio",
  "wit-bindgen 0.63.0",

@@ -26,6 +26,11 @@ mod get_profile {}
 #[reylo::query("select active, status, joined, born, span, balance, since, flags, avatar from users where id = 1")]
 mod user_details {}
 
+/// The crate's enum for an ENUM column: MySQL has no enum types, so the database says it is a column.
+#[reylo::reflect("users.status")]
+#[derive(Debug, PartialEq)]
+enum AccountStatus {}
+
 /// An ENUM parameter: the enum of its values.
 #[reylo::query("select name from users where status = :status order by id")]
 mod users_by_status {}
@@ -77,6 +82,8 @@ async fn main() -> Result<(), sqlx::Error> {
     // One query's ENUM value as another's: the same values, so `cast` compiles.
     let new = users_by_status::Query { status: reylo::Enum::cast(status) }.run(&pool).await?;
     assert_eq!(status, user_details::Status::New);
+    let reflected: AccountStatus = reylo::Enum::cast(status);
+    assert_eq!(reflected, AccountStatus::New);
     println!("8. :status      {new:?}");
 
     // Writes, in a transaction that is rolled back: each returns how many rows it wrote.

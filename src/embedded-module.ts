@@ -38,25 +38,32 @@ export async function projectMigrations(root: string): Promise<{ list?: Migratio
   const dir = dirname(project.cache);
   const shown = relative(project.root, dir) || ".";
   const migrationsDir = join(dir, "migrations");
-  const lockPath = join(dir, "reylo-lock.yaml");
-  const watched = [...(project.file ? [project.file] : []), lockPath, migrationsDir];
+  const lockPath = join(dir, "reylo.lock");
+  // The lock's name before 0.8.0, refused as every migration command refuses it (`old_lock` in
+  // engine/migrate/src/commands.rs): read as no lock, it would run the migrations in name order.
+  const oldPath = join(dir, "reylo-lock.yaml");
+  const watched = [...(project.file ? [project.file] : []), lockPath, oldPath, migrationsDir];
   if (!existsSync(migrationsDir)) return { watched };
+  if (existsSync(oldPath)) {
+    const error = existsSync(lockPath) ? `${shown}/reylo-lock.yaml and ${shown}/reylo.lock are both here: ${shown}/reylo.lock is the lock, and ${shown}/reylo-lock.yaml its name before 0.8.0, so keep ${shown}/reylo.lock and delete the other, with git rm ${shown}/reylo-lock.yaml` : `${shown}/reylo-lock.yaml is the lock's old name: rename it to ${shown}/reylo.lock, with git mv ${shown}/reylo-lock.yaml ${shown}/reylo.lock`;
+    return { error, watched };
+  }
   let names: string[];
   if (existsSync(lockPath)) {
     const lock = readFileSync(lockPath, "utf8");
     // Two branches that each added a migration leave git's markers in the lock.
-    if (/^(<{7}|={7}|>{7})( |$)/m.test(lock)) return { error: `${shown}/reylo-lock.yaml has git's conflict markers: keep main's lines, then run reylo migrate dev, which adds this branch's migrations back`, watched };
+    if (/^(<{7}|={7}|>{7})( |$)/m.test(lock)) return { error: `${shown}/reylo.lock has git's conflict markers: keep main's lines, then run reylo migrate dev, which adds this branch's migrations back`, watched };
     const entries = [...lock.matchAll(/^\s*-\s+(\S+\.sql)\s+([0-9a-f]+)\s*$/gm)].map((m) => ({ name: m[1]!, sum: m[2]! }));
     names = entries.map((e) => e.name);
     const missing = names.filter((n) => !existsSync(join(migrationsDir, n)));
-    if (missing.length) return { error: `${shown}/reylo-lock.yaml lists ${missing.join(", ")}, which ${shown}/migrations doesn't have: write it back from a database that ran it, with reylo migrate history pull`, watched };
+    if (missing.length) return { error: `${shown}/reylo.lock lists ${missing.join(", ")}, which ${shown}/migrations doesn't have: write it back from a database that ran it, with reylo migrate history pull`, watched };
     // Each entry's checksum chains its file's text to the entry before it (`links` in engine/migrate/src/commands.rs).
     for (const [k, e] of entries.entries()) {
       const sql = readFileSync(join(migrationsDir, e.name), "utf8");
       const prev = k === 0 ? "" : entries[k - 1]!.sum;
       if (lockChecksum(prev, e.name, sql) === e.sum) continue;
       const moved = ["", ...entries.slice(0, Math.max(k - 1, 0)).map((p) => p.sum)].some((sum) => sum !== prev && lockChecksum(sum, e.name, sql) === e.sum);
-      const error = moved ? `${shown}/reylo-lock.yaml was merged out of order at ${e.name}: keep main's lines, in main's order, then run reylo migrate dev, which adds this branch's migrations back` : `${shown}/migrations/${e.name} changed after it was locked: a database that ran the old text refuses it, so put the change in a new migration, or, if no database ran it, lock it as it now reads with reylo migrate dev`;
+      const error = moved ? `${shown}/reylo.lock was merged out of order at ${e.name}: keep main's lines, in main's order, then run reylo migrate dev, which adds this branch's migrations back` : `${shown}/migrations/${e.name} changed after it was locked: a database that ran the old text refuses it, so put the change in a new migration, or, if no database ran it, lock it as it now reads with reylo migrate dev`;
       return { error, watched: [...watched, ...names.map((n) => join(migrationsDir, n))] };
     }
   } else {

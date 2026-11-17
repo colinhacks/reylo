@@ -66,6 +66,9 @@ queries=rust/demo-reylo/src/queries.rs
 cp "$queries" "${RUNNER_TEMP:-/tmp}/queries.rs"
 lines=$(wc -l < "$queries")
 printf '\n#[reylo::query("\n    select id,\n        nme from users\n")]\npub mod misspelt {}\n' >> "$queries"
+# A misspelt reflect names what the database said, and one in a form it does not take keeps its enum,
+# so that the enum's uses fail with nothing of their own.
+printf '\n#[reylo::reflect("posts.stauts")]\npub enum Misspelt {}\n\n#[reylo::reflect(column = "posts.status")]\npub enum OldForm {}\n\n#[allow(dead_code)]\nfn uses(_: OldForm) {}\n' >> "$queries"
 refused=0
 DATABASE_URL="$server/rust_demo" cargo build -q -p demo-reylo --features live 2> "${RUNNER_TEMP:-/tmp}/refused.log" || refused=$?
 mv "${RUNNER_TEMP:-/tmp}/queries.rs" "$queries"
@@ -73,6 +76,11 @@ cat "${RUNNER_TEMP:-/tmp}/refused.log"
 [ "$refused" -ne 0 ] || { echo '::error::demo-reylo compiled with a misspelt column'; exit 1; }
 grep -q "column \"nme\" does not exist (42703)" "${RUNNER_TEMP:-/tmp}/refused.log" || { echo "::error::the error is not the database's own"; exit 1; }
 grep -q "at $queries:$((lines + 4)):9\$" "${RUNNER_TEMP:-/tmp}/refused.log" || { echo "::error::the error does not name $queries:$((lines + 4)):9"; exit 1; }
+grep -q 'as a column: column "stauts" does not exist' "${RUNNER_TEMP:-/tmp}/refused.log" || { echo "::error::a misspelt reflect does not say what the database said"; exit 1; }
+if grep -q 'cannot find type `OldForm`' "${RUNNER_TEMP:-/tmp}/refused.log"; then
+  echo '::error::a reflect in a form it does not take left its enum out'
+  exit 1
+fi
 # A build script's statement fails with Cargo's own error at its file, line and column, not a panic.
 report=rust/demo-codegen/src/reports/post_counts.sql
 cp "$report" "${RUNNER_TEMP:-/tmp}/post_counts.sql"

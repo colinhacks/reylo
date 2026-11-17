@@ -13,11 +13,11 @@
 use std::cell::RefCell;
 
 #[cfg(feature = "postgres")]
-type Program = reylo_engine_native::postgres::Postgres;
+type Program = reylo_engine::postgres::Postgres;
 #[cfg(all(feature = "mysql", not(feature = "postgres")))]
-type Program = reylo_engine_native::mysql::Mysql;
+type Program = reylo_engine::mysql::Mysql;
 #[cfg(all(feature = "sqlite", not(feature = "postgres"), not(feature = "mysql")))]
-type Program = reylo_engine_native::sqlite::Sqlite;
+type Program = reylo_engine::sqlite::Sqlite;
 
 wit_bindgen::generate!({
     inline: r#"
@@ -43,7 +43,7 @@ thread_local! {
 
 impl Guest for Engine {
     fn call(request: String) -> String {
-        let answer = reylo_engine_native::Program::call(&Program::default(), &request);
+        let answer = reylo_engine::Program::call(&Program::default(), &request);
         // A ping also names the code the component carries besides the engine (build.rs).
         let ping = serde_json::from_str::<serde_json::Value>(&request).is_ok_and(|r| r["op"] == "ping");
         if !ping {
@@ -63,7 +63,7 @@ impl Guest for Engine {
             let mut state = state.borrow_mut();
             let (runtime, program) = state.get_or_insert_with(|| (tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime"), Program::default()));
             runtime.block_on(async {
-                let answer = reylo_engine_native::answer(program, &request).await;
+                let answer = reylo_engine::answer(program, &request).await;
                 // The tasks the request woke run to their next wait before the answer goes back:
                 // a connection closed or dropped writes its last message and shuts its socket now,
                 // as the native program's runtime, which runs between requests, does it.

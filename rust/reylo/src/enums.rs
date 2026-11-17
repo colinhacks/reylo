@@ -1,18 +1,18 @@
 //! [`Enum`]: a Rust enum whose variants are the values of one database enum, which every enum a query
-//! module or `#[reylo::enum_type]` writes implements, and [`UnexpectedRow`], the error `.run()`
+//! module or `#[reylo::reflect]` writes implements, and [`UnexpectedRow`], the error `.run()`
 //! returns when a statement returns more rows than its cardinality allows.
 
 /// A Rust enum whose variants are the values of one database enum: a Postgres enum type, or the list
 /// of values a `CHECK` constraint or a MySQL `ENUM` allows a column, or the statement itself names.
 ///
-/// Each query module writes its own enum for each one it reads or binds, and `#[reylo::enum_type]`
+/// Each query module writes its own enum for each one it reads or binds, and `#[reylo::reflect]`
 /// makes a crate's own enum one. [`Enum::cast`] turns a value of one into the same value of another,
 /// and fails to type-check where the two are not the same database enum: [`Enum::Id`] names the
 /// database enum as a type, so `cargo check` and the editor see the mismatch too.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not one of Reylo's enums",
     label = "a database enum's value goes here",
-    note = "write `#[reylo::enum_type(\"<schema>.<type>\")]` on `{Self}`, or name the column in a partial `pub struct Row {{ … }}` in the query's module, which matches the enum's variants by name"
+    note = "write `#[reylo::reflect(\"<schema>.<type>\")]` on `{Self}`, or name the column in a partial `pub struct Row {{ … }}` in the query's module, which matches the enum's variants by name"
 )]
 pub trait Enum: Copy + 'static {
     /// The database enum the values are of, as a type: [`EnumId`] of a hash of [`Enum::TYPE`] and
