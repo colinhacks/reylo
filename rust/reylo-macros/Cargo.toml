@@ -23,3 +23,5 @@ reylo-codegen = { path = "../reylo-codegen", default-features = false, features 
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
+# The analysis, as the engine writes it.
+serde_json = "1"

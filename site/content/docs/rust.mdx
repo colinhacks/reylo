@@ -117,7 +117,8 @@ pub mod get_user {
 
 - **`Query`**, one field per parameter, typed by its cast or by where the statement uses it, a text parameter a `&str`. It's also named `Params`, the name compiler errors use.
 - **`Row`**, one row of the result, a column that may be null an `Option`. It derives `Debug`, `Clone` and `PartialEq`, and serde's `Serialize` where every field's type has it.
-- **An enum** for each Postgres enum the statement reads or binds ([Enums](#enums)), and **a struct** for each JSON object it builds ([JSON](#json)).
+- **An enum** for each database enum the statement reads or binds ([Enums](#enums)), and **a struct** for each JSON object it builds ([JSON](#json)).
+- **`SQL`**, the statement as sqlx sends it, with the database's own placeholders.
 
 To accept null in a parameter, cast it to `nullable(…)`, which makes its field an `Option`:
 
@@ -144,7 +145,7 @@ What `.run()` returns follows the statement's cardinality:
 | Any number | `Vec<Row>` |
 | None: a write with no `returning` | `u64`, the number of rows it changed |
 
-To run a query in a transaction, pass the connection it holds:
+A second row where the cardinality allows one is an error, `reylo::UnexpectedRow`, never a row dropped. To run a query in a transaction, pass the connection it holds:
 
 ```rust
 let mut tx = pool.begin().await?;
@@ -152,17 +153,95 @@ let user = get_user::Query { id: 1 }.run(&mut *tx).await?;
 tx.commit().await?;
 ```
 
+### `.stream()`
+
+To read the rows one at a time as they arrive, call `.stream()` on a query that returns any number of them:
+
+```rust
+use futures_util::TryStreamExt;
+
+#[reylo::query("select id, title from posts where user_id = :user_id::int order by id")]
+pub mod posts_by_user {}
+
+let mut posts = posts_by_user::Query { user_id: 1 }.stream(&pool);
+while let Some(post) = posts.try_next().await? {
+    println!("{}", post.title);
+}
+```
+
 ### Enums
 
-Each Postgres enum the statement reads or binds is an enum in its module, with a variant per label:
+Each database enum a statement reads or binds is an enum in its module.
+
+Its variants are its values in PascalCase, and `.label()` gives a value as the database stores it:
 
 ```rust
 #[reylo::query("select id, name from users where role = :role order by id")]
 pub mod users_by_role {}
 
-let role = users_by_role::UserRole::Admin;
-let admins = users_by_role::Query { role }.run(&pool).await?;
+let admins = users_by_role::Query { role: users_by_role::UserRole::Admin }.run(&pool).await?;
+let label = users_by_role::UserRole::Admin.label(); // "admin"
 ```
+
+A `text` column whose `CHECK` lists its values, and a MySQL `ENUM`, is an enum the same way:
+
+```rust
+// posts.status text not null check (status in ('draft', 'published'))
+#[reylo::query("select id, status from posts order by id")]
+pub mod post_statuses {}
+
+let rows = post_statuses::Query.run(&pool).await?;
+let status: post_statuses::Status = rows[0].status;
+```
+
+Each module holds its own enum. To pass one query's value to another, `.cast()` it, which compiles only between enums of the same database enum:
+
+```rust
+use reylo::Enum;
+
+#[reylo::query("select id, role from users where id = :id::int")]
+pub mod get_role {}
+
+let ada = get_role::Query { id: 1 }.run(&pool).await?.expect("ada");
+let admins = users_by_role::Query { role: ada.role.cast() }.run(&pool).await?;
+```
+
+### Your own types
+
+A type of your own can stand in for one the module writes.
+
+To read a column into your own enum, write `Row` in the module with that field alone. The module writes the other fields, and matches your enum's variants by name:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Role { Admin, Member }
+
+#[reylo::query("select id, name, role from users where id = :id::int")]
+pub mod get_member {
+    pub struct Row {
+        pub role: crate::Role,
+    }
+}
+```
+
+A variant your enum lacks, or one it has beyond the database's values, fails to compile. A `Params` with some of the fields gives parameters your types the same way.
+
+To make your own struct the whole row, name it `Row` in the module. Each field takes its column through `Into`, and an enum field through `.cast()`, so its enum needs `#[reylo::enum_type]`:
+
+```rust
+#[reylo::enum_type("public.user_role")]
+#[derive(Debug, PartialEq)]
+pub enum UserRole {} // filled in: Admin, Member
+
+pub struct Member { pub id: i32, pub name: String, pub role: UserRole }
+
+#[reylo::query("select id, name, role from users where id = :id::int")]
+pub mod find_member {
+    pub use crate::Member as Row;
+}
+```
+
+The attribute checks an enum's variants against the database's values, or fills in an empty one. For a column whose `CHECK` lists its values, name the column, as `#[reylo::enum_type(column = "posts.status")]`.
 
 ### Methods
 
@@ -213,7 +292,7 @@ Each SQL type has one Rust type.
 | `real`, `double precision` | `f32`, `f64` |
 | `numeric` | `rust_decimal::Decimal`, or `bigdecimal::BigDecimal` |
 | `text`, `varchar`, `char` | `String` |
-| An enum | an enum the module holds |
+| An enum, or `text` a `CHECK` lists values for | an enum the module holds |
 | `bytea` | `Vec<u8>` |
 | `uuid` | `uuid::Uuid` |
 | `json`, `jsonb` | `serde_json::Value`, or sqlx's `Json` of a struct of the object the statement builds |
@@ -235,7 +314,8 @@ Each SQL type has one Rust type.
 | `YEAR` | `u16` |
 | `FLOAT`, `DOUBLE` | `f32`, `f64` |
 | `DECIMAL` | `rust_decimal::Decimal`, or `bigdecimal::BigDecimal` |
-| `CHAR`, `VARCHAR`, `TEXT`, `ENUM`, `SET` | `String` |
+| `CHAR`, `VARCHAR`, `TEXT`, `SET` | `String` |
+| `ENUM` | an enum the module holds |
 | `BINARY`, `VARBINARY`, `BLOB` | `Vec<u8>` |
 | `JSON` | `serde_json::Value`, or sqlx's `Json` of a struct of the object the statement builds |
 | `DATE` | `chrono::NaiveDate`, or `time::Date` |
@@ -345,6 +425,13 @@ reylo generate rust-sqlx src/queries --out src/queries.rs
 ```
 
 Each folder under an input becomes a module, so `users/get.sql` and `posts/get.sql` are `queries::users::get` and `queries::posts::get`.
+
+In one file, each Postgres enum type is declared once, in a module named after its schema, so every query's value of it is the same type:
+
+```rust
+let role: queries::public::UserRole = ada.role;
+let same: queries::UserRole = role; // the public schema's, also at the top
+```
 
 ### In CI
 
