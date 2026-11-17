@@ -713,8 +713,16 @@ async fn db_reset_refuses_what_dev_refuses_before_it_drops_anything(mut p: P) {
     kept(&mut p);
     assert_eq!(p.rows("select name from users").await.len(), 1);
     assert_eq!(p.history().await, ["20261027100000_users.sql"]);
-    // With the files as dev takes them, it resets.
     std::fs::write(&lock, text).unwrap();
+    // A migrations directory that is gone, which this database ran a migration from.
+    let (dir, away) = (p.dir.join("migrations"), p.dir.join("migrations-away"));
+    std::fs::rename(&dir, &away).unwrap();
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 1);
+    assert_has!(p.peek(), r"migrations doesn't exist\n  This database ran 1 migration from it");
+    kept(&mut p);
+    assert_eq!(p.rows("select name from users").await.len(), 1);
+    std::fs::rename(&away, &dir).unwrap();
+    // With the files as dev takes them, it resets.
     assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
     assert!(p.rows("select name from users").await.is_empty());
     assert_eq!(p.history().await, ["20261027100000_users.sql"]);
