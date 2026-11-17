@@ -17,9 +17,11 @@
 //!   array's order (`wiki/bulk-insert.md`, Order);
 //! - anywhere else, a table, named by the alias written after it or else by the parameter.
 //!
-//! Each dialect reads the JSON with its own reader: `jsonb_to_record` on Postgres, `json_each` on
-//! SQLite, `JSON_TABLE` with `ERROR ON ERROR` on every column on MySQL (which otherwise turns a
-//! value it cannot read into NULL without a warning; `wiki/structured-params/verify.md`).
+//! Each dialect reads the JSON with its own reader: `json_to_record` and `json_to_recordset` on
+//! Postgres (an insert that copies a default reads each element as `jsonb`, which its key tests
+//! read), `json_each` on SQLite, `JSON_TABLE` with `ERROR ON ERROR` on every column on MySQL (which
+//! otherwise turns a value it cannot read into NULL without a warning;
+//! `wiki/structured-params/verify.md`).
 //!
 //! A key a row leaves out takes its column's default. On Postgres and SQLite the insert reads,
 //! for each member whose key may be left out, the row's value where it has the key and else the
