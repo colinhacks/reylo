@@ -685,7 +685,7 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 - **Inherited tables.** A `NOT NULL` constraint holds in every table that inherits from its table.
 - **Whole rows.** The whole row of a subquery or a `with` query, which Postgres types only as `record`, is typed field by field.
 - **SQL functions.** A function in `language sql` is read as the query it is, so its body decides which columns are null. Mark it `stable` if it only reads: Postgres then plans its body into your query.
-- **Your own operators, casts and functions** tell Reylo nothing, and neither do an extension's or a function whose body Reylo can't read. Where the operands' types can only pick a built-in, as beside pgvector, PostGIS or citext, the built-in's rules apply. To say a value is never null, write `coalesce(x, …)` or `where x is not null`.
+- **Your own operators, casts and functions** tell Reylo nothing, and neither do an extension's or a function whose body Reylo can't read. Where the operands' types can only pick a built-in, as beside citext, the built-in's rules apply. An implicit cast by a function, as PostGIS and pgvector define from their types to `text` and `real[]`, may answer null, so in a database that has one a built-in call over a value of such a type, or over an expression Reylo can't type, may be null too, unless the built-in takes any type as it is, as `array_agg` and `count` do. To say a value is never null, write `coalesce(x, …)` or `where x is not null`.
 
 ## Cardinality
 
