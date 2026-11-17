@@ -340,6 +340,7 @@ for_each_dialect!(
     status_shows_what_ran_what_is_pending_and_what_changed,
     lock_writes_the_lock_from_what_a_database_ran,
     db_reset_rebuilds_a_database_from_its_migrations,
+    db_reset_refuses_what_dev_refuses_before_it_drops_anything,
     db_push_refuses_a_schema_that_declares_nothing,
     a_merge_conflict_left_in_a_file_is_refused,
     new_without_schema_sql_writes_what_the_database_has,
@@ -681,6 +682,42 @@ async fn db_reset_rebuilds_a_database_from_its_migrations(mut p: P) {
     // Never in CI.
     assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, true, log).await).await, 1);
     assert_has!(p.output(), r"CI is set, and reylo db reset is for development databases");
+}
+
+async fn db_reset_refuses_what_dev_refuses_before_it_drops_anything(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    p.linear();
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, name {text});"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.exec("insert into users (name) values ('ada')").await;
+    let kept = |p: &mut P| {
+        let out = p.output();
+        assert_has!(&out, r"Nothing was changed\.");
+        assert!(!has(&out, r"Resetting|Emptied the history"), "{out}");
+    };
+    // A migration left with git's conflict markers in it.
+    p.file("20261027110000_tags.sql", &format!("<<<<<<< HEAD\ncreate table tags (id {int});\n=======\ncreate table labels (id {int});\n>>>>>>> main\n"));
+    p.output();
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 1);
+    assert_has!(p.peek(), r"20261027110000_tags\.sql has a merge conflict in it");
+    kept(&mut p);
+    assert_eq!(p.rows("select name from users").await.len(), 1);
+    assert_eq!(p.history().await, ["20261027100000_users.sql"]);
+    // A lock left with git's conflict markers in it.
+    std::fs::remove_file(p.dir.join("migrations").join("20261027110000_tags.sql")).unwrap();
+    let lock = p.dir.join(reylo_migrate::lock::LOCK);
+    let text = std::fs::read_to_string(&lock).unwrap();
+    std::fs::write(&lock, format!("{text}<<<<<<< HEAD\n")).unwrap();
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 1);
+    assert_has!(p.peek(), r"reylo\.lock has a merge conflict");
+    kept(&mut p);
+    assert_eq!(p.rows("select name from users").await.len(), 1);
+    assert_eq!(p.history().await, ["20261027100000_users.sql"]);
+    // With the files as dev takes them, it resets.
+    std::fs::write(&lock, text).unwrap();
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+    assert!(p.rows("select name from users").await.is_empty());
+    assert_eq!(p.history().await, ["20261027100000_users.sql"]);
 }
 
 async fn db_push_refuses_a_schema_that_declares_nothing(mut p: P) {
