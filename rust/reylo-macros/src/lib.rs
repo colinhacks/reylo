@@ -300,9 +300,14 @@ fn options() -> Options {
 /// a struct would reflect a table's row, which it does not write.
 #[proc_macro_attribute]
 pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
+    // The item stays beside an error, so that its uses do not fail too.
     let name = match syn::parse::<LitStr>(attr) {
         Ok(name) => name,
-        Err(e) => return syn::Error::new(e.span(), "name the database enum, as `#[reylo::reflect(\"public.job_kind\")]`, or a column whose values a CHECK or an ENUM lists, as `#[reylo::reflect(\"events.kind\")]`").to_compile_error().into(),
+        Err(e) => {
+            let error = syn::Error::new(e.span(), "name the database enum, as `#[reylo::reflect(\"public.job_kind\")]`, or a column whose values a CHECK or an ENUM lists, as `#[reylo::reflect(\"events.kind\")]`").to_compile_error();
+            let item = TokenStream2::from(item);
+            return quote!(#item #error).into();
+        }
     };
     let item = syn::parse_macro_input!(item as Item);
     let Item::Enum(item) = item else {
@@ -318,14 +323,27 @@ pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// The analysis of `sql`, a statement written to read what `at` names, or none where the database
-/// refuses it, as it refuses a type that does not exist.
-fn lookup(at: &LitStr, sql: &str) -> syn::Result<Option<(Dialect, serde_json::Value)>> {
+/// What the database says of a statement written to read what a `reflect` names.
+enum Lookup {
+    /// A list of values.
+    Found(Dialect, serde_json::Value),
+    /// A value of another type, which the label names.
+    Other(String),
+    /// The database's errors, as for a type that does not exist.
+    Refused(Vec<String>),
+}
+
+fn lookup(at: &LitStr, sql: &str) -> syn::Result<Lookup> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| syn::Error::new(at.span(), "CARGO_MANIFEST_DIR is not set"))?;
     let (dialect, analysis) = reylo_codegen::analysis::analyze(std::path::Path::new(&manifest), sql).map_err(|message| syn::Error::new(at.span(), message))?;
-    let refused = analysis["diagnostics"].as_array().is_some_and(|d| !d.is_empty());
-    let listed = analysis["columns"][0]["type"]["kind"].as_str() == Some("enum");
-    Ok((!refused && listed).then_some((dialect, analysis)))
+    if let Some(diagnostics) = analysis["diagnostics"].as_array().filter(|d| !d.is_empty()) {
+        return Ok(Lookup::Refused(diagnostics.iter().map(|d| d["message"].as_str().unwrap_or("the statement cannot be analyzed").to_string()).collect()));
+    }
+    let ty = &analysis["columns"][0]["type"];
+    if ty["kind"].as_str() == Some("enum") {
+        return Ok(Lookup::Found(dialect, analysis));
+    }
+    Ok(Lookup::Other(ty["label"].as_str().or(ty["kind"].as_str()).unwrap_or_default().to_string()))
 }
 
 fn expand_enum(at: &LitStr, mut item: ItemEnum) -> syn::Result<TokenStream2> {
@@ -335,14 +353,25 @@ fn expand_enum(at: &LitStr, mut item: ItemEnum) -> syn::Result<TokenStream2> {
     // The name as a type, then as a column; a type wins where the name is both.
     let path = at.value();
     let as_type = lookup(at, &format!("select cast(null as {path}) as value"));
-    let as_column = match path.rsplit_once('.') {
-        Some((table, column)) => lookup(at, &format!("select {column} as value from {table}")),
-        None => Ok(None),
-    };
+    let as_column = path.rsplit_once('.').map(|(table, column)| lookup(at, &format!("select {column} as value from {table}")));
     let (dialect, analysis) = match (as_type, as_column) {
-        (Ok(Some(found)), _) | (_, Ok(Some(found))) => found,
-        (Err(e), _) | (_, Err(e)) => return Err(e),
-        _ => return Err(syn::Error::new_spanned(at, format!("{path} is no list of values: name a Postgres enum type, or a column a CHECK (… in (…)) or a MySQL ENUM lists values for, with its table, as `events.kind`"))),
+        (Ok(Lookup::Found(dialect, analysis)), _) | (_, Some(Ok(Lookup::Found(dialect, analysis)))) => (dialect, analysis),
+        (Err(e), _) | (_, Some(Err(e))) => return Err(e),
+        (Ok(as_type), as_column) => {
+            // Neither is a list: what the database said of each, since either may be what was meant.
+            let said = |what: &str, found: Lookup| match found {
+                Lookup::Refused(messages) => format!("\nas {what}: {}", messages.join("; ")),
+                Lookup::Other(label) if label.is_empty() => format!("\nas {what}: it lists no values"),
+                Lookup::Other(label) => format!("\nas {what}: `{label}`, which lists no values"),
+                Lookup::Found(..) => unreachable!(),
+            };
+            let mut message = format!("{path} is no list of values: name a Postgres enum type, or a column a CHECK (… in (…)) or a MySQL ENUM lists values for, with its table, as `events.kind`");
+            message += &said("a type", as_type);
+            if let Some(Ok(as_column)) = as_column {
+                message += &said("a column", as_column);
+            }
+            return Err(syn::Error::new_spanned(at, message));
+        }
     };
     let ty = &analysis["columns"][0]["type"];
     let values: Vec<String> = ty["values"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
