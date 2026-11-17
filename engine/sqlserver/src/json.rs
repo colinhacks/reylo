@@ -183,9 +183,10 @@ impl Builder {
     }
 
     /// The JSON `e` builds, read at `level`; at the top, `None` where it builds none, or none a
-    /// parse could read. Inside a document (`top` false), SQL Server writes as JSON only a `for
-    /// json` subquery, `json_query(…)`, `json_object` and `json_array`, and every other expression
-    /// as a value; a `without_array_wrapper` subquery's result is text there, written as a string.
+    /// parse could read. Inside a document (`top` false), SQL Server writes as JSON a `for json`
+    /// subquery, `json_query(…)`, `json_object`, `json_array` and `isnull` of one of them, which
+    /// keeps its first argument's type, and every other expression as a value; a
+    /// `without_array_wrapper` subquery's result is text there, written as a string.
     fn shape(&mut self, e: &Expr, level: &Level, probe: &mut Option<usize>, top: bool) -> Option<Json> {
         match e {
             Expr::Nested(inner) => self.shape(inner, level, probe, top),
@@ -241,9 +242,9 @@ impl Builder {
                         }
                     }
                     // `isnull(subquery, '[]')`: the empty document in place of the NULL over no
-                    // rows. The empty object has none of the keys. Inside a document the result is
-                    // text, written as a value.
-                    "isnull" | "coalesce" if args.len() == 2 && top => {
+                    // rows. The empty object has none of the keys. Inside a document `coalesce`'s
+                    // result is text, written as a value.
+                    "isnull" | "coalesce" if args.len() == 2 && (top || name == "isnull") => {
                         let (first, empty) = (arg(args[0])?, arg(args[1])?);
                         let mut s = self.shape(&first, level, probe, true)?;
                         match (&mut s, text(&empty).as_deref()) {
@@ -465,10 +466,10 @@ mod tests {
         let p = planned("select (select u.id, (select top 1 p.title from posts p for json path, without_array_wrapper) as first, json_query((select top 1 p.title from posts p for json path, without_array_wrapper)) as promoted, isnull((select p.id from posts p for json path), '[]') as wrapped from users u for json path) as doc, json_query(json_object('child': json_object('id': 1)), '$.child') as child, json_query(json_object('id': 1), '$') as whole, isnull((select top 1 id from t for json path, without_array_wrapper), '{}') as fallback from t");
         let Some(Json::Array { items, .. }) = &p.columns[0] else { panic!("{:?}", p.columns[0]) };
         let Json::Object { keys, .. } = items.as_ref() else { panic!() };
-        // Unwrapped, it is text; through json_query, the object; isnull's result is a value.
+        // Unwrapped, it is text; through json_query, the object; through isnull, the array.
         assert!(matches!(keys[1].value, Json::Text { nullable: true }));
         assert!(matches!(keys[2].value, Json::Object { nullable: true, .. }));
-        assert!(matches!(keys[3].value, Json::Value { .. }));
+        assert!(matches!(keys[3].value, Json::Array { nullable: false, .. }));
         // A path picks part of the document, which may be missing.
         assert!(matches!(p.columns[1], Some(Json::Any { nullable: true })));
         assert!(matches!(p.columns[2], Some(Json::Object { nullable: false, .. })));

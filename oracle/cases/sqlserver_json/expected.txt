@@ -12,6 +12,8 @@ isnull_object.sql: one (id: int) -> { o: json { id?: int } }
 json_query_path.sql: many () -> { c: json json?, whole: json { id: int } }
 json_query_promoted.sql: one () -> { doc: json ({ id: int, first?: { title: nvarchar(≤80 units, UTF-16, ill-formed) } })[]? }
 nested.sql: many () -> { id: int, posts: json ({ id: int, title: nvarchar(≤80 units, UTF-16, ill-formed), body?: nvarchar(UTF-16, ill-formed), score: decimal(10,2), at: datetime2, tag?: uniqueidentifier })[]? }
+nested_coalesce.sql: one () -> { doc: json ({ id: int, posts?: nvarchar(UTF-16, ill-formed) })[]? }
+nested_isnull.sql: one () -> { doc: json ({ id: int, posts: ({ id: int })[] })[]? }
 nested_two.sql: one () -> { tree: json ({ id: int, posts?: ({ id: int })[] })[]? }
 nested_unwrapped.sql: one () -> { doc: json ({ id: int, first?: text })[]? }
 object.sql: many () -> { id: int, o: json { id: int, nick: nvarchar(≤20 units, UTF-16, ill-formed)?, active: bit } }
