@@ -1,3 +1,4 @@
+assign_then_set.sql: one (min: decimal(38,19)) -> { n: int? }
 block.sql: at_most_one (flag: int, id: int) -> { id: int, note: nvarchar(≤50 units, UTF-16, ill-formed)? }
 branch.sql: at_most_one (flag: int, id: int) -> { id: int, note: nvarchar(≤50 units, UTF-16, ill-formed)? }
 branches.sql: many (flag: int) -> { id: int, total: decimal(10,2) }

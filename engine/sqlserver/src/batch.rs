@@ -16,10 +16,12 @@
 //! A batch the parser does not read, or one with a statement the engine does not follow, is typed by
 //! the server's describe alone.
 
-use sqlparser::ast::{ConditionalStatements, DataType, OutputClause, Query, SelectItem, SetExpr, Statement};
-use sqlparser::dialect::MsSqlDialect;
+use std::any::TypeId;
+
+use sqlparser::ast::{ConditionalStatements, DataType, GranteesType, OutputClause, Query, SelectItem, SetExpr, Statement};
+use sqlparser::dialect::{Dialect, MsSqlDialect};
 use sqlparser::keywords::Keyword;
-use sqlparser::parser::{Parser, ParserOptions};
+use sqlparser::parser::{Parser, ParserError, ParserOptions};
 use sqlparser::tokenizer::{Token, TokenWithSpan, Tokenizer};
 
 /// The options whose `set … off` makes an expression NULL where the rules say it is not.
@@ -32,13 +34,110 @@ const STATEMENT_WORDS: &[Keyword] = &[
     Keyword::RETURN, Keyword::COMMIT, Keyword::ROLLBACK, Keyword::TRUNCATE, Keyword::WAITFOR,
 ];
 
+/// T-SQL's reserved words that start a statement and that sqlparser's SQL Server dialect still
+/// takes as an alias with no `as`, so that a statement after a select item or a table on its own
+/// line (`select @n = 1` then `set @m = 2`) reads as the alias of what precedes it. T-SQL takes no
+/// reserved word as an alias unless it is bracketed.
+const RESERVED_STATEMENT_WORDS: &[Keyword] = &[
+    Keyword::SET, Keyword::BEGIN, Keyword::OPEN, Keyword::CLOSE, Keyword::DEALLOCATE, Keyword::FETCH, Keyword::USE, Keyword::GRANT, Keyword::DENY,
+    Keyword::REVOKE, Keyword::WAITFOR, Keyword::KILL, Keyword::COMMIT, Keyword::ROLLBACK, Keyword::CONTINUE, Keyword::BACKUP,
+];
+
+/// sqlparser's SQL Server dialect, with T-SQL's reserved statement words never an alias
+/// ([`RESERVED_STATEMENT_WORDS`]). It reports the SQL Server dialect's type, so every check the
+/// parser makes for that dialect holds, and answers every other question as that dialect does.
+#[derive(Debug)]
+struct TSql;
+
+impl Dialect for TSql {
+    fn dialect(&self) -> TypeId {
+        TypeId::of::<MsSqlDialect>()
+    }
+    fn is_select_item_alias(&self, explicit: bool, kw: &Keyword, parser: &mut Parser) -> bool {
+        !RESERVED_STATEMENT_WORDS.contains(kw) && MsSqlDialect {}.is_select_item_alias(explicit, kw, parser)
+    }
+    fn is_table_factor_alias(&self, explicit: bool, kw: &Keyword, parser: &mut Parser) -> bool {
+        !RESERVED_STATEMENT_WORDS.contains(kw) && MsSqlDialect {}.is_table_factor_alias(explicit, kw, parser)
+    }
+    // Every other method the SQL Server dialect has of its own, as it answers it.
+    fn is_delimited_identifier_start(&self, ch: char) -> bool {
+        MsSqlDialect {}.is_delimited_identifier_start(ch)
+    }
+    fn is_identifier_start(&self, ch: char) -> bool {
+        MsSqlDialect {}.is_identifier_start(ch)
+    }
+    fn is_identifier_part(&self, ch: char) -> bool {
+        MsSqlDialect {}.is_identifier_part(ch)
+    }
+    fn identifier_quote_style(&self, identifier: &str) -> Option<char> {
+        MsSqlDialect {}.identifier_quote_style(identifier)
+    }
+    fn convert_type_before_value(&self) -> bool {
+        MsSqlDialect {}.convert_type_before_value()
+    }
+    fn supports_outer_join_operator(&self) -> bool {
+        MsSqlDialect {}.supports_outer_join_operator()
+    }
+    fn supports_dollar_as_money_prefix(&self) -> bool {
+        MsSqlDialect {}.supports_dollar_as_money_prefix()
+    }
+    fn supports_connect_by(&self) -> bool {
+        MsSqlDialect {}.supports_connect_by()
+    }
+    fn supports_eq_alias_assignment(&self) -> bool {
+        MsSqlDialect {}.supports_eq_alias_assignment()
+    }
+    fn supports_try_convert(&self) -> bool {
+        MsSqlDialect {}.supports_try_convert()
+    }
+    fn supports_boolean_literals(&self) -> bool {
+        MsSqlDialect {}.supports_boolean_literals()
+    }
+    fn supports_named_fn_args_with_colon_operator(&self) -> bool {
+        MsSqlDialect {}.supports_named_fn_args_with_colon_operator()
+    }
+    fn supports_named_fn_args_with_expr_name(&self) -> bool {
+        MsSqlDialect {}.supports_named_fn_args_with_expr_name()
+    }
+    fn supports_named_fn_args_with_rarrow_operator(&self) -> bool {
+        MsSqlDialect {}.supports_named_fn_args_with_rarrow_operator()
+    }
+    fn supports_start_transaction_modifier(&self) -> bool {
+        MsSqlDialect {}.supports_start_transaction_modifier()
+    }
+    fn supports_end_transaction_modifier(&self) -> bool {
+        MsSqlDialect {}.supports_end_transaction_modifier()
+    }
+    fn supports_set_stmt_without_operator(&self) -> bool {
+        MsSqlDialect {}.supports_set_stmt_without_operator()
+    }
+    fn supports_table_versioning(&self) -> bool {
+        MsSqlDialect {}.supports_table_versioning()
+    }
+    fn supports_nested_comments(&self) -> bool {
+        MsSqlDialect {}.supports_nested_comments()
+    }
+    fn supports_object_name_double_dot_notation(&self) -> bool {
+        MsSqlDialect {}.supports_object_name_double_dot_notation()
+    }
+    fn get_reserved_grantees_types(&self) -> &[GranteesType] {
+        MsSqlDialect {}.get_reserved_grantees_types()
+    }
+    fn parse_statement(&self, parser: &mut Parser) -> Option<Result<Statement, ParserError>> {
+        MsSqlDialect {}.parse_statement(parser)
+    }
+    fn get_next_precedence(&self, parser: &Parser) -> Option<Result<u8, ParserError>> {
+        MsSqlDialect {}.get_next_precedence(parser)
+    }
+}
+
 /// The batch's statements, as T-SQL takes them, with or without a `;` after each. sqlparser 0.63
 /// reads that at a batch's top level alone: it stops for a `;` after each statement of a block
 /// (`begin … end`, a `while`'s body), and reads a `return` with no value as returning the statement
 /// after it. T-SQL wants neither, so the engine puts a `;` after such a `return`, and where the
 /// parser stops for one after a statement it has read whole.
 pub fn parse(sql: &str) -> Option<Vec<Statement>> {
-    let dialect = MsSqlDialect {};
+    let dialect = TSql;
     let mut tokens = Tokenizer::new(&dialect, sql).tokenize_with_location().ok()?;
     end_bare_returns(&mut tokens);
     // Each try that stops for a `;` adds one, before a token that had none, so the tries are bounded.
@@ -292,6 +391,30 @@ mod tests {
         // A word that only looks like `return`, and a `case … end` in a block.
         assert!(parse("select [return] from t").is_some());
         assert_eq!(per_run_of("while @i < 3 begin set @i = case when @i > 1 then 3 else @i + 1 end select @i as i end"), 2);
+    }
+
+    #[test]
+    fn reads_a_statement_after_a_select_item_or_a_table_on_its_own_line() {
+        let kinds = |sql: &str| parse(sql).unwrap().iter().map(|s| s.to_string().split(' ').next().unwrap_or_default().to_string()).collect::<Vec<_>>();
+        assert_eq!(kinds("select @a = 1\nset @b = 2"), ["SELECT", "SET"]);
+        assert_eq!(kinds("select 1 as a\nbegin tran\ncommit"), ["SELECT", "BEGIN", "COMMIT"]);
+        assert_eq!(kinds("select * from t\nbegin transaction\nrollback"), ["SELECT", "BEGIN", "ROLLBACK"]);
+        // An UPDATE's SET on its own line is still its own.
+        assert_eq!(kinds("update t\nset a = 1"), ["UPDATE"]);
+        // Everything else reads as the SQL Server dialect reads it.
+        for sql in [
+            "select top (5) [id], t.[name] n from dbo.t with (nolock) where x = N'a' and y = $5 order by id offset 1 rows",
+            "if @f = 1 begin select 1 as a; end else select 2 as b",
+            "declare @t table (id int not null primary key); insert into @t (id) output inserted.id select id from t",
+            "merge t using s on t.id = s.id when matched then update set a = s.a output inserted.id;",
+            "exec dbo.p @a = 1, @b = N'x'",
+        ] {
+            let ours = format!("{:?}", parse(sql));
+            let mut options = ParserOptions::new();
+            options.require_semicolon_stmt_delimiter = false;
+            let theirs = format!("{:?}", Parser::new(&MsSqlDialect {}).with_options(options).try_with_sql(sql).unwrap().parse_statements().ok());
+            assert_eq!(ours, theirs, "{sql}");
+        }
     }
 
     fn read_prelude(statements: &[Statement]) -> String {
