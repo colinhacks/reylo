@@ -64,15 +64,31 @@ fn expand(sql: &LitStr, module: ItemMod) -> TokenStream2 {
         let stand_ins = reylo_codegen::stand_ins(&overrides);
         quote!(#error #stand_ins)
     });
+    let tracked = tracked();
     quote! {
         #(#attrs)*
         #vis mod #ident {
             #[allow(unused_imports)]
             use super::*;
+            #(const _: &str = ::core::include_str!(#tracked);)*
             #body
             #(#own)*
         }
     }
+}
+
+/// The files a statement's types depend on beside it: the project's `schema.sql` and lock, and its
+/// project file. Each is included in the expansion, which has cargo compile the crate again when
+/// one changes, so a statement is typed against the schema a `reylo db push` or `reylo migrate dev`
+/// just made rather than read from the last build. A `.env` file is left out, since an expansion
+/// shown in an editor would show what it holds.
+fn tracked() -> Vec<LitStr> {
+    let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else { return Vec::new() };
+    reylo_codegen::analysis::watched(std::path::Path::new(&manifest))
+        .into_iter()
+        .filter(|path| path.is_file() && !path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".env")))
+        .map(|path| LitStr::new(&path.to_string_lossy(), proc_macro2::Span::call_site()))
+        .collect()
 }
 
 /// What the module's own items stand in for, taken out of `own` where the generated item replaces

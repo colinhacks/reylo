@@ -18,10 +18,47 @@ reylo-engine-core.workspace = true
 reylo-engine-native = { workspace = true, features = ["postgres", "mysql", "sqlite"] }
 reylo-migrate.workspace = true
 # reylo generate: each .sql file's module, and the .sql files a path, a directory or a glob names.
-reylo-codegen = { workspace = true, features = ["generate"] }
+reylo-codegen = { workspace = true, features = ["generate", "postgres", "mysql", "sqlite"] }
 regex = "1"
+# In a Rust project that locks another version of the `reylo` crate, that version's release binary,
+# fetched over HTTPS once, checked against the release's SHA256SUMS and unpacked (src/matched.rs).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+flate2 = "1"
+tar = "0.4"
+sha2 = "0.10"
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
 serde_yaml = "0.9"
+
+# `cargo binstall reylo-cli` installs the release's binary for the platform rather than building the
+# crate: the tarballs the release attaches, named as npm's platform packages are.
+[package.metadata.binstall]
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+disabled-strategies = ["quick-install"]
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/reylo-darwin-arm64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/reylo-darwin-x64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/reylo-linux-x64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/reylo-linux-arm64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/reylo-linux-x64-musl.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/reylo-linux-arm64-musl.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/reylo-win32-x64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/reylo-win32-arm64.tar.gz"
