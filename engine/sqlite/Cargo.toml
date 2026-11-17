@@ -1,8 +1,23 @@
 [package]
 name = "reylo-engine-sqlite"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+repository.workspace = true
+homepage.workspace = true
+# SQLite is in the public domain, with its blessing in place of a license.
+license = "MIT AND blessing"
+# What `build.rs` compiles is no source of this repository: the amalgamation, with the hooks of
+# `csrc/patch-sqlite.py` applied, which the prepare step writes into `.sqlite/` and the package
+# carries, as libsqlite3-sys carries SQLite, so that a build from crates.io needs no step of ours.
+include = [
+  "Cargo.toml",
+  "build.rs",
+  "src/**/*.rs",
+  "csrc/**",
+  ".sqlite/sqlite3-patched.c",
+  ".sqlite/sqlite-amalgamation-3530400/sqlite3.h",
+  ".sqlite/sqlite-amalgamation-3530400/sqlite3ext.h",
+]
 description = "Reylo's analysis engine for SQLite: SQLite's own resolved tree, from an amalgamation patched with the engine's hooks, the function tables and the row-count proof, over the core's protocol."
 
 [lib]
@@ -10,12 +25,9 @@ name = "reylo_engine_sqlite"
 
 [build-dependencies]
 cc = "1"
-reylo-engine-build = { path = "../build-support" }
+reylo-engine-build.workspace = true
 
 [dependencies]
-reylo-engine-core = { path = "../core" }
+reylo-engine-core.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
-
-# The SQLite amalgamation is fetched into `.sqlite/` and patched with `csrc/patch-sqlite.py` by
-# `../build.sh --prepare`; `build.rs` compiles it with `csrc/reylo_sqlite.c`.

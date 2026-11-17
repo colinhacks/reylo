@@ -1,7 +1,86 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,17 +1,24 @@
+ [package]
+-name = "pg_query"
+-description = "PostgreSQL parser that uses the actual PostgreSQL server source to parse SQL queries and return the internal PostgreSQL parse tree."
++# pg_query 18.0.0 (pganalyze/pg_query.rs) with libpg_query 18.1.0, and the fixes Reylo's engine needs
++# that no release of theirs carries yet, published under a name of its own so that Reylo's crates
++# build from crates.io. `links` hands this crate's directory to the engine's build script, which
++# reads libpg_query's headers and node definitions from it (DEP_REYLO_PG_QUERY_ROOT).
++name = "reylo-pg-query"
++description = "The PostgreSQL 18 parser of pg_query 18.0.0 and libpg_query 18.1.0, with the fixes Reylo's analysis engine needs that no pg_query release carries yet."
+ version = "18.0.0"
+ edition = "2021"
+-documentation = "https://docs.rs/pg_query"
+-license = "MIT"
+-repository = "https://github.com/pganalyze/pg_query.rs"
++license = "MIT AND BSD-3-Clause AND PostgreSQL"
++repository = "https://github.com/colinhacks/reylo"
++links = "reylo_pg_query"
++autotests = false
++autobenches = false
++autoexamples = false
+ include = [
+     # pg_query.rs
+-    "README.md", "build.rs", "src/**/*.rs",
++    "README.md", "LICENSE", "build.rs", "extern_block.rs", "src/**/*.rs",
+     # libpg_query
+     "Makefile", "pg_query.h",
+-    "libpg_query/*.h",
++    "libpg_query/*.h", "libpg_query/LICENSE",
+     "libpg_query/{src,vendor}/**/*.{c,h}",
+     "libpg_query/vendor/**/*.inc",
+     "libpg_query/protobuf/pg_query.proto",
+@@ -30,22 +37,13 @@
+ 
+ [build-dependencies]
+ bindgen = "0.66.1"
+-clippy = { version = "0.0.302", optional = true }
+ prost-build = "0.13.5"
+ fs_extra = "1.2.0"
+ cc = "1.0.83"
+ glob = "0.3.1"
+ 
+-[dev-dependencies]
+-brunch = "0.11"
+-easy-parallel = "3.2.0"
+-pretty_assertions = "1.4.0"
+-regex = "1.6.0"
+-
+-[[bench]]
+-name = "parse_vs_summary"
+-harness = false
+-
+-[[bench]]
+-name = "parse_very_large_query"
+-harness = false
++# A member of Reylo's workspace, as every path dependency under it is, so its library alone: upstream's
++# tests and benchmarks, their dependencies and the `clippy` plugin stay upstream's.
++[lib]
++test = false
++doctest = false
 diff -ruN a/build.rs b/build.rs
 --- a/build.rs
 +++ b/build.rs
-@@ -81,6 +81,17 @@
+@@ -1,6 +1,3 @@
+-#![cfg_attr(feature = "clippy", feature(plugin))]
+-#![cfg_attr(feature = "clippy", plugin(clippy))]
+-
+ use fs_extra::dir::CopyOptions;
+ use glob::glob;
+ use std::collections::hash_map::DefaultHasher;
+@@ -17,6 +14,8 @@
+     let target = env::var("TARGET").unwrap();
+ 
+     println!("cargo:rerun-if-changed=libpg_query");
++    // This crate's directory, for a dependent's build script that reads libpg_query's sources.
++    println!("cargo:root={}", env::var("CARGO_MANIFEST_DIR")?);
+     println!("cargo:rustc-link-search=native={}", out_dir.display());
+     println!("cargo:rustc-link-lib=static=pg_query");
+ 
+@@ -81,12 +80,26 @@
          .map_err(|e| format!("Unable to generate bindings: {e}"))?
          .write_to_file(out_dir.join("bindings.rs"))?;
  
@@ -19,6 +98,16 @@ diff -ruN a/build.rs b/build.rs
      // Only generate protobuf bindings if protoc is available
      let protoc_exists = Command::new("protoc").arg("--version").status().is_ok();
      // If the package is being built by docs.rs, we don't want to regenerate the protobuf bindings
+     let is_built_by_docs_rs = env::var("DOCS_RS").is_ok();
+ 
+-    if !is_built_by_docs_rs && (env::var("REGENERATE_PROTOBUF").is_ok() || protoc_exists) {
++    // Only when asked: `src/protobuf.rs` is what the engine's build script reads the tree's types
++    // from, and a build from crates.io must not write into the package it builds.
++    let _ = protoc_exists;
++    if !is_built_by_docs_rs && env::var("REGENERATE_PROTOBUF").is_ok() {
+         println!("generating protobuf bindings");
+         let src_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("src");
+         let proto_tmp_dir = out_dir.join("proto_gen");
 diff -ruN a/extern_block.rs b/extern_block.rs
 --- a/extern_block.rs
 +++ b/extern_block.rs

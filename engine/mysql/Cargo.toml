@@ -1,18 +1,20 @@
 [package]
 name = "reylo-engine-mysql"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Reylo's analysis engine for MySQL: the server's prepare metadata and a sqlparser tree, the row-count proof and the nested JSON shapes, over the core's protocol."
 
 [lib]
 name = "reylo_engine_mysql"
 
 [build-dependencies]
-reylo-engine-build = { path = "../build-support" }
+reylo-engine-build.workspace = true
 
 [dependencies]
-reylo-engine-core = { path = "../core" }
-sqlparser = { path = "vendor/sqlparser", default-features = false, features = ["std"] }
+reylo-engine-core.workspace = true
+sqlparser = { workspace = true, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }

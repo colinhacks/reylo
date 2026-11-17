@@ -77,7 +77,7 @@ export function engine(dialect: Dialect): Promise<Engine> {
       };
       if (ping.status !== "ok") throw refuse(`the engine ${binary} does not answer: ${answer.message ?? answer.status}`);
       if (ping.version !== REYLO_VERSION) {
-        throw refuse(`reylo ${REYLO_VERSION} runs with its engine at ${REYLO_VERSION}, and ${binary} is ${ping.version}: install reylo again, point REYLO_ENGINE_PATH at the engine of reylo ${REYLO_VERSION}, or in a checkout of reylo's repository build it with cargo build --release -p reylo`);
+        throw refuse(`reylo ${REYLO_VERSION} runs with its engine at ${REYLO_VERSION}, and ${binary} is ${ping.version}: install reylo again, point REYLO_ENGINE_PATH at the engine of reylo ${REYLO_VERSION}, or in a checkout of reylo's repository build it with cargo build --release -p reylo-cli`);
       }
       if (ping.database !== dialect) throw refuse(`${binary} serves ${ping.database ?? "no one database"}'s engine when asked for ${dialect}'s`);
       return new Engine(binary, dialect, ping.fingerprint, core);

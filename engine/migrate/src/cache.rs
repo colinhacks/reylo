@@ -161,11 +161,14 @@ fn code_digest(source: &str) -> String {
 
 /// This build's code, as far as it decides what a replay ends in or what the catalog reads: the
 /// version, and the sources that make shadows, run their steps, connect to their servers and read
-/// their catalogs. A development build edited between two runs keys its caches anew.
+/// their catalogs, the last two the native engine's (its `SOURCE_HASH`). Each is this crate's own,
+/// so that a build from its package keys its caches as one in the repository does. A development
+/// build edited between two runs keys its caches anew.
 static CODE: LazyLock<Hash> = LazyLock::new(|| {
     let mut h = Sha256::new();
     for source in [
-        include_str!("../../../Cargo.toml"),
+        env!("CARGO_PKG_VERSION"),
+        reylo_engine_native::SOURCE_HASH,
         include_str!("../Cargo.toml"),
         include_str!("lib.rs"),
         include_str!("cache.rs"),
@@ -174,8 +177,6 @@ static CODE: LazyLock<Hash> = LazyLock::new(|| {
         include_str!("db.rs"),
         include_str!("sql.rs"),
         include_str!("catalog.rs"),
-        include_str!("../../native/src/postgres.rs"),
-        include_str!("../../native/src/mysql.rs"),
     ] {
         h.part(source.as_bytes());
     }

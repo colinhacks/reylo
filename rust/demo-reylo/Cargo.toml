@@ -16,7 +16,7 @@ path = "src/main.rs"
 required-features = ["live"]
 
 [dependencies]
-reylo = { package = "reylo-sqlx", path = "../reylo", features = ["chrono", "uuid", "rust_decimal"] }
+reylo = { workspace = true, features = ["postgres", "chrono", "uuid", "rust_decimal"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

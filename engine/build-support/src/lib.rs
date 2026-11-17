@@ -5,9 +5,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// FNV-1a over `Cargo.toml` and the `entries` of the crate at `root`, a file or a directory each,
-/// file by file in name order: the same on every platform and toolchain, which a std hasher does
-/// not promise. A carriage return is skipped, so a checkout with CRLF line ends hashes the same.
+/// FNV-1a over `Cargo.toml` (as written, which a package keeps as `Cargo.toml.orig`) and the
+/// `entries` of the crate at `root`, a file or a directory each, file by file in name order: the
+/// same on every platform and toolchain, which a std hasher does not promise. A carriage return is
+/// skipped, so a checkout with CRLF line ends hashes the same.
 pub fn source_hash(root: &Path, entries: &[&str]) -> u64 {
     let mut files: Vec<PathBuf> = vec![root.join("Cargo.toml")];
     for entry in entries {
@@ -31,10 +32,16 @@ pub fn source_hash(root: &Path, entries: &[&str]) -> u64 {
             hash = hash.wrapping_mul(0x100000001b3);
         }
     };
+    // `cargo package` writes a normalized `Cargo.toml` and keeps the manifest as written in
+    // `Cargo.toml.orig`: a crate built from crates.io hashes that one, so that it has the hash of
+    // the same sources built here.
+    let manifest = root.join("Cargo.toml");
+    let written = root.join("Cargo.toml.orig");
     for file in &files {
         eat(file.strip_prefix(root).unwrap_or(file).to_string_lossy().replace('\\', "/").as_bytes());
         eat(&[0]);
-        eat(&fs::read(file).unwrap_or_default());
+        let read = if *file == manifest && written.is_file() { &written } else { file };
+        eat(&fs::read(read).unwrap_or_default());
         eat(&[0]);
     }
     hash

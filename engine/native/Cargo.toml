@@ -1,8 +1,10 @@
 [package]
 name = "reylo-engine-native"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Reylo's engine as a native program per database: JSON requests on standard input, one answer per line on standard output. It answers what the WebAssembly engine answers, and opens its own connection to the database to analyze a statement to its end."
 
 [features]
@@ -26,9 +28,12 @@ name = "reylo-sqlite"
 path = "src/bin/reylo-sqlite.rs"
 required-features = ["sqlite"]
 
+[build-dependencies]
+reylo-engine-build.workspace = true
+
 [dependencies]
-reylo-engine = { path = "../facade" }
-reylo-engine-core = { path = "../core" }
+reylo-engine.workspace = true
+reylo-engine-core.workspace = true
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 tokio = { version = "1", features = ["rt", "io-std", "io-util", "net", "time"] }
 tokio-postgres = { version = "0.7", optional = true }

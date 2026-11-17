@@ -1,16 +1,18 @@
 [package]
 name = "reylo-migrate"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Reylo's migrations: hand-written SQL migrations checked against the declared schema in shadow databases before they run: on Postgres, MySQL and SQLite over the connections of the native engine."
 
 [dependencies]
-reylo-engine-native = { path = "../native", default-features = false, features = ["postgres", "mysql", "sqlite"] }
-# Postgres 18's parser, patched in by the workspace, which reads `schema.sql` for the text each
+reylo-engine-native = { workspace = true, features = ["postgres", "mysql", "sqlite"] }
+# Postgres 18's parser (`reylo-pg-query`, the workspace's), which reads `schema.sql` for the text each
 # object was declared with; prost's recursion limit lifted, as the Postgres engine lifts it, so a
 # deeply nested declaration decodes.
-pg_query = "18.0"
+pg_query.workspace = true
 prost = { version = "0.13", features = ["no-recursion-limit"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
