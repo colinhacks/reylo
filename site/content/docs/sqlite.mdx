@@ -662,7 +662,7 @@ const userById = db.transaction((id: number) =>
 const sameUser = userById(1);
 ```
 
-An integer past 2^53 comes back exact. Bun, through `bun:sqlite` and `Bun.sql` alike, keeps only the low 64 bits of a `bigint` outside SQLite's 64-bit range, so Reylo rejects such a parameter rather than store another number.
+An integer past 2^53 comes back exact. Without `safeIntegers`, Bun keeps only the low 64 bits of a `bigint` outside SQLite's 64-bit range, in `bun:sqlite` and `Bun.sql` alike, so Reylo rejects such a parameter on every driver rather than store another number.
 
 ### libSQL
 

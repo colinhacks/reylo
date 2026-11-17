@@ -515,8 +515,9 @@ test("coerce: a value a driver decoded, given its kind; an integer a number cann
   assert.deepEqual(coerce("int8[]", ["1", 2n], "c"), [1n, 2n]);
   assert.equal(coerce("decimal", 1.5, "c"), "1.5");
   assert.equal(coerce("date", new Date("2026-10-20T00:00:00Z"), "c"), "2026-10-20");
-  // Bun.sql decodes a date or timestamp no Date holds (past 275760 AD, a MySQL zero date, and before
-  // 1.4.4 one before 1 AD) as an Invalid Date (its infinities are ±Infinity): refused, never read as infinity.
+  // Bun.sql decodes a date or timestamp it cannot read into a Date (a MySQL date with a zero month or
+  // day, one after 13 September 275760, and before 1.4.4 one before 1 AD) as an Invalid Date (its
+  // infinities are ±Infinity): refused, never read as infinity.
   for (const kind of ["date", "timestamp", "timestamptz", "timestamp|timestamptz"]) {
     assert.throws(() => coerce(kind, new Date(Number.NaN), "born"), (e: Error) => e instanceof DecodeError && /^Column "born": the driver returned an Invalid Date/.test(e.message), kind);
   }

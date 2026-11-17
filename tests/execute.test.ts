@@ -864,11 +864,11 @@ test("sqlite: Bun.sql's SQLite adapter, which has unsafe() and no prepare()", as
   assert.deepEqual(await execute({ unsafe: async () => [row], commitDistributed: async () => {} }, lite, { id: 1, name: "ada" }), [row]);
 });
 
-test("sqlite: a BigInt outside 64 bits, which bun:sqlite and Bun.sql wrap and sqlite3 binds as NULL, is refused before any client is called; Turso's engine's 2^63 too", async () => {
+test("sqlite: a BigInt outside 64 bits, which bun:sqlite and Bun.sql wrap and sqlite3 binds as NULL, is refused before any client is called; Turso's engine's 2^63 too, and only on Turso", async () => {
   const calls: unknown[][] = [];
   const bun = { unsafe: async (_: string, values: unknown[]) => (calls.push(values), [row]), commitDistributed: async () => {} };
   const db = new DatabaseSync(":memory:");
-  const outside = /^TypeError: Parameter "id" is 9223372036854775808, outside the 64-bit integers SQLite stores \(-2\^63 to 2\^63 - 1\)/;
+  const outside = /^TypeError: Parameter "id" is 9223372036854775808, outside the 64-bit integers SQLite holds \(-2\^63 to 2\^63 - 1\), so no SQLite driver binds it exactly\.$/;
   await assert.rejects(Promise.resolve().then(() => execute(bun, lite, { id: 2n ** 63n, name: "ada" })), outside);
   await assert.rejects(Promise.resolve().then(() => execute(bun, lite, { id: -(2n ** 63n) - 1n, name: "ada" })), /is -9223372036854775809, outside the 64-bit integers/);
   assert.throws(() => execute(db, lite, { id: 2n ** 63n, name: "ada" }), outside);
@@ -877,13 +877,28 @@ test("sqlite: a BigInt outside 64 bits, which bun:sqlite and Bun.sql wrap and sq
   await execute(bun, lite, { id: 2n ** 63n - 1n, name: "ada" });
   await execute(bun, lite, { id: -(2n ** 63n), name: "ada" });
   assert.deepEqual(calls.map((v) => v[0]), [2n ** 63n - 1n, -(2n ** 63n)]);
-  // Turso's engine binds the whole number 2^63 as 2^63 - 1; any other driver binds the REAL.
-  const compat = { prepare: () => ({ reader: true, safeIntegers: () => {}, all: () => [row], close: () => {} }), batch: () => [], exec: () => {}, maxWriteReplicationIndex: () => {} };
+  // Turso's engine binds the whole number 2^63 as 2^63 - 1, through its compat Database (with
+  // batch() from 0.7, without before) and its promise API alike; any other driver binds the REAL,
+  // the libsql package's Database among them, which has maxWriteReplicationIndex() as Turso's has,
+  // and sync(), which no Database of Turso's has.
+  const tursoRefusal = /^TypeError: Parameter "id" is 2\^63 \(9223372036854775808\), which Turso's engine binds as 2\^63 - 1 \(9223372036854775807\), so it would store another number\.$/;
+  const statement = () => ({ reader: true, safeIntegers: () => {}, all: (...values: unknown[]) => (calls.push(values), [row]), close: () => {} });
+  const compat = { prepare: statement, batch: () => [], exec: () => {}, maxWriteReplicationIndex: () => {} };
+  const compat06 = { prepare: statement, exec: () => {}, maxWriteReplicationIndex: () => {} };
+  const libsql = { prepare: statement, exec: () => {}, maxWriteReplicationIndex: () => {}, sync: () => {} };
+  const turso = { prepare: () => ({ ...statement(), all: async (...values: unknown[]) => (calls.push(values), [row]) }), connect: async () => {}, maxWriteReplicationIndex: () => {}, exec: async () => {} };
   const q = defineQuery<{ id: number; name: string }, unknown, "many", "sqlite">({ dialect: "sqlite", sql: lite.sql, params: lite.params });
-  assert.throws(() => q.runSync(compat, { id: 2 ** 63, name: "ada" }), /Parameter "id" is 9223372036854776000, which Turso's engine binds as 2\^63 - 1/);
+  assert.throws(() => q.runSync(compat, { id: 2 ** 63, name: "ada" }), tursoRefusal);
+  assert.throws(() => q.runSync(compat06, { id: 2 ** 63, name: "ada" }), tursoRefusal);
+  await assert.rejects(Promise.resolve().then(() => q.run(turso, { id: 2 ** 63, name: "ada" })), tursoRefusal);
   assert.deepEqual(q.runSync(compat, { id: 2 ** 62, name: "ada" }), [row]);
+  assert.deepEqual(q.runSync(libsql, { id: 2 ** 63, name: "ada" }), [row]);
+  assert.equal(calls.at(-1)![0], 2 ** 63);
   await execute(bun, lite, { id: 2 ** 63, name: "ada" });
   assert.equal(calls.at(-1)![0], 2 ** 63);
+  // A Standard Query's encode binds as .run() does, so it refuses the same BigInt.
+  assert.throws(() => q["~standard"].query.encode({ id: 2n ** 64n as never, name: "ada" }), /is 18446744073709551616, outside the 64-bit integers SQLite holds/);
+  assert.deepEqual(q["~standard"].query.encode({ id: 2n ** 63n - 1n as never, name: "ada" }), [2n ** 63n - 1n, "ada", 2n ** 63n - 1n]);
 });
 
 test("the driver's own error comes through unchanged", async () => {
