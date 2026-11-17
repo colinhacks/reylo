@@ -81,7 +81,9 @@ api() {
 
 for crate in "${crates[@]}"; do
   crate_version=$(awk -v c="$crate" '$1 == c { print $2 }' <<<"$versions")
-  if [ "$(published "$crate" "$crate_version")" = yes ]; then
+  # An assignment of its own, so that a probe that gave up stops the run here.
+  state=$(published "$crate" "$crate_version")
+  if [ "$state" = yes ]; then
     echo "$crate $crate_version is on crates.io already"
   else
     echo "publishing $crate $crate_version"
