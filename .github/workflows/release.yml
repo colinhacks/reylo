@@ -340,9 +340,10 @@ jobs:
           esac
 
 
-  # The Rust crates on crates.io, from the commit `finish` tagged, once npm serves the release and the tag exists. crates.io's trusted publishers name this repository and this file, so the run gets a token that lasts 30 minutes and none is stored anywhere. crates.io gives a crate a trusted publisher only once it exists, so a crate's first version is published from a maintainer's machine (`.github/scripts/crates-publish.sh --trust`); until `reylo` is on crates.io, this job publishes nothing and says so.
+  # The Rust crates on crates.io, from the release's tag, once npm serves the release and `finish` has made the tag. crates.io's trusted publishers name this repository, this file and the `crates` environment, which only `main` can deploy to, so a workflow of this name on another branch gets no token; the run gets one that lasts 30 minutes, and none is stored anywhere. crates.io gives a crate a trusted publisher only once it exists, so a crate's first version is published from a maintainer's machine (`.github/scripts/crates-publish.sh --trust`); until `reylo` is on crates.io, this job publishes nothing and says so.
   crates:
     needs: [stage, finish]
+    environment: crates
     runs-on: ubuntu-latest
     name: Publish the Rust crates
     # 13 crates, each waiting for crates.io's index to list the one before it, and its rate if it refuses one
@@ -350,17 +351,26 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # Only crates.io's 404 means no crate; any other answer is tried again, and fails the job if it lasts, rather than skip the crates.
       - name: Whether crates.io holds the crates yet
         id: listed
         run: |
-          if curl -sf -A "reylo-release (github.com/reylosql/reylo)" -o /dev/null https://crates.io/api/v1/crates/reylo; then
-            echo "yes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::reylo is not on crates.io yet, so this release publishes no crate: its first version is published with .github/scripts/crates-publish.sh --trust from a maintainer's machine"
-          fi
+          for _ in 1 2 3 4 5; do
+            status=$(curl -s -A "reylo-release (github.com/reylosql/reylo)" -o /dev/null -w '%{http_code}' https://crates.io/api/v1/crates/reylo || true)
+            case "$status" in
+              200) echo "yes=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              404) echo "::notice::reylo is not on crates.io yet, so this release publishes no crate: its first version is published with .github/scripts/crates-publish.sh --trust from a maintainer's machine"; exit 0 ;;
+            esac
+            echo "crates.io answered $status; trying again in 30 seconds"
+            sleep 30
+          done
+          echo "::error::crates.io did not say whether reylo exists; re-run this job"
+          exit 1
+      # the tag's sources, which npm's packages were built from, on any dispatch: one that only rewrites the notes runs on a newer main
       - if: steps.listed.outputs.yes == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/v${{ needs.stage.outputs.version }}
           persist-credentials: false
       # the patched Postgres parser and the SQLite amalgamation, which the crates carry and no commit holds
       - if: steps.listed.outputs.yes == 'true'
