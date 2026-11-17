@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { Session } from "../src/analyze.ts";
-import { defineQuery, type Query } from "../src/index.ts";
+import { defineQuery, defineSqlserverQuery, type Query } from "../src/index.ts";
 import { sqlModule } from "../src/loader.ts";
 import { rowOf, rowSource, type RowBuilder } from "../src/row.ts";
 import { columnKind, kindType, ParameterError } from "../src/values.ts";
@@ -70,6 +70,12 @@ test("postgres: decode gives each value its kind, and the output its cardinality
   assert.throws(() => one["~standard"].query.decode([["1"], ["2"]]), /Expected at most one row, got 2/);
   const none = defineQuery<{}, never, "none", "postgres">({ dialect: "postgres", sql: "delete from users", params: [], columns: [], cardinality: "none" });
   assert.equal(none["~standard"].query.decode([]), undefined);
+});
+
+test("sqlserver: decode parses a document the statement built, as .run() does", () => {
+  const q = defineSqlserverQuery<{}, { doc: unknown }, "one">({ sql: "select (select 1 as id for json path) as doc", params: [], columns: [["doc", "json"]], cardinality: "one" });
+  assert.deepEqual(q["~standard"].query.decode([['[{"id":1}]']]), { doc: [{ id: 1 }] });
+  assert.deepEqual(q["~standard"].query.decode([[null]]), { doc: null });
 });
 
 test("a row has the columns' names: one named __proto__ is an own property, and of two with one name the last value wins at the first's place", () => {

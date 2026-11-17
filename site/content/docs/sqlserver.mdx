@@ -266,7 +266,8 @@ from users u
 - **Over no rows the subquery is NULL.** Wrap it in `isnull(…, '[]')` for an empty array.
 - **A name with dots**, as `o.total as [amount.value]`, nests its last part in objects named by the others.
 - **One object** instead of an array comes from `without_array_wrapper`, where the subquery returns at most one row, as with `top 1`, and `root('name')` wraps the whole in an object of that key.
-- **Inside a document**, a nested `for json` subquery, `json_query(…)` of one, and SQL Server 2022's `json_object('id': o.id, …)` and `json_array(…)` are written as the JSON they build. A decimal is a JSON number, a `bit` is `true` or `false`, and a date, a time and binary data are strings.
+- **Inside a document**, a nested `for json` subquery, `json_query(…)` of one, and SQL Server 2022's `json_object('id': o.id, …)` and `json_array(…)` are written as the JSON they build. A `without_array_wrapper` subquery there is written as a string unless `json_query(…)` wraps it, and so is any other text. A decimal is a JSON number, a `bit` is `true` or `false`, and a date, a time and binary data are strings.
+- **A path in `json_query`**, as `json_query(doc, '$.child')`, picks a part of the document, which may be missing: it is any JSON, or NULL.
 - **Joined tables under `for json auto`** nest by rules of their own, so such a document is any JSON; over one table it is typed as `path` is.
 
 ## Database errors

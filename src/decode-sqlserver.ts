@@ -374,6 +374,8 @@ function sqlserverDecoder(name: string, kind: Kind): (v: unknown) => unknown {
     if (v === null || v === undefined) return null;
     if (kind === "int8" && (typeof v === "string" || typeof v === "number")) return BigInt(v);
     if (kind === "decimal" && typeof v !== "string") throw new DecodeError(`Column "${name}" holds ${describe(v)}, and a SQL Server decimal's raw value is its exact text, which tedious gives with options.decimalAsString.`);
+    // A document, as .run() reads it: the text the server sends, parsed.
+    if (kind === "json" && typeof v === "string") return JSON.parse(v);
     return v;
   };
 }

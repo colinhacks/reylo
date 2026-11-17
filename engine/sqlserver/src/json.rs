@@ -31,8 +31,9 @@ const MAX_PROBES: usize = 8;
 /// A JSON value a statement builds.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Json {
-    /// An object of these keys; `nullable` where the whole may be SQL NULL.
-    Object { keys: Vec<Key>, nullable: bool },
+    /// An object of these keys; `nullable` where the whole may be SQL NULL. `dotted` for one a
+    /// dotted name makes, which is left out where every key of it is.
+    Object { keys: Vec<Key>, nullable: bool, dotted: bool },
     /// An array of these items.
     Array { items: Box<Json>, nullable: bool },
     /// `json_array(…)`: these values, in order, a NULL one left out where `skips_nulls`.
@@ -41,6 +42,8 @@ pub enum Json {
     Value { probe: usize, index: usize },
     /// JSON nothing types, as `json_query` of a text column.
     Any { nullable: bool },
+    /// JSON written as a string inside a document, as a `without_array_wrapper` subquery is.
+    Text { nullable: bool },
 }
 
 /// One key of an object.
@@ -50,6 +53,8 @@ pub struct Key {
     pub value: Json,
     /// A NULL value leaves the key out rather than writing `null`.
     pub absent_on_null: bool,
+    /// The key may be absent whatever its value, as from the empty object `isnull(…, '{}')` gives.
+    pub absent: bool,
 }
 
 /// A statement's JSON: per result column, its shape where it builds one, and the probes that
@@ -177,12 +182,23 @@ impl Builder {
         Json::Value { probe: at, index: self.probes[at].1.len() - 1 }
     }
 
-    /// The JSON `e` builds, read at `level`; at the top, `None` where it builds none. Inside a
-    /// document, every expression is written as a value.
+    /// The JSON `e` builds, read at `level`; at the top, `None` where it builds none, or none a
+    /// parse could read. Inside a document (`top` false), SQL Server writes as JSON only a `for
+    /// json` subquery, `json_query(…)`, `json_object` and `json_array`, and every other expression
+    /// as a value; a `without_array_wrapper` subquery's result is text there, written as a string.
     fn shape(&mut self, e: &Expr, level: &Level, probe: &mut Option<usize>, top: bool) -> Option<Json> {
         match e {
             Expr::Nested(inner) => self.shape(inner, level, probe, top),
-            Expr::Subquery(q) if is_for_json(q) => Some(self.for_json(q, level)),
+            Expr::Subquery(q) if is_for_json(q) => {
+                if !top && unwrapped(q) {
+                    return Some(Json::Text { nullable: true });
+                }
+                match self.for_json(q, level) {
+                    Some(s) => Some(s),
+                    None if top => None,
+                    None => Some(Json::Text { nullable: true }),
+                }
+            }
             Expr::Function(f) => {
                 let name = f.name.to_string().to_ascii_lowercase();
                 let args: Vec<&FunctionArg> = match &f.args {
@@ -205,34 +221,38 @@ impl Builder {
                             let FunctionArg::ExprNamed { name, arg: FunctionArgExpr::Expr(v), operator: FunctionArgOperator::Colon } = a else { return if top { None } else { Some(Json::Any { nullable: false }) } };
                             let Some(key) = text(name) else { return if top { None } else { Some(Json::Any { nullable: false }) } };
                             let value = self.embedded(v, level, probe);
-                            keys.push(Key { name: key, value, absent_on_null: absent });
+                            keys.push(Key { name: key, value, absent_on_null: absent, absent: false });
                         }
-                        Some(Json::Object { keys, nullable: false })
+                        Some(Json::Object { keys, nullable: false, dotted: false })
                     }
                     "json_array" => {
                         let skips_nulls = !clauses.iter().any(|c| matches!(c, FunctionArgumentClause::JsonNullClause(JsonNullClause::NullOnNull)));
                         let items: Option<Vec<Json>> = args.iter().map(|a| arg(a).map(|v| self.embedded(&v, level, probe))).collect();
                         Some(Json::Tuple { items: items?, skips_nulls })
                     }
+                    // `json_query(x)` is the document `x` holds; a path picks part of it, which may be
+                    // missing or no object or array, so NULL.
                     "json_query" => {
                         let inner = args.first().and_then(|a| arg(a))?;
+                        let whole = args.len() == 1 || args.get(1).and_then(|a| arg(a)).and_then(|p| text(&p)).is_some_and(|p| p.trim() == "$");
                         match self.shape(&inner, level, probe, true) {
-                            Some(s) => Some(s),
-                            None => Some(Json::Any { nullable: true }),
+                            Some(s) if whole => Some(s),
+                            _ => Some(Json::Any { nullable: true }),
                         }
                     }
-                    // `isnull(subquery, '[]')`: the empty document in place of the NULL over no rows.
-                    "isnull" | "coalesce" if args.len() == 2 => {
+                    // `isnull(subquery, '[]')`: the empty document in place of the NULL over no
+                    // rows. The empty object has none of the keys. Inside a document the result is
+                    // text, written as a value.
+                    "isnull" | "coalesce" if args.len() == 2 && top => {
                         let (first, empty) = (arg(args[0])?, arg(args[1])?);
                         let mut s = self.shape(&first, level, probe, true)?;
-                        if matches!((&s, text(&empty).as_deref()), (Json::Array { .. }, Some("[]")) | (Json::Object { .. }, Some("{}"))) {
-                            set_nullable(&mut s, false);
-                            Some(s)
-                        } else if top {
-                            None
-                        } else {
-                            Some(Json::Any { nullable: true })
+                        match (&mut s, text(&empty).as_deref()) {
+                            (Json::Array { .. }, Some("[]")) => {}
+                            (Json::Object { keys, .. }, Some("{}")) => keys.iter_mut().for_each(|k| k.absent = true),
+                            _ => return None,
                         }
+                        set_nullable(&mut s, false);
+                        Some(s)
                     }
                     _ if top => None,
                     _ => Some(self.value(e, level, probe)),
@@ -248,10 +268,14 @@ impl Builder {
         self.shape(e, level, probe, false).unwrap_or_else(|| self.value(e, level, probe))
     }
 
-    /// A scalar subquery that ends in `for json`.
-    fn for_json(&mut self, q: &Query, around: &Level) -> Json {
-        let Some(ForClause::Json { for_json, root, include_null_values, without_array_wrapper }) = &q.for_clause else { return Json::Any { nullable: true } };
-        let SetExpr::Select(select) = q.body.as_ref() else { return Json::Any { nullable: true } };
+    /// A scalar subquery that ends in `for json`; `None` where what it writes may be no JSON
+    /// document, as `without_array_wrapper` over several rows writes objects one after another.
+    fn for_json(&mut self, q: &Query, around: &Level) -> Option<Json> {
+        let Some(ForClause::Json { for_json, root, include_null_values, without_array_wrapper }) = &q.for_clause else { return Some(Json::Any { nullable: true }) };
+        if *without_array_wrapper && !one_row(q) {
+            return None;
+        }
+        let SetExpr::Select(select) = q.body.as_ref() else { return Some(Json::Any { nullable: true }) };
         let mut outer = around.outer.clone();
         outer.push((around.from.clone(), around.names.clone()));
         let level = level(&select.from, &select.group_by, outer);
@@ -265,10 +289,10 @@ impl Builder {
                 _ => None,
             })
             .collect();
-        let Some(names) = names else { return Json::Any { nullable: true } };
+        let Some(names) = names else { return Some(Json::Any { nullable: true }) };
         // AUTO nests each joined table's rows in an array of its own, and writes a dotted name as it is.
         if matches!(for_json, ForJson::Auto) && (select.from.len() != 1 || !select.from[0].joins.is_empty() || names.iter().any(|(path, _)| path.len() > 1)) {
-            return Json::Any { nullable: true };
+            return Some(Json::Any { nullable: true });
         }
         let mut probe = None;
         let mut keys: Vec<Key> = Vec::new();
@@ -276,19 +300,12 @@ impl Builder {
             let value = self.embedded(e, &level, &mut probe);
             insert(&mut keys, &path, value, !*include_null_values);
         }
-        let row = Json::Object { keys, nullable: false };
-        let whole = if *without_array_wrapper {
-            if !one_row(q) {
-                return Json::Any { nullable: true };
-            }
-            set_nullable_owned(row, true)
-        } else {
-            Json::Array { items: Box::new(row), nullable: true }
-        };
-        match root {
-            Some(r) => Json::Object { keys: vec![Key { name: r.clone(), value: whole, absent_on_null: false }], nullable: true },
+        let row = Json::Object { keys, nullable: false, dotted: false };
+        let whole = if *without_array_wrapper { set_nullable_owned(row, true) } else { Json::Array { items: Box::new(row), nullable: true } };
+        Some(match root {
+            Some(r) => Json::Object { keys: vec![Key { name: r.clone(), value: whole, absent_on_null: false, absent: false }], nullable: true, dotted: false },
             None => whole,
-        }
+        })
     }
 }
 
@@ -296,11 +313,11 @@ impl Builder {
 fn insert(keys: &mut Vec<Key>, path: &[String], value: Json, absent_on_null: bool) {
     let Some((first, rest)) = path.split_first() else { return };
     if rest.is_empty() {
-        keys.push(Key { name: first.clone(), value, absent_on_null });
+        keys.push(Key { name: first.clone(), value, absent_on_null, absent: false });
         return;
     }
-    if !keys.iter().any(|k| &k.name == first && matches!(k.value, Json::Object { .. })) {
-        keys.push(Key { name: first.clone(), value: Json::Object { keys: Vec::new(), nullable: false }, absent_on_null });
+    if !keys.iter().any(|k| &k.name == first && matches!(k.value, Json::Object { dotted: true, .. })) {
+        keys.push(Key { name: first.clone(), value: Json::Object { keys: Vec::new(), nullable: false, dotted: true }, absent_on_null, absent: false });
     }
     if let Some(Key { value: Json::Object { keys: inner, .. }, .. }) = keys.iter_mut().rev().find(|k| &k.name == first) {
         insert(inner, rest, value, absent_on_null);
@@ -309,6 +326,12 @@ fn insert(keys: &mut Vec<Key>, path: &[String], value: Json, absent_on_null: boo
 
 fn is_for_json(q: &Query) -> bool {
     matches!(q.for_clause, Some(ForClause::Json { .. }))
+}
+
+/// Whether a `for json` subquery writes its rows without the array around them, which SQL Server
+/// does not hold to be JSON.
+fn unwrapped(q: &Query) -> bool {
+    matches!(q.for_clause, Some(ForClause::Json { without_array_wrapper: true, .. }))
 }
 
 /// Whether a subquery returns at most one row on its face: `top 1`, an aggregate with no
@@ -331,7 +354,7 @@ fn text(e: &Expr) -> Option<String> {
 
 fn set_nullable(s: &mut Json, to: bool) {
     match s {
-        Json::Object { nullable, .. } | Json::Array { nullable, .. } | Json::Any { nullable } => *nullable = to,
+        Json::Object { nullable, .. } | Json::Array { nullable, .. } | Json::Any { nullable } | Json::Text { nullable } => *nullable = to,
         _ => {}
     }
 }
@@ -345,7 +368,7 @@ impl Json {
     /// Whether the whole may be SQL NULL.
     pub fn nullable(&self) -> bool {
         match self {
-            Json::Object { nullable, .. } | Json::Array { nullable, .. } | Json::Any { nullable } => *nullable,
+            Json::Object { nullable, .. } | Json::Array { nullable, .. } | Json::Any { nullable } | Json::Text { nullable } => *nullable,
             Json::Tuple { .. } => false,
             Json::Value { .. } => true,
         }
@@ -355,15 +378,13 @@ impl Json {
 /// The type of a shape, and whether it may be NULL, its values typed by the probes' descriptions.
 pub fn resolve(shape: &Json, probes: &[Option<Vec<Described1>>]) -> (Type, bool) {
     match shape {
-        Json::Object { keys, nullable } => {
+        Json::Object { keys, nullable, .. } => {
             let fields = keys
                 .iter()
                 .map(|k| {
                     let (ty, null) = resolve(&k.value, probes);
-                    // A key a NULL leaves out may be absent, and is never `null`; a nested object
-                    // whose every key may be absent may be left out whole.
-                    let absent = (k.absent_on_null && null) || matches!(&k.value, Json::Object { keys, .. } if !keys.is_empty() && keys.iter().all(|inner| inner.absent_on_null && resolve(&inner.value, probes).1));
-                    Field { optional: absent, ..Field::new(k.name.clone(), ty, null && !k.absent_on_null) }
+                    // A key a NULL leaves out is never `null`.
+                    Field { optional: vanishes(k, probes), ..Field::new(k.name.clone(), ty, null && !k.absent_on_null) }
                 })
                 .collect();
             (Type::structure(fields), *nullable)
@@ -389,7 +410,14 @@ pub fn resolve(shape: &Json, probes: &[Option<Vec<Described1>>]) -> (Type, bool)
             None => (Type::unknown(), true),
         },
         Json::Any { nullable } => (Type::json(), *nullable),
+        Json::Text { nullable } => (Type::text(), *nullable),
     }
+}
+
+/// Whether a key may be absent: one that may be whatever its value, one a NULL value leaves out,
+/// and an object a dotted name makes whose every key may be, at any depth.
+fn vanishes(k: &Key, probes: &[Option<Vec<Described1>>]) -> bool {
+    k.absent || (k.absent_on_null && resolve(&k.value, probes).1) || matches!(&k.value, Json::Object { keys, dotted: true, .. } if !keys.is_empty() && keys.iter().all(|inner| vanishes(inner, probes)))
 }
 
 #[cfg(test)]
@@ -423,13 +451,29 @@ mod tests {
         let Json::Object { keys, .. } = items.as_ref() else { panic!() };
         assert!(!keys[0].absent_on_null);
         assert!(matches!(&p.columns[1], Some(Json::Object { nullable: true, .. })));
-        assert!(matches!(&p.columns[2], Some(Json::Object { keys, nullable: true }) if keys[0].name == "rows"));
-        assert!(matches!(&p.columns[3], Some(Json::Object { keys, nullable: false }) if keys.len() == 2 && keys[1].absent_on_null));
+        assert!(matches!(&p.columns[2], Some(Json::Object { keys, nullable: true, .. }) if keys[0].name == "rows"));
+        assert!(matches!(&p.columns[3], Some(Json::Object { keys, nullable: false, .. }) if keys.len() == 2 && keys[1].absent_on_null));
         assert!(matches!(&p.columns[4], Some(Json::Tuple { skips_nulls: true, .. })));
-        // Several objects with no array around them are no JSON document.
-        assert!(matches!(&p.columns[5], Some(Json::Any { nullable: true })));
+        // Several objects with no array around them are no JSON document: the column stays text.
+        assert_eq!(p.columns[5], None);
         // A `*` leaves every column untyped.
         assert!(planned("select *, (select id from t for json path) as j from t").columns.is_empty());
+    }
+
+    #[test]
+    fn reads_what_sql_server_writes_inside_a_document() {
+        let p = planned("select (select u.id, (select top 1 p.title from posts p for json path, without_array_wrapper) as first, json_query((select top 1 p.title from posts p for json path, without_array_wrapper)) as promoted, isnull((select p.id from posts p for json path), '[]') as wrapped from users u for json path) as doc, json_query(json_object('child': json_object('id': 1)), '$.child') as child, json_query(json_object('id': 1), '$') as whole, isnull((select top 1 id from t for json path, without_array_wrapper), '{}') as fallback from t");
+        let Some(Json::Array { items, .. }) = &p.columns[0] else { panic!("{:?}", p.columns[0]) };
+        let Json::Object { keys, .. } = items.as_ref() else { panic!() };
+        // Unwrapped, it is text; through json_query, the object; isnull's result is a value.
+        assert!(matches!(keys[1].value, Json::Text { nullable: true }));
+        assert!(matches!(keys[2].value, Json::Object { nullable: true, .. }));
+        assert!(matches!(keys[3].value, Json::Value { .. }));
+        // A path picks part of the document, which may be missing.
+        assert!(matches!(p.columns[1], Some(Json::Any { nullable: true })));
+        assert!(matches!(p.columns[2], Some(Json::Object { nullable: false, .. })));
+        // The empty object has none of the keys.
+        assert!(matches!(&p.columns[3], Some(Json::Object { keys, nullable: false, .. }) if keys.iter().all(|k| k.absent)));
     }
 
     #[test]

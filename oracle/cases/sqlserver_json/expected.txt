@@ -5,12 +5,19 @@ auto_join.sql: one () -> { people: json json? }
 auto_single.sql: one () -> { people: json ({ id: int, name: nvarchar(≤40 units, UTF-16, ill-formed) })[]? }
 correlated_value.sql: many () -> { id: int, posts: json ({ id: int, author: nvarchar(≤40 units, UTF-16, ill-formed) })[]? }
 dotted.sql: one () -> { people: json ({ id: int, who: { name: nvarchar(≤40 units, UTF-16, ill-formed), nick?: nvarchar(≤20 units, UTF-16, ill-formed) } })[]? }
+dotted_deep.sql: one () -> { doc: json ({ id: int, a?: { b?: { c?: nvarchar(≤20 units, UTF-16, ill-formed) } } })[]? }
 include_nulls.sql: many () -> { id: int, posts: json ({ id: int, body: nvarchar(UTF-16, ill-formed)? })[]? }
 isnull_empty.sql: many () -> { id: int, posts: json ({ id: int })[] }
+isnull_object.sql: one (id: int) -> { o: json { id?: int } }
+json_query_path.sql: many () -> { c: json json?, whole: json { id: int } }
+json_query_promoted.sql: one () -> { doc: json ({ id: int, first?: { title: nvarchar(≤80 units, UTF-16, ill-formed) } })[]? }
 nested.sql: many () -> { id: int, posts: json ({ id: int, title: nvarchar(≤80 units, UTF-16, ill-formed), body?: nvarchar(UTF-16, ill-formed), score: decimal(10,2), at: datetime2, tag?: uniqueidentifier })[]? }
 nested_two.sql: one () -> { tree: json ({ id: int, posts?: ({ id: int })[] })[]? }
+nested_unwrapped.sql: one () -> { doc: json ({ id: int, first?: text })[]? }
 object.sql: many () -> { id: int, o: json { id: int, nick: nvarchar(≤20 units, UTF-16, ill-formed)?, active: bit } }
 object_absent.sql: many () -> { o: json { nick?: nvarchar(≤20 units, UTF-16, ill-formed) } }
+object_in_for_json.sql: one () -> { doc: json ({ id: int, o: { n: nvarchar(≤40 units, UTF-16, ill-formed) } })[]? }
 param.sql: one (min: decimal(38,19)) -> { posts: json ({ id: int })[]? }
 root.sql: one () -> { doc: json { users: ({ id: int })[]? }? }
 single.sql: many () -> { id: int, first_post: json { title: nvarchar(≤80 units, UTF-16, ill-formed) }? }
+unwrapped_many.sql: one () -> { doc: nvarchar(UTF-16, ill-formed)? }
