@@ -25,7 +25,7 @@ You or your agents write each migration by hand, and Reylo Migrate checks and ru
 </Way>
 </Choice>
 <Choice icon="branch" title="Linear or loose history">
-<Way title="linear, via `reylo-lock.yaml`">
+<Way title="linear, via `reylo.lock`">
 
 A lockfile keeps one order, so two branches that each add a migration conflict in git, before anything deploys.
 
@@ -75,7 +75,7 @@ $ npx reylo migrate init
   ├── schema.sql          this database's schema
   ├── migrations/
   │   └── init.sql        the same, recorded as run here
-  └── reylo-lock.yaml     the order the migrations run in
+  └── reylo.lock          the order the migrations run in
 ```
 
 Commit what it wrote. Its cache, `reylo/.cache/`, keeps itself out of git.
@@ -110,7 +110,7 @@ Run it on your development database:
 $ npx reylo migrate dev
 Applying to postgres://localhost:5432/app
   ✓ 20261104140347_add_bio.sql  applied · 4 ms
-✓ Wrote reylo/reylo-lock.yaml
+✓ Wrote reylo/reylo.lock
 ```
 
 Commit the migration and the lock. When you deploy, run it on production:
@@ -148,7 +148,7 @@ $ reylo migrate new add_bio
 $ reylo migrate dev
 Applying to postgres://localhost:5432/app
   + 20261104140347_add_bio.sql  recorded: already in place
-✓ Wrote reylo/reylo-lock.yaml
+✓ Wrote reylo/reylo.lock
 ```
 
 What changes:
@@ -165,11 +165,11 @@ Your migrations run in one order: the lockfile's, or their names'.
 
 ### Lockfile
 
-The lockfile, `reylo-lock.yaml`, keeps your migrations in one order.
+The lockfile, `reylo.lock`, keeps your migrations in one order.
 
 Each of its lines has a checksum chained to the one before. A migration it doesn't list is a draft, free to edit, which only `reylo migrate dev` runs:
 
-```yaml title="reylo-lock.yaml"
+```yaml title="reylo.lock"
 schema: c7bf681b
 migrations:
   - 20261104120000_users.sql c86e9de4
@@ -180,7 +180,7 @@ When two branches each add a migration, git conflicts on the lock, before anythi
 
 ### Lock-free mode
 
-Delete `reylo-lock.yaml`, and your migrations run in name order.
+Delete `reylo.lock`, and your migrations run in name order.
 
 <MigrationsDiagram without="lock" />
 
@@ -286,7 +286,7 @@ $ reylo migrate init
   ├── schema.sql          this database's schema
   ├── migrations/
   │   └── init.sql        the same, recorded as run here
-  └── reylo-lock.yaml     the order the migrations run in
+  └── reylo.lock          the order the migrations run in
 ```
 
 On an empty database it writes an empty `schema.sql` and an empty lock, and your first migration is `reylo migrate new`'s:
@@ -297,7 +297,7 @@ $ reylo migrate init
   reylo/
   ├── schema.sql          empty: declare your tables here
   ├── migrations/
-  └── reylo-lock.yaml
+  └── reylo.lock
 Then write the first migration: reylo migrate new <name>
 ```
 
@@ -388,7 +388,7 @@ Applying to postgres://localhost:5432/app
   ↺ 20261104120000_tags.sql   rewound: it isn't in the migrations
     ! Dropped tags (3 rows)
   ✓ 20261104130000_posts.sql  applied · 3 ms
-✓ Wrote reylo/reylo-lock.yaml
+✓ Wrote reylo/reylo.lock
 ```
 
 Each time, it takes these steps:
@@ -416,7 +416,7 @@ Runs the migrations it hasn't run, as `reylo migrate deploy` will.
 </Step>
 <Step title="Lock" where="your files">
 
-Writes `reylo-lock.yaml`, listing what ran, in order.
+Writes `reylo.lock`, listing what ran, in order.
 
 </Step>
 </Steps>
@@ -525,7 +525,7 @@ Migrations on postgres://db.example.com/app
   ✓ 20261104140347_add_bio.sql  applied 2026-11-04 15:12 UTC
   · 20261105090000_tags.sql     pending
 ✓ Unchanged since its last migration
-✓ reylo/reylo-lock.yaml matches the migration files
+✓ reylo/reylo.lock matches the migration files
 ✓ The migrations match reylo/schema.sql
 ! 1 migration hasn't run here: reylo migrate deploy runs it, or reylo migrate dev in development
 ```
@@ -538,7 +538,7 @@ Migrations on postgres://localhost:5432/app
   ✓ init.sql                    applied 2026-11-04 12:00 UTC
   ✓ 20261104140347_add_bio.sql  applied 2026-11-04 15:12 UTC
 ✓ Unchanged since its last migration
-✓ reylo/reylo-lock.yaml matches the migration files
+✓ reylo/reylo.lock matches the migration files
 
 ✗ reylo/schema.sql changed since the lock was written
   The lock holds a checksum of reylo/schema.sql from when the migrations last matched it.
@@ -562,7 +562,7 @@ It lists the migrations in the order your database ran them, and checks on a sha
 
 ```terminal
 $ reylo migrate lock
-✓ Wrote reylo/reylo-lock.yaml: 2 migrations, in the order this database ran them
+✓ Wrote reylo/reylo.lock: 2 migrations, in the order this database ran them
 ✓ The migrations match reylo/schema.sql
 ```
 
