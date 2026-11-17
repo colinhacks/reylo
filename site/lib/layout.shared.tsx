@@ -41,7 +41,7 @@ export const pageGroups = [
     label: 'Docs',
     items: [
       { title: 'Intro', href: '/' },
-      { title: 'Usage with TypeScript', href: '/typescript' },
+      { title: SHOW_RUST ? 'Usage with TypeScript' : 'Usage', href: '/typescript' },
       ...(SHOW_RUST ? [{ title: 'Usage with Rust', href: '/rust' }] : []),
       { title: 'Inference engine', href: '/inference' },
       { title: 'Reylo Migrate', href: '/migrate', external: true },

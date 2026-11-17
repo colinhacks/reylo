@@ -1760,3 +1760,36 @@ html #nd-page .prose table {
 .dk-pages-sheet .dk-pages-foot {
   padding-bottom: 0.75rem;
 }
+
+/* ── The landing (components/landing.tsx) ───────────────────────────────────
+   A one-page site whose page holds a `<LandingEnd />` opens as a landing page: the title and
+   everything before the rule are centred on the window, and the table of contents, beside the
+   text in the left column, starts under the rule, scrolls up with the docs and sticks at the top
+   once the rule has left the window (`--dk-landing-offset`, the rule's bottom). The column sits
+   half the table's width right of the window's centre (`LEFT_TOC` in components/shell.tsx), so
+   the landing moves back by that much. Below `xl` the table is a popover above the text, and the
+   column is centred already. */
+@media (width >= 64rem) {
+  #nd-page:has(.dk-landing-end) > h1,
+  #nd-page .prose > :has(~ .dk-landing-end) {
+    translate: calc(var(--fd-toc-width) / -2) 0;
+  }
+
+  body:has(.dk-landing-end) #nd-toc {
+    translate: 0 var(--dk-landing-offset, 0px);
+  }
+
+  html:not([data-dk-landing]) body:has(.dk-landing-end) #nd-toc {
+    visibility: hidden;
+  }
+
+  /* The rule runs under the table's column too: it is where the docs begin. */
+  #nd-page .prose > .dk-landing-end {
+    margin-inline-start: calc(var(--fd-toc-width) * -1);
+  }
+}
+
+#nd-page .prose > .dk-landing-end {
+  margin-block: 4rem 3rem;
+  border-color: var(--color-fd-border);
+}
