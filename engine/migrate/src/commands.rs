@@ -38,7 +38,8 @@ pub struct Options {
 /// the files.
 #[derive(Clone, Debug, Default)]
 pub struct Embedded {
-    /// Each file in the migrations directory, by its name, and its text.
+    /// Each entry of the migrations directory, by its name, and a migration's text: any other
+    /// entry's is empty, since deploy and status name it as a stray.
     pub files: Vec<(String, String)>,
     pub lock: Option<String>,
     pub schema: Option<String>,
@@ -68,8 +69,10 @@ impl Options {
         }
     }
 
+    /// Whether the migrations directory exists: always, for the files a build holds, since
+    /// `reylo::migrate!()` refuses to build without one.
     fn dir_exists(&self) -> bool {
-        self.embedded.as_ref().map_or_else(|| self.dir.exists(), |e| !e.files.is_empty())
+        self.embedded.is_some() || self.dir.exists()
     }
 
     fn schema_exists(&self) -> bool {
@@ -450,15 +453,11 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
             std::fs::create_dir_all(&dir).map_err(|e| Error(format!("cannot make {}: {e}", dir.display())))?;
             let path = dir.join(crate::cache::hex(&digest.finish()[..8]));
             let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(|e| Error(format!("cannot open {}: {e}", path.display())))?;
-            // Waited for without holding the thread: an app's runs share it with others, as two
-            // deploys on one runtime do, and the one holding the lock must go on to release it.
-            loop {
-                match file.try_lock() {
-                    Ok(()) => return Ok(Some(file)),
-                    Err(std::fs::TryLockError::WouldBlock) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
-                    Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
-                }
-            }
+            // Waited for on the runtime's blocking pool, not the run's own thread: an app's runs share
+            // it with others, as two deploys on one runtime do, and the one holding the lock must go
+            // on to release it.
+            let held = tokio::task::spawn_blocking(move || file.lock().map(|()| file)).await.map_err(|e| Error(format!("waiting for the run's lock: {e}")))?;
+            Ok(Some(held?))
         }
     }
 }
@@ -1542,15 +1541,20 @@ async fn late_on(db: &mut Db, opts: &Options, plan: &Plan) -> Result<Option<Prob
     if !lock_free(opts) || !plan.pending.iter().any(|m| last.is_some_and(|last| name_order(&m.name) < last)) {
         return Ok(None);
     }
-    // Without the `cli` feature there are no shadows to replay a late migration in, and a host's
-    // build holds the lock, which keeps none late: one with no lock is deployed from the command line.
+    // A host's connection has no URL to make shadows from, and without the `cli` feature there are
+    // none to replay a late migration in: one with no lock is deployed from the command line.
+    let unchecked = || Problem::new("late-migration-unchecked", "A migration sorts before one this database already ran, and this project keeps no lock").fix("Deploy it from the command line, which checks it in a shadow database", &["reylo migrate deploy"]);
     #[cfg(not(feature = "cli"))]
     {
         let _ = db;
-        Ok(Some(Problem::new("late-migration-unchecked", "A migration sorts before one this database already ran, and this project keeps no lock").fix("Deploy it from the command line, which checks it in a shadow database", &["reylo migrate deploy"])))
+        Ok(Some(unchecked()))
     }
     #[cfg(feature = "cli")]
     {
+        // An app's build may have the feature on, through another crate of its workspace.
+        if matches!(db, Db::Host(_)) {
+            return Ok(Some(unchecked()));
+        }
         let (files, _) = opts.migrations()?;
         let mut server = shadow_server(db, opts).await?;
         let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).collect();

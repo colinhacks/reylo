@@ -540,6 +540,8 @@ The macro compiles your project's migrations into the crate, with their lock and
 
 It refuses, running nothing, where the [command](/migrations#commands) would: on a draft the lock doesn't list yet, a migration edited since the database ran it, or a schema changed by hand since the last deploy. Its error says why, with the fix, as the command prints it.
 
+A migration that fails rolls back with its row, and those before it stay applied: the error's `.applied()` lists them.
+
 On MySQL, the migrations run with the server's own `sql_mode` and time zone, as the command line runs them, rather than the ones sqlx sets for your queries.
 
 ### Status
@@ -572,3 +574,11 @@ A deploy holds a lock on the database while it runs, and so does the command lin
 The app runs the migrations it was built with.
 
 The crate compiles again when one of them, the lock or `reylo/schema.sql` changes, and `reylo migrate dev` writes the lock as it adds one.
+
+Cargo doesn't watch the directory itself, though. Without a lock, have a build script tell it to, so a new migration compiles the crate again:
+
+```rust title="build.rs"
+fn main() {
+    println!("cargo:rerun-if-changed=reylo/migrations");
+}
+```

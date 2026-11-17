@@ -81,7 +81,9 @@ fn expand(sql: &LitStr, module: ItemMod) -> TokenStream2 {
 /// `reylo::migrate!().run(&pool)` runs `reylo migrate deploy` with them, and `.status(&pool)`
 /// `reylo migrate status`. Each file is included as it stands at the build, so Cargo compiles the
 /// crate again when one changes, the lock among them, which `reylo migrate dev` writes when it adds
-/// a migration.
+/// a migration. Cargo watches no directory for a macro, so a file added where no lock lists the
+/// migrations, or a lock or `schema.sql` made after the build, needs the build script line the
+/// docs give (`cargo:rerun-if-changed=reylo/migrations`).
 #[proc_macro]
 pub fn migrate(input: TokenStream) -> TokenStream {
     if !input.is_empty() {
@@ -102,12 +104,12 @@ fn migrations() -> syn::Result<TokenStream2> {
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Err(syn::Error::new(span, format!("there is no {}/migrations directory ({}): reylo migrate init makes one", shown, dir.display())));
     };
-    let mut files: Vec<(String, std::path::PathBuf)> = entries.filter_map(Result::ok).filter(|e| e.path().is_file()).map(|e| (e.file_name().to_string_lossy().into_owned(), e.path())).filter(|(name, _)| !name.starts_with('.')).collect();
+    let mut files: Vec<(String, std::path::PathBuf)> = entries.filter_map(Result::ok).map(|e| (e.file_name().to_string_lossy().into_owned(), e.path())).filter(|(name, _)| !name.starts_with('.')).collect();
     files.sort();
-    // Each migration with its text; any other file by its name alone, which deploy and status name
-    // as a stray, as they do on the command line.
+    // Each migration with its text; any other entry, a directory among them, by its name alone,
+    // which deploy and status name as a stray, as they do on the command line.
     let files = files.iter().map(|(name, path)| {
-        if name.ends_with(".sql") {
+        if name.ends_with(".sql") && path.is_file() {
             let path = path.to_string_lossy();
             quote!((#name, ::core::include_str!(#path)))
         } else {

@@ -44,18 +44,21 @@ impl Migrator {
     /// It refuses, running nothing, where the command would: a migration the lock doesn't list
     /// (a draft), one edited or deleted since the database ran it, a lock git left conflicted, and a
     /// database whose schema was changed by hand since the last deploy. A migration that fails rolls
-    /// back with its row. The error says why, as the command prints it, and
-    /// [`problems`](Error::problems) lists each refusal with its fix.
+    /// back with its row, and those before it stay applied ([`Error::applied`]). The error says why,
+    /// as the command prints it, and [`problems`](Error::problems) lists each refusal with its fix.
     ///
     /// A deploy holds the database's migration lock while it runs, the command line's too, so two
     /// instances of the app starting at once run each migration once.
     pub async fn run<DB: Database>(&self, pool: &sqlx::Pool<DB>) -> Result<Vec<String>, Error> {
         let run = self.on(pool, Command::Deploy).await?;
+        let listed = run.result.as_ref().and_then(|r| r["migrations"].as_array()).map(Vec::as_slice).unwrap_or_default();
+        let with = |state: &str| -> Vec<String> { listed.iter().filter(|m| m["state"] == state).filter_map(|m| m["name"].as_str().map(String::from)).collect() };
+        let applied = with("applied");
         if run.code != 0 {
-            return Err(Error::refused("reylo migrate deploy", &run));
+            let failed = !with("failed").is_empty();
+            return Err(Error::stopped(if failed { "reylo migrate deploy failed" } else { "reylo migrate deploy refused" }, &run, applied));
         }
-        let ran = run.result.as_ref().and_then(|r| r["migrations"].as_array()).map(Vec::as_slice).unwrap_or_default();
-        Ok(ran.iter().filter(|m| m["state"] == "applied").filter_map(|m| m["name"].as_str().map(String::from)).collect())
+        Ok(applied)
     }
 
     /// Runs `reylo migrate status` on the pool's database: each migration with whether it ran, and
@@ -80,11 +83,6 @@ impl Migrator {
             })
             .collect();
         Ok(Status { migrations, problems: problems(&run.problems), lines: run.lines, current: run.code == 0 })
-    }
-
-    /// The names of the migrations the build holds, in name order.
-    pub fn migrations(&self) -> impl Iterator<Item = &'static str> {
-        self.files.iter().map(|(name, _)| *name).filter(|name| name.ends_with(".sql"))
     }
 
     async fn on<DB: Database>(&self, pool: &sqlx::Pool<DB>, command: Command) -> Result<reylo_migrate::commands::HostRun, Error> {
@@ -194,9 +192,18 @@ fn text(sql: &str) -> &str {
     sql
 }
 
+/// The database's message, with Postgres's detail after it, as the command line writes them.
 fn failed(e: sqlx::Error) -> reylo_migrate::Error {
     match e {
-        sqlx::Error::Database(d) => reylo_migrate::Error(d.message().to_string()),
+        sqlx::Error::Database(d) => {
+            #[allow(unused_mut)]
+            let mut message = d.message().to_string();
+            #[cfg(feature = "postgres")]
+            if let Some(detail) = d.try_downcast_ref::<sqlx::postgres::PgDatabaseError>().and_then(|p| p.detail()) {
+                message = format!("{message} ({detail})");
+            }
+            reylo_migrate::Error(message)
+        }
         other => reylo_migrate::Error(other.to_string()),
     }
 }
@@ -404,23 +411,28 @@ fn problems(values: &[serde_json::Value]) -> Vec<Problem> {
 pub struct Error {
     message: String,
     problems: Vec<Problem>,
+    applied: Vec<String>,
 }
 
 impl Error {
     fn new(message: String) -> Error {
-        Error { message, problems: Vec::new() }
+        Error { message, problems: Vec::new(), applied: Vec::new() }
     }
     fn of(e: reylo_migrate::Error) -> Error {
         Error::new(format!("reylo::migrate!(): {e}"))
     }
-    fn refused(command: &str, run: &reylo_migrate::commands::HostRun) -> Error {
+    fn stopped(what: &str, run: &reylo_migrate::commands::HostRun, applied: Vec<String>) -> Error {
         let lines: Vec<&str> = run.lines.iter().map(String::as_str).skip_while(|l| l.is_empty()).collect();
-        Error { message: format!("{command} refused:\n{}", lines.join("\n")), problems: problems(&run.problems) }
+        Error { message: format!("{what}:\n{}", lines.join("\n")), problems: problems(&run.problems), applied }
     }
     /// Each reason it refused, with its fix; none where a migration failed or the database was out
     /// of reach.
     pub fn problems(&self) -> &[Problem] {
         &self.problems
+    }
+    /// The migrations this deploy applied before one failed, in order; none where it refused.
+    pub fn applied(&self) -> &[String] {
+        &self.applied
     }
 }
 

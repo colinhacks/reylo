@@ -153,7 +153,6 @@ fn text(sql: &str) -> &str {
 async fn scenario<DB: reylo::migrate::Database>(p: &Project, pool: impl AsyncFn(&Project) -> sqlx::Pool<DB>) {
     let app = pool(p).await;
     let m = p.migrator();
-    assert_eq!(m.migrations().collect::<Vec<_>>(), NAMES);
 
     let status = m.status(&app).await.unwrap();
     assert!(!status.is_current(), "{status}");
@@ -189,6 +188,25 @@ async fn scenario<DB: reylo::migrate::Database>(p: &Project, pool: impl AsyncFn(
     let mut ran = [ran_a.unwrap(), ran_b.unwrap()].concat();
     ran.sort();
     assert_eq!(ran, NAMES);
+
+    // A migration that fails rolls back alone: those before it stay applied, and the error says so.
+    let broken = p.beside().await;
+    broken.write("20260104000000_broken.sql", "insert into nowhere (id) values (1);\n");
+    broken.lock();
+    let failed = broken.migrator().run(&pool(&broken).await).await.unwrap_err();
+    assert_eq!(failed.applied(), NAMES, "{failed}");
+    assert!(failed.to_string().starts_with("reylo migrate deploy failed") && failed.to_string().contains("nowhere"), "{failed}");
+
+    // With no lock, a migration that sorts before one the database ran is replayed in a shadow
+    // database, which the app has none of: refused, for the command line to deploy, even where
+    // the build has the command line's code, as this test's does.
+    let free = p.beside().await;
+    std::fs::remove_file(free.dir.join("reylo").join(reylo_migrate::lock::LOCK)).unwrap();
+    let pooled = pool(&free).await;
+    assert_eq!(free.migrator().run(&pooled).await.unwrap(), NAMES);
+    free.write("20260102120000_late.sql", "create table late (id int primary key);\n");
+    let late = free.migrator().run(&pooled).await.unwrap_err();
+    assert!(late.problems().iter().any(|problem| problem.code == "late-migration-unchecked"), "{late}");
 
     // A migration edited since the database ran it, relocked: refused, running nothing.
     p.write(NAMES[0], &std::fs::read_to_string(p.dir.join("reylo/migrations").join(NAMES[0])).unwrap().replace("not null", "not null default 'x'"));
