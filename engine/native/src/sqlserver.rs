@@ -6,7 +6,8 @@
 //! The URL is `sqlserver://user:password@host:port/database`, with the settings the `mssql` package
 //! takes as options: `encrypt` (`true` by default, as the package's own default is; `false` encrypts
 //! the login alone) and `trustServerCertificate` (`false` by default: the certificate is checked
-//! against the operating system's roots). A login is SQL Server's own, by user and password.
+//! against the operating system's roots). A login is SQL Server's own, by user and password, or
+//! Microsoft Entra ID's, as `authentication=` names it (`crate::entra`).
 
 use crate::{Failure, Program};
 use reylo_engine::clients::tiberius::{self as answers};
@@ -177,10 +178,14 @@ const SESSION: &str = "set ansi_nulls on; set ansi_null_dflt_on on; set ansi_pad
 
 /// A connection to the server a URL names, in the session `SESSION` sets, and its product version.
 async fn connect(url: &str) -> Result<(Conn, String), Value> {
-    let config = parse(url).map_err(|message| json!({ "status": "error", "message": message }))?;
+    let (mut config, entra) = parse(url).map_err(|message| json!({ "status": "error", "message": message }))?;
     // tiberius takes the process's crypto provider where one is installed: ring's, as every other
     // TLS connection of the program.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    if let Some(method) = &entra {
+        let token = crate::entra::token(method).await.map_err(|message| json!({ "status": "refused", "message": message }))?;
+        config.authentication(AuthMethod::aad_token(token));
+    }
     let attempt = async {
         let tcp = TcpStream::connect(config.get_addr()).await.map_err(|e| json!({ "status": "unreachable", "message": e.to_string() }))?;
         let _ = tcp.set_nodelay(true);
@@ -210,8 +215,9 @@ fn failure(e: &tiberius::error::Error) -> Value {
     }
 }
 
-/// The URL as tiberius's configuration.
-pub fn parse(url: &str) -> Result<Config, String> {
+/// The URL as tiberius's configuration, and the Entra ID sign-in it names, whose token the connection
+/// gets as it opens.
+pub fn parse(url: &str) -> Result<(Config, Option<crate::entra::Entra>), String> {
     let rest = ["sqlserver://", "mssql://"].iter().find_map(|scheme| url.get(..scheme.len()).filter(|s| s.eq_ignore_ascii_case(scheme)).map(|_| &url[scheme.len()..]));
     let Some(rest) = rest else { return Err(format!("a SQL Server URL starts with sqlserver:// or mssql://, and {} does not", redact(url))) };
     let (base, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -236,13 +242,11 @@ pub fn parse(url: &str) -> Result<Config, String> {
     if !database.is_empty() {
         config.database(crate::decode(database));
     }
-    if user.is_empty() {
-        return Err(format!("{} names no user: Reylo signs in to SQL Server with a SQL Server login, as sqlserver://user:password@host/database", redact(url)));
-    }
-    config.authentication(AuthMethod::sql_server(crate::decode(user), crate::decode(password)));
     config.application_name("reylo");
     let mut encrypt = true;
     let mut trust = false;
+    let mut authentication = None;
+    let mut tenant = None;
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, "true"));
         let value = crate::decode(value);
@@ -255,6 +259,8 @@ pub fn parse(url: &str) -> Result<Config, String> {
             "encrypt" => encrypt = truth(&value)?,
             "trustservercertificate" => trust = truth(&value)?,
             "database" => config.database(value),
+            "authentication" => authentication = Some(value),
+            "tenantid" => tenant = Some(value),
             // The package's other options are its own: timeouts, pool sizes, its app name.
             _ => {}
         }
@@ -263,7 +269,14 @@ pub fn parse(url: &str) -> Result<Config, String> {
     if trust {
         config.trust_cert();
     }
-    Ok(config)
+    let entra = crate::entra::Entra::named(authentication.as_deref(), &crate::decode(user), &crate::decode(password), tenant)?;
+    if entra.is_none() {
+        if user.is_empty() {
+            return Err(format!("{} names no user: sign in with a SQL Server login, as sqlserver://user:password@host/database, or with Microsoft Entra ID, as authentication=ActiveDirectoryDefault", redact(url)));
+        }
+        config.authentication(AuthMethod::sql_server(crate::decode(user), crate::decode(password)));
+    }
+    Ok((config, entra))
 }
 
 /// The URL with its user and password left out, for a message.
@@ -280,10 +293,17 @@ mod tests {
 
     #[test]
     fn reads_the_url() {
-        let c = parse("sqlserver://sa:p%40ss@db.example:14330/app?encrypt=false&trustServerCertificate=true").unwrap();
+        let (c, entra) = parse("sqlserver://sa:p%40ss@db.example:14330/app?encrypt=false&trustServerCertificate=true").unwrap();
         assert_eq!(c.get_addr(), "db.example:14330");
+        assert_eq!(entra, None);
         assert!(parse("mssql://sa:x@localhost/app").is_ok());
-        assert_eq!(parse("sqlserver://localhost/app").unwrap_err(), "sqlserver://localhost/app names no user: Reylo signs in to SQL Server with a SQL Server login, as sqlserver://user:password@host/database");
+        assert_eq!(parse("sqlserver://localhost/app").unwrap_err(), "sqlserver://localhost/app names no user: sign in with a SQL Server login, as sqlserver://user:password@host/database, or with Microsoft Entra ID, as authentication=ActiveDirectoryDefault");
+        // Entra ID: a token the connection gets as it opens, where the URL names how.
+        assert_eq!(parse("sqlserver://srv.database.windows.net/app?authentication=ActiveDirectoryDefault").unwrap().1, Some(crate::entra::Entra::Default));
+        assert_eq!(
+            parse("sqlserver://app-id:s%40cret@srv.database.windows.net/app?authentication=ActiveDirectoryServicePrincipal&tenantId=t").unwrap().1,
+            Some(crate::entra::Entra::ServicePrincipal { tenant: "t".into(), client_id: "app-id".into(), secret: "s@cret".into() })
+        );
         assert!(parse("postgres://u@h/db").unwrap_err().starts_with("a SQL Server URL starts with"));
         assert_eq!(redact("sqlserver://sa:secret@h/db"), "sqlserver://…@h/db");
     }

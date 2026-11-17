@@ -29,6 +29,8 @@ pub mod postgres;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 #[cfg(feature = "sqlserver")]
+pub mod entra;
+#[cfg(feature = "sqlserver")]
 pub mod sqlserver;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 mod tls;
