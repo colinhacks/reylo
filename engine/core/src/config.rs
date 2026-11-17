@@ -52,7 +52,7 @@ pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlcommenter: Option<bool>,
     /// The directory of the project's own files, beside the project file (`reylo` when absent):
-    /// `schema.sql`, the migrations in `migrations/`, the lock `reylo-lock.yaml`, and the cache in
+    /// `schema.sql`, the migrations in `migrations/`, the lock `reylo.lock`, and the cache in
     /// `.cache/`, which the type check and the migrations keep there, out of git.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
