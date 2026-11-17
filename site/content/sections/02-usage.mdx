@@ -595,6 +595,10 @@ await db.transaction(async (trx) => {
 });
 ```
 
+#### SQL Server [#sqlserver-drivers]
+
+Pass an `mssql` pool, transaction or request, as on the [SQL Server page](/sqlserver#driver).
+
 ### `.runSync()`
 
 For databases that support synchronous operations, you can use `.runSync()`.
@@ -673,6 +677,7 @@ The error is your database's own, typed with every code it defines, so TypeScrip
 | Postgres | `code`, the SQLSTATE, and `condition`, its name | `constraint`, `table`, `column`, `schema`, `detail`, `hint`, `position` |
 | MySQL | `code`, the error's name, `errno` and `sqlState` | `key`, `constraint`, `table`, `column` |
 | SQLite | `code`, the result code's name, and `errcode` | `table`, `columns`, `constraint` |
+| SQL Server | `number`, the error's number | `constraint`, `table`, `column` |
 
 When the query runs none of your own code, such as a trigger or a function you wrote, Reylo also narrows each error to the names it can carry: a unique violation names one of the unique keys of the tables the query writes, as in the examples above. Your database's page says what it narrows.
 

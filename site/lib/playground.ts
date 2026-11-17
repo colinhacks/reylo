@@ -24,7 +24,7 @@ import { collectFiles, DIALECT_NAME, INFERENCE_CARD_LAYOUT, SCHEMA_FILE, type Di
 import { formatType, resultType } from '../../src/type-format.ts';
 
 /** The dialects the playground tries a statement on: the main page's, each against its own schema. */
-type Dialect = PageDialect;
+type Dialect = Exclude<PageDialect, 'sqlserver'>;
 const site = path.resolve(import.meta.dirname, '..');
 const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite'];
 const SERVERS: Record<Exclude<Dialect, 'sqlite'>, string> = {

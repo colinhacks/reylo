@@ -12,7 +12,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
 /// Each column of the table `@P1` names, and whether it takes NULL.
-pub const TABLE_COLUMNS: &str = "select c.name, c.is_nullable from sys.columns c where c.object_id = object_id(@P1)";
+/// A view's columns are left out: whether one takes NULL is the base table's, which a column of an
+/// outer join's side reports as nullable all the same.
+pub const TABLE_COLUMNS: &str = "select c.name, c.is_nullable from sys.columns c where c.object_id = object_id(@P1) and objectproperty(c.object_id, 'IsView') = 0";
 
 /// The columns of the table a statement writes, each by name with whether it takes NULL.
 #[derive(Debug, Clone, Default)]
@@ -62,7 +64,7 @@ pub fn nullable(statement: &Statement, order: &[String], columns: Option<&Column
         match e {
             Expr::IsNull(x) | Expr::IsNotNull(x) => out.extend(param(x, order).cloned()),
             Expr::Function(f) => {
-                let name = f.name.0.last().map(|p| p.to_string().to_ascii_lowercase()).unwrap_or_default();
+                let name = if f.name.0.len() == 1 { f.name.0[0].to_string().to_ascii_lowercase() } else { String::new() };
                 if let ("isnull" | "coalesce", FunctionArguments::List(list)) = (name.as_str(), &f.args) {
                     // Every argument but the last falls back to the next.
                     let n = list.args.len();

@@ -1,0 +1,1 @@
+merge customers as t using (select :id as id) as s on t.id = s.id when matched and t.vip = 0 then delete when matched then update set vip = 0 output $action as act, inserted.id as kept, deleted.id as removed;

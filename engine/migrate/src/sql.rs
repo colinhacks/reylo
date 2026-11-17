@@ -2,7 +2,9 @@
 //! atomically, so it has to know where one statement ends and whether a statement can run inside a
 //! transaction at all. A statement ends at a `;` outside strings, quoted names, comments and dollar
 //! quotes; the body of a trigger, routine or event (`begin … end`, Postgres's `begin atomic … end`)
-//! holds `;`s of its own and ends at its closing `end`.
+//! holds `;`s of its own and ends at its closing `end`. SQL Server's batches are separated by `GO`
+//! lines, and a procedure's, function's, trigger's or view's `create` takes the rest of its batch
+//! ([`split_statements`]).
 
 use crate::Dialect;
 use regex::Regex;
@@ -69,6 +71,7 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
     let n = b.len();
     let mysql = dialect == Dialect::Mysql;
     let postgres = dialect == Dialect::Postgres;
+    let sqlserver = dialect == Dialect::Sqlserver;
     let mut out = Vec::new();
     let mut i = 0;
     let push = |kind: TokenKind, start: usize, end: usize, out: &mut Vec<Token>| out.push(Token { kind, text: sql[start..end].to_string(), start, end });
@@ -92,7 +95,7 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
             let mut depth = 1;
             let mut j = i + 2;
             while j < n && depth > 0 {
-                if postgres && b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
+                if (postgres || sqlserver) && b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
                     depth += 1;
                     j += 2;
                     continue;
@@ -148,12 +151,13 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
             continue;
         }
         // Quoted names.
-        if ch == b'"' || ch == b'`' || (ch == b'[' && dialect == Dialect::Sqlite) {
+        if ch == b'"' || ch == b'`' || (ch == b'[' && (dialect == Dialect::Sqlite || sqlserver)) {
             let close = if ch == b'[' { b']' } else { ch };
             let mut j = i + 1;
             while j < n {
                 if b[j] == close {
-                    if close != b']' && b.get(j + 1) == Some(&close) {
+                    // SQL Server's `]]` is one `]` inside a bracketed name; SQLite's ends at the first.
+                    if (close != b']' || sqlserver) && b.get(j + 1) == Some(&close) {
                         j += 2;
                         continue;
                     }
@@ -216,9 +220,76 @@ fn opens_body(tokens: &[Token], dialect: Dialect, next: Option<&Token>) -> bool 
     ["TRIGGER", "PROCEDURE", "FUNCTION", "EVENT"].iter().any(|w| has(w))
 }
 
+/// The `GO` lines of a SQL Server script, as the byte ranges of their words: a line that holds
+/// `GO` alone (a count after it too, as sqlcmd takes one), outside strings and comments.
+pub fn go_lines(sql: &str) -> Vec<(usize, usize)> {
+    let tokens = tokenize(sql, Dialect::Sqlserver);
+    let line_of = |at: usize| (sql[..at].rfind('\n').map_or(0, |p| p + 1), sql[at..].find('\n').map_or(sql.len(), |p| at + p));
+    tokens
+        .iter()
+        .filter(|t| t.kind == TokenKind::Word && t.text.eq_ignore_ascii_case("go"))
+        .filter(|t| {
+            let (start, end) = line_of(t.start);
+            let before = sql[start..t.start].trim();
+            let after = sql[t.end..end].trim();
+            let after = after.split("--").next().unwrap_or_default().trim();
+            before.is_empty() && (after.is_empty() || after.bytes().all(|c| c.is_ascii_digit()))
+        })
+        .map(|t| (t.start, line_of(t.start).1))
+        .collect()
+}
+
+/// A SQL Server script's batches, as `GO` lines separate them: the text of each, blank ones left out.
+pub fn batches(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    for (start, end) in go_lines(sql) {
+        out.push(sql[from..start].to_string());
+        from = end;
+    }
+    out.push(sql[from..].to_string());
+    out.into_iter().filter(|b| !is_blank(b, Dialect::Sqlserver)).collect()
+}
+
+/// A SQL Server batch that a `create` (or `create or alter`, or `alter`) of a procedure, a function,
+/// a trigger or a view opens: its body is the rest of the batch.
+fn whole_batch(tokens: &[Token]) -> bool {
+    let words: Vec<String> = tokens.iter().take(4).map(Token::upper).collect();
+    let at = match words.as_slice() {
+        [first, or, alter, ..] if first == "CREATE" && or == "OR" && alter == "ALTER" => 3,
+        [first, ..] if first == "CREATE" || first == "ALTER" => 1,
+        _ => return false,
+    };
+    matches!(words.get(at).map(String::as_str), Some("PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER" | "VIEW"))
+}
+
 /// The statements of `sql`, in order; blank statements (`;;`) are dropped.
 pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<Statement> {
-    let tokens = tokenize(sql, dialect);
+    if dialect == Dialect::Sqlserver {
+        // Batch by batch, each at its place in `sql`; a module's `create` is its batch whole.
+        let mut out = Vec::new();
+        let mut from = 0;
+        let mut ends: Vec<(usize, usize)> = go_lines(sql);
+        ends.push((sql.len(), sql.len()));
+        for (start, end) in ends {
+            let batch = &sql[from..start];
+            let tokens = tokenize(batch, dialect);
+            if whole_batch(&tokens) {
+                let text = batch.trim().trim_end_matches(';').trim_end().to_string();
+                let tokens = tokens.into_iter().filter(|t| t.text != ";" || t.kind != TokenKind::Symbol).map(|t| Token { start: t.start + from, end: t.end + from, ..t }).collect();
+                out.push(Statement { text, tokens });
+            } else {
+                out.extend(split_tokens(batch, tokens, dialect).into_iter().map(|st| Statement { tokens: st.tokens.into_iter().map(|t| Token { start: t.start + from, end: t.end + from, ..t }).collect(), ..st }));
+            }
+            from = end;
+        }
+        return out;
+    }
+    split_tokens(sql, tokenize(sql, dialect), dialect)
+}
+
+/// The statements of `sql`, read from its `tokens`.
+fn split_tokens(sql: &str, tokens: Vec<Token>, dialect: Dialect) -> Vec<Statement> {
     let mut statements = Vec::new();
     let mut from = 0;
     let mut depth = 0usize;
@@ -243,13 +314,16 @@ pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<Statement> {
         // END IF, END LOOP, END WHILE and END REPEAT, which close constructs never counted.
         let w = t.upper();
         let after = upper(tokens.get(k + 1));
-        if w == "BEGIN" && (depth > 0 || opens_body(&current, dialect, tokens.get(k + 1))) {
+        // SQL Server's BEGIN … END is a block anywhere, but for BEGIN TRANSACTION.
+        let tsql_block = dialect == Dialect::Sqlserver && !matches!(after.as_str(), "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "DIALOG" | "CONVERSATION");
+        if w == "BEGIN" && (depth > 0 || tsql_block || opens_body(&current, dialect, tokens.get(k + 1))) {
             depth += 1;
         } else if w == "CASE" && depth > 0 {
             depth += 1;
         } else if w == "END" && depth > 0 && !matches!(after.as_str(), "IF" | "LOOP" | "WHILE" | "REPEAT") {
             depth -= 1;
         }
+        // T-SQL's END TRY and END CATCH close a BEGIN TRY or BEGIN CATCH, counted at its BEGIN.
     }
     flush(&mut current, from, sql.len(), &mut statements);
     statements
@@ -282,14 +356,26 @@ re!(TRANSACTION_CONTROL, r"^(BEGIN|START TRANSACTION|COMMIT|END|ROLLBACK|SAVEPOI
 re!(PG_ALONE, r"^(CREATE (UNIQUE )?INDEX CONCURRENTLY|DROP INDEX CONCURRENTLY|REINDEX\b.*\bCONCURRENTLY|VACUUM|ALTER SYSTEM|CREATE DATABASE|DROP DATABASE|CREATE TABLESPACE|DROP TABLESPACE|CLUSTER$|REINDEX (SYSTEM|DATABASE))");
 re!(SQLITE_ALONE, r"^(VACUUM|ATTACH|DETACH)\b");
 re!(MYSQL_DATA, r"^(INSERT|UPDATE|DELETE|REPLACE|SELECT|WITH|DO|TABLE|VALUES)\b|^SET (@|SESSION|LOCAL|NAMES|CHARACTER)");
+re!(TSQL_TRANSACTION_CONTROL, r"^(BEGIN (TRAN|TRANSACTION|DISTRIBUTED)|COMMIT|ROLLBACK|SAVE (TRAN|TRANSACTION))\b");
+re!(TSQL_ALONE, r"^((CREATE|ALTER|DROP) DATABASE|BACKUP|RESTORE|RECONFIGURE|(CREATE|ALTER|DROP) FULLTEXT (INDEX|CATALOG)|ALTER DATABASE)\b");
 
 /// How the statement runs on the dialect: inside the file's transaction, or not.
 pub fn kind_of(statement: &Statement, dialect: Dialect) -> Kind {
     let h = head(statement, 6);
+    if dialect == Dialect::Sqlserver {
+        return if TSQL_TRANSACTION_CONTROL.is_match(&h) {
+            Kind::TransactionControl
+        } else if TSQL_ALONE.is_match(&h) {
+            Kind::Alone
+        } else {
+            Kind::Transactional
+        };
+    }
     if TRANSACTION_CONTROL.is_match(&h) {
         return Kind::TransactionControl;
     }
     match dialect {
+        Dialect::Sqlserver => unreachable!("read above"),
         Dialect::Postgres => {
             if PG_ALONE.is_match(&h) {
                 Kind::Alone
@@ -338,6 +424,11 @@ pub fn atomicity_problem(sql: &str, dialect: Dialect) -> Option<String> {
             return Some(format!("Its {} can't run in a transaction, so it needs a file of its own.", head(&statements[k], 4).to_lowercase()));
         }
     }
+    if dialect == Dialect::Sqlserver {
+        if let Some(late) = opens_late(sql) {
+            return Some(format!("SQL Server runs a {late} only as the first statement of its batch: put a GO line before it."));
+        }
+    }
     let commits: Vec<&Statement> = statements.iter().zip(&kinds).filter(|(_, k)| **k == Kind::Commits).map(|(s, _)| s).collect();
     if dialect == Dialect::Mysql && !commits.is_empty() && statements.len() > 1 {
         return Some(if commits.len() > 1 {
@@ -348,6 +439,25 @@ pub fn atomicity_problem(sql: &str, dialect: Dialect) -> Option<String> {
         } else {
             format!("MySQL commits a DDL statement on its own, so its {} needs a file of its own.", head(commits[0], 3).to_lowercase())
         });
+    }
+    None
+}
+
+/// A SQL Server statement that must open its batch and doesn't, by its first words: a `create` (or
+/// `alter`) of a view, procedure, function or trigger, or a `create schema`.
+fn opens_late(sql: &str) -> Option<String> {
+    for batch in batches(sql) {
+        let statements = split_tokens(&batch, tokenize(&batch, Dialect::Sqlserver), Dialect::Sqlserver);
+        for st in statements.iter().skip(1) {
+            let words: Vec<String> = st.tokens.iter().take(4).map(Token::upper).collect();
+            let at = if words.len() > 2 && words[0] == "CREATE" && words[1] == "OR" && words[2] == "ALTER" { 3 } else { 1 };
+            let opens = matches!(words.first().map(String::as_str), Some("CREATE" | "ALTER"))
+                && matches!(words.get(at).map(String::as_str), Some("VIEW" | "PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER"))
+                || (words.first().is_some_and(|w| w == "CREATE") && words.get(1).is_some_and(|w| w == "SCHEMA"));
+            if opens {
+                return Some(head(st, at + 1).to_lowercase());
+            }
+        }
     }
     None
 }
@@ -373,6 +483,7 @@ re!(MYSQL_ACCOUNT, r"^(CREATE|ALTER|DROP|RENAME) (USER|ROLE)\b|^(GRANT|REVOKE)\b
 re!(MYSQL_SERVER, r"^(CREATE|ALTER|DROP) (DATABASE|SCHEMA|SERVER|TABLESPACE|LOGFILE|RESOURCE)\b");
 re!(MYSQL_SETTING, r"^SET (GLOBAL|PERSIST)\b|^SET @ @ (GLOBAL|PERSIST)\b");
 re!(MYSQL_ELSEWHERE, r"^(USE|INSTALL|UNINSTALL|FLUSH|KILL|PURGE|SHUTDOWN|RESTART|CHANGE)\b");
+re!(TSQL_SERVER, r"^(CREATE|ALTER|DROP) (LOGIN|DATABASE|ENDPOINT|CREDENTIAL|AVAILABILITY|SERVER)\b|^(USE|RECONFIGURE|SHUTDOWN|KILL|BACKUP|RESTORE)\b|^ALTER (DATABASE|SERVER|LOGIN)\b");
 
 /// Why replaying the statement in a shadow database would reach past the shadow, or None. A shadow
 /// is a scratch database on the target's own server, so a statement that changes the server itself
@@ -439,6 +550,20 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
             }
             None
         }
+        Dialect::Sqlserver => {
+            if TSQL_SERVER.is_match(&h) {
+                return Some("it changes the server, a login or a database, which a shadow shares with the target".into());
+            }
+            // A three-part name, `db.schema.table`, reaches another database.
+            let t = &statement.tokens;
+            let name = |x: &Token| matches!(x.kind, TokenKind::Word | TokenKind::Quoted);
+            for k in 0..t.len().saturating_sub(4) {
+                if name(&t[k]) && t[k + 1].text == "." && name(&t[k + 2]) && t[k + 3].text == "." && name(&t[k + 4]) && (k == 0 || t[k - 1].text != ".") {
+                    return Some(format!("it names the database {}: in a shadow it would reach that database itself, so leave names at two parts, schema.table", t[k].text));
+                }
+            }
+            None
+        }
     }
 }
 
@@ -472,6 +597,17 @@ mod tests {
         assert_eq!(texts("/* a /* nested */ ; */ select 1", Dialect::Postgres), ["select 1"]);
         assert_eq!(texts("select 'it''s'; # comment ;\nselect \"a;b\"", Dialect::Mysql), ["select 'it''s'", "select \"a;b\""]);
         assert!(is_blank("-- nothing\n/* at all */", Dialect::Sqlite));
+        // SQL Server: GO lines part batches, a module's create is its batch, and a block keeps its `;`s.
+        let tsql = "create table a (x int);\ncreate table [b;]] c] (y int);\nGO\ncreate or alter procedure p as\nbegin\n  select 1;\n  select 2;\nend\nGO 2\nif not exists (select 1 from a) begin insert into a values (1); insert into a values (2); end;\nbegin transaction;";
+        assert_eq!(texts(tsql, Dialect::Sqlserver).len(), 5);
+        assert!(texts(tsql, Dialect::Sqlserver)[2].starts_with("create or alter procedure p as") && texts(tsql, Dialect::Sqlserver)[2].ends_with("end"));
+        assert_eq!(batches(tsql).len(), 3);
+        assert!(atomicity_problem("create table a (x int); begin transaction; insert into a values (1); commit", Dialect::Sqlserver).unwrap().contains("It has its own begin"));
+        assert_eq!(atomicity_problem("create table a (x int);\nGO\ncreate view v as select x from a", Dialect::Sqlserver), None);
+        assert_eq!(atomicity_problem("create table a (x int); create view v as select x from a", Dialect::Sqlserver).unwrap(), "SQL Server runs a create view only as the first statement of its batch: put a GO line before it.");
+        assert!(shadow_problem("create login app with password = 'x'", Dialect::Sqlserver).is_some());
+        assert!(shadow_problem("insert into other.dbo.t select 1", Dialect::Sqlserver).is_some());
+        assert_eq!(shadow_problem("insert into dbo.t select 1", Dialect::Sqlserver), None);
     }
 
     #[test]

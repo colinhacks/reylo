@@ -305,6 +305,9 @@ export function checkCast(name: string, written: string, type: EngineType, v: un
   const fail = (message: string): never => {
     throw new ParameterError(`Parameter "${name}" ${message}`);
   };
+  // SQL Server's CAST fails on a value it cannot read, and the parameter is bound as the cast's own
+  // type: the value is checked against that type, as any parameter's is.
+  if (dialect === "sqlserver") return void check(type, written, v, dialect, fail);
   const base = written.replace(/\s*\(.*$/, "");
   const signed = dialect === "sqlite" ? (/int/i.test(base) ? INTEGERS.integer : undefined) : MYSQL_INTEGERS[base.replace(/\s*unsigned$/, "") || "bigint"];
   if (signed) {

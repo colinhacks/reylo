@@ -169,7 +169,13 @@ fn closed(id: u64) -> Value {
     json!({ "status": "unreachable", "message": format!("connection {id} is closed") })
 }
 
-/// A connection to the server a URL names, and its product version.
+/// The session as the `mssql` driver (tedious) sets it as it logs in, which the types the engine
+/// infers assume: ANSI_WARNINGS on, so that an overflow or a division by zero fails rather than
+/// yielding NULL, CONCAT_NULL_YIELDS_NULL on, ANSI_NULLS on, so that `= NULL` matches nothing, and
+/// QUOTED_IDENTIFIER on, which an indexed view and a filtered index need.
+const SESSION: &str = "set ansi_nulls on; set ansi_null_dflt_on on; set ansi_padding on; set ansi_warnings on; set arithabort on; set concat_null_yields_null on; set datefirst 7; set dateformat mdy; set implicit_transactions off; set language us_english; set numeric_roundabort off; set quoted_identifier on; set textsize 2147483647; set transaction isolation level read committed; set xact_abort off";
+
+/// A connection to the server a URL names, in the session `SESSION` sets, and its product version.
 async fn connect(url: &str) -> Result<(Conn, String), Value> {
     let config = parse(url).map_err(|message| json!({ "status": "error", "message": message }))?;
     // tiberius takes the process's crypto provider where one is installed: ring's, as every other
@@ -184,6 +190,9 @@ async fn connect(url: &str) -> Result<(Conn, String), Value> {
         Err(_) => return Err(json!({ "status": "unreachable", "message": format!("no answer within {} seconds", CONNECT_TIMEOUT.as_secs()) })),
         Ok(result) => result?,
     };
+    if let Err(e) = async { client.simple_query(SESSION).await?.into_results().await }.await {
+        return Err(failure(&e));
+    }
     let version = match client.query("select cast(serverproperty('ProductVersion') as nvarchar(128))", &[]).await {
         Ok(stream) => stream.into_row().await.ok().flatten().and_then(|row| row.get::<&str, _>(0).map(String::from)).unwrap_or_default(),
         Err(e) => return Err(failure(&e)),

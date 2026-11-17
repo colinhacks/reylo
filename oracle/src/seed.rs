@@ -496,7 +496,7 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
 }
 
 /// A statement's parameters, several assignments: each takes the next value of every pool.
-fn assignments(pools: &[Vec<String>]) -> Vec<Vec<String>> {
+pub(crate) fn assignments(pools: &[Vec<String>]) -> Vec<Vec<String>> {
     if pools.is_empty() {
         return vec![Vec::new()];
     }
@@ -761,7 +761,7 @@ fn ties(rows: &[&tokio_postgres::SimpleQueryRow], at: &[usize]) -> Option<String
 /// read column by column while they tie. Text and the other kinds sort by rules the server keeps,
 /// so a pair that differs in one is taken as sorted, as is a pair of numbers with no decimal text,
 /// such as `NaN`.
-fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+pub(crate) fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
     let order = analysis["order"].as_array().filter(|o| !o.is_empty())?;
     let keys: Vec<(usize, &str, bool, bool, bool)> = order
         .iter()
@@ -800,7 +800,7 @@ fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Ite
 /// Why the rows of one run contradict the analysis's result key, if they do: two rows agree on
 /// every column of the key, a NULL counting as equal to another NULL. Each row is its columns'
 /// text, in order, `None` for NULL.
-fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+pub(crate) fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
     let rows: Vec<Vec<Option<&str>>> = rows.collect();
     analysis["unique"].as_array()?.iter().find_map(|key| one_key_repeats(key.as_array()?, columns, rows.iter().cloned()))
 }
@@ -831,7 +831,7 @@ fn one_key_repeats<'r>(key: &[Value], columns: &[Value], rows: impl Iterator<Ite
 /// another length, a NULL element in an array typed without one, its elements separated by
 /// `delimiter`, or a null where JSON a statement built typed a value. A JSON `null` at the top is
 /// the column's null to the run time, so it contradicts a column typed non-null.
-fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
+pub(crate) fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
     let whole: Type = serde_json::from_value(ty.clone()).ok()?;
     // An enum's values, from an enum type, a CHECK list or a literal: the value is one of them,
     // and of the type they are of.

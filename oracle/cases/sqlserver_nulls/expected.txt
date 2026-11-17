@@ -1,0 +1,12 @@
+arithmetic.sql: many () -> { doubled: decimal(14,2), third: decimal(16,6), negated: decimal(12,2), odd: decimal(15,4)? }
+case.sql: many () -> { tier: varchar(≤7 bytes, windows-1252), vip_name: nvarchar(≤100 units, UTF-16, ill-formed)?, flag: int }
+coalesce.sql: many () -> { shown: nvarchar(≤200 units, UTF-16, ill-formed), credit: money(19,4, -922337203685477.5808..922337203685477.5807), still_null: nvarchar(≤100 units, UTF-16, ill-formed)?, blank: nvarchar(≤200 units, UTF-16, ill-formed)? }
+cross_apply.sql: many () -> { id: int, total: decimal(12,2) }
+full_join.sql: many () -> { customer: int?, order_id: bigint? }
+functions.sql: many () -> { a: money(19,4, -922337203685477.5808..922337203685477.5807)?, r: money(19,4, -922337203685477.5808..922337203685477.5807)?, y: int, age: int, next_day: datetime2, formatted: nvarchar(≤4000 units, UTF-16, ill-formed)? }
+left_join.sql: many () -> { id: int, name: nvarchar(≤100 units, UTF-16, ill-formed)?, order_id: bigint?, total: decimal(12,2)? }
+outer_apply.sql: many () -> { id: int, total: decimal(12,2)? }
+right_join.sql: many () -> { email: nvarchar(≤200 units, UTF-16, ill-formed)?, id: bigint }
+scalar_subquery.sql: many () -> { id: int, biggest: decimal(12,2)?, orders: int? }
+strings.sql: many () -> { e: nvarchar(≤200 units, UTF-16, ill-formed), name_len: int?, excited: nvarchar(≤101 units, UTF-16, ill-formed), plus: nvarchar(≤101 units, UTF-16, ill-formed)?, head: nvarchar(≤3 units, UTF-16, ill-formed), trimmed: nvarchar(≤100 units, UTF-16, ill-formed)?, spelled: nvarchar(≤4000 units, UTF-16, ill-formed) }
+where_implies.sql: many () -> { name: nvarchar(≤100 units, UTF-16, ill-formed), shipped: date }

@@ -11,10 +11,14 @@
 //! answers the engine and how its runs are isolated is in `mysql.rs`. A case with a `min_version`
 //! file (a `server_version_num`, such as `180000`, or for MySQL the version as one number, such
 //! as `80400`) is skipped on an older server. A MySQL case's `sql_mode` file sets its sessions'
-//! `sql_mode`.
+//! `sql_mode`. A case whose `dialect` file says `sqlserver` runs in a database of its own on the
+//! SQL Server `--sqlserver-url` (or `ORACLE_SQLSERVER_URL`) names, a throwaway one too, which it
+//! refuses on port 1433, and its `min_version` is the server's major version (16 for 2022); how its
+//! runs bind and are isolated is in `sqlserver.rs`.
 //!
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
+//!   cargo run -p reylo-oracle -- --sqlserver-url 'sqlserver://sa:…@127.0.0.1:14333/master?trustServerCertificate=true' oracle/cases/sqlserver_types
 //!   cargo run -p reylo-oracle -- --url … --bless oracle/cases/not_null   # rewrite expected.txt
 //!   cargo run -p reylo-oracle -- --url … --analyses old.json oracle/cases  # check other answers
 //!   cargo run -p reylo-oracle -- --url … --dump new.json oracle/cases      # write the answers
@@ -59,6 +63,7 @@ mod errors;
 mod mysql;
 mod replay;
 mod seed;
+mod sqlserver;
 mod validity;
 
 use reylo_engine_core::types::Type;
@@ -84,6 +89,7 @@ fn main() -> ExitCode {
 async fn oracle() -> ExitCode {
     let mut url = std::env::var("ORACLE_URL").ok();
     let mut mysql_url = std::env::var("ORACLE_MYSQL_URL").ok();
+    let mut sqlserver_url = std::env::var("ORACLE_SQLSERVER_URL").ok();
     let mut bless = false;
     let mut keep = false;
     let mut strict_coverage = false;
@@ -98,6 +104,7 @@ async fn oracle() -> ExitCode {
         match arg.as_str() {
             "--url" => url = args.next(),
             "--mysql-url" => mysql_url = args.next(),
+            "--sqlserver-url" => sqlserver_url = args.next(),
             "--bless" => bless = true,
             "--keep" => keep = true,
             "--strict-coverage" => strict_coverage = true,
@@ -158,6 +165,7 @@ async fn oracle() -> ExitCode {
     let mut dumped = Map::new();
     let mut admin: Option<(Client, Config, i32)> = None;
     let mut mysql_server: Option<mysql::Server> = None;
+    let mut sqlserver_server: Option<sqlserver::Server> = None;
     for case in &cases {
         let dialect = fs::read_to_string(case.join("dialect")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "postgres".into());
         let timeout_ms = fs::read_to_string(case.join("timeout")).ok().and_then(|s| s.trim().parse::<u64>().ok()).filter(|ms| *ms > 0).unwrap_or(timeout_ms);
@@ -184,6 +192,26 @@ async fn oracle() -> ExitCode {
                 continue;
             }
             mysql::run(case, server, keep, timeout_ms, &given, &mut dumped, statements(case)).await
+        } else if dialect == "sqlserver" {
+            if sqlserver_server.is_none() {
+                let Some(url) = sqlserver_url.as_deref() else {
+                    eprintln!("a SQL Server case needs --sqlserver-url (or ORACLE_SQLSERVER_URL): a throwaway server, never a shared one");
+                    return ExitCode::from(2);
+                };
+                match sqlserver::connect(url).await {
+                    Ok(server) => sqlserver_server = Some(server),
+                    Err(e) => {
+                        eprintln!("cannot connect to the SQL Server: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            let server = sqlserver_server.as_mut().expect("connected above");
+            if server.version < min {
+                println!("{}: skipped (server {} < {min})", case.display(), server.version);
+                continue;
+            }
+            sqlserver::run(case, server, keep, timeout_ms, &given, &mut dumped, statements(case)).await
         } else {
             if admin.is_none() {
                 let Some(url) = url.as_deref() else {

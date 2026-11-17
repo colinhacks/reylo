@@ -3,8 +3,10 @@
 //! halfway) and checks what the command refuses and what the database ends up as. The adversarial
 //! ones are chosen to break it: ways a shadow can differ from the target that are not the
 //! migrations' doing, objects the comparison does not read, and commands that record what they did
-//! not run. Postgres's and MySQL's run against the servers `REYLO_TEST_PG` and `REYLO_TEST_MYSQL`
-//! name, and are skipped where the variable is not set; SQLite's always run.
+//! not run. Postgres's, MySQL's and SQL Server's run against the servers `REYLO_TEST_PG`,
+//! `REYLO_TEST_MYSQL` and `REYLO_TEST_SQLSERVER` name, and are skipped where the variable is not
+//! set; SQLite's always run. A scenario's SQL is written once, in the spelling Postgres, MySQL and
+//! SQLite share; on SQL Server, `add column` is written `add` (`tsql`).
 
 use reylo_migrate::catalog::catalog;
 use reylo_migrate::db::{with_database, Db, Row, Server};
@@ -36,6 +38,33 @@ fn base(d: Dialect) -> Option<String> {
         Dialect::Postgres => std::env::var("REYLO_TEST_PG").ok(),
         Dialect::Mysql => std::env::var("REYLO_TEST_MYSQL").ok(),
         Dialect::Sqlite => Some(String::new()),
+        Dialect::Sqlserver => std::env::var("REYLO_TEST_SQLSERVER").ok(),
+    }
+}
+
+/// A scenario's SQL as SQL Server spells it: `add column` is T-SQL's `add`, a table is renamed with
+/// `sp_rename`, `create table … as select` is `select … into`, a transaction opens with `begin
+/// transaction`, and a view, a function, a procedure or a trigger opens a batch of its own, as does
+/// a statement after a column's `add`, which T-SQL reads as the batch is compiled.
+fn tsql(d: Dialect, sql: &str) -> String {
+    if d != Dialect::Sqlserver {
+        return sql.to_string();
+    }
+    let re = |p: &str| regex::Regex::new(p).unwrap();
+    let sql = re(r"(?i)\badd column\b").replace_all(sql, "add");
+    let sql = re(r"(?i)alter table (\S+) rename to (\S+?);").replace_all(&sql, "exec sp_rename N'$1', N'$2';");
+    let sql = re(r"(?i)create table (\S+) as select (.+?) from ").replace_all(&sql, "select $2 into $1 from ");
+    let sql = re(r"(?i)\bbegin;").replace_all(&sql, "begin transaction;");
+    let sql = re(r"(?i);\s*(create\s+(?:or\s+alter\s+)?(?:view|function|procedure|trigger)\b)").replace_all(&sql, ";\nGO\n$1");
+    re(r"(?i)(alter table \S+ add [^;]+;)\s*(\S)").replace_all(&sql, "$1\nGO\n$2").into_owned()
+}
+
+/// `add column` as the dialect writes it in a plan: T-SQL's is `add`.
+fn add_column(d: Dialect) -> &'static str {
+    if d == Dialect::Sqlserver {
+        "add"
+    } else {
+        "add column"
     }
 }
 
@@ -58,6 +87,13 @@ impl P {
         std::fs::create_dir_all(dir.join("migrations")).unwrap();
         let url = match d {
             Dialect::Sqlite => format!("sqlite:{}", dir.join("dev.db").display()),
+            Dialect::Sqlserver => {
+                let mut admin = Db::connect(&with_database(&base, "master"), &dir).await.unwrap();
+                admin.exec(&format!("if db_id(N'{name}') is not null begin alter database [{name}] set single_user with rollback immediate; drop database [{name}]; end")).await.unwrap();
+                admin.exec(&format!("create database [{name}] {create}")).await.unwrap();
+                admin.close().await;
+                with_database(&base, &name)
+            }
             _ => {
                 let admin_url = if d == Dialect::Postgres { base.clone() } else { with_database(&base, "") };
                 let mut admin = Db::connect(&admin_url, &dir).await.unwrap();
@@ -71,6 +107,7 @@ impl P {
             Dialect::Postgres => Types { id: "bigint generated always as identity primary key", text: "text", int: "bigint" },
             Dialect::Mysql => Types { id: "bigint auto_increment primary key", text: "varchar(200)", int: "bigint" },
             Dialect::Sqlite => Types { id: "integer primary key", text: "text", int: "integer" },
+            Dialect::Sqlserver => Types { id: "bigint identity(1, 1) primary key", text: "nvarchar(200)", int: "bigint" },
         };
         Some(P { d, dir, url, name, lines: vec![], t, strict: false })
     }
@@ -224,11 +261,11 @@ impl P {
     }
 
     fn file(&self, name: &str, sql: &str) {
-        std::fs::write(self.dir.join("migrations").join(name), sql).unwrap();
+        std::fs::write(self.dir.join("migrations").join(name), tsql(self.d, sql)).unwrap();
     }
 
     fn schema(&self, sql: &str) {
-        std::fs::write(self.dir.join("schema.sql"), sql).unwrap();
+        std::fs::write(self.dir.join("schema.sql"), tsql(self.d, sql)).unwrap();
     }
 
     fn files(&self) -> Vec<String> {
@@ -247,6 +284,7 @@ impl P {
     }
 
     async fn exec(&self, sql: &str) {
+        let sql = &tsql(self.d, sql);
         let mut db = Db::connect(&self.url, &self.dir).await.unwrap();
         db.script(sql).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
         db.close().await;
@@ -266,7 +304,11 @@ impl P {
     /// The applied migrations, in the order Reylo reads them: by time, and on SQLite, whose clock has
     /// milliseconds, a tie by the order the rows were written.
     async fn history(&self) -> Vec<String> {
-        let tie = if self.d == Dialect::Sqlite { "rowid, " } else { "" };
+        let tie = match self.d {
+            Dialect::Sqlite => "rowid, ",
+            Dialect::Sqlserver => "id, ",
+            _ => "",
+        };
         self.try_rows(&format!("select name from __reylo_migrations where applied_at is not null order by applied_at, {tie}case when name = 'init.sql' then '' else name end"))
             .await
             .unwrap_or_default()
@@ -321,6 +363,10 @@ macro_rules! for_each_dialect {
             #[tokio::test(flavor = "current_thread")]
             async fn sqlite() {
                 if let Some(p) = super::P::new(super::Dialect::Sqlite).await { super::$scenario(p).await }
+            }
+            #[tokio::test(flavor = "current_thread")]
+            async fn sqlserver() {
+                if let Some(p) = super::P::new(super::Dialect::Sqlserver).await { let url = p.url.clone(); super::$scenario(p).await; super::forget(&url).await }
             }
         }
     )*};
@@ -764,7 +810,7 @@ async fn refuses_migrations_that_do_not_add_up(mut p: P) {
     p.file("20261027100000_users.sql", &format!("create table users (id {}, email {} not null);", p.t.id, p.t.text));
     // check holds the migrations against schema.sql, and runs nothing.
     assert_eq!(p.dry_run().await, 1);
-    assert_has!(p.output(), r"\S*schema\.sql has what no migration makes yet\n\n    alter table users add column name [^\n]+;\n\n  Write it as a migration:\n    reylo migrate new <name>");
+    assert_has!(p.output(), &format!(r"\S*schema\.sql has what no migration makes yet\n\n    alter table users {} name [^\n]+;\n\n  Write it as a migration:\n    reylo migrate new <name>", add_column(p.d)));
     assert!(p.try_rows("select 1 from users").await.is_err(), "nothing was applied");
     // apply moves the migrations into the database and never reads schema.sql.
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
@@ -796,7 +842,7 @@ async fn refuses_drift(mut p: P) {
     assert_has!(p.output(), r"✗ This database was changed outside its migrations\n\n  \+ column users\.hotfix [^\n]+\n\n[\s\S]*reylo migrate deploy --dry-run\n\nNothing was changed\.$");
     assert_eq!(p.dry_run().await, 1);
     let out = p.output();
-    assert_has!(&out, r"✗ This database was changed outside its migrations\n\n    alter table users add column hotfix [^\n]+;\n");
+    assert_has!(&out, &format!(r"✗ This database was changed outside its migrations\n\n    alter table users {} hotfix [^\n]+;\n", add_column(p.d)));
     assert_has!(&out, r"To keep it, add it to \S*schema\.sql and write its migration in development:\n    reylo migrate new <name>\n    reylo migrate dev\n  Then record it here, running nothing:\n    reylo migrate history push");
     assert_eq!(p.history().await, ["20261027100000_users.sql"]);
 }
@@ -1223,7 +1269,11 @@ async fn a_shadow_left_by_a_killed_run_is_swept(mut p: P) {
     target.exec(&format!("create database {dead}")).await.unwrap();
     target.close().await;
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
-    let list = if p.d == Dialect::Postgres { "select datname as n from pg_database where datname like 'reylo_shadow_%'" } else { r"select schema_name as n from information_schema.schemata where schema_name like 'reylo\_shadow\_%'" };
+    let list = match p.d {
+        Dialect::Postgres => "select datname as n from pg_database where datname like 'reylo_shadow_%'",
+        Dialect::Sqlserver => "select name as n from sys.databases where name like 'reylo[_]shadow[_]%'",
+        _ => r"select schema_name as n from information_schema.schemata where schema_name like 'reylo\_shadow\_%'",
+    };
     // Another test's run may be sweeping it at the same moment, which this run's sweep leaves to
     // it: it is gone once that drop ends.
     let mut names: Vec<String> = Vec::new();
@@ -1256,7 +1306,7 @@ async fn a_rebuilt_table_does_not_cascade(mut p: P) {
 
 async fn one_schema_built_two_ways_has_one_catalog(p: P) {
     let (int, text) = (p.t.int, p.t.text);
-    let ways = [format!("create table users (id {int}, email {text});"), format!("create table users (id {int}); alter table users add column email {text};")];
+    let ways = [format!("create table users (id {int}, email {text});"), tsql(p.d, &format!("create table users (id {int}); alter table users add column email {text};"))];
     let mut target = Db::connect(&p.url, &p.dir).await.unwrap();
     let mut server = Server::open(&mut target, &p.url, None).await.unwrap();
     let mut out = Vec::new();
@@ -1341,12 +1391,12 @@ async fn a_cached_prefix_replays_only_what_follows_it(mut p: P) {
     reylo_migrate::cache::take_stats();
     assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     let stats = reylo_migrate::cache::take_stats();
-    // MySQL has no copy of a database: the cache keeps its lines.
-    let keeps_databases = p.d != Dialect::Mysql;
+    // MySQL and SQL Server have no copy of a database: the cache keeps its lines.
+    let keeps_databases = !matches!(p.d, Dialect::Mysql | Dialect::Sqlserver);
     if keeps_databases {
         assert_eq!((stats.replayed, stats.copies), (0, 2), "the databases the last check kept answer: {stats:?}");
     } else {
-        assert_eq!(stats.replayed, 4, "MySQL replays it all: {stats:?}");
+        assert_eq!(stats.replayed, 4, "it replays it all: {stats:?}");
     }
     // Then their lines do, with no shadow at all.
     assert_eq!(p.dry_run().await, 0, "{}", p.peek());
@@ -1408,7 +1458,7 @@ async fn db_push_takes_a_development_database_to_schema_sql(mut p: P) {
     // schema.sql moves first: sync makes the change, unrecorded, and says what to write.
     p.schema(&format!("create table users (id {id}, name {text}, bio {text});"));
     assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"Pushing \S*schema\.sql to \S+\n  \+ alter table users add column bio [^\n]+;\n✓ This database matches \S*schema\.sql\n! Not in a migration yet: reylo migrate new <name> writes it");
+    assert_has!(p.output(), &format!(r"Pushing \S*schema\.sql to \S+\n  \+ alter table users {} bio [^\n]+;\n✓ This database matches \S*schema\.sql\n! Not in a migration yet: reylo migrate new <name> writes it", add_column(p.d)));
     assert_eq!(p.history().await, ["20261027100000_users.sql"]);
     p.exec("insert into users (name, bio) values ('ada', 'hi')").await;
     // The migration written for it is +recorded, and the rows stay. sync alone refuses it
@@ -1459,7 +1509,7 @@ async fn db_push_rewinds_what_no_longer_agrees(mut p: P) {
     p.output();
     assert_eq!(p.dev().await, 1, "{}", p.peek());
     let out = p.output();
-    assert_has!(&out, r"✗ This database was changed outside \S*schema\.sql and its migrations\n\n    alter table users add column hotfix");
+    assert_has!(&out, &format!(r"✗ This database was changed outside \S*schema\.sql and its migrations\n\n    alter table users {} hotfix", add_column(p.d)));
     p.exec(&undo_in(&out)).await;
     assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
     assert!(p.try_rows("select hotfix from users").await.is_err());
@@ -1885,7 +1935,7 @@ async fn create_renames_a_table_keeping_its_rows(mut p: P) {
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
     assert_has!(p.output(), r"✓ Wrote [^\n]+\n  ! users → accounts is written as a rename, keeping its rows\n    If they're different tables, delete the file, then:");
     let sql = sql_of(&p, "accounts");
-    assert!(sql.contains("rename to accounts") && !sql.contains("drop table"), "{sql}");
+    assert!((sql.contains("rename to accounts") || sql.contains("exec sp_rename N'users', N'accounts'")) && !sql.contains("drop table"), "{sql}");
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_eq!(p.rows("select email from accounts").await[0].text("email"), "a");
     p.output();
@@ -1915,7 +1965,7 @@ async fn db_push_renames_a_table_keeping_its_rows(mut p: P) {
     p.output();
     p.schema(&format!("create table accounts (id {id}, email {text});"));
     assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"Pushing \S*schema\.sql to \S+\n    ! users is renamed accounts, keeping its rows[^\n]*\n  \+ alter table \S*users\S* rename to \S*accounts\S*;");
+    assert_has!(p.output(), if p.d == Dialect::Sqlserver { r"Pushing \S*schema\.sql to \S+\n    ! users is renamed accounts, keeping its rows[^\n]*\n  \+ exec sp_rename N'users', N'accounts';" } else { r"Pushing \S*schema\.sql to \S+\n    ! users is renamed accounts, keeping its rows[^\n]*\n  \+ alter table \S*users\S* rename to \S*accounts\S*;" });
     assert_eq!(p.rows("select email from accounts").await[0].text("email"), "a");
     // The migration written for it is recorded, and the row stays.
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
@@ -2061,6 +2111,7 @@ async fn db_push_force_accepts_every_destructive_change(mut p: P) {
         Dialect::Postgres => ("timestamptz", "date", r"users\.stamp changes from timestamp with time zone to date, which keeps only the date"),
         Dialect::Mysql => ("datetime(6)", "datetime", r"users\.stamp changes from datetime\(6\) to datetime, which rounds to whole seconds"),
         Dialect::Sqlite => ("text", "integer", r"users\.stamp changes from text to integer, which stores text that reads as a number as that number"),
+        Dialect::Sqlserver => ("datetimeoffset(7)", "date", r"users\.stamp changes from datetimeoffset\(7\) to date, which keeps only the date"),
     };
     p.file("20261027100000_users.sql", &format!("create table users (id {id}, stamp {before}, bio {text});"));
     p.schema(&format!("create table users (id {id}, stamp {before}, bio {text});"));
@@ -2199,6 +2250,7 @@ async fn create_names_a_type_change_that_loses_values_in_drop(mut p: P) {
         Dialect::Postgres => ("timestamptz", "date", r"users\.stamp changes from timestamp with time zone to date, which keeps only the date"),
         Dialect::Mysql => ("datetime(6)", "datetime", r"users\.stamp changes from datetime\(6\) to datetime, which rounds to whole seconds"),
         Dialect::Sqlite => ("text", "integer", r"users\.stamp changes from text to integer, which stores text that reads as a number as that number"),
+        Dialect::Sqlserver => ("datetimeoffset(7)", "date", r"users\.stamp changes from datetimeoffset\(7\) to date, which keeps only the date"),
     };
     p.file("20261027100000_users.sql", &format!("create table users (id {id}, stamp {before});"));
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
@@ -2216,6 +2268,7 @@ async fn create_names_a_type_change_that_loses_values_in_drop(mut p: P) {
         Dialect::Postgres => "timestamptz",
         Dialect::Mysql => "datetime(6)",
         Dialect::Sqlite => "text",
+        Dialect::Sqlserver => "datetimeoffset(7)",
     };
     for f in p.files().into_iter().filter(|f| f.contains("_narrow")) {
         std::fs::remove_file(p.dir.join("migrations").join(f)).unwrap();
@@ -2224,6 +2277,7 @@ async fn create_names_a_type_change_that_loses_values_in_drop(mut p: P) {
         Dialect::Postgres => "alter table users alter column stamp type timestamp(3) with time zone",
         Dialect::Mysql => "alter table users modify stamp datetime(3)",
         Dialect::Sqlite => "alter table users add column note text",
+        Dialect::Sqlserver => "alter table users alter column stamp datetimeoffset(3) null",
     }));
     p.schema(&format!("create table users (id {id}, stamp {wider}{});", if p.d == Dialect::Sqlite { ", note text" } else { "" }));
     p.output();
@@ -2282,7 +2336,7 @@ async fn db_push_watch_syncs_again_when_schema_sql_changes(mut p: P) {
     saver.join().unwrap();
     let out = p.output();
     assert_has!(&out, r"Watching \S*schema\.sql and \S*migrations: each save pushes again");
-    assert_has!(&out, r"This database matches \S*schema\.sql and its migrations[\s\S]*\d\d:\d\d:\d\d[\s\S]*Pushing \S*schema\.sql to \S+\n  \+ alter table users add column bio");
+    assert_has!(&out, &format!(r"This database matches \S*schema\.sql and its migrations[\s\S]*\d\d:\d\d:\d\d[\s\S]*Pushing \S*schema\.sql to \S+\n  \+ alter table users {} bio", add_column(p.d)));
     assert!(p.try_rows("select bio from users").await.is_ok());
     assert_eq!(p.run(async |o, log| reylo_migrate::db_push_watch(o, true, &Default::default(), Some(1), log).await).await, 1);
     assert_has!(p.output(), "CI is set, and reylo db push --watch is for development databases");
@@ -2440,7 +2494,7 @@ async fn create_states_what_it_drops_and_renames(mut p: P) {
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &choices, log).await).await, 0, "{}", p.peek());
     assert_has!(p.output(), r"  ! users\.middle_name → nickname is written as a rename, keeping its rows\n    If they're different columns, delete the file, then:\n      reylo migrate new tidy --drop users\.legacy,users\.middle_name");
     let sql = made(&p).iter().map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect::<String>();
-    assert!(sql.contains("rename column middle_name to nickname") && sql.contains("drop column legacy"), "{sql}");
+    assert!((sql.contains("rename column middle_name to nickname") || sql.contains("exec sp_rename N'users.[middle_name]', N'nickname', N'COLUMN'")) && sql.contains("drop column legacy"), "{sql}");
     take_back(&p);
     // Both named: both dropped, nickname added.
     let choices = create(&["users.legacy", "users.middle_name"], &[]);

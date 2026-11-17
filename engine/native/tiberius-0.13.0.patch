@@ -1,0 +1,81 @@
+diff -ru a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -296,6 +296,12 @@
+ [dependencies.tokio-rustls]
+ version = "0.26.4"
+ optional = true
++default-features = false
++features = [
++    "logging",
++    "tls12",
++    "ring",
++]
+ 
+ [dependencies.tokio-util]
+ version = "0.7"
+diff -ru a/src/client/tls_stream/rustls_tls_stream.rs b/src/client/tls_stream/rustls_tls_stream.rs
+--- a/src/client/tls_stream/rustls_tls_stream.rs
++++ b/src/client/tls_stream/rustls_tls_stream.rs
+@@ -21,7 +21,7 @@
+             danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+             WantsClientCert,
+         },
+-        crypto::{aws_lc_rs, CryptoProvider},
++        crypto::{ring, CryptoProvider},
+         pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+         ClientConfig, ConfigBuilder, DigitallySignedStruct, Error as RustlsError, RootCertStore,
+         SignatureScheme,
+@@ -267,7 +267,7 @@
+ 
+ /// Resolve the rustls `CryptoProvider`: honour a process-installed default
+ /// (`CryptoProvider::install_default`) if present, otherwise fall back to
+-/// aws-lc-rs.
++/// ring.
+ fn resolve_crypto_provider(installed: Option<Arc<CryptoProvider>>) -> Arc<CryptoProvider> {
+     match installed {
+         Some(provider) => {
+@@ -280,9 +280,9 @@
+         None => {
+             event!(
+                 Level::DEBUG,
+-                "No process-installed CryptoProvider; using the aws-lc-rs default"
++                "No process-installed CryptoProvider; using the ring default"
+             );
+-            Arc::new(aws_lc_rs::default_provider())
++            Arc::new(ring::default_provider())
+         }
+     }
+ }
+@@ -501,7 +501,7 @@
+ 
+     #[test]
+     fn resolve_crypto_provider_honours_installed() {
+-        let installed = Arc::new(aws_lc_rs::default_provider());
++        let installed = Arc::new(ring::default_provider());
+         let got = resolve_crypto_provider(Some(installed.clone()));
+         assert!(
+             Arc::ptr_eq(&got, &installed),
+@@ -510,11 +510,11 @@
+     }
+ 
+     #[test]
+-    fn resolve_crypto_provider_falls_back_to_aws_lc_rs() {
++    fn resolve_crypto_provider_falls_back_to_ring() {
+         let got = resolve_crypto_provider(None);
+         assert!(
+             !got.cipher_suites.is_empty(),
+-            "the aws-lc-rs fallback must provide cipher suites"
++            "the ring fallback must provide cipher suites"
+         );
+     }
+ 
+@@ -938,7 +938,7 @@
+         // deliberately absent, so `leaf` cannot chain to anything trusted.
+         roots.add(leaf.clone()).unwrap();
+ 
+-        let provider = Arc::new(aws_lc_rs::default_provider());
++        let provider = Arc::new(ring::default_provider());
+         let verifier = tokio_rustls::rustls::client::WebPkiServerVerifier::builder_with_provider(
+             Arc::new(roots),
+             provider,

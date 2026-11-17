@@ -19,6 +19,7 @@ pub async fn catalog(db: &mut Db) -> Result<Vec<String>, Error> {
         Dialect::Postgres => postgres(db).await?,
         Dialect::Mysql => mysql(db).await?,
         Dialect::Sqlite => sqlite(db).await?,
+        Dialect::Sqlserver => sqlserver(db).await?,
     };
     Ok(lines.into_iter().collect::<BTreeSet<_>>().into_iter().collect())
 }
@@ -1131,6 +1132,24 @@ async fn sqlite(db: &mut Db) -> Result<Vec<String>, Error> {
         }
     }
     Ok(lines)
+}
+
+// ---------------------------------------------------------------------------------------------
+// SQL Server. The lines are the diff engine's objects, each its id and its definition: the reader
+// already writes every definition from the catalog views, with the names SQL Server chose for
+// constraints left out, so two databases made from one file read the same.
+
+async fn sqlserver(db: &mut Db) -> Result<Vec<String>, Error> {
+    let schema = crate::diff::sqlserver::read(db).await?;
+    Ok(schema
+        .objects
+        .values()
+        .map(|o| match o.def.as_str() {
+            "" => o.id.clone(),
+            def if def.contains('\n') => format!("{} {}", o.id, json(def)),
+            def => format!("{} {def}", o.id),
+        })
+        .collect())
 }
 
 /// Postgres's SQL on one line: the whitespace between two tokens read as one space, and each token

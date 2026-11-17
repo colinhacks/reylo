@@ -1,0 +1,10 @@
+drop index posts_user on posts;
+declare @reylo_5e3a7e0a825e nvarchar(max) = (select top 1 quotename(f.name) from sys.foreign_keys f where f.parent_object_id = object_id(N'posts') and f.referenced_object_id = object_id(N'users') and (select string_agg(c.name, N',') within group (order by fc.constraint_column_id) from sys.foreign_key_columns fc join sys.columns c on c.object_id = fc.parent_object_id and c.column_id = fc.parent_column_id where fc.constraint_object_id = f.object_id) = N'user_id');
+exec (N'alter table posts drop constraint ' + @reylo_5e3a7e0a825e);
+declare @reylo_f124b1fecb24 nvarchar(max) = (select top 1 quotename(name) from sys.key_constraints where parent_object_id = object_id(N'users') and type = 'PK');
+exec (N'alter table users drop constraint ' + @reylo_f124b1fecb24);
+alter table posts alter column user_id bigint not null;
+alter table users alter column id bigint not null;
+alter table users add primary key clustered (id);
+alter table posts add foreign key (user_id) references users (id);
+create nonclustered index posts_user on posts (user_id);

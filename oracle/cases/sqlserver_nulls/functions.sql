@@ -1,0 +1,1 @@
+select abs(credit) as a, round(credit, 0) as r, year(joined) as y, datediff(day, joined, sysutcdatetime()) as age, dateadd(day, 1, joined) as next_day, format(joined, 'yyyy') as formatted from customers

@@ -359,7 +359,7 @@ impl Cache {
                 touch(&file);
                 Some(Shadow { db: Db::Sqlite(to), name: ":memory:".into() })
             }
-            Dialect::Mysql => None,
+            Dialect::Mysql | Dialect::Sqlserver => None,
         }
     }
 
@@ -390,7 +390,7 @@ impl Cache {
                 self.save_sqlite(&shadow, key);
                 Ok(shadow)
             }
-            Dialect::Mysql => Ok(shadow),
+            Dialect::Mysql | Dialect::Sqlserver => Ok(shadow),
         }
     }
 
@@ -427,7 +427,7 @@ impl Cache {
                 self.save_sqlite(&shadow, key);
                 Some(shadow)
             }
-            Dialect::Mysql => Some(shadow),
+            Dialect::Mysql | Dialect::Sqlserver => Some(shadow),
         }
     }
 
@@ -495,6 +495,10 @@ async fn server_state(server: &mut Server) -> Result<String, Error> {
             let users: Vec<String> = users.into_iter().map(|(u, h)| format!("{u}@{h}")).collect();
             Ok(format!("{v}\n\x1f{u}\n\x1f{who}\n\x1f{}\n\x1f{}\n\x1f{defaults:?}", globals.join("\n"), users.join("\n")))
         }
+        Server::Sqlserver { admin, collation, .. } => {
+            let rows = crate::db::sqlserver_state(admin).await?;
+            Ok(format!("{rows}\n\x1f{collation:?}"))
+        }
         Server::Sqlite => {
             let conn = rusqlite::Connection::open_in_memory().map_err(|e| Error(e.to_string()))?;
             let mut statement = conn.prepare("pragma compile_options").map_err(|e| Error(e.to_string()))?;
@@ -540,6 +544,13 @@ pub(crate) async fn snapshot(db: &mut Db) -> Result<String, Error> {
                 out.push(format!("{} {} {}", r.text("u"), r.text("who"), r.text("db")));
             }
             Ok(out.join("\n"))
+        }
+        Dialect::Sqlserver => {
+            // The session's SET options, its user and database, and the temporary tables it holds.
+            let rows = db
+                .rows("select concat_ws(' ', @@options, user_name(), db_name(), @@lock_timeout, @@textsize, (select count(*) from tempdb.sys.objects where name like N'#%' and object_id = object_id(N'tempdb..' + name))) as s")
+                .await?;
+            Ok(rows.first().map(|r| r.text("s").to_string()).unwrap_or_default())
         }
         Dialect::Sqlite => {
             // `foreign_keys` is set by every migration's run itself, before it and after it.

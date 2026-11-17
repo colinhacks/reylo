@@ -58,7 +58,7 @@ Reylo is the perfect option for the agent era:
 - 🌵 **DRY** — no redundant hand-written types
 - 🎯 **Checked against your database** — a misspelled column is a type error
 - 🤖 **Agent-friendly** — DRY code is more maintainable for agents
-- 🧩 **Postgres, MySQL and SQLite** — Neon, PlanetScale, Cloudflare D1, Turso and more
+- 🧩 **Postgres, MySQL, SQLite and SQL Server** — Neon, PlanetScale, Cloudflare D1, Turso and more
 - 🔌 **Bring your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](#supported-drivers)
 - ⚡ **No codegen** — no generated files, no watcher
 
@@ -68,7 +68,7 @@ To install Reylo, you'll need:
 
 - **TypeScript 7.1 (currently in beta).** The first release with content mappers.
 - **Node 24 or later.**
-- **A running dev database.** Postgres, MySQL 8.0.22 or later, or a SQLite file: Reylo reads your current schema from it.
+- **A running dev database.** Postgres, MySQL 8.0.22 or later, SQL Server 2019 or later (a preview), or a SQLite file: Reylo reads your current schema from it.
 
 Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
@@ -104,7 +104,7 @@ Point Reylo at your dev database with `DATABASE_URL`, in your environment or in 
 
 ```sh
 # .env
-DATABASE_URL=postgres://localhost:5432/app  # or mysql://…, or file:./app.db for SQLite
+DATABASE_URL=postgres://localhost:5432/app  # or mysql://…, sqlserver://…, or file:./app.db for SQLite
 ```
 
 To make `.sql` imports work at run time too, load Reylo where your code runs. On Node:
@@ -168,6 +168,7 @@ Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a D
 - **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`
 - **MySQL** — `mysql2`, `mariadb`, PlanetScale, `Bun.sql`
 - **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, SQLite Wasm, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
+- **SQL Server** (a preview) — `mssql`
 
 ## Documentation
 

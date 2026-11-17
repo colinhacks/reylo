@@ -27,6 +27,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import postgres from 'postgres';
 import mysql from 'mysql2/promise';
+import mssql from 'mssql';
 import { Session } from '../../src/analyze.ts';
 import { ident, orNull, renderParamType, renderType } from '../../src/render.ts';
 import { docComment, leadingComment, statementAfter } from '../../src/doc-comment.ts';
@@ -44,6 +45,7 @@ const site = path.resolve(import.meta.dirname, '..');
 const URLS: Record<Exclude<Dialect, 'sqlite'>, string> = {
   postgres: process.env.REYLO_CAPTURE_POSTGRES ?? 'postgres://postgres@localhost:54329/reylo_capture',
   mysql: process.env.REYLO_CAPTURE_MYSQL ?? 'mysql://root@127.0.0.1:54336/reylo_capture',
+  sqlserver: process.env.REYLO_CAPTURE_SQLSERVER ?? 'sqlserver://sa:Reylo_capture_1@127.0.0.1:54333/reylo_capture?encrypt=true&trustServerCertificate=true',
 };
 /** The scratch database an inference card's own schema is built in, on the same server: made again for each card. */
 const cardUrl = (url: string) => {
@@ -53,8 +55,8 @@ const cardUrl = (url: string) => {
 };
 // The driver each scratch project names, whose defaults the types follow, as for a project with
 // that driver: postgres.js, mysql2 and node:sqlite (no package).
-const DRIVER: Record<Dialect, string | undefined> = { postgres: 'postgres', mysql: 'mysql2', sqlite: undefined };
-const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite'];
+const DRIVER: Record<Dialect, string | undefined> = { postgres: 'postgres', mysql: 'mysql2', sqlite: undefined, sqlserver: 'mssql' };
+const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite', 'sqlserver'];
 
 // ---- Arguments ----
 
@@ -67,7 +69,7 @@ for (let i = 0; i < args.length; i++) {
   const schema = /^--schema(?:=(.*))?$/.exec(arg);
   if (schema) {
     const value = schema[1] ?? args[++i];
-    const m = /^(postgres|mysql|sqlite)=(.+)$/.exec(value ?? '');
+    const m = /^(postgres|mysql|sqlite|sqlserver)=(.+)$/.exec(value ?? '');
     if (!m) fail(`--schema takes <dialect>=<file>, as in --schema mysql=schema.sql; got ${value ?? 'nothing'}`);
     schemaFiles[m[1] as Dialect] = readFileSync(path.resolve(m[2]!), 'utf8');
   } else if (arg.startsWith('-')) fail(`unknown option ${arg}`);
@@ -227,6 +229,37 @@ async function buildMysql(schema: string, url = URLS.mysql): Promise<string> {
   return url;
 }
 
+/** The `mssql` configuration of a `sqlserver://` URL, on `database`. */
+function mssqlConfig(url: URL, database: string) {
+  return {
+    server: url.hostname,
+    port: Number(url.port || 1433),
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database,
+    options: { encrypt: url.searchParams.get('encrypt') !== 'false', trustServerCertificate: url.searchParams.get('trustServerCertificate') === 'true' },
+  };
+}
+
+async function buildSqlserver(schema: string, url = URLS.sqlserver): Promise<string> {
+  const { db, admin } = scratch(url);
+  const server = await new mssql.ConnectionPool(mssqlConfig(admin, 'master')).connect();
+  try {
+    await server.request().batch(`if db_id(N'${db}') is not null begin alter database [${db}] set single_user with rollback immediate; drop database [${db}]; end`);
+    await server.request().batch(`create database [${db}]`);
+  } finally {
+    await server.close();
+  }
+  const pool = await new mssql.ConnectionPool(mssqlConfig(admin, db)).connect();
+  try {
+    // A schema's batches, as its `GO` lines part them.
+    for (const batch of schema.split(/^\s*go\s*$/im)) if (batch.trim()) await pool.request().batch(batch);
+  } finally {
+    await pool.close();
+  }
+  return url;
+}
+
 function buildSqlite(dir: string, schema: string): string {
   const db = new DatabaseSync(path.join(dir, 'capture.db'));
   try {
@@ -332,7 +365,7 @@ try {
       const dir = project(root, dialect);
       let url: string;
       try {
-        url = dialect === 'postgres' ? await buildPostgres(schema) : dialect === 'mysql' ? await buildMysql(schema) : buildSqlite(dir, schema);
+        url = dialect === 'postgres' ? await buildPostgres(schema) : dialect === 'mysql' ? await buildMysql(schema) : dialect === 'sqlserver' ? await buildSqlserver(schema) : buildSqlite(dir, schema);
       } catch (e) {
         errors.push(`${shown}: the ${DIALECT_NAME[dialect]} ${SCHEMA_FILE} fails: ${(e as Error).message}`);
         continue;
@@ -382,7 +415,7 @@ try {
         const own = project(root, dialect, `${dialect}-card-${i}`);
         let cardDb: string;
         try {
-          cardDb = dialect === 'postgres' ? await buildPostgres(block.schema!, cardUrl(URLS.postgres)) : dialect === 'mysql' ? await buildMysql(block.schema!, cardUrl(URLS.mysql)) : buildSqlite(own, block.schema!);
+          cardDb = dialect === 'postgres' ? await buildPostgres(block.schema!, cardUrl(URLS.postgres)) : dialect === 'mysql' ? await buildMysql(block.schema!, cardUrl(URLS.mysql)) : dialect === 'sqlserver' ? await buildSqlserver(block.schema!, cardUrl(URLS.sqlserver)) : buildSqlite(own, block.schema!);
         } catch (e) {
           report(block, `the card's schema fails: ${(e as Error).message}`);
           continue;
@@ -407,7 +440,7 @@ function indent(text: string) {
 /** The module's parameters, row and row count on one line. */
 function summary(module: string): string {
   const m = /^declare const query: Query<(.*)> & \{$/m.exec(module);
-  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite)", QueryError$/, '') : module;
+  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite|sqlserver)", QueryError$/, '') : module;
 }
 
 for (const w of warnings) console.warn(`warning: ${w}`);

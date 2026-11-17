@@ -1,0 +1,264 @@
+---
+title: SQL Server
+description: How Reylo types SQL queries on SQL Server. Each column's type in TypeScript, null values, row counts, parameters, the mssql driver, migrations and limits.
+---
+
+<p className="dk-subheader">How Reylo types queries on SQL Server</p>
+
+[Reylo](/) is an engine that infers the types of SQL queries from your live database. This page covers how it types and runs queries on SQL Server: column types, null values, row counts, parameters, the driver and migrations.
+
+| | |
+| --- | --- |
+| Status | A preview: what it types and returns may still change |
+| SQL Server versions | 2019 or later, with a SQL login; tested on 2022 |
+| Connection | A `sqlserver://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url) |
+| Driver | `mssql`, with the option it needs to read decimals exactly ([Driver](#driver)) |
+| Type checking | Reylo's engine connects to SQL Server itself, so your project needs no driver for it |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="sqlserver"
+create table users (
+  id int identity(1, 1) primary key,
+  name nvarchar(100) not null,
+  email nvarchar(255) unique,
+  active bit not null default 1,
+  created_at datetime2(3) not null default sysutcdatetime()
+);
+```
+
+```sql file="schema.sql" dialect="sqlserver"
+create table orders (
+  id bigint identity(1, 1) primary key,
+  user_id int not null references users (id),
+  total decimal(12, 2) not null,
+  placed_at datetimeoffset(3) not null default sysdatetimeoffset(),
+  ships_on date,
+  receipt varbinary(max)
+);
+```
+
+</Details>
+
+## Connection
+
+Name the database with a `sqlserver://` URL:
+
+```sh title=".env"
+DATABASE_URL="sqlserver://reylo:secret@localhost:1433/app?trustServerCertificate=true"
+```
+
+The connection is encrypted unless the URL says `encrypt=false`, which encrypts the login alone. Add `trustServerCertificate=true` for a server whose certificate your machine doesn't trust, such as one in Docker.
+
+## Where types come from [#sources]
+
+Reylo types each query from SQL Server's own description of it.
+
+Reylo asks the live database to describe the query, with [`sp_describe_undeclared_parameters`](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-describe-undeclared-parameters-transact-sql) for its parameters and [`sys.dm_exec_describe_first_result_set`](https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-exec-describe-first-result-set-transact-sql) for its columns. Reylo adds which columns are never null and how many rows the query returns.
+
+## Data types
+
+Each SQL Server type has one TypeScript type:
+
+| SQL type | TypeScript | The value `.run()` returns |
+| --- | --- | --- |
+| `tinyint`, `smallint`, `int`, `count(*)` | `number` | `2026` |
+| `bigint`, `count_big(*)` | `bigint` | `9007199254740993n` |
+| `bit` | `boolean` | `true` |
+| `decimal`, `numeric`, `money`, `smallmoney` | `string` | `"12.50"` |
+| `float`, `real` | `number` | `1.5` |
+| `char`, `varchar`, `nchar`, `nvarchar`, `text`, `ntext`, `xml` | `string` | `"Ada"` |
+| `binary`, `varbinary`, `image` | `Uint8Array` | `Uint8Array.of(0, 255)` |
+| `uniqueidentifier` | `string` | `"6F9619FF-8B86-D011-B42D-00C04FC964FF"` |
+| `date` | `string` | `"2026-10-20"` |
+| `time` | `string` | `"10:00:00.123"` |
+| `datetime2`, `datetime`, `smalldatetime` | `string` | `"2026-10-20T10:00:00.123"` |
+| `datetimeoffset` | `string` | `"2026-10-20T10:00:00.123+05:30"` |
+
+A `uniqueidentifier` comes back in capitals, as SQL Server writes it.
+
+### Decimals
+
+A `decimal`, `numeric`, `money` or `smallmoney` comes back as its exact text, with its scale:
+
+```ts twoslash tab="main.ts"
+import totals from "./ss_totals.sql";
+
+const sums = await totals.run(db);
+//    ^?
+```
+
+```sql tab="ss_totals.sql" dialect="sqlserver"
+select user_id, sum(total) as spent, count_big(*) as orders
+from orders
+group by user_id
+```
+
+`mssql` reads a decimal as a JavaScript number unless its pool sets `decimalAsString`, so `.run()` refuses a decimal from a pool without it rather than return a rounded value ([Driver](#driver)).
+
+### Dates and times
+
+A date or a time comes back as its ISO 8601 text, with as many digits as its type keeps: `"10:00:00.1234567"` from a `time(7)`. A `datetimeoffset` keeps the offset it was written with:
+
+```ts twoslash tab="main.ts"
+import recentOrders from "./ss_recent_orders.sql";
+
+const recent = await recentOrders.run(db, { since: "2026-10-01T00:00:00Z" });
+//    ^?
+```
+
+```sql tab="ss_recent_orders.sql" dialect="sqlserver"
+select id, placed_at, ships_on
+from orders
+where placed_at >= :since
+```
+
+Pass a date or a time as the same text. A `datetimeoffset` parameter takes the text with its offset, or `Z`.
+
+## Nullability
+
+Each column can be null unless Reylo can tell it never is ([Inference](/inference#left-joins)). On SQL Server:
+
+- **The server's description.** Reylo starts from whether SQL Server describes each column as nullable, which it does for any expression it can't prove, such as `upper(name)`.
+- **Expressions over columns that are never null**, such as `upper(u.name)`, `len(name)`, `total * 2` and `concat(name, '!')`, are never null, with SQL Server's `ANSI_WARNINGS` on, as `mssql` sets it: an overflow then fails rather than give `NULL`.
+- **A `where` test** makes its column non-null, even across a `left join`: `where o.total > :min` rules out a missing order.
+- **`count(*)`, `row_number()` and `rank()`** are never null, and a `max` or `min` of a column that is never null isn't either, in a group.
+
+```ts twoslash tab="main.ts"
+import usersWithOrders from "./ss_users_with_orders.sql";
+
+const rows = await usersWithOrders.run(db);
+//    ^?
+```
+
+```sql tab="ss_users_with_orders.sql" dialect="sqlserver"
+select u.name, upper(u.name) as shout, o.total, o.ships_on
+from users u
+left join orders o on o.user_id = u.id
+```
+
+## Cardinality
+
+Reylo infers how many rows a query returns from its keys, aggregates and `top`:
+
+- **A key**: `where id = :id` on a primary key or a unique key returns at most one row. A key column SQL Server converts to compare it doesn't count, such as a `varchar` key compared with a number, since `'01'` and `'1'` both equal `1`.
+- **`top 1`** or `top (1)` returns at most one row.
+- **An aggregate** with no `group by` returns exactly one row, or at most one with a `having`, an `offset` or a `top` that may be 0.
+- **A write with `output`** returns what it outputs: one row for an `insert … values` of one row, at most one where a unique index ignores duplicates, and any number for an `update`, a `delete` or a `merge`. A write with no `output` returns nothing, or the rows a trigger on its table returns.
+
+```ts twoslash tab="main.ts"
+import addUser from "./ss_add_user.sql";
+
+const user = await addUser.run(db, { name: "Ada", email: "ada@example.com" });
+//    ^?
+```
+
+```sql tab="ss_add_user.sql" dialect="sqlserver"
+insert into users (name, email)
+output inserted.id, inserted.created_at
+values (:name, :email)
+```
+
+## Parameters
+
+### Placeholders
+
+Write parameters as `:name`, and pass `.run()` an object with those names. Reylo sends each one as `@p_1`, `@p_2`, …, so `@name` keeps its T-SQL meaning.
+
+### What a parameter takes
+
+A parameter accepts the same values `.run()` returns for its type, and `.run()` binds it as the type SQL Server deduced for it. So a `varchar` column is compared with a `varchar`, and SQL Server can use its index:
+
+| SQL type | A parameter takes |
+| --- | --- |
+| `tinyint`, `smallint`, `int` | `number` |
+| `bigint` | `number`, `bigint` or a string of digits |
+| `bit` | `boolean` |
+| `decimal`, `numeric`, `money`, `smallmoney` | `string` |
+| `float`, `real` | `number` |
+| `char`, `varchar`, `nchar`, `nvarchar` | `string` |
+| `binary`, `varbinary` | `Uint8Array` |
+| `uniqueidentifier`, `date`, `time`, `datetime2`, `datetimeoffset` | `string` |
+
+### Casts
+
+Cast a parameter whose type SQL Server can't deduce, as in a `select` list:
+
+```sql tab="ss_echo.sql" dialect="sqlserver"
+select :n::int + 1 as next, cast(:label as nvarchar(40)) as label
+```
+
+Reylo writes `::int` as SQL Server's `cast(… as int)`. A `::text` is `nvarchar(max)`, `::boolean` is `bit`, and `::timestamptz` is `datetimeoffset`.
+
+## Database errors
+
+With [`.try()`](/typescript#try), an error SQL Server raised comes back as `{ error }`:
+
+| Field | What it holds |
+| --- | --- |
+| `number` | The error's number, as `2627` |
+| `state` | Its state, which tells apart the places one number is raised from |
+| `class` | Its severity, from 11 to 25 |
+| `message` | The server's message |
+| `constraint` | On a duplicate key, a foreign key or a check, the constraint or the unique index |
+| `table` | The table the message names, as `dbo.users` |
+| `column` | The column a `NULL` is refused for, or a value is cut to fit |
+
+## Driver
+
+Reylo runs SQL Server queries on `mssql`. Pass `.run()` a `ConnectionPool`, a `Transaction` or a `Request`:
+
+```ts twoslash tab="main.ts"
+import sql from "mssql";
+import getUser from "./ss_get_user.sql";
+
+const pool = await new sql.ConnectionPool({
+  server: "localhost",
+  database: "app",
+  user: "reylo",
+  password: process.env.DB_PASSWORD,
+  options: { decimalAsString: true },
+}).connect();
+
+const user = await getUser.run(pool, { id: 1 });
+
+const tx = new sql.Transaction(pool);
+await tx.begin();
+await getUser.run(tx, { id: 1 });
+await tx.commit();
+```
+
+```sql tab="ss_get_user.sql" dialect="sqlserver"
+select id, name, email from users where id = :id
+```
+
+Set `options.decimalAsString` on the pool, and leave `options.useUTC` on, its default: `.run()` refuses a pool that reads dates in the process's time zone. Reylo decodes its results itself, so a pool's other options don't affect Reylo's queries.
+
+## Migrations
+
+`reylo migrate` and `reylo db` work on SQL Server as on the other databases ([Migrations](/migrations)). A migration file is T-SQL batches, which `GO` lines part:
+
+```sql title="migrations/20261020100000_orders_view.sql"
+alter table orders add status varchar(10) not null default 'open';
+GO
+create view open_orders as select id, user_id, total from orders where status = 'open';
+```
+
+- **A view, a function, a procedure or a trigger** opens a batch of its own, and so does `create schema`. A plan Reylo writes puts the `GO` lines in.
+- **A statement after an `alter table … add`** that reads the new column goes in a later batch, since SQL Server compiles a batch before it runs it.
+- **A file runs in one transaction**, which SQL Server's DDL joins, so a file that fails leaves nothing behind.
+- **A constraint SQL Server named itself**, such as a primary key written without a name, is dropped by looking its name up as the migration runs, since every database it's made in names it differently.
+
+## Limits
+
+What Reylo can't type on SQL Server, and what to do instead:
+
+| Limit | Instead |
+| --- | --- |
+| A file of several statements, a batch with variables (`declare`), or `exec` | One statement per file: a `select`, or an `insert`, `update`, `delete` or `merge` with `output` |
+| A temporary table | A common table expression, or a table of your schema |
+| A parameter used twice, as in `:name is null or name = :name`, which SQL Server can't describe | Read it once in a `with`: `with input as (select :name::nvarchar(100) as name) select … from users, input where input.name is null or users.name = input.name` |
+| `rows(…)` and `row(…)` parameters | A parameter per value |
+| A sign-in with Microsoft Entra ID | A SQL login |
+| JSON the query builds with `for json` | It is a `string`: parse it yourself |
+| The Rust crate, whose sqlx has no SQL Server driver | The npm package `reylo` |

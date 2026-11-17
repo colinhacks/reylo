@@ -35,6 +35,9 @@ const KINDS: &[&str] = &["select", "with", "insert", "update", "delete", "merge"
 /// `suggested_precision`, `suggested_scale`). An error where a parameter's type cannot be deduced.
 pub const UNDECLARED: &str = "exec sys.sp_describe_undeclared_parameters @tsql = @P1";
 
+/// The database's default collation, which a parameter of a character type takes.
+pub const DATABASE_COLLATION: &str = "select convert(nvarchar(128), databasepropertyex(db_name(), 'Collation'))";
+
 /// The first result set's columns, given the parameters' declarations (`@P2`, NULL for none), in
 /// browse mode, which names each column's source and adds the source's hidden key columns. A
 /// statement the server refuses is one row with its error in the last two columns, not an error.
@@ -94,17 +97,21 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     let parsed = match Parser::parse_sql(&MsSqlDialect {}, &rewritten.sql) {
         Ok(mut statements) if statements.len() == 1 => statements.pop(),
         Ok(statements) if statements.len() > 1 => return refuse(vec![whole(sql, lex::several_statements(), 10, None)]),
+        _ if several_unseparated(&rewritten.sql) => return refuse(vec![whole(sql, lex::several_statements(), 10, None)]),
         _ => None,
     };
     if let Some(message) = refused_word(&lex::first_word(sql, &lexed)).or_else(|| parsed.as_ref().and_then(refused)) {
         return refuse(vec![whole(sql, message, 10, None)]);
     }
-    // The first round: each parameter's type.
+    // The first round: each parameter's type, and the collation one of a character type takes.
     let deduced: Deduced = if rewritten.order.is_empty() {
         Vec::new()
     } else {
-        match host.query(UNDECLARED, vec![json!(rewritten.sql)], Scope::Statement)? {
-            Ok(rows) => deduced(&rows, rewritten.order.len()),
+        let collation = host.query(DATABASE_COLLATION, Vec::new(), Scope::Session);
+        let undeclared = host.query(UNDECLARED, vec![json!(rewritten.sql)], Scope::Statement);
+        let collation = collation?.ok().and_then(|rows| rows.first()?.first().and_then(as_str).map(String::from));
+        match undeclared? {
+            Ok(rows) => deduced(&rows, rewritten.order.len(), collation.as_deref()),
             Err(e) => {
                 let message = authored(&e.message);
                 // A parameter the server cannot type takes a cast, at the parameter.
@@ -212,6 +219,22 @@ const BATCH: &str = "A typed .sql file holds one statement, and this one is part
 /// Why a statement is not one the analysis reads, by its first word, which needs no parse: a
 /// stored procedure's and a batch's result sets are the server's to describe and nothing's to
 /// bound.
+/// Whether the text is two statements with no `;` between them, which T-SQL takes (`select 1
+/// select 2`) and the parser does not: one statement read whole, then a word that starts another
+/// and a statement read from there. Where the parser stops at a clause it doesn't read, such as
+/// `with rollup`, what follows reads as no statement.
+fn several_unseparated(sql: &str) -> bool {
+    use sqlparser::tokenizer::Token;
+    const STARTS: &[&str] = &["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "WITH", "EXEC", "EXECUTE", "DECLARE", "SET", "IF", "WHILE", "BEGIN", "CREATE", "ALTER", "DROP", "TRUNCATE", "PRINT", "RETURN", "THROW", "RAISERROR", "WAITFOR", "USE"];
+    let dialect = MsSqlDialect {};
+    let Ok(mut parser) = Parser::new(&dialect).try_with_sql(sql) else { return false };
+    if parser.parse_statement().is_err() {
+        return false;
+    }
+    while parser.consume_token(&Token::SemiColon) {}
+    matches!(parser.peek_token().token, Token::Word(w) if STARTS.contains(&w.value.to_ascii_uppercase().as_str())) && parser.parse_statement().is_ok()
+}
+
 fn refused_word(word: &str) -> Option<String> {
     match word {
         "exec" | "execute" => Some(EXEC.into()),
@@ -241,7 +264,9 @@ fn cannot_deduce(code: &Option<String>) -> bool {
 }
 
 /// Each parameter's deduced type, in binding order, by the name the rewrite gave it (`@p_1`).
-fn deduced(rows: &[Vec<Value>], count: usize) -> Deduced {
+/// A parameter of a character type takes the database's default collation, whose code page its
+/// length in bytes is counted in.
+fn deduced(rows: &[Vec<Value>], count: usize, collation: Option<&str>) -> Deduced {
     let mut out: Deduced = vec![None; count];
     for row in rows {
         let Some(name) = row.get(1).and_then(as_str) else { continue };
@@ -250,7 +275,7 @@ fn deduced(rows: &[Vec<Value>], count: usize) -> Deduced {
         if n == 0 || n > count {
             continue;
         }
-        out[n - 1] = Some(Described { name: ty.to_string(), max_length: int(row.get(4)), precision: int(row.get(5)) as u32, scale: int(row.get(6)) as u32, collation: None });
+        out[n - 1] = Some(Described { name: ty.to_string(), max_length: int(row.get(4)), precision: int(row.get(5)) as u32, scale: int(row.get(6)) as u32, collation: collation.map(String::from) });
     }
     out
 }
@@ -510,6 +535,9 @@ mod tests {
     #[test]
     fn a_parameter_the_server_cannot_type_asks_for_a_cast() {
         let a = analyzed("select :p as p", &|sql, _| {
+            if sql == DATABASE_COLLATION {
+                return Ok(vec![vec![json!("SQL_Latin1_General_CP1_CI_AS")]]);
+            }
             assert_eq!(sql, UNDECLARED);
             Err(crate::api::DbError { message: "The parameter type for '@p_1' cannot be uniquely deduced; two possibilities are 'sql_variant' and 'xml'.".into(), code: Some("11506".into()), position: None })
         });
@@ -523,6 +551,8 @@ mod tests {
         let none = |_: &str, _: &[Value]| -> Result<Vec<Vec<Value>>, crate::api::DbError> { panic!("nothing is asked") };
         assert!(analyzed("exec dbo.search @term = :t", &none).diagnostics[0].message.starts_with("EXEC runs a stored procedure"));
         assert!(analyzed("select 1 select 2", &none).diagnostics[0].message.starts_with("A typed .sql file holds one statement and this one holds several"));
+        assert!(several_unseparated("select 1 as a select 2 as b"));
+        assert!(!several_unseparated("select n, count(*) as c from f group by n with rollup"));
     }
 
     #[test]

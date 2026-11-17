@@ -1,0 +1,61 @@
+agg_having.sql: many () -> { m: int? }
+agg_total.sql: one () -> { m: int?, s: int?, sa: nvarchar(≤4000 units, UTF-16, ill-formed)? }
+alias_eq.sql: many () -> { u: nvarchar(≤200 units, UTF-16, ill-formed), c: int }
+apply_agg.sql: many () -> { id: int, mx: int? }
+cast_xml.sql: many () -> { x: xml }
+computed.sql: many () -> { c_choose: int?, c_space: varchar(≤8000 bytes, windows-1252)?, c_char: char(=1 bytes, windows-1252)?, c_stuff: nvarchar(≤4000 units, UTF-16, ill-formed)?, c_quotename: nvarchar(≤258 units, UTF-16, ill-formed)?, c_isnull: int, c_nullif: int? }
+cube.sql: many () -> { n: int?, v: varchar(≤10 bytes, windows-1252)?, c: int }
+fn_ascii.sql: many () -> { a: int?, u: int? }
+fn_char.sql: many () -> { c: char(=1 bytes, windows-1252)?, nc: nchar(=1 units, UTF-16, ill-formed)? }
+fn_choose.sql: many () -> { ch: int? }
+fn_concat_ws.sql: many () -> { cw: nvarchar(≤224 units, UTF-16, ill-formed), cc: varchar(≤24 bytes, windows-1252) }
+fn_dates.sql: many () -> { a: datetime2, b: int, c: nvarchar(≤30 units, UTF-16, ill-formed), e: date, t: datetime2 }
+fn_format.sql: many () -> { fm: nvarchar(≤4000 units, UTF-16, ill-formed)? }
+fn_json.sql: many () -> { jv: nvarchar(≤4000 units, UTF-16, ill-formed)? }
+fn_nullif.sql: many () -> { nf: int? }
+fn_parsename.sql: many () -> { p: nvarchar(≤128 units, UTF-16, ill-formed)? }
+fn_quotename.sql: many () -> { q: nvarchar(≤258 units, UTF-16, ill-formed)? }
+fn_replicate.sql: many () -> { rp: varchar(≤8000 bytes, windows-1252)? }
+fn_round.sql: many () -> { r: int }
+fn_space.sql: many () -> { sp: varchar(≤8000 bytes, windows-1252)? }
+fn_str.sql: many () -> { st: varchar(≤8000 bytes, windows-1252)? }
+fn_strict.sql: many () -> { a: nvarchar(≤2 units, UTF-16, ill-formed)?, b: nvarchar(≤1 units, UTF-16, ill-formed), c: int, e: int, u: nvarchar(≤200 units, UTF-16, ill-formed), l: int, r: nvarchar(≤200 units, UTF-16, ill-formed) }
+fn_stuff.sql: many () -> { st: nvarchar(≤4000 units, UTF-16, ill-formed)? }
+fn_try.sql: many () -> { tc: tinyint?, tv: tinyint?, tp: int? }
+full_join.sql: many () -> { n: int?, x: int? }
+grouping_sets.sql: many () -> { n: int?, c: int? }
+log_zero.sql: many () -> { a: float, b: float }
+merge_both.sql: many (id: int) -> { act: nvarchar(≤10 units, UTF-16, ill-formed), ins: int?, del: int?, insx: int?, delx: int? }
+nested_outer.sql: many () -> { x: int?, hx: int? }
+openjson.sql: many () -> { k: nvarchar(≤4000 units, UTF-16, ill-formed), v: nvarchar(UTF-16, ill-formed)?, t: tinyint }
+openjson_with.sql: many () -> { a: int?, b: int? }
+outer_apply_filter.sql: many () -> { x: int }
+pivot.sql: many () -> { z: int? }
+power_neg.sql: many () -> { a: int }
+recursive.sql: many () -> { k: int?, z: int? }
+rollup.sql: many () -> { n: int?, c: int }
+rollup_where.sql: many () -> { n: int?, c: int }
+server_case.sql: many () -> { a: int?, b: int? }
+server_isnull.sql: many () -> { a: int?, b: int?, c: int? }
+sqrt_neg.sql: many () -> { a: float }
+stale_tvf.sql: many () -> { x: int? }
+stale_view.sql: many () -> { x: int? }
+subq.sql: many () -> { a: int?, b: int? }
+sum_where.sql: many () -> { s: int }
+udf_concat.sql: many () -> { c: int? }
+udf_count.sql: many () -> { c: int? }
+udf_isnull.sql: many () -> { i: int? }
+udf_max.sql: many () -> { m: int? }
+udf_max_grouped.sql: many () -> { m: int? }
+udf_newid.sql: many () -> { x: int? }
+udf_substring.sql: many () -> { x: nvarchar(≤200 units, UTF-16, ill-formed)? }
+udf_upper.sql: many () -> { u: nvarchar(≤200 units, UTF-16, ill-formed)? }
+values_null.sql: many () -> { a: int? }
+where_case.sql: many () -> { x: int? }
+where_in_null.sql: many () -> { x: int? }
+where_isnull.sql: many () -> { y: int? }
+where_not.sql: many () -> { x: int? }
+windows.sql: many () -> { l: int?, ld: int?, fv: int?, lv: int? }
+windows_frames.sql: many () -> { sw: int?, mx: int, rs: int, cn: int }
+windows_named.sql: many () -> { a: int? }
+with_rollup.sql: many () -> { n: int?, c: int? }

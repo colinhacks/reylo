@@ -10,6 +10,7 @@
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
+pub mod sqlserver;
 
 use crate::db::Db;
 use crate::{Dialect, Error};
@@ -21,6 +22,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         Dialect::Postgres => postgres::read(db).await,
         Dialect::Mysql => mysql::read(db).await,
         Dialect::Sqlite => sqlite::read(db).await,
+        Dialect::Sqlserver => sqlserver::read(db).await,
     }
 }
 
@@ -33,6 +35,7 @@ pub async fn alterer(db: &mut Db) -> Result<Box<dyn Alterer>, Error> {
         }
         Dialect::Mysql => Box::new(mysql::MysqlAlterer::default()),
         Dialect::Sqlite => Box::new(sqlite::SqliteAlterer::default()),
+        Dialect::Sqlserver => Box::new(sqlserver::SqlserverAlterer),
     })
 }
 
@@ -148,6 +151,18 @@ pub trait Alterer {
         let _ = (from, to);
         None
     }
+    /// Whether a blocking change of an object refuses `dependent`, which depends on it without being
+    /// its own, so that it is dropped before the change and created again after. Postgres and MySQL
+    /// rebuild an index or a constraint themselves; SQL Server refuses those too.
+    fn refused_by(&self, dependent: &Object) -> bool {
+        matches!(dependent.kind, Some(Kind::View | Kind::Rule | Kind::Policy | Kind::Trigger))
+    }
+    /// Whether this change of an object whose changes block (`Change::Alter { blocks: true }`)
+    /// blocks: SQL Server changes a column's default without `alter column`, which nothing refuses.
+    fn blocks(&self, from: &Object, to: &Object) -> bool {
+        let _ = (from, to);
+        true
+    }
     /// The plan's statements once ordered, for the settings that let them run in that order: a
     /// Postgres function's body calls others the server keeps no record of, so no order is safe.
     fn finish(&self, statements: &mut Vec<String>) {
@@ -255,8 +270,7 @@ impl Plan {
             out.push_str(&format!("-- loses data: {} {why}\n", column.trim_start_matches("column ")));
         }
         for s in &self.statements {
-            out.push_str(s.trim_end());
-            out.push_str(if s.starts_with("--") { "\n" } else { ";\n" });
+            out.push_str(&if s.starts_with("--") { format!("{}\n", s.trim_end()) } else { format!("{}\n", ended(s)) });
         }
         out
     }
@@ -264,6 +278,18 @@ impl Plan {
     /// The statements to run, comments left out.
     pub fn runnable(&self) -> impl Iterator<Item = &String> {
         self.statements.iter().filter(|s| !s.starts_with("--"))
+    }
+}
+
+/// A SQL Server plan's batch separator: a statement of its own, written as the line `GO`.
+pub const GO: &str = "GO";
+
+/// A plan's statement as a script writes it: ended with `;`, but for a `GO` line, which ends nothing.
+pub fn ended(statement: &str) -> String {
+    if statement == GO {
+        GO.to_string()
+    } else {
+        format!("{};", statement.trim_end().trim_end_matches(';'))
     }
 }
 
@@ -295,7 +321,8 @@ fn with_owned<'a>(schema: &'a Schema, id: &'a str) -> Vec<&'a str> {
     out
 }
 
-/// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`.
+/// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`, and
+/// `[Accounts]` of `app.[Accounts]`.
 pub fn last_written(name: &str) -> String {
     let mut quote: Option<char> = None;
     let mut at = 0;
@@ -304,6 +331,7 @@ pub fn last_written(name: &str) -> String {
             Some(q) if ch == q => quote = None,
             Some(_) => {}
             None if ch == '"' || ch == '`' => quote = Some(ch),
+            None if ch == '[' => quote = Some(']'),
             None if ch == '.' => at = k + 1,
             None => {}
         }
@@ -397,6 +425,7 @@ fn table_parts(id: &str) -> Vec<String> {
             Some(q) if ch == q => quoted = None,
             Some(_) => out.last_mut().unwrap().push(ch),
             None if ch == '"' || ch == '`' => quoted = Some(ch),
+            None if ch == '[' => quoted = Some(']'),
             None if ch == '.' => out.push(String::new()),
             None => out.last_mut().unwrap().push(ch),
         }
@@ -613,7 +642,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     let mut drops: BTreeSet<String> = BTreeSet::new();
     let mut creates: BTreeSet<String> = BTreeSet::new();
     let mut alters: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    // Altered in a way a view, rule, policy or trigger on it blocks.
+    // Altered in a way that what depends on it can block (`Alterer::refused_by`).
     let mut blocking: BTreeSet<String> = BTreeSet::new();
     for (id, a) in &from.objects {
         match to.objects.get(id) {
@@ -623,7 +652,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             }
             Some(b) if a.def != b.def => match (&b.change, alterer.alter(a, b)) {
                 (Change::Alter { blocks }, Some(statements)) => {
-                    if *blocks {
+                    if *blocks && alterer.blocks(a, b) {
                         blocking.insert(id.clone());
                     }
                     alters.insert(id.clone(), statements);
@@ -687,16 +716,16 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
         for dependent in dependents.get(id.as_str()).into_iter().flatten() {
             let d = &from.objects[*dependent];
             let owned = d.owner.as_deref() == Some(id.as_str());
-            // A blocking change refuses only views, rules, policies and triggers on it; the server
-            // rebuilds an index or a constraint itself. A column of a type changed so changes
-            // type too, and so blocks what is on it.
+            // A blocking change refuses what its alterer says (views, rules, policies and triggers on
+            // it, where the server rebuilds an index or a constraint itself). A column of a type
+            // changed so changes type too, and so blocks what is on it.
             if !replaced && d.kind == Some(Kind::Column) && !owned {
                 if seen.insert(dependent.to_string()) {
                     queue.push(dependent.to_string());
                 }
                 continue;
             }
-            if !replaced && !owned && !matches!(d.kind, Some(Kind::View | Kind::Rule | Kind::Policy | Kind::Trigger)) {
+            if !replaced && !owned && !alterer.refused_by(d) {
                 continue;
             }
             if !replaced && owned {

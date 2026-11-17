@@ -38,6 +38,59 @@ pub enum Db {
     Postgres(tokio_postgres::Client),
     Mysql(mysql_async::Conn),
     Sqlite(rusqlite::Connection),
+    Sqlserver(reylo_engine_native::sqlserver::Conn),
+}
+
+pub(crate) fn sqlserver_error(e: tiberius::error::Error) -> Error {
+    match e {
+        tiberius::error::Error::Server(t) => Error(t.message().to_string()),
+        other => Error(other.to_string()),
+    }
+}
+
+/// A SQL Server value as text: a `bit` as `1` or `0`, a number in its decimal digits, binary data in
+/// hexadecimal, and a date or a time as tiberius prints it.
+fn sqlserver_text(value: &tiberius::ColumnData<'_>) -> Option<String> {
+    use tiberius::ColumnData::*;
+    match value {
+        U8(v) => v.map(|v| v.to_string()),
+        I16(v) => v.map(|v| v.to_string()),
+        I32(v) => v.map(|v| v.to_string()),
+        I64(v) => v.map(|v| v.to_string()),
+        F32(v) => v.map(|v| v.to_string()),
+        F64(v) => v.map(|v| v.to_string()),
+        Bit(v) => v.map(|v| if v { "1".into() } else { "0".into() }),
+        String(v) => v.as_deref().map(str::to_string),
+        Guid(v) => v.map(|v| v.to_string()),
+        Binary(v) => v.as_deref().map(|b| b.iter().map(|byte| format!("{byte:02x}")).collect()),
+        Numeric(v) => v.map(|v| v.to_string()),
+        Xml(v) => v.as_deref().map(|x| x.to_string()),
+        other => Some(format!("{other:?}")),
+    }
+}
+
+/// The rows of every result set of a SQL Server batch, every value as text.
+async fn sqlserver_rows(client: &mut reylo_engine_native::sqlserver::Conn, sql: &str) -> Result<Vec<Row>, Error> {
+    let results = client.simple_query(sql).await.map_err(sqlserver_error)?.into_results().await.map_err(sqlserver_error)?;
+    Ok(results
+        .into_iter()
+        .flatten()
+        .map(|row| {
+            let columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+            let values = row.into_iter().map(|v| sqlserver_text(&v)).collect();
+            Row { columns, values }
+        })
+        .collect())
+}
+
+/// A connection to the SQL Server database a URL names, as the engine opens one.
+pub(crate) async fn open_sqlserver(url: &str) -> Result<reylo_engine_native::sqlserver::Conn, Error> {
+    reylo_engine_native::sqlserver::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
+}
+
+/// A SQL Server name in brackets, `]` doubled.
+pub(crate) fn bracket(name: &str) -> String {
+    format!("[{}]", name.replace(']', "]]"))
 }
 
 pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
@@ -134,6 +187,7 @@ impl Db {
             Dialect::Postgres => Ok(Db::Postgres(crate::db::open_postgres(url).await?)),
             Dialect::Mysql => Ok(Db::Mysql(crate::db::open_mysql(url).await?)),
             Dialect::Sqlite => Ok(Db::Sqlite(rusqlite::Connection::open(sqlite_path(url, base)).map_err(sqlite_error)?)),
+            Dialect::Sqlserver => Ok(Db::Sqlserver(open_sqlserver(url).await?)),
         }
     }
 
@@ -142,6 +196,7 @@ impl Db {
             Db::Postgres(_) => Dialect::Postgres,
             Db::Mysql(_) => Dialect::Mysql,
             Db::Sqlite(_) => Dialect::Sqlite,
+            Db::Sqlserver(_) => Dialect::Sqlserver,
         }
     }
 
@@ -184,6 +239,7 @@ impl Db {
                     .map_err(sqlite_error)?;
                 Ok(rows.into_iter().map(|values| Row { columns: columns.clone(), values }).collect())
             }
+            Db::Sqlserver(client) => sqlserver_rows(client, sql).await,
         }
     }
 
@@ -193,12 +249,20 @@ impl Db {
             Db::Postgres(client) => client.batch_execute(sql).await.map_err(pg_error),
             Db::Mysql(conn) => conn.query_drop(sql).await.map_err(mysql_error),
             Db::Sqlite(conn) => conn.execute_batch(sql).map_err(sqlite_error),
+            Db::Sqlserver(client) => sqlserver_rows(client, sql).await.map(|_| ()),
         }
     }
 
     /// Runs a script of statements: on MySQL one at a time, since a server that takes several in
-    /// one query reads them as one batch; elsewhere as written.
+    /// one query reads them as one batch; on SQL Server one batch at a time, as its `GO` lines part
+    /// them; elsewhere as written.
     pub async fn script(&mut self, sql: &str) -> Result<(), Error> {
+        if self.dialect() == Dialect::Sqlserver {
+            for batch in crate::sql::batches(sql) {
+                self.exec(&batch).await?;
+            }
+            return Ok(());
+        }
         if self.dialect() != Dialect::Mysql {
             return self.exec(sql).await;
         }
@@ -220,12 +284,22 @@ impl Db {
                 conn.exec_drop(sql, mysql_async::Params::Positional(values)).await.map_err(mysql_error)
             }
             Db::Sqlite(conn) => conn.execute(sql, rusqlite::params_from_iter(params.iter())).map(|_| ()).map_err(sqlite_error),
+            Db::Sqlserver(client) => {
+                let params: Vec<&dyn tiberius::ToSql> = params.iter().map(|p| p as &dyn tiberius::ToSql).collect();
+                client.execute(sql, &params).await.map(|_| ()).map_err(sqlserver_error)
+            }
         }
     }
 
     pub async fn close(self) {
-        if let Db::Mysql(conn) = self {
-            let _ = conn.disconnect().await;
+        match self {
+            Db::Mysql(conn) => {
+                let _ = conn.disconnect().await;
+            }
+            Db::Sqlserver(client) => {
+                let _ = client.close().await;
+            }
+            _ => {}
         }
     }
 
@@ -233,6 +307,7 @@ impl Db {
     pub fn param(&self, n: usize) -> String {
         match self {
             Db::Postgres(_) => format!("${n}"),
+            Db::Sqlserver(_) => format!("@P{n}"),
             _ => "?".into(),
         }
     }
@@ -438,6 +513,41 @@ pub enum Server {
         defaults: Option<(String, String)>,
     },
     Sqlite,
+    Sqlserver {
+        /// A connection to `master`, which creates and drops the shadows and holds each one's lock.
+        admin: reylo_engine_native::sqlserver::Conn,
+        url: String,
+        /// The target database's collation, which every column created without its own takes.
+        collation: Option<String>,
+    },
+}
+
+/// Everything about a SQL Server a replay's outcome turns on, beside its steps: its version and
+/// collation, the login the shadows are made as, and the server's principals a grant may name.
+pub(crate) async fn sqlserver_state(admin: &mut reylo_engine_native::sqlserver::Conn) -> Result<String, Error> {
+    let rows = sqlserver_rows(
+        admin,
+        "select concat_ws(char(10), @@version, cast(serverproperty('Collation') as nvarchar(128)), suser_sname(),
+          (select string_agg(cast(name as nvarchar(max)), N',') within group (order by name) from sys.server_principals where type in ('S', 'U', 'G', 'R'))) as s",
+    )
+    .await?;
+    Ok(rows.first().map(|r| r.text("s").to_string()).unwrap_or_default())
+}
+
+/// Takes the application lock `name` for the session, at once: whether it was granted.
+async fn sqlserver_lock(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) -> Result<bool, Error> {
+    let rows = sqlserver_rows(admin, &format!("declare @r int; exec @r = sp_getapplock @Resource = N'{name}', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; select @r as r")).await?;
+    Ok(rows.first().and_then(|r| r.text("r").parse::<i64>().ok()).is_some_and(|r| r >= 0))
+}
+
+async fn sqlserver_unlock(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) {
+    let _ = sqlserver_rows(admin, &format!("exec sp_releaseapplock @Resource = N'{name}', @LockOwner = 'Session'")).await;
+}
+
+/// Drops a SQL Server database, its other sessions ended first.
+async fn sqlserver_drop(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) -> Result<(), Error> {
+    let db = bracket(name);
+    sqlserver_rows(admin, &format!("if db_id(N'{name}') is not null begin alter database {db} set single_user with rollback immediate; drop database {db}; end")).await.map(|_| ())
 }
 
 const PG_LISTS: &[&str] = &["search_path", "temp_tablespaces", "local_preload_libraries", "session_preload_libraries"];
@@ -547,6 +657,11 @@ impl Server {
                 Ok(Server::Mysql { admin, url: server_url.to_string(), defaults })
             }
             Dialect::Sqlite => Ok(Server::Sqlite),
+            Dialect::Sqlserver => {
+                let admin = open_sqlserver(&with_database(server_url, "master")).await?;
+                let collation = target.rows("select cast(collation_name as nvarchar(128)) as c from sys.databases where name = db_name()").await?.first().and_then(|r| r.get("c").map(String::from));
+                Ok(Server::Sqlserver { admin, url: server_url.to_string(), collation })
+            }
         }
     }
 
@@ -555,6 +670,7 @@ impl Server {
             Server::Postgres { .. } => Dialect::Postgres,
             Server::Mysql { .. } => Dialect::Mysql,
             Server::Sqlite => Dialect::Sqlite,
+            Server::Sqlserver { .. } => Dialect::Sqlserver,
         }
     }
 
@@ -574,6 +690,20 @@ impl Server {
                 Ok(Shadow { db, name })
             }
             Server::Sqlite => Ok(Shadow { db: Db::Sqlite(rusqlite::Connection::open_in_memory().map_err(sqlite_error)?), name: ":memory:".into() }),
+            Server::Sqlserver { admin, url, collation } => {
+                let name = random_name();
+                if !sqlserver_lock(admin, &name).await? {
+                    return Err(Error(format!("cannot lock the shadow {name}")));
+                }
+                // A collation's name is a word, which the server reads unquoted alone.
+                let collate = collation.as_deref().filter(|c| c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')).map(|c| format!(" collate {c}")).unwrap_or_default();
+                if let Err(e) = sqlserver_rows(admin, &format!("create database {}{collate}", bracket(&name))).await {
+                    sqlserver_unlock(admin, &name).await;
+                    return Err(e);
+                }
+                let db = Db::Sqlserver(open_sqlserver(&with_database(url, &name)).await?);
+                Ok(Shadow { db, name })
+            }
         }
     }
 
@@ -687,6 +817,11 @@ impl Server {
                 let _ = admin.query_drop(format!("select release_lock('{name}')")).await;
             }
             Server::Sqlite => {}
+            Server::Sqlserver { admin, .. } => {
+                db.close().await;
+                let _ = sqlserver_drop(admin, &name).await;
+                sqlserver_unlock(admin, &name).await;
+            }
         }
     }
 
@@ -734,6 +869,17 @@ impl Server {
                 }
             }
             Server::Sqlite => {}
+            Server::Sqlserver { admin, .. } => {
+                let names: Vec<String> = sqlserver_rows(admin, &format!("select name from sys.databases where name like N'{}%'", SHADOW_PREFIX.replace('_', "[_]"))).await?.iter().map(|r| r.text("name").to_string()).collect();
+                for name in names {
+                    if !sqlserver_lock(admin, &name).await? {
+                        continue;
+                    }
+                    sqlserver_drop(admin, &name).await?;
+                    sqlserver_unlock(admin, &name).await;
+                    dropped += 1;
+                }
+            }
         }
         // The replay caches no run will use, which are not counted: they are not a run's leftovers.
         crate::cache::sweep(self).await?;
@@ -741,8 +887,14 @@ impl Server {
     }
 
     pub async fn close(self) {
-        if let Server::Mysql { admin, .. } = self {
-            let _ = admin.disconnect().await;
+        match self {
+            Server::Mysql { admin, .. } => {
+                let _ = admin.disconnect().await;
+            }
+            Server::Sqlserver { admin, .. } => {
+                let _ = admin.close().await;
+            }
+            _ => {}
         }
     }
 }

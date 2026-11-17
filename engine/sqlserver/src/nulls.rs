@@ -218,8 +218,13 @@ const DATE_PART_FIRST: &[&str] = &["datepart", "datename", "dateadd", "datediff"
 /// The aggregates that are not NULL over a group of rows whose argument is never NULL.
 const AGGREGATES: &[&str] = &["sum", "avg", "min", "max", "string_agg"];
 
+/// A built-in function's name, lowercased. T-SQL calls a user's scalar function by its schema too
+/// (`dbo.upper(…)`), so a name with a schema is none of the built-ins these rules know.
 fn name_of(f: &Function) -> String {
-    f.name.0.last().map(|p| p.to_string().trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase()).unwrap_or_default()
+    match f.name.0.as_slice() {
+        [only] => only.to_string().trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase(),
+        _ => String::new(),
+    }
 }
 
 fn args(f: &Function) -> Vec<&Expr> {

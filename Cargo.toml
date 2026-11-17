@@ -6,9 +6,11 @@
 # oracle (`oracle/`). One lockfile, one `target/`. The component crate, `engine/wasip2`, is a
 # workspace of its own (its Cargo.toml says why).
 #
-# The `[patch]` is the Postgres crate's: `pg_query` 18.0.0, the Postgres 18 parser, with the patch
-# from `engine/postgres/vendor/` applied by `engine/build.sh --prepare`, which also fetches the SQLite
-# amalgamation `engine/sqlite/build.rs` compiles. Run it once before any cargo command here.
+# The `[patch]` holds two crates as `engine/build.sh --prepare` makes them: `pg_query` 18.0.0, the
+# Postgres 18 parser, with the patch from `engine/postgres/vendor/`, and tiberius 0.13.0, SQL Server's
+# client, with `engine/native/tiberius-0.13.0.patch`, which makes ring its TLS fallback. The step also
+# fetches the SQLite amalgamation `engine/sqlite/build.rs` compiles. Run it once before any cargo
+# command here.
 #
 # `engine/mysql/vendor/sqlparser`, the MySQL crate's own copy of `sqlparser`, is a member as every
 # path dependency under this directory is, with no tests of its own.
@@ -43,6 +45,7 @@ version = "0.8.0-beta.0"
 
 [patch.crates-io]
 pg_query = { path = "engine/postgres/.patched/pg_query" }
+tiberius = { path = "engine/native/.patched/tiberius" }
 
 [profile.release]
 # 3 rather than "s": 7 µs less CPU on a 50-row read (71 against 78 with the other fixes), for a
