@@ -19,7 +19,7 @@ The attribute fills the module with the statement's types: `Query`, its paramete
 
 <Callout title="Not on crates.io yet">
 
-The `reylo` and `reylo-build` crates are published once `pg_query`, the Postgres parser they build on, releases the fixes they need.
+The `reylo` and `reylo-build` crates aren't on crates.io yet.
 
 </Callout>
 
@@ -27,7 +27,7 @@ The `reylo` and `reylo-build` crates are published once `pg_query`, the Postgres
 
 To use Reylo in Rust, you'll need:
 
-- **sqlx 0.9**, with its Tokio runtime and your database's driver.
+- **sqlx 0.9 or 0.8**, with its Tokio runtime and your database's driver. SQLite needs sqlx 0.9.
 - **A running dev database.** Reylo reads your current schema from it each time the crate compiles:
   - **Postgres** 14 to 18
   - **MySQL** 8.0.22 or later
@@ -49,6 +49,7 @@ Reylo's features choose the database and the Rust types the attribute writes:
 
 ```toml title="Cargo.toml"
 reylo = { version = "0.8", features = [
+  "sqlx_0_9",      # the default; or "sqlx_0_8"
   "postgres",      # the default; or "mysql" or "sqlite"
   "chrono",        # dates and times as chrono's types; or "time"
   "uuid",          # uuid as uuid::Uuid
@@ -57,6 +58,16 @@ reylo = { version = "0.8", features = [
 ```
 
 A statement that reads a type whose feature is off fails to compile, and says which feature to turn on.
+
+On sqlx 0.8, turn off Reylo's default features and turn on `sqlx_0_8`:
+
+```toml title="Cargo.toml"
+[dependencies]
+reylo = { version = "0.8", default-features = false, features = ["sqlx_0_8", "postgres", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
+```
+
+On 0.8, sqlx's own `json`, `chrono`, `time` and `uuid` features are yours to turn on, as your types need them; `json` is one of sqlx's defaults.
 
 ### Database
 
@@ -67,6 +78,46 @@ DATABASE_URL=postgres://postgres@localhost:5432/app
 ```
 
 The URL's scheme names the database: `postgres://`, `mysql://`, or `sqlite:` with a path relative to the crate.
+
+### Command line
+
+The `reylo` command runs your migrations and writes modules to files. Install it once:
+
+```sh
+cargo binstall reylo-cli
+```
+
+The [CLI](/cli) page has the other ways to install it. In a Rust project, it runs the version your `Cargo.lock` holds for the `reylo` crate, the same as the attribute's: a version it doesn't have yet, it fetches once, checked against the release's checksums.
+
+<Details summary="Run it through cargo, with nothing installed">
+
+Add a package to your workspace that runs it:
+
+```toml title="tools/Cargo.toml"
+[package]
+name = "tools"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+reylo-cli = "0.8"
+```
+
+```rust title="tools/src/main.rs"
+fn main() {
+    reylo_cli::main()
+}
+```
+
+```toml title=".cargo/config.toml"
+[alias]
+reylo = "run -q -p tools --"
+```
+
+Then `cargo reylo db push` runs it. It compiles the CLI in your project the first time, beside the attribute's own copy of the engine.
+
+</Details>
 
 ### Editor
 
@@ -373,11 +424,11 @@ error[E0560]: struct `Params` has no field named `user_id`
   = note: available fields are: `id`
 ```
 
-### After a migration
+### After a schema change
 
-Cargo compiles a crate again when its files change, not its database.
+A change to `reylo/schema.sql` or the migrations' lock compiles the crate again.
 
-After a migration, compile the crate again to type its statements against the new schema:
+So after `reylo db push` or `reylo migrate dev`, the next build types each statement against the new schema. After a change made another way, such as SQL run by hand, compile it again yourself:
 
 ```sh
 touch src/main.rs && cargo build
@@ -391,7 +442,7 @@ Reylo can write each query's module to a file instead.
 reylo generate rust-sqlx
 ```
 
-It writes a `.rs` file beside each `.sql` file of the crate, holding what `#[reylo::query]` would: `Query`, `Row` and `.run()`. The `reylo` command comes with Reylo's npm package, so `npx reylo generate rust-sqlx` runs it with nothing installed.
+It writes a `.rs` file beside each `.sql` file of the crate, holding what `#[reylo::query]` would: `Query`, `Row` and `.run()`, with the [command line](#command-line) installed.
 
 ```text
 src/
