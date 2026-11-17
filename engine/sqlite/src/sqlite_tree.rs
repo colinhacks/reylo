@@ -223,6 +223,9 @@ pub struct Node {
     pub subtype: bool,
     /// The column is a view's, as a write through the view's INSTEAD OF trigger reads it.
     pub view: bool,
+    /// The column of the row the statement wrote, as its RETURNING reads it: from the registers
+    /// that hold the row, with no cursor (`cursor` is a register's number).
+    pub register: bool,
     /// The column's collation, which a comparison with it uses where the column decides.
     pub coll: Option<String>,
     pub resolved: Option<bool>,

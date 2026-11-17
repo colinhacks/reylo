@@ -1,0 +1,22 @@
+delete_row.sql: at_most_one () -> { note: TEXT(UTF-8, ill-formed)? }
+insert_expression.sql: one () -> { loud: text(UTF-8, ill-formed) }
+insert_literal.sql: one () -> { note: TEXT(UTF-8, ill-formed), at: TEXT(UTF-8, ill-formed), n: INTEGER? }
+insert_param_bare.sql: one (id: int64, note: text(UTF-8, ill-formed)?) -> { note: TEXT(UTF-8, ill-formed)? }
+insert_param_cast.sql: one (id: int64, note: text(UTF-8, ill-formed)) -> { note: TEXT(UTF-8, ill-formed) }
+insert_positional.sql: one () -> { note: TEXT(UTF-8, ill-formed), at: TEXT(UTF-8, ill-formed)?, n: INTEGER }
+insert_rows.sql: many () -> { note: TEXT(UTF-8, ill-formed) }
+insert_rows_null.sql: many () -> { note: TEXT(UTF-8, ill-formed)? }
+insert_select.sql: many () -> { note: TEXT(UTF-8, ill-formed) }
+insert_select_nullable.sql: many () -> { note: TEXT(UTF-8, ill-formed)? }
+replace_row.sql: one () -> { note: TEXT(UTF-8, ill-formed) }
+trigger_insert.sql: one () -> { note: TEXT(text(UTF-8, ill-formed) | bytes) }
+trigger_update.sql: many () -> { note: TEXT(text(UTF-8, ill-formed) | bytes)?, other: TEXT(text(UTF-8, ill-formed) | bytes)? }
+update_expression.sql: many () -> { note: TEXT(UTF-8, ill-formed) }
+update_from.sql: many () -> { note: TEXT(UTF-8, ill-formed)? }
+update_literal.sql: at_most_one () -> { note: TEXT(UTF-8, ill-formed), at: TEXT(UTF-8, ill-formed)? }
+upsert_excluded.sql: many () -> { note: TEXT(UTF-8, ill-formed)? }
+upsert_keeps.sql: many () -> { note: TEXT(UTF-8, ill-formed)? }
+upsert_nothing.sql: many () -> { note: TEXT(UTF-8, ill-formed) }
+upsert_set.sql: many () -> { note: TEXT(UTF-8, ill-formed) }
+upsert_where.sql: many () -> { note: TEXT(UTF-8, ill-formed) }
+view_insert.sql: at_most_one () -> { note: unknown? }

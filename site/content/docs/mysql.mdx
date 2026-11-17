@@ -108,7 +108,7 @@ In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)):
 | `DECIMAL`, `SUM(…)`, `AVG(…)`, `/` | `rust_decimal::Decimal` or `bigdecimal::BigDecimal` |
 | `FLOAT`, `DOUBLE` | `f32`, `f64` |
 | `CHAR`, `VARCHAR`, `TEXT` | `String` |
-| `ENUM` | `String` |
+| `ENUM` | an enum the module holds |
 | `SET` | `String`, its labels joined by commas |
 | `DATE` | `chrono::NaiveDate`, or `time::Date` |
 | `DATETIME`, `TIMESTAMP` | `chrono::NaiveDateTime` or `time::PrimitiveDateTime`; `chrono::DateTime<Utc>` or `time::OffsetDateTime` |
@@ -692,7 +692,7 @@ await getUser.run(reserved, { id: 1 });
 reserved.release();
 ```
 
-Bun loses the microseconds of a `DATETIME`, a fraction that is all zeros, and a `TIME`'s fraction in a query with parameters, before Reylo sees them. An expression that could be a `BIGINT` or a `DECIMAL` (`round(:x)`) comes back as a `bigint` when it has no decimal point, since Bun returns both as text. Bun 1.4 can't read a `VECTOR` at all (`ERR_MYSQL_UNSUPPORTED_COLUMN_TYPE`), so select `vector_to_string(v)` instead.
+Bun loses the microseconds of a `DATETIME` before Reylo sees them. Before Bun 1.4.4 it also loses a fraction that is all zeros and a `TIME`'s fraction in a query with parameters, and an expression that could be a `BIGINT` or a `DECIMAL` (`round(:x)`) comes back as a `bigint` when it has no decimal point, since Bun returns both as text and doesn't say which column type it read. Bun 1.4 can't read a `VECTOR` at all (`ERR_MYSQL_UNSUPPORTED_COLUMN_TYPE`), so select `vector_to_string(v)` instead.
 
 ### Drizzle
 

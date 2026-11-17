@@ -48,6 +48,7 @@
     "planetscale-2": "npm:@planetscale/database@2.0.0",
     "postgres": "3.4.9",
     "postgres-3": "npm:postgres@3.4.9",
+    "postgres-4": "npm:postgres@4.1.1",
     "slonik": "49.12.0",
     "sql.js": "1.15.2",
     "sqlite": "5.1.1",

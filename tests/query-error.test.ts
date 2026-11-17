@@ -43,8 +43,13 @@ test("Postgres: the error each driver throws reads as one, with the server's fie
       { ...PG_NONE, message: `null value in column "email" of relation "t" violates not-null constraint`, code: "23502", condition: "not_null_violation", detail: "Failing row contains (3, null, 1, null).", schema: "rs_probe", table: "t", column: "email" },
     ],
     [
-      "postgres.js on a domain, whose type is `data type_name`",
+      "postgres.js 3 on a domain, whose type is `data type_name`",
       thrown(`value for domain rs_probe.positive violates check constraint "positive_check"`, { severity: "ERROR", code: "23514", schema_name: "rs_probe", "data type_name": "positive", constraint_name: "positive_check" }),
+      { ...PG_NONE, message: `value for domain rs_probe.positive violates check constraint "positive_check"`, code: "23514", condition: "check_violation", schema: "rs_probe", dataType: "positive", constraint: "positive_check" },
+    ],
+    [
+      "postgres.js 4 on a domain, whose type is `data_type_name`",
+      thrown(`value for domain rs_probe.positive violates check constraint "positive_check"`, { severity: "ERROR", code: "23514", schema_name: "rs_probe", data_type_name: "positive", constraint_name: "positive_check" }),
       { ...PG_NONE, message: `value for domain rs_probe.positive violates check constraint "positive_check"`, code: "23514", condition: "check_violation", schema: "rs_probe", dataType: "positive", constraint: "positive_check" },
     ],
     [

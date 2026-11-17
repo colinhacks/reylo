@@ -74,8 +74,8 @@ if [ "$(cat $TP/.source 2>/dev/null || true)" != "$TP_SOURCE" ]; then
 fi
 # tiberius falls back to aws-lc-rs, a C library, for TLS where the process installed no crypto
 # provider, and builds tokio-rustls with it: the patch beside it makes the fallback ring, which the
-# binary's other connections use, so its TLS builds no C. tiberius-rs/tiberius#456 makes the
-# provider a feature.
+# binary's other connections use, so its TLS builds no C, and makes it the crate `reylo-tiberius`,
+# without tiberius's own tests and examples. tiberius-rs/tiberius#456 makes the provider a feature.
 TIB=native/.patched/tiberius
 TIB_SHA256=e07324791de2bdaed058af4aa433a0b5ec5c0beac407a9797419c19805df2415
 TIB_SOURCE="$TIB_SHA256 $(sha256 native/tiberius-0.13.0.patch)"

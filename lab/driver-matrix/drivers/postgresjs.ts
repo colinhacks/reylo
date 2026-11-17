@@ -8,7 +8,9 @@ const url = process.env.DM_PG_URL ?? "postgres://localhost:5432/postgres";
 
 let postgres: any;
 try {
-  postgres = requireFrom(a.pkg!);
+  // 4.0 and later are ES modules only, which require() gives as their namespace.
+  const m = requireFrom(a.pkg!);
+  postgres = m.default ?? m;
 } catch (e) {
   notRun(meta, `cannot load ${a.pkg}: ${(e as Error).message}`);
   process.exit(0);

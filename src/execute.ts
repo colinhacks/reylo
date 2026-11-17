@@ -574,6 +574,14 @@ function statement(query: QueryModule, params: ParamsInput) {
   // Every MySQL and SQLite driver binds JSON text as text, which the database reads as JSON (a
   // structured parameter's is written already).
   if (query.dialect !== "postgres") bound.values = bound.values.map((v, i) => (isJsonValue(query, bound.names[i]!, v) && query.inputs?.[bound.names[i]!]?.members === undefined ? jsonText(v) : v));
+  // SQLite holds an INTEGER in 64 bits, so a BigInt outside them has no exact form there.
+  // better-sqlite3, node:sqlite, libSQL, Turso's engine and SQLite Wasm refuse one, but bun:sqlite
+  // and Bun.sql keep its low 64 bits where the statement reads numbers (2^63 was stored as -2^63,
+  // and 2^64 + 5 as 5), and sqlite3 binds any BigInt as NULL.
+  if (query.dialect === "sqlite")
+    bound.values.forEach((v, i) => {
+      if (typeof v === "bigint" && (v >= 2n ** 63n || v < -(2n ** 63n))) throw new ParameterError(`Parameter "${bound.names[i]}" is ${v}, outside the 64-bit integers SQLite holds (-2^63 to 2^63 - 1), so no SQLite driver binds it exactly.`);
+    });
   // The comment naming the file goes on last, after a structured parameter's lists are written.
   bound.text = sentText(query, bound.text);
   return bound;
@@ -598,7 +606,7 @@ export function rawStatement(query: QueryModule, params: unknown): { text: strin
 }
 
 /** A bound value as the text Postgres's input function reads, as `.run()` sends it through pg. */
-function postgresText(query: QueryModule, name: string, v: unknown): string | null {
+export function postgresText(query: QueryModule, name: string, v: unknown): string | null {
   if (v == null) return null;
   const t = query.inputs?.[name]?.type;
   if (isJsonValue(query, name, v)) return jsonText(v);
@@ -729,7 +737,7 @@ function checkBinary(type: EngineType | undefined, name: string, v: unknown, dia
 // null") and libSQL binds `true` as the REAL 1.0. A query without `inputs` gets neither. On MySQL
 // a VECTOR, MySQL's one array, as the text of its floats, `[1,2.5]`, which the engine's
 // `to_vector(?)` reads: drivers left to themselves sent an array as the text "1,2,3" (mysql2's
-// execute()) or expanded it into a list of values (mysql2's query(), mariadb). On Postgres a
+// execute() before 3.24) or expanded it into a list of values (mysql2's query(), mariadb). On Postgres a
 // pgvector vector the same way, as the text its input reads, and an array of vectors as an array
 // of those texts.
 function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name: string): unknown {

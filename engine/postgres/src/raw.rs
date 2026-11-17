@@ -67,13 +67,6 @@ pub struct Parsed {
     pub protobuf: pb::ParseResult,
 }
 
-impl Parsed {
-    /// The tree with the tables and functions it names, which `pg_query` lists by walking it.
-    pub fn listed(self) -> pg_query::ParseResult {
-        pg_query::ParseResult::new(self.protobuf, String::new())
-    }
-}
-
 /// Parse `sql` with libpg_query, as `pg_query::parse(sql, 0)` does, into the same tree.
 pub fn parse(sql: &str) -> pg_query::Result<Parsed> {
     let input = CString::new(sql)?;

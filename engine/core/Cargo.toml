@@ -2,14 +2,16 @@
 name = "reylo-engine-core"
 version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "What every database's analysis engine shares: the request protocol and its host, the placeholder lexer, the project file, the type model and its JSON Schema, structured parameters, the freshness facts, and the WebAssembly ABI each database's artifact exports."
 
 [lib]
 name = "reylo_engine_core"
 
 [build-dependencies]
-reylo-engine-build = { path = "../build-support" }
+reylo-engine-build.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -22,5 +22,12 @@ async fn main() -> Result<(), sqlx::Error> {
     // Each group has its user, so max(joined) is never NULL.
     let joined: &reylo::sqlx::types::chrono::DateTime<reylo::sqlx::types::chrono::Utc> = &rows[0].joined;
     println!("3. build script  {rows:?} ({joined})");
+
+    // One file declares each enum type once, so one query's value of it is another's parameter.
+    let moods = reports::moods::Query.run(&pool).await?;
+    let bob: reports::public::Mood = moods[1].mood.expect("bob");
+    let same: reports::Mood = bob;
+    let sad = reports::sad_users::Query { mood: same }.run(&pool).await?;
+    println!("4. shared enum   {moods:?} {sad:?}");
     Ok(())
 }

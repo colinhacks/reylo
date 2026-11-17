@@ -24,8 +24,11 @@
 //!
 //! The catalog answers in one session-scoped query, [`crate::postgres::TRUST_QUERY`], which also
 //! says which built-in types a user's overload's argument converts from (with the server's own
-//! rules: a domain by its base type, an array by its elements), and which built-in types a user's
-//! implicit cast function converts, which a candidate over built-in types would then call.
+//! rules: a domain by its base type, an array by its elements), and which types a user's implicit
+//! cast function converts to a built-in type, which a candidate over built-in types would then
+//! call. A user's type among them (a composite, an enum, an extension's `geometry`) is no operand
+//! the resolution reads as a built-in's, but any operand whose type the build cannot name may be
+//! of it.
 
 use crate::host::{as_str, as_u32};
 use serde_json::Value;
@@ -104,8 +107,12 @@ pub struct Overloads {
     any: HashSet<u32>,
     /// The base type of every argument type of a user's overload that is a domain.
     bases: HashMap<u32, u32>,
-    /// Built-in types a user's implicit cast function converts to another built-in type.
+    /// Types a user's implicit cast function converts to a built-in type: built-in ones, and the
+    /// user's own.
     implicit: HashSet<u32>,
+    /// Function names every built-in overload of which takes each argument as it is, which no
+    /// implicit cast runs on.
+    through: HashSet<String>,
     /// Function names a user's type also has: a call of one argument with no exact match may be a
     /// cast to it.
     typed: HashSet<String>,
@@ -186,6 +193,7 @@ impl Overloads {
                         }
                     }
                     "implicit" => out.implicit.extend(a),
+                    "through" => out.through.extend(name.map(str::to_string)),
                     "rows" => out.rows = oids(row.get(2)).map(|o| o.into_iter().collect()),
                     "scalars" => out.scalars.extend(oids(row.get(2)).unwrap_or_default()),
                     "column" => out.attributes.extend(name.map(str::to_string)),
@@ -324,10 +332,23 @@ impl Overloads {
         self.attributes.contains(name)
     }
 
-    /// Whether a user's function converts some built-in type to another implicitly, which a call
-    /// of any name over a value of that type may run ([`Overloads::implicit`]).
+    /// Whether a user's function converts some type to a built-in one implicitly, which a call of
+    /// any name over a value of that type may run ([`Overloads::implicit`]): a call over an
+    /// operand whose type the build cannot name may be one.
     pub fn casts_implicitly(&self) -> bool {
         !self.implicit.is_empty()
+    }
+
+    /// Whether a built-in function `name` takes every argument as it is, of any type, so that no
+    /// implicit cast runs on one ([`Overloads::through`]).
+    pub fn passes_through(&self, name: &str) -> bool {
+        self.through.contains(name)
+    }
+
+    /// Whether a user's function converts some built-in type to another implicitly, which a call
+    /// over operands of built-in types may run.
+    pub fn casts_built_in_implicitly(&self) -> bool {
+        self.implicit.iter().any(|t| *t < FIRST_USER_OID)
     }
 
     /// Whether every overload of a user's of a function `name` is an aggregate, and none returns a
@@ -577,6 +598,23 @@ mod tests {
         let (c, _) = catalog(vec![vec![json!("opaque b"), json!("+"), Value::Null, json!(2), json!(0)], vec![json!("implicit"), Value::Null, Value::Null, json!(oid::TEXT), Value::Null], builtin("b", "+", &[oid::INT4, oid::INT4], oid::INT4)]);
         assert_eq!(c.resolve(Kind::Infix, "+", &[Operand::Is(oid::TEXT), Operand::Is(oid::INT4)]), None);
         assert_eq!(c.resolve(Kind::Infix, "+", &[Operand::Is(oid::INT4), Operand::Is(oid::INT4)]), Some(Some(oid::INT4)));
+        assert!(c.casts_implicitly() && c.casts_built_in_implicitly());
+    }
+
+    #[test]
+    fn a_user_implicit_cast_function_from_a_user_type_proves_nothing_of_its_values() {
+        // PostGIS's implicit cast of a `geometry` to `text`, which `replace(geom, 'a', 'b')` runs.
+        let (c, _) = catalog(vec![
+            vec![json!("implicit"), Value::Null, Value::Null, json!(GEOMETRY), Value::Null],
+            builtin("f", "replace", &[oid::TEXT, oid::TEXT, oid::TEXT], oid::TEXT),
+            vec![json!("through"), json!("array_agg"), Value::Null, Value::Null, Value::Null],
+        ]);
+        assert!(c.casts_implicitly() && !c.casts_built_in_implicitly());
+        // `array_agg(anynonarray)` takes a `geometry` as it is.
+        assert!(c.passes_through("array_agg") && !c.passes_through("replace"));
+        assert_eq!(c.resolve(Kind::Function, "replace", &[Operand::Is(GEOMETRY), Operand::Unknown, Operand::Unknown]), None);
+        assert_eq!(c.resolve(Kind::Function, "replace", &[Operand::Opaque, Operand::Unknown, Operand::Unknown]), None);
+        assert_eq!(c.resolve(Kind::Function, "replace", &[Operand::Is(oid::TEXT), Operand::Unknown, Operand::Unknown]), Some(None));
     }
 
     #[test]

@@ -534,8 +534,8 @@ dependencies = [
 name = "demo-codegen"
 version = "0.0.0"
 dependencies = [
+ "reylo",
  "reylo-build",
- "reylo-sqlx",
  "sqlx",
  "tokio",
 ]
@@ -544,7 +544,8 @@ dependencies = [
 name = "demo-docs"
 version = "0.0.0"
 dependencies = [
- "reylo-sqlx",
+ "futures-util",
+ "reylo",
  "sqlx",
  "tokio",
 ]
@@ -553,7 +554,7 @@ dependencies = [
 name = "demo-mysql"
 version = "0.0.0"
 dependencies = [
- "reylo-sqlx",
+ "reylo",
  "sqlx",
  "tokio",
 ]
@@ -562,7 +563,8 @@ dependencies = [
 name = "demo-reylo"
 version = "0.0.0"
 dependencies = [
- "reylo-sqlx",
+ "futures-util",
+ "reylo",
  "serde",
  "serde_json",
  "sqlx",
@@ -573,7 +575,7 @@ dependencies = [
 name = "demo-sqlite"
 version = "0.0.0"
 dependencies = [
- "reylo-sqlx",
+ "reylo",
  "sqlx",
  "tokio",
 ]
@@ -1647,22 +1649,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pg_query"
-version = "18.0.0"
-dependencies = [
- "bindgen 0.66.1",
- "cc",
- "fs_extra",
- "glob",
- "itertools 0.10.5",
- "prost",
- "prost-build",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2004,6 +1990,30 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "reylo"
 version = "0.8.0-beta.0"
 dependencies = [
+ "bigdecimal",
+ "chrono",
+ "futures-core",
+ "futures-util",
+ "reylo-macros",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "time",
+ "uuid",
+]
+
+[[package]]
+name = "reylo-build"
+version = "0.8.0-beta.0"
+dependencies = [
+ "reylo-codegen",
+]
+
+[[package]]
+name = "reylo-cli"
+version = "0.8.0-beta.0"
+dependencies = [
  "regex",
  "reylo-codegen",
  "reylo-engine-core",
@@ -2015,15 +2025,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "reylo-build"
-version = "0.0.0"
-dependencies = [
- "reylo-codegen",
-]
-
-[[package]]
 name = "reylo-codegen"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "glob",
  "mysql_async",
@@ -2043,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "futures-io",
  "mysql_async",
@@ -2052,15 +2055,15 @@ dependencies = [
  "reylo-engine-postgres",
  "reylo-engine-sqlite",
  "reylo-engine-sqlserver",
+ "reylo-tiberius",
  "rusqlite",
  "serde_json",
- "tiberius",
  "tokio-postgres",
 ]
 
 [[package]]
 name = "reylo-engine-build"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 
 [[package]]
 name = "reylo-engine-core"
@@ -2075,28 +2078,29 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-mysql"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "reylo-engine-build",
  "reylo-engine-core",
+ "reylo-sqlparser",
  "serde",
  "serde_json",
- "sqlparser 0.63.0",
 ]
 
 [[package]]
 name = "reylo-engine-native"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "mysql_async",
  "reylo-engine",
+ "reylo-engine-build",
  "reylo-engine-core",
+ "reylo-tiberius",
  "rusqlite",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
  "serde_json",
- "tiberius",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
@@ -2106,21 +2110,21 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-postgres"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
- "pg_query",
  "prost",
  "reylo-engine-build",
  "reylo-engine-core",
+ "reylo-pg-query",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "reylo-engine-sqlite"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "cc",
  "reylo-engine-build",
@@ -2131,40 +2135,41 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-sqlserver"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "reylo-engine-build",
  "reylo-engine-core",
  "serde",
  "serde_json",
- "sqlparser 0.63.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sqlparser",
 ]
 
 [[package]]
 name = "reylo-macros"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "reylo-codegen",
+ "serde_json",
  "syn 2.0.119",
 ]
 
 [[package]]
 name = "reylo-migrate"
-version = "0.0.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "libc",
  "mysql_async",
- "pg_query",
  "prost",
  "regex",
  "reylo-engine-native",
+ "reylo-pg-query",
+ "reylo-tiberius",
  "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
- "tiberius",
  "tokio",
  "tokio-postgres",
 ]
@@ -2181,26 +2186,73 @@ dependencies = [
  "reylo-engine",
  "reylo-engine-core",
  "reylo-engine-native",
+ "reylo-tiberius",
  "rusqlite",
  "serde_json",
- "tiberius",
  "tokio",
  "tokio-postgres",
 ]
 
 [[package]]
-name = "reylo-sqlx"
-version = "0.0.0"
+name = "reylo-pg-query"
+version = "18.0.0"
 dependencies = [
- "bigdecimal",
- "chrono",
- "reylo-macros",
- "rust_decimal",
+ "bindgen 0.66.1",
+ "cc",
+ "fs_extra",
+ "glob",
+ "itertools 0.10.5",
+ "prost",
+ "prost-build",
  "serde",
  "serde_json",
- "sqlx",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "reylo-sqlparser"
+version = "0.63.0"
+dependencies = [
+ "log",
+ "reylo-engine-build",
+]
+
+[[package]]
+name = "reylo-tiberius"
+version = "0.13.0"
+dependencies = [
+ "async-trait",
+ "asynchronous-codec",
+ "bigdecimal",
+ "byteorder",
+ "bytes",
+ "chrono",
+ "connection-string",
+ "encoding_rs",
+ "enumflags2",
+ "futures-timer",
+ "futures-util",
+ "libc",
+ "num-traits",
+ "once_cell",
+ "pin-project-lite",
+ "pretty-hex",
+ "rust_decimal",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "secrecy",
+ "serde",
+ "thiserror 2.0.20",
+ "tiberius-macros",
  "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
  "uuid",
+ "webpki-roots",
+ "zeroize",
 ]
 
 [[package]]
@@ -2645,13 +2697,6 @@ dependencies = [
 [[package]]
 name = "sqlparser"
 version = "0.63.0"
-dependencies = [
- "log",
-]
-
-[[package]]
-name = "sqlparser"
-version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
 dependencies = [
@@ -2983,37 +3028,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.4",
-]
-
-[[package]]
-name = "tiberius"
-version = "0.13.0"
-dependencies = [
- "async-trait",
- "asynchronous-codec",
- "byteorder",
- "bytes",
- "connection-string",
- "encoding_rs",
- "enumflags2",
- "futures-timer",
- "futures-util",
- "libc",
- "num-traits",
- "once_cell",
- "pin-project-lite",
- "pretty-hex",
- "rustls-native-certs",
- "rustls-pki-types",
- "rustls-webpki",
- "secrecy",
- "thiserror 2.0.20",
- "tiberius-macros",
- "tokio-rustls",
- "tokio-util",
- "tracing",
- "uuid",
- "zeroize",
 ]
 
 [[package]]

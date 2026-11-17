@@ -900,6 +900,26 @@ returning id, name
 
 </InferenceCard>
 
+A column the write sets to a value that is never null returns that value, so it isn't null either:
+
+<InferenceCard>
+
+```sql file="returned_values.sql" dialect="postgres"
+update users
+set email = :email::text
+where id = :id
+returning email
+```
+
+```sql file="returned_values.sql" dialect="sqlite"
+update users
+set email = :email::text
+where id = :id
+returning email
+```
+
+</InferenceCard>
+
 On Postgres 18, an update can return its values from before and after, as `old` and `new`:
 
 <InferenceCard>

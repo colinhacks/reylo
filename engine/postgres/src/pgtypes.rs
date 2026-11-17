@@ -92,7 +92,7 @@ impl PgType {
 
 /// An identifier as Postgres writes it: bare where it is lowercase letters, digits and
 /// underscores not starting with a digit, else in double quotes.
-fn quote_ident(name: &str) -> String {
+pub(crate) fn quote_ident(name: &str) -> String {
     let plain = name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_') && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     if plain { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) }
 }

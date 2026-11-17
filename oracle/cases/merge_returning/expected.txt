@@ -1,6 +1,6 @@
 by_source.sql: many () -> { action: text(¬NUL), source_name: text(¬NUL)?, source_id: int4?, cur: text(¬NUL), shout: text(¬NUL)?, up: text(¬NUL) }
 by_source_nothing.sql: many () -> { source_name: text(¬NUL), label: text(¬NUL), shout: text(¬NUL) }
-by_source_update.sql: many () -> { source_name: text(¬NUL)?, label: text(¬NUL)?, nick: text(¬NUL)?, shout: text(¬NUL) }
+by_source_update.sql: many () -> { source_name: text(¬NUL)?, label: text(¬NUL)?, nick: text(¬NUL), shout: text(¬NUL) }
 by_target.sql: many () -> { action: text(¬NUL), source_name: text(¬NUL), cur: text(¬NUL), both: text(¬NUL) }
 delete.sql: many () -> { gone: text(¬NUL), source_name: text(¬NUL), shout: text(¬NUL) }
 json.sql: many () -> { j: json { source: text(¬NUL)?, target: text(¬NUL), row: { id: int4, name: text(¬NUL), label: text(¬NUL) }?, mine: { id: int4, name: text(¬NUL), nick: text(¬NUL)? } } }

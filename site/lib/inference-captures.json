@@ -1423,23 +1423,21 @@
                   "max": "+5874897-12-31",
                   "infinity": true,
                   "label": "date"
-                },
-                "nullable": true
+                }
               },
               {
                 "name": "receipt",
                 "type": {
                   "kind": "bytes",
                   "label": "bytea"
-                },
-                "nullable": true
+                }
               }
             ]
           }
         },
         "rust": {
           "params": "Query {\n    ships_on: chrono::NaiveDate,\n    receipt: Vec<u8>,\n    id: i64,\n}",
-          "returns": "Option<{\n    id: i64,\n    ships_on: Option<chrono::NaiveDate>,\n    receipt: Option<Vec<u8>>,\n}>"
+          "returns": "Option<{\n    id: i64,\n    ships_on: chrono::NaiveDate,\n    receipt: Vec<u8>,\n}>"
         }
       }
     },
@@ -2096,6 +2094,58 @@
         "rust": {
           "params": "Query { id: &'a str, title: &'a str }",
           "returns": "Option<{ id: String }>"
+        }
+      }
+    },
+    "returned_values.sql": {
+      "685d2c74e7d2c4c2": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "code_points": [
+                  [
+                    1,
+                    1114111
+                  ]
+                ],
+                "label": "text"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int4"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "code_points": [
+                    [
+                      1,
+                      1114111
+                    ]
+                  ],
+                  "label": "text"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { email: &'a str, id: i32 }",
+          "returns": "Option<{ email: String }>"
         }
       }
     },
@@ -5320,6 +5370,48 @@
         "rust": {
           "params": "Query { order: &'a str }",
           "returns": "u64"
+        }
+      }
+    },
+    "returned_values.sql": {
+      "685d2c74e7d2c4c2": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-8",
+                "ill_formed": true
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 64
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "TEXT"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "params": "Query { email: &'a str, id: i64 }",
+          "returns": "Option<{ email: String }>"
         }
       }
     },

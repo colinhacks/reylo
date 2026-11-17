@@ -1,8 +1,10 @@
 [package]
 name = "reylo-engine-native"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Reylo's engine as a native program per database: JSON requests on standard input, one answer per line on standard output. It answers what the WebAssembly engine answers, and opens its own connection to the database to analyze a statement to its end."
 
 [features]
@@ -32,9 +34,12 @@ name = "reylo-sqlserver"
 path = "src/bin/reylo-sqlserver.rs"
 required-features = ["sqlserver"]
 
+[build-dependencies]
+reylo-engine-build.workspace = true
+
 [dependencies]
-reylo-engine = { path = "../facade" }
-reylo-engine-core = { path = "../core" }
+reylo-engine.workspace = true
+reylo-engine-core.workspace = true
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 tokio = { version = "1", features = ["rt", "io-std", "io-util", "net", "time"] }
 tokio-postgres = { version = "0.7", optional = true }
@@ -43,7 +48,7 @@ tokio-postgres-rustls = { version = "0.13", optional = true }
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"], optional = true }
 rusqlite = { version = "0.39", features = ["bundled"], optional = true }
 # TLS over rustls, with ring for its crypto as the program's every other connection.
-tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls"], optional = true }
+tiberius = { workspace = true, features = ["tds73", "rustls"], optional = true }
 tokio-util = { version = "0.7", features = ["compat"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }

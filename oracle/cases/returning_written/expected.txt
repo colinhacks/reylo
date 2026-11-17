@@ -1,0 +1,55 @@
+column_defaults.sql: one () -> { note: text(¬NUL)?, stamp: timestamptz? }
+domain_literal.sql: one () -> { d: text(¬NUL) }
+enum_literal.sql: one () -> { m: public.mood('calm' | 'sharp') }
+foreign_insert.sql: at_most_one () -> { note: text(¬NUL)? }
+generated.sql: many () -> { a: int4, g: int4? }
+insert_default.sql: one () -> { note: text(¬NUL)? }
+insert_expression.sql: one () -> { loud: text(¬NUL) }
+insert_in_part.sql: one () -> { tags: text(¬NUL)?[]? }
+insert_literal.sql: one () -> { note: text(¬NUL), at: timestamptz, n: int8? }
+insert_new_old.sql: one () -> { after: text(¬NUL), before: text(¬NUL)? }
+insert_param_bare.sql: one (id: int4, note: text(¬NUL)?) -> { note: text(¬NUL)? }
+insert_param_cast.sql: one (id: int4, note: text(¬NUL)) -> { note: text(¬NUL) }
+insert_positional.sql: one () -> { note: text(¬NUL), at: timestamptz? }
+insert_rows.sql: many (note: text(¬NUL)) -> { note: text(¬NUL) }
+insert_rows_null.sql: many () -> { note: text(¬NUL)? }
+insert_select.sql: many () -> { note: text(¬NUL) }
+insert_select_nullable.sql: many () -> { note: text(¬NUL)? }
+insert_select_with.sql: one () -> { note: text(¬NUL) }
+insert_star.sql: one () -> { id: int4, note: text(¬NUL), at: timestamptz?, n: int8, tags: text(¬NUL)?[]?, label: text(¬NUL)? }
+merge_by_source.sql: many () -> { note: text(¬NUL) }
+merge_by_source_keeps.sql: many () -> { note: text(¬NUL)? }
+merge_delete.sql: many () -> { note: text(¬NUL)? }
+merge_insert_source.sql: many () -> { note: text(¬NUL)? }
+merge_new_old.sql: many () -> { before: text(¬NUL)?, after: text(¬NUL) }
+merge_nothing.sql: many () -> { note: text(¬NUL) }
+merge_update_insert.sql: many () -> { note: text(¬NUL), action: text(¬NUL) }
+partition_insert.sql: one () -> { note: text(¬NUL)? }
+partition_moved.sql: many () -> { note: text(¬NUL)? }
+partition_plain.sql: one () -> { note: text(¬NUL)? }
+quoted_name.sql: one () -> { note: text(¬NUL) }
+rule_insert.sql: many () -> { note: text(¬NUL)? }
+star_in_row.sql: at_most_one () -> { note: text(¬NUL)?, label: text(¬NUL)? }
+star_in_values.sql: one () -> { note: text(¬NUL)?, label: text(¬NUL)? }
+trigger_insert.sql: one () -> { note: text(¬NUL)? }
+trigger_update.sql: many () -> { note: text(¬NUL)? }
+trigger_upsert.sql: one () -> { note: text(¬NUL)? }
+update_default.sql: many () -> { note: text(¬NUL)? }
+update_expression.sql: many () -> { note: text(¬NUL) }
+update_expression_only.sql: many () -> { loud: text(¬NUL), joined: text(¬NUL)?, was: text(¬NUL)? }
+update_from.sql: many () -> { note: text(¬NUL)? }
+update_from_row.sql: many () -> { label: text(¬NUL) }
+update_literal.sql: at_most_one () -> { note: text(¬NUL), at: timestamptz, n: int8? }
+update_new_old.sql: many () -> { before: text(¬NUL)?, after: text(¬NUL) }
+update_row.sql: many () -> { note: text(¬NUL), n: int8 }
+update_subquery_row.sql: many () -> { note: text(¬NUL)?, n: int8? }
+upsert_excluded.sql: many () -> { note: text(¬NUL) }
+upsert_existing.sql: many () -> { note: text(¬NUL)? }
+upsert_keeps.sql: many () -> { note: text(¬NUL)? }
+upsert_nothing.sql: many () -> { note: text(¬NUL) }
+upsert_old_new.sql: many () -> { before: text(¬NUL)?, after: text(¬NUL) }
+upsert_where.sql: many () -> { note: text(¬NUL) }
+view_insert.sql: at_most_one () -> { note: text(¬NUL)? }
+with_insert.sql: one () -> { note: text(¬NUL) }
+with_trigger.sql: many () -> { note: text(¬NUL)? }
+with_update.sql: at_most_one () -> { note: text(¬NUL) }
