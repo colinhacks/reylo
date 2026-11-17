@@ -587,6 +587,24 @@ pub fn changes_data(statement: &Statement) -> bool {
     DATA.is_match(&head(statement, 1))
 }
 
+/// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`, and
+/// `[Accounts]` of `app.[Accounts]`.
+pub fn last_written(name: &str) -> String {
+    let mut quote: Option<char> = None;
+    let mut at = 0;
+    for (k, ch) in name.char_indices() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '`' => quote = Some(ch),
+            None if ch == '[' => quote = Some(']'),
+            None if ch == '.' => at = k + 1,
+            None => {}
+        }
+    }
+    name[at..].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

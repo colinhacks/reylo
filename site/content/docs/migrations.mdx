@@ -227,6 +227,8 @@ const ran = await migrate();
 
 It runs `reylo migrate deploy` as the command line does, and resolves to the names of the migrations it ran. It rejects with the deploy's problems, as on a draft or a database changed by hand. Pass `{ url }` to migrate another database.
 
+In Rust, `reylo::migrate!()` compiles your migrations into the crate and runs them on your sqlx pool ([Rust](/rust#migrations)).
+
 A Cloudflare Durable Object runs its migrations on itself, from its constructor ([Durable Objects](/durable-objects#migrations)).
 
 ## Commands

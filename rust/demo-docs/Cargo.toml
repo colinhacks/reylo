@@ -18,7 +18,7 @@ required-features = ["live"]
 # Every Rust snippet the docs site shows, compiled against the schema of its examples, with the types
 # the page names for each value written out, and run.
 [dependencies]
-reylo = { workspace = true, features = ["sqlx_0_9", "postgres", "chrono", "uuid"] }
+reylo = { workspace = true, features = ["sqlx_0_9", "postgres", "migrate", "chrono", "uuid"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures-util = { version = "0.3", default-features = false }

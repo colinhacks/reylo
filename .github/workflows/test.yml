@@ -63,7 +63,7 @@ jobs:
           # Every database, or the ones the change reaches.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-sqlserver -p reylo-engine -p reylo-engine-native -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-codegen -p reylo'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-sqlserver -p reylo-engine -p reylo-engine-native -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-codegen -p reylo --features reylo/mysql,reylo/sqlite'
             echo 'shards=["postgres","sqlite","mysql-1","mysql-2","mysql-slow","sqlserver"]'
             echo playground=true
           }
@@ -92,7 +92,9 @@ jobs:
               engine/mysql/* | oracle/cases/mysql_*) mysql=true ;;
               engine/sqlite/* | oracle/cases/sqlite_*) sqlite=true ;;
               engine/sqlserver/* | oracle/cases/sqlserver_*) sqlserver=true ;;
-              engine/cli/* | engine/migrate/*) binary=true ;;
+              engine/cli/*) binary=true ;;
+              # The migrations, which the Rust crate's reylo::migrate!() runs from an app too.
+              engine/migrate/*) binary=true rust=true ;;
               # The Rust crate, whose generator the binary's reylo generate runs.
               rust/*) rust=true binary=true ;;
               oracle/cases/*) postgres=true ;;
@@ -105,7 +107,8 @@ jobs:
           $sqlserver && { tests="$tests -p reylo-engine-sqlserver"; shards="$shards,\"sqlserver\""; }
           # The binary's own crates, the migrations and the command line, which link every database.
           $binary && tests="$tests -p reylo-migrate -p reylo-cli"
-          $rust && tests="$tests -p reylo-codegen -p reylo"
+          # The Rust crate on each of its databases, whose own tests (tests/migrate.rs) run on all three.
+          $rust && tests="$tests -p reylo-codegen -p reylo --features reylo/mysql,reylo/sqlite"
           if [ -z "$tests" ]; then
             { echo engine=false; echo tests=; echo 'shards=[]'; } >> "$GITHUB_OUTPUT"
           else
@@ -312,6 +315,8 @@ jobs:
         run: |
           set -o pipefail
           cargo build --workspace --all-targets 2>&1 | tee "$RUNNER_TEMP/build.log"
+          # The migrations as an app's reylo::migrate!() builds them, without the command line's clients.
+          cargo check -p reylo-migrate --no-default-features 2>&1 | tee -a "$RUNNER_TEMP/build.log"
           ! grep -E '^warning' "$RUNNER_TEMP/build.log"
       # The migrations' init writes its baseline with pg_dump, which refuses a server newer than itself, and
       # the runner's own is older than the service's Postgres 18. Its directory goes first on the PATH, since

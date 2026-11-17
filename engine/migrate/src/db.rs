@@ -6,8 +6,11 @@
 //! leaves a shadow nobody holds, which the next run drops before it builds its own.
 
 use crate::{Dialect, Error};
+#[cfg(feature = "cli")]
 use mysql_async::prelude::Queryable;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 /// One row, every value as text (Postgres's booleans as `t` and `f`), as its columns name them.
 #[derive(Clone, Debug, Default)]
@@ -17,6 +20,11 @@ pub struct Row {
 }
 
 impl Row {
+    /// A row of `values`, in the order `columns` names them; a host's [`Session`] builds its rows so.
+    pub fn new(columns: Vec<String>, values: Vec<Option<String>>) -> Row {
+        Row { columns, values }
+    }
+
     pub fn get(&self, name: &str) -> Option<&str> {
         let at = self.columns.iter().position(|c| c == name)?;
         self.values[at].as_deref()
@@ -35,12 +43,20 @@ impl Row {
 }
 
 pub enum Db {
+    #[cfg(feature = "cli")]
     Postgres(tokio_postgres::Client),
+    #[cfg(feature = "cli")]
     Mysql(mysql_async::Conn),
+    #[cfg(feature = "cli")]
     Sqlite(rusqlite::Connection),
+    #[cfg(feature = "cli")]
     Sqlserver(reylo_engine_native::sqlserver::Conn),
+    /// A database the host holds the connection to, as a Rust app's own pool through
+    /// `reylo::migrate!()`.
+    Host(Box<dyn Session>),
 }
 
+#[cfg(feature = "cli")]
 pub(crate) fn sqlserver_error(e: tiberius::error::Error) -> Error {
     match e {
         tiberius::error::Error::Server(t) => Error(t.message().to_string()),
@@ -50,6 +66,7 @@ pub(crate) fn sqlserver_error(e: tiberius::error::Error) -> Error {
 
 /// A SQL Server value as text: a `bit` as `1` or `0`, a number in its decimal digits, binary data in
 /// hexadecimal, and a date or a time as tiberius prints it.
+#[cfg(feature = "cli")]
 fn sqlserver_text(value: &tiberius::ColumnData<'_>) -> Option<String> {
     use tiberius::ColumnData::*;
     match value {
@@ -70,6 +87,7 @@ fn sqlserver_text(value: &tiberius::ColumnData<'_>) -> Option<String> {
 }
 
 /// The rows of every result set of a SQL Server batch, every value as text.
+#[cfg(feature = "cli")]
 async fn sqlserver_rows(client: &mut reylo_engine_native::sqlserver::Conn, sql: &str) -> Result<Vec<Row>, Error> {
     let results = client.simple_query(sql).await.map_err(sqlserver_error)?.into_results().await.map_err(sqlserver_error)?;
     Ok(results
@@ -84,15 +102,34 @@ async fn sqlserver_rows(client: &mut reylo_engine_native::sqlserver::Conn, sql: 
 }
 
 /// A connection to the SQL Server database a URL names, as the engine opens one.
+#[cfg(feature = "cli")]
 pub(crate) async fn open_sqlserver(url: &str) -> Result<reylo_engine_native::sqlserver::Conn, Error> {
     reylo_engine_native::sqlserver::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
 }
 
 /// A SQL Server name in brackets, `]` doubled.
+#[cfg(feature = "cli")]
 pub(crate) fn bracket(name: &str) -> String {
     format!("[{}]", name.replace(']', "]]"))
 }
 
+/// A future a [`Session`] answers with.
+pub type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
+
+/// One connection a host holds to the database deploy and status run on: each statement run as
+/// written, every value of a row as text (a boolean as `t` or `true`), as [`Db::rows`] reads them.
+/// The connection is the same one for the whole run, since the run's lock is the session's.
+pub trait Session: Send {
+    fn dialect(&self) -> Dialect;
+    /// The rows of the statements in `sql`.
+    fn rows<'a>(&'a mut self, sql: &'a str) -> Answer<'a, Vec<Row>>;
+    /// Runs `sql`: one statement or several.
+    fn exec<'a>(&'a mut self, sql: &'a str) -> Answer<'a, ()>;
+    /// Runs one statement with text parameters, `$1` on Postgres and `?` elsewhere.
+    fn exec_with<'a>(&'a mut self, sql: &'a str, params: &'a [&'a str]) -> Answer<'a, ()>;
+}
+
+#[cfg(feature = "cli")]
 pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
     match e.as_db_error() {
         Some(d) => {
@@ -106,6 +143,7 @@ pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
     }
 }
 
+#[cfg(feature = "cli")]
 pub(crate) fn mysql_error(e: mysql_async::Error) -> Error {
     match e {
         mysql_async::Error::Server(s) => Error(s.message),
@@ -113,10 +151,12 @@ pub(crate) fn mysql_error(e: mysql_async::Error) -> Error {
     }
 }
 
+#[cfg(feature = "cli")]
 pub(crate) fn sqlite_error(e: rusqlite::Error) -> Error {
     Error(e.to_string())
 }
 
+#[cfg(feature = "cli")]
 fn mysql_text(value: &mysql_async::Value) -> Option<String> {
     use mysql_async::Value::*;
     match value {
@@ -158,6 +198,7 @@ pub fn sqlite_path(url: &str, base: &Path) -> String {
 }
 
 /// The rows of `sql` over Postgres's simple protocol, every value as text.
+#[cfg(feature = "cli")]
 pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Result<Vec<Row>, Error> {
     let mut out = Vec::new();
     for message in client.simple_query(sql).await.map_err(pg_error)? {
@@ -172,16 +213,19 @@ pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Resul
 
 /// A connection to the Postgres database a URL names, as the engine opens one (its TLS, timeout and
 /// failure messages), without the server version it reports.
+#[cfg(feature = "cli")]
 pub(crate) async fn open_postgres(url: &str) -> Result<tokio_postgres::Client, Error> {
     reylo_engine_native::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
 }
 
 /// A connection to the MySQL database a URL names, as the engine opens one.
+#[cfg(feature = "cli")]
 pub(crate) async fn open_mysql(url: &str) -> Result<mysql_async::Conn, Error> {
     reylo_engine_native::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
 }
 
 impl Db {
+    #[cfg(feature = "cli")]
     pub async fn connect(url: &str, base: &Path) -> Result<Db, Error> {
         match Dialect::of_url(url)? {
             Dialect::Postgres => Ok(Db::Postgres(crate::db::open_postgres(url).await?)),
@@ -193,10 +237,15 @@ impl Db {
 
     pub fn dialect(&self) -> Dialect {
         match self {
+            #[cfg(feature = "cli")]
             Db::Postgres(_) => Dialect::Postgres,
+            #[cfg(feature = "cli")]
             Db::Mysql(_) => Dialect::Mysql,
+            #[cfg(feature = "cli")]
             Db::Sqlite(_) => Dialect::Sqlite,
+            #[cfg(feature = "cli")]
             Db::Sqlserver(_) => Dialect::Sqlserver,
+            Db::Host(session) => session.dialect(),
         }
     }
 
@@ -204,7 +253,10 @@ impl Db {
     /// protocol), every value as text.
     pub async fn rows(&mut self, sql: &str) -> Result<Vec<Row>, Error> {
         match self {
+            Db::Host(session) => session.rows(sql).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => pg_rows(client, sql).await,
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => {
                 let rows: Vec<mysql_async::Row> = conn.query(sql).await.map_err(mysql_error)?;
                 Ok(rows
@@ -216,6 +268,7 @@ impl Db {
                     })
                     .collect())
             }
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => {
                 let mut statement = conn.prepare(sql).map_err(sqlite_error)?;
                 let columns: Vec<String> = statement.column_names().into_iter().map(String::from).collect();
@@ -239,6 +292,7 @@ impl Db {
                     .map_err(sqlite_error)?;
                 Ok(rows.into_iter().map(|values| Row { columns: columns.clone(), values }).collect())
             }
+            #[cfg(feature = "cli")]
             Db::Sqlserver(client) => sqlserver_rows(client, sql).await,
         }
     }
@@ -246,9 +300,14 @@ impl Db {
     /// Runs `sql` as written: one statement or several.
     pub async fn exec(&mut self, sql: &str) -> Result<(), Error> {
         match self {
+            Db::Host(session) => session.exec(sql).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => client.batch_execute(sql).await.map_err(pg_error),
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => conn.query_drop(sql).await.map_err(mysql_error),
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute_batch(sql).map_err(sqlite_error),
+            #[cfg(feature = "cli")]
             Db::Sqlserver(client) => sqlserver_rows(client, sql).await.map(|_| ()),
         }
     }
@@ -277,15 +336,20 @@ impl Db {
     /// Runs one statement with text parameters, `$1` on Postgres and `?` elsewhere.
     pub async fn exec_with(&mut self, sql: &str, params: &[&str]) -> Result<(), Error> {
         match self {
+            Db::Host(session) => session.exec_with(sql, params).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => {
                 let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params.iter().map(|p| p as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
                 client.execute(sql, &params).await.map(|_| ()).map_err(pg_error)
             }
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => {
                 let values: Vec<mysql_async::Value> = params.iter().map(|p| mysql_async::Value::from(*p)).collect();
                 conn.exec_drop(sql, mysql_async::Params::Positional(values)).await.map_err(mysql_error)
             }
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute(sql, rusqlite::params_from_iter(params.iter())).map(|_| ()).map_err(sqlite_error),
+            #[cfg(feature = "cli")]
             Db::Sqlserver(client) => {
                 let params: Vec<&dyn tiberius::ToSql> = params.iter().map(|p| p as &dyn tiberius::ToSql).collect();
                 client.execute(sql, &params).await.map(|_| ()).map_err(sqlserver_error)
@@ -294,6 +358,7 @@ impl Db {
     }
 
     pub async fn close(self) {
+        #[cfg(feature = "cli")]
         match self {
             Db::Mysql(conn) => {
                 let _ = conn.disconnect().await;
@@ -307,9 +372,9 @@ impl Db {
 
     /// The parameter marker for the `n`th parameter.
     pub fn param(&self, n: usize) -> String {
-        match self {
-            Db::Postgres(_) => format!("${n}"),
-            Db::Sqlserver(_) => format!("@P{n}"),
+        match self.dialect() {
+            Dialect::Postgres => format!("${n}"),
+            Dialect::Sqlserver => format!("@P{n}"),
             _ => "?".into(),
         }
     }
@@ -478,7 +543,13 @@ pub struct Shadow {
     pub name: String,
 }
 
+/// Where shadows are made: the target's server, or the one `shadow_url` names. Without the `cli`
+/// feature there is none: deploy and status make no shadow.
+#[cfg(not(feature = "cli"))]
+pub enum Server {}
+
 /// Where shadows are made: the target's server, or the one `shadow_url` names.
+#[cfg(feature = "cli")]
 pub enum Server {
     Postgres {
         admin: tokio_postgres::Client,
@@ -526,6 +597,7 @@ pub enum Server {
 
 /// Everything about a SQL Server a replay's outcome turns on, beside its steps: its version and
 /// collation, the login the shadows are made as, and the server's principals a grant may name.
+#[cfg(feature = "cli")]
 pub(crate) async fn sqlserver_state(admin: &mut reylo_engine_native::sqlserver::Conn) -> Result<String, Error> {
     let rows = sqlserver_rows(
         admin,
@@ -537,23 +609,28 @@ pub(crate) async fn sqlserver_state(admin: &mut reylo_engine_native::sqlserver::
 }
 
 /// Takes the application lock `name` for the session, at once: whether it was granted.
+#[cfg(feature = "cli")]
 async fn sqlserver_lock(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) -> Result<bool, Error> {
     let rows = sqlserver_rows(admin, &format!("declare @r int; exec @r = sp_getapplock @Resource = N'{name}', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; select @r as r")).await?;
     Ok(rows.first().and_then(|r| r.text("r").parse::<i64>().ok()).is_some_and(|r| r >= 0))
 }
 
+#[cfg(feature = "cli")]
 async fn sqlserver_unlock(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) {
     let _ = sqlserver_rows(admin, &format!("exec sp_releaseapplock @Resource = N'{name}', @LockOwner = 'Session'")).await;
 }
 
 /// Drops a SQL Server database, its other sessions ended first.
+#[cfg(feature = "cli")]
 async fn sqlserver_drop(admin: &mut reylo_engine_native::sqlserver::Conn, name: &str) -> Result<(), Error> {
     let db = bracket(name);
     sqlserver_rows(admin, &format!("if db_id(N'{name}') is not null begin alter database {db} set single_user with rollback immediate; drop database {db}; end")).await.map(|_| ())
 }
 
+#[cfg(feature = "cli")]
 const PG_LISTS: &[&str] = &["search_path", "temp_tablespaces", "local_preload_libraries", "session_preload_libraries"];
 
+#[cfg(feature = "cli")]
 impl Server {
     /// The server shadows are made on: `shadow_url`'s, else the target's. A shadow is made like the
     /// target, which `target` is connected to.
@@ -904,6 +981,7 @@ impl Server {
 /// Ends a Postgres shadow's session, and waits up to a second for its server process to go: a
 /// database with a session left cannot be dropped, renamed or copied without the server's own wait
 /// for it, a tenth of a second at a time.
+#[cfg(feature = "cli")]
 pub(crate) async fn pg_close(admin: &tokio_postgres::Client, db: Db, name: &str) {
     drop(db);
     for _ in 0..200 {
