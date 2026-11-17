@@ -1,9 +1,9 @@
 ---
-name: using-reylo
+name: reylo
 description: "Use in a project that imports .sql files with Reylo, which a tsconfig.json whose contentMappers names reylo, a .reylo.yaml file or a reylo dependency shows: writing or changing a .sql query, calling its .run(), .runSync() or .with(), passing it a database client, tracing or logging its queries, fixing an error the type check reports in a .sql file, or evaluating, planning or carrying out a move of a project's queries to Reylo from Prisma Client."
 ---
 
-# Using Reylo
+# Reylo
 
 Reylo lets TypeScript import a `.sql` file as a typed query. The types come from the database itself: the parameters, the columns and their nullability, nested JSON and how many rows the query returns. Nothing is declared by hand, so a type is changed by changing the SQL or the schema, never by an annotation.
 

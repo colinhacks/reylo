@@ -20,7 +20,7 @@ A maintainer may keep local notes beside this file, which are never committed; w
 | `site/` | The docs site, reylo.dev: Vite, React Router and MDX; its design is docs-kit, copied into `site/docs-kit/` |
 | `examples/` | One complete project per setup the docs describe, the models to copy when setting Reylo up elsewhere ([examples/README.md](./examples/README.md)); each is checked |
 | `lab/` | End-to-end check projects: one per dialect, the bundlers, Jest, Next.js, the drivers and the driver matrix, and `lab/compare`, which runs other SQL typing tools on the same queries for the docs' comparison |
-| `skills/using-reylo/` | The agent skill for projects that use Reylo; not instructions for work here, but kept current with what users see |
+| `skills/reylo/` | The agent skill for projects that use Reylo; not instructions for work here, but kept current with what users see |
 | `scripts/build.ts` | `nub run build`: writes every publishable package to `dist/`, `reylo` and the platform package of this machine (`--binaries <dir>` packages all eight) |
 | `.github/workflows/` | `test.yml` (CI on every push to `main` and pull request, and by hand on a branch), `windows.yml` (the type check on Windows, which `test.yml` runs on each push to `main` and each release), `binaries.yml` (each platform's binary built, installed and run on that platform, on a pull request that changes how it is built or found, and within each release; one platform's binary alone, by hand), `channels.yml` (the `reylo` command installed and run through every channel that does without npm: `site/public/install.sh` and `install.ps1`, which reylo.dev serves, the Homebrew formula and Scoop manifest `.github/scripts/channels.sh` writes, and the container image `.github/docker/Dockerfile` builds; on a pull request that changes one, after `binaries.yml`'s builds, and by hand on a release's assets), `release.yml` (the staged npm release, which a maintainer dispatches, and then the tap, the bucket and the image, `.github/scripts/channels-publish.sh`), `pullfrog.yml` |
 
@@ -49,7 +49,7 @@ A maintainer may keep local notes beside this file, which are never committed; w
 | The Rust crate: the Rust type of each descriptor, the module's items, the macro, and `reylo generate rust-sqlx` | `rust/reylo-codegen/src/` (`types.rs`, the types; `lib.rs`, the items; `analysis.rs`, the analysis and its cache; `generate.rs`, the files the generator writes), and `rust/reylo-macros/src/lib.rs` | `cargo test -p reylo-codegen -p reylo`, then `.github/scripts/rust-demos.sh` with both test databases, which builds and runs every demo; the docs' `rust.mdx` and `rust/demo-docs` |
 | The docs | `site/content/` | `nub run build` in `site/` ([recipe](#a-docs-change)) |
 
-The live tests in these files skip without both test databases ([JavaScript](#javascript)). A change a user of Reylo would notice also updates the docs and the skill, `skills/using-reylo/SKILL.md`, in the same pull request.
+The live tests in these files skip without both test databases ([JavaScript](#javascript)). A change a user of Reylo would notice also updates the docs and the skill, `skills/reylo/SKILL.md`, in the same pull request.
 
 The engine, crate by crate:
 
