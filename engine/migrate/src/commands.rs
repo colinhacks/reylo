@@ -21,7 +21,7 @@ pub struct Options {
     pub shadow_url: Option<String>,
     pub dir: PathBuf,
     pub schema: PathBuf,
-    /// The lock's file, `reylo/reylo-lock.yaml`.
+    /// The lock's file, `reylo/reylo.lock`.
     pub lock: PathBuf,
     /// The cache of replays and the SQLite lock files, `reylo/.cache/`.
     pub cache: PathBuf,
@@ -949,6 +949,30 @@ fn lock_problems(opts: &Options, files: &[Migration]) -> Vec<Problem> {
     problems
 }
 
+/// The lock under its name before 0.8.0, beside the lock or in its place: never read, and refused by
+/// every command that reads or writes the lock.
+fn old_lock(opts: &Options) -> Option<Problem> {
+    let old = opts.lock.with_file_name(lock::OLD_LOCK);
+    if !old.exists() {
+        return None;
+    }
+    let (was, is) = (shown(&old), shown(&opts.lock));
+    Some(if opts.lock.exists() {
+        Problem::new("lock-old-name", format!("{was} and {is} are both here"))
+            .note(format!("{is} is the lock, and {was} its name before 0.8.0, which nothing reads."))
+            .fix(format!("Keep {is} and delete {was}"), &[&format!("git rm {was}")])
+    } else {
+        Problem::new("lock-old-name", format!("{was} is the lock's old name: it is {is} now"))
+            .note("Nothing reads it under that name, and read as no lock, it would run the migrations in name order.")
+            .fix("Rename it", &[&format!("git mv {was} {is}")])
+    })
+}
+
+/// The refusal of a project that still holds the lock under its old name ([`old_lock`]).
+fn refuse_old_lock(opts: &Options, log: Log<'_>) -> Option<i32> {
+    old_lock(opts).map(|p| refuse(&[p], log))
+}
+
 /// Whether the project keeps no lock: its history isn't linear, and its migrations run in name order.
 fn lock_free(opts: &Options) -> bool {
     lock::read(&opts.lock) == lock::State::Missing
@@ -1483,6 +1507,9 @@ fn may_leave_part(sql: &str, d: Dialect) -> bool {
 /// `reylo migrate deploy`: runs what is pending on a database that is as Reylo's last run left it, and
 /// refuses one that isn't, running nothing. It needs no shadow database: `--dry-run` is what replays.
 pub async fn deploy(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = deploy_on(&mut db, opts, log).await;
     db.close().await;
@@ -1652,6 +1679,9 @@ fn uncompared_line() -> String {
 /// history, what is pending tried in a shadow, and the migrations against schema.sql; runs nothing,
 /// and writes nothing to the database.
 pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     // A SQLite file that isn't there yet is a database a first deploy makes: checked as the
     // empty one opening it makes, which is removed after, with what its engine wrote beside it.
     let made: Vec<PathBuf> = match missing_file(opts)? {
@@ -1829,6 +1859,9 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
 /// with data statements at its end, which a schema can't show ran. For a database changed by hand
 /// (a hotfix, then written as a migration), and one whose history was lost or kept by another tool.
 pub async fn history_push(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
@@ -2028,6 +2061,9 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
 /// is written again, and a deploy still to reach this database stays locked. Changes no database, and
 /// refuses one whose tables aren't what its history makes, whose files would not make it either.
 pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
@@ -2117,6 +2153,9 @@ fn there(opts: &Options) -> Result<(), Error> {
 /// reads, writes nothing and needs no shadow. It exits 1 where the database and the files aren't in
 /// step: a migration pending, cut off, edited or deleted, a change made by hand, or a check that fails.
 pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     there(opts)?;
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = status_on(&mut db, opts, log).await;
@@ -2314,6 +2353,9 @@ fn lock_line(opts: &Options) -> String {
 /// migration it ran must be in the migrations as it ran it. This is how a project that deleted its
 /// lock takes linear history back.
 pub async fn lock_from_history(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
@@ -2373,6 +2415,9 @@ async fn lock_from_history_on(db: &mut Db, server: &mut Server, opts: &Options, 
 /// with its rows, but a platform's own objects and the extensions the project's files don't create;
 /// the history is emptied; and every migration runs as `reylo migrate dev` runs it. Never in CI.
 pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     if in_ci {
         return Ok(refused_in_ci("reylo db reset", log));
     }
@@ -2511,6 +2556,9 @@ pub struct Choices {
 }
 
 pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     static VALID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9_]+$").expect("a valid pattern"));
     if name.is_empty() {
         return Err(Error("name the migration: reylo migrate new <name>".into()));
@@ -3502,6 +3550,9 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
 /// `reylo migrate init`: writes `schema.sql` and `migrations/init.sql` from the database, then
 /// records init.sql without running it, once a shadow shows the database already has its schema.
 pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     let started = if opts.schema.exists() { Some(shown(&opts.schema)) } else if !read_migrations(&opts.dir)?.0.is_empty() { Some(shown(&opts.dir)) } else { None };
     if let Some(what) = started {
         let problem = Problem::new("project-started", format!("This project has started already ({what} {})", if what.ends_with(".sql") { "exists" } else { "holds migrations" }))
@@ -3709,6 +3760,9 @@ pub fn refused_in_ci(command: &str, log: Log<'_>) -> i32 {
 /// database already has (`db push` made it) is recorded instead. Never in CI (`in_ci`, from the `CI`
 /// variable).
 pub async fn dev(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     if in_ci {
         return Ok(refused_in_ci("reylo migrate dev", log));
     }
@@ -4391,6 +4445,9 @@ pub async fn db_push(opts: &Options, in_ci: bool, push: &Push, log: Log<'_>) -> 
 }
 
 async fn db_push_as(opts: &Options, in_ci: bool, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     if in_ci {
         return Ok(refused_in_ci("reylo db push", log));
     }
@@ -4407,6 +4464,9 @@ async fn db_push_as(opts: &Options, in_ci: bool, push: &Push, asked: &Asked, log
 /// waited out like any run, and what `push` states holds for every run. `runs` bounds how many runs it
 /// makes, for a test; None runs until stopped.
 pub async fn db_push_watch(opts: &Options, in_ci: bool, push: &Push, runs: Option<usize>, log: Log<'_>) -> Result<i32, Error> {
+    if let Some(code) = refuse_old_lock(opts, log) {
+        return Ok(code);
+    }
     if in_ci {
         return Ok(refused_in_ci("reylo db push --watch", log));
     }

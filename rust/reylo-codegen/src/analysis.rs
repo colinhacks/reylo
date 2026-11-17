@@ -236,7 +236,7 @@ fn locate(manifest: &Path) -> Result<Located, String> {
 pub fn watched(dir: &Path) -> Vec<PathBuf> {
     let Ok(project) = reylo_engine_native::project::Project::resolve(dir, std::env::vars().collect()) else { return Vec::new() };
     let home = project.root.join(project.config.dir.as_deref().unwrap_or("reylo"));
-    let own = [home.join("schema.sql"), home.join("migrations"), home.join("reylo-lock.yaml")];
+    let own = [home.join("schema.sql"), home.join("migrations"), home.join("reylo.lock")];
     project.file.iter().cloned().chain(project.env_files().iter().cloned()).chain(own).filter(|p| p.exists()).collect()
 }
 

@@ -25,7 +25,7 @@ You or your agents write each migration by hand, and Reylo Migrate checks and ru
 </Way>
 </Choice>
 <Choice icon="branch" title="Linear or loose history">
-<Way title="linear, via `reylo-lock.yaml`">
+<Way title="linear, via `reylo.lock`">
 
 A lockfile keeps one order, so two branches that each add a migration conflict in git, before anything deploys.
 
@@ -75,7 +75,7 @@ $ npx reylo migrate init
   ├── schema.sql          this database's schema
   ├── migrations/
   │   └── init.sql        the same, recorded as run here
-  └── reylo-lock.yaml     the order the migrations run in
+  └── reylo.lock          the order the migrations run in
 ```
 
 Commit what it wrote. Its cache, `reylo/.cache/`, keeps itself out of git.
@@ -110,7 +110,7 @@ Run it on your development database:
 $ npx reylo migrate dev
 Applying to postgres://localhost:5432/app
   ✓ 20261104140347_add_bio.sql  applied · 4 ms
-✓ Wrote reylo/reylo-lock.yaml
+✓ Wrote reylo/reylo.lock
 ```
 
 Commit the migration and the lock. When you deploy, run it on production:
@@ -148,7 +148,7 @@ $ reylo migrate new add_bio
 $ reylo migrate dev
 Applying to postgres://localhost:5432/app
   + 20261104140347_add_bio.sql  recorded: already in place
-✓ Wrote reylo/reylo-lock.yaml
+✓ Wrote reylo/reylo.lock
 ```
 
 What changes:
@@ -165,11 +165,11 @@ Your migrations run in one order: the lockfile's, or their names'.
 
 ### Lockfile
 
-The lockfile, `reylo-lock.yaml`, keeps your migrations in one order.
+The lockfile, `reylo.lock`, keeps your migrations in one order.
 
 Each of its lines has a checksum chained to the one before. A migration it doesn't list is a draft, free to edit, which only `reylo migrate dev` runs:
 
-```yaml title="reylo-lock.yaml"
+```yaml title="reylo.lock"
 schema: c7bf681b
 migrations:
   - 20261104120000_users.sql c86e9de4
@@ -180,7 +180,7 @@ When two branches each add a migration, git conflicts on the lock, before anythi
 
 ### Lock-free mode
 
-Delete `reylo-lock.yaml`, and your migrations run in name order.
+Delete `reylo.lock`, and your migrations run in name order.
 
 <MigrationsDiagram without="lock" />
 

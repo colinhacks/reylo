@@ -1,4 +1,4 @@
-//! `reylo-lock.yaml`, the project's lock: the migrations in the order they run, each its name and a checksum chained to the line before, and
+//! `reylo.lock`, the project's lock: the migrations in the order they run, each its name and a checksum chained to the line before, and
 //! the checksum of `schema.sql` from the last time the migrations were proven to reach it. Two
 //! branches that each add a migration both append to it, so git conflicts on it when the second one
 //! merges, which is the point: before anything is deployed, one branch's migrations must move after
@@ -14,7 +14,11 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::LazyLock;
 
-pub const LOCK: &str = "reylo-lock.yaml";
+pub const LOCK: &str = "reylo.lock";
+
+/// The lock's name before 0.8.0. Every command that reads or writes the lock refuses a project that
+/// still holds it, rather than read it: read as no lock, it would run the migrations in name order.
+pub const OLD_LOCK: &str = "reylo-lock.yaml";
 
 const HEADER: &str = "# The order this project's migrations run in, written by reylo migrate dev and reylo migrate lock.
 # A merge conflict here means another branch added migrations too: keep main's lines, then
