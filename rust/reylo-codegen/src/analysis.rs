@@ -6,6 +6,11 @@
 //!
 //! The cache is the TypeScript loader's (`src/analyze.ts`): the same file names, the same entry and
 //! the same schema fingerprint, so a crate and a package in one directory would share it.
+//!
+//! Each database is behind the feature of its name, which brings its engine and its client, so a
+//! crate that runs on one database builds neither of the others. With none on, nothing is read, and
+//! the module still builds, for a crate's check.
+#![cfg_attr(not(any(feature = "postgres", feature = "mysql", feature = "sqlite")), allow(dead_code, unused_imports, unreachable_code))]
 
 use crate::Dialect;
 use reylo_engine::AnswerCache;
@@ -13,16 +18,22 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::Mutex;
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+use std::sync::{MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 use reylo_engine_native::Failure;
+#[cfg(feature = "postgres")]
 use tokio_postgres::Client;
 
 const ENTRY_VERSION: u64 = 1;
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 /// How long a schema fingerprint is trusted, as the loader trusts one (`SCHEMA_TTL` in
 /// `src/analyze.ts`): the statements of one compile are checked against one fingerprint, and a
 /// migration shows up in an editor's next expansion within seconds.
 const SCHEMA_TTL: Duration = Duration::from_secs(5);
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 /// Once the database is found unreachable, statements are read from `reylo/.cache/` for a minute
 /// instead of each paying the connect timeout (`OFFLINE_TTL` in `src/analyze.ts`).
 const OFFLINE_TTL: Duration = Duration::from_secs(60);
@@ -30,6 +41,7 @@ const OFFLINE_TTL: Duration = Duration::from_secs(60);
 /// A database's connection and what was learned over it, shared by every statement the macro
 /// expands in one process: a compiler's run over a crate, or an editor's macro server for as long
 /// as it runs. A cached statement then costs a file read, not a connection and a fingerprint.
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 struct Session<C, D> {
     url: String,
     conn: Option<C>,
@@ -38,6 +50,7 @@ struct Session<C, D> {
     answers: AnswerCache<D>,
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 impl<C, D> Session<C, D> {
     fn fresh(&self) -> Option<Result<String, String>> {
         let (schema, at) = self.schema.as_ref()?;
@@ -58,12 +71,16 @@ impl<C, D> Session<C, D> {
     }
 }
 
+#[cfg(feature = "postgres")]
 static POSTGRES: Mutex<Option<Session<Client, reylo_engine::clients::tokio_postgres::Describe>>> = Mutex::new(None);
+#[cfg(feature = "mysql")]
 static MYSQL: Mutex<Option<Session<mysql_async::Conn, reylo_engine::clients::mysql_async::Describe>>> = Mutex::new(None);
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// The runtime the shared connections live on: its worker keeps a connection's task running
 /// between expansions.
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn runtime() -> Result<&'static tokio::runtime::Runtime, String> {
     if RUNTIME.get().is_none() {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().map_err(|e| e.to_string())?;
@@ -73,6 +90,7 @@ fn runtime() -> Result<&'static tokio::runtime::Runtime, String> {
 }
 
 /// The session for `url`, a new one where the last expansion named another database.
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn session<C, D>(cell: &'static Mutex<Option<Session<C, D>>>, url: &str) -> MutexGuard<'static, Option<Session<C, D>>> {
     let mut guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.as_ref().map_or(true, |s| s.url != url) {
@@ -83,9 +101,12 @@ fn session<C, D>(cell: &'static Mutex<Option<Session<C, D>>>, url: &str) -> Mute
 /// The schema fingerprints of Postgres and MySQL: the loader's own queries (`FINGERPRINT` in
 /// `src/analyze.ts`), as its definitions write them out, so that an entry either writes is current
 /// for both.
+#[cfg(feature = "postgres")]
 const POSTGRES_FINGERPRINT: &str = include_str!("fingerprint-postgres.sql");
+#[cfg(feature = "mysql")]
 const MYSQL_FINGERPRINT: &str = include_str!("fingerprint-mysql.sql");
 /// SQLite's whole schema, and the functions of the SQLite that opened it, as the loader reads them.
+#[cfg(feature = "sqlite")]
 const SQLITE_FINGERPRINT: &str = include_str!("fingerprint-sqlite.sql");
 
 impl Dialect {
@@ -97,11 +118,30 @@ impl Dialect {
         }
     }
 
-    fn fingerprint(self) -> &'static str {
+    /// The engine's fingerprint, where the crate builds the database's engine.
+    fn fingerprint(self) -> Option<&'static str> {
         match self {
-            Dialect::Postgres => reylo_engine::postgres::FINGERPRINT,
-            Dialect::Sqlite => reylo_engine::sqlite::FINGERPRINT,
-            Dialect::Mysql => reylo_engine::mysql::FINGERPRINT,
+            #[cfg(feature = "postgres")]
+            Dialect::Postgres => Some(reylo_engine::postgres::FINGERPRINT),
+            #[cfg(feature = "sqlite")]
+            Dialect::Sqlite => Some(reylo_engine::sqlite::FINGERPRINT),
+            #[cfg(feature = "mysql")]
+            Dialect::Mysql => Some(reylo_engine::mysql::FINGERPRINT),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+
+    /// The build's error for a database whose feature is off.
+    fn off(self) -> String {
+        format!("the database URL names {}, and reylo's {} feature is off: turn it on in Cargo.toml, as `reylo = {{ version = \"…\", features = [\"{}\"] }}`", self.title(), self.name(), self.name())
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Dialect::Postgres => "Postgres",
+            Dialect::Sqlite => "SQLite",
+            Dialect::Mysql => "MySQL",
         }
     }
 
@@ -126,23 +166,30 @@ pub fn analyze(dir: &Path, sql: &str) -> Result<(Dialect, Value), String> {
     let Some(url) = url else {
         // No URL: whichever database the cache holds an analysis of the statement for.
         for dialect in [Dialect::Postgres, Dialect::Sqlite, Dialect::Mysql] {
-            if let Some(entry) = newest_entry(&queries, &statement_key(dialect, sql), "") {
+            let Some(key) = statement_key(dialect, sql) else { continue };
+            if let Some(entry) = newest_entry(&queries, &key, "") {
                 return Ok((dialect, entry));
             }
         }
         return Err(missing);
     };
     let dialect = Dialect::of(&url)?;
+    let _ = (&root, &cache);
     let analysis = match dialect {
+        #[cfg(feature = "postgres")]
         Dialect::Postgres => runtime()?.block_on(async {
             let mut guard = session(&POSTGRES, &url);
             postgres(&cache, &queries, sql, guard.as_mut().expect("made by session")).await
         })?,
+        #[cfg(feature = "sqlite")]
         Dialect::Sqlite => sqlite(&root, &cache, &queries, &url, sql)?,
+        #[cfg(feature = "mysql")]
         Dialect::Mysql => runtime()?.block_on(async {
             let mut guard = session(&MYSQL, &url);
             mysql(&cache, &queries, sql, guard.as_mut().expect("made by session")).await
         })?,
+        #[allow(unreachable_patterns)]
+        off => return Err(off.off()),
     };
     Ok((dialect, analysis))
 }
@@ -183,18 +230,32 @@ fn locate(manifest: &Path) -> Result<Located, String> {
     Ok(located)
 }
 
+/// The project of the crate at `dir`, as `reylo migrate` resolves it: its directory, and the
+/// directory of its own files (`reylo`, or the one the project file's `dir` names), where its
+/// migrations, lock and `schema.sql` are.
+pub fn home(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let project = reylo_engine_native::project::Project::resolve(dir, std::env::vars().collect())?;
+    let home = home_of(&project);
+    Ok((project.root, home))
+}
+
+fn home_of(project: &reylo_engine_native::project::Project) -> PathBuf {
+    project.root.join(project.config.dir.as_deref().unwrap_or("reylo"))
+}
+
 /// The files a statement's analysis depends on beside the statement, which a build script names
 /// to Cargo so that a change to one runs it again: the project file, the `.env` files, and the
 /// schema and migrations in the project's `reylo/` directory, each where it exists.
 pub fn watched(dir: &Path) -> Vec<PathBuf> {
     let Ok(project) = reylo_engine_native::project::Project::resolve(dir, std::env::vars().collect()) else { return Vec::new() };
-    let home = project.root.join(project.config.dir.as_deref().unwrap_or("reylo"));
+    let home = home_of(&project);
     let own = [home.join("schema.sql"), home.join("migrations"), home.join("reylo-lock.yaml")];
     project.file.iter().cloned().chain(project.env_files().iter().cloned()).chain(own).filter(|p| p.exists()).collect()
 }
 
+#[cfg(feature = "postgres")]
 async fn postgres(cache: &Path, queries: &Path, sql: &str, session: &mut Session<Client, reylo_engine::clients::tokio_postgres::Describe>) -> Result<Value, String> {
-    let statement = statement_key(Dialect::Postgres, sql);
+    let statement = statement_key(Dialect::Postgres, sql).expect("the feature builds the engine");
     let server = server(&session.url);
     let schema = match session.fresh() {
         Some(schema) => schema,
@@ -231,6 +292,7 @@ async fn postgres(cache: &Path, queries: &Path, sql: &str, session: &mut Session
 }
 
 /// The session's client, connected again where the server closed it.
+#[cfg(feature = "postgres")]
 async fn postgres_client<'c>(conn: &'c mut Option<Client>, url: &str) -> Result<&'c Client, Failure> {
     if conn.as_ref().map_or(true, Client::is_closed) {
         *conn = Some(reylo_engine_native::postgres::open(url).await?.0);
@@ -238,8 +300,9 @@ async fn postgres_client<'c>(conn: &'c mut Option<Client>, url: &str) -> Result<
     Ok(conn.as_ref().expect("connected above"))
 }
 
+#[cfg(feature = "mysql")]
 async fn mysql(cache: &Path, queries: &Path, sql: &str, session: &mut Session<mysql_async::Conn, reylo_engine::clients::mysql_async::Describe>) -> Result<Value, String> {
-    let statement = statement_key(Dialect::Mysql, sql);
+    let statement = statement_key(Dialect::Mysql, sql).expect("the feature builds the engine");
     let server = server(&session.url);
     let schema = match session.fresh() {
         Some(schema) => schema,
@@ -284,6 +347,7 @@ async fn mysql(cache: &Path, queries: &Path, sql: &str, session: &mut Session<my
 
 /// The fingerprint's rows as the loader reads them, each value as mysql2 decodes it; the outer
 /// error is a database that cannot be reached.
+#[cfg(feature = "mysql")]
 async fn mysql_fingerprint(conn: &mut Option<mysql_async::Conn>, url: &str) -> Result<Result<Vec<Vec<Value>>, mysql_async::Error>, Failure> {
     use mysql_async::prelude::Queryable;
     let conn = mysql_conn(conn, url).await?;
@@ -300,6 +364,7 @@ async fn mysql_fingerprint(conn: &mut Option<mysql_async::Conn>, url: &str) -> R
 }
 
 /// The session's connection, opened where there is none.
+#[cfg(feature = "mysql")]
 async fn mysql_conn<'c>(conn: &'c mut Option<mysql_async::Conn>, url: &str) -> Result<&'c mut mysql_async::Conn, Failure> {
     if conn.is_none() {
         *conn = Some(reylo_engine_native::mysql::open(url).await?.0);
@@ -307,8 +372,9 @@ async fn mysql_conn<'c>(conn: &'c mut Option<mysql_async::Conn>, url: &str) -> R
     Ok(conn.as_mut().expect("connected above"))
 }
 
+#[cfg(feature = "sqlite")]
 fn sqlite(root: &Path, cache: &Path, queries: &Path, url: &str, sql: &str) -> Result<Value, String> {
-    let statement = statement_key(Dialect::Sqlite, sql);
+    let statement = statement_key(Dialect::Sqlite, sql).expect("the feature builds the engine");
     let path = PathBuf::from(reylo_engine_native::project::sqlite_path(url, root).map_err(|why| format!("Cannot read the SQLite URL {url}: {why}."))?);
     let server = path.to_string_lossy().to_string();
     // A file that is gone is a database that cannot be reached: the entries are used as they are.
@@ -362,11 +428,12 @@ fn remember(cache: &Path, file: &Path, dialect: Dialect, schema: &str, analysis:
 
 /// The first half of an entry's file name, as `src/analyze.ts` hashes it: the engine's hash of
 /// its sources is in it, so an entry another engine wrote is not read.
-fn statement_key(dialect: Dialect, sql: &str) -> String {
-    sha256(&json!([ENTRY_VERSION, dialect.fingerprint(), dialect.name(), sql]).to_string())[..32].to_string()
+fn statement_key(dialect: Dialect, sql: &str) -> Option<String> {
+    Some(sha256(&json!([ENTRY_VERSION, dialect.fingerprint()?, dialect.name(), sql]).to_string())[..32].to_string())
 }
 
 /// The server, without credentials: the scheme, the user, the host and port, and the database.
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn server(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let (authority, path) = rest.split_once('/').map_or((rest, String::new()), |(a, p)| (a, format!("/{}", p.split('?').next().unwrap_or(""))));

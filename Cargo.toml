@@ -43,7 +43,7 @@ members = [
 [workspace.package]
 version = "0.8.0-beta.0"
 license = "MIT"
-repository = "https://github.com/colinhacks/reylo"
+repository = "https://github.com/reylosql/reylo"
 homepage = "https://reylo.dev"
 
 # The crates of this workspace, each by path and by the version crates.io knows it at. The two copies
@@ -56,7 +56,7 @@ reylo-engine-sqlite = { path = "engine/sqlite", version = "=0.8.0-beta.0" }
 reylo-engine-mysql = { path = "engine/mysql", version = "=0.8.0-beta.0" }
 reylo-engine = { path = "engine/facade", version = "=0.8.0-beta.0" }
 reylo-engine-native = { path = "engine/native", version = "=0.8.0-beta.0", default-features = false }
-reylo-migrate = { path = "engine/migrate", version = "=0.8.0-beta.0" }
+reylo-migrate = { path = "engine/migrate", version = "=0.8.0-beta.0", default-features = false }
 reylo-codegen = { path = "rust/reylo-codegen", version = "=0.8.0-beta.0", default-features = false }
 reylo-macros = { path = "rust/reylo-macros", version = "=0.8.0-beta.0" }
 reylo = { path = "rust/reylo", version = "=0.8.0-beta.0", default-features = false }

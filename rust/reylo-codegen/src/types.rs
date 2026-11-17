@@ -377,7 +377,9 @@ impl Types {
                 _ => return Err(self.unsupported(label, t, "")),
             },
             Kind::Float(f) => (float(f.exponent_bits, f.mantissa_bits), false),
-            Kind::Decimal(_) => (self.decimal(label)?, false),
+            // Read through `reylo::Exact`: a numeric past a Decimal's range is an error, where sqlx
+            // 0.8's own decoder panics.
+            Kind::Decimal(_) => (self.decimal(label)?, true),
             // A list of values of another type than text: its base type's values.
             Kind::Enum(e) => self.postgres(&e.ty, label)?,
             Kind::Text(_) => (quote!(::std::string::String), false),
@@ -455,9 +457,10 @@ impl Types {
             },
             Kind::Float(f) => (float(f.exponent_bits, f.mantissa_bits), false),
             Kind::Decimal(_) => (self.decimal(label)?, false),
-            // A SET is its elements joined by commas, as MySQL sends them.
-            Kind::Text(_) | Kind::Enum(_) => (quote!(::std::string::String), false),
-            Kind::Array(_) if name == "set" => (quote!(::std::string::String), false),
+            // A SET is its elements joined by commas, as MySQL sends them. Text is read through
+            // `reylo::Exact`, which reads it whatever its collation, as sqlx 0.8 does not.
+            Kind::Text(_) | Kind::Enum(_) => (quote!(::std::string::String), true),
+            Kind::Array(_) if name == "set" => (quote!(::std::string::String), true),
             Kind::Bytes(_) => (quote!(::std::vec::Vec<u8>), false),
             // A BIT(1) is a truth value, and a wider BIT its bits, as sqlx reads them.
             Kind::Array(a) if name == "bit" => match a.size.as_ref().and_then(|s| s.exact) {
@@ -933,7 +936,7 @@ pub fn text_impls(ident: &Ident, db: &TokenStream2) -> TokenStream2 {
             }
         }
         impl<'q> ::reylo::sqlx::Encode<'q, ::reylo::sqlx::#db> for #ident {
-            fn encode_by_ref(&self, buf: &mut <::reylo::sqlx::#db as ::reylo::sqlx::Database>::ArgumentBuffer) -> ::core::result::Result<::reylo::sqlx::encode::IsNull, ::reylo::sqlx::error::BoxDynError> {
+            fn encode_by_ref(&self, buf: &mut ::reylo::__private::ArgumentBuffer<'q, ::reylo::sqlx::#db>) -> ::core::result::Result<::reylo::sqlx::encode::IsNull, ::reylo::sqlx::error::BoxDynError> {
                 <&str as ::reylo::sqlx::Encode<'q, ::reylo::sqlx::#db>>::encode_by_ref(&::reylo::Enum::label(*self), buf)
             }
         }

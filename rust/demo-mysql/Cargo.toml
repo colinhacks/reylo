@@ -16,6 +16,6 @@ path = "src/main.rs"
 required-features = ["live"]
 
 [dependencies]
-reylo = { workspace = true, features = ["mysql", "chrono", "rust_decimal"] }
+reylo = { workspace = true, features = ["sqlx_0_9", "mysql", "chrono", "rust_decimal"] }
 sqlx = { version = "0.9", default-features = false, features = ["mysql", "runtime-tokio", "json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

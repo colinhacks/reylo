@@ -9,19 +9,44 @@
 
 pub use reylo_macros::{query, reflect};
 
+#[cfg(feature = "migrate")]
+pub mod migrate;
+/// The project's migrations, compiled in: `reylo::migrate!().run(&pool)` runs `reylo migrate deploy`
+/// from the app, and `.status(&pool)` `reylo migrate status` ([`migrate::Migrator`]).
+#[cfg(feature = "migrate")]
+pub use reylo_macros::migrate;
+
 mod enums;
 mod exact;
 pub use enums::{Enum, EnumId, UnexpectedRow};
 pub use exact::Exact;
 
+#[cfg(all(feature = "sqlx_0_9", feature = "sqlx_0_8"))]
+compile_error!("reylo's sqlx_0_9 and sqlx_0_8 features are both on: turn on the one of the sqlx the crate runs on, with `default-features = false` for sqlx_0_8");
+#[cfg(not(any(feature = "sqlx_0_9", feature = "sqlx_0_8")))]
+compile_error!("reylo needs the feature of the sqlx the crate runs on: sqlx_0_9 (a default feature) or sqlx_0_8");
+#[cfg(all(feature = "sqlx_0_8", feature = "sqlite"))]
+compile_error!("reylo's sqlite feature runs on sqlx 0.9 alone: sqlx 0.8's SQLite links libsqlite3-sys 0.30, and the macro's SQLite client a newer one, which Cargo cannot build beside it");
+
 // What the expansion names, so that a crate needs no dependency of its own on them.
 pub use serde;
 pub use serde_json;
+#[cfg(feature = "sqlx_0_9")]
 pub use sqlx;
+#[cfg(all(feature = "sqlx_0_8", not(feature = "sqlx_0_9")))]
+pub use sqlx08 as sqlx;
 
 #[doc(hidden)]
 pub mod __private {
+    use crate::sqlx;
     use futures_util::TryStreamExt;
+
+    /// The buffer a database's `Encode` writes into: sqlx 0.8 names it with the lifetime of the
+    /// query it is bound to, and sqlx 0.9 without.
+    #[cfg(feature = "sqlx_0_9")]
+    pub type ArgumentBuffer<'q, DB> = <DB as sqlx::Database>::ArgumentBuffer;
+    #[cfg(all(feature = "sqlx_0_8", not(feature = "sqlx_0_9")))]
+    pub type ArgumentBuffer<'q, DB> = <DB as sqlx::Database>::ArgumentBuffer<'q>;
 
     pub use futures_core::stream::BoxStream;
 

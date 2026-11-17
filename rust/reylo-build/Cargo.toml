@@ -7,5 +7,12 @@ repository.workspace = true
 homepage.workspace = true
 description = "Writes the modules of reylo generate rust-sqlx from a build script, into Cargo's OUT_DIR: each .sql file's Query, Row and run on sqlx, typed by Reylo's engine."
 
+[features]
+# The databases the build script can analyze a statement on, as `reylo`'s features of the same names.
+default = ["postgres"]
+postgres = ["reylo-codegen/postgres"]
+mysql = ["reylo-codegen/mysql"]
+sqlite = ["reylo-codegen/sqlite"]
+
 [dependencies]
 reylo-codegen = { workspace = true, features = ["generate"] }

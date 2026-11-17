@@ -17,7 +17,7 @@ diff -ruN a/Cargo.toml b/Cargo.toml
 -license = "MIT"
 -repository = "https://github.com/pganalyze/pg_query.rs"
 +license = "MIT AND BSD-3-Clause AND PostgreSQL"
-+repository = "https://github.com/colinhacks/reylo"
++repository = "https://github.com/reylosql/reylo"
 +links = "reylo_pg_query"
 +autotests = false
 +autobenches = false
