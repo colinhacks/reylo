@@ -111,6 +111,8 @@ function tsqlVariables(sql: string): { declared: Set<string>; args: Set<number> 
   let mode: "none" | "declare" | "exec" = "none";
   let expect = false;
   let depth = 0;
+  // The `case` expressions open at the top level, whose `else` and `end` end no statement.
+  let cases = 0;
   let i = 0;
   while (i < sql.length) {
     const ch = sql[i]!;
@@ -135,7 +137,7 @@ function tsqlVariables(sql: string): { declared: Set<string>; args: Set<number> 
     }
     if (ch === "(") { depth += 1; i += 1; continue; }
     if (ch === ")") { depth = Math.max(0, depth - 1); i += 1; continue; }
-    if (ch === ";" && depth === 0) { mode = "none"; i += 1; continue; }
+    if (ch === ";" && depth === 0) { mode = "none"; cases = 0; i += 1; continue; }
     if (ch === "," && depth === 0) { if (mode === "declare") expect = true; i += 1; continue; }
     if (ch === "@" && sql[i + 1] === "@") { i += 2; continue; }
     if (ch === "@" && /[A-Za-z_]/.test(sql[i + 1] ?? "")) {
@@ -148,9 +150,13 @@ function tsqlVariables(sql: string): { declared: Set<string>; args: Set<number> 
     if (/[A-Za-z_]/.test(ch) && !(i > 0 && /[A-Za-z0-9_]/.test(sql[i - 1]!))) {
       const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(i))![0];
       const lower = word.toLowerCase();
-      if (depth === 0 && TSQL_STARTS.has(lower)) {
-        mode = lower === "declare" ? "declare" : lower === "exec" || lower === "execute" ? "exec" : "none";
-        expect = mode === "declare";
+      if (depth === 0) {
+        if (lower === "case") cases += 1;
+        else if (lower === "end" && cases > 0) cases -= 1;
+        else if (cases === 0 && TSQL_STARTS.has(lower)) {
+          mode = lower === "declare" ? "declare" : lower === "exec" || lower === "execute" ? "exec" : "none";
+          expect = mode === "declare";
+        }
       }
       i += word.length; continue;
     }

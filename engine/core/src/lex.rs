@@ -304,6 +304,8 @@ fn tsql_variables(sql: &str) -> Variables {
     let mut out = Variables { declared: Default::default(), arguments: Default::default() };
     let mut mode = Mode::None;
     let mut depth = 0usize;
+    // The `case` expressions open at the top level, whose `else` and `end` end no statement.
+    let mut cases = 0usize;
     let mut i = 0;
     while i < b.len() {
         match b[i] {
@@ -354,6 +356,7 @@ fn tsql_variables(sql: &str) -> Variables {
             }
             b';' if depth == 0 => {
                 mode = Mode::None;
+                cases = 0;
                 i += 1;
             }
             b',' if depth == 0 => {
@@ -389,12 +392,20 @@ fn tsql_variables(sql: &str) -> Variables {
             c if is_name_start(c) && !prev_is_name_char(b, i) => {
                 let end = name_end(b, i);
                 let word = sql[i..end].to_ascii_lowercase();
-                if depth == 0 && TSQL_STARTS.contains(&word.as_str()) {
-                    mode = match word.as_str() {
-                        "declare" => Mode::Declare { expect: true },
-                        "exec" | "execute" => Mode::Exec,
-                        _ => Mode::None,
-                    };
+                if depth == 0 {
+                    match word.as_str() {
+                        "case" => cases += 1,
+                        "end" if cases > 0 => cases -= 1,
+                        _ if cases > 0 => {}
+                        w if TSQL_STARTS.contains(&w) => {
+                            mode = match w {
+                                "declare" => Mode::Declare { expect: true },
+                                "exec" | "execute" => Mode::Exec,
+                                _ => Mode::None,
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 i = end;
             }
@@ -999,6 +1010,9 @@ mod tests {
         // every other `@name` is a parameter, as `sp_executesql` reads the batch.
         assert_eq!(names("declare @since datetime2 = dateadd(day, -@days, sysutcdatetime()), @t table (id int); select id from orders where placed_at > @since and user_id = @user", Dialect::Sqlserver), ["days", "user"]);
         assert_eq!(names("exec dbo.find_user @id = @id, @Flag = 1", Dialect::Sqlserver), ["id"]);
+        // A `case` in a declaration is an expression: its `else` and `end` end neither the list nor a block.
+        assert_eq!(names("declare @a int = case when @flag = 1 then 2 else 3 end, @b int = 4; select @b as b", Dialect::Sqlserver), ["flag"]);
+        assert_eq!(names("begin declare @c int = case @f when 1 then case when @g = 2 then 1 end else 0 end, @d int = 1 end select @d, @e", Dialect::Sqlserver), ["f", "g", "e"]);
         assert_eq!(names("declare @n int\nselect @n = count(*) from t\nselect @N as n, @x as x, '@n' as s", Dialect::Sqlserver), ["x"]);
         // One statement keeps one prefix.
         assert_eq!(lex("select @a, :b", Dialect::Sqlserver).unwrap_err().message, ":b and @a have different prefixes; write every named parameter of a statement with one prefix, here @b");
