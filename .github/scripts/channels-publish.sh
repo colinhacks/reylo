@@ -78,7 +78,9 @@ if [ "$latest" = "v$version" ]; then
   tags+=(--tag "$image:$minor" --tag "$image:latest")
 fi
 printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-docker buildx create --use --name reylo-release > /dev/null
+# The builder's BuildKit image, pinned as every other image here: the driver's default is a moving tag.
+docker buildx create --use --name reylo-release \
+  --driver-opt image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe > /dev/null
 docker buildx build --platform linux/amd64,linux/arm64 --file .github/docker/Dockerfile \
   --build-arg VERSION="$version" "${tags[@]}" --push "$work/image"
 docker logout ghcr.io > /dev/null
