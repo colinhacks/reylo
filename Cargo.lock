@@ -2412,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "reylo"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -2432,7 +2432,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-build"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "glob",
  "mysql_async",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-cli"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "flate2",
  "regex",
@@ -2469,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "azure_core",
  "azure_identity",
@@ -2497,11 +2497,11 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-build"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 
 [[package]]
 name = "reylo-engine-core"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "reylo-engine-build",
@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-mysql"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "reylo-engine-build",
  "reylo-engine-core",
@@ -2523,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-postgres"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
@@ -2537,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-sqlite"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "cc",
  "reylo-engine-build",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-sqlserver"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "reylo-engine-build",
  "reylo-engine-core",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-macros"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2570,7 +2570,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-migrate"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "mysql_async",

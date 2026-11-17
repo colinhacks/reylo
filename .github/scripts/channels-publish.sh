@@ -88,5 +88,5 @@ echo "pushed ${tags[*]}"
 
 # GHCR may create a package private on its first push, and only its settings page makes it public.
 if ! docker manifest inspect "$image:$version" > /dev/null 2>&1; then
-  echo "::warning::$image:$version is not pullable without signing in; make the package public at https://github.com/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${GITHUB_REPOSITORY#*/}/settings"
+  echo "::warning::$image:$version is not pullable without signing in; make the package public at https://github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${GITHUB_REPOSITORY#*/}/settings"
 fi
