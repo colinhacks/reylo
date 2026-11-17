@@ -475,14 +475,43 @@ test("mysql: execute() → [rows, fields] on mysql2, a repeated name repeated in
   assert.deepEqual(await execute(pool, my, { id: 1, name: "ada" }), []);
 });
 
-test("mysql: a refusal of mysql2's prepared statements, as Cloudflare Hyperdrive answers one, names the mariadb driver", async () => {
+test("mysql: where a server refuses mysql2's prepared statements, as Cloudflare Hyperdrive does, Reylo writes the values into the text and runs query() from then on", async () => {
   const refusal = Object.assign(new Error("Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages"), { code: "ER_UNKNOWN_COM_ERROR" });
-  const pool = { query: async () => [[], []] as [unknown, unknown], execute: async () => Promise.reject(refusal) };
-  await assert.rejects(async () => execute(pool, my, { id: 1, name: "ada" }), (e: Error) => {
-    assert.equal(e.message, "reylo cannot run a mysql statement through mysql2 here: Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages. mysql2's execute(), which Reylo runs, prepares every statement, and this server, as Cloudflare Hyperdrive does, refuses prepared statements. Connect with the mariadb driver instead, whose query() Reylo runs without them.");
-    assert.equal(e.cause, refusal);
-    return true;
-  });
+  const sent: string[] = [];
+  let executes = 0;
+  let sqlMode = "STRICT_TRANS_TABLES";
+  const fields = [{ name: "id" }, { name: "name" }, { name: "again" }];
+  const pool = {
+    escape: (v: unknown) => `'${String(v)}'`,
+    execute: async () => (executes++, Promise.reject(refusal)),
+    query: async (options: { sql: string }) => {
+      sent.push(options.sql);
+      return (options.sql === "select @@session.sql_mode" ? [[[sqlMode]], []] : [[[1, "ada", 1]], fields]) as [unknown, unknown];
+    },
+  };
+  assert.deepEqual(await execute(pool, my, { id: 1, name: "it's" }), [{ id: 1, name: "ada", again: 1 }]);
+  await execute(pool, my, { id: 2.5, name: "C:\\" });
+  sqlMode = "STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES";
+  await execute(pool, my, { id: 3, name: "C:\\" });
+  await execute(pool, my, { id: 4, name: new Uint8Array([1, 2]) });
+  assert.equal(executes, 1);
+  assert.deepEqual(sent, [
+    "select 1 as id, 'it''s' as name, 1 as again",
+    "select @@session.sql_mode",
+    "select 2.5e0 as id, 'C:\\\\' as name, 2.5e0 as again",
+    "select @@session.sql_mode",
+    "select 3 as id, 'C:\\' as name, 3 as again",
+    "select 4 as id, _binary X'0102' as name, 4 as again",
+  ]);
+  // A charset other than UTF-8 can write a character outside ASCII with a quote's or a backslash's byte (SJIS's ¥, latin1's Ŝ): such a value is refused, and ASCII runs.
+  for (const charsetNumber of [13, 8]) {
+    const other = { ...pool, pool: { config: { connectionConfig: { charsetNumber } } } };
+    assert.deepEqual(await execute(other, my, { id: 1, name: "ada" }), [{ id: 1, name: "ada", again: 1 }]);
+    await assert.rejects(async () => execute(other, my, { id: 1, name: "¥' or 1=1 -- " }), (e: Error) => e.message.startsWith("reylo cannot run a mysql statement through mysql2 here:") && e.message.includes("is not UTF-8"));
+  }
+  // The app's queryFormat would rewrite every statement query() sends.
+  const formatted = { ...pool, pool: { config: { connectionConfig: { queryFormat: (sql: string) => sql } } } };
+  await assert.rejects(async () => execute(formatted, my, { id: 1, name: "ada" }), (e: Error) => e.message === "reylo cannot run a mysql statement through mysql2 here: this server, as Cloudflare Hyperdrive does, refuses prepared statements, so Reylo runs mysql2's query(), which passes every statement through the app's queryFormat. Connect without a queryFormat, or with the mariadb driver.");
   // Any other error is the driver's own.
   const other = new Error("Unknown column 'nmae' in 'field list'");
   await assert.rejects(async () => execute({ ...pool, execute: async () => Promise.reject(other) }, my, { id: 1, name: "ada" }), (e: unknown) => e === other);
@@ -528,24 +557,50 @@ async function refusingPrepares(): Promise<{ port: number; close(): Promise<void
 
 const mariadbLive = mysqlLive || (!existsSync(join(DRIVERS, "mariadb")) && "lab/drivers is not installed");
 
-test("mysql: through a server that refuses prepared statements, as Cloudflare Hyperdrive does, mysql2 is refused with what to use instead, and mariadb runs", { skip: mariadbLive }, async () => {
-  const own = await mysqlDatabase("reylo_execute_refusing", "create table users (id int primary key, name text not null); insert into users values (1, 'Ada')");
+test("mysql: through a server that refuses prepared statements, as Cloudflare Hyperdrive does, mysql2 and mariadb run, in either sql_mode", { skip: mariadbLive }, async () => {
+  const own = await mysqlDatabase("reylo_execute_refusing", "create table users (id int primary key, name text not null); insert into users values (1, 'Ada'), (2, 'C:\\\\dir\\\\ it''s')");
   const proxy = await refusingPrepares();
   const u = new URL(MYSQL!);
   const connection = { host: "127.0.0.1", port: proxy.port, user: decodeURIComponent(u.username) || "root", password: decodeURIComponent(u.password), database: new URL(own.url).pathname.slice(1) };
   const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select name from users where id = :id", params: ["id"] };
+  const byName: QueryModule<"mysql"> = { dialect: "mysql", sql: "select id from users where name = :name -- :note", params: ["name"] };
+  const bits: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :a | :b as n", params: ["a", "b"] };
+  // As the engine compiles it on a server in NO_BACKSLASH_ESCAPES, where the literal ends at its second quote.
+  const slash: QueryModule<"mysql"> = { dialect: "mysql", sql: "select '\\' as slash, :id as n", params: ["id"], text: "select '\\' as slash, ? as n", order: ["id"] };
+  const mysql2 = driver("mysql2/promise");
   try {
-    const m = await driver("mysql2/promise").createConnection(connection);
-    try {
-      await assert.rejects(async () => execute(m, q, { id: 1 }), (e: Error) => e.message.startsWith("reylo cannot run a mysql statement through mysql2 here: Hyperdrive does not currently support MySQL COM_STMT_PREPARE messages.") && e.message.endsWith("Connect with the mariadb driver instead, whose query() Reylo runs without them."));
-    } finally {
-      await m.end();
-    }
-    for (const client of [await driver("mariadb").createConnection(connection), driver("mariadb").createPool({ ...connection, connectionLimit: 1 })]) {
+    const clients: [string, () => Promise<ReturnType<typeof driver>>][] = [
+      ["mysql2", () => mysql2.createConnection(connection)],
+      ["mysql2", async () => mysql2.createPool({ ...connection, connectionLimit: 1 })],
+      ["mysql2", async () => mysql2.createPool({ ...connection, connectionLimit: 1, namedPlaceholders: true, nestTables: true })],
+      ["mariadb", () => driver("mariadb").createConnection(connection)],
+      ["mariadb", async () => driver("mariadb").createPool({ ...connection, connectionLimit: 1 })],
+    ];
+    for (const [name, open] of clients) {
+      const client = await open();
       try {
-        assert.deepEqual(plain((await execute(client, q, { id: 1 })) as object[]), [{ name: "Ada" }]);
+        for (const mode of ["", "NO_BACKSLASH_ESCAPES"]) {
+          await client.query(`set session sql_mode = '${mode}'`);
+          assert.deepEqual(plain((await execute(client, q, { id: 1 })) as object[]), [{ name: "Ada" }]);
+          assert.deepEqual(plain((await execute(client, byName, { name: "C:\\dir\\ it's" })) as object[]), [{ id: 2 }]);
+          assert.deepEqual(plain((await execute(client, byName, { name: "x\\' or 1=1 -- " })) as object[]), []);
+          const [bitwise] = (await execute(client, bits, { a: new Uint8Array([1, 2]), b: new Uint8Array([3, 4]) })) as { n: Uint8Array }[];
+          assert.deepEqual([...bitwise!.n], [3, 6]);
+          // mariadb's own placeholder scan reads the literal as it would in the default mode.
+          if (mode && name === "mysql2") assert.deepEqual(plain((await execute(client, slash, { id: 7 })) as object[]), [{ slash: "\\", n: 7n }]);
+        }
       } finally {
         await client.end();
+      }
+    }
+    // SJIS writes ¥ with a backslash's byte, and latin1 and ascii keep a character's low byte (Ŝ is a backslash's, ħ a quote's): ASCII runs, and a value outside it is refused.
+    for (const [charset, attack] of [["SJIS", "¥' or 1=1 -- "], ["LATIN1", "\u015c' or 1=1 -- "], ["ASCII", "x\u0127 or 1=1 -- "]] as const) {
+      const other = await mysql2.createConnection({ ...connection, charset });
+      try {
+        assert.deepEqual(plain((await execute(other, q, { id: 1 })) as object[]), [{ name: "Ada" }]);
+        await assert.rejects(async () => execute(other, byName, { name: attack }), (e: Error) => e.message.includes("is not UTF-8"));
+      } finally {
+        await other.end();
       }
     }
   } finally {

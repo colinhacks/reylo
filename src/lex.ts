@@ -3,8 +3,8 @@
 // outside strings and comments, and returns the binding order. A name may be dotted
 // (`:auth.user_id`); each segment starts like a name, so `arr[1:2]` is a slice, and on Postgres a
 // colon that opens a subscript is a slice with no lower bound (`tags[:n]`). MySQL text is read
-// as a session in the default `sql_mode` reads it: a backslash in a string escapes the character
-// after it, `"` quotes a string, `#` starts a line comment, and `--` does only before a space or
+// as a session in the default `sql_mode` reads it, unless a `MysqlText` says otherwise: a
+// backslash in a string escapes the character after it, `"` quotes a string, `#` starts a line comment, and `--` does only before a space or
 // a control character. SQL Server's `[name]` is a quoted name, in which `]]` is one `]`, its `@name`
 // a name as T-SQL writes one (no dots; `@`, `#` and `$` may follow its first letter), its `@@name` a
 // function, and it has no `?`. This is the provisional JavaScript version of the engine's lexer; the Rust
@@ -12,9 +12,13 @@
 // MySQL's other modes).
 export type Placeholder = { name: string; start: number; end: number };
 
+/** How a MySQL session reads text, by its `sql_mode` (the engine's `MysqlText`): the default mode reads a backslash in a string as an escape, and a double-quoted word as a string. */
+export type MysqlText = { backslashEscapes: boolean; ansiQuotes: boolean };
+const DEFAULT_MYSQL_TEXT: MysqlText = { backslashEscapes: true, ansiQuotes: false };
+
 // A name drops its prefix (`:id` is `id`); a positional placeholder is named by its number
 // (`$2` and `?2` are `2`), and a bare `?` takes the number after the largest so far.
-export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sqlite" | "sqlserver"): { params: string[]; placeholders: Placeholder[] } {
+export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sqlite" | "sqlserver", mysqlText: MysqlText = DEFAULT_MYSQL_TEXT): { params: string[]; placeholders: Placeholder[] } {
   const placeholders: Placeholder[] = [];
   const params: string[] = [];
   let largest = 0;
@@ -29,6 +33,8 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
     return n;
   };
   const mysql = dialect === "mysql";
+  const doubleQuotedString = mysql && !mysqlText.ansiQuotes;
+  const escapes = mysql && mysqlText.backslashEscapes;
   // What was read last, past whitespace and comments: an operand (a name other than `array`, a
   // number, a quoted name, a placeholder, `)` or `]`), the `[` of a subscript after one, or other.
   let last: "other" | "operand" | "subscript" = "other";
@@ -37,7 +43,7 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
   while (i < sql.length) {
     const ch = sql[i]!;
     const next = sql[i + 1];
-    if (ch === "'" || (ch === '"' && mysql)) { i = skipQuoted(sql, i, ch, mysql); last = "other"; continue; }
+    if (ch === "'" || (ch === '"' && doubleQuotedString)) { i = skipQuoted(sql, i, ch, escapes); last = "other"; continue; }
     if (ch === '"' || ch === "`") { i = skipQuoted(sql, i, ch, false); last = "operand"; continue; }
     // SQLite's `[name]` is a quoted identifier, which ends at the first `]`.
     if (ch === "[" && dialect === "sqlite") { const end = sql.indexOf("]", i); i = end === -1 ? sql.length : end + 1; last = "operand"; continue; }
