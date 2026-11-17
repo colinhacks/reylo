@@ -718,8 +718,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             let owned = d.owner.as_deref() == Some(id.as_str());
             // A blocking change refuses what its alterer says (views, rules, policies and triggers on
             // it, where the server rebuilds an index or a constraint itself). A column of a type
-            // changed so changes type too, and so blocks what is on it.
-            if !replaced && d.kind == Some(Kind::Column) && !owned {
+            // changed so changes type too, and so blocks what is on it, but for one the alterer says
+            // the change refuses, as SQL Server's computed columns refuse a change to what they read.
+            if !replaced && d.kind == Some(Kind::Column) && !owned && !alterer.refused_by(d) {
                 if seen.insert(dependent.to_string()) {
                     queue.push(dependent.to_string());
                 }
@@ -899,10 +900,12 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // A table or column dropped loses its rows, made again or not; a column whose table
                 // goes is the table's loss.
                 let in_lost_table = o.kind == Some(Kind::Column) && o.owner.as_ref().is_some_and(|t| drops.contains(t));
+                // A computed column (an extra line `computed`) loses nothing: its values are its expression's.
+                let computed = o.extra.iter().any(|l| l == "computed");
                 // A foreign table's rows are its server's.
                 let table = if o.kind == Some(Kind::Column) { o.owner.as_ref().and_then(|t| from.objects.get(t)) } else { Some(o) };
                 let foreign = table.is_some_and(|t| t.extra.iter().any(|l| l.starts_with("shape foreign")));
-                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign {
+                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign && !computed {
                     plan.losses.push(id.clone());
                 }
                 plan.statements.extend(o.drop.clone());

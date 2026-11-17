@@ -136,15 +136,33 @@ test("SQL Server: each parameter is bound as the server typed it, and comes back
     const exact = await exactDriver(db);
     const values = {
       id: 3, flag: true, big: 9223372036854775807n, amount: "-99999999.9999", label: "x".repeat(20), title: "😀".repeat(20), raw: new Uint8Array([1, 2, 3]), uid: "00000000-0000-0000-0000-000000000001",
-      day: "9999-12-31", at: "00:00:00.001", stamp: "2026-01-02T03:04:05.1234567", zoned: exact ? "2026-01-02T03:04:05.123-07:00" : null,
+      day: "9999-12-31", at: "00:00:00.001", stamp: "2026-01-02T03:04:05.1234567", zoned: "2026-01-02T03:04:05.123-07:00",
     };
     assert.deepEqual(plain(await q.run(db.pool, values)), { id: 3 });
     const back = await built(root, "back", "select big, label, title, raw, uid, day, at, stamp from t where id = :id");
     assert.deepEqual(plain(await back.run(db.pool, { id: 3 })), { big: 9223372036854775807n, label: values.label, title: values.title, raw: { bytes: [1, 2, 3] }, uid: "00000000-0000-0000-0000-000000000001", day: "9999-12-31", at: "00:00:00.001", stamp: "2026-01-02T03:04:05.1234567" });
+    // A datetimeoffset keeps the offset it was given on any tedious, read here as numbers and text.
+    const offset = await built(root, "offset", "select datepart(tz, zoned) as tz, cast(cast(zoned as datetime2(3)) as nvarchar(30)) as local from t where id = :id");
+    assert.deepEqual(plain(await offset.run(db.pool, { id: 3 })), { tz: -420, local: "2026-01-02 03:04:05.123" });
     if (exact) {
       const decimals = await built(root, "decimals", "select amount, zoned from t where id = :id");
       assert.deepEqual(plain(await decimals.run(db.pool, { id: 3 })), { amount: "-99999999.9999", zoned: "2026-01-02T03:04:05.123-07:00" });
     }
+    // A decimal a double holds is bound on any tedious; one it doesn't, only where tedious writes it exactly.
+    const wide = await built(root, "wide", "select cast(cast(:d as decimal(38, 10)) as nvarchar(50)) as d");
+    assert.deepEqual(await wide.run(db.pool, { d: "12.5" }), { d: "12.5000000000" });
+    if (exact) assert.deepEqual(await wide.run(db.pool, { d: "1234567890123456789.0123456789" }), { d: "1234567890123456789.0123456789" });
+    else await assert.rejects(wide.run(db.pool, { d: "1234567890123456789.0123456789" }), /Parameter "d" is a SQL Server decimal, which tedious would write as 1234567890123456800: Reylo binds its exact text, which tedious writes with the pool's options\.decimalAsString set to true\./);
+    // A text or binary value longer than its column is the server's to meet: no match, or error 2628 on a write
+    // (a binary's trailing zeros are cut without one, as a text's trailing spaces are).
+    const byLabel = await built(root, "by_label", "select id from t where label = :label");
+    assert.deepEqual(plain(await byLabel.run(db.pool, { label: values.label })), [{ id: 3 }]);
+    assert.deepEqual(await byLabel.run(db.pool, { label: values.label + "y" }), []);
+    const byCode = await built(root, "by_code", "select id from t where code = :code");
+    assert.deepEqual(await byCode.run(db.pool, { code: "abcd" }), []);
+    await assert.rejects(q.run(db.pool, { ...values, id: 5, label: values.label + "y" }), (e: any) => e.number === 2628);
+    await assert.rejects(q.run(db.pool, { ...values, id: 6, title: values.title + "😀" }), (e: any) => e.number === 2628);
+    await assert.rejects(q.run(db.pool, { ...values, id: 7, raw: new Uint8Array(9).fill(1) }), (e: any) => e.number === 2628);
     // A time's text that is none is refused before anything is sent.
     await assert.rejects(q.run(db.pool, { ...values, id: 4, day: "tomorrow" }), /Parameter "day" is a SQL Server date, and "tomorrow" is not its text/);
   } finally {

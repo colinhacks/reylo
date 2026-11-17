@@ -17,7 +17,16 @@
 //
 // Each parameter is bound with the type the analysis deduced for it (`input(name, type, value)`),
 // from the `TYPES` of the app's own `mssql`, which the module imports (src/loader.ts), so that a
-// `varchar` column is compared with a `varchar` and a decimal parameter keeps its scale.
+// `varchar` column is compared with a `varchar` and a decimal parameter keeps its scale:
+//
+// - a text or binary value longer than the deduced length is declared at its own, so that the
+//   server meets it as SQL Server would (a comparison matches nothing, a write fails with error
+//   2628) rather than the protocol;
+// - a decimal is written exactly or refused: a tedious before `options.decimalAsString` writes one
+//   through a JavaScript number, so a value that doesn't survive that needs the version that has
+//   it, which the pool proves once by reading a decimal back as its text;
+// - a `datetimeoffset` is a Date of its instant whose `offsetMinutes`, and `getTimezoneOffset()`
+//   for a tedious from before it reads that, give the offset it was written with.
 import { DecodeError, describe, type Columns, type Kind } from "./values.ts";
 import { bareName, type EngineType } from "./engine-type.ts";
 import { readSqlserverError } from "./query-error.ts";
@@ -55,12 +64,27 @@ function asBuffer(v: unknown): unknown {
   return v instanceof Uint8Array && NodeBuffer !== undefined && !NodeBuffer.isBuffer(v) ? NodeBuffer.from(v.buffer, v.byteOffset, v.byteLength) : v;
 }
 
-/** The SQL type of a parameter's engine type, by its label and size, as `mssql`'s factory makes it. */
-function mssqlType(types: MssqlTypes, t: EngineType): unknown {
+/** A string's length in UTF-8, which no code page's encoding of it exceeds. */
+function utf8Length(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c >= 0xd800 && c < 0xdc00 ? (i++, 4) : 3;
+  }
+  return n;
+}
+
+/** The SQL type of a parameter's engine type, by its label and size, as `mssql`'s factory makes it, for the value `v` it binds. */
+function mssqlType(types: MssqlTypes, t: EngineType, v: unknown): unknown {
   const name = bareName(t);
   const size = (t as { size?: { max?: number; exact?: number } }).size;
   const length = size?.exact ?? size?.max;
   const max = (types.MAX as unknown as number) ?? 65535;
+  // A value's length, in UTF-16 code units for nchar and nvarchar, in bytes for the rest.
+  const units = typeof v === "string" ? v.length : 0;
+  const bytes = typeof v === "string" ? utf8Length(v) : v instanceof Uint8Array ? v.byteLength : 0;
+  // The declared length: the deduced one, or the value's where that is longer, up to `limit`.
+  const fit = (measured: number, limit: number) => (length === undefined ? max : measured <= length ? length : measured <= limit ? measured : max);
   // A time's scale, from its tick: `1/1000` is 3 digits past the second.
   const tick = (t as { tick?: string }).tick;
   const scale = tick === "1" ? 0 : tick?.match(/^1\/1(0+)$/)?.[1]?.length;
@@ -89,22 +113,22 @@ function mssqlType(types: MssqlTypes, t: EngineType): unknown {
     case "real":
       return types.Real?.();
     case "char":
-      return types.Char?.(length ?? 1);
+      return bytes > (length ?? 1) ? types.VarChar?.(fit(bytes, 8000)) : types.Char?.(length ?? 1);
     case "varchar":
-      return types.VarChar?.(length ?? max);
+      return types.VarChar?.(fit(bytes, 8000));
     case "nchar":
-      return types.NChar?.(length ?? 1);
+      return units > (length ?? 1) ? types.NVarChar?.(fit(units, 4000)) : types.NChar?.(length ?? 1);
     case "nvarchar":
     case "sysname":
-      return types.NVarChar?.(length ?? max);
+      return types.NVarChar?.(fit(units, 4000));
     case "text":
       return types.Text?.();
     case "ntext":
       return types.NText?.();
     case "binary":
-      return types.Binary?.(length ?? 1);
+      return bytes > (length ?? 1) ? types.VarBinary?.(fit(bytes, 8000)) : types.Binary?.(length ?? 1);
     case "varbinary":
-      return types.VarBinary?.(length ?? max);
+      return types.VarBinary?.(fit(bytes, 8000));
     case "image":
       return types.Image?.();
     case "uniqueidentifier":
@@ -167,6 +191,8 @@ function bindValue(t: EngineType, v: unknown, name: string): unknown {
         const instant = new Date(local.getTime() - offset * 60000);
         Object.defineProperty(instant, "nanosecondDelta", { value: (local as Date & { nanosecondDelta: number }).nanosecondDelta, enumerable: false });
         Object.defineProperty(instant, "offsetMinutes", { value: offset, enumerable: false });
+        // A tedious from before it reads offsetMinutes writes the offset getTimezoneOffset() gives.
+        Object.defineProperty(instant, "getTimezoneOffset", { value: () => -offset, enumerable: false });
         return instant;
       }
       break;
@@ -237,6 +263,65 @@ function decodeValue(v: unknown, column: MssqlColumn, kind: Kind | undefined, na
   throw new DecodeError(`Column "${name}" is a SQL Server ${type}, which tedious gave as ${describe(v)}${kind ? ` where Reylo reads a ${kind}` : ""}.`);
 }
 
+/** A decimal's text in units of its last place at `scale`, rounded half away from zero as SQL Server rounds it, or undefined for text that is no plain decimal. */
+function decimalUnits(text: string, scale: number): bigint | undefined {
+  const m = /^\s*([+-]?)(\d*)(?:\.(\d*))?\s*$/.exec(text);
+  if (!m || (m[2] === "" && !m[3])) return undefined;
+  const digits = m[3] ?? "";
+  const kept = BigInt((m[2] || "0") + digits.slice(0, scale).padEnd(scale, "0")) + (digits.length > scale && digits[scale]! >= "5" ? 1n : 0n);
+  return m[1] === "-" ? -kept : kept;
+}
+
+/** Whether a tedious that reads a decimal parameter with parseFloat, as before options.decimalAsString, writes `text` at `scale` exactly: it writes the integer `value * 10 ** scale` is, money's as it is and a decimal's rounded half away from zero, which is exact where that double is the exact value. */
+function floatKeeps(text: string, scale: number, money: boolean): boolean {
+  const exact = decimalUnits(text, scale);
+  // Text that is no plain decimal, such as `1e5`, goes through parseFloat on every tedious.
+  if (exact === undefined) return true;
+  const value = parseFloat(text);
+  const scaled = value * Math.pow(10, scale);
+  const written = money ? scaled : Math.sign(value) * Math.round(Math.abs(scaled));
+  return Number.isInteger(written) && BigInt(written) === exact;
+}
+
+/** Whether each pool's tedious writes a decimal exactly, as the version that reads one as its text does, by pool. */
+const exactDecimals = new WeakMap<object, Promise<boolean>>();
+
+/** Whether the tedious of the pool `c` runs on reads a decimal as its text, which the version that writes one exactly also adds: asked once a pool, on the pool or the transaction `c` is or belongs to. */
+function writesExactDecimals(c: AnyClient): Promise<boolean> {
+  const on: AnyClient | undefined = typeof c.request === "function" ? c : c.parent;
+  if (!on || typeof on.request !== "function") return Promise.resolve(false);
+  let pool = on;
+  while (pool.parent) pool = pool.parent;
+  let known = exactDecimals.get(pool);
+  if (!known) {
+    known = Promise.resolve()
+      .then(() => on.request().query("select cast(1.5 as decimal(2, 1)) as d"))
+      .then(
+        (result) => typeof result?.recordset?.[0]?.d === "string",
+        () => {
+          exactDecimals.delete(pool);
+          return false;
+        },
+      );
+    exactDecimals.set(pool, known);
+  }
+  return known;
+}
+
+/** A decimal parameter's scale and whether it is money, or undefined for a parameter of any other type. */
+function decimalScale(t: EngineType): { scale: number; money: boolean } | undefined {
+  switch (bareName(t)) {
+    case "decimal":
+    case "numeric":
+      return { scale: (t as { max_scale?: number }).max_scale ?? 0, money: false };
+    case "money":
+    case "smallmoney":
+      return { scale: 4, money: true };
+    default:
+      return undefined;
+  }
+}
+
 /** A SQL Server statement's rows on an `mssql` pool, transaction or request, or undefined on any other client. */
 async function runSqlserver(c: Client, query: QueryModule<"sqlserver">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
   const request = requestOf(c);
@@ -244,9 +329,17 @@ async function runSqlserver(c: Client, query: QueryModule<"sqlserver">, { text, 
   const options = optionsOf(request);
   if (options?.useUTC === false) throw new TypeError(`reylo reads SQL Server's dates and times in UTC, and this pool reads them in the process's time zone: create it with options.useUTC left on, its default.`);
   const types = query.libraries?.mssql as MssqlTypes | undefined;
+  for (const [i, name] of names.entries()) {
+    const t = query.inputs?.[name]?.type;
+    const v = values[i];
+    const decimal = t !== undefined ? decimalScale(t) : undefined;
+    if (decimal && typeof v === "string" && !floatKeeps(v, decimal.scale, decimal.money) && !(await writesExactDecimals(c))) {
+      throw new TypeError(`Parameter "${name}" is a SQL Server ${bareName(t!)}, which tedious would write as ${parseFloat(v)}: Reylo binds its exact text, which tedious writes with the pool's options.decimalAsString set to true.`);
+    }
+  }
   names.forEach((name, i) => {
     const t = query.inputs?.[name]?.type;
-    const sqlType = types !== undefined && t !== undefined ? mssqlType(types, t) : undefined;
+    const sqlType = types !== undefined && t !== undefined ? mssqlType(types, t, values[i]) : undefined;
     const value = t !== undefined ? bindValue(t, values[i], name) : asBuffer(values[i]);
     if (sqlType === undefined) request.input(`p_${i + 1}`, value);
     else request.input(`p_${i + 1}`, sqlType, value);

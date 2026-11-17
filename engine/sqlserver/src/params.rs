@@ -11,10 +11,11 @@ use sqlparser::ast::{AssignmentTarget, Expr, FunctionArg, FunctionArgExpr, Funct
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
-/// Each column of the table `@P1` names, and whether it takes NULL.
-/// A view's columns are left out: whether one takes NULL is the base table's, which a column of an
-/// outer join's side reports as nullable all the same.
-pub const TABLE_COLUMNS: &str = "select c.name, c.is_nullable from sys.columns c where c.object_id = object_id(@P1) and objectproperty(c.object_id, 'IsView') = 0";
+/// Each column of the table `@P1` names, and whether it takes NULL, for a user table of this
+/// database alone. A view's columns are left out: whether one takes NULL is the base table's, which
+/// a column of an outer join's side reports as nullable all the same. A name with a database part
+/// has an object id of that database's.
+pub const TABLE_COLUMNS: &str = "select c.name, c.is_nullable from sys.columns c where c.object_id = object_id(@P1) and parsename(@P1, 3) is null and parsename(@P1, 4) is null and objectproperty(c.object_id, 'IsUserTable') = 1";
 
 /// The columns of the table a statement writes, each by name with whether it takes NULL.
 #[derive(Debug, Clone, Default)]

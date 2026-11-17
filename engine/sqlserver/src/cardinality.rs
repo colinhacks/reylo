@@ -26,16 +26,21 @@ use sqlparser::ast::{BinaryOperator, Expr, FromTable, GroupByExpr, OutputClause,
 
 /// The columns of each unique index of the table `@P1` names, in key order: an index that is
 /// unique, not filtered (a filtered one holds only its filter's rows to it), not disabled and not
-/// hypothetical, its included columns left out.
+/// hypothetical, its included columns left out. Only a user table of this database has keys here:
+/// a view or a synonym has none of its own, and a name with a database part has an object id of
+/// that database's.
 pub const UNIQUE_KEYS: &str = "select i.index_id, c.name, type_name(c.system_type_id), c.collation_name from sys.indexes i \
     join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id \
     join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id \
-    where i.object_id = object_id(@P1) and i.is_unique = 1 and i.has_filter = 0 and i.is_disabled = 0 and i.is_hypothetical = 0 and ic.is_included_column = 0 \
+    where i.object_id = object_id(@P1) and parsename(@P1, 3) is null and parsename(@P1, 4) is null and objectproperty(i.object_id, 'IsUserTable') = 1 \
+    and i.is_unique = 1 and i.has_filter = 0 and i.is_disabled = 0 and i.is_hypothetical = 0 and ic.is_included_column = 0 \
     order by i.index_id, ic.key_ordinal";
 
-/// Whether the table `@P1` names has a unique index that ignores a duplicate rather than refuse
-/// it, which leaves a one-row INSERT with no row.
-pub const IGNORES_DUPLICATES: &str = "select count(*) from sys.indexes where object_id = object_id(@P1) and ignore_dup_key = 1";
+/// Whether an INSERT into the table `@P1` names may be left with no row: its table has a unique
+/// index that ignores a duplicate rather than refuse it, or the name is no user table of this
+/// database (a view, a synonym, a table of another database), whose indexes aren't read.
+pub const IGNORES_DUPLICATES: &str = "select case when parsename(@P1, 3) is null and parsename(@P1, 4) is null and objectproperty(object_id(@P1), 'IsUserTable') = 1 \
+    then (select count(*) from sys.indexes where object_id = object_id(@P1) and ignore_dup_key = 1) else 1 end";
 
 /// One column of a unique key: its name as the catalog writes it, its type's name and its collation.
 #[derive(Debug, Clone, Default, PartialEq)]

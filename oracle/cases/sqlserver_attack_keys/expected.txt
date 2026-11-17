@@ -11,6 +11,8 @@ group_by_empty.sql: many () -> { c: int? }
 having_fromless.sql: at_most_one () -> { a: int }
 idk_default.sql: many () -> { id: int }
 idk_insert.sql: at_most_one (id: int, v: int?) -> { id: int }
+idk_synonym_insert.sql: at_most_one (id: int, v: int) -> { id: int }
+idk_view_insert.sql: at_most_one (id: int, v: int) -> { id: int }
 merge_trig.sql: many (id: int) -> { n: int? }
 offset_count.sql: at_most_one () -> { c: int }
 offset_fromless.sql: at_most_one () -> { a: int }

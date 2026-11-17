@@ -221,7 +221,7 @@ fn opens_body(tokens: &[Token], dialect: Dialect, next: Option<&Token>) -> bool 
 }
 
 /// The `GO` lines of a SQL Server script, as the byte ranges of their words: a line that holds
-/// `GO` alone (a count after it too, as sqlcmd takes one), outside strings and comments.
+/// `GO` alone (a count after it too, as sqlcmd takes one, from 1), outside strings and comments.
 pub fn go_lines(sql: &str) -> Vec<(usize, usize)> {
     let tokens = tokenize(sql, Dialect::Sqlserver);
     let line_of = |at: usize| (sql[..at].rfind('\n').map_or(0, |p| p + 1), sql[at..].find('\n').map_or(sql.len(), |p| at + p));
@@ -233,7 +233,7 @@ pub fn go_lines(sql: &str) -> Vec<(usize, usize)> {
             let before = sql[start..t.start].trim();
             let after = sql[t.end..end].trim();
             let after = after.split("--").next().unwrap_or_default().trim();
-            before.is_empty() && (after.is_empty() || after.bytes().all(|c| c.is_ascii_digit()))
+            before.is_empty() && (after.is_empty() || (after.bytes().all(|c| c.is_ascii_digit()) && after.parse::<u32>().is_ok_and(|n| n > 0)))
         })
         .map(|t| (t.start, line_of(t.start).1))
         .collect()
@@ -241,14 +241,21 @@ pub fn go_lines(sql: &str) -> Vec<(usize, usize)> {
 
 /// A SQL Server script's batches, as `GO` lines separate them: the text of each, blank ones left out.
 pub fn batches(sql: &str) -> Vec<String> {
+    batch_runs(sql).into_iter().map(|(batch, _)| batch).collect()
+}
+
+/// A SQL Server script's batches, each with how many times it runs: `GO 3` after a batch runs it
+/// three times, as sqlcmd does.
+pub fn batch_runs(sql: &str) -> Vec<(String, u32)> {
     let mut out = Vec::new();
     let mut from = 0;
     for (start, end) in go_lines(sql) {
-        out.push(sql[from..start].to_string());
+        let count = sql[start + 2..end].split("--").next().unwrap_or_default().trim().parse().unwrap_or(1);
+        out.push((sql[from..start].to_string(), count));
         from = end;
     }
-    out.push(sql[from..].to_string());
-    out.into_iter().filter(|b| !is_blank(b, Dialect::Sqlserver)).collect()
+    out.push((sql[from..].to_string(), 1));
+    out.into_iter().filter(|(b, _)| !is_blank(b, Dialect::Sqlserver)).collect()
 }
 
 /// A SQL Server batch that a `create` (or `create or alter`, or `alter`) of a procedure, a function,
@@ -311,7 +318,8 @@ fn split_tokens(sql: &str, tokens: Vec<Token>, dialect: Dialect) -> Vec<Statemen
         }
         current.push(t.clone());
         // A body opens at BEGIN (and inside it, at a nested BEGIN or a CASE); END closes one, but for
-        // END IF, END LOOP, END WHILE and END REPEAT, which close constructs never counted.
+        // MySQL's END IF, END LOOP, END WHILE and END REPEAT, which close constructs never counted.
+        // In T-SQL an IF or a WHILE after END is the next statement.
         let w = t.upper();
         let after = upper(tokens.get(k + 1));
         // SQL Server's BEGIN … END is a block anywhere, but for BEGIN TRANSACTION.
@@ -320,7 +328,7 @@ fn split_tokens(sql: &str, tokens: Vec<Token>, dialect: Dialect) -> Vec<Statemen
             depth += 1;
         } else if w == "CASE" && depth > 0 {
             depth += 1;
-        } else if w == "END" && depth > 0 && !matches!(after.as_str(), "IF" | "LOOP" | "WHILE" | "REPEAT") {
+        } else if w == "END" && depth > 0 && !(dialect != Dialect::Sqlserver && matches!(after.as_str(), "IF" | "LOOP" | "WHILE" | "REPEAT")) {
             depth -= 1;
         }
         // T-SQL's END TRY and END CATCH close a BEGIN TRY or BEGIN CATCH, counted at its BEGIN.
@@ -601,7 +609,13 @@ mod tests {
         let tsql = "create table a (x int);\ncreate table [b;]] c] (y int);\nGO\ncreate or alter procedure p as\nbegin\n  select 1;\n  select 2;\nend\nGO 2\nif not exists (select 1 from a) begin insert into a values (1); insert into a values (2); end;\nbegin transaction;";
         assert_eq!(texts(tsql, Dialect::Sqlserver).len(), 5);
         assert!(texts(tsql, Dialect::Sqlserver)[2].starts_with("create or alter procedure p as") && texts(tsql, Dialect::Sqlserver)[2].ends_with("end"));
-        assert_eq!(batches(tsql).len(), 3);
+        assert_eq!(batch_runs(tsql).iter().map(|(_, n)| *n).collect::<Vec<_>>(), [1, 2, 1]);
+        // `GO 0` is no GO line: the server refuses the batch that holds it.
+        assert_eq!(batches("select 1\nGO 0\nselect 2").len(), 1);
+        // END then IF is a block's end and the next statement, which the batch's later ones follow.
+        let ifs = "if 1 = 1 begin select 1; end\nif 2 = 2 begin select 2; end;\nselect 3";
+        assert_eq!(texts(ifs, Dialect::Sqlserver).len(), 2);
+        assert_eq!(atomicity_problem(&format!("create table a (x int);\n{ifs};\ncreate view v as select x from a"), Dialect::Sqlserver).unwrap(), "SQL Server runs a create view only as the first statement of its batch: put a GO line before it.");
         assert!(atomicity_problem("create table a (x int); begin transaction; insert into a values (1); commit", Dialect::Sqlserver).unwrap().contains("It has its own begin"));
         assert_eq!(atomicity_problem("create table a (x int);\nGO\ncreate view v as select x from a", Dialect::Sqlserver), None);
         assert_eq!(atomicity_problem("create table a (x int); create view v as select x from a", Dialect::Sqlserver).unwrap(), "SQL Server runs a create view only as the first statement of its batch: put a GO line before it.");

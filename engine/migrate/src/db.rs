@@ -255,11 +255,13 @@ impl Db {
 
     /// Runs a script of statements: on MySQL one at a time, since a server that takes several in
     /// one query reads them as one batch; on SQL Server one batch at a time, as its `GO` lines part
-    /// them; elsewhere as written.
+    /// them, and as many times as a `GO` line's count says; elsewhere as written.
     pub async fn script(&mut self, sql: &str) -> Result<(), Error> {
         if self.dialect() == Dialect::Sqlserver {
-            for batch in crate::sql::batches(sql) {
-                self.exec(&batch).await?;
+            for (batch, count) in crate::sql::batch_runs(sql) {
+                for _ in 0..count {
+                    self.exec(&batch).await?;
+                }
             }
             return Ok(());
         }

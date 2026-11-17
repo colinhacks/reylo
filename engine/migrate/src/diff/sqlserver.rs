@@ -110,8 +110,9 @@ fn named_columns(text: &str, columns: &BTreeMap<String, String>) -> BTreeSet<Str
 }
 
 /// A statement that drops a constraint SQL Server named itself, by looking its name up with
-/// `lookup` (a query of its bracketed name) as it runs. The variable is named for the constraint,
-/// so that several in one batch don't collide.
+/// `lookup` (a query of its bracketed name) as it runs, and fails where nothing matches, since
+/// `exec` of the NULL the lookup then gives runs nothing. The variable is named for the
+/// constraint, so that several in one batch don't collide.
 fn drop_found(table: &str, lookup: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in table.bytes().chain(lookup.bytes()) {
@@ -119,7 +120,8 @@ fn drop_found(table: &str, lookup: &str) -> String {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     let var = format!("@reylo_{:012x}", hash & 0xffff_ffff_ffff);
-    format!("declare {var} nvarchar(max) = (select top 1 {lookup});\nexec (N'alter table {} drop constraint ' + {var})", table.replace('\'', "''"))
+    let quoted = table.replace('\'', "''");
+    format!("declare {var} nvarchar(max) = (select top 1 {lookup});\nif {var} is null throw 50000, N'The constraint to drop on {quoted}, which SQL Server named itself, is not there.', 1;\nexec (N'alter table {quoted} drop constraint ' + {var})")
 }
 
 /// A module's text from its first word on, the words that open it (`CREATE OR ALTER VIEW`,
@@ -352,6 +354,9 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
             .then(|| format!("{} is not null with no default, so adding it fails on a table that has rows: give it a default, or add it nullable, fill it, then make it not null", r.text("name")));
         let mut extra = vec![format!("table={table}"), format!("column={}", r.text("name")), format!("head={ty}"), format!("special={special}")];
         extra.push(format!("nullable={}", r.flag("nullable")));
+        if computed {
+            extra.push("computed".to_string());
+        }
         if let Some((name, expr)) = &default {
             extra.push(format!("default={expr}"));
             extra.push(format!("default_name={name}"));
@@ -814,11 +819,13 @@ impl Alterer for SqlserverAlterer {
         Some(vec![format!("exec sp_rename {}, {}, N'COLUMN'", literal(&format!("{table}.[{}]", old.replace(']', "]]"))), literal(new))])
     }
 
-    /// SQL Server refuses `alter column` on a column a key, a check, an index or a schema-bound
-    /// module holds.
+    /// SQL Server refuses `alter column` on a column a key, a check, an index, a computed column
+    /// or a schema-bound module holds.
     fn refused_by(&self, dependent: &Object) -> bool {
         match dependent.kind {
             Some(Kind::Constraint | Kind::Index) => true,
+            // A computed column refuses `alter column` of a column it reads (error 5074).
+            Some(Kind::Column) => dependent.extra.iter().any(|e| e.starts_with("head=as ")),
             Some(Kind::View | Kind::Function) => dependent.extra.iter().any(|e| e == "schemabound"),
             _ => false,
         }

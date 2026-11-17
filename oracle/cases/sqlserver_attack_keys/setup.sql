@@ -60,3 +60,7 @@ GO
 update tt set v = 2 where id = 1;
 GO
 update tt set v = 3 where id = 1;
+GO
+create view idk_v as select id, v from idk;
+GO
+create synonym idk_s for idk;
