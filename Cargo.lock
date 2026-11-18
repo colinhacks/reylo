@@ -2149,6 +2149,7 @@ dependencies = [
 name = "reylo-engine"
 version = "0.8.0"
 dependencies = [
+ "futures-util",
  "mysql_async",
  "reylo-engine-build",
  "reylo-engine-core",

@@ -47,6 +47,36 @@ pub trait AsyncAnswerer<D> {
 
     /// As [`Answerer::query`].
     fn query(&mut self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, Self::Error>> + Send;
+
+    /// The answers to one round's needs, in their order: one after another, unless the host can ask them together.
+    fn answer_all(&mut self, needs: &[Need]) -> impl Future<Output = Vec<Result<Answer<D>, Self::Error>>> + Send
+    where
+        Self: Send,
+        Self::Error: Send,
+        D: Send,
+    {
+        async move {
+            let mut given = Vec::with_capacity(needs.len());
+            for need in needs {
+                given.push(answer_async(self, need).await);
+            }
+            given
+        }
+    }
+}
+
+/// The answer to one need, over an [`AsyncAnswerer`].
+pub async fn answer_async<D, A: AsyncAnswerer<D> + ?Sized>(answerer: &mut A, need: &Need) -> Result<Answer<D>, A::Error> {
+    Ok(match need {
+        Need::Describe { sql, .. } => match answerer.describe(sql).await? {
+            Ok(describe) => Answer::Describe { describe },
+            Err(error) => Answer::Error { error },
+        },
+        Need::Query { sql, params, .. } => match answerer.query(sql, params).await? {
+            Ok(rows) => Answer::Rows { rows },
+            Err(error) => Answer::Error { error },
+        },
+    })
 }
 
 /// Why a replay ended without an analysis.
@@ -191,27 +221,31 @@ pub fn run<Db: Database, A: Answerer<Db::Describe>>(sql: &str, answerer: &mut A,
 }
 
 /// [`run`] for an [`AsyncAnswerer`].
-pub async fn run_async<Db: Database, A: AsyncAnswerer<Db::Describe>>(sql: &str, answerer: &mut A, cache: &mut AnswerCache<Db::Describe>) -> Result<Analysis, ReplayError<A::Error>> {
+pub async fn run_async<Db: Database, A: AsyncAnswerer<Db::Describe> + Send>(sql: &str, answerer: &mut A, cache: &mut AnswerCache<Db::Describe>) -> Result<Analysis, ReplayError<A::Error>>
+where
+    A::Error: Send,
+    Db::Describe: Send,
+{
     let mut answers: Answers<Db::Describe> = HashMap::new();
     for _ in 0..ROUNDS {
         let needs = match round::<Db>(sql, &mut answers).map_err(ReplayError::Engine)? {
             Round::Done(analysis) => return Ok(*analysis),
             Round::Needs(needs) => needs,
         };
+        let mut asked = Vec::new();
         for need in needs {
-            let known = cache.get(&need).cloned();
-            let given = match known {
-                Some(known) => known,
-                None => {
-                    let fresh = match &need {
-                        Need::Describe { sql, .. } => answer(answerer.describe(sql).await)?,
-                        Need::Query { sql, params, .. } => rows(answerer.query(sql, params).await)?,
-                    };
-                    cache.put(&need, &fresh);
-                    fresh
+            match cache.get(&need) {
+                Some(known) => {
+                    answers.insert(id(&need).to_string(), known.clone());
                 }
-            };
-            answers.insert(id(&need).to_string(), given);
+                None => asked.push(need),
+            }
+        }
+        let given = answerer.answer_all(&asked).await;
+        for (need, given) in asked.iter().zip(given) {
+            let given = given.map_err(ReplayError::Host)?;
+            cache.put(need, &given);
+            answers.insert(id(need).to_string(), given);
         }
     }
     Err(ReplayError::Unsettled)
