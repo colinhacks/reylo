@@ -76,8 +76,10 @@ fn is<T: Into<i32>>(field: i32, value: T) -> bool {
 enum Shape {
     /// Kept as it is, in the file being written.
     Kept(String),
-    /// In the file being written, then statements for the last file.
-    Later(String, Vec<String>),
+    /// In the file being written; then, in the last file, a validation (a scan that blocks no
+    /// writes) and what finishes the change once every validation has run (`set not null`, which
+    /// holds a lock that blocks reads and writes until the file commits).
+    Later(String, String, Vec<String>),
     /// In a file of its own, then statements for the file after it.
     Alone(String, Vec<String>),
 }
@@ -99,7 +101,7 @@ fn shape(statement: &str, existing: &BTreeSet<String>) -> Shape {
                 }
                 // Added without reading a row, then validated later, which blocks no writes.
                 if is(c.contype, ConstrType::ConstrCheck) || is(c.contype, ConstrType::ConstrForeign) {
-                    return Shape::Later(format!("{} not valid", statement.trim_end()), vec![format!("alter table {rel} validate constraint {}", quote_ident(&c.conname))]);
+                    return Shape::Later(format!("{} not valid", statement.trim_end()), format!("alter table {rel} validate constraint {}", quote_ident(&c.conname)), vec![]);
                 }
                 // Its index built concurrently, then taken as the constraint's.
                 let plain = c.including.is_empty() && c.options.is_empty() && !c.nulls_not_distinct && !c.deferrable && c.indexname.is_empty() && c.indexspace.is_empty() && c.access_method.is_empty() && !c.without_overlaps;
@@ -116,7 +118,8 @@ fn shape(statement: &str, existing: &BTreeSet<String>) -> Shape {
                 let check = quote_ident(&not_null_check(&cmd.name));
                 return Shape::Later(
                     format!("alter table {rel} add constraint {check} check ({column} is not null) not valid"),
-                    vec![format!("alter table {rel} validate constraint {check}"), statement.trim_end().to_string(), format!("alter table {rel} drop constraint {check}")],
+                    format!("alter table {rel} validate constraint {check}"),
+                    vec![statement.trim_end().to_string(), format!("alter table {rel} drop constraint {check}")],
                 );
             }
             kept()
@@ -138,7 +141,9 @@ fn shape(statement: &str, existing: &BTreeSet<String>) -> Shape {
 pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<String>>> {
     let mut files: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = Vec::new();
-    let mut last: Vec<String> = Vec::new();
+    // The last file: every validation first, then what finishes the changes, so that no
+    // validation reads a table under the lock a finishing statement before it holds.
+    let (mut validations, mut finishes): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     let mut comments: Vec<String> = Vec::new();
     let mut changed = false;
     // The session's settings in force (`set check_function_bodies = off` around functions), which a
@@ -163,11 +168,12 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
                 current.append(&mut comments);
                 current.push(s);
             }
-            Shape::Later(s, after) => {
+            Shape::Later(s, validation, finish) => {
                 changed = true;
                 current.append(&mut comments);
                 current.push(s);
-                last.extend(after);
+                validations.push(validation);
+                finishes.extend(finish);
             }
             Shape::Alone(s, after) => {
                 changed = true;
@@ -194,8 +200,9 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
     if does_something(&current) {
         files.push(current);
     }
-    if !last.is_empty() {
-        files.push(last);
+    if !validations.is_empty() {
+        validations.extend(finishes);
+        files.push(validations);
     }
     Some(files)
 }
@@ -248,22 +255,39 @@ async fn not_null_proofs(db: &mut Db) -> Result<BTreeMap<(String, String), (Stri
     Ok(out)
 }
 
-/// The storage of each table and materialized view, by the name the database gives it: a table
-/// rewritten (a type change that copies it, a volatile default, `vacuum full`) gets new storage.
-async fn storage(db: &mut Db) -> Result<BTreeMap<String, (String, String)>, Error> {
+/// A relation's storage, as `pg_class` records it.
+struct Stored {
+    oid: String,
+    file: String,
+    /// `r`, `m` or `p` for a table, `i` for an index.
+    kind: String,
+    /// An index's table; a table's own name.
+    table: String,
+}
+
+/// The storage of each table, materialized view, partitioned table and index of those, by the name
+/// the database gives it. A table copied (a type change that rewrites it, a volatile default,
+/// `vacuum full`) gets new storage, and so does an index built again (a type or collation change of
+/// a column it covers, which may leave the table's own storage as it was); a partitioned table has
+/// none, and is here so that a statement that names it is read as naming a table.
+async fn storage(db: &mut Db) -> Result<BTreeMap<String, Stored>, Error> {
     let rows = db
         .rows(
-            r"select c.oid::regclass::text as t, c.oid::text as oid, c.relfilenode::text as file from pg_class c join pg_namespace n on n.oid = c.relnamespace
-            where c.relkind in ('r', 'm') and n.nspname not in ('pg_catalog', 'information_schema') and n.nspname not like 'pg\_%'",
+            r"select c.oid::regclass::text as t, c.oid::text as oid, c.relfilenode::text as file, c.relkind::text as kind,
+              coalesce((select x.indrelid::regclass::text from pg_index x where x.indexrelid = c.oid), c.oid::regclass::text) as owner
+            from pg_class c join pg_namespace n on n.oid = c.relnamespace
+            where c.relkind in ('r', 'm', 'p', 'i') and n.nspname not in ('pg_catalog', 'information_schema') and n.nspname not like 'pg\_%'",
         )
         .await?;
-    Ok(rows.iter().map(|r| (r.text("t").to_string(), (r.text("oid").to_string(), r.text("file").to_string()))).collect())
+    Ok(rows.iter().map(|r| (r.text("t").to_string(), Stored { oid: r.text("oid").to_string(), file: r.text("file").to_string(), kind: r.text("kind").to_string(), table: r.text("owner").to_string() })).collect())
 }
 
 /// Runs `m` as `deploy` runs it, saying each lock it holds on a table that was there before it ran
 /// while it reads every row: the parse tree for a scan (a validated constraint, an index built
-/// without `concurrently`, a `set not null` no validated check proves), and the tables' storage for
-/// a copy. Postgres only; elsewhere it runs the file and says nothing.
+/// without `concurrently`, a `set not null` no validated check proves, a validation after an
+/// earlier statement of the file took a lock that blocks writes, which it holds until the file
+/// commits), and the storage of tables and their indexes for a copy or a rebuild. Postgres only;
+/// elsewhere it runs the file and says nothing.
 pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard>, Error> {
     if db.dialect() != Dialect::Postgres {
         run(db, m, false).await?;
@@ -273,10 +297,15 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
     let proofs = not_null_proofs(db).await?;
     // A statement names a table as the search path finds it; the database's own name for it is
     // what the hazard gives.
-    let resolve = |name: &str, before: &BTreeMap<String, (String, String)>| -> Option<String> { before.contains_key(name).then(|| name.to_string()).or_else(|| before.keys().find(|k| k.rsplit_once('.').is_some_and(|(_, t)| t == name)).cloned()) };
+    let tables: BTreeSet<String> = before.iter().filter(|(_, s)| s.kind != "i").map(|(name, _)| name.clone()).collect();
+    let resolve = |name: &str| -> Option<String> { tables.contains(name).then(|| name.to_string()).or_else(|| tables.iter().find(|k| k.rsplit_once('.').is_some_and(|(_, t)| t == name)).cloned()) };
     let mut hazards: Vec<Hazard> = Vec::new();
     let mut truncated: BTreeSet<String> = BTreeSet::new();
     let mut validated: BTreeSet<(String, String)> = BTreeSet::new();
+    // The tables an earlier statement of the file locked against writes, until it commits.
+    let mut locked: BTreeSet<String> = BTreeSet::new();
+    // The indexes the file makes by name, which may be ones it dropped first.
+    let mut made: BTreeSet<String> = BTreeSet::new();
     let mut add = |table: &str, what: String| {
         let hazard = Hazard { table: table.to_string(), what };
         if !hazards.contains(&hazard) {
@@ -287,9 +316,20 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
         for raw in &result.protobuf.stmts {
             match raw.stmt.as_ref().and_then(|s| s.node.as_ref()) {
                 Some(N::AlterTableStmt(a)) => {
-                    let Some(table) = a.relation.as_ref().and_then(|r| resolve(&named(r), &before)) else { continue };
+                    let Some(table) = a.relation.as_ref().and_then(|r| resolve(&named(r))) else { continue };
+                    let mut locks = false;
                     for cmd in &a.cmds {
                         let Some(N::AlterTableCmd(cmd)) = &cmd.node else { continue };
+                        if is(cmd.subtype, At::AtValidateConstraint) {
+                            // A validation alone blocks no writes, but under a lock the file
+                            // already holds it reads every row with writes blocked.
+                            if locked.contains(&table) {
+                                add(&table, format!("checks every row of {table} while an earlier statement's lock blocks writes to it"));
+                            }
+                            validated.insert((table.clone(), cmd.name.clone()));
+                            continue;
+                        }
+                        locks = true;
                         if is(cmd.subtype, At::AtAddConstraint) {
                             let Some(N::Constraint(c)) = cmd.def.as_ref().and_then(|d| d.node.as_ref()) else { continue };
                             if is(c.contype, ConstrType::ConstrCheck) && !c.skip_validation {
@@ -299,8 +339,6 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
                             } else if (is(c.contype, ConstrType::ConstrUnique) || is(c.contype, ConstrType::ConstrPrimary) || is(c.contype, ConstrType::ConstrExclusion)) && c.indexname.is_empty() {
                                 add(&table, format!("builds an index on {table} while it blocks reads and writes to it"));
                             }
-                        } else if is(cmd.subtype, At::AtValidateConstraint) {
-                            validated.insert((table.clone(), cmd.name.clone()));
                         } else if is(cmd.subtype, At::AtSetNotNull) {
                             let proven = proofs.get(&(table.clone(), cmd.name.clone())).is_some_and(|(name, valid)| *valid || validated.contains(&(table.clone(), name.clone())));
                             if !proven {
@@ -308,16 +346,21 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
                             }
                         }
                     }
+                    if locks {
+                        locked.insert(table);
+                    }
                 }
                 Some(N::IndexStmt(i)) if !i.concurrent => {
-                    if let Some(table) = i.relation.as_ref().and_then(|r| resolve(&named(r), &before)) {
+                    made.insert(i.idxname.clone());
+                    if let Some(table) = i.relation.as_ref().and_then(|r| resolve(&named(r))) {
                         add(&table, format!("builds an index on {table} while it blocks writes to it"));
+                        locked.insert(table);
                     }
                 }
                 Some(N::TruncateStmt(t)) => {
                     for r in &t.relations {
                         if let Some(N::RangeVar(r)) = &r.node {
-                            truncated.extend(resolve(&named(r), &before));
+                            truncated.extend(resolve(&named(r)));
                         }
                     }
                 }
@@ -327,15 +370,28 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
     }
     run(db, m, false).await?;
     // A table renamed keeps its storage; one given new storage was copied, but for a truncate,
-    // which empties it at once.
+    // which empties it at once. An index given new storage on a table that wasn't copied was
+    // built again, reading every row while its table's lock blocks reads and writes.
     let after = storage(db).await?;
-    for (table, (oid, file)) in &before {
-        if truncated.contains(table) {
-            continue;
-        }
-        if after.values().any(|(o, f)| o == oid && f != file) {
+    let moved = |s: &Stored| after.values().any(|a| a.oid == s.oid && a.file != s.file);
+    let mut copied: BTreeSet<String> = BTreeSet::new();
+    for (table, s) in before.iter().filter(|(_, s)| s.kind == "r" || s.kind == "m") {
+        if !truncated.contains(table) && moved(s) {
+            copied.insert(table.clone());
             hazards.retain(|h| &h.table != table);
             hazards.push(Hazard { table: table.clone(), what: format!("rewrites {table}, copying every row while it blocks reads and writes to it") });
+        }
+    }
+    // Postgres builds an index again under its name with a new oid, so an index is followed by its
+    // name: there with other storage, where the file didn't make one of that name itself.
+    let rebuilt = |name: &str, s: &Stored| after.get(name).is_some_and(|a| a.kind == "i" && (a.oid != s.oid || a.file != s.file));
+    for (index, s) in before.iter().filter(|(_, s)| s.kind == "i") {
+        let bare = index.rsplit_once('.').map_or(index.as_str(), |(_, n)| n).trim_matches('"');
+        if !truncated.contains(&s.table) && !copied.contains(&s.table) && !made.contains(bare) && rebuilt(index, s) {
+            let hazard = Hazard { table: s.table.clone(), what: format!("builds {index} again, reading every row of {} while it blocks reads and writes to it", s.table) };
+            if !hazards.contains(&hazard) {
+                hazards.push(hazard);
+            }
         }
     }
     Ok(hazards)
@@ -380,6 +436,22 @@ mod tests {
             vec![
                 vec!["alter table users add constraint email_not_null check (email is not null) not valid".to_string()],
                 vec!["alter table users validate constraint email_not_null".to_string(), "alter table users alter column email set not null".to_string(), "alter table users drop constraint email_not_null".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn validates_everything_before_any_column_is_made_not_null() {
+        let files = lock_safe(&plan(&["alter table users alter column a set not null", "alter table users alter column b set not null"]), &existing(&["users"])).unwrap();
+        assert_eq!(
+            files[1],
+            vec![
+                "alter table users validate constraint a_not_null".to_string(),
+                "alter table users validate constraint b_not_null".to_string(),
+                "alter table users alter column a set not null".to_string(),
+                "alter table users drop constraint a_not_null".to_string(),
+                "alter table users alter column b set not null".to_string(),
+                "alter table users drop constraint b_not_null".to_string(),
             ]
         );
     }

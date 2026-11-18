@@ -2701,6 +2701,8 @@ on!(
     new_writes_constraints_and_indexes_that_block_no_writes,
     new_refuses_a_table_rewrite_until_blocking,
     deploy_waits_out_a_lock_another_session_holds,
+    new_refuses_a_check_on_a_partitioned_table_until_blocking,
+    new_refuses_an_index_built_again_until_blocking,
 );
 
 #[tokio::test(flavor = "current_thread")]
@@ -3034,6 +3036,34 @@ mod adversarial {
         assert_has!(p.output(), r"_widen\.sql\n      ! It rewrites users, copying every row");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.output();
+    }
+
+    pub async fn new_refuses_a_check_on_a_partitioned_table_until_blocking(mut p: P) {
+        let v1 = "create table users (id int, n int) partition by range (id); create table users0 partition of users for values from (0) to (1000000);";
+        p.schema(v1);
+        p.file("20261027100000_users.sql", v1);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 2)").await;
+        p.output();
+        // A check on a partitioned table reads every partition's rows, and has no shape that doesn't.
+        p.schema("create table users (id int, n int, constraint pos check (n > 0)) partition by range (id); create table users0 partition of users for values from (0) to (1000000);");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "pos", &Default::default(), log).await).await, 1);
+        assert_has!(p.output(), r"✗ This migration checks every row of users while it blocks reads and writes to it");
+        let blocking = reylo_migrate::Choices { blocking: true, ..Default::default() };
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "pos", &blocking, log).await).await, 0, "{}", p.peek());
+    }
+
+    pub async fn new_refuses_an_index_built_again_until_blocking(mut p: P) {
+        let v1 = r#"create table users (id int primary key, name text collate "C"); create index users_name on users (name);"#;
+        p.schema(v1);
+        p.file("20261027100000_users.sql", v1);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into users values (1, 'a')").await;
+        p.output();
+        // Another collation keeps the table's storage but builds its index again.
+        p.schema(r#"create table users (id int primary key, name text collate "POSIX"); create index users_name on users (name);"#);
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posix", &Default::default(), log).await).await, 1);
+        assert_has!(p.output(), r"✗ This migration builds users_name again, reading every row of users while it blocks reads and writes to it");
     }
 
     pub async fn deploy_waits_out_a_lock_another_session_holds(mut p: P) {
