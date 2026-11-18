@@ -1768,7 +1768,8 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 }
 
 .ml-hosts svg {
-  width: 1.875rem;
+  width: auto;
+  max-width: 3.5rem;
   height: 1.875rem;
   color: var(--color-fd-foreground);
 }

@@ -54,35 +54,27 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         <p>Push <code>schema.sql</code> to your development database on every save. Then <code>reylo migrate dev</code> rewinds what left your migrations and runs what's new.</p>
       </Row>
 
-      <Row n={5} title="A database per branch" visual={<BranchConfig />}>
-        <p>Your project file can run a command. Point each git branch at a development database of its own.</p>
-      </Row>
-
-      <Row n={6} title="Schemaless mode" visual={<Term lines={SCHEMALESS} />} flip>
+      <Row n={5} title="Schemaless mode" visual={<Term lines={SCHEMALESS} />}>
         <p>Delete <code>schema.sql</code>, and your migrations are your schema. Write them by hand, or from changes to your development database.</p>
       </Row>
 
-      <Row n={7} title="A lockfile for one history" visual={<LockFile />}>
+      <Row n={6} title="A lockfile for one history" visual={<LockFile />} flip>
         <p>The lock keeps one order, each line chained to the last. Two branches that each add a migration conflict in git, before anything deploys.</p>
       </Row>
 
-      <Row n={8} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />} flip>
+      <Row n={7} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />}>
         <p>Delete the lock, and migrations run in name order. A migration that lands before one a database already ran is replayed in both orders on a shadow database, and stopped where the two end differently.</p>
       </Row>
 
-      <Row n={9} title="Dry runs before every deploy" visual={<Term lines={DRY_RUN} />}>
-        <p>Before you deploy, each pending migration is tried on a throwaway shadow database. It runs against your database's schema and against <code>schema.sql</code>.</p>
-      </Row>
-
-      <Row n={10} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />} flip>
+      <Row n={8} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />} flip>
         <p>Every migration in the lock carries a checksum chained to the last, so an edited or reordered file is caught before it runs. Each database stores a fingerprint of its schema, so a change made by hand stops the deploy, with the ways to keep it.</p>
       </Row>
 
-      <Row n={11} title="Runs on your host" visual={<Hosts />}>
+      <Row n={9} title="Runs on your host" visual={<Hosts />}>
         <p>Postgres, MySQL and SQLite, on your own server or a hosted one.</p>
       </Row>
 
-      <Row n={12} title="Hit the ground running" visual={<Term lines={INIT} />} flip>
+      <Row n={10} title="Hit the ground running" visual={<Term lines={INIT} />} flip>
         <p>One command reads your database and writes its <code>schema.sql</code>, a first migration and the lock.</p>
       </Row>
 
@@ -368,14 +360,6 @@ const PUSH: Script = [
   '✓ Wrote reylo/reylo.lock',
 ];
 
-const DRY_RUN: Script = [
-  '$ reylo migrate deploy --dry-run',
-  '✓ This database is as its migrations left it',
-  '✓ The migrations match reylo/schema.sql',
-  '✓ 1 pending, each tried on a shadow database:',
-  '    · 20261104140347_add_bio.sql',
-];
-
 const HAND_CHANGE: Script = [
   '$ reylo migrate deploy',
   '✗ This database was changed outside its migrations',
@@ -465,31 +449,16 @@ function SchemaToMigration() {
   );
 }
 
-/** The project file pointing each git branch at its own development database, through a command it runs. */
-function BranchConfig() {
-  return (
-    <div className="ml-win" aria-hidden="true">
-      <div className="ml-bar">
-        <FileIcon />
-        .reylo.yaml
-      </div>
-      <pre className="ml-sql ml-lock">
-        <span className="ml-mu"># a development database for each git branch</span>
-        {'\n'}
-        {kw('direct_url:')} postgres://localhost:5432/app_{ty('$(git branch --show-current)')}
-      </pre>
-    </div>
-  );
-}
-
 /** Where Reylo Migrate runs, as each host's logo over its name. */
 function Hosts() {
   return (
     <div className="ml-hosts">
       {HOSTS.map((h) => (
         <span key={h.name}>
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d={h.path} />
+          <svg viewBox={h.viewBox} fill="currentColor" aria-hidden="true">
+            {h.paths.map((d) => (
+              <path key={d} d={d} />
+            ))}
           </svg>
           {h.name}
         </span>
@@ -498,8 +467,15 @@ function Hosts() {
   );
 }
 
-/** reylo/reylo.lock as the docs show it: the schema's checksum, and each migration with its chained checksum. */
+/** reylo/reylo.lock after two branches each added a migration: git stops the merge on the lock, before anything deploys. */
 function LockFile() {
+  const line = (name: string, sum: string) => (
+    <>
+      {'  - '}
+      {name} {ty(sum)}
+      {'\n'}
+    </>
+  );
   return (
     <div className="ml-win" aria-hidden="true">
       <div className="ml-bar">
@@ -511,11 +487,17 @@ function LockFile() {
         {'\n'}
         {kw('migrations:')}
         {'\n'}
-        {'  - 20261104120000_users.sql '}
-        {ty('c86e9de4')}
+        {line('init.sql', '1d42e07a')}
+        {line('20261104120000_users.sql', 'c86e9de4')}
+        {line('20261104140347_add_bio.sql', '78ad08c0')}
+        {line('20261105090000_tags.sql', '3f1a9b27')}
+        <span className="ml-er">{'<<<<<<< main'}</span>
         {'\n'}
-        {'  - 20261104140347_add_bio.sql '}
-        {ty('78ad08c0')}
+        {line('20261106100000_orders.sql', '9c04e1d2')}
+        <span className="ml-mu">{'======='}</span>
+        {'\n'}
+        {line('20261106093000_nick.sql', 'e51b7a38')}
+        <span className="ml-er">{'>>>>>>> add-nick'}</span>
       </pre>
     </div>
   );
