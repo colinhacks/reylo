@@ -296,6 +296,11 @@ fn undo_in(out: &str) -> String {
     quoted.replace("'\\''", "'")
 }
 
+/// `url` connecting as `role`, with no password: the test servers trust their local connections.
+fn as_role(url: &str, role: &str) -> String {
+    regex::Regex::new(r"^([a-z]+://)(?:[^@/]*@)?").unwrap().replace(url, format!("${{1}}{role}@").as_str()).into_owned()
+}
+
 fn has(text: &str, pattern: &str) -> bool {
     regex::Regex::new(pattern).unwrap().is_match(text)
 }
@@ -2650,6 +2655,8 @@ on!(
     a_migrations_session_setting_is_never_carried_by_the_cache,
     init_reads_a_function_dumped_before_the_table_it_reads,
     a_platforms_schemas_and_extensions_are_in_every_shadow,
+    a_role_that_is_no_superuser_runs_every_command,
+    a_role_that_cannot_create_databases_is_told_of_shadow_url,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
@@ -2666,7 +2673,7 @@ on!(Mysql, a_recurring_event_is_in_the_dump);
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
-    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written);
+    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url);
 }
 on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_deploy);
@@ -2739,6 +2746,51 @@ async fn a_database_whose_default_collation_differs() {
 
 mod adversarial {
     use super::*;
+
+    /// The role a hosted Postgres gives (Neon's, Supabase's): it may create databases and is no
+    /// superuser, so no catalog only a superuser reads is in its reach.
+    pub async fn a_role_that_is_no_superuser_runs_every_command(mut p: P) {
+        p.exec("do $$ begin create role madv_hosted login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_hosted", p.name)).await;
+        p.url = as_role(&p.url, "madv_hosted");
+        p.exec("create table users (id int primary key)").await;
+        let opts = p.opts();
+        assert_eq!(reylo_migrate::init(&opts, &[], &mut |_: &str| {}).await.unwrap_or_else(|e| panic!("init: {e}")), 0);
+        p.strict = true;
+        p.schema(&format!("{}\ncreate table posts (id int primary key, user_id int references users (id));\n", std::fs::read_to_string(p.dir.join("schema.sql")).unwrap()));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.schema(&format!("{}\nalter table posts add column title text;\n", std::fs::read_to_string(p.dir.join("schema.sql")).unwrap()));
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+    }
+
+    /// A role that may not create a database (PlanetScale's, some managed ones') can make no shadow:
+    /// the refusal names shadow_url, and `init` leaves no project behind.
+    pub async fn a_role_that_cannot_create_databases_is_told_of_shadow_url(mut p: P) {
+        let role = "madv_nocreate";
+        match p.d {
+            Dialect::Postgres => {
+                p.exec(&format!("do $$ begin create role {role} login nocreatedb; exception when duplicate_object or unique_violation then null; end $$")).await;
+                p.exec(&format!("alter database {} owner to {role}", p.name)).await;
+            }
+            _ => p.exec(&format!("create user if not exists '{role}'@'%'; grant all on `{}`.* to '{role}'@'%'", p.name)).await,
+        }
+        p.url = as_role(&p.url, role);
+        p.exec("create table users (id int primary key)").await;
+        let opts = p.opts();
+        let e = reylo_migrate::init(&opts, &[], &mut |_: &str| {}).await.expect_err("no shadow database can be made");
+        assert_has!(e.0, "shadow_url");
+        assert!(!p.dir.join("schema.sql").exists(), "init left schema.sql");
+        assert!(!p.dir.join(reylo_migrate::lock::LOCK).exists(), "init left the lock");
+        assert!(p.files().is_empty(), "init left {:?}", p.files());
+        p.schema("create table users (id int primary key);");
+        p.file("20261027100000_users.sql", "create table users (id int primary key);");
+        let e = reylo_migrate::dry_run(&opts, &mut |_: &str| {}).await.expect_err("no shadow database can be made");
+        assert_has!(e.0, "shadow_url");
+    }
 
     pub async fn a_database_search_path_resolves_names_as_the_target_does(mut p: P) {
         p.exec(&format!("alter database {} set search_path = app, public", p.name)).await;

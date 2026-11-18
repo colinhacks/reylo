@@ -778,7 +778,8 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
         format!("select 'pg_language'::regclass, x.oid from pg_language x where x.oid >= 16384 and {}", not_extension("pg_language", "x")),
         format!("select 'pg_transform'::regclass, x.oid from pg_transform x where {}", not_extension("pg_transform", "x")),
         format!("select 'pg_am'::regclass, x.oid from pg_am x where x.oid >= 16384 and {}", not_extension("pg_am", "x")),
-        format!("select 'pg_user_mapping'::regclass, x.oid from pg_user_mapping x join pg_foreign_server s on s.oid = x.umserver where {}", not_platform("s.srvowner")),
+        // The view, which every role may read; the table under it is a superuser's alone.
+        format!("select 'pg_user_mapping'::regclass, x.umid from pg_user_mappings x join pg_foreign_server s on s.oid = x.srvid where {}", not_platform("s.srvowner")),
     ];
     let mut out = Vec::new();
     for (queries, why) in [(&by_name[..], "read by name only"), (&not_read[..], "not read")] {

@@ -3805,6 +3805,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         return Ok(0);
     }
     let sql = schema_as_sql(opts, schemas).await?;
+    let made_dir = !opts.dir.exists();
     std::fs::create_dir_all(&opts.dir)?;
     std::fs::write(&opts.schema, &sql)?;
     let init = opts.dir.join(INIT);
@@ -3814,9 +3815,21 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     let schema = Some(lock::schema_sum(&entries[0].sum, &sql));
     lock::write(&opts.lock, &lock::Lock { schema, entries })?;
     // init.sql is recorded as run, which the tree says; what recording it prints is said only where
-    // it didn't.
+    // it didn't. One that can't start (no shadow database can be made) leaves no project behind, so
+    // that init runs again once it can.
     let mut said: Vec<String> = Vec::new();
-    let code = history_push(opts, &mut |l: &str| said.push(l.to_string())).await?;
+    let code = match history_push(opts, &mut |l: &str| said.push(l.to_string())).await {
+        Ok(code) => code,
+        Err(e) => {
+            for file in [&opts.schema, &init, &opts.lock] {
+                let _ = std::fs::remove_file(file);
+            }
+            if made_dir {
+                let _ = std::fs::remove_dir(&opts.dir);
+            }
+            return Err(e);
+        }
+    };
     log(&format!("{} Started {home} from {}", paint("green", "✓"), shown_url(&opts.url)));
     log(&format!("  {home}"));
     log(&entry(branch(false), &file_name(&opts.schema), "this database's schema"));
