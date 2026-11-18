@@ -39,39 +39,55 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         <Install />
       </header>
 
-      <Row title="The world's most advanced multi-dialect diff engine" visual={<SchemaToMigration />}>
+      <Row n={1} title="The world's most advanced multi-dialect diff engine" visual={<SchemaToMigration />}>
         <p>
           Edit <code>schema.sql</code> and run one command. Reylo Migrate compares what your migrations make with what you declared, on Postgres, MySQL and SQLite, and writes the difference as plain SQL, yours to read and edit.
         </p>
       </Row>
 
-      <Row title="Use the full power of your database" visual={<SchemaKinds />} flip>
+      <Row n={2} title="Use the full power of your database" visual={<SchemaKinds />} flip>
         <p>Enums, domains, generated columns, exclusion constraints, partial indexes, materialized views, functions, triggers, row level security and grants, declared as you would on the database itself.</p>
       </Row>
 
-      <Row title="Elegantly unambiguous" visual={<Term lines={DROPS} />}>
+      <Row n={3} title="Elegantly unambiguous" visual={<Term lines={RENAMES} />}>
         <p>
-          A change that loses data is refused until <code>--drop</code> names it. A rename keeps its rows, and where a rename and a drop look alike, Reylo Migrate asks.
+          Where a change could be a rename or a drop, Reylo Migrate asks you to say which: <code>--rename</code> keeps the rows, and <code>--drop</code> lets them go.
         </p>
       </Row>
 
-      <Row title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
+      <Row n={4} title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
         <p>
           A push takes your development database to <code>schema.sql</code> as you edit, with <code>--watch</code> on every save, and the migration comes when the change is right.
         </p>
       </Row>
 
-      <Row title="Dry runs before every deploy" visual={<Term lines={DRY_RUN} />}>
+      <Row n={5} title="Schemaless mode" visual={<Term lines={SCHEMALESS} />}>
+        <p>
+          Delete <code>schema.sql</code>, and your migrations are your schema. Write each one by hand, or change your development database and let Reylo Migrate write what it has that your migrations don't.
+        </p>
+      </Row>
+
+      <Row n={6} title="A lockfile for one history" visual={<LockFile />} flip>
+        <p>
+          The lock lists your migrations in order, each line's checksum chained to the one before. Two branches that each add a migration conflict in git, before anything deploys.
+        </p>
+      </Row>
+
+      <Row n={7} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />}>
+        <p>Delete the lock, and migrations run in name order. A migration that sorts before one a database already ran is replayed in both orders on a shadow database, and refused where the two end differently.</p>
+      </Row>
+
+      <Row n={8} title="Dry runs before every deploy" visual={<Term lines={DRY_RUN} />} flip>
         <p>
           Your migrations replay on throwaway shadow databases: against production's schema, against <code>schema.sql</code>, and with what's pending tried on top. Nothing runs on yours.
         </p>
       </Row>
 
-      <Row title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />} flip>
+      <Row n={9} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />}>
         <p>Chained checksums in the lock catch a migration edited, deleted or reordered, and each migration stores a fingerprint of the schema it leaves. A column added in a dashboard no longer matches it, so the deploy refuses and shows the change, with the ways to keep it.</p>
       </Row>
 
-      <Row title="Start from the database you have" visual={<Term lines={INIT} />}>
+      <Row n={10} title="Start from the database you have" visual={<Term lines={INIT} />} flip>
         <p>
           One command reads your database and writes its <code>schema.sql</code>, a first migration, and the lock, with that migration recorded as already run.
         </p>
@@ -119,11 +135,12 @@ function GitHubIcon() {
   );
 }
 
-/** A feature: its name and a sentence or two, beside what it does. `flip` puts the words on the right. */
-function Row({ title, visual, flip, children }: { title: string; visual: ReactNode; flip?: boolean; children: ReactNode }) {
+/** A feature: its number, in the accent, its name and a sentence or two, beside what it does. `flip` puts the words on the right. */
+function Row({ n, title, visual, flip, children }: { n: number; title: string; visual: ReactNode; flip?: boolean; children: ReactNode }) {
   return (
     <section className={flip ? 'ml-row ml-flip' : 'ml-row'}>
       <div className="ml-row-text">
+        <span className="ml-num">{String(n).padStart(2, '0')}</span>
         <h2>{title}</h2>
         {children}
       </div>
@@ -297,20 +314,47 @@ function Term({ lines }: { lines: Script }) {
   return <TermWindow lines={usePlayer(lines)} script={lines} />;
 }
 
-const DROPS: Script = [
-  '$ reylo migrate new drop_bio',
-  '✗ This migration drops the column users.bio and its data',
-  '',
-  '  To drop it:',
-  '    reylo migrate new drop_bio --drop users.bio',
-  '',
-  'Nothing was changed.',
-  '',
+const RENAMES: Script = [
   '$ reylo migrate new about',
   '✓ Wrote reylo/migrations/20261104150000_about.sql',
   '  ! users.bio → about is written as a rename, keeping its rows',
   "    If they're different columns, delete the file, then:",
   '      reylo migrate new about --drop users.bio',
+  '',
+  '$ reylo migrate new tidy',
+  '✗ These 2 look like renames, but each changes more than its name',
+  '',
+  '    posts.title → heading  text → varchar(100)',
+  '    users.bio   → about    text → varchar(200)',
+  '',
+  '  If they are renames, keeping their rows:',
+  '    reylo migrate new tidy \\',
+  '      --rename posts.title=heading \\',
+  '      --rename users.bio=about',
+  '  If they are new, dropping the old ones and their data:',
+  '    reylo migrate new tidy --drop posts.title,users.bio',
+];
+
+const SCHEMALESS: Script = [
+  "$ reylo run 'alter table users add column bio text'",
+  '✓ alter table users add column bio text',
+  '',
+  '$ reylo migrate new add_bio',
+  '✓ Wrote reylo/migrations/20261104140347_add_bio.sql',
+  '',
+  '$ reylo migrate dev',
+  'Applying to postgres://localhost:5432/app',
+  '  + 20261104140347_add_bio.sql  recorded: already in place',
+  '✓ Wrote reylo/reylo.lock',
+];
+
+const LOCK_FREE: Script = [
+  '$ reylo migrate status',
+  'Migrations on postgres://localhost:5432/app',
+  '  ✓ init.sql                 applied 2026-11-04 12:00 UTC',
+  '  ✓ 20261105090000_tags.sql  applied 2026-11-05 09:00 UTC',
+  '✓ Unchanged since its last migration',
+  '· No lock: migrations run in name order (reylo migrate lock writes one)',
 ];
 
 const PUSH: Script = [
@@ -414,6 +458,29 @@ function SchemaToMigration() {
         </pre>
       </div>
       <TermWindow lines={lines} script={MIGRATE} className="ml-under" />
+    </div>
+  );
+}
+
+/** reylo/reylo.lock as the docs show it: the schema's checksum, and each migration with its chained checksum. */
+function LockFile() {
+  return (
+    <div className="ml-win" aria-hidden="true">
+      <div className="ml-bar">
+        <FileIcon />
+        reylo/reylo.lock
+      </div>
+      <pre className="ml-sql ml-lock">
+        {kw('schema:')} {ty('c7bf681b')}
+        {'\n'}
+        {kw('migrations:')}
+        {'\n'}
+        {'  - 20261104120000_users.sql '}
+        {ty('c86e9de4')}
+        {'\n'}
+        {'  - 20261104140347_add_bio.sql '}
+        {ty('78ad08c0')}
+      </pre>
     </div>
   );
 }
