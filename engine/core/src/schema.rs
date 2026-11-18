@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn inside_json_an_hstore_is_an_object_of_nullable_text() {
-        let hstore = Type::new(Kind::Map(crate::types::MapType { key: Box::new(Slot::non_null(Type::text())), value: Box::new(Slot::nullable(Type::text())) })).named("public.hstore");
+        let hstore = Type::new(Kind::Map(crate::types::MapType { key: Box::new(Slot::non_null(Type::text())), value: Box::new(Slot::nullable(Type::text())), size: None })).named("public.hstore");
         assert_eq!(hstore.json_schema(IN_JSON), json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}));
         assert_eq!(hstore.json_schema(WIRE), json!({"type": "string", "description": "pg type public.hstore"}));
     }

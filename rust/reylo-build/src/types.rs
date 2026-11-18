@@ -1003,7 +1003,7 @@ mod tests {
     /// A Postgres jsonb column a CHECK holds to `schema` (in the canonical vocabulary the engine
     /// writes), as its Rust type and the items it declares, each as Rust source.
     fn checked(schema: serde_json::Value) -> (String, Vec<String>) {
-        let t = Type { kind: Kind::Json(JsonType { content: None, schema: Some(schema) }), label: Some("jsonb".into()), comment: None };
+        let t = Type { kind: Kind::Json(JsonType { content: None, schema: Some(schema) }), label: Some("jsonb".into()), comment: None, title: None };
         let mut types = Types::new(Dialect::Postgres, Options::default(), BTreeMap::new(), Span::call_site(), false);
         let shape = types.column(&t, false, "prefs").unwrap();
         let finished = types.finish(&BTreeSet::new()).unwrap();

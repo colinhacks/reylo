@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://reylo.dev/typedefs/0.1.0.json",
-  "title": "Reylo Type Defs 0.1.0",
+  "$id": "https://reylo.dev/typedefs/0.1.1.json",
+  "title": "Reylo Type Defs 0.1.1",
   "description": "What introspecting one SQL statement returns, and the type of each parameter and column in it: which values each slot can hold. The format's reference is at https://reylo.dev/typedefs.",
   "$ref": "#/$defs/StatementDescriptor",
   "$defs": {
@@ -111,6 +111,10 @@
         "comment": {
           "description": "The comment the source keeps on a named type, such as `COMMENT ON TYPE`. A field's own comment is on the field.",
           "type": "string"
+        },
+        "title": {
+          "description": "A short name for the type, as JSON Schema's `title`. Like the comment, it says nothing of the values.",
+          "type": "string"
         }
       }
     },
@@ -144,7 +148,7 @@
       }
     },
     "Size": {
-      "description": "How long a value is, in whole numbers of its kind's unit (bytes, elements, or a text's `unit`): `exact`, or `min`, `max` or both. A length is never exclusive, since a whole number has an inclusive spelling.",
+      "description": "How long a value is, in whole numbers of its kind's unit (bytes, elements, a map's keys, or a text's `unit`): `exact`, or `min`, `max` or both. A length is never exclusive, since a whole number has an inclusive spelling.",
       "type": "object",
       "properties": {
         "exact": {
@@ -346,6 +350,10 @@
         },
         "media_type": {
           "description": "What the text is, as a media type (`text/html`): JSON Schema's `contentMediaType`.",
+          "type": "string"
+        },
+        "format": {
+          "description": "What the text is, by JSON Schema's format name (`email`, `uri`, `hostname`, `ipv4`) or a source's own. It narrows the values, and a consumer that does not know a format ignores it. A format the format has a kind for is written as that kind: `date-time` is an `instant`, `uuid` a `uuid` and `binary` `bytes`.",
           "type": "string"
         }
       },
@@ -797,11 +805,14 @@
       "unevaluatedProperties": false
     },
     "MapType": {
-      "description": "Keys to values, each key once and in no order: a dictionary. A map whose keys may repeat is an array of `{ key, value }` structs.",
+      "description": "Keys to values, each key once and in no order: a dictionary. A map whose keys may repeat is an array of `{ key, value }` structs. Its size counts its keys, as JSON Schema's `minProperties` and `maxProperties` do.",
       "type": "object",
       "allOf": [
         {
           "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Sized"
         }
       ],
       "properties": {
@@ -1240,7 +1251,7 @@
       "properties": {
         "$schema": {
           "description": "The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything.",
-          "const": "https://reylo.dev/typedefs/0.1.0.json"
+          "const": "https://reylo.dev/typedefs/0.1.1.json"
         },
         "dialect": {
           "$ref": "#/$defs/Dialect"
@@ -1358,6 +1369,18 @@
         "comment": {
           "description": "What the field is, as its source documents it, such as the comment a database keeps on a column.",
           "type": "string"
+        },
+        "title": {
+          "description": "A short name for the field, as JSON Schema's `title`.",
+          "type": "string"
+        },
+        "read_only": {
+          "description": "Only values the source gives back hold the field, and values sent to it leave it out: JSON Schema's `readOnly`, such as an id the source assigns. Never beside `write_only`.",
+          "const": true
+        },
+        "write_only": {
+          "description": "Only values sent to the source hold the field, and values it gives back leave it out: JSON Schema's `writeOnly`, such as a password. Never beside `read_only`.",
+          "const": true
         }
       },
       "required": [

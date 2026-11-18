@@ -40,6 +40,8 @@ export interface Base {
   label?: string;
   /** The comment the source keeps on a named type, such as `COMMENT ON TYPE`. A field's own comment is on the field. */
   comment?: string;
+  /** A short name for the type, as JSON Schema's `title`. Like the comment, it says nothing of the values. */
+  title?: string;
 }
 
 /** Inclusive bounds on an integer's values, in its canonical text, as JSON Schema's `minimum` and `maximum` are. Every bound on a whole number has an inclusive spelling (`x > 0` is `min: "1"`), so an integer takes no exclusive bound. Bounds narrow its values only beyond what its width implies. */
@@ -54,7 +56,7 @@ export interface Bounded extends InclusivelyBounded {
   exclusive_max?: string;
 }
 
-/** How long a value is, in whole numbers of its kind's unit (bytes, elements, or a text's `unit`): `exact`, or `min`, `max` or both. A length is never exclusive, since a whole number has an inclusive spelling. */
+/** How long a value is, in whole numbers of its kind's unit (bytes, elements, a map's keys, or a text's `unit`): `exact`, or `min`, `max` or both. A length is never exclusive, since a whole number has an inclusive spelling. */
 export interface Size {
   exact?: number;
   min?: number;
@@ -120,6 +122,8 @@ export interface TextType extends Base {
   pattern?: string;
   /** What the text is, as a media type (`text/html`): JSON Schema's `contentMediaType`. */
   media_type?: string;
+  /** What the text is, by JSON Schema's format name (`email`, `uri`, `hostname`, `ipv4`) or a source's own. It narrows the values, and a consumer that does not know a format ignores it. A format the format has a kind for is written as that kind: `date-time` is an `instant`, `uuid` a `uuid` and `binary` `bytes`. */
+  format?: string;
 }
 
 /** A text's length: in code points where `unit` is absent, in the encoding's code units (UTF-16 units, as a JavaScript string's `length` counts), or in bytes in the encoding. A unit other than code points is written only where the text names its `encoding`. */
@@ -281,8 +285,8 @@ export interface StructType extends Base {
   extra?: Slot;
 }
 
-/** Keys to values, each key once and in no order: a dictionary. A map whose keys may repeat is an array of `{ key, value }` structs. */
-export interface MapType extends Base {
+/** Keys to values, each key once and in no order: a dictionary. A map whose keys may repeat is an array of `{ key, value }` structs. Its size counts its keys, as JSON Schema's `minProperties` and `maxProperties` do. */
+export interface MapType extends Base, Sized {
   kind: "map";
   /** Inside JSON content, a key is text and never null. */
   key: Slot;
@@ -402,7 +406,7 @@ export interface UnknownType {
 /** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
 export interface StatementDescriptor {
   /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything. */
-  $schema: "https://reylo.dev/typedefs/0.1.0.json";
+  $schema: "https://reylo.dev/typedefs/0.1.1.json";
   dialect: Dialect;
   /** The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them. */
   sql: string;
@@ -443,6 +447,12 @@ export interface Field extends Slot {
   default?: string;
   /** What the field is, as its source documents it, such as the comment a database keeps on a column. */
   comment?: string;
+  /** A short name for the field, as JSON Schema's `title`. */
+  title?: string;
+  /** Only values the source gives back hold the field, and values sent to it leave it out: JSON Schema's `readOnly`, such as an id the source assigns. Never beside `write_only`. */
+  read_only?: true;
+  /** Only values sent to the source hold the field, and values it gives back leave it out: JSON Schema's `writeOnly`, such as a password. Never beside `read_only`. */
+  write_only?: true;
 }
 
 /** A statement's parameter. Where the statement writes it whole into a column, its type is that column's: `insert into t (price) values (:price)` into a decimal of scale 2 gives `price` that scale, though the database describes the parameter with none and would round 1.234. That is stricter than the server, never looser. */
