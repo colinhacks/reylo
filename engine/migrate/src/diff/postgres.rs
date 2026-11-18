@@ -2151,7 +2151,7 @@ fn or_replace(create: &str) -> String {
 /// An enum whose labels are removed or reordered, swapped for a new type: the old one renamed
 /// aside, the new one created, each column of it converted through its text (a row holding a
 /// removed label fails the conversion, and the file with it), and the old one dropped.
-fn swap_enum(name: &str, create: &str, columns: &[String]) -> Vec<String> {
+fn swap_enum(name: &str, create: &str, columns: &[String], removed: &[&String]) -> Vec<String> {
     let (schema, bare) = name.rsplit_once('.').unwrap_or(("", name));
     let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
     let old = if schema.is_empty() { aside.clone() } else { format!("{schema}.{aside}") };
@@ -2164,7 +2164,8 @@ fn swap_enum(name: &str, create: &str, columns: &[String]) -> Vec<String> {
             out.push(format!("alter table {table} alter column {column} drop default"));
         }
         out.push(format!("alter table {table} alter column {column} type {ty} using {column}::{text}::{ty}"));
-        if !default.is_empty() {
+        // A default that names a label the type no longer has is the column's own change to set.
+        if !default.is_empty() && !removed.iter().any(|l| default.contains(l.as_str())) {
             let restored = default.replace(&format!("::{old}"), &format!("::{name}")).replace(&format!("::{aside}"), &format!("::{name}"));
             out.push(format!("alter table {table} alter column {column} set default {restored}"));
         }
@@ -2467,16 +2468,10 @@ impl Alterer for PostgresAlterer {
                     let (unmake, remake) = around(from, to);
                     let mut out = unmake;
                     // The columns both have: one the plan drops is gone before, one it adds comes after.
-                    // Each with the default the target gives it, which the old one's may not fit.
                     let plain = |l: &&String| !l.starts_with(AROUND) && !l.starts_with(AGAIN) && !l.starts_with(USES);
-                    let kept: Vec<String> = from
-                        .extra
-                        .iter()
-                        .filter(plain)
-                        .filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2))))
-                        .cloned()
-                        .collect();
-                    let mut swap = swap_enum(name, &to.create[0], &kept);
+                    let kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2)))).cloned().collect();
+                    let removed: Vec<&String> = a.iter().filter(|l| !b.contains(l)).collect();
+                    let mut swap = swap_enum(name, &to.create[0], &kept, &removed);
                     let last = swap.pop();
                     out.extend(swap);
                     out.extend(remake);
