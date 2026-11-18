@@ -262,6 +262,7 @@ Then write the first migration: reylo migrate new <name>
 Writes the next migration, from your change to `schema.sql`.
 
 - It replays your migrations on a shadow database, and writes the change from what they make to `schema.sql`. It never reads your database's schema.
+- It first checks that your development database ran each migration as it now reads. One edited or deleted since, such as a branch's after you switch away from it, is refused until `reylo migrate dev` settles it.
 - With no `schema.sql`, it writes what your development database has that your migrations don't make ([Schemaless mode](/migrations#schemaless-mode)).
 - The file is yours: read it, and add the data changes a schema can't say.
 - It names anything in `schema.sql` that Reylo Migrate compares by name only, or not at all, such as a text search configuration or a security label. Write a change to those by hand.
