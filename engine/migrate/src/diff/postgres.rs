@@ -582,6 +582,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select a.attrelid as rel, a.attnum as num, format('%I', a.attname) as name, format_type(a.atttypid, a.atttypmod) as type, a.attnotnull as notnull,
               pg_get_expr(d.adbin, d.adrelid) as def, d.oid as defoid, a.attidentity as identity, {} as identity_options, a.attgenerated as generated, a.attislocal as local,
+              (select format('%I.%I', sn.nspname, sc.relname) from pg_depend sd join pg_class sc on sc.oid = sd.objid join pg_namespace sn on sn.oid = sc.relnamespace
+                where sd.classid = 'pg_class'::regclass and sd.refclassid = 'pg_class'::regclass and sd.refobjid = a.attrelid and sd.refobjsubid = a.attnum and sd.deptype = 'i'
+                  and (sc.relnamespace <> c.relnamespace or sc.relname <> left(c.relname || '_' || a.attname || '_seq', 63))) as identity_name,
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
               col_description(a.attrelid, a.attnum) as comment, {} as nn_valid, {} as acl,
               case when a.attstorage <> t.typstorage then case a.attstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end end as storage,
@@ -678,7 +681,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             // column is made without it, and it is added after, by its name, not valid.
             let unvalidated = c.flag("notnull") && !c.flag("nn_valid") && !c.flag("noinherit");
             let full = column_def(c, kind == "c");
-            let made = if unvalidated { full.trim_end_matches(" not null").to_string() } else { full.clone() };
+            // An identity's sequence named otherwise than Postgres would name it is made under its
+            // name; which name it has is no part of the definition compared.
+            let named = c.get("identity_name").map(|n| named_identity(&full, n)).unwrap_or_else(|| full.clone());
+            let made = if unvalidated { named.trim_end_matches(" not null").to_string() } else { named.clone() };
             let add_not_null = format!("alter table {name} add constraint {} not null {} not valid", c.text("nn_name"), c.text("name"));
             if unvalidated {
                 later.push(add_not_null.clone());
@@ -697,7 +703,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     owner: Some(id.clone()),
                     def: def.clone(),
                     create: [Some(if kind == "c" { format!("alter type {name} add attribute {} {made}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }), unvalidated.then(|| add_not_null.clone())].into_iter().flatten().collect(),
-                    extra: c.get("nn_name").map(|n| format!("not null name {n}")).into_iter().chain((kind == "p").then(|| "partitioned".to_string())).collect(),
+                    extra: c.get("nn_name").map(|n| format!("not null name {n}")).into_iter().chain(c.get("identity_name").map(|n| format!("{IDENTITY_SEQUENCE}{n}"))).chain((kind == "p").then(|| "partitioned".to_string())).collect(),
                     drop: vec![if kind == "c" { format!("alter type {name} drop attribute {}", c.text("name")) } else { format!("alter table {name} drop column {}", c.text("name")) }],
                     inline: true,
                     change: Change::Alter { blocks: true },
@@ -1807,8 +1813,27 @@ pub fn derived_renames(current: &Schema, target: &Schema, renamed: &[(String, St
                 _ => format!("alter sequence {rest} rename to {wanted}"),
             });
         }
-        // Each column's not null, which Postgres 18 names after the table too.
+        // Each identity's sequence, which Postgres names after the table and keeps through its
+        // rename, where the target's is named after the new one.
         let old_rel = old_table.strip_prefix("table ").unwrap_or(old_table);
+        let (schema, _) = last(old_rel);
+        for o in current.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(old_table.as_str()) && parse_column(&o.def).identity.is_some()) {
+            let Some(column) = o.id.strip_prefix(&format!("column {old_rel}.")) else { continue };
+            let Some(t) = target.objects.get(&format!("column {new_rel}.{column}")).filter(|t| parse_column(&t.def).identity.is_some()) else { continue };
+            let column = column.strip_prefix('"').and_then(|c| c.strip_suffix('"')).map(|c| c.replace("\"\"", "\"")).unwrap_or_else(|| column.to_string());
+            let chosen = |table: &str| {
+                let mut name = format!("{table}_{column}_seq");
+                while name.len() > 63 {
+                    name.pop();
+                }
+                format!("{schema}.{}", declared::quote_ident(&name))
+            };
+            let (was, now) = (identity_sequence(o).unwrap_or_else(|| chosen(old)), identity_sequence(t).unwrap_or_else(|| chosen(new)));
+            if was != now {
+                out.push(format!("alter sequence {was} rename to {}", last(&now).1));
+            }
+        }
+        // Each column's not null, which Postgres 18 names after the table too.
         for o in current.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(old_table.as_str())) {
             let Some(column) = o.id.strip_prefix(&format!("column {old_rel}.")) else { continue };
             let Some(name) = not_null_name(o) else { continue };
@@ -1819,6 +1844,23 @@ pub fn derived_renames(current: &Schema, target: &Schema, renamed: &[(String, St
         }
     }
     out
+}
+
+/// What precedes the name of an identity's sequence where it isn't the one Postgres would choose.
+const IDENTITY_SEQUENCE: &str = "identity sequence ";
+
+/// The name of an identity column's sequence, where Postgres wouldn't have chosen it.
+fn identity_sequence(o: &Object) -> Option<String> {
+    o.extra.iter().find_map(|l| l.strip_prefix(IDENTITY_SEQUENCE)).map(String::from)
+}
+
+/// A column definition, or an identity, with its sequence's name among the identity's options.
+fn named_identity(def: &str, sequence: &str) -> String {
+    if def.contains(" as identity (") {
+        def.replacen(" as identity (", &format!(" as identity (sequence name {sequence} "), 1)
+    } else {
+        def.replacen(" as identity", &format!(" as identity (sequence name {sequence})"), 1)
+    }
 }
 
 /// The name of a column's not null (Postgres 18).
@@ -2469,10 +2511,11 @@ impl Alterer for PostgresAlterer {
                 }
                 match (&a.identity, &b.identity) {
                     (None, Some(kind)) => {
+                        let kind = identity_sequence(to).map(|n| named_identity(kind, &n)).unwrap_or_else(|| kind.clone());
                         out.push(format!("{at} add {kind}"));
                         // A new identity starts past the rows the table holds, or its first insert
                         // collides; one that counts down is left where it starts.
-                        let (_, options) = identity_parts(kind);
+                        let (_, options) = identity_parts(&kind);
                         let sequence = format!("pg_get_serial_sequence({}, {})", literal(&table), literal(&name.replace('"', "")));
                         match (options.get("increment by").map(|i| i.starts_with('-')), options.get("start with").or(options.get("minvalue"))) {
                             (Some(true), _) => {}

@@ -3084,16 +3084,16 @@ mod adversarial {
     }
 
     pub async fn a_renamed_tables_sequence_keeps_counting(mut p: P) {
-        p.schema("create table users (id serial primary key, email text unique);");
-        p.file("20261027100000_users.sql", "create table users (id serial primary key, email text unique);");
+        p.schema("create table users (id serial primary key, email text unique, n integer generated always as identity);");
+        p.file("20261027100000_users.sql", "create table users (id serial primary key, email text unique, n integer generated always as identity);");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.exec("insert into users (email) values ('a'), ('b'), ('c')").await;
         // What Postgres named after the table is renamed with it: its sequence keeps its value.
-        p.schema("create table accounts (id serial primary key, email text unique);");
+        p.schema("create table accounts (id serial primary key, email text unique, n integer generated always as identity);");
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
         let made = p.files().into_iter().find(|f| f.ends_with("_accounts.sql")).unwrap();
         let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
-        for part in ["alter table users rename to accounts", "rename constraint users_pkey to accounts_pkey", "rename constraint users_email_key to accounts_email_key", "alter sequence users_id_seq rename to accounts_id_seq"] {
+        for part in ["alter table users rename to accounts", "rename constraint users_pkey to accounts_pkey", "rename constraint users_email_key to accounts_email_key", "alter sequence users_id_seq rename to accounts_id_seq", "alter sequence users_n_seq rename to accounts_n_seq"] {
             assert!(sql.contains(part), "{part} in:\n{sql}");
         }
         assert!(!sql.lines().any(|l| !l.starts_with("--") && (l.contains("create") || l.contains("drop"))), "{sql}");
