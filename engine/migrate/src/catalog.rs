@@ -528,7 +528,8 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
                   case when rg.rngcollation <> 0 then 'collate=' || (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = rg.rngcollation) end,
                   'opclass=' || (select format('%I.%I', on_.nspname, oc.opcname) from pg_opclass oc join pg_namespace on_ on on_.oid = oc.opcnamespace where oc.oid = rg.rngsubopc),
                   case when rg.rngcanonical <> 0 then 'canonical=' || rg.rngcanonical::regproc::text end,
-                  case when rg.rngsubdiff <> 0 then 'diff=' || rg.rngsubdiff::regproc::text end)
+                  case when rg.rngsubdiff <> 0 then 'diff=' || rg.rngsubdiff::regproc::text end,
+                  'multirange=' || rg.rngmultitypid::regtype::text)
                 from pg_range rg where rg.rngtypid = t.oid) as range
             from pg_type t join pg_namespace n on n.oid = t.typnamespace
             where t.typtype in ('e', 'd', 'r') and {ns} and {} and {}",
