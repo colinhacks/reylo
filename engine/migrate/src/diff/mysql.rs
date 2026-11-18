@@ -1134,9 +1134,9 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
         }
     }
     // InnoDB adds one FULLTEXT index a statement: each after the first is a statement of its own.
-    let mut fulltext = clauses.iter().enumerate().filter(|(_, c)| c.starts_with("add fulltext ")).map(|(k, _)| k).skip(1).collect::<Vec<_>>();
-    fulltext.reverse();
-    let later: Vec<String> = fulltext.into_iter().map(|k| clauses.remove(k)).rev().collect();
+    let fulltext: Vec<usize> = clauses.iter().enumerate().filter(|(_, c)| c.starts_with("add fulltext ")).map(|(k, _)| k).skip(1).collect();
+    let mut later: Vec<String> = fulltext.iter().rev().map(|k| clauses.remove(*k)).collect::<Vec<_>>();
+    later.reverse();
     let mut out = Vec::new();
     match clauses.len() {
         0 => {}
