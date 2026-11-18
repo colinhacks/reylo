@@ -1657,21 +1657,23 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
     // A check that calls a function of its own table's row can't be made with the table, before the
-    // function: it is added after both.
+    // function: it is added after both. So is a column of a domain whose check calls one that reads
+    // the column's table.
     let late: Vec<(String, String)> = s
         .objects
         .values()
-        .filter(|o| o.kind == Some(Kind::Constraint) && o.inline)
+        .filter(|o| matches!(o.kind, Some(Kind::Constraint | Kind::Column)) && o.inline)
         .filter(|o| {
             let table = o.owner.clone().unwrap_or_default();
-            o.deps.iter().any(|d| d.starts_with("function ") && s.objects.get(d).is_some_and(|f| f.deps.contains(&table)))
+            let reads_table = |d: &String| d.starts_with("function ") && s.objects.get(d).is_some_and(|f| f.deps.contains(&table));
+            o.deps.iter().any(|d| reads_table(d) || (d.starts_with("type ") && s.objects.get(d).is_some_and(|t| t.def.starts_with("domain ") && t.deps.iter().any(reads_table))))
         })
         .map(|o| (o.id.clone(), o.owner.clone().unwrap_or_default()))
         .collect();
     for (id, table) in late {
         let Some(o) = s.objects.get_mut(&id) else { continue };
         o.inline = false;
-        let line = o.create.first().and_then(|c| c.split_once(" add ")).map(|(_, l)| l.to_string()).unwrap_or_default();
+        let line = o.create.first().and_then(|c| c.split_once(" add ")).map(|(_, l)| l.strip_prefix("column ").unwrap_or(l).to_string()).unwrap_or_default();
         if let Some(t) = s.objects.get_mut(&table) {
             if let Some(create) = t.create.first_mut() {
                 for (from, to) in [(format!("\n  {line},"), String::new()), (format!(",\n  {line}\n"), "\n".to_string())] {
@@ -1858,6 +1860,19 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
     Ok(s)
+}
+
+/// Whether `text` names an enum's label (`'b'` as written in the type), as a literal or as an
+/// element of an array's (`'{a,b}'`, `'{"b c"}'`).
+fn names_label(text: &str, label: &str) -> bool {
+    if text.contains(label) {
+        return true;
+    }
+    let bare = label.trim_start_matches('\'').trim_end_matches('\'').replace("''", "'");
+    let quoted = format!("\"{}\"", bare.replace('\\', "\\\\").replace('"', "\\\""));
+    text.split('\'').skip(1).step_by(2).filter(|l| l.starts_with('{') && l.ends_with('}')).any(|l| {
+        l[1..l.len() - 1].split(',').any(|e| e.trim() == bare || e.trim() == quoted)
+    })
 }
 
 /// A list of string literals, `'a', 'b, c'`, each as written: the commas inside a literal are its own.
@@ -2579,6 +2594,9 @@ impl Alterer for PostgresAlterer {
         let (a, b) = (parse_column(&from.def).ty, parse_column(&to.def).ty);
         // An array's elements change as values of their type do, a value made an array of one
         // among them.
+        if a.ends_with("[]") && !b.ends_with("[]") {
+            return Some(format!("changes from {a} to {b}, which keeps only each array's first element"));
+        }
         let element = |t: &str| t.strip_suffix("[]").unwrap_or(t).to_string();
         let (x, y) = if b.ends_with("[]") { (element(&a), element(&b)) } else { (a.clone(), b.clone()) };
         let why = super::narrowing(&type_class(&x), &type_class(&y))?;
@@ -2680,7 +2698,18 @@ impl Alterer for PostgresAlterer {
                     out.extend(unmake);
                     let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
                     let element = b.ty.strip_suffix("[]").filter(|_| !a.ty.ends_with("[]"));
-                    if let Some(element) = element {
+                    let first = a.ty.strip_suffix("[]").filter(|_| !b.ty.ends_with("[]"));
+                    if let Some(from_element) = first {
+                        // An array becomes its first element, which `narrows` says loses the rest.
+                        let value = if self.assigns(from_element, &b.ty) {
+                            format!("{name}[1]")
+                        } else if self.casts(from_element, &b.ty) {
+                            format!("({name}[1])::{}", b.ty)
+                        } else {
+                            format!("({name}[1])::text::{}", b.ty)
+                        };
+                        out.push(format!("{at} type {}{collate} using {value}", b.ty));
+                    } else if let Some(element) = element {
                         // A value becomes an array of one element, and a null stays null. Where the
                         // server converts the value in assignment, it does here too, refusing one
                         // the element's type can't hold rather than cutting it to fit.
@@ -2762,8 +2791,22 @@ impl Alterer for PostgresAlterer {
                         // One whose new bounds share no value with its old ones starts again: every
                         // value it gave lies outside them. Otherwise it keeps its place.
                         let bound = |e: &BTreeMap<String, String>, key: &str| e[key].parse::<i128>().unwrap_or_default();
-                        if bound(&ey, "maxvalue") < bound(&ex, "minvalue") || bound(&ey, "minvalue") > bound(&ex, "maxvalue") {
+                        let disjoint = bound(&ey, "maxvalue") < bound(&ex, "minvalue") || bound(&ey, "minvalue") > bound(&ex, "maxvalue");
+                        if disjoint {
                             set.push("restart".into());
+                        }
+                        // Bounds that close in past where the sequence stands move it to the new
+                        // bound first, which the change otherwise refuses: every value it gave lies
+                        // beyond that bound, so none is given again.
+                        let descending = ey["increment by"].starts_with('-');
+                        let (edge, beyond) = if descending { ("maxvalue", ">") } else { ("minvalue", "<") };
+                        let closes = if descending { bound(&ey, edge) < bound(&ex, edge) } else { bound(&ey, edge) > bound(&ex, edge) };
+                        if closes && !disjoint {
+                            let sequence = format!("pg_get_serial_sequence({}, {})", literal(&table), literal(&name.replace('"', "")));
+                            out.push(format!(
+                                "select setval(q.seq, {0}, false) from (select {sequence} as seq) q join pg_sequences s on format('%I.%I', s.schemaname, s.sequencename) = q.seq where coalesce(s.last_value, s.start_value) {beyond} {0}",
+                                ey[edge]
+                            ));
                         }
                         if ox.contains_key("cycle") != oy.contains_key("cycle") {
                             set.push(if oy.contains_key("cycle") { "set cycle".into() } else { "set no cycle".into() });
@@ -2795,7 +2838,7 @@ impl Alterer for PostgresAlterer {
                 let name = to.id.strip_prefix("type ")?;
                 // A label added in a transaction can't be used in it (a default, a check), as a
                 // label of a type made in it can: one the target uses is added by making the type again.
-                let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().filter(|x| !x.starts_with(AGAIN)).any(|x| x.contains(l.as_str())));
+                let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().filter(|x| !x.starts_with(AGAIN)).any(|x| names_label(x, l)));
                 let reorders = kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y);
                 // Under a partition key the type stays: a label used is added, and committed
                 // before what uses it, a migration of its own.
@@ -3062,6 +3105,14 @@ mod tests {
     }
 
     #[test]
+    fn finds_a_label_in_an_arrays_literal() {
+        assert!(names_label("t|v|e[]|'{b}'::e[]", "'b'"));
+        assert!(names_label("default '{a,\"b c\"}'::e[]", "'b c'"));
+        assert!(!names_label("default '{ab}'::e[]", "'b'"));
+        assert!(names_label("check (v <> 'b'::e)", "'b'"));
+    }
+
+    #[test]
     fn reads_a_list_of_literals_with_commas_in_them() {
         assert_eq!(literal_list("'a', 'b, c', 'it''s', 'd|e'"), vec!["'a'", "'b, c'", "'it''s'", "'d|e'"]);
     }
@@ -3075,6 +3126,7 @@ mod tests {
         assert!(narrows("numeric", "numeric(5,1)[]").is_some_and(|w| w.contains("rounds to 1 decimal places")));
         assert!(narrows("numeric[]", "numeric(5,1)[]").is_some());
         assert_eq!(narrows("integer", "integer[]"), None);
+        assert!(narrows("integer[]", "integer").is_some_and(|w| w.contains("first element")));
         assert_eq!(narrows("bytea", "bytea[]"), None);
     }
 }
