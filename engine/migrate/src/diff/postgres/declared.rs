@@ -666,6 +666,25 @@ pub(super) fn read(schema: &Schema, sql: &str, base: &[String]) -> Declared {
 }
 
 /// The index of the parenthesis that closes the one at `open`, past quoted text.
+/// A default as a column's definition writes it: an expression the definition can't take as it
+/// stands (`now() at time zone 'utc'`, `not a`, `x is null`) in parentheses, which `set default`
+/// needs none of. A column's default is the grammar's narrower expression, with no word operator
+/// at its top level.
+pub(super) fn column_default(text: &str) -> String {
+    use crate::sql::TokenKind::{Symbol, Word};
+    const WORDS: [&str; 15] = ["and", "or", "not", "is", "isnull", "notnull", "like", "ilike", "similar", "between", "in", "at", "collate", "overlaps", "escape"];
+    let mut depth = 0i32;
+    for t in crate::sql::tokenize(text, crate::Dialect::Postgres) {
+        match (t.kind, t.text.as_str()) {
+            (Symbol, "(" | "[") => depth += 1,
+            (Symbol, ")" | "]") => depth -= 1,
+            (Word, w) if depth == 0 && WORDS.contains(&w.to_ascii_lowercase().as_str()) => return format!("({text})"),
+            _ => {}
+        }
+    }
+    text.to_string()
+}
+
 pub(super) fn closing(text: &str, open: usize) -> Option<usize> {
     let (mut depth, mut quote) = (0, None);
     for (k, c) in text.char_indices().skip_while(|(k, _)| *k < open) {
@@ -705,11 +724,12 @@ pub(super) fn apply(schema: &mut Schema, declared: &Declared) {
         }
         match o.kind {
             Some(Kind::Column) => {
-                let old = bare(&o.def).to_string();
+                // As the column's statements write it: an unvalidated not null is the table's to say.
+                let old = bare(&o.def).trim_end_matches(" not valid").to_string();
                 let mut c = parse_column(&old);
                 let mut extra = Vec::new();
                 if let (Some(_), Some(text)) = (&c.default, declared.expressions.get(&format!("default {}", o.id))) {
-                    c.default = Some(text.clone());
+                    c.default = Some(column_default(text));
                     extra.push(format!("default {text}"));
                 }
                 if let (Some(g), Some(text)) = (c.generated.clone(), declared.expressions.get(&format!("generated {}", o.id))) {
@@ -789,6 +809,15 @@ pub(super) fn apply(schema: &mut Schema, declared: &Declared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_column_default_is_parenthesized_where_its_definition_needs_it() {
+        assert_eq!(column_default("now() AT TIME ZONE 'utc'"), "(now() AT TIME ZONE 'utc')");
+        assert_eq!(column_default("NOT (a IS DISTINCT FROM b)"), "(NOT (a IS DISTINCT FROM b))");
+        assert_eq!(column_default("coalesce(a is null, false)"), "coalesce(a is null, false)");
+        assert_eq!(column_default("'x'::text"), "'x'::text");
+        assert_eq!(column_default("nextval('s'::regclass)"), "nextval('s'::regclass)");
+    }
 
     #[test]
     fn names_as_postgres_names_them() {

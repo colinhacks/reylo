@@ -2690,6 +2690,7 @@ on!(
     a_renamed_tables_sequence_keeps_counting,
     a_foreign_table_is_renamed_as_stated,
     a_partitioned_table_is_renamed_with_its_partitions,
+    a_table_renamed_onto_a_views_name_drops_the_view_first,
     partitions_made_at_run_time_are_data,
     the_fingerprint_leaves_out_only_what_is_a_childs,
     a_comment_above_a_cut_off_build_is_read_past,
@@ -3142,16 +3143,16 @@ mod adversarial {
     }
 
     pub async fn a_renamed_tables_sequence_keeps_counting(mut p: P) {
-        p.schema("create table users (id serial primary key, email text unique);");
-        p.file("20261027100000_users.sql", "create table users (id serial primary key, email text unique);");
+        p.schema("create table users (id serial primary key, email text unique, n integer generated always as identity);");
+        p.file("20261027100000_users.sql", "create table users (id serial primary key, email text unique, n integer generated always as identity);");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.exec("insert into users (email) values ('a'), ('b'), ('c')").await;
         // What Postgres named after the table is renamed with it: its sequence keeps its value.
-        p.schema("create table accounts (id serial primary key, email text unique);");
+        p.schema("create table accounts (id serial primary key, email text unique, n integer generated always as identity);");
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
         let made = p.files().into_iter().find(|f| f.ends_with("_accounts.sql")).unwrap();
         let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
-        for part in ["alter table users rename to accounts", "rename constraint users_pkey to accounts_pkey", "rename constraint users_email_key to accounts_email_key", "alter sequence users_id_seq rename to accounts_id_seq"] {
+        for part in ["alter table users rename to accounts", "rename constraint users_pkey to accounts_pkey", "rename constraint users_email_key to accounts_email_key", "alter sequence users_id_seq rename to accounts_id_seq", "alter sequence users_n_seq rename to accounts_n_seq"] {
             assert!(sql.contains(part), "{part} in:\n{sql}");
         }
         assert!(!sql.lines().any(|l| !l.starts_with("--") && (l.contains("create") || l.contains("drop"))), "{sql}");
@@ -3159,6 +3160,10 @@ mod adversarial {
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.exec("insert into accounts (email) values ('d')").await;
         assert_eq!(p.rows("select id from accounts where email = 'd'").await[0].text("id"), "4");
+        // And its columns' not nulls, which Postgres 18 names after the table too.
+        for r in p.rows("select conname from pg_constraint where conrelid = 'accounts'::regclass and contype = 'n'").await {
+            assert!(r.text("conname").starts_with("accounts_"), "{} kept the old table's name", r.text("conname"));
+        }
         p.output();
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
@@ -3179,15 +3184,27 @@ mod adversarial {
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
-    pub async fn a_partitioned_table_is_renamed_with_its_partitions(mut p: P) {
-        p.file("20261027100000_events.sql", "create table events (id int, at date, primary key (id, at)) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01');");
+    pub async fn a_table_renamed_onto_a_views_name_drops_the_view_first(mut p: P) {
+        p.file("20261027100000_data.sql", "create table t_data (id int, name text); create view data as select * from t_data; create view q as select * from data;");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
-        p.exec("insert into events values (1, '2024-06-01')").await;
-        p.schema("create table logs (id int, at date, primary key (id, at)) partition by range (at); create table logs_2024 partition of logs for values from ('2024-01-01') to ('2025-01-01');");
+        p.exec("insert into t_data values (1, 'a')").await;
+        // The view goes, with the view on it, before the table takes its name; the plan makes q again.
+        p.schema("create table data (id int, name text); create view q as select * from data;");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select name from q").await.len(), 1);
+    }
+
+    pub async fn a_partitioned_table_is_renamed_with_its_partitions(mut p: P) {
+        p.file("20261027100000_events.sql", "create table events (id int generated always as identity, at date, primary key (id, at)) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01');");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into events (at) values ('2024-06-01')").await;
+        p.schema("create table logs (id int generated always as identity, at date, primary key (id, at)) partition by range (at); create table logs_2024 partition of logs for values from ('2024-01-01') to ('2025-01-01');");
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "logs", &Default::default(), log).await).await, 0, "{}", p.peek());
         let made = p.files().into_iter().find(|f| f.ends_with("_logs.sql")).unwrap();
         let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
         assert!(sql.contains("alter table events rename to logs") && sql.contains("alter table events_2024 rename to logs_2024") && sql.contains("rename to logs_2024_pkey"), "{sql}");
+        // The identity's sequence is the parent's alone, renamed with it.
+        assert!(sql.contains("alter sequence events_id_seq rename to logs_id_seq") && !sql.contains("events_2024_id_seq"), "{sql}");
         p.output();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(p.rows("select id from logs_2024").await.len(), 1);

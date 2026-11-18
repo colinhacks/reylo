@@ -26,6 +26,16 @@ pub async fn declare(db: &mut Db, schema: &mut Schema, sql: &str) -> Result<(), 
     let path: Vec<String> = rows.first().and_then(|r| serde_json::from_str(r.text("path")).ok()).unwrap_or_default();
     let found = declared::read(schema, sql, &path);
     declared::apply(schema, &found);
+    // An index whose partitions' indexes are attached to it is made on its table alone, as the
+    // server renders it, whatever the file wrote: each of those is made and attached on its own.
+    for o in schema.objects.values_mut() {
+        if let Some(rendering) = o.extra.iter().find_map(|l| l.strip_prefix("rendering ")).map(String::from) {
+            if let Some(first) = o.create.first_mut() {
+                schema.verbatim.remove(first.as_str());
+                *first = rendering;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -151,6 +161,9 @@ struct Ids {
     opfamilies: BTreeMap<u32, String>,
     casts: BTreeMap<u32, String>,
     servers: BTreeMap<u32, String>,
+    publications: BTreeMap<u32, String>,
+    event_triggers: BTreeMap<u32, String>,
+    wrappers: BTreeMap<u32, String>,
     /// (catalog, oid) of an extension's member: the extension, which stands for it.
     members: BTreeMap<(String, u32), String>,
 }
@@ -176,6 +189,9 @@ impl Ids {
             "pg_opfamily" => self.opfamilies.get(&oid).cloned(),
             "pg_cast" => self.casts.get(&oid).cloned(),
             "pg_foreign_server" => self.servers.get(&oid).cloned(),
+            "pg_publication" => self.publications.get(&oid).cloned(),
+            "pg_event_trigger" => self.event_triggers.get(&oid).cloned(),
+            "pg_foreign_data_wrapper" => self.wrappers.get(&oid).cloned(),
             _ => None,
         }
         .or_else(|| self.members.get(&(class.to_string(), oid)).cloned())
@@ -304,7 +320,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select t.oid, format('%I.%I', n.nspname, t.typname) as name, t.typtype as kind,
               format('%s', (select json_agg(e.enumlabel order by e.enumsortorder) from pg_enum e where e.enumtypid = t.oid)) as labels,
               case when t.typtype = 'd' then format_type(t.typbasetype, t.typtypmod) end as base, t.typnotnull as notnull, t.typdefault as def,
-              (select string_agg(format(' constraint %I %s', c.conname, pg_get_constraintdef(c.oid)), '' order by c.conname) from pg_constraint c where c.contypid = t.oid and c.contype = 'c') as checks,
+              (select string_agg(format(' constraint %I %s', c.conname, pg_get_constraintdef(c.oid)), '' order by c.conname) from pg_constraint c where c.contypid = t.oid and c.contype = 'c' and c.convalidated) as checks,
+
               format('%s', (select json_agg(json_build_array(format('%I', c.conname), pg_get_constraintdef(c.oid)) order by c.conname) from pg_constraint c where c.contypid = t.oid and c.contype = 'c')) as checklist,
               case when t.typtype = 'd' and t.typcollation <> 0 and t.typcollation <> (select b.typcollation from pg_type b where b.oid = t.typbasetype)
                 then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = t.typcollation) end as collation,
@@ -312,9 +329,13 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                   case when r.rngsubopc <> 0 and not (select o.opcdefault from pg_opclass o where o.oid = r.rngsubopc) then 'subtype_opclass = ' || (select format('%I.%I', on_.nspname, o.opcname) from pg_opclass o join pg_namespace on_ on on_.oid = o.opcnamespace where o.oid = r.rngsubopc) end,
                   case when r.rngcollation <> 0 and r.rngcollation <> (select st.typcollation from pg_type st where st.oid = r.rngsubtype) then 'collation = ' || (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = r.rngcollation) end,
                   case when r.rngcanonical <> 0 then 'canonical = ' || format('%s', r.rngcanonical::regproc) end,
-                  case when r.rngsubdiff <> 0 then 'subtype_diff = ' || format('%s', r.rngsubdiff::regproc) end) from pg_range r where r.rngtypid = t.oid) end as range
+                  case when r.rngsubdiff <> 0 then 'subtype_diff = ' || format('%s', r.rngsubdiff::regproc) end,
+                  (select 'multirange_type_name = ' || format('%I.%I', mn.nspname, m.typname) from pg_type m join pg_namespace mn on mn.oid = m.typnamespace where m.oid = r.rngmultitypid
+                    and (mn.oid <> t.typnamespace or m.typname <> case when position('range' in t.typname) > 0 then overlay(t.typname placing 'multirange' from position('range' in t.typname) for 5) else t.typname || '_multirange' end))) from pg_range r where r.rngtypid = t.oid) end as range,
+              {} as acl
             from pg_type t join pg_namespace n on n.oid = t.typnamespace
             where t.typtype in ('e', 'd', 'r') and {ns} and {} and {}",
+            acl_in("t.typacl", 'T', "t.typowner", Some("t.typnamespace")),
             not_extension("pg_type", "t"),
             not_platform("t.typowner")
         ))
@@ -323,6 +344,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let name = r.text("name");
         let id = format!("type {name}");
         ids.types.insert(oid(&r, "oid"), id.clone());
+        // A domain's checks left unvalidated, which no `create domain` can make.
+        let unvalidated: Vec<(String, String)> = serde_json::from_str::<Vec<(String, String)>>(r.text("checklist")).unwrap_or_default().into_iter().filter(|(_, d)| d.ends_with(" NOT VALID")).collect();
         let (def, create, change) = match r.text("kind") {
             "e" => {
                 let labels: Vec<String> = serde_json::from_str(r.text("labels")).unwrap_or_default();
@@ -339,7 +362,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     if r.flag("notnull") { " not null" } else { "" },
                     r.text("checks")
                 );
-                (def.clone(), format!("create {}", def.replacen("domain ", &format!("domain {name} as "), 1)), Change::Alter { blocks: false })
+                let unvalidated: String = unvalidated.iter().map(|(n, d)| format!(" constraint {n} {d}")).collect();
+                (format!("{def}{unvalidated}"), format!("create {}", def.replacen("domain ", &format!("domain {name} as "), 1)), Change::Alter { blocks: false })
             }
             _ => (format!("range ({})", r.text("range")), format!("create type {name} as range ({})", r.text("range")), Change::Replace),
         };
@@ -372,7 +396,17 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 extra.push(format!("{}|{}|{}|{}", c.text("rel"), c.text("col"), c.text("type"), c.text("def")));
             }
         }
-        s.add(Object { id, kind: Some(Kind::Type), def, create: vec![create], drop: vec![format!("drop type {name}")], change, extra, ..Object::default() });
+        // A check left unvalidated is added after the domain is made, which can't take one.
+        let mut create = vec![create];
+        create.extend(unvalidated.iter().map(|(n, d)| format!("alter domain {name} add constraint {n} {d}")));
+        grants(&mut s, r.text("acl"), name, &id, if r.text("kind") == "d" { "domain" } else { "type" });
+        s.add(Object { id, kind: Some(Kind::Type), def, create, drop: vec![format!("drop type {name}")], change, extra, ..Object::default() });
+    }
+    // A domain's checks are the domain's: what they call, it depends on.
+    for r in db.rows("select co.oid, co.contypid from pg_constraint co where co.contypid <> 0").await? {
+        if let Some(t) = ids.types.get(&oid(&r, "contypid")).cloned() {
+            ids.constraints.insert(oid(&r, "oid"), t);
+        }
     }
 
     // Sequences not owned by an identity column; the column a sequence is owned by is an object
@@ -486,13 +520,19 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // not those a partition takes from its parent), and the indexes they own.
     let mut constraint_indexes: BTreeMap<u32, String> = BTreeMap::new();
     let mut inline_constraints: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    let mut keyed: BTreeSet<(u32, String)> = BTreeSet::new();
     let partitions: BTreeSet<u32> = rels.iter().filter(|r| r.get("bound").is_some() || r.text("kind") == "c").map(|r| oid(r, "oid")).collect();
     for r in db
         .rows(&format!(
             "select co.oid, co.conindid, format('%I.%I', n.nspname, c.relname) as rel, c.oid as reloid, format('%I', co.conname) as name,
-              pg_get_constraintdef(co.oid, false) as def, co.condeferrable as deferrable, co.condeferred as deferred, co.convalidated as validated, co.contype as type
+              pg_get_constraintdef(co.oid, false) as def, co.condeferrable as deferrable, co.condeferred as deferred, co.convalidated as validated, co.contype as type,
+              case when co.contype = 'f' then
+                (select string_agg(format_type(a.atttypid, null), ', ' order by k.n) from unnest(co.conkey) with ordinality k(num, n) join pg_attribute a on a.attrelid = co.conrelid and a.attnum = k.num)
+                || ' to ' || (select string_agg(format_type(a.atttypid, null), ', ' order by k.n) from unnest(co.confkey) with ordinality k(num, n) join pg_attribute a on a.attrelid = co.confrelid and a.attnum = k.num)
+              end as linked
             from pg_constraint co join pg_class c on c.oid = co.conrelid join pg_namespace n on n.oid = c.relnamespace
-            where co.contype <> 'n' and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}",
+            where co.contype not in ('n', 't') and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}
+            order by co.contype, co.conname",
             not_platform("c.relowner"),
             not_extension("pg_constraint", "co")
         ))
@@ -510,16 +550,26 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let def = r.text("def").to_string();
         // A new table's own constraints are written inside its create table; a foreign key, which
         // names another table, is a statement of its own after both exist.
-        let inline = r.text("type") != "f" && r.flag("validated") && !partitions.contains(&oid(&r, "reloid"));
+        // A create table makes one index for keys alike (a primary key and a unique constraint on
+        // its columns, or two unique ones), keeping the first: the second is added after it.
+        let keys = |d: &str| d.trim_start_matches("PRIMARY KEY").trim_start_matches("UNIQUE").trim().to_string();
+        let alike = matches!(r.text("type"), "p" | "u") && keyed.contains(&(oid(&r, "reloid"), keys(&def)));
+        if matches!(r.text("type"), "p" | "u") {
+            keyed.insert((oid(&r, "reloid"), keys(&def)));
+        }
+        let inline = r.text("type") != "f" && r.flag("validated") && !partitions.contains(&oid(&r, "reloid")) && !alike;
         if inline {
             inline_constraints.entry(oid(&r, "reloid")).or_default().push(format!("constraint {name} {def}"));
         }
+        // A foreign key holds while the types of the columns it links compare; a change of either
+        // side's type makes it again around the change, so that both columns can change between.
+        let linked = r.get("linked").map(|l| format!("\n-- links {l}")).unwrap_or_default();
         s.add(Object {
             inline,
             id,
             kind: Some(Kind::Constraint),
             owner: Some(table.clone()),
-            def: def.clone(),
+            def: format!("{def}{linked}"),
             create: vec![format!("alter table {rel} add constraint {name} {def}")],
             drop: vec![format!("alter table {rel} drop constraint {name}")],
             ..Object::default()
@@ -531,16 +581,30 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     for r in db
         .rows(&format!(
             "select a.attrelid as rel, a.attnum as num, format('%I', a.attname) as name, format_type(a.atttypid, a.atttypmod) as type, a.attnotnull as notnull,
-              pg_get_expr(d.adbin, d.adrelid) as def, d.oid as defoid, a.attidentity as identity, a.attgenerated as generated, a.attislocal as local,
+              pg_get_expr(d.adbin, d.adrelid) as def, d.oid as defoid, a.attidentity as identity, {} as identity_options, a.attgenerated as generated, a.attislocal as local,
+              (select format('%I.%I', sn.nspname, sc.relname) from pg_depend sd join pg_class sc on sc.oid = sd.objid join pg_namespace sn on sn.oid = sc.relnamespace
+                where sd.classid = 'pg_class'::regclass and sd.refclassid = 'pg_class'::regclass and sd.refobjid = a.attrelid and sd.refobjsubid = a.attnum and sd.deptype = 'i'
+                  and (sc.relnamespace <> c.relnamespace or sc.relname <> left(c.relname || '_' || a.attname || '_seq', 63))) as identity_name,
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
-              col_description(a.attrelid, a.attnum) as comment, {} as noinherit, {} as acl
+              col_description(a.attrelid, a.attnum) as comment, {} as nn_valid, {} as acl,
+              case when a.attstorage <> t.typstorage then case a.attstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end end as storage,
+              case t.typstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end as type_storage,
+              case a.attcompression when 'p' then 'pglz' when 'l' then 'lz4' end as compression,
+              case when coalesce(a.attstattarget, -1) >= 0 then a.attstattarget end as stattarget
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
             left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
             where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
             order by a.attrelid, a.attnum",
             // Postgres 18 records a column's NOT NULL as a constraint, which may be kept from the
             // table's children (NO INHERIT).
-            if version >= 180000 { "coalesce((select co.connoinherit from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), false)" } else { "false" },
+            crate::catalog::identity_options("a"),
+            if version >= 180000 {
+                "coalesce((select co.connoinherit from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), false) as noinherit,
+                  (select format('%I', co.conname) from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]) as nn_name,
+                  coalesce((select co.convalidated from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), true)"
+            } else {
+                "false as noinherit, null as nn_name, true"
+            },
             acl("a.attacl", 'c', "c.relowner"),
             not_extension("pg_class", "c"),
             not_platform("c.relowner")
@@ -550,6 +614,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         columns.entry(oid(&r, "rel")).or_default().push(r);
     }
 
+    // Each table's columns' defaults and not nulls, by name: a partition's that differ are its own.
+    let names: BTreeMap<u32, String> = rels.iter().map(|r| (oid(r, "oid"), r.text("name").to_string())).collect();
+    let mut column_states: BTreeMap<(String, String), (Option<String>, bool)> = BTreeMap::new();
+    for (rel, cols) in &columns {
+        for c in cols {
+            column_states.insert((names.get(rel).cloned().unwrap_or_default(), c.text("name").to_string()), (c.get("def").filter(|_| c.text("generated").is_empty()).map(String::from), c.flag("notnull")));
+        }
+    }
     for r in &rels {
         let rel = oid(r, "oid");
         let name = r.text("name").to_string();
@@ -558,10 +630,13 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let cols = columns.remove(&rel).unwrap_or_default();
         let partition = r.get("bound").is_some();
         let mut col_defs = Vec::new();
+        // What a partition says of its columns where its parent says otherwise.
+        let mut overrides = Vec::new();
+        let mut later: Vec<String> = Vec::new();
         for c in &cols {
             let col_id = format!("column {name}.{}", c.text("name"));
             let target = if matches!(kind, "v" | "m") { id.clone() } else { col_id.clone() };
-            ids.column.insert((rel, c.text("num").parse().unwrap_or(0)), target);
+            ids.column.insert((rel, c.text("num").parse().unwrap_or(0)), target.clone());
             if let Some(d) = c.get("defoid") {
                 ids.attrdefs.insert(d.parse().unwrap_or(0), col_id.clone());
             }
@@ -579,15 +654,45 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 });
             }
             if kind != "c" {
-                column_grants(&mut s, c.text("acl"), &name, c.text("name"), &col_id);
+                column_grants(&mut s, c.text("acl"), &name, c.text("name"), &target);
+            }
+            // How the column's values are kept and how closely the planner samples them, where not
+            // its type's defaults.
+            if matches!(kind, "r" | "p" | "m") {
+                let at = format!("alter {} {name} alter column {}", if kind == "m" { "materialized view" } else { "table" }, c.text("name"));
+                for (what, value, default) in [("storage", c.get("storage"), c.text("type_storage").to_string()), ("compression", c.get("compression"), "default".into()), ("statistics", c.get("stattarget"), "-1".into())] {
+                    let Some(value) = value else { continue };
+                    s.add(Object {
+                        id: format!("{what} {col_id}"),
+                        kind: Some(Kind::ColumnSetting),
+                        owner: Some(if matches!(kind, "m") { id.clone() } else { col_id.clone() }),
+                        def: value.to_string(),
+                        create: vec![format!("{at} set {what} {value}")],
+                        drop: vec![format!("{at} set {what} {default}")],
+                        change: Change::Alter { blocks: false },
+                        ..Object::default()
+                    });
+                }
             }
             if matches!(kind, "v" | "m") {
                 continue;
             }
-            let def = column_def(c, kind == "c");
-            if c.flag("local") || !partition {
-                col_defs.push(format!("{} {def}", c.text("name")));
+            // A not null left unvalidated (Postgres 18), which no column definition can write: the
+            // column is made without it, and it is added after, by its name, not valid.
+            let unvalidated = c.flag("notnull") && !c.flag("nn_valid") && !c.flag("noinherit");
+            let full = column_def(c, kind == "c");
+            // An identity's sequence named otherwise than Postgres would name it is made under its
+            // name; which name it has is no part of the definition compared.
+            let named = c.get("identity_name").map(|n| named_identity(&full, n)).unwrap_or_else(|| full.clone());
+            let made = if unvalidated { named.trim_end_matches(" not null").to_string() } else { named.clone() };
+            let add_not_null = format!("alter table {name} add constraint {} not null {} not valid", c.text("nn_name"), c.text("name"));
+            if unvalidated {
+                later.push(add_not_null.clone());
             }
+            if c.flag("local") || !partition {
+                col_defs.push(format!("{} {made}", c.text("name")));
+            }
+            let def = if unvalidated { format!("{full} not valid") } else { full.clone() };
             if c.flag("local") {
                 let caution = (c.flag("notnull") && c.get("def").is_none() && c.text("identity").is_empty() && kind != "c")
                     .then(|| format!("{} is not null with no default, so adding it fails on a table that has rows: give it a default, or add it nullable, fill it, then set not null", c.text("name")));
@@ -597,7 +702,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     kind: Some(Kind::Column),
                     owner: Some(id.clone()),
                     def: def.clone(),
-                    create: vec![if kind == "c" { format!("alter type {name} add attribute {} {def}", c.text("name")) } else { format!("alter table {name} add column {} {def}", c.text("name")) }],
+                    create: [Some(if kind == "c" { format!("alter type {name} add attribute {} {made}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }), unvalidated.then(|| add_not_null.clone())].into_iter().flatten().collect(),
+                    extra: c.get("nn_name").map(|n| format!("not null name {n}")).into_iter().chain(c.get("identity_name").map(|n| format!("{IDENTITY_SEQUENCE}{n}"))).chain((kind == "p").then(|| "partitioned".to_string())).collect(),
                     drop: vec![if kind == "c" { format!("alter type {name} drop attribute {}", c.text("name")) } else { format!("alter table {name} drop column {}", c.text("name")) }],
                     inline: true,
                     change: Change::Alter { blocks: true },
@@ -605,7 +711,26 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 });
             } else if partition {
                 // A partition's column is its parent's, made, changed and dropped with it: an
-                // object with no statement of its own, so that a partition detached keeps it.
+                // object with no statement of its own, so that a partition detached keeps it, but
+                // for a default or a not null of its own.
+                let parent = r.get("parent").and_then(|p| column_states.get(&(p.to_string(), c.text("name").to_string())));
+                let mine = (c.get("def").filter(|_| c.text("generated").is_empty()).map(String::from), c.flag("notnull"));
+                if let Some((default, not_null)) = parent {
+                    let mut said = Vec::new();
+                    if mine.0 != *default {
+                        match &mine.0 {
+                            Some(d) => said.push(format!("default {d}")),
+                            // A default the parent has and the partition doesn't is dropped after it is made.
+                            None => later.push(format!("alter table {name} alter column {} drop default", c.text("name"))),
+                        }
+                    }
+                    if mine.1 && !not_null {
+                        said.push("not null".to_string());
+                    }
+                    if !said.is_empty() {
+                        overrides.push(format!("{} {}", c.text("name"), said.join(" ")));
+                    }
+                }
                 s.add(Object {
                     id: col_id,
                     kind: Some(Kind::Column),
@@ -613,7 +738,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     def: def.clone(),
                     inline: true,
                     change: Change::Alter { blocks: true },
-                    extra: vec!["partition".into()],
+                    extra: std::iter::once("partition".to_string()).chain((kind == "p").then(|| "partitioned".to_string())).collect(),
+                    deps: r.get("parent").map(|p| format!("column {p}.{}", c.text("name"))).into_iter().collect(),
                     ..Object::default()
                 });
             }
@@ -638,7 +764,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 let foreign = if kind == "f" { "foreign " } else { "" };
                 let head = format!("create {unlogged}{foreign}table {name}");
                 let body = match (r.get("bound"), r.get("parent")) {
-                    (Some(bound), Some(parent)) => format!("{head} partition of {parent} {bound}"),
+                    (Some(bound), Some(parent)) if overrides.is_empty() => format!("{head} partition of {parent} {bound}"),
+                    (Some(bound), Some(parent)) => format!("{head} partition of {parent} (\n  {}\n) {bound}", overrides.join(",\n  ")),
                     (None, Some(parent)) => format!("{head} (\n  {}\n) inherits ({parent})", col_defs.join(",\n  ")),
                     _ => format!("{head} (\n  {}\n)", col_defs.join(",\n  ")),
                 };
@@ -664,15 +791,18 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         };
         // A table's own properties change in place; a view or a composite type is replaced.
         let change = if object_kind == Kind::Table { Change::Alter { blocks: false } } else { Change::Replace };
-        s.add(Object { id: id.clone(), kind: Some(object_kind), def, create: vec![create], drop: vec![drop], change, extra, ..Object::default() });
-        if r.flag("rls") {
+        let mut create = vec![create];
+        create.extend(later);
+        s.add(Object { id: id.clone(), kind: Some(object_kind), def, create, drop: vec![drop], change, extra, ..Object::default() });
+        // Row-level security, enabled, forced on the table's owner, or both: each is set on its own.
+        if r.flag("rls") || r.flag("force") {
             s.add(Object {
                 id: format!("rls {name}"),
                 kind: Some(Kind::Rls),
                 owner: Some(id.clone()),
-                def: if r.flag("force") { "force".into() } else { String::new() },
-                create: [Some(format!("alter table {name} enable row level security")), r.flag("force").then(|| format!("alter table {name} force row level security"))].into_iter().flatten().collect(),
-                drop: vec![format!("alter table {name} disable row level security"), format!("alter table {name} no force row level security")],
+                def: [r.flag("rls").then_some("enable"), r.flag("force").then_some("force")].into_iter().flatten().collect::<Vec<_>>().join(" "),
+                create: [r.flag("rls").then(|| format!("alter table {name} enable row level security")), r.flag("force").then(|| format!("alter table {name} force row level security"))].into_iter().flatten().collect(),
+                drop: [r.flag("rls").then(|| format!("alter table {name} disable row level security")), r.flag("force").then(|| format!("alter table {name} no force row level security"))].into_iter().flatten().collect(),
                 change: Change::Alter { blocks: false },
                 ..Object::default()
             });
@@ -693,33 +823,96 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
 
+    // Grants on an identity column's sequence, which goes with the column.
     for r in db
         .rows(&format!(
+            "select format('%I.%I', n.nspname, q.relname) as name, d.refobjid as rel, d.refobjsubid as att, {} as acl
+            from pg_class q join pg_namespace n on n.oid = q.relnamespace
+              join pg_depend d on d.classid = 'pg_class'::regclass and d.objid = q.oid and d.deptype = 'i' and d.refclassid = 'pg_class'::regclass and d.refobjsubid > 0
+            where q.relkind = 'S' and {ns}",
+            acl_in("q.relacl", 's', "q.relowner", Some("q.relnamespace"))
+        ))
+        .await?
+    {
+        let Some(column) = ids.column.get(&(oid(&r, "rel"), r.text("att").parse().unwrap_or(0))).cloned() else { continue };
+        grants(&mut s, r.text("acl"), r.text("name"), &column, "sequence");
+    }
+
+    let indexes = db
+        .rows(&format!(
             "select i.indexrelid as oid, i.indrelid as rel, format('%I.%I', n.nspname, c.relname) as name, pg_get_indexdef(i.indexrelid) as def,
-              exists (select 1 from pg_inherits h where h.inhrelid = i.indexrelid) as inherited
+              (select h.inhparent from pg_inherits h where h.inhrelid = i.indexrelid) as parent,
+              exists (select 1 from pg_constraint co where co.conindid = i.indexrelid) as keyed,
+              exists (select 1 from pg_inherits h where h.inhparent = i.indexrelid) as attached,
+              (select pi.indisvalid from pg_inherits h join pg_index pi on pi.indexrelid = h.inhparent where h.inhrelid = i.indexrelid) as parent_valid,
+              i.indisvalid as valid, t.relkind = 'p' as partitioned
             from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid
             where {ns} and {} and {} and t.relname <> '{history}'",
             not_extension("pg_class", "c"),
             not_platform("t.relowner")
         ))
-        .await?
-    {
-        let index = oid(&r, "oid");
-        if constraint_indexes.contains_key(&index) || r.flag("inherited") {
-            continue;
+        .await?;
+    // A partitioned table's index that every partition's index is attached to is made on the table
+    // itself, after those, which it attaches as it is made, keeping their names; one that some
+    // partition has none for is made on the table alone (`on only`), and each partition's index is
+    // attached to it after. A partition's index goes with its table's, and a partition made by the
+    // plan takes its table's indexes with it.
+    // A parent whose partition holds another index like the one attached to it is made on its
+    // table alone, and that one attached by name: made on the table, it would attach either.
+    // Postgres matches them without their names, storage options, sort order or nulls placement.
+    static LOOSE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" WITH \([^)]*\)| DESC\b| ASC\b| NULLS (FIRST|LAST)\b").expect("a valid pattern"));
+    let unnamed = |r: &Row| {
+        let bare = super::last_written(r.text("name"));
+        LOOSE.replace_all(&r.text("def").replacen(&format!(" INDEX {bare} ON "), " INDEX ON ", 1), "").into_owned()
+    };
+    let mut by_name_only: BTreeSet<String> = BTreeSet::new();
+    for r in indexes.iter().filter(|r| r.get("parent").is_some()) {
+        if indexes.iter().any(|o| o.text("rel") == r.text("rel") && o.text("oid") != r.text("oid") && unnamed(o) == unnamed(r)) {
+            by_name_only.insert(r.text("parent").to_string());
         }
-        let Some((table, _)) = relations.get(&oid(&r, "rel")) else { continue };
-        let id = format!("index {}", r.text("name"));
-        ids.class.insert(index, id.clone());
-        s.add(Object {
-            id,
-            kind: Some(Kind::Index),
-            owner: Some(table.clone()),
-            def: r.text("def").to_string(),
-            create: vec![r.text("def").to_string()],
-            drop: vec![format!("drop index {}", r.text("name"))],
-            ..Object::default()
-        });
+    }
+    let valid = |index: &str| indexes.iter().find(|r| r.text("oid") == index).is_some_and(|r| r.flag("valid")) && !by_name_only.contains(index);
+    for pass in [false, true] {
+        for r in &indexes {
+            let index = oid(r, "oid");
+            let child = r.get("parent").is_some();
+            if constraint_indexes.contains_key(&index) || child != pass || (child && r.flag("keyed")) {
+                continue;
+            }
+            let Some((table, _)) = relations.get(&oid(r, "rel")) else { continue };
+            let id = format!("index {}", r.text("name"));
+            ids.class.insert(index, id.clone());
+            let def = r.text("def").to_string();
+            let mut o = Object { id: id.clone(), kind: Some(Kind::Index), owner: Some(table.clone()), def: def.clone(), create: vec![def.clone()], drop: vec![format!("drop index {}", r.text("name"))], ..Object::default() };
+            if r.flag("attached") {
+                let made = if valid(r.text("oid")) { def.replacen(" ON ONLY ", " ON ", 1) } else { def.clone() };
+                o.create = vec![made.clone()];
+                o.extra.push(format!("rendering {made}"));
+            }
+            // A partitioned table's index is valid once every partition's is attached to it: one the
+            // target has valid where this one isn't is made again, attaching them as it is made.
+            if r.flag("partitioned") && !r.flag("valid") {
+                o.def.push_str("\n(invalid)");
+            }
+            if let Some(parent) = r.get("parent").and_then(|p| p.parse::<u32>().ok()).and_then(|p| ids.class.get(&p).cloned()) {
+                let parent_name = parent.split_once(' ').map(|(_, n)| n.to_string()).unwrap_or_default();
+                o.def = format!("{def}\nattached to {parent_name}");
+                o.extra.push(format!("attached to {parent_name}"));
+                o.goes_with = Some(parent.clone());
+                o.inline = true;
+                o.change = Change::Alter { blocks: false };
+                if valid(r.text("parent")) {
+                    if let Some(p) = s.objects.get_mut(&parent) {
+                        p.after.insert(id.clone());
+                    }
+                } else {
+                    o.create.push(format!("alter index {parent_name} attach partition {}", r.text("name")));
+                    o.deps.insert(parent);
+                    o.extra.push("attached by statement".into());
+                }
+            }
+            s.add(o);
+        }
     }
 
     // A table's replica identity where it isn't the default (its primary key): what logical
@@ -746,15 +939,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select p.oid, p.prokind as kind, {} as acl, format('%s', p.oid::regprocedure) as ident, format('%I.%I', n.nspname, p.proname) as qname, pg_get_function_result(p.oid) as result, pg_get_function_arguments(p.oid) as args,
               case when p.prokind <> 'a' then pg_get_functiondef(p.oid) end as def,
-              case when p.prokind = 'a' then (select concat_ws(', ', 'sfunc = ' || format('%s', a.aggtransfn::regproc), 'stype = ' || format_type(a.aggtranstype, null),
-                  case when a.aggfinalfn <> 0 then 'finalfunc = ' || format('%s', a.aggfinalfn::regproc) end,
-                  case when a.aggcombinefn <> 0 then 'combinefunc = ' || format('%s', a.aggcombinefn::regproc) end,
-                  case when a.agginitval is not null then 'initcond = ' || quote_literal(a.agginitval) end,
-                  case when a.aggsortop <> 0 then 'sortop = ' || format('%s', a.aggsortop::regoperator) end)
-                from pg_aggregate a where a.aggfnoid = p.oid) end as agg
+              case when p.prokind = 'a' then ({}) end as agg
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace
             where p.prokind in ('f', 'p', 'w', 'a') and {ns} and {} and {} and not {}",
             acl_in("p.proacl", 'f', "p.proowner", Some("p.pronamespace")),
+            crate::catalog::aggregate_options("p"),
             not_extension("pg_proc", "p"),
             not_platform("p.proowner"),
             made_with("pg_proc", "p")
@@ -769,9 +958,12 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "a" => "aggregate",
             _ => "function",
         };
+        // An aggregate of no arguments is written `(*)` wherever it is named.
+        let star = |text: &str| if word == "aggregate" && text.ends_with("()") { format!("{}(*)", &text[..text.len() - 2]) } else { text.to_string() };
         let (def, create) = if word == "aggregate" {
             let def = format!("aggregate ({})", r.text("agg"));
-            (def, format!("create aggregate {}({}) ({})", r.text("qname"), r.text("args"), r.text("agg")))
+            let args = if r.text("args").is_empty() { "*" } else { r.text("args") };
+            (def, format!("create aggregate {}({args}) ({})", r.text("qname"), r.text("agg")))
         } else {
             let text = r.text("def").trim().to_string();
             (text.clone(), text)
@@ -783,7 +975,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             // alterer decides.
             def: format!("{def}\n-- result {}; arguments {}", r.text("result"), r.text("args")),
             create: vec![create],
-            drop: vec![format!("drop {word} {ident}")],
+            drop: vec![format!("drop {word} {}", star(&ident))],
             change: Change::Alter { blocks: false },
             ..Object::default()
         });
@@ -912,7 +1104,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
 
     for r in db
         .rows(&format!(
-            "select r.oid, r.ev_class, format('%I', r.rulename) as name, format('%I.%I', n.nspname, c.relname) as rel, pg_get_ruledef(r.oid, false) as def, r.rulename = '_RETURN' as view
+            "select r.oid, r.ev_class, format('%I', r.rulename) as name, format('%I.%I', n.nspname, c.relname) as rel, pg_get_ruledef(r.oid, false) as def, r.rulename = '_RETURN' as view, r.ev_enabled as enabled
             from pg_rewrite r join pg_class c on c.oid = r.ev_class join pg_namespace n on n.oid = c.relnamespace where {ns} and {}",
             not_platform("c.relowner")
         ))
@@ -925,12 +1117,20 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
         let id = format!("rule {}.{}", r.text("rel"), r.text("name"));
         ids.rewrites.insert(oid(&r, "oid"), id.clone());
+        // Fired in origin and local sessions (O), never (D), in replicas (R), or always (A).
+        let enabled = match r.text("enabled") {
+            "D" => Some(format!("alter table {} disable rule {}", r.text("rel"), r.text("name"))),
+            "R" => Some(format!("alter table {} enable replica rule {}", r.text("rel"), r.text("name"))),
+            "A" => Some(format!("alter table {} enable always rule {}", r.text("rel"), r.text("name"))),
+            _ => None,
+        };
         s.add(Object {
             id,
             kind: Some(Kind::Rule),
             owner: Some(owner.clone()),
-            def: r.text("def").to_string(),
-            create: vec![r.text("def").trim_end_matches(';').to_string()],
+            def: format!("{} {}", r.text("def"), r.text("enabled")),
+            create: [Some(r.text("def").trim_end_matches(';').to_string()), enabled].into_iter().flatten().collect(),
+            change: Change::Alter { blocks: false },
             drop: vec![format!("drop rule {} on {}", r.text("name"), r.text("rel"))],
             ..Object::default()
         });
@@ -1102,11 +1302,49 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         s.add(Object { id, kind: Some(Kind::Cast), create: vec![format!("create cast {head} {def}")], drop: vec![format!("drop cast {head}")], def, ..Object::default() });
     }
 
+    // Foreign-data wrappers: what a server of theirs connects with.
+    for r in db
+        .rows(&format!(
+            "select w.oid, format('%I', w.fdwname) as name, case when w.fdwhandler <> 0 then format('%s', w.fdwhandler::regproc) end as handler,
+              case when w.fdwvalidator <> 0 then format('%s', w.fdwvalidator::regproc) end as validator, {} as options, {} as acl
+            from pg_foreign_data_wrapper w where {} and {}",
+            option_pairs("w.fdwoptions"),
+            acl("w.fdwacl", 'F', "w.fdwowner"),
+            crate::catalog::not_extension("pg_foreign_data_wrapper", "w"),
+            not_platform("w.fdwowner")
+        ))
+        .await?
+    {
+        let name = r.text("name");
+        let id = format!("foreign data wrapper {name}");
+        ids.wrappers.insert(oid(&r, "oid"), id.clone());
+        let options: Vec<(String, String)> = serde_json::from_str(r.text("options")).unwrap_or_default();
+        let def = format!(
+            "{}{}{}",
+            r.get("handler").map(|h| format!(" handler {h}")).unwrap_or_default(),
+            r.get("validator").map(|v| format!(" validator {v}")).unwrap_or_default(),
+            options_clause(&options)
+        );
+        let extra = vec![format!("handler {}", r.get("handler").unwrap_or("")), format!("validator {}", r.get("validator").unwrap_or("")), format!("options {}", r.text("options"))];
+        grants(&mut s, r.text("acl"), name, &id, "foreign data wrapper");
+        s.add(Object {
+            id,
+            kind: Some(Kind::Server),
+            create: vec![format!("create foreign data wrapper {name}{def}")],
+            drop: vec![format!("drop foreign data wrapper {name}")],
+            def,
+            extra,
+            change: Change::Alter { blocks: false },
+            ..Object::default()
+        });
+    }
+
     for r in db
         .rows(&format!(
             "select s.oid, format('%I', s.srvname) as name, format('%I', w.fdwname) as fdw, s.srvtype as type, s.srvversion as version,
-              (select string_agg(format('%I %L', split_part(o, '=', 1), substr(o, strpos(o, '=') + 1)), ', ') from unnest(s.srvoptions) o) as options
+              (select string_agg(format('%I %L', split_part(o, '=', 1), substr(o, strpos(o, '=') + 1)), ', ') from unnest(s.srvoptions) o) as options, {} as acl
             from pg_foreign_server s join pg_foreign_data_wrapper w on w.oid = s.srvfdw where {}",
+            acl("s.srvacl", 'S', "s.srvowner"),
             not_platform("s.srvowner")
         ))
         .await?
@@ -1121,24 +1359,60 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             r.text("fdw"),
             r.get("options").map(|o| format!(" options ({o})")).unwrap_or_default()
         );
+        grants(&mut s, r.text("acl"), name, &id, "foreign server");
         s.add(Object { id, kind: Some(Kind::Server), create: vec![format!("create server {name} {def}")], drop: vec![format!("drop server {name}")], def, ..Object::default() });
+    }
+
+    // Event triggers: a function run on DDL, as a whole database's.
+    for r in db
+        .rows(&format!(
+            "select et.oid, format('%I', et.evtname) as name, et.evtevent as event, format('%s', et.evtfoid::regproc) as function, et.evtenabled as enabled,
+              (select string_agg(quote_literal(t), ', ' order by t) from unnest(et.evttags) t) as tags
+            from pg_event_trigger et where {} and {}",
+            crate::catalog::not_extension("pg_event_trigger", "et"),
+            not_platform("et.evtowner")
+        ))
+        .await?
+    {
+        let name = r.text("name");
+        let id = format!("event trigger {name}");
+        ids.event_triggers.insert(oid(&r, "oid"), id.clone());
+        let when = r.get("tags").map(|t| format!(" when tag in ({t})")).unwrap_or_default();
+        let enabled = match r.text("enabled") {
+            "D" => Some(format!("alter event trigger {name} disable")),
+            "R" => Some(format!("alter event trigger {name} enable replica")),
+            "A" => Some(format!("alter event trigger {name} enable always")),
+            _ => None,
+        };
+        s.add(Object {
+            id,
+            kind: Some(Kind::Trigger),
+            def: format!("on {}{when} execute function {}() {}", r.text("event"), r.text("function"), r.text("enabled")),
+            create: [Some(format!("create event trigger {name} on {}{when} execute function {}()", r.text("event"), r.text("function"))), enabled].into_iter().flatten().collect(),
+            drop: vec![format!("drop event trigger {name}")],
+            extra: vec![format!("enabled {}", r.text("enabled"))],
+            change: Change::Alter { blocks: false },
+            ..Object::default()
+        });
     }
 
     // Publications: what each publishes, from the tables and schemas it names.
     // Postgres 15 publishes some of a table's columns, its rows that match a filter, and schemas.
-    let (columns, schemas) = if version >= 150000 {
+    // The columns a table's list names, by name, which a publication depends on.
+    let (columns, schemas, listed) = if version >= 150000 {
         (
             "coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = c.oid and a.attnum = any(pr.prattrs::int2[])) || ')', '') || coalesce(' where (' || pg_get_expr(pr.prqual, c.oid) || ')', '')",
             "(select json_agg(format('%I', n.nspname) order by n.nspname) from pg_publication_namespace pn join pg_namespace n on n.oid = pn.pnnspid where pn.pnpubid = p.oid)",
+            "coalesce((select json_agg(format('%I', a.attname)) from pg_attribute a where a.attrelid = c.oid and a.attnum = any(pr.prattrs::int2[])), '[]'::json)",
         )
     } else {
-        ("''", "null::json")
+        ("''", "null::json", "'[]'::json")
     };
     for r in db
         .rows(&format!(
-            "select format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root,
+            "select p.oid, format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root,
               concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end) as publish,
-              format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}) order by 1) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
+              format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}, {listed}) order by 1) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
               format('%s', {schemas}) as schemas
             from pg_publication p where {}",
             not_platform("p.pubowner")
@@ -1146,14 +1420,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .await?
     {
         let name = r.text("name");
-        let tables: Vec<(String, String)> = serde_json::from_str(r.text("tables")).unwrap_or_default();
+        let tables: Vec<(String, String, Vec<String>)> = serde_json::from_str(r.text("tables")).unwrap_or_default();
         let in_schemas: Vec<String> = serde_json::from_str(r.text("schemas")).unwrap_or_default();
         let mut what = Vec::new();
         if r.flag("all_tables") {
             what.push("all tables".to_string());
         }
         if !tables.is_empty() {
-            what.push(format!("table {}", tables.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(", ")));
+            what.push(format!("table {}", tables.iter().map(|(_, t, _)| t.as_str()).collect::<Vec<_>>().join(", ")));
         }
         if !in_schemas.is_empty() {
             what.push(format!("tables in schema {}", in_schemas.join(", ")));
@@ -1170,10 +1444,15 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             if what.is_empty() { String::new() } else { format!(" for {}", what.join(", ")) },
             if with.is_empty() { String::new() } else { format!(" with ({})", with.join(", ")) }
         );
-        let deps = tables.iter().map(|(t, _)| format!("table {t}")).chain(in_schemas.iter().map(|n| format!("schema {n}"))).collect();
-        let mut objects: Vec<String> = tables.iter().map(|(_, t)| format!("table {t}")).collect();
+        let deps = tables
+            .iter()
+            .flat_map(|(t, _, listed)| std::iter::once(format!("table {t}")).chain(listed.iter().map(move |c| format!("column {t}.{c}"))))
+            .chain(in_schemas.iter().map(|n| format!("schema {n}")))
+            .collect();
+        let mut objects: Vec<String> = tables.iter().map(|(_, t, _)| format!("table {t}")).collect();
         objects.extend(in_schemas.iter().map(|n| format!("tables in schema {n}")));
         let extra = vec![format!("all {}", r.flag("all_tables")), format!("objects {}", objects.join(", ")), format!("with {}", with.join(", ")), format!("publish {}", r.text("publish"))];
+        ids.publications.insert(oid(&r, "oid"), format!("publication {name}"));
         // After the tables it names, among the last objects made.
         s.add(Object {
             id: format!("publication {name}"),
@@ -1195,22 +1474,34 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               (select t.typtype from pg_type t where d.classoid = 'pg_type'::regclass and t.oid = d.objoid) as typtype,
               (select p.prokind from pg_proc p where d.classoid = 'pg_proc'::regclass and p.oid = d.objoid) as prokind
             from pg_description d where d.objsubid = 0 and d.objoid >= 16384
-              and d.classoid in ('pg_namespace'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass, 'pg_class'::regclass)",
+              and d.classoid in ('pg_namespace'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass, 'pg_class'::regclass,
+                'pg_collation'::regclass, 'pg_publication'::regclass, 'pg_rewrite'::regclass, 'pg_foreign_server'::regclass, 'pg_event_trigger'::regclass, 'pg_foreign_data_wrapper'::regclass)",
         )
         .await?
     {
         let Some(target) = ids.of(r.text("cls"), oid(&r, "objoid"), 0) else { continue };
         let (kind, name) = target.split_once(' ').unwrap_or_default();
-        let on_table = |rest: &str| rest.rsplit_once('.').map(|(table, name)| format!("{name} on {table}"));
+        let on_table = |rest: &str| {
+            let name = super::last_written(rest);
+            rest.strip_suffix(name.as_str()).and_then(|t| t.strip_suffix('.')).map(|table| format!("{name} on {table}"))
+        };
         let on = match (r.text("cls"), kind) {
             ("pg_namespace", "schema") => Some(format!("schema {name}")),
             ("pg_type", "type") if r.text("typtype") == "d" => Some(format!("domain {name}")),
             ("pg_type", "type") => Some(format!("type {name}")),
+            ("pg_proc", "function") if r.text("prokind") == "a" && name.ends_with("()") => Some(format!("aggregate {}(*)", &name[..name.len() - 2])),
             ("pg_proc", "function") => Some(format!("{} {name}", match r.text("prokind") { "p" => "procedure", "a" => "aggregate", _ => "function" })),
             ("pg_constraint", "constraint") => on_table(name).map(|n| format!("constraint {n}")),
             ("pg_trigger", "trigger") => on_table(name).map(|n| format!("trigger {n}")),
             ("pg_policy", "policy") => on_table(name).map(|n| format!("policy {n}")),
             ("pg_class", "index") => Some(format!("index {name}")),
+            ("pg_class", "sequence") => Some(format!("sequence {name}")),
+            ("pg_collation", "collation") => Some(format!("collation {name}")),
+            ("pg_publication", "publication") => Some(format!("publication {name}")),
+            ("pg_rewrite", "rule") => on_table(name).map(|n| format!("rule {n}")),
+            ("pg_foreign_server", "server") => Some(format!("server {name}")),
+            ("pg_event_trigger", "event") => Some(format!("event trigger {}", name.trim_start_matches("trigger "))),
+            ("pg_foreign_data_wrapper", "foreign") => Some(format!("foreign data wrapper {}", name.trim_start_matches("data wrapper "))),
             _ => None,
         };
         let (Some(on), Some(text)) = (on, r.get("description")) else { continue };
@@ -1295,7 +1586,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // What each object depends on, as the server records it.
     for r in db
         .rows(
-            "select format('%s', d.classid::regclass) as cls, d.objid, d.objsubid, format('%s', d.refclassid::regclass) as rcls, d.refobjid, d.refobjsubid
+            "select format('%s', d.classid::regclass) as cls, d.objid, d.objsubid, format('%s', d.refclassid::regclass) as rcls, d.refobjid, d.refobjsubid, d.deptype
             from pg_depend d where d.deptype in ('n', 'a') and d.objid >= 16384 and d.refobjid >= 16384",
         )
         .await?
@@ -1303,7 +1594,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let from = ids.of(r.text("cls"), oid(&r, "objid"), r.text("objsubid").parse().unwrap_or(0));
         let to = ids.of(r.text("rcls"), oid(&r, "refobjid"), r.text("refobjsubid").parse().unwrap_or(0));
         if let (Some(from), Some(to)) = (from, to) {
-            if from != to {
+            // A sequence a column owns goes with the column, which its owner object says, while the
+            // column's default uses the sequence: made first, and dropped after the default goes.
+            let owned_by = r.text("deptype") == "a" && from.starts_with("sequence ") && to.starts_with("column ");
+            if from != to && !owned_by {
                 if let Some(o) = s.objects.get_mut(&from) {
                     o.deps.insert(to);
                 }
@@ -1311,12 +1605,41 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
     // A schema's objects depend on it, as the records say; a column depends on nothing of its own
-    // table, which creating the table makes.
+    // table, which creating the table makes, but a generated column on the columns it reads, which
+    // an added or a renamed one must be first.
     let tables: BTreeSet<String> = s.objects.values().filter(|o| o.kind == Some(Kind::Table)).map(|o| o.id.clone()).collect();
     for o in s.objects.values_mut() {
         if let Some(owner) = o.owner.clone() {
             if tables.contains(&owner) && o.kind == Some(Kind::Column) {
-                o.deps.retain(|d| !d.starts_with(&format!("column {}.", owner.trim_start_matches("table "))) && *d != owner);
+                let generated = parse_column(&o.def).generated.is_some();
+                o.deps.retain(|d| (generated || !d.starts_with(&format!("column {}.", owner.trim_start_matches("table ")))) && *d != owner);
+            }
+        }
+    }
+    // A check that calls a function of its own table's row can't be made with the table, before the
+    // function: it is added after both.
+    let late: Vec<(String, String)> = s
+        .objects
+        .values()
+        .filter(|o| o.kind == Some(Kind::Constraint) && o.inline)
+        .filter(|o| {
+            let table = o.owner.clone().unwrap_or_default();
+            o.deps.iter().any(|d| d.starts_with("function ") && s.objects.get(d).is_some_and(|f| f.deps.contains(&table)))
+        })
+        .map(|o| (o.id.clone(), o.owner.clone().unwrap_or_default()))
+        .collect();
+    for (id, table) in late {
+        let Some(o) = s.objects.get_mut(&id) else { continue };
+        o.inline = false;
+        let line = o.create.first().and_then(|c| c.split_once(" add ")).map(|(_, l)| l.to_string()).unwrap_or_default();
+        if let Some(t) = s.objects.get_mut(&table) {
+            if let Some(create) = t.create.first_mut() {
+                for (from, to) in [(format!("\n  {line},"), String::new()), (format!(",\n  {line}\n"), "\n".to_string())] {
+                    if create.contains(&from) {
+                        *create = create.replacen(&from, &to, 1);
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1370,6 +1693,40 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             continue;
         }
         let lines: Vec<String> = on.iter().filter_map(|a| s.objects.get(a)).map(|a| around_line(a)).collect();
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra.extend(lines);
+        }
+    }
+    // A view that names an enum's label uses it, as a default or a check does.
+    let mut uses: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for o in s.objects.values().filter(|o| o.kind == Some(Kind::View)) {
+        for t in o.deps.iter().filter(|d| s.objects.get(*d).is_some_and(|t| t.def.starts_with("enum ("))) {
+            uses.entry(t.clone()).or_default().push(format!("{USES}{}", o.def.replace('\n', " ")));
+        }
+    }
+    for (id, lines) in uses {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra.extend(lines);
+        }
+    }
+    // A schema's owner gives up its own usage after everything else in the schema is made, which
+    // a role that is no superuser can't reach without it.
+    let revokes: Vec<(String, String)> = s.objects.values().filter(|o| o.id.ends_with(" from its owner") && o.owner.as_deref().is_some_and(|w| w.starts_with("schema "))).map(|o| (o.id.clone(), o.owner.clone().unwrap_or_default())).collect();
+    for (id, schema) in revokes {
+        let inside = format!(" {}.", schema.trim_start_matches("schema "));
+        let rest: BTreeSet<String> = s.objects.keys().filter(|k| **k != id && k.contains(&inside)).cloned().collect();
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.after.extend(rest);
+        }
+    }
+    // An enum made again takes its grants, revokes, owner and comment back, which a new type lacks.
+    let mut metadata: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for o in s.objects.values().filter(|o| matches!(o.kind, Some(Kind::Grant | Kind::Comment))) {
+        if let Some(t) = o.owner.as_ref().filter(|t| s.objects.get(*t).is_some_and(|t| t.def.starts_with("enum ("))) {
+            metadata.entry(t.clone()).or_default().extend(o.create.iter().map(|c| format!("{AGAIN}{c}")));
+        }
+    }
+    for (id, lines) in metadata {
         if let Some(o) = s.objects.get_mut(&id) {
             o.extra.extend(lines);
         }
@@ -1456,8 +1813,60 @@ pub fn derived_renames(current: &Schema, target: &Schema, renamed: &[(String, St
                 _ => format!("alter sequence {rest} rename to {wanted}"),
             });
         }
+        // Each identity's sequence, which Postgres names after the table and keeps through its
+        // rename, where the target's is named after the new one. A partition's identity is its
+        // parent's, with no sequence of its own.
+        let old_rel = old_table.strip_prefix("table ").unwrap_or(old_table);
+        let (schema, _) = last(old_rel);
+        for o in current.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(old_table.as_str()) && parse_column(&o.def).identity.is_some() && !o.extra.iter().any(|l| l == "partition")) {
+            let Some(column) = o.id.strip_prefix(&format!("column {old_rel}.")) else { continue };
+            let Some(t) = target.objects.get(&format!("column {new_rel}.{column}")).filter(|t| parse_column(&t.def).identity.is_some()) else { continue };
+            let column = column.strip_prefix('"').and_then(|c| c.strip_suffix('"')).map(|c| c.replace("\"\"", "\"")).unwrap_or_else(|| column.to_string());
+            let chosen = |table: &str| {
+                let mut name = format!("{table}_{column}_seq");
+                while name.len() > 63 {
+                    name.pop();
+                }
+                format!("{schema}.{}", declared::quote_ident(&name))
+            };
+            let (was, now) = (identity_sequence(o).unwrap_or_else(|| chosen(old)), identity_sequence(t).unwrap_or_else(|| chosen(new)));
+            if was != now {
+                out.push(format!("alter sequence {was} rename to {}", last(&now).1));
+            }
+        }
+        // Each column's not null, which Postgres 18 names after the table too.
+        for o in current.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(old_table.as_str())) {
+            let Some(column) = o.id.strip_prefix(&format!("column {old_rel}.")) else { continue };
+            let Some(name) = not_null_name(o) else { continue };
+            let wanted = crate::diff::swap_name(&name, old, new);
+            if wanted != name && target.objects.get(&format!("column {new_rel}.{column}")).and_then(not_null_name).as_deref() == Some(wanted.as_str()) {
+                out.push(format!("alter table {new_rel} rename constraint {name} to {wanted}"));
+            }
+        }
     }
     out
+}
+
+/// What precedes the name of an identity's sequence where it isn't the one Postgres would choose.
+const IDENTITY_SEQUENCE: &str = "identity sequence ";
+
+/// The name of an identity column's sequence, where Postgres wouldn't have chosen it.
+fn identity_sequence(o: &Object) -> Option<String> {
+    o.extra.iter().find_map(|l| l.strip_prefix(IDENTITY_SEQUENCE)).map(String::from)
+}
+
+/// A column definition, or an identity, with its sequence's name among the identity's options.
+fn named_identity(def: &str, sequence: &str) -> String {
+    if def.contains(" as identity (") {
+        def.replacen(" as identity (", &format!(" as identity (sequence name {sequence} "), 1)
+    } else {
+        def.replacen(" as identity", &format!(" as identity (sequence name {sequence})"), 1)
+    }
+}
+
+/// The name of a column's not null (Postgres 18).
+fn not_null_name(o: &Object) -> Option<String> {
+    o.extra.iter().find_map(|l| l.strip_prefix("not null name ")).map(String::from)
 }
 
 /// Each table's indexes by name, each table as `schema.table` (quoted where it must be), the ones a
@@ -1534,6 +1943,7 @@ fn acl_in(acl: &str, kind: char, owner: &str, schema: Option<&str>) -> String {
         's' => "S",
         'f' => "f",
         'n' => "n",
+        'T' => "T",
         _ => "",
     };
     let implied = format!(
@@ -1541,14 +1951,36 @@ fn acl_in(acl: &str, kind: char, owner: &str, schema: Option<&str>) -> String {
            from pg_default_acl d, aclexplode(d.defaclacl) x where d.defaclrole = {owner} and d.defaclobjtype = '{object}' and d.defaclnamespace in (0, {}) and x.grantee <> {owner})",
         schema.unwrap_or("0")
     );
-    format!("format('%s', json_build_array({}, {}, {implied}))", explode(&format!("coalesce({acl}, acldefault('{kind}', {owner}))")), explode(&format!("acldefault('{kind}', {owner})")))
+    // What the owner has taken from itself, and how a statement names it: the role the plan runs
+    // as, where it owns the object, as `current_user`.
+    let lacks = format!(
+        "(select json_agg(d.privilege_type order by d.privilege_type) from aclexplode(acldefault('{kind}', {owner})) d
+           where d.grantee = {owner} and not exists (select 1 from aclexplode(coalesce({acl}, acldefault('{kind}', {owner}))) x where x.grantee = {owner} and x.privilege_type = d.privilege_type))"
+    );
+    let spelled = format!("case when {owner} = {} then 'current_user' else quote_ident(pg_get_userbyid({owner})) end", crate::catalog::runner());
+    format!("format('%s', json_build_array({}, {}, {implied}, {lacks}, {spelled}))", explode(&format!("coalesce({acl}, acldefault('{kind}', {owner}))")), explode(&format!("acldefault('{kind}', {owner})")))
 }
 
 /// One object per privilege the object `name` (`on` says what it is: `table`, `function`, …)
 /// grants beyond those it has by default, and one per default privilege it has revoked: a new
 /// object has its defaults, which the plan revokes where the target has. `privileges` is `acl`'s.
 fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
-    let lists: Vec<Option<Vec<serde_json::Value>>> = serde_json::from_str(privileges).unwrap_or_default();
+    let parts: Vec<serde_json::Value> = serde_json::from_str(privileges).unwrap_or_default();
+    // What the owner has taken from itself, revoked after the object is made or its owner set.
+    let owner = parts.get(4).and_then(|v| v.as_str()).unwrap_or("current_user").to_string();
+    for privilege in parts.get(3).and_then(|v| v.as_array()).cloned().unwrap_or_default().iter().filter_map(|p| p.as_str()) {
+        s.add(Object {
+            id: format!("revoke {privilege} on {name} from its owner"),
+            kind: Some(Kind::Grant),
+            owner: Some(id.to_string()),
+            def: String::new(),
+            create: vec![format!("revoke {} on {on} {name} from {owner}", privilege.to_lowercase())],
+            drop: vec![format!("grant {} on {on} {name} to {owner}", privilege.to_lowercase())],
+            deps: [format!("owner {id}")].into_iter().collect(),
+            ..Object::default()
+        });
+    }
+    let lists: Vec<Option<Vec<serde_json::Value>>> = parts.iter().take(3).map(|v| serde_json::from_value(v.clone()).ok()).collect();
     let (have, default) = (lists.first().cloned().flatten().unwrap_or_default(), lists.get(1).cloned().flatten().unwrap_or_default());
     let key = |g: &serde_json::Value| (g["grantee"].as_str().unwrap_or_default().to_string(), g["privilege"].as_str().unwrap_or_default().to_string(), g["grantable"].as_bool().unwrap_or(false));
     let (have, default): (BTreeSet<_>, BTreeSet<_>) = (have.iter().map(key).collect(), default.iter().map(key).collect());
@@ -1565,6 +1997,19 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
             create: vec![grant(grantee, privilege, *grantable)],
             drop: vec![revoke(grantee, privilege)],
             inline: implied.contains(&(grantee.clone(), privilege.clone(), *grantable)),
+            ..Object::default()
+        });
+    }
+    // What the owner's default privileges grant it as it is made, and it doesn't have: revoked
+    // after it is made, which an object already there has no need of.
+    for (grantee, privilege, grantable) in implied.iter().filter(|g| !have.contains(g) && !default.contains(g)) {
+        s.add(Object {
+            id: format!("revoke {privilege} on {name} from {grantee}"),
+            kind: Some(Kind::Grant),
+            owner: Some(id.to_string()),
+            def: grantable.to_string(),
+            create: vec![revoke(grantee, privilege)],
+            drop: vec![grant(grantee, privilege, *grantable)],
             ..Object::default()
         });
     }
@@ -1585,8 +2030,8 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
 /// anon`), which a column has none of by default. `privileges` is `acl`'s, `table` the column's
 /// table and `id` the column's.
 fn column_grants(s: &mut Schema, privileges: &str, table: &str, column: &str, id: &str) {
-    let lists: Vec<Option<Vec<serde_json::Value>>> = serde_json::from_str(privileges).unwrap_or_default();
-    for g in lists.first().cloned().flatten().unwrap_or_default() {
+    let parts: Vec<serde_json::Value> = serde_json::from_str(privileges).unwrap_or_default();
+    for g in parts.first().and_then(|v| v.as_array()).cloned().unwrap_or_default() {
         let (grantee, privilege, grantable) = (g["grantee"].as_str().unwrap_or_default(), g["privilege"].as_str().unwrap_or_default().to_lowercase(), g["grantable"].as_bool().unwrap_or(false));
         s.add(Object {
             id: format!("grant {privilege} ({column}) on {table} to {grantee}"),
@@ -1600,8 +2045,43 @@ fn column_grants(s: &mut Schema, privileges: &str, table: &str, column: &str, id
     }
 }
 
+/// SQL giving an options array (`fdwoptions`, `srvoptions`) as JSON pairs of a name and a value.
+fn option_pairs(column: &str) -> String {
+    format!("format('%s', coalesce((select json_agg(json_build_array(split_part(o, '=', 1), substr(o, strpos(o, '=') + 1)) order by o) from unnest({column}) o), '[]'::json))")
+}
+
+/// Options as a `create` statement writes them: ` options (debug 'true')`, or nothing.
+fn options_clause(options: &[(String, String)]) -> String {
+    if options.is_empty() {
+        return String::new();
+    }
+    format!(" options ({})", options.iter().map(|(k, v)| format!("{} {}", declared::quote_ident(k), literal(v))).collect::<Vec<_>>().join(", "))
+}
+
+/// The `options (…)` clause of an `alter` that takes options `from` has to those `to` has.
+fn options_change(from: &[(String, String)], to: &[(String, String)]) -> Option<String> {
+    let mut out = Vec::new();
+    for (k, v) in to {
+        match from.iter().find(|(a, _)| a == k) {
+            Some((_, w)) if w == v => {}
+            Some(_) => out.push(format!("set {} {}", declared::quote_ident(k), literal(v))),
+            None => out.push(format!("add {} {}", declared::quote_ident(k), literal(v))),
+        }
+    }
+    for (k, _) in from.iter().filter(|(a, _)| !to.iter().any(|(b, _)| b == a)) {
+        out.push(format!("drop {}", declared::quote_ident(k)));
+    }
+    (!out.is_empty()).then(|| format!("options ({})", out.join(", ")))
+}
+
 /// What an object a change is made around is carried as: `around <id>\t<def>\t<drop>\t<create>`.
 const AROUND: &str = "around ";
+
+/// A statement an enum made again runs after: one of its grants, its owner or its comment.
+const AGAIN: &str = "again ";
+
+/// A view's definition that names an enum's labels, carried by the enum.
+const USES: &str = "uses ";
 
 fn around_line(o: &Object) -> String {
     format!("{AROUND}{}\t{}\t{}\t{}", o.id, o.def.replace(['\t', '\n'], " "), o.drop.join("; "), o.create.join("; "))
@@ -1642,9 +2122,10 @@ fn column_def(c: &Row, attribute: bool) -> String {
     if attribute {
         return parts.join(" ");
     }
+    let options = c.get("identity_options").map(|o| format!(" ({o})")).unwrap_or_default();
     match (c.text("identity"), c.text("generated")) {
-        ("a", _) => parts.push("generated always as identity".into()),
-        ("d", _) => parts.push("generated by default as identity".into()),
+        ("a", _) => parts.push(format!("generated always as identity{options}")),
+        ("d", _) => parts.push(format!("generated by default as identity{options}")),
         (_, g) if !g.is_empty() => parts.push(format!("generated always as ({}) {}", c.text("def"), if g == "s" { "stored" } else { "virtual" })),
         _ => {
             if let Some(def) = c.get("def") {
@@ -1669,11 +2150,17 @@ struct Column {
     not_null: bool,
     /// Its NOT NULL kept from the table's children.
     no_inherit: bool,
+    /// Its NOT NULL not validated against the rows (Postgres 18).
+    not_valid: bool,
 }
 
 fn parse_column(def: &str) -> Column {
     let mut c = Column::default();
     let mut rest = bare(def).to_string();
+    if let Some(r) = rest.strip_suffix(" not valid") {
+        c.not_valid = true;
+        rest = r.to_string();
+    }
     if let Some(r) = rest.strip_suffix(" no inherit") {
         c.no_inherit = true;
         rest = r.to_string();
@@ -1683,9 +2170,9 @@ fn parse_column(def: &str) -> Column {
         rest = r.to_string();
     }
     for marker in [" generated always as identity", " generated by default as identity"] {
-        if let Some(r) = rest.strip_suffix(marker) {
-            c.identity = Some(marker.trim().to_string());
-            rest = r.to_string();
+        if let Some(at) = rest.find(marker).filter(|at| rest[at + marker.len()..].is_empty() || rest[at + marker.len()..].starts_with(" (")) {
+            c.identity = Some(rest[at + 1..].to_string());
+            rest = rest[..at].to_string();
         }
     }
     if let Some(at) = rest.find(" generated always as (") {
@@ -1723,6 +2210,33 @@ fn render_column(c: &Column) -> String {
     parts.join(" ")
 }
 
+/// An identity's kind (`always`, `by default`) and its sequence's options as `column_def` writes
+/// them: `generated by default as identity (increment by 10 cycle)`.
+fn identity_parts(identity: &str) -> (String, BTreeMap<String, String>) {
+    let (head, options) = identity.split_once(" (").map(|(h, o)| (h, o.trim_end_matches(')'))).unwrap_or((identity, ""));
+    let kind = head.trim_start_matches("generated ").trim_end_matches(" as identity").to_string();
+    let words: Vec<&str> = options.split_whitespace().collect();
+    let mut out = BTreeMap::new();
+    let mut k = 0;
+    while k < words.len() {
+        match words[k] {
+            "start" | "increment" if k + 2 < words.len() => {
+                out.insert(format!("{} {}", words[k], words[k + 1]), words[k + 2].to_string());
+                k += 3;
+            }
+            "minvalue" | "maxvalue" | "cache" if k + 1 < words.len() => {
+                out.insert(words[k].to_string(), words[k + 1].to_string());
+                k += 2;
+            }
+            word => {
+                out.insert(word.to_string(), String::new());
+                k += 1;
+            }
+        }
+    }
+    (kind, out)
+}
+
 /// A create statement of a function or procedure that replaces one of its signature.
 fn or_replace(create: &str) -> String {
     let re = regex::Regex::new(r"(?is)^create\s+(function|procedure)\b").expect("a valid pattern");
@@ -1736,12 +2250,12 @@ fn or_replace(create: &str) -> String {
 /// An enum whose labels are removed or reordered, swapped for a new type: the old one renamed
 /// aside, the new one created, each column of it converted through its text (a row holding a
 /// removed label fails the conversion, and the file with it), and the old one dropped.
-fn swap_enum(name: &str, create: &str, columns: &[String]) -> Vec<String> {
+fn swap_enum(name: &str, create: &str, columns: &[String], targets: &[String]) -> Vec<String> {
     let (schema, bare) = name.rsplit_once('.').unwrap_or(("", name));
     let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
     let old = if schema.is_empty() { aside.clone() } else { format!("{schema}.{aside}") };
     let mut out = vec![format!("alter type {name} rename to {aside}"), create.to_string()];
-    for c in columns.iter().filter(|c| !c.starts_with(AROUND)) {
+    for c in columns.iter().filter(|c| !c.starts_with(AROUND) && !c.starts_with(AGAIN) && !c.starts_with(USES)) {
         let parts: Vec<&str> = c.splitn(4, '|').collect();
         let [table, column, ty, default] = parts[..] else { continue };
         let text = if ty.ends_with("[]") { "text[]" } else { "text" };
@@ -1749,7 +2263,10 @@ fn swap_enum(name: &str, create: &str, columns: &[String]) -> Vec<String> {
             out.push(format!("alter table {table} alter column {column} drop default"));
         }
         out.push(format!("alter table {table} alter column {column} type {ty} using {column}::{text}::{ty}"));
-        if !default.is_empty() {
+        // A default the target keeps is set back; one it changes is the column's own change to
+        // make, after what it calls, and one the old type alone takes can't be set back at all.
+        let kept = targets.iter().find(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2))).and_then(|t| t.splitn(4, '|').nth(3)) == Some(default);
+        if !default.is_empty() && kept {
             let restored = default.replace(&format!("::{old}"), &format!("::{name}")).replace(&format!("::{aside}"), &format!("::{name}"));
             out.push(format!("alter table {table} alter column {column} set default {restored}"));
         }
@@ -1767,15 +2284,28 @@ pub struct PostgresAlterer {
     /// The string types (`typcategory` S): any type converts to one in assignment, through its text
     /// form, with no `pg_cast` row.
     pub strings: BTreeSet<String>,
+    /// Every other cast the server has, made only when written (`::`).
+    pub explicit: BTreeSet<(String, String)>,
 }
 
 impl PostgresAlterer {
     /// The casts the server behind `db` makes in assignment.
     pub async fn read(db: &mut Db, version: i64) -> Result<PostgresAlterer, Error> {
-        let rows = db.rows("select format_type(castsource, null) as s, format_type(casttarget, null) as t from pg_cast where castcontext in ('a', 'i')").await?;
-        let assignment = rows.iter().map(|r| (r.text("s").to_string(), r.text("t").to_string())).collect();
+        let rows = db.rows("select format_type(castsource, null) as s, format_type(casttarget, null) as t, castcontext as c from pg_cast").await?;
+        let assignment = rows.iter().filter(|r| r.text("c") != "e").map(|r| (r.text("s").to_string(), r.text("t").to_string())).collect();
+        let explicit = rows.iter().filter(|r| r.text("c") == "e").map(|r| (r.text("s").to_string(), r.text("t").to_string())).collect();
         let strings = db.rows("select format_type(oid, null) as t from pg_type where typcategory = 'S'").await?.iter().map(|r| r.text("t").to_string()).collect();
-        Ok(PostgresAlterer { version, assignment, strings })
+        Ok(PostgresAlterer { version, assignment, strings, explicit })
+    }
+
+    /// Whether a written cast takes a value of type `from` to `to`: one the server has, or the
+    /// conversion of a string type's text into any type.
+    fn casts(&self, from: &str, to: &str) -> bool {
+        static MODIFIER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\d+(,\d+)?\)").expect("a valid pattern"));
+        let bare = |t: &str| MODIFIER.replace_all(t, "").into_owned();
+        let (from, to) = (bare(from), bare(to));
+        let (from_elem, to_elem) = (from.trim_end_matches("[]"), to.trim_end_matches("[]"));
+        self.assigns(&from, &to) || self.strings.contains(from_elem) || self.explicit.contains(&(from_elem.to_string(), to_elem.to_string()))
     }
 
     /// Whether a column of type `from` becomes `to` without an explicit cast: the same type with
@@ -1842,14 +2372,26 @@ impl Alterer for PostgresAlterer {
 
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
         let (a, b) = (parse_column(&from.def).ty, parse_column(&to.def).ty);
-        let why = super::narrowing(&type_class(&a), &type_class(&b))?;
+        // An array's elements change as values of their type do, a value made an array of one
+        // among them.
+        let element = |t: &str| t.strip_suffix("[]").unwrap_or(t).to_string();
+        let (x, y) = if b.ends_with("[]") { (element(&a), element(&b)) } else { (a.clone(), b.clone()) };
+        let why = super::narrowing(&type_class(&x), &type_class(&y))?;
         Some(format!("changes from {a} to {b}, which {why}"))
     }
 
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
         let table = to.owner.as_deref()?.strip_prefix("table ")?;
         let (old, new) = (super::last_written(&from.id), super::last_written(&to.id));
-        Some(vec![format!("alter table {table} rename column {old} to {new}")])
+        let mut out = vec![format!("alter table {table} rename column {old} to {new}")];
+        // Its not null keeps the name it had, which Postgres 18 made from the column's: renamed
+        // where the target's differs.
+        if let (Some(a), Some(b)) = (not_null_name(from), not_null_name(to)) {
+            if a != b {
+                out.push(format!("alter table {table} rename constraint {a} to {b}"));
+            }
+        }
+        Some(out)
     }
 
     fn alter(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
@@ -1862,9 +2404,33 @@ impl Alterer for PostgresAlterer {
             _ => (String::new(), String::new()),
         };
         match to.kind? {
-            Kind::Column if to.owner.as_deref().is_some_and(|o| o.starts_with("type ")) => None,
-            // A partition's column changes with its parent's.
-            Kind::Column if to.extra.iter().any(|l| l == "partition") => Some(vec![]),
+            // A composite type's attribute takes another type in place.
+            Kind::Column if to.owner.as_deref().is_some_and(|o| o.starts_with("type ")) => {
+                let b = parse_column(&to.def);
+                let ty = to.owner.as_deref()?.strip_prefix("type ")?;
+                let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
+                Some(vec![format!("alter type {ty} alter attribute {name} type {}{collate}", b.ty)])
+            }
+            // A partition's column changes with its parent's, but for a default or a not null of
+            // its own, set after the parent's.
+            Kind::Column if to.extra.iter().any(|l| l == "partition") => {
+                let (a, b) = (parse_column(&from.def), parse_column(&to.def));
+                // A default set on a partitioned table alone, which its partitions say for themselves.
+                let only = if to.extra.iter().any(|l| l == "partitioned") { "only " } else { "" };
+                let (at, at_default) = (format!("alter table {table} alter column {name}"), format!("alter table {only}{table} alter column {name}"));
+                let mut out = Vec::new();
+                if a.ty == b.ty && a.generated.is_none() && b.generated.is_none() && a.identity.is_none() && b.identity.is_none() {
+                    match (&a.default, &b.default) {
+                        (Some(_), None) => out.push(format!("{at_default} drop default")),
+                        (x, Some(y)) if x.as_ref() != Some(y) => out.push(format!("{at_default} set default {y}")),
+                        _ => {}
+                    }
+                    if a.not_null != b.not_null {
+                        out.push(format!("{at} {} not null", if b.not_null { "set" } else { "drop" }));
+                    }
+                }
+                Some(out)
+            }
             Kind::Column => {
                 let (a, mut b) = (parse_column(&from.def), parse_column(&to.def));
                 // The text `schema.sql` declared its default and generation with, where it is known.
@@ -1898,17 +2464,37 @@ impl Alterer for PostgresAlterer {
                 }
                 // Set default replaces one; one is dropped only to go, or around a type change,
                 // which would cast it.
+                // A partitioned table's default changes on it alone, where its type stays: each
+                // partition sets its own, which may differ.
+                let at_default = if !type_changes && to.extra.iter().any(|l| l == "partitioned") { format!("alter table only {table} alter column {name}") } else { at.clone() };
                 if a.default.is_some() && (b.default.is_none() || type_changes) {
-                    out.push(format!("{at} drop default"));
+                    out.push(format!("{at_default} drop default"));
                 }
                 let (unmake, remake) = if type_changes { around(from, to) } else { (vec![], vec![]) };
                 if type_changes {
                     out.extend(unmake);
                     let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
-                    if self.assigns(&a.ty, &b.ty) {
+                    let element = b.ty.strip_suffix("[]").filter(|_| !a.ty.ends_with("[]"));
+                    if let Some(element) = element {
+                        // A value becomes an array of one element, and a null stays null. Where the
+                        // server converts the value in assignment, it does here too, refusing one
+                        // the element's type can't hold rather than cutting it to fit.
+                        let value = if self.assigns(&a.ty, element) {
+                            name.clone()
+                        } else if self.casts(&a.ty, element) {
+                            format!("{name}::{element}")
+                        } else {
+                            format!("{name}::text::{element}")
+                        };
+                        out.push(format!("{at} type {}{collate} using case when {name} is null then null else array[{value}] end", b.ty));
+                    } else if self.assigns(&a.ty, &b.ty) {
                         out.push(format!("{at} type {}{collate}", b.ty));
-                    } else {
+                    } else if self.casts(&a.ty, &b.ty) {
                         out.push(format!("{at} type {}{collate} using {name}::{}", b.ty, b.ty));
+                    } else {
+                        // No cast between them (one enum to another): through their text.
+                        let text = if b.ty.ends_with("[]") { "text[]" } else { "text" };
+                        out.push(format!("{at} type {}{collate} using {name}::{text}::{}", b.ty, b.ty));
                     }
                     out.extend(remake);
                 }
@@ -1916,22 +2502,82 @@ impl Alterer for PostgresAlterer {
                     if let Some(d) = declared_default {
                         b.default = Some(d);
                     }
-                    out.push(format!("{at} set default {}", b.default.as_deref().unwrap_or_default()));
+                    out.push(format!("{at_default} set default {}", b.default.as_deref().unwrap_or_default()));
+                }
+                // An identity needs its column not null first.
+                let mut not_null_done = false;
+                if a.identity.is_none() && b.identity.is_some() && b.not_null && !a.not_null && !b.no_inherit {
+                    out.push(format!("{at} set not null"));
+                    not_null_done = true;
                 }
                 match (&a.identity, &b.identity) {
                     (None, Some(kind)) => {
-                        out.push(format!("{at} add {kind}"));
-                        // A new identity starts past the rows the table holds, or its first insert collides.
-                        out.push(format!("select setval(pg_get_serial_sequence({}, {}), coalesce(max({name}), 0) + 1, false) from {table}", literal(&table), literal(&name.replace('"', "")), ));
+                        let named = identity_sequence(to).map(|n| named_identity(kind, &n)).unwrap_or_else(|| kind.clone());
+                        out.push(format!("{at} add {named}"));
+                        // A new identity starts past the rows the table holds, or its first insert
+                        // collides; one that counts down is left where it starts.
+                        let (_, options) = identity_parts(kind);
+                        let sequence = format!("pg_get_serial_sequence({}, {})", literal(&table), literal(&name.replace('"', "")));
+                        match (options.get("increment by").map(|i| i.starts_with('-')), options.get("start with").or(options.get("minvalue"))) {
+                            (Some(true), _) => {}
+                            (_, None) => out.push(format!("select setval({sequence}, coalesce(max({name}), 0) + 1, false) from {table}")),
+                            (_, Some(start)) => out.push(format!("select setval({sequence}, greatest(coalesce(max({name}) + 1, {start}), {start}), false) from {table}")),
+                        }
                     }
-                    (Some(x), Some(y)) if x != y => out.push(format!("{at} set {}", y.trim_end_matches(" as identity"))),
+                    (Some(x), Some(y)) if x != y => {
+                        let ((kx, ox), (ky, oy)) = (identity_parts(x), identity_parts(y));
+                        let mut set = Vec::new();
+                        if kx != ky {
+                            set.push(format!("set generated {ky}"));
+                        }
+                        // Each option as it takes effect, its default where none is written: the
+                        // bounds follow the direction and the column's type, and the start the bounds.
+                        let effective = |o: &BTreeMap<String, String>, ty: &str| -> BTreeMap<String, String> {
+                            let (low, high) = match ty {
+                                "smallint" => ("-32768", "32767"),
+                                "integer" => ("-2147483648", "2147483647"),
+                                _ => ("-9223372036854775808", "9223372036854775807"),
+                            };
+                            let descending = o.get("increment by").is_some_and(|i| i.starts_with('-'));
+                            let mut out = BTreeMap::new();
+                            out.insert("increment by".to_string(), o.get("increment by").cloned().unwrap_or_else(|| "1".into()));
+                            out.insert("minvalue".to_string(), o.get("minvalue").cloned().unwrap_or_else(|| if descending { low.into() } else { "1".into() }));
+                            out.insert("maxvalue".to_string(), o.get("maxvalue").cloned().unwrap_or_else(|| if descending { "-1".into() } else { high.into() }));
+                            let start = o.get("start with").cloned().unwrap_or_else(|| out[if descending { "maxvalue" } else { "minvalue" }].clone());
+                            out.insert("start with".to_string(), start);
+                            out.insert("cache".to_string(), o.get("cache").cloned().unwrap_or_else(|| "1".into()));
+                            out
+                        };
+                        let (ex, ey) = (effective(&ox, &a.ty), effective(&oy, &b.ty));
+                        for key in ["increment by", "minvalue", "maxvalue", "start with", "cache"] {
+                            if ex[key] != ey[key] {
+                                set.push(format!("set {key} {}", ey[key]));
+                            }
+                        }
+                        // One whose new bounds share no value with its old ones starts again: every
+                        // value it gave lies outside them. Otherwise it keeps its place.
+                        let bound = |e: &BTreeMap<String, String>, key: &str| e[key].parse::<i128>().unwrap_or_default();
+                        if bound(&ey, "maxvalue") < bound(&ex, "minvalue") || bound(&ey, "minvalue") > bound(&ex, "maxvalue") {
+                            set.push("restart".into());
+                        }
+                        if ox.contains_key("cycle") != oy.contains_key("cycle") {
+                            set.push(if oy.contains_key("cycle") { "set cycle".into() } else { "set no cycle".into() });
+                        }
+                        if !set.is_empty() {
+                            out.push(format!("{at} {}", set.join(" ")));
+                        }
+                    }
                     _ => {}
                 }
-                // A NOT NULL kept from the table's children is added as a constraint of its own.
-                if a.not_null && (!b.not_null || a.no_inherit != b.no_inherit) {
+                // A NOT NULL kept from the table's children is added as a constraint of its own, and
+                // so is one left unvalidated, by its name; setting not null validates one.
+                if a.not_null && (!b.not_null || a.no_inherit != b.no_inherit || (b.not_valid && !a.not_valid)) {
                     out.push(format!("{at} drop not null"));
                 }
-                if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit) {
+                if b.not_null && b.not_valid && (!a.not_null || !a.not_valid) {
+                    let nn = to.extra.iter().find_map(|l| l.strip_prefix("not null name ")).unwrap_or_default();
+                    out.push(format!("alter table {table} add constraint {nn} not null {name} not valid"));
+                } else if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit || (a.not_valid && !b.not_valid)) && !not_null_done {
                     out.push(if b.no_inherit { format!("alter table {table} add not null {name} no inherit") } else { format!("{at} set not null") });
                 }
                 Some(out)
@@ -1942,13 +2588,22 @@ impl Alterer for PostgresAlterer {
                 let (a, b) = (labels(&from.def), labels(&to.def));
                 let kept: Vec<&String> = b.iter().filter(|l| a.contains(l)).collect();
                 let name = to.id.strip_prefix("type ")?;
-                if kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y) {
+                // A label added in a transaction can't be used in it (a default, a check), as a
+                // label of a type made in it can: one the target uses is added by making the type again.
+                let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().filter(|x| !x.starts_with(AGAIN)).any(|x| x.contains(l.as_str())));
+                if used || kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y) {
                     let (unmake, remake) = around(from, to);
                     let mut out = unmake;
-                    let mut swap = swap_enum(name, &to.create[0], &from.extra);
+                    // The columns both have: one the plan drops is gone before, one it adds comes after.
+                    let plain = |l: &&String| !l.starts_with(AROUND) && !l.starts_with(AGAIN) && !l.starts_with(USES);
+                    let kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2)))).cloned().collect();
+                    // Each with the default the target gives it, which is set back where unchanged.
+                    let targets: Vec<String> = kept.iter().filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2))).cloned()).collect();
+                    let mut swap = swap_enum(name, &to.create[0], &kept, &targets);
                     let last = swap.pop();
                     out.extend(swap);
                     out.extend(remake);
+                    out.extend(to.extra.iter().filter_map(|l| l.strip_prefix(AGAIN)).map(String::from));
                     out.extend(last);
                     return Some(out);
                 }
@@ -2087,11 +2742,73 @@ impl Alterer for PostgresAlterer {
                 }
                 Some(out)
             }
-            Kind::Rls => {
+            Kind::Rls if to.id.starts_with("rls ") => {
                 let name = to.id.strip_prefix("rls ")?;
-                Some(vec![if to.def == "force" { format!("alter table {name} force row level security") } else { format!("alter table {name} no force row level security") }])
+                let has = |o: &Object, what: &str| o.def.split(' ').any(|w| w == what);
+                let mut out = Vec::new();
+                if has(from, "enable") != has(to, "enable") {
+                    out.push(format!("alter table {name} {} row level security", if has(to, "enable") { "enable" } else { "disable" }));
+                }
+                if has(from, "force") != has(to, "force") {
+                    out.push(format!("alter table {name} {} row level security", if has(to, "force") { "force" } else { "no force" }));
+                }
+                Some(out)
             }
-            Kind::Comment => Some(to.create.clone()),
+            Kind::Comment | Kind::ColumnSetting => Some(to.create.clone()),
+            Kind::Index => {
+                // An index of a partition, alone, is attached to its table's index in place.
+                let attached = |o: &Object| o.extra.iter().find_map(|l| l.strip_prefix("attached to ")).map(String::from);
+                let plain = |o: &Object| bare(&o.def).split("\nattached to ").next().unwrap_or_default().to_string();
+                // Under an index the target has valid, the one made with it attaches it as it is made.
+                match (attached(from), attached(to)) {
+                    (None, Some(_)) if plain(from) == plain(to) && !to.extra.iter().any(|l| l == "attached by statement") => Some(vec![]),
+                    (None, Some(parent)) if plain(from) == plain(to) => Some(vec![format!("alter index {parent} attach partition {}", to.id.strip_prefix("index ")?)]),
+                    _ => None,
+                }
+            }
+            Kind::Trigger if to.id.starts_with("event trigger ") => {
+                // Only whether it fires changes in place.
+                let without = |o: &Object| bare(&o.def).rsplit_once(' ').map(|(d, _)| d.to_string()).unwrap_or_default();
+                if without(from) != without(to) {
+                    return None;
+                }
+                let name = to.id.strip_prefix("event trigger ")?;
+                Some(vec![match to.extra.iter().find_map(|l| l.strip_prefix("enabled ")) {
+                    Some("D") => format!("alter event trigger {name} disable"),
+                    Some("R") => format!("alter event trigger {name} enable replica"),
+                    Some("A") => format!("alter event trigger {name} enable always"),
+                    _ => format!("alter event trigger {name} enable"),
+                }])
+            }
+            Kind::Rule => {
+                // Only whether it fires changes in place.
+                let (Some((a, _)), Some((b, enabled))) = (bare(&from.def).rsplit_once(' '), bare(&to.def).rsplit_once(' ')) else { return None };
+                let rest = to.id.strip_prefix("rule ")?;
+                let rule = super::last_written(rest);
+                let table = rest.strip_suffix(rule.as_str())?.strip_suffix('.')?;
+                (a == b).then(|| {
+                    vec![match enabled {
+                        "D" => format!("alter table {table} disable rule {rule}"),
+                        "R" => format!("alter table {table} enable replica rule {rule}"),
+                        "A" => format!("alter table {table} enable always rule {rule}"),
+                        _ => format!("alter table {table} enable rule {rule}"),
+                    }]
+                })
+            }
+            Kind::Server if to.id.starts_with("foreign data wrapper ") => {
+                let name = to.id.strip_prefix("foreign data wrapper ")?;
+                let part = |o: &Object, what: &str| o.extra.iter().find_map(|l| l.strip_prefix(what)).unwrap_or_default().to_string();
+                let mut changes = Vec::new();
+                for what in ["handler", "validator"] {
+                    let to_value = part(to, &format!("{what} "));
+                    if part(from, &format!("{what} ")) != to_value {
+                        changes.push(if to_value.is_empty() { format!("no {what}") } else { format!("{what} {to_value}") });
+                    }
+                }
+                let options = |o: &Object| -> Vec<(String, String)> { serde_json::from_str(&part(o, "options ")).unwrap_or_default() };
+                changes.extend(options_change(&options(from), &options(to)));
+                Some(vec![format!("alter foreign data wrapper {name} {}", changes.join(" "))])
+            }
             Kind::Function => {
                 // Create or replace keeps a function whose result and arguments stay.
                 let tail = |def: &str| def.rsplit_once("\n-- ").map(|(_, t)| t.to_string()).unwrap_or_default();
@@ -2118,5 +2835,24 @@ mod tests {
         assert!(c.not_null);
         let i = parse_column("bigint generated always as identity not null");
         assert_eq!(i.identity.as_deref(), Some("generated always as identity"));
+        let o = parse_column("integer generated by default as identity (increment by 10 minvalue -200 maxvalue 200) not null");
+        assert_eq!(o.identity.as_deref(), Some("generated by default as identity (increment by 10 minvalue -200 maxvalue 200)"));
+        assert_eq!(o.ty, "integer");
+        let (kind, options) = identity_parts(o.identity.as_deref().unwrap());
+        assert_eq!(kind, "by default");
+        assert_eq!(options.get("increment by").map(String::as_str), Some("10"));
+        assert_eq!(options.get("minvalue").map(String::as_str), Some("-200"));
+    }
+
+    #[test]
+    fn a_value_made_an_array_narrows_as_its_element_does() {
+        let alterer = PostgresAlterer { version: 180000, assignment: BTreeSet::new(), strings: BTreeSet::new(), explicit: BTreeSet::new() };
+        let column = |def: &str| Object { id: "column public.t.c".into(), kind: Some(Kind::Column), def: def.into(), ..Object::default() };
+        let narrows = |a: &str, b: &str| alterer.narrows(&column(a), &column(b));
+        assert!(narrows("timestamp without time zone", "date[]").is_some_and(|w| w.contains("keeps only the date")));
+        assert!(narrows("numeric", "numeric(5,1)[]").is_some_and(|w| w.contains("rounds to 1 decimal places")));
+        assert!(narrows("numeric[]", "numeric(5,1)[]").is_some());
+        assert_eq!(narrows("integer", "integer[]"), None);
+        assert_eq!(narrows("bytea", "bytea[]"), None);
     }
 }
