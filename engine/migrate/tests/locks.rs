@@ -1,7 +1,8 @@
 //! The locks a plan holds on a table with rows, measured: each case in `tests/diff/postgres-locks/`
 //! builds `v1.sql` with `seed.sql`'s rows (a few million, so that reading them all takes time),
 //! plans to `v2.sql`, and runs the plan's lock-safe files (`reylo_migrate::locks`) while another
-//! connection runs `writer.sql` over and over. The writer's longest wait must stay short, and the
+//! connection runs `writer.sql` over and over. The writer's longest wait for a lock, read off
+//! `pg_stat_activity` by a third connection, must stay short, and the
 //! files must reach `v2.sql`. The same plan, run as one file the way it was written before the
 //! lock-safe shape, must make the writer wait several times longer: that is what shows the case
 //! measures a lock at all. Run against the server `REYLO_TEST_PG` names, skipped where it is not set.
@@ -10,7 +11,7 @@ use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::{with_database, Db};
 use reylo_migrate::{diff, locks, sql::runs_alone, Dialect};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -39,19 +40,38 @@ fn read(path: &Path) -> String {
 /// over and over: the writer's longest wait, and how many times it ran.
 async fn with_writer(url: &str, db: &mut Db, files: &[String], writer: &str) -> Result<(Duration, usize), String> {
     let stop = Arc::new(AtomicBool::new(false));
-    let (url, writer, flag) = (url.to_string(), writer.to_string(), stop.clone());
+    let pid = Arc::new(AtomicI32::new(0));
+    let (writer_url, writer, flag, writer_pid) = (url.to_string(), writer.to_string(), stop.clone(), pid.clone());
     let task = tokio::spawn(async move {
-        let mut db = Db::connect(&url, &std::env::temp_dir()).await.unwrap();
-        let (mut longest, mut runs) = (Duration::ZERO, 0usize);
+        let mut db = Db::connect(&writer_url, &std::env::temp_dir()).await.unwrap();
+        writer_pid.store(db.rows("select pg_backend_pid() as p").await.unwrap()[0].text("p").parse().unwrap(), Ordering::Relaxed);
+        let mut runs = 0usize;
         while !flag.load(Ordering::Relaxed) {
-            let at = Instant::now();
             db.exec(&writer).await.unwrap();
-            longest = longest.max(at.elapsed());
             runs += 1;
             tokio::task::yield_now().await;
         }
         db.close().await;
-        (longest, runs)
+        runs
+    });
+    // What the writer waits for is read off the server, every few milliseconds: only time spent
+    // waiting for a lock counts, never a write made slow by a scan sharing the machine.
+    let (monitor_url, flag, watched) = (url.to_string(), stop.clone(), pid.clone());
+    let monitor = tokio::spawn(async move {
+        let mut db = Db::connect(&monitor_url, &std::env::temp_dir()).await.unwrap();
+        let (mut longest, mut since): (Duration, Option<Instant>) = (Duration::ZERO, None);
+        while !flag.load(Ordering::Relaxed) {
+            let p = watched.load(Ordering::Relaxed);
+            let waiting = p != 0 && db.rows(&format!("select wait_event_type = 'Lock' as w from pg_stat_activity where pid = {p}")).await.unwrap().first().is_some_and(|r| r.flag("w"));
+            match (waiting, since) {
+                (true, None) => since = Some(Instant::now()),
+                (true, Some(at)) => longest = longest.max(at.elapsed()),
+                (false, _) => since = None,
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        db.close().await;
+        longest
     });
     // The writer is running before the first file is.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -65,7 +85,8 @@ async fn with_writer(url: &str, db: &mut Db, files: &[String], writer: &str) -> 
         }
     }
     stop.store(true, Ordering::Relaxed);
-    let (longest, runs) = task.await.unwrap();
+    let runs = task.await.unwrap();
+    let longest = monitor.await.unwrap();
     match failed {
         Some(e) => Err(e),
         None => Ok((longest, runs)),
