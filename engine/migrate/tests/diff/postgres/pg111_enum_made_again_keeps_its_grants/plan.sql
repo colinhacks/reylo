@@ -2,7 +2,7 @@ alter type e rename to e__old;
 create type e as enum ('a', 'b');
 alter table t alter column v drop default;
 alter table t alter column v type e using v::text::e;
-alter table t alter column v set default 'a'::e;
+alter table t alter column v set default 'b'::e;
 comment on type e is 'kept';
 grant usage on type e to diff_enum_user;
 revoke usage on type e from public;

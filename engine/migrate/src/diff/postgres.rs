@@ -1680,6 +1680,18 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             o.extra.extend(lines);
         }
     }
+    // A view that names an enum's label uses it, as a default or a check does.
+    let mut uses: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for o in s.objects.values().filter(|o| o.kind == Some(Kind::View)) {
+        for t in o.deps.iter().filter(|d| s.objects.get(*d).is_some_and(|t| t.def.starts_with("enum ("))) {
+            uses.entry(t.clone()).or_default().push(format!("{USES}{}", o.def.replace('\n', " ")));
+        }
+    }
+    for (id, lines) in uses {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra.extend(lines);
+        }
+    }
     // An enum made again takes its grants, revokes, owner and comment back, which a new type lacks.
     let mut metadata: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for o in s.objects.values().filter(|o| matches!(o.kind, Some(Kind::Grant | Kind::Comment))) {
@@ -1967,6 +1979,9 @@ const AROUND: &str = "around ";
 /// A statement an enum made again runs after: one of its grants, its owner or its comment.
 const AGAIN: &str = "again ";
 
+/// A view's definition that names an enum's labels, carried by the enum.
+const USES: &str = "uses ";
+
 fn around_line(o: &Object) -> String {
     format!("{AROUND}{}\t{}\t{}\t{}", o.id, o.def.replace(['\t', '\n'], " "), o.drop.join("; "), o.create.join("; "))
 }
@@ -2139,7 +2154,7 @@ fn swap_enum(name: &str, create: &str, columns: &[String]) -> Vec<String> {
     let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
     let old = if schema.is_empty() { aside.clone() } else { format!("{schema}.{aside}") };
     let mut out = vec![format!("alter type {name} rename to {aside}"), create.to_string()];
-    for c in columns.iter().filter(|c| !c.starts_with(AROUND) && !c.starts_with(AGAIN)) {
+    for c in columns.iter().filter(|c| !c.starts_with(AROUND) && !c.starts_with(AGAIN) && !c.starts_with(USES)) {
         let parts: Vec<&str> = c.splitn(4, '|').collect();
         let [table, column, ty, default] = parts[..] else { continue };
         let text = if ty.ends_with("[]") { "text[]" } else { "text" };
@@ -2450,7 +2465,15 @@ impl Alterer for PostgresAlterer {
                     let (unmake, remake) = around(from, to);
                     let mut out = unmake;
                     // The columns both have: one the plan drops is gone before, one it adds comes after.
-                    let kept: Vec<String> = from.extra.iter().filter(|c| !c.starts_with(AROUND) && !c.starts_with(AGAIN) && to.extra.iter().any(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2)))).cloned().collect();
+                    // Each with the default the target gives it, which the old one's may not fit.
+                    let plain = |l: &&String| !l.starts_with(AROUND) && !l.starts_with(AGAIN) && !l.starts_with(USES);
+                    let kept: Vec<String> = from
+                        .extra
+                        .iter()
+                        .filter(plain)
+                        .filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2))))
+                        .cloned()
+                        .collect();
                     let mut swap = swap_enum(name, &to.create[0], &kept);
                     let last = swap.pop();
                     out.extend(swap);
