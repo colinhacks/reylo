@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { HOSTS } from './host-logos';
 import { wordmark } from './wordmark';
 import { githubUrl, migrateDocsUrl } from '@/lib/layout.shared';
 
@@ -33,14 +34,12 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         <h1 className="ml-h1">
           <span>SQL-first database migrations</span> <em>for busy teams</em>
         </h1>
-        <p className="ml-lede">
-          Keep your whole schema in one <code>schema.sql</code>, and Reylo Migrate writes each migration as plain SQL. One binary, for Postgres, MySQL and SQLite.
-        </p>
+        <p className="ml-lede">Model your schema in plain SQL, on Postgres, MySQL and SQLite.</p>
         <Install />
       </header>
 
       <Row n={1} title="The world's most advanced multi-dialect diff engine" visual={<SchemaToMigration />}>
-        <p>Edit <code>schema.sql</code> and run one command. Reylo Migrate writes the difference as plain SQL, on Postgres, MySQL and SQLite.</p>
+        <p>Edit <code>schema.sql</code> and run one command. The change comes back as a draft migration in plain SQL, yours to edit.</p>
       </Row>
 
       <Row n={2} title="Use the full power of your database" visual={<SchemaKinds />} flip>
@@ -52,7 +51,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </Row>
 
       <Row n={4} title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
-        <p>Push <code>schema.sql</code> to your development database on every save. Write the migration once the change is right.</p>
+        <p>Push <code>schema.sql</code> to your development database on every save. Then <code>reylo migrate dev</code> rewinds what left your migrations and runs what's new.</p>
       </Row>
 
       <Row n={5} title="A database per branch" visual={<BranchConfig />}>
@@ -68,22 +67,22 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </Row>
 
       <Row n={8} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />} flip>
-        <p>Delete the lock, and migrations run in name order. A migration merged late is tried in both orders first.</p>
+        <p>Delete the lock, and migrations run in name order. A migration that lands before one a database already ran is replayed in both orders on a shadow database, and stopped where the two end differently.</p>
       </Row>
 
       <Row n={9} title="Dry runs before every deploy" visual={<Term lines={DRY_RUN} />}>
-        <p>Every pending migration is tried on a throwaway shadow database first. Nothing runs on yours.</p>
+        <p>Before you deploy, each pending migration is tried on a throwaway shadow database. It runs against your database's schema and against <code>schema.sql</code>.</p>
       </Row>
 
       <Row n={10} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />} flip>
-        <p>Chained checksums catch an edited migration, and a fingerprint catches a change made by hand. The deploy stops and shows what changed.</p>
+        <p>Every migration in the lock carries a checksum chained to the last, so an edited or reordered file is caught before it runs. Each database stores a fingerprint of its schema, so a change made by hand stops the deploy, with the ways to keep it.</p>
       </Row>
 
       <Row n={11} title="Runs on your host" visual={<Hosts />}>
         <p>Postgres, MySQL and SQLite, on your own server or a hosted one.</p>
       </Row>
 
-      <Row n={12} title="Start from the database you have" visual={<Term lines={INIT} />} flip>
+      <Row n={12} title="Hit the ground running" visual={<Term lines={INIT} />} flip>
         <p>One command reads your database and writes its <code>schema.sql</code>, a first migration and the lock.</p>
       </Row>
 
@@ -258,9 +257,9 @@ function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
   return lines;
 }
 
-/** A printed line's marks in their colours: ✓ and + green, ✗ red, ! and · yellow; a command it names bright. */
+/** A printed line's marks in their colours: ✓ and + green, ✗ red, !, · and ↺ yellow; a command it names bright. */
 function paint(line: string): ReactNode {
-  const m = line.match(/^(\s*)(✓|✗|!|·|\+)(\s.*)?$/);
+  const m = line.match(/^(\s*)(✓|✗|!|·|\+|↺)(\s.*)?$/);
   if (m) {
     const cls = m[2] === '✓' || m[2] === '+' ? 'ml-ok' : m[2] === '✗' ? 'ml-er' : 'ml-wn';
     return (
@@ -344,11 +343,14 @@ const SCHEMALESS: Script = [
 
 const LOCK_FREE: Script = [
   '$ reylo migrate status',
-  'Migrations on postgres://localhost:5432/app',
-  '  ✓ init.sql                 applied 2026-11-04 12:00 UTC',
-  '  ✓ 20261105090000_tags.sql  applied 2026-11-05 09:00 UTC',
-  '✓ Unchanged since its last migration',
   '· No lock: migrations run in name order (reylo migrate lock writes one)',
+  '',
+  '$ reylo migrate deploy',
+  '✗ 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran, and the two orders end differently',
+  '  + a fresh database: column users.nick text',
+  '  Give 20261105080000_no_nick.sql a later name, so that every database runs it after 20261105090000_nick.sql',
+  '',
+  'Nothing was changed.',
 ];
 
 const PUSH: Script = [
@@ -357,6 +359,13 @@ const PUSH: Script = [
   '  + alter table users add column nick text;',
   '✓ This database matches reylo/schema.sql',
   '! Not in a migration yet: reylo migrate new <name> writes it',
+  '',
+  '$ reylo migrate dev',
+  'Applying to postgres://localhost:5432/app',
+  "  ↺ 20261104120000_tags.sql   rewound: it isn't in the migrations",
+  '    ! Dropped tags (3 rows)',
+  '  ✓ 20261104130000_posts.sql  applied · 3 ms',
+  '✓ Wrote reylo/reylo.lock',
 ];
 
 const DRY_RUN: Script = [
@@ -473,14 +482,17 @@ function BranchConfig() {
   );
 }
 
-/** The hosts the docs cover Reylo Migrate on, as names on tiles. */
-const HOSTS = ['Supabase', 'Neon', 'PlanetScale', 'Cloudflare D1', 'Durable Objects', 'Your own server'];
-
+/** Where Reylo Migrate runs, as each host's logo over its name. */
 function Hosts() {
   return (
     <div className="ml-hosts">
       {HOSTS.map((h) => (
-        <span key={h}>{h}</span>
+        <span key={h.name}>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d={h.path} />
+          </svg>
+          {h.name}
+        </span>
       ))}
     </div>
   );
@@ -674,7 +686,13 @@ function SchemaKinds() {
           </button>
         ))}
       </div>
-      <pre className="ml-sql">{KINDS[at].sql}</pre>
+      <div className="ml-kinds-body">
+        {KINDS.map((k, i) => (
+          <pre key={k.name} className="ml-sql" data-on={i === at || undefined}>
+            {k.sql}
+          </pre>
+        ))}
+      </div>
     </div>
   );
 }

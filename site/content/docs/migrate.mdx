@@ -829,60 +829,6 @@ To save it over `schema.sql`, write it to another file first. A redirect empties
 $ reylo db introspect > schema.new.sql && mv schema.new.sql reylo/schema.sql
 ```
 
-### JSON output
-
-With `--json`, a command prints one JSON object, for agents and scripts.
-
-Every command takes it but `reylo db push --watch`:
-
-```terminal
-$ reylo migrate status --url $PROD_URL --json
-{
-  "command": "reylo migrate status",
-  "ok": false,
-  "exit": 1,
-  "problems": [
-    {
-      "code": "database-changed",
-      "title": "This database was changed outside its migrations",
-      …
-    }
-  ],
-  "result": {
-    "migrations": [
-      {
-        "name": "20261104140347_add_bio.sql",
-        "state": "applied",
-        "applied_at": "2026-11-04T15:12:00Z"
-      },
-      {
-        "name": "20261105090000_tags.sql",
-        "state": "pending"
-      }
-    ],
-    "database": "changed",
-    "changes": [
-      "+ column users.hotfix bigint"
-    ],
-    "lock": "ok",
-    "schema_sql": "matched"
-  },
-  "log": [
-    "Migrations on postgres://db.example.com/app",
-    …
-  ]
-}
-```
-
-The object holds:
-
-- Whether the command succeeded, in `ok`, and its exit code, in `exit`.
-- What it found, in `result`. For a status, that's each migration's state, and the state of the database, the lock and `schema.sql`; for a deploy, each migration it ran.
-- Each refusal, in `problems`, with a stable `code` such as `database-changed`, and the fixes the terminal shows. Branch on the `code`, which stays the same when the wording changes.
-- The schema `reylo db introspect` prints, in `sql`.
-- Why a command couldn't start, such as a database it can't reach, in `error`.
-- Every line the command would have printed, in `log`.
-
 ## Configuration
 
 Each setting is optional. Here they are with their defaults:

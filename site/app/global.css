@@ -1206,7 +1206,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-lede {
   position: relative;
-  max-width: 38rem;
+  max-width: 46rem;
   margin: 0 0 2.75rem;
   font-size: 1.375rem;
   line-height: 1.55;
@@ -1347,8 +1347,24 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   margin: 0;
   font-size: 1.1875rem;
   line-height: 1.6;
+  letter-spacing: 0.005em;
   color: var(--color-fd-muted-foreground);
   text-wrap: pretty;
+}
+
+/* A hairline between a row's heading and its description, 1.5rem clear of each. */
+.ml-row-text h2 {
+  padding-bottom: 1.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--color-fd-border);
+}
+
+.dark .ml-row-text p {
+  color: hsl(0 0% 80%);
+}
+
+.dark .ml-row-text p code {
+  color: hsl(0 0% 96%);
 }
 
 .ml-row-visual {
@@ -1729,7 +1745,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   min-height: 0;
 }
 
-/* The hosts, as tiles in a grid of three. */
+/* The hosts, three by three: each logo, in the text's colour, over its name. */
 .ml-hosts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1737,13 +1753,43 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 }
 
 .ml-hosts span {
-  display: grid;
-  place-items: center;
-  height: 5.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 7rem;
   border: 1px solid var(--color-fd-border);
   border-radius: 0.875rem;
   background: var(--color-fd-card);
-  font-size: 1.0625rem;
-  font-weight: 600;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--color-fd-muted-foreground);
+}
+
+.ml-hosts svg {
+  width: 1.875rem;
+  height: 1.875rem;
   color: var(--color-fd-foreground);
+}
+
+/* Every kind is drawn in one cell and all but the chosen one hidden, so the editor holds the tallest
+   one's height and nothing below it moves as the tabs change. */
+.ml-kinds-body {
+  display: grid;
+}
+
+.ml-kinds-body > .ml-sql {
+  grid-area: 1 / 1;
+  visibility: hidden;
+}
+
+.ml-kinds-body > .ml-sql[data-on] {
+  visibility: visible;
+}
+
+/* A terminal wraps a long line, as a narrow terminal window does, instead of scrolling it. */
+.ml-term {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
