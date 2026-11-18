@@ -1115,7 +1115,10 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
             None => clauses.push(format!("add column {}", c.written(collation))),
         }
     }
-    for (name, _, def) in to.indexes.iter().filter(|(n, _, _)| !made.contains(n)) {
+    // An index a new key would make is left to it, unless this statement drops one: another key
+    // may need it until the new one is in place, so both go in the same statement.
+    let swaps = clauses.iter().any(|c| c.starts_with("drop index ") || c == "drop primary key");
+    for (name, _, def) in to.indexes.iter().filter(|(n, _, _)| swaps || !made.contains(n)) {
         if from.indexes.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| index_now(d) != *def) {
             clauses.push(format!("add {def}"));
         }
