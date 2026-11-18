@@ -403,12 +403,6 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         fk.cols.push(r.text("col").into());
         fk.refs.push(r.text("rc").into());
     }
-    // A foreign key's own index: named as the key, on exactly its columns. Adding the key makes it
-    // and dropping the key leaves it, so it goes with the key rather than the table's body.
-    let fk_index = |t: &str, n: &str, fk: &Fk| -> bool {
-        let key = (t.to_string(), n.to_string());
-        parts.get(&key).is_some_and(|p| *p == fk.cols) && !unique.contains(&key) && n != "PRIMARY"
-    };
     // A key between tables that reach each other through keys: neither table can be dropped while
     // the other's key stands, so such a key is dropped by a statement of its own, before either,
     // where every other key goes with its table.
@@ -448,8 +442,15 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             body.options.push(("collate".into(), collation.to_string()));
             body.options.sort();
         }
-        let owned: BTreeSet<String> = fks.iter().filter(|((t, n), fk)| *t == name && fk_index(t, n, fk)).map(|((_, n), _)| n.clone()).collect();
-        body.indexes.retain(|(i, _, _)| !owned.contains(i));
+        // A foreign key's own index: named as the key, on exactly its columns, which adding the key
+        // makes where no index serves it. It stays in the table's body as any index does, so that
+        // the body's change swaps the index that serves a key for another in one statement, which
+        // MySQL takes where it refuses either alone; a new table, or a new key, leaves it to the key.
+        let keys: Vec<String> = fks.keys().filter(|(t, _)| *t == name).map(|(_, n)| n.clone()).collect();
+        let owned: Vec<String> = fks.iter().filter(|((t, n), fk)| *t == name && parts.get(&(t.clone(), n.clone())).is_some_and(|p| *p == fk.cols) && !unique.contains(&(t.clone(), n.clone())) && n != "PRIMARY").map(|((_, n), _)| n.clone()).collect();
+        let key_lines = vec![format!("{KEYS}{}", json!(keys)), format!("{OWN}{}", json!(owned))];
+        let mut made = body.clone();
+        made.indexes.retain(|(i, _, _)| !owned.contains(i));
         let id = format!("table {name}");
         let def = body.to_json();
         // Every column is an object of its own, which carries no statement: the table's own
@@ -473,11 +474,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 inline: true,
                 deps,
                 change: Change::Alter { blocks: false },
-                extra: vec![def.clone()],
+                extra: [vec![def.clone()], key_lines.clone()].concat(),
                 ..Object::default()
             });
         }
-        s.add(Object { id: id.clone(), kind: Some(Kind::Table), create: vec![create_table(&ctx, &body)], drop: vec![format!("drop table {q}")], def, change: Change::Alter { blocks: false }, ..Object::default() });
+        s.add(Object { id: id.clone(), kind: Some(Kind::Table), create: vec![create_table(&ctx, &made)], drop: vec![format!("drop table {q}")], def, change: Change::Alter { blocks: false }, extra: key_lines, ..Object::default() });
 
         // Foreign keys, from the server's rendering of each.
         for element in elements(&text) {
@@ -503,9 +504,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 deps.extend(fk.refs.iter().map(|c| format!("column {}.{c}", fk.ref_table)));
             }
             let fq = ctx.ident(&fk_name);
+            // MySQL renames an index it made for a key to the name of the next key that uses it:
+            // renamed to itself as the key goes, it is the table's own, and keeps its name when a
+            // key is added again (a key's actions change by dropping it and adding it).
             let mut drop = format!("alter table {q} drop foreign key {fq}");
-            if owned.contains(&fk_name) {
-                drop += &format!(", drop index {fq}");
+            let serving = parts.iter().filter(|((t, i), p)| *t == name && i != "PRIMARY" && *i != fk_name && p.len() >= fk.cols.len() && p[..fk.cols.len()] == fk.cols[..]);
+            for ((_, i), _) in serving {
+                let iq = ctx.ident(i);
+                drop += &format!(", rename index {iq} to {iq}");
             }
             s.add(Object {
                 id: format!("foreign key {name}.{fk_name}"),
@@ -1055,7 +1061,7 @@ fn renamed_parts(text: &str, map: &BTreeMap<String, String>) -> String {
 
 /// The statements that take a table from one body to the other: one `alter table` with a clause
 /// per change, and the change of its partitioning, which MySQL takes only as a statement of its own.
-fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String> {
+fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeSet<String>) -> Vec<String> {
     let pairs = pairs.to_vec();
     let map: BTreeMap<String, String> = pairs.iter().map(|(old, new)| (old.clone(), to.column(new).map(|c| c.q.clone()).unwrap_or_default())).collect();
     let old_of: BTreeMap<&str, &str> = pairs.iter().map(|(o, n)| (n.as_str(), o.as_str())).collect();
@@ -1109,7 +1115,7 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
             None => clauses.push(format!("add column {}", c.written(collation))),
         }
     }
-    for (name, _, def) in &to.indexes {
+    for (name, _, def) in to.indexes.iter().filter(|(n, _, _)| !made.contains(n)) {
         if from.indexes.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| index_now(d) != *def) {
             clauses.push(format!("add {def}"));
         }
@@ -1148,6 +1154,18 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
         out.push(if to.partition.is_empty() { format!("alter table {} remove partitioning", to.q) } else { format!("alter table {} {}", to.q, to.partition) });
     }
     out
+}
+
+/// What a table and its columns carry beside the body: the names of the table's foreign keys, and
+/// of the indexes those keys made for themselves, each a JSON list.
+const KEYS: &str = "foreign keys ";
+const OWN: &str = "indexes of keys ";
+
+/// The indexes a new foreign key makes as it is added, which the table's own change leaves to it.
+fn made_by_keys(from: &[String], to: &[String]) -> BTreeSet<String> {
+    let list = |extra: &[String], what: &str| -> BTreeSet<String> { extra.iter().find_map(|l| l.strip_prefix(what)).and_then(|l| serde_json::from_str::<Vec<String>>(l).ok()).unwrap_or_default().into_iter().collect() };
+    let had = list(from, KEYS);
+    list(to, OWN).into_iter().filter(|n| !had.contains(n)).collect()
 }
 
 #[derive(Default)]
@@ -1236,7 +1254,7 @@ impl Alterer for MysqlAlterer {
             return None;
         }
         let last = pairs.iter().map(|(_, n)| n.as_str()).max()?;
-        Some(if new == last { alter_table(&a, &b, &pairs) } else { Vec::new() })
+        Some(if new == last { alter_table(&a, &b, &pairs, &made_by_keys(&from.extra, &to.extra)) } else { Vec::new() })
     }
 
     fn alter(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
@@ -1245,7 +1263,7 @@ impl Alterer for MysqlAlterer {
                 let (a, b) = (Body::from_json(&from.def)?, Body::from_json(&to.def)?);
                 let pairs = self.pairs(to.id.strip_prefix("table ")?, &a, &b);
                 // Where a column is renamed, the rename writes the table's statement.
-                Some(if pairs.is_empty() { alter_table(&a, &b, &pairs) } else { Vec::new() })
+                Some(if pairs.is_empty() { alter_table(&a, &b, &pairs, &made_by_keys(&from.extra, &to.extra)) } else { Vec::new() })
             }
             // The table's statement changes the column.
             Kind::Column => Some(Vec::new()),
