@@ -20,7 +20,7 @@ The other fields narrow the kind: a size, bounds, a pattern, a character set. A 
 { "kind": "integer", "bits": 32, "min": "0", "max": "150", "label": "int4" }
 ```
 
-- **Values inside a type are strings**, in the kind's canonical text, so a 64-bit bound or a date survives any encoding. Counts, such as `bits`, and code points are numbers.
+- **Values inside a type are strings**, in the kind's canonical text, so a 64-bit bound or a date survives any encoding. Counts, such as `bits`, and code points are integers.
 - **A flag appears only when it's true.** Its absence means false.
 - **A label is the database's name** for the type, where it has one. It never changes what the type means.
 - **A comment** is the documentation the source keeps on a named type, and **a title** is a short name for it, as JSON Schema's `title`. Neither says anything of the values.
