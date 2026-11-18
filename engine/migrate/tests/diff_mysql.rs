@@ -40,6 +40,49 @@ async fn counts(db: &mut Db) -> Vec<(String, String)> {
     out
 }
 
+/// Each table's rows, as text, column by column (but generated ones, whose values are their
+/// expression's): `(table, column names, rows)`.
+async fn values(db: &mut Db) -> Vec<(String, Vec<String>, Vec<Vec<String>>)> {
+    let tables = db.rows("select table_name as t from information_schema.tables where table_schema = database() and table_type = 'BASE TABLE' order by 1").await.unwrap();
+    let mut out = Vec::new();
+    for t in tables {
+        let table = t.text("t").to_string();
+        let columns: Vec<String> = db
+            .rows(&format!("select column_name as c from information_schema.columns where table_schema = database() and table_name = '{}' and extra not like '%GENERATED%' order by ordinal_position", table.replace('\'', "''")))
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.text("c").to_string())
+            .collect();
+        if columns.is_empty() {
+            continue;
+        }
+        let list = columns.iter().enumerate().map(|(k, c)| format!("coalesce(hex(`{}`), 'NULL') as v{k}", c.replace('`', "``"))).collect::<Vec<_>>().join(", ");
+        let mut rows: Vec<Vec<String>> = db.rows(&format!("select {list} from `{table}`")).await.unwrap().iter().map(|r| (0..columns.len()).map(|k| r.text(&format!("v{k}")).to_string()).collect()).collect();
+        rows.sort();
+        out.push((table.to_lowercase(), columns.iter().map(|c| c.to_lowercase()).collect(), rows));
+    }
+    out
+}
+
+/// The tables a plan changed the values of, in the columns they kept.
+fn changed(before: &[(String, Vec<String>, Vec<Vec<String>>)], after: &[(String, Vec<String>, Vec<Vec<String>>)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (table, columns, rows) in before {
+        let Some((_, now_columns, now_rows)) = after.iter().find(|(t, ..)| t == table) else { continue };
+        let both: Vec<(usize, usize)> = columns.iter().enumerate().filter_map(|(k, c)| now_columns.iter().position(|n| n == c).map(|j| (k, j))).collect();
+        let pick = |rows: &[Vec<String>], side: usize| -> Vec<Vec<String>> {
+            let mut out: Vec<Vec<String>> = rows.iter().map(|r| both.iter().map(|(k, j)| r[if side == 0 { *k } else { *j }].clone()).collect()).collect();
+            out.sort();
+            out
+        };
+        if pick(rows, 0) != pick(now_rows, 1) {
+            out.push(table.clone());
+        }
+    }
+    out
+}
+
 /// The database's events, which the comparator does not read, with the database's own name taken
 /// out and when each starts left out (the server fixes it as the event is made).
 async fn events(db: &mut Db) -> Vec<String> {
@@ -93,6 +136,7 @@ async fn mysql() {
         from.script(&read(&case.join("seed.sql"))).await.unwrap_or_else(|e| panic!("{name}: seed.sql: {e}"));
         to.script(&read(&case.join("v2.sql"))).await.unwrap_or_else(|e| panic!("{name}: v2.sql: {e}"));
         let before = counts(&mut from).await;
+        let rows_before = values(&mut from).await;
         let plan = diff::plan(&diff::mysql::read(&mut from).await.unwrap(), &diff::mysql::read(&mut to).await.unwrap(), &alterer);
         let text = plan.sql();
         let mut failed = None;
@@ -106,6 +150,9 @@ async fn mysql() {
         let again = diff::plan(&diff::mysql::read(&mut from).await.unwrap(), &diff::mysql::read(&mut to).await.unwrap(), &alterer).sql();
         let after = counts(&mut from).await;
         let lost: Vec<String> = before.iter().filter(|(t, n)| after.iter().any(|(u, m)| u == t && m != n)).map(|(t, n)| format!("{t}: {n} rows before")).collect();
+        // Every column a table keeps keeps its values, where the case doesn't say the change rewrites them.
+        let skip: Vec<String> = read(&case.join("changes.txt")).lines().filter_map(|l| l.split_whitespace().next()).map(|t| t.to_lowercase()).collect();
+        let rewritten: Vec<String> = if failed.is_none() { changed(&rows_before, &values(&mut from).await).into_iter().filter(|t| !skip.contains(t)).collect() } else { vec![] };
         let check = read(&case.join("check.sql"));
         let checked = if failed.is_none() && !check.is_empty() { from.script(&check).await.err() } else { None };
         let expected = case.join("plan.sql");
@@ -121,6 +168,9 @@ async fn mysql() {
         }
         if !lost.is_empty() {
             problems.push(format!("rows lost: {}", lost.join(", ")));
+        }
+        if !rewritten.is_empty() {
+            problems.push(format!("values changed in: {}", rewritten.join(", ")));
         }
         if !again.is_empty() {
             problems.push(format!("after the plan, the plan again is not empty:\n{again}"));
