@@ -281,7 +281,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             lines.push(format!("grant schema {name} {acl}"));
         }
         if let Some(lacks) = r.get("owner_lacks") {
-            lines.push(format!("owner lacks schema {name} {lacks}"));
+            lines.push(format!("owner schema {name} lacks {lacks}"));
         }
         if let Some(comment) = r.get("comment") {
             lines.push(format!("comment schema {name} {}", json(comment)));
@@ -374,7 +374,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             lines.push(format!("grant {name} {acl}"));
         }
         if let Some(lacks) = r.get("owner_lacks") {
-            lines.push(format!("owner lacks {name} {lacks}"));
+            lines.push(format!("owner {name} lacks {lacks}"));
         }
         if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {name} {}", json(comment)));
@@ -690,7 +690,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             lines.push(format!("grant {name} {acl}"));
         }
         if let Some(lacks) = r.get("owner_lacks") {
-            lines.push(format!("owner lacks {name} {lacks}"));
+            lines.push(format!("owner {name} lacks {lacks}"));
         }
         if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {name} {}", json(comment)));
@@ -1262,6 +1262,14 @@ fn one_line(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_partitions_owner_line_goes_with_it() {
+        let reference = vec!["table public.t partition by RANGE (id)".to_string()];
+        let live = vec![reference[0].clone(), "table public.p partition of public.t FOR VALUES FROM (0) TO (10)".into(), "owner public.p lacks SELECT".into()];
+        assert_eq!(without_extra_children(&live, &reference), reference);
+        assert_eq!(without_children(&live), reference);
+    }
 
     #[test]
     fn a_views_text_keeps_the_spacing_inside_its_strings() {

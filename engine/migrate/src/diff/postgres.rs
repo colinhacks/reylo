@@ -1694,6 +1694,16 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             o.extra.extend(lines);
         }
     }
+    // A schema's owner gives up its own usage after everything else in the schema is made, which
+    // a role that is no superuser can't reach without it.
+    let revokes: Vec<(String, String)> = s.objects.values().filter(|o| o.id.ends_with(" from its owner") && o.owner.as_deref().is_some_and(|w| w.starts_with("schema "))).map(|o| (o.id.clone(), o.owner.clone().unwrap_or_default())).collect();
+    for (id, schema) in revokes {
+        let inside = format!(" {}.", schema.trim_start_matches("schema "));
+        let rest: BTreeSet<String> = s.objects.keys().filter(|k| **k != id && k.contains(&inside)).cloned().collect();
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.after.extend(rest);
+        }
+    }
     // An enum made again takes its grants, revokes, owner and comment back, which a new type lacks.
     let mut metadata: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for o in s.objects.values().filter(|o| matches!(o.kind, Some(Kind::Grant | Kind::Comment))) {
