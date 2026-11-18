@@ -449,9 +449,9 @@ export interface Field extends Slot {
   comment?: string;
   /** A short name for the field, as JSON Schema's `title`. */
   title?: string;
-  /** Only values the source gives back hold the field, and values sent to it leave it out: JSON Schema's `readOnly`, such as an id the source assigns. Never beside `write_only`. */
+  /** The source manages the value, such as an id it assigns: a value sent to it in this field may be ignored or refused, as JSON Schema's `readOnly` says. It says nothing of whether the field is present, which `optional` says. Never beside `write_only`. */
   read_only?: true;
-  /** Only values sent to the source hold the field, and values it gives back leave it out: JSON Schema's `writeOnly`, such as a password. Never beside `read_only`. */
+  /** Values the source gives back never hold the field, such as a password, as JSON Schema's `writeOnly` says. Only beside `optional`, since one direction never holds it, so a consumer that ignores this reads the field as one that may be absent. */
   write_only?: true;
 }
 

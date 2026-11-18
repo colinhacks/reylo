@@ -526,10 +526,10 @@ pub struct Field {
     /// A short name for the field, as JSON Schema's `title`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Only values the source gives back hold the field: JSON Schema's `readOnly`.
+    /// The source manages the value, which a value sent to it may not set: JSON Schema's `readOnly`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub read_only: bool,
-    /// Only values sent to the source hold the field: JSON Schema's `writeOnly`.
+    /// Values the source gives back never hold the field, which is optional: JSON Schema's `writeOnly`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub write_only: bool,
 }
@@ -1455,6 +1455,9 @@ impl Type {
             if f.read_only && f.write_only {
                 return Err(format!("{here}: field {:?} is both read_only and write_only", f.name));
             }
+            if f.write_only && !f.optional {
+                return Err(format!("{here}: field {:?} is write_only but not optional", f.name));
+            }
             if f.default.is_some() && !f.optional {
                 return Err(format!("{here}: field {:?} has a default but is not optional", f.name));
             }
@@ -1823,7 +1826,7 @@ mod tests {
         assert_eq!(round_trip(json!({"kind": "array", "size": {"max": 2}, "label": "set", "distinct": true, "element": {"type": {"kind": "enum", "type": {"kind": "text"}, "values": ["a", "b"]}}})).short(), "set{text('a' | 'b')}");
         assert_eq!(round_trip(json!({"kind": "tuple", "elements": [{"type": {"kind": "integer", "bits": 32}}], "optional_elements": [{"nullable": true, "type": {"kind": "text"}}], "rest": {"type": {"kind": "boolean"}}})).short(), "(int32, text?=, ...boolean)");
         assert_eq!(round_trip(json!({"kind": "struct", "fields": [{"name": "id", "type": {"kind": "integer", "bits": 32}}, {"name": "tag", "optional": true, "default": "none", "comment": "What it is", "type": {"kind": "text"}}], "extra": {"type": {"kind": "text"}}})).short(), "{ id: int32, tag?: text, *: text }");
-        round_trip(json!({"kind": "struct", "title": "User", "fields": [{"name": "id", "read_only": true, "title": "Id", "type": {"kind": "uuid"}}, {"name": "password", "write_only": true, "type": {"kind": "text", "format": "password"}}]}));
+        round_trip(json!({"kind": "struct", "title": "User", "fields": [{"name": "id", "read_only": true, "title": "Id", "type": {"kind": "uuid"}}, {"name": "password", "optional": true, "write_only": true, "type": {"kind": "text", "format": "password"}}]}));
         round_trip(json!({"kind": "text", "format": "email"}));
         round_trip(json!({"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "integer", "bits": 32}}, "size": {"max": 64}}));
         assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "boolean"}, "values": ["true"]})).short(), "boolean(true)");
@@ -1874,7 +1877,8 @@ mod tests {
         let refused = |value: Value| serde_json::from_value::<Type>(value.clone()).unwrap().check().err().unwrap_or_else(|| panic!("{value} passed"));
         refused(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "min": "0", "exclusive_min": "0"}));
         refused(json!({"kind": "integer", "bits": 32, "exclusive_min": "0"}));
-        refused(json!({"kind": "struct", "fields": [{"name": "id", "read_only": true, "write_only": true, "type": {"kind": "uuid"}}]}));
+        refused(json!({"kind": "struct", "fields": [{"name": "id", "optional": true, "read_only": true, "write_only": true, "type": {"kind": "uuid"}}]}));
+        refused(json!({"kind": "struct", "fields": [{"name": "password", "write_only": true, "type": {"kind": "text"}}]}));
         refused(json!({"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "text"}}, "size": {"min": 4, "max": 2}}));
         refused(json!({"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "text"}}, "size": {"unit": "byte", "max": 2}}));
         refused(json!({"kind": "integer", "bits": 32, "min": "5", "max": "1"}));
