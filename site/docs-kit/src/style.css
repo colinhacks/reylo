@@ -863,12 +863,28 @@ code {
   }
 }
 
-/* A table of two columns (Reylo's Data types tables, "SQL type | TypeScript") splits the width in
-   halves; its columns once came out 197px beside 603px and then, sized by
-   their content, the other way round. A wider table shares its width by its content. */
-#nd-page .prose table:has(tr > :nth-child(2):last-child):has(th:not(:empty)) {
-  table-layout: fixed;
+/* A table spans the text column, and the browser sizes its columns by their content: a column of
+   short names (a field, a flag) stays as narrow as its longest name, and a column of prose takes
+   the rest. Equal halves left "Field" as wide as "What it holds". */
+#nd-page .prose table:has(th:not(:empty)) {
+  table-layout: auto;
   width: 100%;
+}
+
+/* A long value in a cell, `2026-10-20T10:00:00.123456`, breaks where it must rather than run past
+   the table's edge, now that columns size by their content; each piece is still a chip. (A rule
+   that kept code in a cell on one line from 640px on made a long value push the table past the
+   text column, where it scrolled sideways.) */
+#nd-page .prose td code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The first column names things (a field, a SQL type): a name stays whole, and its column is as wide
+   as the longest. */
+#nd-page .prose td:first-child code {
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 /* A table whose header cells are all empty is a list of labels and their values (Reylo's dialect
@@ -909,13 +925,7 @@ code {
 
 }
 
-@media (min-width: 640px) {
-  /* A short type in a cell (`Row | null`) stays on one line where the column has the room; on a
-     phone the table would scroll sideways instead. */
-  #nd-page .prose td code {
-    white-space: nowrap;
-  }
-}
+
 
 /* ── <Callout> (components/callout.tsx) ──────────────────────────────────────
    A flat card like a code block's frame, with no shadow: a header bar, ruled off like a titled
