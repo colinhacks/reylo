@@ -28,7 +28,7 @@ Text with no `encoding` is any valid Unicode text. An `encoding` is one of a clo
 | `GB2312` | Unicode's `EASTASIA/GB/GB2312.TXT`, in EUC-CN |
 | `DEC-MCS`, `hp-roman8`, `SEN_850200_B` | RFC 1345's charts of those names |
 
-Where vendors' tables for a name differ, it stands for the widest of them, so a value any of them writes is one of its characters. `code_points` narrows the characters further, by Unicode code point, whatever the encoding: Postgres's text holds every character but NUL, `[[1, 1114111]]`, and MySQL's `utf8mb3` only the Basic Multilingual Plane. A pattern is an I-Regexp (RFC 9485), matched against the whole value.
+Where vendors' tables for a name differ, it stands for the widest of them, so a value any of them writes is one of its characters. `code_points` narrows the characters further, by Unicode code point, whatever the encoding: Postgres's text holds every character but NUL, `[[1, 1114111]]`, and MySQL's `utf8mb3` only the Basic Multilingual Plane. A pattern is an I-Regexp (RFC 9485), matched against the whole value. A `format` names what the text is, by JSON Schema's format names (`email`, `uri`, `hostname`) or a source's own, and a consumer that does not know one ignores it.
 
 ## Rules
 
@@ -44,6 +44,8 @@ Where vendors' tables for a name differ, it stands for the widest of them, so a 
      - a date-bearing kind's bounds beyond 0001-01-01 to 9999-12-31, and a time's reaching 24:00:00.
 
    A new kind may come in a minor version too, since a consumer that does not know it reads it as rule 6 says.
+
+   Some fields neither widen nor narrow: a type's `title` and `comment`, and a field's `title` and `comment`, describe the type, never which values it holds. They may come in a minor version too.
 
 2. **A type is what the database guarantees**, never only what was declared: a SQLite column that is not STRICT is the union of what its affinity stores. A bound or a list of values appears only when it is true of every finite value, the `infinity` and `nan` flags speaking for the rest: from a type modifier, a validated CHECK on a column read straight from its table, a domain's check, or a constant the statement writes, which makes the column an `enum` of the constants it holds. A constraint that is not validated is not reported, and neither is a domain's NOT NULL, which an outer join defeats. A value a database stores only under a lax setting its default refuses is not typed, and a client that meets one refuses it: MySQL's zero and partial dates (`0000-00-00`, `2026-00-15`) and the empty error value of its enums. So is a Postgres array deeper than the one dimension its type is written with: Postgres keeps any number of dimensions in an array column, and the format writes the array flat, as almost every column holds it.
 

@@ -690,6 +690,48 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
             out.push(format!("-- {} is not null with no default, so the copy fails on a table that has rows: give it a default, or add it nullable, fill it, then make it not null", p.tokens[0].text));
         }
     }
+    // The columns both have, but those the new table generates.
+    let copied: Vec<String> = new_parts
+        .iter()
+        .filter(|p| p.column.as_deref().is_some_and(|c| find(&old_parts, c).is_some() && !flag(c, 'g')))
+        .map(|p| p.tokens[0].text.clone())
+        .collect();
+    let named: Vec<String> = old_columns.iter().chain(new_columns.iter()).map(|(c, _)| c.clone()).collect();
+    // A table whose text names its columns by its own name (a check written `"users"."age" > 21`)
+    // can be neither made under another name nor renamed: SQLite reads the name as the table's
+    // own. Where no table references it, its rows wait in a temporary table instead, while the
+    // table is made again under its name.
+    if children.is_empty() && names_itself(&target, &a.name) {
+        let aside = quote(&format!("reylo_aside_{}", a.name));
+        let mut copied = copied;
+        if a.bare_rowid && b.bare_rowid {
+            if let Some(rowid) = ["rowid", "_rowid_", "oid"].into_iter().find(|n| !named.iter().any(|c| c == n)) {
+                copied.insert(0, rowid.to_string());
+            }
+        }
+        let list = copied.join(", ");
+        let sequence = a.autoincrement && b.autoincrement;
+        let seq_aside = quote(&format!("reylo_aside_{}_sequence", a.name));
+        if !copied.is_empty() {
+            out.push(format!("create temp table {aside} as select {list} from {table}"));
+        }
+        if sequence {
+            out.push(format!("create temp table {seq_aside} as select seq from sqlite_sequence where name = {}", literal(&a.name)));
+        }
+        out.push(format!("drop table {table}"));
+        out.push(target.clone());
+        if !copied.is_empty() {
+            out.push(format!("insert into {table} ({list}) select {list} from temp.{aside}"));
+            out.push(format!("drop table temp.{aside}"));
+        }
+        if sequence {
+            out.push(format!("delete from sqlite_sequence where name = {}", literal(&a.name)));
+            out.push(format!("insert into sqlite_sequence (name, seq) select {}, seq from temp.{seq_aside}", literal(&a.name)));
+            out.push(format!("drop table temp.{seq_aside}"));
+        }
+        out.extend(by_rank(coming).into_iter().map(|(_, create)| create));
+        return Some(out);
+    }
     if cycle {
         out.push("-- these tables reference each other, so no order fills them: their keys wait for the commit".to_string());
         out.push("pragma defer_foreign_keys = on".to_string());
@@ -723,13 +765,6 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
     for ((x, _), (child, _)) in family[1..].iter().zip(&children) {
         out.push(renamed_text(child.create.first()?, &x.name)?);
     }
-    // The columns both have, but those the new table generates; and the rowid where no column is it.
-    let copied: Vec<String> = new_parts
-        .iter()
-        .filter(|p| p.column.as_deref().is_some_and(|c| find(&old_parts, c).is_some() && !flag(c, 'g')))
-        .map(|p| p.tokens[0].text.clone())
-        .collect();
-    let named: Vec<String> = old_columns.iter().chain(new_columns.iter()).map(|(c, _)| c.clone()).collect();
     copy_rows(&mut out, &a, &b, &scratches[&fold(&a.name)].0, copied, &named);
     for ((x, y), (child, _)) in family[1..].iter().zip(&children) {
         let child_parts = parts(child.create.first()?);
@@ -748,8 +783,14 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
     Some(out)
 }
 
-/// The tables of `from` that reference the table `id`, at any depth, each with itself in `to`: one
-/// the plan drops is no part of a rebuild, since the plan drops it first. Each comes after every one
+/// Whether a table's text names a column by the table's own name, as `"users"."age"`.
+fn names_itself(sql: &str, table: &str) -> bool {
+    let tokens = tokenize(sql, Dialect::Sqlite);
+    (0..tokens.len()).any(|k| tokens.get(k + 1).is_some_and(|n| n.text == ".") && (k == 0 || tokens[k - 1].text != ".") && name_of(&tokens[k]).is_some_and(|n| fold(&n) == fold(table)))
+}
+
+/// The tables of `from` that reference the table `id`, at any depth, and still do in `to`, each with
+/// itself in `to`: one the plan drops is no part of a rebuild, since the plan drops it first. Each comes after every one
 /// of them it references, and the answer's second part says whether some reference each other, so
 /// that no order has that.
 fn children_of<'a>(from: &'a Schema, to: &'a Schema, id: &str) -> (Vec<(&'a Object, &'a Object)>, bool) {
@@ -760,7 +801,10 @@ fn children_of<'a>(from: &'a Schema, to: &'a Schema, id: &str) -> (Vec<(&'a Obje
     while k < seen.len() {
         let parent = seen[k].clone();
         k += 1;
-        for o in from.objects.values().filter(table).filter(|o| o.deps.contains(&parent)) {
+        // One that stops referencing it changes first, the planner's order for what stops
+        // depending on a table, so it no longer references it when the rebuild runs.
+        let still = |o: &&Object| to.objects.get(&o.id).is_some_and(|t| t.deps.contains(&parent));
+        for o in from.objects.values().filter(table).filter(|o| o.deps.contains(&parent)).filter(still) {
             if !seen.contains(&o.id) {
                 seen.push(o.id.clone());
                 family.push(o);

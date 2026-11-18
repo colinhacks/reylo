@@ -6,7 +6,7 @@ on:
   #
   # Everything the release needs is given at dispatch: the commit is the one dispatched, the version comes from its `package.json` (every package moves at reylo's version, which `scripts/build.ts` enforces), and the release notes are the required `notes` input. A run's inputs are fixed for its whole life, so the notes survive the approval wait and any re-run of a job.
   #
-  # One run builds the `reylo` binary on each platform of npm/platforms.json (`build`, a job per platform on a runner of its architecture), and installs each through every channel that does without npm (binaries.yml calls channels.yml), then two release jobs. `stage` puts the nine versions in npm's staged queue: the eight platform packages `@reylosql/engine-<platform>`, each holding its platform's binary, then reylo, which names them as optional dependencies at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. The GitHub release carries the same eight binaries as assets, and the docs site's playground engine (`playground`), which no commit holds; `finish` then publishes the Homebrew formula, the Scoop manifest and the container image from those assets. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
+  # One run builds the `reylo` binary on each platform of npm/platforms.json (`build`, a job per platform on a runner of its architecture), and installs each through every channel that does without npm (binaries.yml calls channels.yml), then two release jobs. `stage` puts the nine versions in npm's staged queue: the eight platform packages `@reylosql/engine-<platform>`, each holding its platform's binary, then reylo, which names them as optional dependencies at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. The GitHub release carries the same eight binaries as assets, and the docs site's playground engine (`playground`), which no commit holds; `finish` then publishes the Homebrew formula, the Scoop manifest and the container image from those assets, and `crates` the Rust crates, on crates.io. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
   #
   # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after a maintainer approved the run.
   #
@@ -339,3 +339,47 @@ jobs:
               ;;
           esac
 
+
+  # The Rust crates on crates.io, from the release's tag, once npm serves the release and `finish` has made the tag. crates.io's trusted publishers name this repository, this file and the `crates` environment, which only `main` can deploy to, so a workflow of this name on another branch gets no token; the run gets one that lasts 30 minutes, and none is stored anywhere. crates.io gives a crate a trusted publisher only once it exists, so a crate's first version is published from a maintainer's machine (`.github/scripts/crates-publish.sh --trust`); until `reylo` is on crates.io, this job publishes nothing and says so.
+  crates:
+    needs: [stage, finish]
+    environment: crates
+    runs-on: ubuntu-latest
+    name: Publish the Rust crates
+    # 13 crates, each waiting for crates.io's index to list the one before it, and its rate if it refuses one
+    timeout-minutes: 90
+    permissions:
+      id-token: write
+    steps:
+      # Only crates.io's 404 means no crate; any other answer is tried again, and fails the job if it lasts, rather than skip the crates.
+      - name: Whether crates.io holds the crates yet
+        id: listed
+        run: |
+          for _ in 1 2 3 4 5; do
+            status=$(curl -s -A "reylo-release (github.com/reylosql/reylo)" -o /dev/null -w '%{http_code}' https://crates.io/api/v1/crates/reylo || true)
+            case "$status" in
+              200) echo "yes=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              404) echo "::notice::reylo is not on crates.io yet, so this release publishes no crate: its first version is published with .github/scripts/crates-publish.sh --trust from a maintainer's machine"; exit 0 ;;
+            esac
+            echo "crates.io answered $status; trying again in 30 seconds"
+            sleep 30
+          done
+          echo "::error::crates.io did not say whether reylo exists; re-run this job"
+          exit 1
+      # the tag's sources, which npm's packages were built from, on any dispatch: one that only rewrites the notes runs on a newer main
+      - if: steps.listed.outputs.yes == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/v${{ needs.stage.outputs.version }}
+          persist-credentials: false
+      # the patched Postgres parser and the SQLite amalgamation, which the crates carry and no commit holds
+      - if: steps.listed.outputs.yes == 'true'
+        run: engine/build.sh --prepare
+      - if: steps.listed.outputs.yes == 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - if: steps.listed.outputs.yes == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          VERSION: ${{ needs.stage.outputs.version }}
+        run: .github/scripts/crates-publish.sh "$VERSION"

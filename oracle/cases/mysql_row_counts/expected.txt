@@ -33,6 +33,7 @@ key_composite.sql: at_most_one (post: int32, tag: varchar) -> { tag: varchar(≤
 key_composite_partial.sql: many (post: int32) -> { tag: varchar(≤20) }
 key_cross_join.sql: many (id: int32) -> { id: int }
 key_derived.sql: at_most_one (id: int32) -> { id: int }
+key_double_ampersand.sql: at_most_one (id: int32, name: varchar) -> { id: int, name: varchar(≤20) }
 key_exists.sql: at_most_one (id: int32) -> { id: int }
 key_group_by.sql: at_most_one (id: int32) -> { id: int, n: bigint }
 key_group_by_bare.sql: at_most_one (id: int32) -> { id: int, n: bigint }

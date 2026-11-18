@@ -893,7 +893,7 @@ fn base_type(t: &PgType) -> Type {
         (true, "polygon") => points(1),
         (true, "circle") => Type::structure(vec![Field::new("center", point(), false), Field::new("radius", float8(), false)]),
         // An extension's types, in whatever schema it was created in.
-        (_, "hstore") => Type::new(Kind::Map(MapType { key: Box::new(Slot::non_null(text())), value: Box::new(Slot::nullable(text())) })),
+        (_, "hstore") => Type::new(Kind::Map(MapType { key: Box::new(Slot::non_null(text())), value: Box::new(Slot::nullable(text())), size: None })),
         (_, "vector" | "sparsevec") => vector(8, 23),
         (_, "halfvec") => vector(5, 10),
         (_, "citext") => text(),

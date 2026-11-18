@@ -22,9 +22,10 @@ use alloc::boxed::Box;
 
 use crate::{
     ast::{BinaryOperator, Expr},
-    dialect::Dialect,
+    dialect::{Dialect, Precedence},
     keywords::Keyword,
     parser::{Parser, ParserError},
+    tokenizer::Token,
 };
 
 use super::keywords;
@@ -199,6 +200,14 @@ impl Dialect for MySqlDialect {
     /// See: <https://dev.mysql.com/doc/refman/8.4/en/expressions.html>
     fn supports_double_ampersand_operator(&self) -> bool {
         true
+    }
+
+    /// `&&` is AND, and binds as AND does: `x = a && c` is `(x = a) AND c`.
+    fn get_next_precedence(&self, parser: &Parser) -> Option<Result<u8, ParserError>> {
+        match parser.peek_token_ref().token {
+            Token::Overlap => Some(Ok(self.prec_value(Precedence::And))),
+            _ => None,
+        }
     }
 
     /// Deprecated functionality by MySQL but still supported

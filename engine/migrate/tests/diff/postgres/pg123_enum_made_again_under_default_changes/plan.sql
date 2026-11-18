@@ -1,0 +1,13 @@
+alter type e rename to e__old;
+create type e as enum ('b', 'a');
+alter table t alter column v drop default;
+alter table t alter column v type e using v::text::e;
+drop type e__old;
+alter type g rename to g__old;
+create type g as enum ('b', 'a');
+alter table u alter column v drop default;
+alter table u alter column v type g using v::text::g;
+drop type g__old;
+alter table t alter column v drop default;
+create function f() returns text language sql immutable as $$ select 'a'::text $$;
+alter table u alter column v set default f()::g;

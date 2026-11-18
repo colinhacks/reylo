@@ -338,6 +338,11 @@ fn undo_in(out: &str) -> String {
     quoted.replace("'\\''", "'")
 }
 
+/// `url` connecting as `role`, with no password: the test servers trust their local connections.
+fn as_role(url: &str, role: &str) -> String {
+    regex::Regex::new(r"^([a-z]+://)(?:[^@/]*@)?").unwrap().replace(url, format!("${{1}}{role}@").as_str()).into_owned()
+}
+
 fn has(text: &str, pattern: &str) -> bool {
     regex::Regex::new(pattern).unwrap().is_match(text)
 }
@@ -403,6 +408,7 @@ for_each_dialect!(
     status_shows_what_ran_what_is_pending_and_what_changed,
     lock_writes_the_lock_from_what_a_database_ran,
     db_reset_rebuilds_a_database_from_its_migrations,
+    db_reset_refuses_what_dev_refuses_before_it_drops_anything,
     db_push_refuses_a_schema_that_declares_nothing,
     a_merge_conflict_left_in_a_file_is_refused,
     new_without_schema_sql_writes_what_the_database_has,
@@ -744,6 +750,50 @@ async fn db_reset_rebuilds_a_database_from_its_migrations(mut p: P) {
     // Never in CI.
     assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, true, log).await).await, 1);
     assert_has!(p.output(), r"CI is set, and reylo db reset is for development databases");
+}
+
+async fn db_reset_refuses_what_dev_refuses_before_it_drops_anything(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    p.linear();
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, name {text});"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.exec("insert into users (name) values ('ada')").await;
+    let kept = |p: &mut P| {
+        let out = p.output();
+        assert_has!(&out, r"Nothing was changed\.");
+        assert!(!has(&out, r"Resetting|Emptied the history"), "{out}");
+    };
+    // A migration left with git's conflict markers in it.
+    p.file("20261027110000_tags.sql", &format!("<<<<<<< HEAD\ncreate table tags (id {int});\n=======\ncreate table labels (id {int});\n>>>>>>> main\n"));
+    p.output();
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 1);
+    assert_has!(p.peek(), r"20261027110000_tags\.sql has a merge conflict in it");
+    kept(&mut p);
+    assert_eq!(p.rows("select name from users").await.len(), 1);
+    assert_eq!(p.history().await, ["20261027100000_users.sql"]);
+    // A lock left with git's conflict markers in it.
+    std::fs::remove_file(p.dir.join("migrations").join("20261027110000_tags.sql")).unwrap();
+    let lock = p.dir.join(reylo_migrate::lock::LOCK);
+    let text = std::fs::read_to_string(&lock).unwrap();
+    std::fs::write(&lock, format!("{text}<<<<<<< HEAD\n")).unwrap();
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 1);
+    assert_has!(p.peek(), r"reylo\.lock has a merge conflict");
+    kept(&mut p);
+    assert_eq!(p.rows("select name from users").await.len(), 1);
+    assert_eq!(p.history().await, ["20261027100000_users.sql"]);
+    std::fs::write(&lock, text).unwrap();
+    // A migrations directory that is gone, which this database ran a migration from.
+    let (dir, away) = (p.dir.join("migrations"), p.dir.join("migrations-away"));
+    std::fs::rename(&dir, &away).unwrap();
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 1);
+    assert_has!(p.peek(), r"migrations doesn't exist\n  This database ran 1 migration from it");
+    kept(&mut p);
+    assert_eq!(p.rows("select name from users").await.len(), 1);
+    std::fs::rename(&away, &dir).unwrap();
+    // With the files as dev takes them, it resets.
+    assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+    assert!(p.rows("select name from users").await.is_empty());
+    assert_eq!(p.history().await, ["20261027100000_users.sql"]);
 }
 
 async fn db_push_refuses_a_schema_that_declares_nothing(mut p: P) {
@@ -2678,6 +2728,8 @@ on!(
     a_migrations_session_setting_is_never_carried_by_the_cache,
     init_reads_a_function_dumped_before_the_table_it_reads,
     a_platforms_schemas_and_extensions_are_in_every_shadow,
+    a_role_that_is_no_superuser_runs_every_command,
+    a_role_that_cannot_create_databases_is_told_of_shadow_url,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
@@ -2694,7 +2746,7 @@ on!(Mysql, a_recurring_event_is_in_the_dump);
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
-    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written);
+    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url);
 }
 on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_deploy);
@@ -2711,6 +2763,7 @@ on!(
     a_renamed_tables_sequence_keeps_counting,
     a_foreign_table_is_renamed_as_stated,
     a_partitioned_table_is_renamed_with_its_partitions,
+    a_table_renamed_onto_a_views_name_drops_the_view_first,
     partitions_made_at_run_time_are_data,
     the_fingerprint_leaves_out_only_what_is_a_childs,
     a_comment_above_a_cut_off_build_is_read_past,
@@ -2773,6 +2826,58 @@ fn a_database_whose_default_collation_differs() {
 
 mod adversarial {
     use super::*;
+
+    /// The role a hosted Postgres gives (Neon's, Supabase's): it may create databases and is no
+    /// superuser, so no catalog only a superuser reads is in its reach.
+    pub async fn a_role_that_is_no_superuser_runs_every_command(mut p: P) {
+        p.exec("do $$ begin create role madv_hosted login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_hosted", p.name)).await;
+        // A shadow another role's run left on the server, which this role may not drop.
+        let theirs = format!("reylo_shadow_theirs{}", COUNTER.fetch_add(1, Ordering::Relaxed));
+        p.exec(&format!("create database {theirs}")).await;
+        let admin = p.url.clone();
+        p.url = as_role(&p.url, "madv_hosted");
+        p.exec("create table users (id int primary key)").await;
+        let opts = p.opts();
+        assert_eq!(reylo_migrate::init(&opts, &[], &mut |_: &str| {}).await.unwrap_or_else(|e| panic!("init: {e}")), 0);
+        p.strict = true;
+        p.schema(&format!("{}\ncreate table posts (id int primary key, user_id int references users (id));\n", std::fs::read_to_string(p.dir.join("schema.sql")).unwrap()));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.schema(&format!("{}\nalter table posts add column title text;\n", std::fs::read_to_string(p.dir.join("schema.sql")).unwrap()));
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        let mut db = Db::connect(&admin, &p.dir).await.unwrap();
+        let _ = db.exec(&format!("drop database if exists {theirs}")).await;
+        db.close().await;
+    }
+
+    /// A role that may not create a database (PlanetScale's, some managed ones') can make no shadow:
+    /// the refusal names shadow_url, and `init` leaves no project behind.
+    pub async fn a_role_that_cannot_create_databases_is_told_of_shadow_url(mut p: P) {
+        let role = "madv_nocreate";
+        match p.d {
+            Dialect::Postgres => {
+                p.exec(&format!("do $$ begin create role {role} login nocreatedb; exception when duplicate_object or unique_violation then null; end $$")).await;
+                p.exec(&format!("alter database {} owner to {role}", p.name)).await;
+            }
+            _ => p.exec(&format!("create user if not exists '{role}'@'%'; grant all on `{}`.* to '{role}'@'%'", p.name)).await,
+        }
+        p.url = as_role(&p.url, role);
+        p.exec("create table users (id int primary key)").await;
+        let opts = p.opts();
+        let e = reylo_migrate::init(&opts, &[], &mut |_: &str| {}).await.expect_err("no shadow database can be made");
+        assert_has!(e.0, "shadow_url");
+        assert!(!p.dir.join("schema.sql").exists(), "init left schema.sql");
+        assert!(!p.dir.join(reylo_migrate::lock::LOCK).exists(), "init left the lock");
+        assert!(p.files().is_empty(), "init left {:?}", p.files());
+        p.schema("create table users (id int primary key);");
+        p.file("20261027100000_users.sql", "create table users (id int primary key);");
+        let e = reylo_migrate::dry_run(&opts, &mut |_: &str| {}).await.expect_err("no shadow database can be made");
+        assert_has!(e.0, "shadow_url");
+    }
 
     pub async fn a_database_search_path_resolves_names_as_the_target_does(mut p: P) {
         p.exec(&format!("alter database {} set search_path = app, public", p.name)).await;
@@ -3117,16 +3222,16 @@ mod adversarial {
     }
 
     pub async fn a_renamed_tables_sequence_keeps_counting(mut p: P) {
-        p.schema("create table users (id serial primary key, email text unique);");
-        p.file("20261027100000_users.sql", "create table users (id serial primary key, email text unique);");
+        p.schema("create table users (id serial primary key, email text unique, n integer generated always as identity);");
+        p.file("20261027100000_users.sql", "create table users (id serial primary key, email text unique, n integer generated always as identity);");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.exec("insert into users (email) values ('a'), ('b'), ('c')").await;
         // What Postgres named after the table is renamed with it: its sequence keeps its value.
-        p.schema("create table accounts (id serial primary key, email text unique);");
+        p.schema("create table accounts (id serial primary key, email text unique, n integer generated always as identity);");
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
         let made = p.files().into_iter().find(|f| f.ends_with("_accounts.sql")).unwrap();
         let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
-        for part in ["alter table users rename to accounts", "rename constraint users_pkey to accounts_pkey", "rename constraint users_email_key to accounts_email_key", "alter sequence users_id_seq rename to accounts_id_seq"] {
+        for part in ["alter table users rename to accounts", "rename constraint users_pkey to accounts_pkey", "rename constraint users_email_key to accounts_email_key", "alter sequence users_id_seq rename to accounts_id_seq", "alter sequence users_n_seq rename to accounts_n_seq"] {
             assert!(sql.contains(part), "{part} in:\n{sql}");
         }
         assert!(!sql.lines().any(|l| !l.starts_with("--") && (l.contains("create") || l.contains("drop"))), "{sql}");
@@ -3134,6 +3239,10 @@ mod adversarial {
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.exec("insert into accounts (email) values ('d')").await;
         assert_eq!(p.rows("select id from accounts where email = 'd'").await[0].text("id"), "4");
+        // And its columns' not nulls, which Postgres 18 names after the table too.
+        for r in p.rows("select conname from pg_constraint where conrelid = 'accounts'::regclass and contype = 'n'").await {
+            assert!(r.text("conname").starts_with("accounts_"), "{} kept the old table's name", r.text("conname"));
+        }
         p.output();
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
@@ -3154,15 +3263,27 @@ mod adversarial {
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
-    pub async fn a_partitioned_table_is_renamed_with_its_partitions(mut p: P) {
-        p.file("20261027100000_events.sql", "create table events (id int, at date, primary key (id, at)) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01');");
+    pub async fn a_table_renamed_onto_a_views_name_drops_the_view_first(mut p: P) {
+        p.file("20261027100000_data.sql", "create table t_data (id int, name text); create view data as select * from t_data; create view q as select * from data;");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
-        p.exec("insert into events values (1, '2024-06-01')").await;
-        p.schema("create table logs (id int, at date, primary key (id, at)) partition by range (at); create table logs_2024 partition of logs for values from ('2024-01-01') to ('2025-01-01');");
+        p.exec("insert into t_data values (1, 'a')").await;
+        // The view goes, with the view on it, before the table takes its name; the plan makes q again.
+        p.schema("create table data (id int, name text); create view q as select * from data;");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select name from q").await.len(), 1);
+    }
+
+    pub async fn a_partitioned_table_is_renamed_with_its_partitions(mut p: P) {
+        p.file("20261027100000_events.sql", "create table events (id int generated always as identity, at date, primary key (id, at)) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01');");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into events (at) values ('2024-06-01')").await;
+        p.schema("create table logs (id int generated always as identity, at date, primary key (id, at)) partition by range (at); create table logs_2024 partition of logs for values from ('2024-01-01') to ('2025-01-01');");
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "logs", &Default::default(), log).await).await, 0, "{}", p.peek());
         let made = p.files().into_iter().find(|f| f.ends_with("_logs.sql")).unwrap();
         let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
         assert!(sql.contains("alter table events rename to logs") && sql.contains("alter table events_2024 rename to logs_2024") && sql.contains("rename to logs_2024_pkey"), "{sql}");
+        // The identity's sequence is the parent's alone, renamed with it.
+        assert!(sql.contains("alter sequence events_id_seq rename to logs_id_seq") && !sql.contains("events_2024_id_seq"), "{sql}");
         p.output();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(p.rows("select id from logs_2024").await.len(), 1);
