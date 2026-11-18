@@ -622,7 +622,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let mut col_defs = Vec::new();
         // What a partition says of its columns where its parent says otherwise.
         let mut overrides = Vec::new();
-        let mut late_not_nulls: Vec<String> = Vec::new();
+        let mut later: Vec<String> = Vec::new();
         for c in &cols {
             let col_id = format!("column {name}.{}", c.text("name"));
             let target = if matches!(kind, "v" | "m") { id.clone() } else { col_id.clone() };
@@ -674,7 +674,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             let made = if unvalidated { full.trim_end_matches(" not null").to_string() } else { full.clone() };
             let add_not_null = format!("alter table {name} add constraint {} not null {} not valid", c.text("nn_name"), c.text("name"));
             if unvalidated {
-                late_not_nulls.push(add_not_null.clone());
+                later.push(add_not_null.clone());
             }
             if c.flag("local") || !partition {
                 col_defs.push(format!("{} {made}", c.text("name")));
@@ -690,7 +690,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     owner: Some(id.clone()),
                     def: def.clone(),
                     create: [Some(if kind == "c" { format!("alter type {name} add attribute {} {made}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }), unvalidated.then(|| add_not_null.clone())].into_iter().flatten().collect(),
-                    extra: c.get("nn_name").map(|n| vec![format!("not null name {n}")]).unwrap_or_default(),
+                    extra: c.get("nn_name").map(|n| format!("not null name {n}")).into_iter().chain((kind == "p").then(|| "partitioned".to_string())).collect(),
                     drop: vec![if kind == "c" { format!("alter type {name} drop attribute {}", c.text("name")) } else { format!("alter table {name} drop column {}", c.text("name")) }],
                     inline: true,
                     change: Change::Alter { blocks: true },
@@ -705,8 +705,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 if let Some((default, not_null)) = parent {
                     let mut said = Vec::new();
                     if mine.0 != *default {
-                        if let Some(d) = &mine.0 {
-                            said.push(format!("default {d}"));
+                        match &mine.0 {
+                            Some(d) => said.push(format!("default {d}")),
+                            // A default the parent has and the partition doesn't is dropped after it is made.
+                            None => later.push(format!("alter table {name} alter column {} drop default", c.text("name"))),
                         }
                     }
                     if mine.1 && !not_null {
@@ -723,7 +725,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     def: def.clone(),
                     inline: true,
                     change: Change::Alter { blocks: true },
-                    extra: vec!["partition".into()],
+                    extra: std::iter::once("partition".to_string()).chain((kind == "p").then(|| "partitioned".to_string())).collect(),
                     deps: r.get("parent").map(|p| format!("column {p}.{}", c.text("name"))).into_iter().collect(),
                     ..Object::default()
                 });
@@ -777,7 +779,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         // A table's own properties change in place; a view or a composite type is replaced.
         let change = if object_kind == Kind::Table { Change::Alter { blocks: false } } else { Change::Replace };
         let mut create = vec![create];
-        create.extend(late_not_nulls);
+        create.extend(later);
         s.add(Object { id: id.clone(), kind: Some(object_kind), def, create, drop: vec![drop], change, extra, ..Object::default() });
         // Row-level security, enabled, forced on the table's owner, or both: each is set on its own.
         if r.flag("rls") || r.flag("force") {
@@ -1645,6 +1647,18 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             o.extra.extend(lines);
         }
     }
+    // An enum made again takes its grants, revokes, owner and comment back, which a new type lacks.
+    let mut metadata: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for o in s.objects.values().filter(|o| matches!(o.kind, Some(Kind::Grant | Kind::Comment))) {
+        if let Some(t) = o.owner.as_ref().filter(|t| s.objects.get(*t).is_some_and(|t| t.def.starts_with("enum ("))) {
+            metadata.entry(t.clone()).or_default().extend(o.create.iter().map(|c| format!("{AGAIN}{c}")));
+        }
+    }
+    for (id, lines) in metadata {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra.extend(lines);
+        }
+    }
     Ok(s)
 }
 
@@ -1917,6 +1931,9 @@ fn options_change(from: &[(String, String)], to: &[(String, String)]) -> Option<
 /// What an object a change is made around is carried as: `around <id>\t<def>\t<drop>\t<create>`.
 const AROUND: &str = "around ";
 
+/// A statement an enum made again runs after: one of its grants, its owner or its comment.
+const AGAIN: &str = "again ";
+
 fn around_line(o: &Object) -> String {
     format!("{AROUND}{}\t{}\t{}\t{}", o.id, o.def.replace(['\t', '\n'], " "), o.drop.join("; "), o.create.join("; "))
 }
@@ -2089,7 +2106,7 @@ fn swap_enum(name: &str, create: &str, columns: &[String]) -> Vec<String> {
     let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
     let old = if schema.is_empty() { aside.clone() } else { format!("{schema}.{aside}") };
     let mut out = vec![format!("alter type {name} rename to {aside}"), create.to_string()];
-    for c in columns.iter().filter(|c| !c.starts_with(AROUND)) {
+    for c in columns.iter().filter(|c| !c.starts_with(AROUND) && !c.starts_with(AGAIN)) {
         let parts: Vec<&str> = c.splitn(4, '|').collect();
         let [table, column, ty, default] = parts[..] else { continue };
         let text = if ty.ends_with("[]") { "text[]" } else { "text" };
@@ -2234,12 +2251,14 @@ impl Alterer for PostgresAlterer {
             // its own, set after the parent's.
             Kind::Column if to.extra.iter().any(|l| l == "partition") => {
                 let (a, b) = (parse_column(&from.def), parse_column(&to.def));
-                let at = format!("alter table {table} alter column {name}");
+                // A default set on a partitioned table alone, which its partitions say for themselves.
+                let only = if to.extra.iter().any(|l| l == "partitioned") { "only " } else { "" };
+                let (at, at_default) = (format!("alter table {table} alter column {name}"), format!("alter table {only}{table} alter column {name}"));
                 let mut out = Vec::new();
                 if a.ty == b.ty && a.generated.is_none() && b.generated.is_none() && a.identity.is_none() && b.identity.is_none() {
                     match (&a.default, &b.default) {
-                        (Some(_), None) => out.push(format!("{at} drop default")),
-                        (x, Some(y)) if x.as_ref() != Some(y) => out.push(format!("{at} set default {y}")),
+                        (Some(_), None) => out.push(format!("{at_default} drop default")),
+                        (x, Some(y)) if x.as_ref() != Some(y) => out.push(format!("{at_default} set default {y}")),
                         _ => {}
                     }
                     if a.not_null != b.not_null {
@@ -2281,8 +2300,11 @@ impl Alterer for PostgresAlterer {
                 }
                 // Set default replaces one; one is dropped only to go, or around a type change,
                 // which would cast it.
+                // A partitioned table's default changes on it alone, where its type stays: each
+                // partition sets its own, which may differ.
+                let at_default = if !type_changes && to.extra.iter().any(|l| l == "partitioned") { format!("alter table only {table} alter column {name}") } else { at.clone() };
                 if a.default.is_some() && (b.default.is_none() || type_changes) {
-                    out.push(format!("{at} drop default"));
+                    out.push(format!("{at_default} drop default"));
                 }
                 let (unmake, remake) = if type_changes { around(from, to) } else { (vec![], vec![]) };
                 if type_changes {
@@ -2303,7 +2325,7 @@ impl Alterer for PostgresAlterer {
                     if let Some(d) = declared_default {
                         b.default = Some(d);
                     }
-                    out.push(format!("{at} set default {}", b.default.as_deref().unwrap_or_default()));
+                    out.push(format!("{at_default} set default {}", b.default.as_deref().unwrap_or_default()));
                 }
                 // An identity needs its column not null first.
                 let mut not_null_done = false;
@@ -2330,22 +2352,34 @@ impl Alterer for PostgresAlterer {
                         if kx != ky {
                             set.push(format!("set generated {ky}"));
                         }
-                        // Each option the target has, or its default where it has none. The start
-                        // left out is the first value the bounds allow, so it moves with them.
-                        let start = |o: &BTreeMap<String, String>| -> String {
+                        // Each option as it takes effect, its default where none is written: the
+                        // bounds follow the direction and the column's type, and the start the bounds.
+                        let effective = |o: &BTreeMap<String, String>, ty: &str| -> BTreeMap<String, String> {
+                            let (low, high) = match ty {
+                                "smallint" => ("-32768", "32767"),
+                                "integer" => ("-2147483648", "2147483647"),
+                                _ => ("-9223372036854775808", "9223372036854775807"),
+                            };
                             let descending = o.get("increment by").is_some_and(|i| i.starts_with('-'));
-                            o.get("start with").or(o.get(if descending { "maxvalue" } else { "minvalue" })).cloned().unwrap_or_else(|| if descending { "-1".into() } else { "1".into() })
+                            let mut out = BTreeMap::new();
+                            out.insert("increment by".to_string(), o.get("increment by").cloned().unwrap_or_else(|| "1".into()));
+                            out.insert("minvalue".to_string(), o.get("minvalue").cloned().unwrap_or_else(|| if descending { low.into() } else { "1".into() }));
+                            out.insert("maxvalue".to_string(), o.get("maxvalue").cloned().unwrap_or_else(|| if descending { "-1".into() } else { high.into() }));
+                            let start = o.get("start with").cloned().unwrap_or_else(|| out[if descending { "maxvalue" } else { "minvalue" }].clone());
+                            out.insert("start with".to_string(), start);
+                            out.insert("cache".to_string(), o.get("cache").cloned().unwrap_or_else(|| "1".into()));
+                            out
                         };
-                        let (mut ox, mut oy) = (ox, oy);
-                        ox.insert("start with".into(), start(&ox));
-                        oy.insert("start with".into(), start(&oy));
-                        for (key, default) in [("increment by", Some("1".to_string())), ("minvalue", None), ("maxvalue", None), ("start with", None), ("cache", Some("1".to_string()))] {
-                            if ox.get(key) != oy.get(key) {
-                                set.push(match oy.get(key).cloned().or(default) {
-                                    Some(v) => format!("set {key} {v}"),
-                                    None => format!("set no {key}"),
-                                });
+                        let (ex, ey) = (effective(&ox, &a.ty), effective(&oy, &b.ty));
+                        for key in ["increment by", "minvalue", "maxvalue", "start with", "cache"] {
+                            if ex[key] != ey[key] {
+                                set.push(format!("set {key} {}", ey[key]));
                             }
+                        }
+                        // One that turns to count the other way starts again: every value it gave lies
+                        // outside its new bounds.
+                        if ex["increment by"].starts_with('-') != ey["increment by"].starts_with('-') {
+                            set.push("restart".into());
                         }
                         if ox.contains_key("cycle") != oy.contains_key("cycle") {
                             set.push(if oy.contains_key("cycle") { "set cycle".into() } else { "set no cycle".into() });
@@ -2377,16 +2411,17 @@ impl Alterer for PostgresAlterer {
                 let name = to.id.strip_prefix("type ")?;
                 // A label added in a transaction can't be used in it (a default, a check), as a
                 // label of a type made in it can: one the target uses is added by making the type again.
-                let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().any(|x| x.contains(l.as_str())));
+                let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().filter(|x| !x.starts_with(AGAIN)).any(|x| x.contains(l.as_str())));
                 if used || kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y) {
                     let (unmake, remake) = around(from, to);
                     let mut out = unmake;
                     // The columns both have: one the plan drops is gone before, one it adds comes after.
-                    let kept: Vec<String> = from.extra.iter().filter(|c| !c.starts_with(AROUND) && to.extra.iter().any(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2)))).cloned().collect();
+                    let kept: Vec<String> = from.extra.iter().filter(|c| !c.starts_with(AROUND) && !c.starts_with(AGAIN) && to.extra.iter().any(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2)))).cloned().collect();
                     let mut swap = swap_enum(name, &to.create[0], &kept);
                     let last = swap.pop();
                     out.extend(swap);
                     out.extend(remake);
+                    out.extend(to.extra.iter().filter_map(|l| l.strip_prefix(AGAIN)).map(String::from));
                     out.extend(last);
                     return Some(out);
                 }

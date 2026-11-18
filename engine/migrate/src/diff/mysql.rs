@@ -1198,6 +1198,17 @@ impl Alterer for MysqlAlterer {
         if from.kind != Some(Kind::Column) {
             return None;
         }
+        // A column that stops being virtual keeps none of the values it computed, and one that
+        // becomes generated computes its values in place of those it holds.
+        let generated = |def: &str| {
+            let def = def.to_ascii_lowercase();
+            def.find("generated always as").map(|at| if def[at..].contains(" virtual") { "virtual" } else { "stored" })
+        };
+        match (generated(&from.def), generated(&to.def)) {
+            (Some("virtual"), None) => return Some("stops being a virtual column, which leaves its rows without the values it computed".into()),
+            (None, Some(_)) => return Some("becomes a generated column, which replaces its values with the expression's".into()),
+            _ => {}
+        }
         let (a, b) = (type_of(&from.def), type_of(&to.def));
         let why = super::narrowing(&type_class(&a), &type_class(&b))?;
         Some(format!("changes from {a} to {b}, which {why}"))

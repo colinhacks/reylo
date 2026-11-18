@@ -877,6 +877,16 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         }
                     }
                 }
+                // An alter after the changes of what stops depending on it (a column moved to
+                // another enum, before the one it leaves is made again).
+                if matches!(op, Op::Alter(_)) {
+                    for dependent in dependents.get(id.as_str()).into_iter().flatten() {
+                        let leaves = from.objects[*dependent].deps.contains(id) && to.objects.get(*dependent).is_some_and(|d| !d.deps.contains(id));
+                        if let Some(j) = find(Op::Alter(dependent.to_string())).filter(|_| leaves) {
+                            after[k].insert(j);
+                        }
+                    }
+                }
                 // An alter after the drops of what depends on it and is replaced (a view on a
                 // column whose type changes).
                 if matches!(op, Op::Alter(_)) {

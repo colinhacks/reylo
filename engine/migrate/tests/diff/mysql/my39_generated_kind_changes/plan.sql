@@ -1,3 +1,6 @@
+-- loses data: readings.label stops being a virtual column, which leaves its rows without the values it computed
+-- loses data: readings.later becomes a generated column, which replaces its values with the expression's
+-- loses data: readings.plain becomes a generated column, which replaces its values with the expression's
 alter table readings
   drop column doubled,
   drop column tripled,
