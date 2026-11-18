@@ -645,7 +645,7 @@ pub fn plan(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> Pl
 fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> Plan {
     let text = match dialect {
         Dialect::Postgres => sql.to_string(),
-        Dialect::Sqlite | Dialect::Mysql => dollar_placeholders(sql),
+        Dialect::Sqlite | Dialect::Mysql | Dialect::Clickhouse => dollar_placeholders(sql),
     };
     let Ok(parsed) = crate::stack::parse(&text) else { return Plan::default() };
     let version = parsed.protobuf.version;
@@ -1798,7 +1798,7 @@ impl Reader<'_> {
                 }
                 let accepted = match self.dialect {
                     Dialect::Postgres => POSTGRES_OPERATORS.contains(&op.as_str()),
-                    Dialect::Sqlite | Dialect::Mysql => SQLITE_OPERATORS.contains(&op.as_str()),
+                    Dialect::Sqlite | Dialect::Mysql | Dialect::Clickhouse => SQLITE_OPERATORS.contains(&op.as_str()),
                 };
                 let Some(right) = a.rexpr.as_deref() else { return Expr::Unknown };
                 // A prefix operator: a sign, and on Postgres a root, absolute value or bitwise not.

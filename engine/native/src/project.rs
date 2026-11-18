@@ -84,6 +84,8 @@ pub fn dialect_of(url: &str) -> Option<&'static str> {
         "postgres" | "postgresql" => Some("postgres"),
         "mysql" | "mariadb" => Some("mysql"),
         "file" | "sqlite" => Some("sqlite"),
+        // ClickHouse is named by the URL of its HTTP interface, as an app gives it to @clickhouse/client.
+        "http" | "https" => Some("clickhouse"),
         _ => None,
     }
 }
@@ -716,7 +718,9 @@ mod tests {
         assert_eq!(dialect_of("MySQL://root@h"), Some("mysql"));
         assert_eq!(dialect_of("mariadb://root@h"), Some("mysql"));
         assert_eq!(dialect_of("file:./app.db"), Some("sqlite"));
-        assert_eq!(dialect_of("http://h"), None);
+        assert_eq!(dialect_of("http://h"), Some("clickhouse"));
+        assert_eq!(dialect_of("HTTPS://app@h:8443/shop"), Some("clickhouse"));
+        assert_eq!(dialect_of("clickhouse://h:9000"), None);
         assert_eq!(dialect_of(":memory:"), None);
         assert_eq!(sqlite_path(":memory:", Path::new("/app")).unwrap(), ":memory:");
         if cfg!(unix) {

@@ -2,6 +2,8 @@
 //! the [`crate::Answerer`] or [`crate::AsyncAnswerer`] for that client and an `analyze` that runs a
 //! statement's whole replay on it.
 
+#[cfg(feature = "clickhouse")]
+pub mod clickhouse;
 #[cfg(feature = "mysql")]
 pub mod mysql_async;
 #[cfg(feature = "sqlite")]

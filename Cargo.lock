@@ -2151,6 +2151,7 @@ version = "0.8.0"
 dependencies = [
  "mysql_async",
  "reylo-engine-build",
+ "reylo-engine-clickhouse",
  "reylo-engine-core",
  "reylo-engine-mysql",
  "reylo-engine-postgres",
@@ -2163,12 +2164,23 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
+ "ureq",
  "webpki-roots",
 ]
 
 [[package]]
 name = "reylo-engine-build"
 version = "0.8.0"
+
+[[package]]
+name = "reylo-engine-clickhouse"
+version = "0.8.0"
+dependencies = [
+ "reylo-engine-build",
+ "reylo-engine-core",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "reylo-engine-core"

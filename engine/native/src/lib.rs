@@ -5,9 +5,10 @@
 //! opens a connection. It replays an analysis, naming the statements it needs described and the
 //! catalog queries it needs run, and a host answers them ([`replay`]).
 //!
-//! Each database is behind a feature (`postgres`, `sqlite`, `mysql`), which brings its engine, the
-//! answers to its needs over its client (tokio-postgres, rusqlite or mysql_async) with an `analyze`
-//! that runs a statement's whole replay on it ([`clients`]), and its program. A host that answers the
+//! Each database is behind a feature (`postgres`, `sqlite`, `mysql`, `clickhouse`), which brings
+//! its engine, the answers to its needs over its client (tokio-postgres, rusqlite, mysql_async, or
+//! ureq for ClickHouse's HTTP interface) with an `analyze` that runs a statement's whole replay on
+//! it ([`clients`]), and its program. A host that answers the
 //! engine its own way implements [`Answerer`] or [`AsyncAnswerer`] and calls [`replay::run`] or
 //! [`replay::run_async`] with its database's engine, from [`engines`]
 //! (`replay::run_async::<reylo_engine::engines::postgres::Postgres, _>`): the module of a database's
@@ -51,9 +52,12 @@ pub mod engines {
     /// The MySQL engine: the server's prepare metadata, read with a parse of the statement.
     #[cfg(feature = "mysql")]
     pub use reylo_engine_mysql as mysql;
+    /// The ClickHouse engine: the server's own describe of a statement, and its query tree.
+    #[cfg(feature = "clickhouse")]
+    pub use reylo_engine_clickhouse as clickhouse;
 }
 
-#[cfg(any(feature = "postgres", feature = "sqlite", feature = "mysql"))]
+#[cfg(any(feature = "postgres", feature = "sqlite", feature = "mysql", feature = "clickhouse"))]
 pub mod clients;
 
 /// Why a client could not answer the engine at all: a lost connection, a catalog query the
@@ -80,6 +84,8 @@ pub const SOURCE_HASH: &str = env!("REYLO_ENGINE_HASH");
 
 /// The project file, `.reylo.yaml`, and the database it names, as every frontend reads them.
 pub mod project;
+#[cfg(feature = "clickhouse")]
+pub mod clickhouse;
 #[cfg(feature = "mysql")]
 pub mod mysql;
 #[cfg(feature = "postgres")]
@@ -105,7 +111,7 @@ pub enum Failure {
 
 impl Failure {
     /// The failure a program's answer reports.
-    #[cfg_attr(not(any(feature = "postgres", feature = "mysql")), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "postgres", feature = "mysql", feature = "clickhouse")), allow(dead_code))]
     fn of(answer: &Value) -> Failure {
         let message = answer["message"].as_str().unwrap_or_default().to_string();
         match answer["status"].as_str() {
