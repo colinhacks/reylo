@@ -304,8 +304,10 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
     let mut validated: BTreeSet<(String, String)> = BTreeSet::new();
     // The tables an earlier statement of the file locked against writes, until it commits.
     let mut locked: BTreeSet<String> = BTreeSet::new();
-    // The indexes the file makes by name, which may be ones it dropped first.
+    // The indexes the file makes by name, which may be ones it dropped first, and those it builds
+    // again concurrently, which blocks no writes; and the tables whose every index it so rebuilds.
     let mut made: BTreeSet<String> = BTreeSet::new();
+    let mut reindexed: BTreeSet<String> = BTreeSet::new();
     let mut add = |table: &str, what: String| {
         let hazard = Hazard { table: table.to_string(), what };
         if !hazards.contains(&hazard) {
@@ -357,6 +359,14 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
                         locked.insert(table);
                     }
                 }
+                Some(N::ReindexStmt(r)) if r.params.iter().any(|p| matches!(&p.node, Some(N::DefElem(d)) if d.defname == "concurrently")) => {
+                    let Some(rel) = &r.relation else { continue };
+                    if is(r.kind, pg_query::protobuf::ReindexObjectType::ReindexObjectIndex) {
+                        made.insert(rel.relname.clone());
+                    } else if is(r.kind, pg_query::protobuf::ReindexObjectType::ReindexObjectTable) {
+                        reindexed.extend(resolve(&named(rel)));
+                    }
+                }
                 Some(N::TruncateStmt(t)) => {
                     for r in &t.relations {
                         if let Some(N::RangeVar(r)) = &r.node {
@@ -387,7 +397,7 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
     let rebuilt = |name: &str, s: &Stored| after.get(name).is_some_and(|a| a.kind == "i" && (a.oid != s.oid || a.file != s.file));
     for (index, s) in before.iter().filter(|(_, s)| s.kind == "i") {
         let bare = index.rsplit_once('.').map_or(index.as_str(), |(_, n)| n).trim_matches('"');
-        if !truncated.contains(&s.table) && !copied.contains(&s.table) && !made.contains(bare) && rebuilt(index, s) {
+        if !truncated.contains(&s.table) && !copied.contains(&s.table) && !reindexed.contains(&s.table) && !made.contains(bare) && rebuilt(index, s) {
             let hazard = Hazard { table: s.table.clone(), what: format!("builds {index} again, reading every row of {} while it blocks reads and writes to it", s.table) };
             if !hazards.contains(&hazard) {
                 hazards.push(hazard);

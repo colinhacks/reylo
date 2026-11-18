@@ -2703,6 +2703,7 @@ on!(
     deploy_waits_out_a_lock_another_session_holds,
     new_refuses_a_check_on_a_partitioned_table_until_blocking,
     new_refuses_an_index_built_again_until_blocking,
+    a_concurrent_reindex_is_said_to_block_nothing,
 );
 
 #[tokio::test(flavor = "current_thread")]
@@ -3064,6 +3065,17 @@ mod adversarial {
         p.schema(r#"create table users (id int primary key, name text collate "POSIX"); create index users_name on users (name);"#);
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posix", &Default::default(), log).await).await, 1);
         assert_has!(p.output(), r"✗ This migration builds users_name again, reading every row of users while it blocks reads and writes to it");
+    }
+
+    pub async fn a_concurrent_reindex_is_said_to_block_nothing(mut p: P) {
+        p.file("20261027100000_users.sql", "create table users (id int primary key, n int); create index users_n on users (n);");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.file("20261027110000_reindex.sql", "reindex index concurrently users_n;");
+        p.file("20261027120000_reindex_table.sql", "reindex table concurrently users;");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        let out = p.output();
+        assert!(out.contains("2 pending") && !out.contains(" It "), "{out}");
     }
 
     pub async fn deploy_waits_out_a_lock_another_session_holds(mut p: P) {
