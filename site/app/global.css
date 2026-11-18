@@ -1139,7 +1139,9 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   display: flex;
   align-items: center;
   gap: 0.625rem;
-  font: 600 1rem/1 'Orbitron', var(--font-text);
+  font: 600 0.9375rem/1 'Orbitron', var(--font-text);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--color-fd-primary);
 }
 
@@ -1178,31 +1180,21 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   pointer-events: none;
 }
 
-.ml-eyebrow {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.625rem;
-  font: 600 0.8125rem/1 'Orbitron', var(--font-text);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--color-fd-primary);
-}
-
-.ml-eyebrow svg {
-  height: 0.875rem;
-  width: auto;
-}
-
 .ml-h1 {
   position: relative;
-  max-width: 13ch;
-  margin: 1.75rem 0 2rem;
-  font-size: 6.25rem;
+  margin: 0 0 2rem;
+  /* Two lines, each kept whole: the first fills the column at the largest size, and both shrink
+     with the window rather than break again. It may run over the mark behind it. */
+  font-size: clamp(2.25rem, 5.4vw, 4.875rem);
   font-weight: 600;
   line-height: 0.98;
   letter-spacing: -0.04em;
-  text-wrap: balance;
+}
+
+.ml-h1 span,
+.ml-h1 em {
+  display: block;
+  white-space: nowrap;
 }
 
 .dark .ml-h1 {
@@ -1230,9 +1222,34 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-big {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   flex-wrap: wrap;
   gap: 1rem;
+}
+
+.ml-box {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.ml-seg {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.ml-seg button {
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.4375rem;
+  font: 0.84rem var(--font-code);
+  color: var(--color-fd-muted-foreground);
+}
+
+.ml-seg button:hover,
+.ml-seg button.on {
+  color: var(--color-fd-foreground);
+  background: var(--color-fd-secondary);
 }
 
 .ml-cmd {
@@ -1256,8 +1273,9 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 .ml-copybtn {
   display: grid;
   place-items: center;
-  width: 2.625rem;
-  height: 2.625rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin-left: 0.75rem;
   border-radius: 0.5rem;
   color: var(--color-fd-muted-foreground);
 }
@@ -1268,7 +1286,8 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 }
 
 .ml-copybtn svg,
-.ml-docs svg {
+.ml-docs svg,
+.ml-docs-link svg {
   width: 1rem;
   height: 1rem;
   fill: none;
@@ -1294,26 +1313,9 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   background: var(--color-fd-accent);
 }
 
-.ml-alt {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  margin-top: 1rem;
-  font-size: 0.9rem;
-  color: var(--color-fd-muted-foreground);
-}
-
-.ml-alt button {
-  padding: 0.125rem 0.375rem;
-  border-radius: 0.3125rem;
-  font: 0.84rem var(--font-code);
-  color: var(--color-fd-muted-foreground);
-}
-
-.ml-alt button:hover,
-.ml-alt button.on {
-  color: var(--color-fd-foreground);
-  background: var(--color-fd-secondary);
+.ml-copybtn svg {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 /* A feature row: the words in one column, what it does in the other, the sides alternating. */
@@ -1343,8 +1345,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   text-wrap: balance;
 }
 
-.ml-row-text p,
-.ml-end p {
+.ml-row-text p {
   margin: 0;
   font-size: 1.1875rem;
   line-height: 1.6;
@@ -1557,17 +1558,52 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-end {
   padding-block: 6rem 7rem;
+  border-top: 1px solid var(--color-fd-border);
   text-align: center;
 }
 
-.ml-end p {
-  margin-bottom: 2.25rem;
+.ml-end h2 {
+  margin-bottom: 2.5rem;
 }
 
-.ml-end .ml-big,
-.ml-end .ml-alt {
+.ml-centered .ml-big {
   justify-content: center;
 }
+
+.ml-docs-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.75rem;
+  font-size: 1.0625rem;
+  font-weight: 500;
+  color: var(--color-fd-muted-foreground);
+}
+
+.ml-docs-link:hover {
+  color: var(--color-fd-foreground);
+}
+
+.ml-gh {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ml-gh svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.ml-stars {
+  padding: 0.0625rem 0.4375rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+
 
 .ml-foot {
   display: flex;
@@ -1612,8 +1648,13 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
     padding-inline: 1.25rem;
   }
 
+  /* On a phone the first line can't stay whole: the headline wraps, in three lines at this size. */
   .ml-h1 {
-    font-size: 3rem;
+    font-size: 2rem;
+  }
+
+  .ml-h1 span {
+    white-space: normal;
   }
 
   .ml-row-text h2,
@@ -1652,4 +1693,14 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
    (optical-spacing's ink-align.mjs, 2026-11-17). A transform moves no layout. */
 .ml-bar svg {
   translate: 0 0.625px;
+}
+
+/* The brand's mark sat 0.56px high against its small-caps name, and the GitHub icon 0.31px high
+   against its label (optical-spacing's ink-align.mjs, 2026-11-17). */
+.ml-brand svg {
+  translate: 0 0.5px;
+}
+
+.ml-gh svg {
+  translate: 0 0.3px;
 }
