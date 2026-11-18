@@ -1183,7 +1183,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   margin: 0 0 2rem;
   /* Two lines, each kept whole: the first fills the column at the largest size, and both shrink
      with the window rather than break again. It may run over the mark behind it. */
-  font-size: clamp(2.25rem, 5.4vw, 4.875rem);
+  font-size: clamp(2.25rem, 6.6vw, 6rem);
   font-weight: 600;
   line-height: 0.98;
   letter-spacing: -0.04em;
@@ -1376,13 +1376,14 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 .ml-num {
   display: block;
   margin-bottom: 1rem;
-  font: 600 0.875rem/1 var(--font-code);
+  font: 600 1rem/1 var(--font-code);
   letter-spacing: 0.08em;
   color: var(--color-fd-primary);
 }
 
 .dark .ml-num {
-  text-shadow: 0 0 10px rgb(255 184 0 / 0.55);
+  color: #ffd43b;
+  text-shadow: 0 0 11px rgb(255 184 0 / 0.65);
 }
 
 .dark .ml-brand {
@@ -1593,9 +1594,44 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 }
 
 .ml-end {
-  padding-block: 6rem 7rem;
+  position: relative;
+  padding-block: 8rem 9rem;
   border-top: 1px solid var(--color-fd-border);
   text-align: center;
+}
+
+/* The mark, large and faint behind the closing section, as behind the hero. */
+.ml-end-mark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 46rem;
+  max-width: 100%;
+  height: auto;
+  translate: -50% -50%;
+  color: var(--color-fd-primary);
+  opacity: 0.07;
+  pointer-events: none;
+}
+
+.ml-end > :not(.ml-end-mark) {
+  position: relative;
+}
+
+.ml-docs-primary {
+  border-color: var(--color-fd-primary);
+  background: var(--color-fd-primary);
+  color: hsl(0 0% 6%);
+  font-weight: 600;
+}
+
+.ml-docs-primary:hover {
+  background: var(--color-fd-primary);
+  filter: brightness(1.08);
+}
+
+.ml-docs-primary svg {
+  color: hsl(0 0% 6%);
 }
 
 .ml-end h2 {
@@ -1689,7 +1725,8 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
     font-size: 2rem;
   }
 
-  .ml-h1 span {
+  .ml-h1 span,
+  .ml-h1 em {
     white-space: normal;
   }
 

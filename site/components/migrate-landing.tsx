@@ -32,7 +32,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       <header className="ml-hero">
         <Mark className="ml-ghost" />
         <h1 className="ml-h1">
-          <span>SQL-first database migrations</span> <em>for busy teams</em>
+          <span>SQL-first</span> <em>database migration tool</em>
         </h1>
         <p className="ml-lede">Model your schema in plain SQL, on Postgres, MySQL and SQLite.</p>
         <Install />
@@ -58,7 +58,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         <p>Delete <code>schema.sql</code>, and your migrations are your schema. Write them by hand, or from changes to your development database.</p>
       </Row>
 
-      <Row n={6} title="A lockfile for one history" visual={<LockFile />} flip>
+      <Row n={6} title={<>Linear history via <code>reylo.lock</code></>} visual={<LockFile />} flip>
         <p>The lock keeps one order, each line chained to the last. Two branches that each add a migration conflict in git, before anything deploys.</p>
       </Row>
 
@@ -79,14 +79,9 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </Row>
 
       <section className="ml-end">
+        <Mark className="ml-end-mark" />
         <h2>Get started</h2>
         <Install centered />
-        <a className="ml-docs-link" href={migrateDocsUrl}>
-          Read the docs
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M2.5 8h11M9 3.5 13.5 8 9 12.5" />
-          </svg>
-        </a>
       </section>
 
       <footer className="ml-foot">
@@ -121,7 +116,7 @@ function GitHubIcon() {
 }
 
 /** A feature: its number, in the accent, its name and a sentence or two, beside what it does. `flip` puts the words on the right. */
-function Row({ n, title, visual, flip, children }: { n: number; title: string; visual: ReactNode; flip?: boolean; children: ReactNode }) {
+function Row({ n, title, visual, flip, children }: { n: number; title: ReactNode; visual: ReactNode; flip?: boolean; children: ReactNode }) {
   return (
     <section className={flip ? 'ml-row ml-flip' : 'ml-row'}>
       <div className="ml-row-text">
@@ -136,7 +131,7 @@ function Row({ n, title, visual, flip, children }: { n: number; title: string; v
 
 const INSTALLS = { brew: 'brew install reylosql/tap/reylo', npm: 'npm install reylo', curl: 'curl -fsSL https://reylo.dev/install.sh | sh' } as const;
 
-/** The install command, by package manager: the managers as tabs over its upper left, a copy button at its end, and, in the hero, the docs beside it. `centered` is the closing call to action's, which centres it and leaves the docs to a link under it. */
+/** The install command, by package manager: the managers as tabs over its upper left, a copy button at its end, and the docs beside it. `centered` is the closing call to action's, which centres the two and fills the docs button with the yellow. */
 function Install({ centered }: { centered?: boolean }) {
   const [kind, setKind] = useState<keyof typeof INSTALLS>('brew');
   const [copied, setCopied] = useState(false);
@@ -178,8 +173,8 @@ function Install({ centered }: { centered?: boolean }) {
             </button>
           </div>
         </div>
-        {centered ? null : (
-          <a className="ml-docs" href={migrateDocsUrl}>
+        {(
+          <a className={centered ? 'ml-docs ml-docs-primary' : 'ml-docs'} href={migrateDocsUrl}>
             Read the docs
             <svg viewBox="0 0 16 16" aria-hidden="true">
               <path d="M2.5 8h11M9 3.5 13.5 8 9 12.5" />
