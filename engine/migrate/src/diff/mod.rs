@@ -862,9 +862,15 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         }
                     }
                 }
-                // After its own drop, where it is replaced.
+                // After its own drop, where it is replaced, or the drop of what it goes with.
                 if let Some(j) = find(Op::Drop(id.clone())) {
                     after[k].insert(j);
+                } else if drops.contains(id) {
+                    for o in owners(from, id) {
+                        if let Some(j) = find(Op::Drop(o.to_string())) {
+                            after[k].insert(j);
+                        }
+                    }
                 }
                 // An alter after the drops of what depends on it and is replaced (a view on a
                 // column whose type changes).

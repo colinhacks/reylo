@@ -26,6 +26,16 @@ pub async fn declare(db: &mut Db, schema: &mut Schema, sql: &str) -> Result<(), 
     let path: Vec<String> = rows.first().and_then(|r| serde_json::from_str(r.text("path")).ok()).unwrap_or_default();
     let found = declared::read(schema, sql, &path);
     declared::apply(schema, &found);
+    // An index whose partitions' indexes are attached to it is made on its table alone, as the
+    // server renders it, whatever the file wrote: each of those is made and attached on its own.
+    for o in schema.objects.values_mut() {
+        if let Some(rendering) = o.extra.iter().find_map(|l| l.strip_prefix("rendering ")).map(String::from) {
+            if let Some(first) = o.create.first_mut() {
+                schema.verbatim.remove(first.as_str());
+                *first = rendering;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -319,9 +329,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                   case when r.rngsubopc <> 0 and not (select o.opcdefault from pg_opclass o where o.oid = r.rngsubopc) then 'subtype_opclass = ' || (select format('%I.%I', on_.nspname, o.opcname) from pg_opclass o join pg_namespace on_ on on_.oid = o.opcnamespace where o.oid = r.rngsubopc) end,
                   case when r.rngcollation <> 0 and r.rngcollation <> (select st.typcollation from pg_type st where st.oid = r.rngsubtype) then 'collation = ' || (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = r.rngcollation) end,
                   case when r.rngcanonical <> 0 then 'canonical = ' || format('%s', r.rngcanonical::regproc) end,
-                  case when r.rngsubdiff <> 0 then 'subtype_diff = ' || format('%s', r.rngsubdiff::regproc) end) from pg_range r where r.rngtypid = t.oid) end as range
+                  case when r.rngsubdiff <> 0 then 'subtype_diff = ' || format('%s', r.rngsubdiff::regproc) end) from pg_range r where r.rngtypid = t.oid) end as range,
+              {} as acl
             from pg_type t join pg_namespace n on n.oid = t.typnamespace
             where t.typtype in ('e', 'd', 'r') and {ns} and {} and {}",
+            acl_in("t.typacl", 'T', "t.typowner", Some("t.typnamespace")),
             not_extension("pg_type", "t"),
             not_platform("t.typowner")
         ))
@@ -385,6 +397,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         // A check left unvalidated is added after the domain is made, which can't take one.
         let mut create = vec![create];
         create.extend(unvalidated.iter().map(|(n, d)| format!("alter domain {name} add constraint {n} {d}")));
+        grants(&mut s, r.text("acl"), name, &id, if r.text("kind") == "d" { "domain" } else { "type" });
         s.add(Object { id, kind: Some(Kind::Type), def, create, drop: vec![format!("drop type {name}")], change, extra, ..Object::default() });
     }
     // A domain's checks are the domain's: what they call, it depends on.
@@ -505,13 +518,15 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // not those a partition takes from its parent), and the indexes they own.
     let mut constraint_indexes: BTreeMap<u32, String> = BTreeMap::new();
     let mut inline_constraints: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    let mut keyed: BTreeSet<(u32, String)> = BTreeSet::new();
     let partitions: BTreeSet<u32> = rels.iter().filter(|r| r.get("bound").is_some() || r.text("kind") == "c").map(|r| oid(r, "oid")).collect();
     for r in db
         .rows(&format!(
             "select co.oid, co.conindid, format('%I.%I', n.nspname, c.relname) as rel, c.oid as reloid, format('%I', co.conname) as name,
               pg_get_constraintdef(co.oid, false) as def, co.condeferrable as deferrable, co.condeferred as deferred, co.convalidated as validated, co.contype as type
             from pg_constraint co join pg_class c on c.oid = co.conrelid join pg_namespace n on n.oid = c.relnamespace
-            where co.contype not in ('n', 't') and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}",
+            where co.contype not in ('n', 't') and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}
+            order by co.contype, co.conname",
             not_platform("c.relowner"),
             not_extension("pg_constraint", "co")
         ))
@@ -529,7 +544,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let def = r.text("def").to_string();
         // A new table's own constraints are written inside its create table; a foreign key, which
         // names another table, is a statement of its own after both exist.
-        let inline = r.text("type") != "f" && r.flag("validated") && !partitions.contains(&oid(&r, "reloid"));
+        // A create table makes one index for keys alike (a primary key and a unique constraint on
+        // its columns, or two unique ones), keeping the first: the second is added after it.
+        let keys = |d: &str| d.trim_start_matches("PRIMARY KEY").trim_start_matches("UNIQUE").trim().to_string();
+        let alike = matches!(r.text("type"), "p" | "u") && keyed.contains(&(oid(&r, "reloid"), keys(&def)));
+        if matches!(r.text("type"), "p" | "u") {
+            keyed.insert((oid(&r, "reloid"), keys(&def)));
+        }
+        let inline = r.text("type") != "f" && r.flag("validated") && !partitions.contains(&oid(&r, "reloid")) && !alike;
         if inline {
             inline_constraints.entry(oid(&r, "reloid")).or_default().push(format!("constraint {name} {def}"));
         }
@@ -585,7 +607,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         for c in &cols {
             let col_id = format!("column {name}.{}", c.text("name"));
             let target = if matches!(kind, "v" | "m") { id.clone() } else { col_id.clone() };
-            ids.column.insert((rel, c.text("num").parse().unwrap_or(0)), target);
+            ids.column.insert((rel, c.text("num").parse().unwrap_or(0)), target.clone());
             if let Some(d) = c.get("defoid") {
                 ids.attrdefs.insert(d.parse().unwrap_or(0), col_id.clone());
             }
@@ -603,7 +625,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 });
             }
             if kind != "c" {
-                column_grants(&mut s, c.text("acl"), &name, c.text("name"), &col_id);
+                column_grants(&mut s, c.text("acl"), &name, c.text("name"), &target);
             }
             // How the column's values are kept and how closely the planner samples them, where not
             // its type's defaults.
@@ -736,33 +758,61 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
 
+    // Grants on an identity column's sequence, which goes with the column.
     for r in db
         .rows(&format!(
+            "select format('%I.%I', n.nspname, q.relname) as name, d.refobjid as rel, d.refobjsubid as att, {} as acl
+            from pg_class q join pg_namespace n on n.oid = q.relnamespace
+              join pg_depend d on d.classid = 'pg_class'::regclass and d.objid = q.oid and d.deptype = 'i' and d.refclassid = 'pg_class'::regclass and d.refobjsubid > 0
+            where q.relkind = 'S' and {ns}",
+            acl_in("q.relacl", 's', "q.relowner", Some("q.relnamespace"))
+        ))
+        .await?
+    {
+        let Some(column) = ids.column.get(&(oid(&r, "rel"), r.text("att").parse().unwrap_or(0))).cloned() else { continue };
+        grants(&mut s, r.text("acl"), r.text("name"), &column, "sequence");
+    }
+
+    let indexes = db
+        .rows(&format!(
             "select i.indexrelid as oid, i.indrelid as rel, format('%I.%I', n.nspname, c.relname) as name, pg_get_indexdef(i.indexrelid) as def,
-              exists (select 1 from pg_inherits h where h.inhrelid = i.indexrelid) as inherited
+              (select h.inhparent from pg_inherits h where h.inhrelid = i.indexrelid) as parent,
+              exists (select 1 from pg_constraint co where co.conindid = i.indexrelid) as keyed,
+              exists (select 1 from pg_inherits h where h.inhparent = i.indexrelid) as attached
             from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid
             where {ns} and {} and {} and t.relname <> '{history}'",
             not_extension("pg_class", "c"),
             not_platform("t.relowner")
         ))
-        .await?
-    {
-        let index = oid(&r, "oid");
-        if constraint_indexes.contains_key(&index) || r.flag("inherited") {
-            continue;
+        .await?;
+    // A partitioned table's index is made on it alone (`on only`), then each partition's index is
+    // attached to it, which goes with it: as many as the database has, named as it names them.
+    for pass in [false, true] {
+        for r in &indexes {
+            let index = oid(r, "oid");
+            let child = r.get("parent").is_some();
+            if constraint_indexes.contains_key(&index) || child != pass || (child && r.flag("keyed")) {
+                continue;
+            }
+            let Some((table, _)) = relations.get(&oid(r, "rel")) else { continue };
+            let id = format!("index {}", r.text("name"));
+            ids.class.insert(index, id.clone());
+            let def = r.text("def").to_string();
+            let mut o = Object { id, kind: Some(Kind::Index), owner: Some(table.clone()), def: def.clone(), create: vec![def.clone()], drop: vec![format!("drop index {}", r.text("name"))], ..Object::default() };
+            if r.flag("attached") {
+                o.extra.push(format!("rendering {def}"));
+            }
+            if let Some(parent) = r.get("parent").and_then(|p| p.parse::<u32>().ok()).and_then(|p| ids.class.get(&p).cloned()) {
+                let parent_name = parent.split_once(' ').map(|(_, n)| n.to_string()).unwrap_or_default();
+                o.def = format!("{def}\nattached to {parent_name}");
+                o.create.push(format!("alter index {parent_name} attach partition {}", r.text("name")));
+                o.extra.push(format!("attached to {parent_name}"));
+                o.goes_with = Some(parent.clone());
+                o.deps.insert(parent);
+                o.change = Change::Alter { blocks: false };
+            }
+            s.add(o);
         }
-        let Some((table, _)) = relations.get(&oid(&r, "rel")) else { continue };
-        let id = format!("index {}", r.text("name"));
-        ids.class.insert(index, id.clone());
-        s.add(Object {
-            id,
-            kind: Some(Kind::Index),
-            owner: Some(table.clone()),
-            def: r.text("def").to_string(),
-            create: vec![r.text("def").to_string()],
-            drop: vec![format!("drop index {}", r.text("name"))],
-            ..Object::default()
-        });
     }
 
     // A table's replica identity where it isn't the default (its primary key): what logical
@@ -1705,6 +1755,7 @@ fn acl_in(acl: &str, kind: char, owner: &str, schema: Option<&str>) -> String {
         's' => "S",
         'f' => "f",
         'n' => "n",
+        'T' => "T",
         _ => "",
     };
     let implied = format!(
@@ -1736,6 +1787,19 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
             create: vec![grant(grantee, privilege, *grantable)],
             drop: vec![revoke(grantee, privilege)],
             inline: implied.contains(&(grantee.clone(), privilege.clone(), *grantable)),
+            ..Object::default()
+        });
+    }
+    // What the owner's default privileges grant it as it is made, and it doesn't have: revoked
+    // after it is made, which an object already there has no need of.
+    for (grantee, privilege, grantable) in implied.iter().filter(|g| !have.contains(g) && !default.contains(g)) {
+        s.add(Object {
+            id: format!("revoke {privilege} on {name} from {grantee}"),
+            kind: Some(Kind::Grant),
+            owner: Some(id.to_string()),
+            def: grantable.to_string(),
+            create: vec![revoke(grantee, privilege)],
+            drop: vec![grant(grantee, privilege, *grantable)],
             ..Object::default()
         });
     }
@@ -2390,6 +2454,15 @@ impl Alterer for PostgresAlterer {
                 Some(out)
             }
             Kind::Comment | Kind::ColumnSetting => Some(to.create.clone()),
+            Kind::Index => {
+                // An index of a partition, alone, is attached to its table's index in place.
+                let attached = |o: &Object| o.extra.iter().find_map(|l| l.strip_prefix("attached to ")).map(String::from);
+                let plain = |o: &Object| bare(&o.def).split("\nattached to ").next().unwrap_or_default().to_string();
+                match (attached(from), attached(to)) {
+                    (None, Some(parent)) if plain(from) == plain(to) => Some(vec![format!("alter index {parent} attach partition {}", to.id.strip_prefix("index ")?)]),
+                    _ => None,
+                }
+            }
             Kind::Trigger if to.id.starts_with("event trigger ") => {
                 // Only whether it fires changes in place.
                 let without = |o: &Object| bare(&o.def).rsplit_once(' ').map(|(d, _)| d.to_string()).unwrap_or_default();
