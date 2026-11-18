@@ -1133,12 +1133,17 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
             });
         }
     }
+    // InnoDB adds one FULLTEXT index a statement: each after the first is a statement of its own.
+    let mut fulltext = clauses.iter().enumerate().filter(|(_, c)| c.starts_with("add fulltext ")).map(|(k, _)| k).skip(1).collect::<Vec<_>>();
+    fulltext.reverse();
+    let later: Vec<String> = fulltext.into_iter().map(|k| clauses.remove(k)).rev().collect();
     let mut out = Vec::new();
     match clauses.len() {
         0 => {}
         1 => out.push(format!("alter table {} {}", to.q, clauses[0])),
         _ => out.push(format!("alter table {}\n  {}", to.q, clauses.join(",\n  "))),
     }
+    out.extend(later.iter().map(|c| format!("alter table {} {c}", to.q)));
     if from.partition != to.partition {
         out.push(if to.partition.is_empty() { format!("alter table {} remove partitioning", to.q) } else { format!("alter table {} {}", to.q, to.partition) });
     }

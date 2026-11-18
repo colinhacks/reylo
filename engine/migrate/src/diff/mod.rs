@@ -844,6 +844,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
         }
     }
 
+    let renamed_as: BTreeMap<&str, &str> = renames.iter().map(|(new, (old, _))| (old.as_str(), new.as_str())).collect();
     // The edges: an op runs after every op in `after[op]`.
     let index: BTreeMap<Op, usize> = ops.iter().cloned().enumerate().map(|(k, op)| (op, k)).collect();
     let mut after: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); ops.len()];
@@ -953,7 +954,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                             after[k].insert(j);
                         }
                     }
-                    if let Some(j) = find(Op::Alter(dependent.to_string())) {
+                    // A dependent renamed changes under its new name.
+                    let now = renamed_as.get(*dependent).map(|n| n.to_string()).unwrap_or_else(|| dependent.to_string());
+                    if let Some(j) = find(Op::Alter(now)) {
                         after[k].insert(j);
                     }
                 }
