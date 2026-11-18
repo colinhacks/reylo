@@ -385,6 +385,8 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
               pg_get_expr(d.adbin, d.adrelid) as def, a.attidentity as identity, {} as identity_options, a.attgenerated as generated,
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
               col_description(c.oid, a.attnum) as comment,
+              concat_ws(' ', case when a.attstorage <> t.typstorage then 'storage=' || a.attstorage::text end, case when a.attcompression <> '' then 'compression=' || a.attcompression::text end,
+                case when coalesce(a.attstattarget, -1) >= 0 then 'statistics=' || a.attstattarget end) as settings,
               exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.connoinherit and nn.conkey = array[a.attnum]) as noinherit,
               (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
                  from aclexplode(a.attacl) x where x.grantee <> c.relowner) as acl
@@ -416,6 +418,10 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         }
         if let Some(collation) = r.get("collation") {
             parts.push(format!("collate {collation}"));
+        }
+        // How its values are kept, and how closely the planner samples them.
+        if let Some(settings) = r.get("settings").filter(|s| !s.is_empty()) {
+            parts.push(settings.to_string());
         }
         lines.push(parts.join(" "));
         // A privilege on the column alone: `grant select (email) on users to …`.
@@ -588,7 +594,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             "select format('aggregate %s (%s) kind=%s', p.oid::regprocedure, ({}), a.aggkind) as line
             from pg_aggregate a join pg_proc p on p.oid = a.aggfnoid join pg_namespace n on n.oid = p.pronamespace
             where {ns} and {} and {}
-            union all select 'rule ' || pg_get_ruledef(r.oid, false) from pg_rewrite r join pg_class c on c.oid = r.ev_class join pg_namespace n on n.oid = c.relnamespace
+            union all select 'rule ' || pg_get_ruledef(r.oid, false) || case r.ev_enabled when 'O' then '' else ' enabled=' || r.ev_enabled::text end from pg_rewrite r join pg_class c on c.oid = r.ev_class join pg_namespace n on n.oid = c.relnamespace
             where r.rulename <> '_RETURN' and {ns} and {}
             union all select 'statistics ' || pg_get_statisticsobjdef(s.oid) from pg_statistic_ext s join pg_namespace n on n.oid = s.stxnamespace where {ns} and {}",
             aggregate_options("p"),
@@ -620,7 +626,15 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             union all select 'trigger ' || format('%I', tg.tgname) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(tg.oid, 'pg_trigger')
             from pg_trigger tg join pg_class c on c.oid = tg.tgrelid join pg_namespace n on n.oid = c.relnamespace where not tg.tgisinternal and {ns}
             union all select 'policy ' || format('%I', po.polname) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(po.oid, 'pg_policy')
-            from pg_policy po join pg_class c on c.oid = po.polrelid join pg_namespace n on n.oid = c.relnamespace",
+            from pg_policy po join pg_class c on c.oid = po.polrelid join pg_namespace n on n.oid = c.relnamespace
+            union all select 'collation ' || format('%I.%I', n.nspname, co.collname), null, obj_description(co.oid, 'pg_collation')
+            from pg_collation co join pg_namespace n on n.oid = co.collnamespace where {ns} and {}
+            union all select 'publication ' || format('%I', pb.pubname), null, obj_description(pb.oid, 'pg_publication') from pg_publication pb
+            union all select 'rule ' || format('%I', ru.rulename) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(ru.oid, 'pg_rewrite')
+            from pg_rewrite ru join pg_class c on c.oid = ru.ev_class join pg_namespace n on n.oid = c.relnamespace where ru.rulename <> '_RETURN' and {ns}
+            union all select 'event trigger ' || format('%I', et.evtname), null, obj_description(et.oid, 'pg_event_trigger') from pg_event_trigger et where {}
+            union all select 'foreign data wrapper ' || format('%I', w.fdwname), {}, obj_description(w.oid, 'pg_foreign_data_wrapper') from pg_foreign_data_wrapper w where {}
+            union all select 'server ' || format('%I', sv.srvname), {}, obj_description(sv.oid, 'pg_foreign_server') from pg_foreign_server sv where {}",
             acl("c.relacl", "c.relowner", 's'),
             not_extension("pg_class", "c"),
             not_platform("c.relowner"),
@@ -632,6 +646,12 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             not_platform("t.typowner"),
             not_extension("pg_class", "c"),
             not_platform("c.relowner"),
+            not_extension("pg_collation", "co"),
+            not_extension("pg_event_trigger", "et"),
+            acl("w.fdwacl", "w.fdwowner", 'F'),
+            not_extension("pg_foreign_data_wrapper", "w"),
+            acl("sv.srvacl", "sv.srvowner", 'S'),
+            not_platform("sv.srvowner"),
         ))
         .await?
     {
@@ -694,6 +714,25 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         lines.push(r.text("line").to_string());
     }
 
+    // Foreign-data wrappers, with their functions and options; event triggers, with what fires them.
+    for r in db
+        .rows(&format!(
+            "select format('foreign data wrapper %I handler=%s validator=%s', w.fdwname, w.fdwhandler::regproc, w.fdwvalidator::regproc)
+              || coalesce(' options (' || (select string_agg(o, ', ' order by o) from unnest(w.fdwoptions) o) || ')', '') as line
+            from pg_foreign_data_wrapper w where {} and {}
+            union all select format('event trigger %I on %s tags=(%s) function=%s enabled=%s', et.evtname, et.evtevent,
+              coalesce((select string_agg(t, ', ' order by t) from unnest(et.evttags) t), ''), et.evtfoid::regprocedure, et.evtenabled)
+            from pg_event_trigger et where {} and {}",
+            not_extension("pg_foreign_data_wrapper", "w"),
+            not_platform("w.fdwowner"),
+            not_extension("pg_event_trigger", "et"),
+            not_platform("et.evtowner")
+        ))
+        .await?
+    {
+        lines.push(r.text("line").to_string());
+    }
+
     // Foreign servers, with their wrapper and options.
     for r in db
         .rows(&format!(
@@ -728,8 +767,6 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         })
         .collect();
     kinds.push(format!("select 'pg_cast'::regclass, x.oid from pg_cast x where x.oid >= 16384 and {}", not_extension("pg_cast", "x")));
-    kinds.push(format!("select 'pg_event_trigger'::regclass, x.oid from pg_event_trigger x where {} and {}", not_extension("pg_event_trigger", "x"), not_platform("x.evtowner")));
-    kinds.push(format!("select 'pg_foreign_data_wrapper'::regclass, x.oid from pg_foreign_data_wrapper x where {} and {}", not_extension("pg_foreign_data_wrapper", "x"), not_platform("x.fdwowner")));
     for r in db
         .rows(&format!("select 'object ' || o.type || ' ' || o.identity || ' (definition not compared)' as line from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o", kinds.join(" union all ")))
         .await?
@@ -818,8 +855,6 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
         in_ns("pg_ts_config", "cfgnamespace", "cfgowner"),
         in_ns("pg_ts_dict", "dictnamespace", "dictowner"),
         format!("select 'pg_cast'::regclass as classid, x.oid as objid from pg_cast x where x.oid >= 16384 and {} and {}", not_extension("pg_cast", "x"), made_with("pg_cast")),
-        format!("select 'pg_event_trigger'::regclass, x.oid from pg_event_trigger x where {} and {}", not_extension("pg_event_trigger", "x"), not_platform("x.evtowner")),
-        format!("select 'pg_foreign_data_wrapper'::regclass, x.oid from pg_foreign_data_wrapper x where {} and {}", not_extension("pg_foreign_data_wrapper", "x"), not_platform("x.fdwowner")),
     ];
     let not_read = [
         format!("select 'pg_ts_parser'::regclass as classid, x.oid as objid from pg_ts_parser x join pg_namespace n on n.oid = x.prsnamespace where {ns} and {}", not_extension("pg_ts_parser", "x")),
@@ -834,22 +869,12 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
         let sql = format!("select o.type || ' ' || o.identity as what from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o order by 1", queries.join(" union all "));
         out.extend(db.rows(&sql).await?.iter().map(|r| format!("{}: {why}", r.text("what"))));
     }
-    // Security labels, and a column's own storage, compression and statistics target.
+    // Security labels.
     let labels = format!(
         "select format('security label on %s %s', l.objtype, l.objname) as what from pg_seclabels l join pg_namespace n on n.oid = l.objnamespace where {ns} and {} order by 1",
         not_platform("n.nspowner")
     );
     out.extend(db.rows(&labels).await?.iter().map(|r| format!("{}: not read", r.text("what"))));
-    let columns = format!(
-        "select format('%s of column %I.%I.%I', concat_ws(', ', case when a.attstorage <> t.typstorage then 'storage' end, case when a.attcompression <> '' then 'compression' end,
-            case when coalesce(a.attstattarget, -1) >= 0 then 'statistics target' end), n.nspname, c.relname, a.attname) as what
-          from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
-          where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'm') and {ns} and {} and {}
-            and (a.attstorage <> t.typstorage or a.attcompression <> '' or coalesce(a.attstattarget, -1) >= 0) order by 1",
-        not_extension("pg_class", "c"),
-        not_platform("c.relowner")
-    );
-    out.extend(db.rows(&columns).await?.iter().map(|r| format!("{}: not read", r.text("what"))));
     Ok(out)
 }
 
@@ -875,6 +900,8 @@ pub(crate) fn owned_objects(history: &str) -> String {
         format!("select 'pg_collation'::regclass, c.oid, c.collowner from pg_collation c join pg_namespace n on n.oid = c.collnamespace where {ns} and {} and {}", not_extension("pg_collation", "c"), not_platform("c.collowner")),
         format!("select 'pg_publication'::regclass, p.oid, p.pubowner from pg_publication p where {}", not_platform("p.pubowner")),
         format!("select 'pg_foreign_server'::regclass, s.oid, s.srvowner from pg_foreign_server s where {}", not_platform("s.srvowner")),
+        format!("select 'pg_foreign_data_wrapper'::regclass, w.oid, w.fdwowner from pg_foreign_data_wrapper w where {} and {}", not_extension("pg_foreign_data_wrapper", "w"), not_platform("w.fdwowner")),
+        format!("select 'pg_event_trigger'::regclass, et.oid, et.evtowner from pg_event_trigger et where {} and {}", not_extension("pg_event_trigger", "et"), not_platform("et.evtowner")),
     ]
     .join(" union all ")
 }

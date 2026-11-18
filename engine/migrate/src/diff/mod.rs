@@ -47,6 +47,8 @@ pub enum Kind {
     Table,
     Column,
     SequenceOwner,
+    /// A column's storage, compression or statistics target, set once the column is there.
+    ColumnSetting,
     Constraint,
     Index,
     View,

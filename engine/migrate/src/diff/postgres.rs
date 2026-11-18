@@ -151,6 +151,9 @@ struct Ids {
     opfamilies: BTreeMap<u32, String>,
     casts: BTreeMap<u32, String>,
     servers: BTreeMap<u32, String>,
+    publications: BTreeMap<u32, String>,
+    event_triggers: BTreeMap<u32, String>,
+    wrappers: BTreeMap<u32, String>,
     /// (catalog, oid) of an extension's member: the extension, which stands for it.
     members: BTreeMap<(String, u32), String>,
 }
@@ -176,6 +179,9 @@ impl Ids {
             "pg_opfamily" => self.opfamilies.get(&oid).cloned(),
             "pg_cast" => self.casts.get(&oid).cloned(),
             "pg_foreign_server" => self.servers.get(&oid).cloned(),
+            "pg_publication" => self.publications.get(&oid).cloned(),
+            "pg_event_trigger" => self.event_triggers.get(&oid).cloned(),
+            "pg_foreign_data_wrapper" => self.wrappers.get(&oid).cloned(),
             _ => None,
         }
         .or_else(|| self.members.get(&(class.to_string(), oid)).cloned())
@@ -546,7 +552,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select a.attrelid as rel, a.attnum as num, format('%I', a.attname) as name, format_type(a.atttypid, a.atttypmod) as type, a.attnotnull as notnull,
               pg_get_expr(d.adbin, d.adrelid) as def, d.oid as defoid, a.attidentity as identity, {} as identity_options, a.attgenerated as generated, a.attislocal as local,
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
-              col_description(a.attrelid, a.attnum) as comment, {} as noinherit, {} as acl
+              col_description(a.attrelid, a.attnum) as comment, {} as noinherit, {} as acl,
+              case when a.attstorage <> t.typstorage then case a.attstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end end as storage,
+              case t.typstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end as type_storage,
+              case a.attcompression when 'p' then 'pglz' when 'l' then 'lz4' end as compression,
+              case when coalesce(a.attstattarget, -1) >= 0 then a.attstattarget end as stattarget
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
             left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
             where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
@@ -594,6 +604,24 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             }
             if kind != "c" {
                 column_grants(&mut s, c.text("acl"), &name, c.text("name"), &col_id);
+            }
+            // How the column's values are kept and how closely the planner samples them, where not
+            // its type's defaults.
+            if matches!(kind, "r" | "p" | "m") {
+                let at = format!("alter {} {name} alter column {}", if kind == "m" { "materialized view" } else { "table" }, c.text("name"));
+                for (what, value, default) in [("storage", c.get("storage"), c.text("type_storage").to_string()), ("compression", c.get("compression"), "default".into()), ("statistics", c.get("stattarget"), "-1".into())] {
+                    let Some(value) = value else { continue };
+                    s.add(Object {
+                        id: format!("{what} {col_id}"),
+                        kind: Some(Kind::ColumnSetting),
+                        owner: Some(if matches!(kind, "m") { id.clone() } else { col_id.clone() }),
+                        def: value.to_string(),
+                        create: vec![format!("{at} set {what} {value}")],
+                        drop: vec![format!("{at} set {what} {default}")],
+                        change: Change::Alter { blocks: false },
+                        ..Object::default()
+                    });
+                }
             }
             if matches!(kind, "v" | "m") {
                 continue;
@@ -926,7 +954,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
 
     for r in db
         .rows(&format!(
-            "select r.oid, r.ev_class, format('%I', r.rulename) as name, format('%I.%I', n.nspname, c.relname) as rel, pg_get_ruledef(r.oid, false) as def, r.rulename = '_RETURN' as view
+            "select r.oid, r.ev_class, format('%I', r.rulename) as name, format('%I.%I', n.nspname, c.relname) as rel, pg_get_ruledef(r.oid, false) as def, r.rulename = '_RETURN' as view, r.ev_enabled as enabled
             from pg_rewrite r join pg_class c on c.oid = r.ev_class join pg_namespace n on n.oid = c.relnamespace where {ns} and {}",
             not_platform("c.relowner")
         ))
@@ -939,12 +967,20 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
         let id = format!("rule {}.{}", r.text("rel"), r.text("name"));
         ids.rewrites.insert(oid(&r, "oid"), id.clone());
+        // Fired in origin and local sessions (O), never (D), in replicas (R), or always (A).
+        let enabled = match r.text("enabled") {
+            "D" => Some(format!("alter table {} disable rule {}", r.text("rel"), r.text("name"))),
+            "R" => Some(format!("alter table {} enable replica rule {}", r.text("rel"), r.text("name"))),
+            "A" => Some(format!("alter table {} enable always rule {}", r.text("rel"), r.text("name"))),
+            _ => None,
+        };
         s.add(Object {
             id,
             kind: Some(Kind::Rule),
             owner: Some(owner.clone()),
-            def: r.text("def").to_string(),
-            create: vec![r.text("def").trim_end_matches(';').to_string()],
+            def: format!("{} {}", r.text("def"), r.text("enabled")),
+            create: [Some(r.text("def").trim_end_matches(';').to_string()), enabled].into_iter().flatten().collect(),
+            change: Change::Alter { blocks: false },
             drop: vec![format!("drop rule {} on {}", r.text("name"), r.text("rel"))],
             ..Object::default()
         });
@@ -1116,11 +1152,49 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         s.add(Object { id, kind: Some(Kind::Cast), create: vec![format!("create cast {head} {def}")], drop: vec![format!("drop cast {head}")], def, ..Object::default() });
     }
 
+    // Foreign-data wrappers: what a server of theirs connects with.
+    for r in db
+        .rows(&format!(
+            "select w.oid, format('%I', w.fdwname) as name, case when w.fdwhandler <> 0 then format('%s', w.fdwhandler::regproc) end as handler,
+              case when w.fdwvalidator <> 0 then format('%s', w.fdwvalidator::regproc) end as validator, {} as options, {} as acl
+            from pg_foreign_data_wrapper w where {} and {}",
+            option_pairs("w.fdwoptions"),
+            acl("w.fdwacl", 'F', "w.fdwowner"),
+            crate::catalog::not_extension("pg_foreign_data_wrapper", "w"),
+            not_platform("w.fdwowner")
+        ))
+        .await?
+    {
+        let name = r.text("name");
+        let id = format!("foreign data wrapper {name}");
+        ids.wrappers.insert(oid(&r, "oid"), id.clone());
+        let options: Vec<(String, String)> = serde_json::from_str(r.text("options")).unwrap_or_default();
+        let def = format!(
+            "{}{}{}",
+            r.get("handler").map(|h| format!(" handler {h}")).unwrap_or_default(),
+            r.get("validator").map(|v| format!(" validator {v}")).unwrap_or_default(),
+            options_clause(&options)
+        );
+        let extra = vec![format!("handler {}", r.get("handler").unwrap_or("")), format!("validator {}", r.get("validator").unwrap_or("")), format!("options {}", r.text("options"))];
+        grants(&mut s, r.text("acl"), name, &id, "foreign data wrapper");
+        s.add(Object {
+            id,
+            kind: Some(Kind::Server),
+            create: vec![format!("create foreign data wrapper {name}{def}")],
+            drop: vec![format!("drop foreign data wrapper {name}")],
+            def,
+            extra,
+            change: Change::Alter { blocks: false },
+            ..Object::default()
+        });
+    }
+
     for r in db
         .rows(&format!(
             "select s.oid, format('%I', s.srvname) as name, format('%I', w.fdwname) as fdw, s.srvtype as type, s.srvversion as version,
-              (select string_agg(format('%I %L', split_part(o, '=', 1), substr(o, strpos(o, '=') + 1)), ', ') from unnest(s.srvoptions) o) as options
+              (select string_agg(format('%I %L', split_part(o, '=', 1), substr(o, strpos(o, '=') + 1)), ', ') from unnest(s.srvoptions) o) as options, {} as acl
             from pg_foreign_server s join pg_foreign_data_wrapper w on w.oid = s.srvfdw where {}",
+            acl("s.srvacl", 'S', "s.srvowner"),
             not_platform("s.srvowner")
         ))
         .await?
@@ -1135,7 +1209,41 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             r.text("fdw"),
             r.get("options").map(|o| format!(" options ({o})")).unwrap_or_default()
         );
+        grants(&mut s, r.text("acl"), name, &id, "foreign server");
         s.add(Object { id, kind: Some(Kind::Server), create: vec![format!("create server {name} {def}")], drop: vec![format!("drop server {name}")], def, ..Object::default() });
+    }
+
+    // Event triggers: a function run on DDL, as a whole database's.
+    for r in db
+        .rows(&format!(
+            "select et.oid, format('%I', et.evtname) as name, et.evtevent as event, format('%s', et.evtfoid::regproc) as function, et.evtenabled as enabled,
+              (select string_agg(quote_literal(t), ', ' order by t) from unnest(et.evttags) t) as tags
+            from pg_event_trigger et where {} and {}",
+            crate::catalog::not_extension("pg_event_trigger", "et"),
+            not_platform("et.evtowner")
+        ))
+        .await?
+    {
+        let name = r.text("name");
+        let id = format!("event trigger {name}");
+        ids.event_triggers.insert(oid(&r, "oid"), id.clone());
+        let when = r.get("tags").map(|t| format!(" when tag in ({t})")).unwrap_or_default();
+        let enabled = match r.text("enabled") {
+            "D" => Some(format!("alter event trigger {name} disable")),
+            "R" => Some(format!("alter event trigger {name} enable replica")),
+            "A" => Some(format!("alter event trigger {name} enable always")),
+            _ => None,
+        };
+        s.add(Object {
+            id,
+            kind: Some(Kind::Trigger),
+            def: format!("on {}{when} execute function {}() {}", r.text("event"), r.text("function"), r.text("enabled")),
+            create: [Some(format!("create event trigger {name} on {}{when} execute function {}()", r.text("event"), r.text("function"))), enabled].into_iter().flatten().collect(),
+            drop: vec![format!("drop event trigger {name}")],
+            extra: vec![format!("enabled {}", r.text("enabled"))],
+            change: Change::Alter { blocks: false },
+            ..Object::default()
+        });
     }
 
     // Publications: what each publishes, from the tables and schemas it names.
@@ -1152,7 +1260,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     };
     for r in db
         .rows(&format!(
-            "select format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root,
+            "select p.oid, format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root,
               concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end) as publish,
               format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}, {listed}) order by 1) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
               format('%s', {schemas}) as schemas
@@ -1194,6 +1302,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let mut objects: Vec<String> = tables.iter().map(|(_, t, _)| format!("table {t}")).collect();
         objects.extend(in_schemas.iter().map(|n| format!("tables in schema {n}")));
         let extra = vec![format!("all {}", r.flag("all_tables")), format!("objects {}", objects.join(", ")), format!("with {}", with.join(", ")), format!("publish {}", r.text("publish"))];
+        ids.publications.insert(oid(&r, "oid"), format!("publication {name}"));
         // After the tables it names, among the last objects made.
         s.add(Object {
             id: format!("publication {name}"),
@@ -1215,7 +1324,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               (select t.typtype from pg_type t where d.classoid = 'pg_type'::regclass and t.oid = d.objoid) as typtype,
               (select p.prokind from pg_proc p where d.classoid = 'pg_proc'::regclass and p.oid = d.objoid) as prokind
             from pg_description d where d.objsubid = 0 and d.objoid >= 16384
-              and d.classoid in ('pg_namespace'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass, 'pg_class'::regclass)",
+              and d.classoid in ('pg_namespace'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass, 'pg_class'::regclass,
+                'pg_collation'::regclass, 'pg_publication'::regclass, 'pg_rewrite'::regclass, 'pg_foreign_server'::regclass, 'pg_event_trigger'::regclass, 'pg_foreign_data_wrapper'::regclass)",
         )
         .await?
     {
@@ -1235,6 +1345,13 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             ("pg_trigger", "trigger") => on_table(name).map(|n| format!("trigger {n}")),
             ("pg_policy", "policy") => on_table(name).map(|n| format!("policy {n}")),
             ("pg_class", "index") => Some(format!("index {name}")),
+            ("pg_class", "sequence") => Some(format!("sequence {name}")),
+            ("pg_collation", "collation") => Some(format!("collation {name}")),
+            ("pg_publication", "publication") => Some(format!("publication {name}")),
+            ("pg_rewrite", "rule") => on_table(name).map(|n| format!("rule {n}")),
+            ("pg_foreign_server", "server") => Some(format!("server {name}")),
+            ("pg_event_trigger", "event") => Some(format!("event trigger {}", name.trim_start_matches("trigger "))),
+            ("pg_foreign_data_wrapper", "foreign") => Some(format!("foreign data wrapper {}", name.trim_start_matches("data wrapper "))),
             _ => None,
         };
         let (Some(on), Some(text)) = (on, r.get("description")) else { continue };
@@ -1652,6 +1769,35 @@ fn column_grants(s: &mut Schema, privileges: &str, table: &str, column: &str, id
             ..Object::default()
         });
     }
+}
+
+/// SQL giving an options array (`fdwoptions`, `srvoptions`) as JSON pairs of a name and a value.
+fn option_pairs(column: &str) -> String {
+    format!("format('%s', coalesce((select json_agg(json_build_array(split_part(o, '=', 1), substr(o, strpos(o, '=') + 1)) order by o) from unnest({column}) o), '[]'::json))")
+}
+
+/// Options as a `create` statement writes them: ` options (debug 'true')`, or nothing.
+fn options_clause(options: &[(String, String)]) -> String {
+    if options.is_empty() {
+        return String::new();
+    }
+    format!(" options ({})", options.iter().map(|(k, v)| format!("{} {}", declared::quote_ident(k), literal(v))).collect::<Vec<_>>().join(", "))
+}
+
+/// The `options (…)` clause of an `alter` that takes options `from` has to those `to` has.
+fn options_change(from: &[(String, String)], to: &[(String, String)]) -> Option<String> {
+    let mut out = Vec::new();
+    for (k, v) in to {
+        match from.iter().find(|(a, _)| a == k) {
+            Some((_, w)) if w == v => {}
+            Some(_) => out.push(format!("set {} {}", declared::quote_ident(k), literal(v))),
+            None => out.push(format!("add {} {}", declared::quote_ident(k), literal(v))),
+        }
+    }
+    for (k, _) in from.iter().filter(|(a, _)| !to.iter().any(|(b, _)| b == a)) {
+        out.push(format!("drop {}", declared::quote_ident(k)));
+    }
+    (!out.is_empty()).then(|| format!("options ({})", out.join(", ")))
 }
 
 /// What an object a change is made around is carried as: `around <id>\t<def>\t<drop>\t<create>`.
@@ -2243,7 +2389,50 @@ impl Alterer for PostgresAlterer {
                 }
                 Some(out)
             }
-            Kind::Comment => Some(to.create.clone()),
+            Kind::Comment | Kind::ColumnSetting => Some(to.create.clone()),
+            Kind::Trigger if to.id.starts_with("event trigger ") => {
+                // Only whether it fires changes in place.
+                let without = |o: &Object| bare(&o.def).rsplit_once(' ').map(|(d, _)| d.to_string()).unwrap_or_default();
+                if without(from) != without(to) {
+                    return None;
+                }
+                let name = to.id.strip_prefix("event trigger ")?;
+                Some(vec![match to.extra.iter().find_map(|l| l.strip_prefix("enabled ")) {
+                    Some("D") => format!("alter event trigger {name} disable"),
+                    Some("R") => format!("alter event trigger {name} enable replica"),
+                    Some("A") => format!("alter event trigger {name} enable always"),
+                    _ => format!("alter event trigger {name} enable"),
+                }])
+            }
+            Kind::Rule => {
+                // Only whether it fires changes in place.
+                let (Some((a, _)), Some((b, enabled))) = (bare(&from.def).rsplit_once(' '), bare(&to.def).rsplit_once(' ')) else { return None };
+                let rest = to.id.strip_prefix("rule ")?;
+                let rule = super::last_written(rest);
+                let table = rest.strip_suffix(rule.as_str())?.strip_suffix('.')?;
+                (a == b).then(|| {
+                    vec![match enabled {
+                        "D" => format!("alter table {table} disable rule {rule}"),
+                        "R" => format!("alter table {table} enable replica rule {rule}"),
+                        "A" => format!("alter table {table} enable always rule {rule}"),
+                        _ => format!("alter table {table} enable rule {rule}"),
+                    }]
+                })
+            }
+            Kind::Server if to.id.starts_with("foreign data wrapper ") => {
+                let name = to.id.strip_prefix("foreign data wrapper ")?;
+                let part = |o: &Object, what: &str| o.extra.iter().find_map(|l| l.strip_prefix(what)).unwrap_or_default().to_string();
+                let mut changes = Vec::new();
+                for what in ["handler", "validator"] {
+                    let to_value = part(to, &format!("{what} "));
+                    if part(from, &format!("{what} ")) != to_value {
+                        changes.push(if to_value.is_empty() { format!("no {what}") } else { format!("{what} {to_value}") });
+                    }
+                }
+                let options = |o: &Object| -> Vec<(String, String)> { serde_json::from_str(&part(o, "options ")).unwrap_or_default() };
+                changes.extend(options_change(&options(from), &options(to)));
+                Some(vec![format!("alter foreign data wrapper {name} {}", changes.join(" "))])
+            }
             Kind::Function => {
                 // Create or replace keeps a function whose result and arguments stay.
                 let tail = |def: &str| def.rsplit_once("\n-- ").map(|(_, t)| t.to_string()).unwrap_or_default();

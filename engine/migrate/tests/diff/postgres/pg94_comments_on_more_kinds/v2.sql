@@ -1,0 +1,11 @@
+create table accounts (id serial primary key, balance numeric not null);
+create sequence ticket_seq;
+comment on sequence ticket_seq is 'tickets';
+comment on sequence accounts_id_seq is 'the serial''s own';
+create collation ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+comment on collation ci is 'case-insensitive';
+create publication audit_feed for table accounts;
+comment on publication audit_feed is 'audit';
+create rule prevent_negative as on insert to accounts where new.balance < 0 do instead nothing;
+comment on rule prevent_negative on accounts is 'no negative balances';
+alter table accounts disable rule prevent_negative;
