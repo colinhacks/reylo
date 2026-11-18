@@ -2,7 +2,8 @@
 //! the database as it is, `v2.sql` the schema it should have. Each case builds both, plans from
 //! one to the other, runs the plan on the first, and requires its catalog to equal the second's
 //! and every table both have to keep its own rows, value for value (a partitioned table's are its partitions'); `server.sql`, where a case has one, makes what it
-//! needs of the server itself (a role). The plan is kept beside the case as `plan.sql`,
+//! needs of the server itself (a role), and `check.sql` runs after the plan, so a case can require
+//! what no catalog shows (an identity that gives an unused value next). The plan is kept beside the case as `plan.sql`,
 //! compared like the oracle's expected output: `REYLO_BLESS=1` writes it. Postgres's cases run
 //! against the server `REYLO_TEST_PG` names, and are skipped where it is not set.
 
@@ -205,6 +206,8 @@ async fn postgres() {
             }
         }
         let rows_after = values(&mut from, Some(&rows_before), &renamed, &skip).await;
+        let check = read(&case.join("check.sql"));
+        let checked = if failed.is_none() && !check.is_empty() { from.exec(&check).await.err() } else { None };
         let changed: Vec<String> = rows_before
             .iter()
             .filter_map(|b| {
@@ -230,6 +233,9 @@ async fn postgres() {
         }
         if !changed.is_empty() {
             problems.push(format!("values changed: {}", changed.join("; ")));
+        }
+        if let Some(e) = checked {
+            problems.push(format!("check.sql failed after the plan: {e}"));
         }
         if !bless && read(&expected) != text {
             problems.push(format!("the plan is not plan.sql's (REYLO_BLESS=1 writes it):\n{text}"));

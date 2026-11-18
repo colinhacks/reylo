@@ -2376,9 +2376,10 @@ impl Alterer for PostgresAlterer {
                                 set.push(format!("set {key} {}", ey[key]));
                             }
                         }
-                        // One that turns to count the other way starts again: every value it gave lies
-                        // outside its new bounds.
-                        if ex["increment by"].starts_with('-') != ey["increment by"].starts_with('-') {
+                        // One whose new bounds share no value with its old ones starts again: every
+                        // value it gave lies outside them. Otherwise it keeps its place.
+                        let bound = |e: &BTreeMap<String, String>, key: &str| e[key].parse::<i128>().unwrap_or_default();
+                        if bound(&ey, "maxvalue") < bound(&ex, "minvalue") || bound(&ey, "minvalue") > bound(&ex, "maxvalue") {
                             set.push("restart".into());
                         }
                         if ox.contains_key("cycle") != oy.contains_key("cycle") {
