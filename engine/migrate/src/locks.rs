@@ -67,6 +67,18 @@ fn not_null_check(column: &str) -> String {
     format!("{}{SUFFIX}", &column[..end])
 }
 
+/// Whether a boolean option is on: written bare (`concurrently`), or with a value Postgres reads as
+/// true (`true`, `on`, `1`, `yes`), never `false`, `off` or `0`.
+fn option_on(d: &pg_query::protobuf::DefElem) -> bool {
+    match d.arg.as_ref().and_then(|a| a.node.as_ref()) {
+        None => true,
+        Some(N::Boolean(b)) => b.boolval,
+        Some(N::Integer(i)) => i.ival != 0,
+        Some(N::String(s)) => matches!(s.sval.to_ascii_lowercase().as_str(), "true" | "on" | "yes" | "1" | "t" | "y"),
+        _ => false,
+    }
+}
+
 /// Whether a parse tree's enum field holds `value`.
 fn is<T: Into<i32>>(field: i32, value: T) -> bool {
     field == value.into()
@@ -359,7 +371,7 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
                         locked.insert(table);
                     }
                 }
-                Some(N::ReindexStmt(r)) if r.params.iter().any(|p| matches!(&p.node, Some(N::DefElem(d)) if d.defname == "concurrently")) => {
+                Some(N::ReindexStmt(r)) if r.params.iter().any(|p| matches!(&p.node, Some(N::DefElem(d)) if d.defname == "concurrently" && option_on(d))) => {
                     let Some(rel) = &r.relation else { continue };
                     if is(r.kind, pg_query::protobuf::ReindexObjectType::ReindexObjectIndex) {
                         made.insert(rel.relname.clone());
@@ -501,6 +513,21 @@ mod tests {
         assert_eq!(lock_safe(&plan(&["alter table users add constraint c check (n > 0) not valid", "create index concurrently i on users (n)"]), &existing(&["users"])), None);
         // Qualified names match the table's qualified name.
         assert!(lock_safe(&plan(&["create index i on billing.invoices (n)"]), &existing(&["billing.invoices"])).is_some());
+    }
+
+    #[test]
+    fn reads_whether_an_option_is_on() {
+        let concurrently = |sql: &str| match parsed(sql) {
+            Some(N::ReindexStmt(r)) => r.params.iter().any(|p| matches!(&p.node, Some(N::DefElem(d)) if d.defname == "concurrently" && option_on(d))),
+            _ => panic!("{sql}"),
+        };
+        assert!(concurrently("reindex index concurrently users_n"));
+        assert!(concurrently("reindex (concurrently) index users_n"));
+        assert!(concurrently("reindex (concurrently true) table users"));
+        assert!(!concurrently("reindex (concurrently false) index users_n"));
+        assert!(!concurrently("reindex (concurrently off) table users"));
+        assert!(!concurrently("reindex (concurrently 0) index users_n"));
+        assert!(!concurrently("reindex index users_n"));
     }
 
     #[test]

@@ -3076,6 +3076,10 @@ mod adversarial {
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
         let out = p.output();
         assert!(out.contains("2 pending") && !out.contains(" It "), "{out}");
+        // One that turns the option off builds the index again under a lock that blocks writes.
+        p.file("20261027130000_reindex_off.sql", "reindex (concurrently false) index users_n;");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"_reindex_off\.sql\n      ! It builds users_n again");
     }
 
     pub async fn deploy_waits_out_a_lock_another_session_holds(mut p: P) {
