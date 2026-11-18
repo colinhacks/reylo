@@ -1,0 +1,3 @@
+public.t.b becomes an array of its value
+public.t.n becomes an array of its value
+public.t.k becomes an array of its value, as text

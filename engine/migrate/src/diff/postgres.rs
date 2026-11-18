@@ -525,7 +525,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     for r in db
         .rows(&format!(
             "select co.oid, co.conindid, format('%I.%I', n.nspname, c.relname) as rel, c.oid as reloid, format('%I', co.conname) as name,
-              pg_get_constraintdef(co.oid, false) as def, co.condeferrable as deferrable, co.condeferred as deferred, co.convalidated as validated, co.contype as type
+              pg_get_constraintdef(co.oid, false) as def, co.condeferrable as deferrable, co.condeferred as deferred, co.convalidated as validated, co.contype as type,
+              case when co.contype = 'f' then
+                (select string_agg(format_type(a.atttypid, null), ', ' order by k.n) from unnest(co.conkey) with ordinality k(num, n) join pg_attribute a on a.attrelid = co.conrelid and a.attnum = k.num)
+                || ' to ' || (select string_agg(format_type(a.atttypid, null), ', ' order by k.n) from unnest(co.confkey) with ordinality k(num, n) join pg_attribute a on a.attrelid = co.confrelid and a.attnum = k.num)
+              end as linked
             from pg_constraint co join pg_class c on c.oid = co.conrelid join pg_namespace n on n.oid = c.relnamespace
             where co.contype not in ('n', 't') and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}
             order by co.contype, co.conname",
@@ -557,12 +561,15 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         if inline {
             inline_constraints.entry(oid(&r, "reloid")).or_default().push(format!("constraint {name} {def}"));
         }
+        // A foreign key holds while the types of the columns it links compare; a change of either
+        // side's type makes it again around the change, so that both columns can change between.
+        let linked = r.get("linked").map(|l| format!("\n-- links {l}")).unwrap_or_default();
         s.add(Object {
             inline,
             id,
             kind: Some(Kind::Constraint),
             owner: Some(table.clone()),
-            def: def.clone(),
+            def: format!("{def}{linked}"),
             create: vec![format!("alter table {rel} add constraint {name} {def}")],
             drop: vec![format!("alter table {rel} drop constraint {name}")],
             ..Object::default()
@@ -1592,12 +1599,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
     // A schema's objects depend on it, as the records say; a column depends on nothing of its own
-    // table, which creating the table makes.
+    // table, which creating the table makes, but a generated column on the columns it reads, which
+    // an added or a renamed one must be first.
     let tables: BTreeSet<String> = s.objects.values().filter(|o| o.kind == Some(Kind::Table)).map(|o| o.id.clone()).collect();
     for o in s.objects.values_mut() {
         if let Some(owner) = o.owner.clone() {
             if tables.contains(&owner) && o.kind == Some(Kind::Column) {
-                o.deps.retain(|d| !d.starts_with(&format!("column {}.", owner.trim_start_matches("table "))) && *d != owner);
+                let generated = parse_column(&o.def).generated.is_some();
+                o.deps.retain(|d| (generated || !d.starts_with(&format!("column {}.", owner.trim_start_matches("table ")))) && *d != owner);
             }
         }
     }
@@ -1798,8 +1807,23 @@ pub fn derived_renames(current: &Schema, target: &Schema, renamed: &[(String, St
                 _ => format!("alter sequence {rest} rename to {wanted}"),
             });
         }
+        // Each column's not null, which Postgres 18 names after the table too.
+        let old_rel = old_table.strip_prefix("table ").unwrap_or(old_table);
+        for o in current.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(old_table.as_str())) {
+            let Some(column) = o.id.strip_prefix(&format!("column {old_rel}.")) else { continue };
+            let Some(name) = not_null_name(o) else { continue };
+            let wanted = crate::diff::swap_name(&name, old, new);
+            if wanted != name && target.objects.get(&format!("column {new_rel}.{column}")).and_then(not_null_name).as_deref() == Some(wanted.as_str()) {
+                out.push(format!("alter table {new_rel} rename constraint {name} to {wanted}"));
+            }
+        }
     }
     out
+}
+
+/// The name of a column's not null (Postgres 18).
+fn not_null_name(o: &Object) -> Option<String> {
+    o.extra.iter().find_map(|l| l.strip_prefix("not null name ")).map(String::from)
 }
 
 /// Each table's indexes by name, each table as `schema.table` (quoted where it must be), the ones a
@@ -2312,7 +2336,15 @@ impl Alterer for PostgresAlterer {
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
         let table = to.owner.as_deref()?.strip_prefix("table ")?;
         let (old, new) = (super::last_written(&from.id), super::last_written(&to.id));
-        Some(vec![format!("alter table {table} rename column {old} to {new}")])
+        let mut out = vec![format!("alter table {table} rename column {old} to {new}")];
+        // Its not null keeps the name it had, which Postgres 18 made from the column's: renamed
+        // where the target's differs.
+        if let (Some(a), Some(b)) = (not_null_name(from), not_null_name(to)) {
+            if a != b {
+                out.push(format!("alter table {table} rename constraint {a} to {b}"));
+            }
+        }
+        Some(out)
     }
 
     fn alter(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
@@ -2395,7 +2427,12 @@ impl Alterer for PostgresAlterer {
                 if type_changes {
                     out.extend(unmake);
                     let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
-                    if self.assigns(&a.ty, &b.ty) {
+                    let element = b.ty.strip_suffix("[]").filter(|_| !a.ty.ends_with("[]"));
+                    if let Some(element) = element {
+                        // A value becomes an array of one element, and a null stays null.
+                        let value = if self.casts(&a.ty, element) { format!("{name}::{element}") } else { format!("{name}::text::{element}") };
+                        out.push(format!("{at} type {}{collate} using case when {name} is null then null else array[{value}] end", b.ty));
+                    } else if self.assigns(&a.ty, &b.ty) {
                         out.push(format!("{at} type {}{collate}", b.ty));
                     } else if self.casts(&a.ty, &b.ty) {
                         out.push(format!("{at} type {}{collate} using {name}::{}", b.ty, b.ty));

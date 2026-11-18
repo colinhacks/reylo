@@ -3101,6 +3101,10 @@ mod adversarial {
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.exec("insert into accounts (email) values ('d')").await;
         assert_eq!(p.rows("select id from accounts where email = 'd'").await[0].text("id"), "4");
+        // And its columns' not nulls, which Postgres 18 names after the table too.
+        for r in p.rows("select conname from pg_constraint where conrelid = 'accounts'::regclass and contype = 'n'").await {
+            assert!(r.text("conname").starts_with("accounts_"), "{} kept the old table's name", r.text("conname"));
+        }
         p.output();
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
