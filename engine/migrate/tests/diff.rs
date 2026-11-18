@@ -9,7 +9,7 @@
 
 use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::{with_database, Db};
-use reylo_migrate::diff;
+use reylo_migrate::{diff, locks, sql::runs_alone, Dialect};
 use std::path::{Path, PathBuf};
 
 fn cases(dialect: &str) -> Vec<PathBuf> {
@@ -172,16 +172,37 @@ async fn postgres() {
             }
         }
         let mut plan = diff::plan(&diff::postgres::read(&mut from).await.unwrap(), &target, &alterer);
-        // Written as `create` writes it, in schema.sql's style, and run as written.
+        // Written as `create` writes it, in schema.sql's style and in the lock-safe shape where a
+        // statement would block writes to a table with rows while it reads them all, and run as
+        // written: each file in a transaction of its own, but an index built concurrently.
         diff::postgres::style(&mut from, &mut plan, &target.verbatim).await.unwrap();
-        for s in plan.runnable().take(if failed.is_some() { 0 } else { usize::MAX }) {
-            if let Err(e) = from.exec(s).await {
-                failed = Some(format!("{s}: {e}"));
+        let existing = locks::existing_tables(&mut from).await.unwrap();
+        let files = match locks::lock_safe(&plan, &existing) {
+            Some(files) => locks::file_texts(&plan, &files),
+            None => vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")],
+        };
+        for file in files.iter().take(if failed.is_some() { 0 } else { usize::MAX }) {
+            let sql = if runs_alone(file, Dialect::Postgres) { file.clone() } else { format!("begin;\n{file}\ncommit;") };
+            if let Err(e) = from.exec(&sql).await {
+                let _ = from.exec("rollback").await;
+                failed = Some(format!("{file}: {e}"));
                 break;
             }
         }
-        plan.statements.splice(0..0, moves);
-        let text = plan.sql();
+        let split = locks::lock_safe(&plan, &existing).is_some();
+        plan.statements.splice(0..0, moves.clone());
+        // Several files show one after another, each under a line naming it.
+        let text = if split && files.len() > 1 {
+            let mut out = moves.iter().map(|m| format!("{m};\n")).collect::<String>();
+            for (k, file) in files.iter().enumerate() {
+                out.push_str(&format!("-- file {} of {}\n{file}", k + 1, files.len()));
+            }
+            out
+        } else if split {
+            moves.iter().map(|m| format!("{m};\n")).collect::<String>() + &files[0]
+        } else {
+            plan.sql()
+        };
         let (mut only_a, mut only_b) = difference(&catalog(&mut from).await.unwrap(), &catalog(&mut to).await.unwrap());
         let (pa, pb) = (unread(&mut from).await, unread(&mut to).await);
         only_a.extend(pa.iter().filter(|l| !pb.contains(l)).cloned());

@@ -1,1 +1,1 @@
-create unique index users_code_key on users (code);
+create unique index concurrently users_code_key on users (code);
