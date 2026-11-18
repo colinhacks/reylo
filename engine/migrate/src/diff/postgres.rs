@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 mod declared;
+pub(crate) use declared::quote_ident;
 
 /// Rewrites the create statements of `schema`, which `read` read from the database `db` is
 /// connected to, from the text `sql` declared each object with: `sql` is the file that built that

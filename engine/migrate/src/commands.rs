@@ -3,7 +3,7 @@
 //! setting, a file or a connection), which the command line prints.
 
 use crate::catalog::{catalog, difference, HISTORY_TABLE};
-use crate::db::{shown_url, Db, Server};
+use crate::db::{shown_url, Db, Ran, Server};
 use crate::lock;
 #[cfg(feature = "cli")]
 use crate::replay::{Shadows, Step};
@@ -503,6 +503,73 @@ async fn insert_row(db: &mut Db, m: &Migration, applied: bool, fingerprint: Opti
 // its row. No run cut off between the two leaves an applied row with nothing to compare.
 
 pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), Error> {
+    let mut tries = 1;
+    loop {
+        match run_once(db, m, record).await {
+            Ok(()) => return Ok(()),
+            Err(Ran::Failed(e)) => return Err(e),
+            // A statement that gave up waiting for a lock changed nothing: the file runs again, after
+            // a pause that grows, until the last try.
+            Err(Ran::Waited(_)) if tries < LOCK_TRIES => {
+                tokio::time::sleep(std::time::Duration::from_secs(LOCK_PAUSES[(tries - 1).min(LOCK_PAUSES.len() - 1)])).await;
+                tries += 1;
+            }
+            Err(Ran::Waited(e)) => return Err(Error(format!("{}: {e}, {LOCK_TRIES} times over {} seconds{}", m.name, LOCK_PAUSES.iter().take(LOCK_TRIES - 1).sum::<u64>(), holders(db).await))),
+        }
+    }
+}
+
+/// How long a statement of a migration waits for a lock before it gives up: while it waits, every
+/// query after it on that table waits behind it, so a short wait, tried again, blocks the app for
+/// moments rather than for as long as the longest transaction holding the table runs. A migration
+/// sets its own (`set local lock_timeout`) to wait longer.
+const LOCK_TIMEOUT_MS: u64 = 500;
+
+/// How many times a migration runs whose statement gave up waiting for a lock, and the pause before
+/// each try after the first, in seconds.
+const LOCK_TRIES: usize = 10;
+const LOCK_PAUSES: [u64; 9] = [1, 2, 4, 8, 10, 10, 10, 10, 10];
+
+/// The transactions open on the database, oldest first, which a migration's lock likely waited for.
+async fn holders(db: &mut Db) -> String {
+    let sql = match db.dialect() {
+        Dialect::Postgres => {
+            "select pid::text as id, extract(epoch from now() - xact_start)::bigint::text as secs, state, left(regexp_replace(coalesce(query, ''), '\\s+', ' ', 'g'), 80) as q
+            from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() and xact_start is not null order by xact_start limit 3"
+        }
+        Dialect::Mysql => "select trx_mysql_thread_id as id, timestampdiff(second, trx_started, now()) as secs, trx_state as state, left(coalesce(trx_query, ''), 80) as q from information_schema.innodb_trx order by trx_started limit 3",
+        Dialect::Sqlite => return String::new(),
+    };
+    let Ok(rows) = db.rows(sql).await else { return String::new() };
+    if rows.is_empty() {
+        return String::new();
+    }
+    let open: Vec<String> = rows.iter().map(|r| format!("{} open {} s ({}){}", r.text("id"), r.text("secs"), r.text("state"), if r.text("q").is_empty() { String::new() } else { format!(": {}", r.text("q")) })).collect();
+    format!(". The oldest open transactions, by session: {}", open.join("; "))
+}
+
+/// Sets how long the session's statements wait for a lock: a transaction's own on Postgres
+/// (`set local`, which its commit or rollback ends), the session's on MySQL until `reset_lock_wait`.
+async fn limit_lock_wait(db: &mut Db) -> Result<(), Error> {
+    match db {
+        #[cfg(feature = "cli")]
+        Db::Postgres(_) => db.exec(&format!("set local lock_timeout = '{LOCK_TIMEOUT_MS}ms'")).await,
+        // MySQL counts whole seconds, at least one.
+        #[cfg(feature = "cli")]
+        Db::Mysql(_) => db.exec("set session lock_wait_timeout = 1").await,
+        _ => Ok(()),
+    }
+}
+
+async fn reset_lock_wait(db: &mut Db) -> Result<(), Error> {
+    match db {
+        #[cfg(feature = "cli")]
+        Db::Mysql(_) => db.exec("set session lock_wait_timeout = default").await,
+        _ => Ok(()),
+    }
+}
+
+async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
     let d = db.dialect();
     if runs_alone(&m.sql, d) {
         if record {
@@ -517,7 +584,16 @@ pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), 
             Ok(db.rows("select indexrelid::regclass::text as i from pg_index where not indisvalid").await?.iter().map(|r| r.text("i").to_string()).collect())
         };
         let before = invalid(db).await?;
-        if let Err(e) = db.script(&m.sql).await {
+        // On Postgres such a statement is built concurrently, whose waits block no one, so it waits
+        // as long as it must; MySQL's DDL waits for its lock as the app's queries queue behind it.
+        if d == Dialect::Mysql {
+            limit_lock_wait(db).await?;
+        }
+        let result = db.script_or_wait(&m.sql).await;
+        if d == Dialect::Mysql {
+            reset_lock_wait(db).await?;
+        }
+        if let Err(e) = result {
             for index in invalid(db).await.unwrap_or_default() {
                 if !before.contains(&index) {
                     let _ = db.exec(&format!("drop index concurrently if exists {index}")).await;
@@ -544,17 +620,21 @@ pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), 
     }
     db.exec(if d == Dialect::Mysql { "start transaction" } else { "begin" }).await?;
     let result = async {
-        db.script(&m.sql).await?;
+        if d == Dialect::Postgres {
+            limit_lock_wait(db).await?;
+        }
+        db.script_or_wait(&m.sql).await?;
         if d == Dialect::Sqlite {
             let broken = db.rows("pragma foreign_key_check").await?;
             if !broken.is_empty() {
-                return Err(Error(format!("{} rows break a foreign key after this migration", broken.len())));
+                return Err(Ran::Failed(Error(format!("{} rows break a foreign key after this migration", broken.len()))));
             }
         }
         if record {
             insert_row(db, m, true, Some(PENDING)).await?;
         }
-        db.exec("commit").await
+        db.exec("commit").await?;
+        Ok(())
     }
     .await;
     if result.is_err() {
@@ -1887,6 +1967,19 @@ async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         }
         other => other,
     };
+    // What each pending migration blocks while it reads every row of a table, on Postgres: said,
+    // not refused, since `migrate new` asked when it was written, and a hand-written one is its
+    // author's to judge.
+    let hazards = match &result {
+        Ok(plan) if plan.ok() && db.dialect() == Dialect::Postgres && !plan.pending.is_empty() => {
+            let texts: Vec<&str> = plan.ran.iter().chain(&plan.pending).map(|f| f.sql.as_str()).collect();
+            let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
+            let found = pending_hazards(&mut shadows, &plan.ran, &plan.pending).await;
+            shadows.finish().await;
+            found?
+        }
+        _ => vec![],
+    };
     db.close().await;
     server.close().await;
     let plan = result?;
@@ -1914,10 +2007,34 @@ async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
             log(&format!("{} {n} pending, each tried on a shadow database:", paint("green", "✓")));
             for m in &plan.pending {
                 log(&format!("    {} {}", paint("dim", "·"), m.name));
+                for (_, h) in hazards.iter().filter(|(name, _)| *name == m.name) {
+                    log(&format!("      {} It {}", paint("yellow", "!"), h.what));
+                }
             }
         }
     }
     Ok(0)
+}
+
+/// Each pending migration's locks that block writes to a table with rows while it reads them all,
+/// run on a replay of what the database ran, then each in turn.
+#[cfg(feature = "cli")]
+async fn pending_hazards(shadows: &mut Shadows<'_>, ran: &[Migration], pending: &[Migration]) -> Result<Vec<(String, crate::locks::Hazard)>, Error> {
+    let lane = shadows.lane();
+    shadows.push(lane, ran.iter().map(Step::of));
+    if shadows.open(lane).await?.is_err() {
+        return Ok(vec![]);
+    }
+    shadows.taint(lane);
+    let mut out = Vec::new();
+    for m in pending {
+        match crate::locks::run_watched(shadows.db(lane), m).await {
+            Ok(found) => out.extend(found.into_iter().map(|h| (m.name.clone(), h))),
+            // The check already tried each pending migration: one that fails here says nothing more.
+            Err(_) => break,
+        }
+    }
+    Ok(out)
 }
 
 /// `reylo db wipe`: deletes every row of the project's tables, and nothing else: the schema and
@@ -2755,6 +2872,9 @@ pub struct Choices {
     pub drop: Vec<String>,
     /// Each a column's old name, `users.full_name`, and its new one, `name`.
     pub rename: Vec<(String, String)>,
+    /// Whether the migration may hold a lock that blocks writes to a table with rows while it reads
+    /// them all, a table copied by a change of type among them (`--blocking`).
+    pub blocking: bool,
 }
 
 #[cfg(feature = "cli")]
@@ -2816,7 +2936,11 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
         [one] if drafted.empty => log(&format!("{} Wrote {one}, empty: {} has nothing new, so it's for a change to data", paint("green", "✓"), drafted.target)),
         [one] => log(&format!("{} Wrote {one}", paint("green", "✓"))),
         many => {
-            log(&format!("{} Wrote {} migrations, one per statement, since MySQL commits each DDL statement on its own:", paint("green", "✓"), many.len()));
+            if drafted.lock_safe {
+                log(&format!("{} Wrote {} migrations, so that none blocks writes to a table while it reads every row:", paint("green", "✓"), many.len()));
+            } else {
+                log(&format!("{} Wrote {} migrations, one per statement, since MySQL commits each DDL statement on its own:", paint("green", "✓"), many.len()));
+            }
             for path in many {
                 log(&format!("    {path}"));
             }
@@ -2879,6 +3003,8 @@ struct Drafted {
     notes: Vec<String>,
     empty: bool,
     target: String,
+    /// Whether its files are the lock-safe shape's (`locks`), rather than one per MySQL statement.
+    lock_safe: bool,
 }
 
 /// What a plan loses, as a sentence names it: `the column users.bio`, `the table tags`.
@@ -3146,6 +3272,9 @@ fn command_line(asked: &Asked, choices: &Choices, more_drops: &[String], renames
         flags.push(format!("--drop {}", drops.iter().map(|n| shell_word(n)).collect::<Vec<_>>().join(",")));
     }
     flags.extend(choices.rename.iter().chain(renames).map(|(old, new)| format!("--rename {}={}", shell_word(old), shell_word(new))));
+    if choices.blocking {
+        flags.push("--blocking".to_string());
+    }
     if force {
         flags.push("--force".to_string());
     }
@@ -3190,6 +3319,26 @@ fn guess_problem(guesses: &[Guess], drops: &[(String, String)], narrowed: &[(Str
         .fix(if one { "If it is new, dropping the old one and its data" } else { "If they are new, dropping the old ones and their data" }, &[&create_command(asked, stated, &dropped, &[])])
 }
 
+/// The refusal of a migration that holds a lock blocking writes to a table with rows while it
+/// reads them all, which `--blocking` accepts.
+#[cfg(feature = "cli")]
+fn lock_problem(hazards: &[crate::locks::Hazard], asked: &Asked, choices: &Choices) -> Problem {
+    let title = match hazards {
+        [one] => format!("This migration {}", one.what),
+        _ => "This migration blocks writes to tables while it reads every row".to_string(),
+    };
+    let mut problem = Problem::new("blocks-writes", title);
+    if hazards.len() > 1 {
+        problem = problem.lines([String::new()]).lines(hazards.iter().map(|h| format!("    It {}", h.what))).lines([String::new()]);
+    }
+    problem = problem.note("On a table with many rows, the app's writes wait for as long as that takes.");
+    if hazards.iter().any(|h| h.what.starts_with("rewrites ")) {
+        problem = problem.note("To change a column without copying its table, add a column, fill it in batches, then swap the two, each step a migration of its own.");
+    }
+    let blocking = Choices { blocking: true, ..choices.clone() };
+    problem.fix("Where the table is small enough to wait for", &[&create_command(asked, &blocking, &[], &[])])
+}
+
 /// The problems with what `choices` states about the tables and columns a plan drops (`lost`, as
 /// the plan's ids, and `shown`, as the file names them, one for one): each must be named in
 /// `--drop`, and each name in `--drop` must name only what it drops. `guesses`, renames it won't
@@ -3201,7 +3350,7 @@ fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String,
     let mut problems = drop_problems_of(lost, shown, narrowed, guesses, owners, added, choices, asked);
     // Where --force can accept them all, the last says so, once nothing but what it accepts is left.
     if asked.offers_force && !problems.is_empty() && problems.iter().all(|p| DESTRUCTIVE.contains(&p.code)) {
-        let stated = Choices { drop: vec![], rename: choices.rename.clone() };
+        let stated = Choices { drop: vec![], rename: choices.rename.clone(), ..Default::default() };
         let last = problems.pop().expect("a problem");
         problems.push(last.fix("To accept every destructive change", &[&command_line(asked, &stated, &[], &[], true)]));
     }
@@ -3216,7 +3365,7 @@ fn drop_problems_of(lost: &[String], shown: &[String], narrowed: &[(String, Stri
     let mut named: Vec<String> = Vec::new();
     // What --drop states that holds, which a suggested command keeps. It names what is dropped, and
     // a column whose change of type loses what its values hold.
-    let mut stated = Choices { drop: vec![], rename: choices.rename.clone() };
+    let mut stated = Choices { drop: vec![], rename: choices.rename.clone(), ..Default::default() };
     let all: Vec<String> = lost.iter().cloned().chain(narrowed.iter().map(|(id, _, _)| id.clone())).collect();
     for w in &choices.drop {
         match resolve(&all, w) {
@@ -3385,7 +3534,7 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
             }
             name.to_string()
         };
-        let columns = Choices { drop: choices.drop.iter().map(|w| follow(w)).collect(), rename: column_renames.iter().map(|(a, b)| (follow(a), b.clone())).collect() };
+        let columns = Choices { drop: choices.drop.iter().map(|w| follow(w)).collect(), rename: column_renames.iter().map(|(a, b)| (follow(a), b.clone())).collect(), ..Default::default() };
         let alterer = crate::diff::alterer(db).await?;
         let stated = match stated_renames(&current, &target.schema, &columns, subject) {
             Ok(stated) => stated,
@@ -3413,7 +3562,7 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
         if let Some(asked) = asked {
             // What the plan adds, the names a person might mean by a rename of what it drops.
             let added: Vec<String> = target.schema.objects.iter().filter(|(id, o)| matches!(o.kind, Some(crate::diff::Kind::Column | crate::diff::Kind::Table)) && !current.objects.contains_key(*id) && !(o.kind == Some(crate::diff::Kind::Column) && o.owner.as_ref().is_some_and(|t| !current.objects.contains_key(t)))).map(|(id, o)| format!("{} {}", if o.kind == Some(crate::diff::Kind::Table) { "table" } else { "column" }, shown_name(id))).collect();
-            let mut problems = drop_problems(&lost, &plan.losses, &narrowed, &guesses, &owned_by_guess, &added, &Choices { drop: columns.drop.clone(), rename: choices.rename.clone() }, asked);
+            let mut problems = drop_problems(&lost, &plan.losses, &narrowed, &guesses, &owned_by_guess, &added, &Choices { drop: columns.drop.clone(), rename: choices.rename.clone(), ..Default::default() }, asked);
             if force {
                 problems.retain(|p| !DESTRUCTIVE.contains(&p.code));
             }
@@ -3440,7 +3589,7 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
 #[allow(clippy::type_complexity)]
 #[cfg(feature = "cli")]
 async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_name: &str, migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<Drafted, Vec<Problem>>, Error> {
-    let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string() };
+    let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false };
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
@@ -3502,29 +3651,82 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         if plan.statements.is_empty() && moves.is_empty() {
             return Ok(Ok(drafted(vec![String::new()], 0, vec![], true)));
         }
+        // On Postgres, a plan that would hold a lock that blocks writes to a table with rows while it
+        // reads them all is written in the shape that doesn't, as several files (`locks`).
+        let existing = if d == Dialect::Postgres { crate::locks::existing_tables(shadows.db(c)).await? } else { Default::default() };
+        let mut split = crate::locks::lock_safe(&plan, &existing);
         // The plan runs on the replay as `deploy` will run its files: one file in one transaction (on
-        // SQLite with foreign keys off until it is checked), or on MySQL a file per statement.
-        let pieces: Vec<String> = if d == Dialect::Mysql {
-            plan.runnable().cloned().collect()
-        } else {
-            vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")]
-        };
-        let mut failed = None;
-        for sql in pieces {
-            let file = Migration { name: "plan".into(), time: String::new(), path: PathBuf::new(), sql };
-            if let Err(e) = run(shadows.db(c), &file, false).await {
-                failed = Some(e.0);
-                break;
+        // SQLite with foreign keys off until it is checked), on MySQL a file per statement, and the
+        // lock-safe shape's files one after another. Each says the locks it holds.
+        let pieces = |split: &Option<Vec<Vec<String>>>, plan: &crate::diff::Plan| -> Vec<String> {
+            match split {
+                Some(files) => crate::locks::file_texts(plan, files),
+                None if d == Dialect::Mysql => plan.runnable().cloned().collect(),
+                None => vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")],
             }
-        }
+        };
+        let run_pieces = async |db: &mut Db, sqls: Vec<String>| -> Result<(Option<String>, Vec<crate::locks::Hazard>), Error> {
+            let mut hazards = Vec::new();
+            for sql in sqls {
+                let file = Migration { name: "plan".into(), time: String::new(), path: PathBuf::new(), sql };
+                match crate::locks::run_watched(db, &file).await {
+                    Ok(found) => hazards.extend(found),
+                    Err(e) => return Ok((Some(e.0), hazards)),
+                }
+            }
+            Ok((None, hazards))
+        };
+        let (mut failed, mut hazards) = run_pieces(shadows.db(c), pieces(&split, &plan)).await?;
         let wanted = match shadows.lines(a).await? {
             Ok(lines) => lines,
             Err((_, e)) => return Ok(Err(vec![fails_problem(target_name, e)])),
         };
-        let reached = catalog(shadows.db(c)).await?;
-        plan.statements.splice(0..0, moves);
-        let mut texts = plan_files(&plan, d);
+        let mut reached = catalog(shadows.db(c)).await?;
+        // Where the lock-safe shape doesn't reach the target (a statement that needs a constraint
+        // validated, or a column not null, before the last file), the plan is one file, on a new
+        // replay, as the planner wrote it.
         let mut notes = Vec::new();
+        if split.is_some() && (failed.is_some() || reached != wanted) {
+            split = None;
+            let c2 = shadows.lane();
+            shadows.push(c2, files.iter().map(Step::of));
+            if let Err((m, e)) = shadows.open(c2).await? {
+                return Ok(Err(vec![Problem::new("replay-fails", format!("{m} fails when replayed in a shadow database")).note(e)]));
+            }
+            shadows.taint(c2);
+            if !moves.is_empty() {
+                let file = Migration { name: "moves".into(), time: String::new(), path: PathBuf::new(), sql: moves.iter().map(|m| format!("{m};")).collect::<Vec<_>>().join("\n") };
+                run(shadows.db(c2), &file, false).await?;
+            }
+            (failed, hazards) = run_pieces(shadows.db(c2), pieces(&None, &plan)).await?;
+            reached = catalog(shadows.db(c2)).await?;
+            notes.push(format!("  {} Written as one file: in files that never block writes while they read every row, it didn't reach {target_name}", paint("yellow", "!")));
+        }
+        if !hazards.is_empty() && !choices.blocking && failed.is_none() && reached == wanted {
+            return Ok(Err(vec![lock_problem(&hazards, &asked, choices)]));
+        }
+        for h in &hazards {
+            notes.push(format!("  {} It {}", paint("yellow", "!"), h.what));
+        }
+        let split_files = split.as_ref().map(|files| files.len());
+        let mut texts = match split {
+            Some(mut files) => {
+                // The moves first, in a file of their own where the first is an index built concurrently.
+                if !moves.is_empty() {
+                    let first = files[0].iter().filter(|s| !s.starts_with("--")).map(|s| format!("{s};")).collect::<Vec<_>>().join("\n");
+                    if runs_alone(&first, d) {
+                        files.insert(0, std::mem::take(&mut moves));
+                    } else {
+                        files[0].splice(0..0, std::mem::take(&mut moves));
+                    }
+                }
+                crate::locks::file_texts(&plan, &files)
+            }
+            None => {
+                plan.statements.splice(0..0, std::mem::take(&mut moves));
+                plan_files(&plan, d)
+            }
+        };
         for loss in &plan.losses {
             notes.push(format!("  {} Drops {} and its {}", paint("yellow", "!"), described(loss), if loss.starts_with("table ") { "rows" } else { "data" }));
         }
@@ -3550,7 +3752,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             notes.push(format!("      {}", paint("cyan", &create_command(&asked, choices, &names, &[]))));
         }
         if failed.is_none() && reached == wanted {
-            return Ok(Ok(drafted(texts, 0, notes, false)));
+            return Ok(Ok(Drafted { lock_safe: split_files.is_some(), ..drafted(texts, 0, notes, false) }));
         }
         let mut remaining = Vec::new();
         if let Some(f) = &failed {
@@ -3562,7 +3764,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         notes.push(paint("bold red", &format!("✗ The migration doesn't reach {target_name}: what remains is written at its top, to finish by hand")));
         notes.extend(remaining.iter().map(|r| format!("  {r}")));
         texts[0] = format!("-- This plan does not reach {target_name} yet. What remains:\n{}\n{}", remaining.iter().map(|r| format!("--   {}", r.replace('\n', " "))).collect::<Vec<_>>().join("\n"), texts[0]);
-        Ok(Ok(drafted(texts, 1, notes, false)))
+        Ok(Ok(Drafted { lock_safe: split_files.is_some(), ..drafted(texts, 1, notes, false) }))
     }
     .await;
     shadows.finish().await;
