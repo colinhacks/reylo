@@ -111,6 +111,16 @@ On a D1 database that already has tables, the `init.sql` that `reylo migrate ini
 wrangler d1 execute DB --remote --command "insert into d1_migrations (name) values ('init.sql')"
 ```
 
+On a new D1 database for that project, Wrangler would run `init.sql` last, since it applies files in name order. Run it first and record it, then apply the rest:
+
+```sh
+# makes Wrangler's d1_migrations table
+wrangler d1 migrations list DB --remote
+wrangler d1 execute DB --remote --file reylo/migrations/init.sql
+wrangler d1 execute DB --remote --command "insert into d1_migrations (name) values ('init.sql')"
+wrangler d1 migrations apply DB --remote
+```
+
 ## Blocked functions
 
 D1 blocks some of SQLite's functions, such as `json_pretty` and `power`. The type check also runs each query on Cloudflare's SQLite, as Wrangler runs it locally, so a blocked function is a type error. It does so when your `package.json` has `wrangler` and its config has a D1 database:
