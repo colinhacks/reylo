@@ -5,10 +5,10 @@
 ** one-line hooks, five of them right after name resolution), so the SQLITE_PRIVATE internals are
 ** callable here. The engine gives this file the schema DDL and one statement; the hooks fire while
 ** SQLite prepares the statement against an in-memory replay of that schema, and the walker
-** serializes what SQLite resolved: every expression with sqlite3ExprAffinity and
-** sqlite3ExprCanBeNull, every column reference with its Table, Column, NOT NULL and outer-join
-** mark (EP_CanBeNull), the FROM items with their join type and cursor, the DML target columns per
-** value position, and each table's columns and unique keys. The rules (function result types,
+** serializes what SQLite resolved: every expression with sqlite3ExprAffinity, every column
+** reference with its Table, Column, NOT NULL and outer-join mark (EP_CanBeNull), the FROM items
+** with their join type and cursor, the DML target columns per value position, and each table's
+** columns and unique keys. The rules (function result types,
 ** arithmetic, the row-count proof) live in Rust; nothing here decides a type. A host that
 ** registers scalar functions of its own on its connection names them with their argument counts,
 ** and the replay registers a stub for each, so a statement calling one prepares here as it does
@@ -187,7 +187,7 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
   int iCol = p->iColumn;
   kv_int(s, "cursor", p->iTable);
   kv_int(s, "index", iCol);
-  if( pTab==0 ){ kv_bool(s, "resolved", 0); return; }
+  if( pTab==0 ) return;
   tableSeen(pTab);
   kv_str(s, "table", pTab->zName);
   if( iCol<0 ) iCol = pTab->iPKey;
@@ -228,7 +228,6 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
   sqlite3_str_appendchar(s, 1, '{');
   kv_str(s, "op", opName(op));
   kv_str(s, "aff", affName(missingField(p) ? SQLITE_AFF_NONE : sqlite3ExprAffinity(p)));
-  kv_bool(s, "canBeNull", sqlite3ExprCanBeNull(p));
   /* SQLite moves every ON term into the WHERE; one from an outer join's ON says so, and names the
   ** cursor of the join's right side, which the term restricts without removing a row. */
   if( ExprHasProperty(p, EP_OuterON) ){ kv_bool(s, "outerOn", 1); kv_int(s, "join", p->w.iJoin); }
@@ -264,7 +263,6 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
       /* A FILTER alone is held as a window too; `over` is a call with an OVER clause. */
       kv_bool(s, "over", IsWindowFunc(p));
       kv_bool(s, "distinct", ExprHasProperty(p, EP_Distinct));
-      kv_bool(s, "infix", ExprHasProperty(p, EP_InfixFunc));
       key(s, "args");
       if( !ExprHasProperty(p, EP_TokenOnly|EP_Reduced) && ExprUseXList(p) ) exprList(s, p->x.pList, pSel);
       else sqlite3_str_appendall(s, "[]");
@@ -291,7 +289,6 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
       break;
     }
     case TK_CAST:
-      kv_str(s, "to", ExprHasProperty(p, EP_IntValue) ? "" : p->u.zToken);
       kv_str(s, "affinity", affName(sqlite3AffinityType(ExprHasProperty(p, EP_IntValue) ? "" : p->u.zToken, 0)));
       /* fall through: the operand is pLeft */
       key(s, "left"); expr(s, ExprHasProperty(p, EP_TokenOnly) ? 0 : p->pLeft, pSel); sqlite3_str_appendchar(s, 1, ',');
@@ -363,7 +360,6 @@ static void selectJson(sqlite3_str *s, Select *pTop){
     kv_str(s, "table", pItem->pSTab && !pItem->fg.isSubquery ? pItem->pSTab->zName : pItem->zName);
     kv_str(s, "alias", pItem->zAlias);
     kv_bool(s, "outer", (pItem->fg.jointype & (JT_LEFT|JT_LTORJ))!=0);
-    kv_bool(s, "cross", (pItem->fg.jointype & JT_CROSS)!=0);
     kv_bool(s, "right", (pItem->fg.jointype & JT_RIGHT)!=0);
     kv_bool(s, "leftOfRight", (pItem->fg.jointype & JT_LTORJ)!=0);
     kv_bool(s, "tabFunc", pItem->fg.isTabFunc);
@@ -391,7 +387,6 @@ static void selectJson(sqlite3_str *s, Select *pTop){
   key(s, "limit"); expr(s, pTop->pLimit ? pTop->pLimit->pLeft : 0, pTop); sqlite3_str_appendchar(s, 1, ',');
   key(s, "offset"); expr(s, pTop->pLimit ? pTop->pLimit->pRight : 0, pTop); sqlite3_str_appendchar(s, 1, ',');
   kv_bool(s, "distinct", (p->selFlags & SF_Distinct)!=0);
-  kv_bool(s, "hasAgg", (p->selFlags & SF_HasAgg)!=0);
   kv_bool(s, "aggregate", (p->selFlags & SF_Aggregate)!=0);
   kv_bool(s, "values", (p->selFlags & SF_Values)!=0);
   kv_bool(s, "window", p->pWin!=0);
@@ -494,6 +489,7 @@ static void insertHook(Parse *pParse, Table *pTab, IdList *pColumn, ExprList *pL
 }
 static void updateHook(Parse *pParse, Table *pTab, ExprList *pChanges, Expr *pWhere, int *aXRef, SrcList *pTabList, int onError, Upsert *pUpsert){
   int i, j;
+  (void)pTabList;
   if( skipHook(pParse) || gCaptured ) return;
   gCaptured = 1;
   tableSeen(pTab);
@@ -512,7 +508,6 @@ static void updateHook(Parse *pParse, Table *pTab, ExprList *pChanges, Expr *pWh
   }
   closeArr(gDml); sqlite3_str_appendchar(gDml, 1, ',');
   key(gDml, "where"); expr(gDml, pWhere, 0); sqlite3_str_appendchar(gDml, 1, ',');
-  kv_int(gDml, "fromItems", pTabList ? pTabList->nSrc : 1);
   closeObj(gDml);
 }
 static void deleteHook(Parse *pParse, Table *pTab, Expr *pWhere){
@@ -585,7 +580,6 @@ static void tables(sqlite3_str *s){
     Index *pIdx;
     key(s, pTab->zName); sqlite3_str_appendchar(s, 1, '{');
     kv_bool(s, "strict", (pTab->tabFlags & TF_Strict)!=0);
-    kv_bool(s, "withoutRowid", (pTab->tabFlags & TF_WithoutRowid)!=0);
     kv_str(s, "rowidAlias", pTab->iPKey>=0 ? pTab->aCol[pTab->iPKey].zCnName : 0);
     kv_bool(s, "ignores", ignoresConflict(pTab));
     key(s, "columns"); sqlite3_str_appendchar(s, 1, '[');
@@ -597,9 +591,6 @@ static void tables(sqlite3_str *s){
       kv_str(s, "affinity", affName(pCol->affinity));
       kv_bool(s, "notNull", pCol->notNull!=0);
       kv_bool(s, "checkedNotNull", checkedNotNull(pTab, i));
-      kv_bool(s, "pk", (pCol->colFlags & COLFLAG_PRIMKEY)!=0);
-      kv_bool(s, "generated", (pCol->colFlags & COLFLAG_GENERATED)!=0);
-      kv_bool(s, "hidden", (pCol->colFlags & COLFLAG_HIDDEN)!=0);
       closeObj(s); sqlite3_str_appendchar(s, 1, ',');
     }
     closeArr(s); sqlite3_str_appendchar(s, 1, ',');
@@ -858,7 +849,6 @@ char *reylo_sqlite_analyze(
   sqlite3_str *out = sqlite3_str_new(0);
   sqlite3_str *schemaErrors = sqlite3_str_new(0);
   sqlite3_stmt *pStmt = 0, *pNames = 0;
-  const char *zTail = 0;
   int rc, i, n, nDepth;
   sqlite3_str_appendchar(schemaErrors, 1, '[');
   rc = openSchema(azDdl, nDdl, azFn, aFnArg, nFn, azHost, aHostArg, zHostType, nHost, schemaErrors);
@@ -883,7 +873,7 @@ char *reylo_sqlite_analyze(
   ** of every shape needs at most 42% (measured on Node 24 and 26, 2026-10-21). The schema's own
   ** statements keep SQLite's bound. */
   nDepth = sqlite3_limit(gDb, SQLITE_LIMIT_EXPR_DEPTH, REYLO_SQLITE_EXPR_DEPTH);
-  rc = sqlite3_prepare_v2(gDb, zSql, -1, &pStmt, &zTail);
+  rc = sqlite3_prepare_v2(gDb, zSql, -1, &pStmt, 0);
   sqlite3_limit(gDb, SQLITE_LIMIT_EXPR_DEPTH, nDepth);
   installHooks(0);
   if( nHost>=0 ) sqlite3_set_authorizer(gDb, 0, 0);
@@ -923,8 +913,6 @@ char *reylo_sqlite_analyze(
       sqlite3_str_appendchar(out, 1, '{');
       kv_str(out, "name", sqlite3_column_name(pNames ? pNames : pStmt, i));
       kv_str(out, "declared", sqlite3_column_decltype(pStmt, i));
-      kv_str(out, "table", sqlite3_column_table_name(pStmt, i));
-      kv_str(out, "column", sqlite3_column_origin_name(pStmt, i));
       closeObj(out); sqlite3_str_appendchar(out, 1, ',');
     }
     closeArr(out); sqlite3_str_appendchar(out, 1, ',');
@@ -932,13 +920,11 @@ char *reylo_sqlite_analyze(
     key(out, "params"); sqlite3_str_appendchar(out, 1, '[');
     for(i=1; i<=n; i++){
       sqlite3_str_appendchar(out, 1, '{');
-      kv_int(out, "index", i);
       kv_str(out, "name", sqlite3_bind_parameter_name(pStmt, i));
       closeObj(out); sqlite3_str_appendchar(out, 1, ',');
     }
     closeArr(out); sqlite3_str_appendchar(out, 1, ',');
     kv_bool(out, "readonly", sqlite3_stmt_readonly(pStmt));
-    kv_bool(out, "tail", zTail && zTail[0] && sqlite3_complete(zTail)==0 ? 1 : (zTail && strspn(zTail, " \t\r\n;")!=strlen(zTail)));
     key(out, "tables"); tables(out); sqlite3_str_appendchar(out, 1, ',');
   }
   key(out, "schemaErrors"); sqlite3_str_appendall(out, sqlite3_str_value(schemaErrors) ? sqlite3_str_value(schemaErrors) : "[]");

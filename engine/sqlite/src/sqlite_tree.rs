@@ -20,8 +20,6 @@ pub struct Tree {
     pub columns: Vec<PublicColumn>,
     pub params: Vec<PublicParam>,
     pub readonly: bool,
-    /// More than one statement in the text.
-    pub tail: bool,
     pub tables: HashMap<String, TableInfo>,
     pub error: Option<TreeError>,
     pub schema_errors: Vec<SchemaError>,
@@ -56,14 +54,11 @@ pub struct SchemaError {
 pub struct PublicColumn {
     pub name: String,
     pub declared: Option<String>,
-    pub table: Option<String>,
-    pub column: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PublicParam {
-    pub index: usize,
     pub name: Option<String>,
 }
 
@@ -71,7 +66,6 @@ pub struct PublicParam {
 #[serde(rename_all = "camelCase", default)]
 pub struct TableInfo {
     pub strict: bool,
-    pub without_rowid: bool,
     pub rowid_alias: Option<String>,
     /// A NOT NULL, UNIQUE or PRIMARY KEY of the table is declared ON CONFLICT IGNORE: a write
     /// that breaks it, with no OR clause of its own, skips the row.
@@ -89,9 +83,6 @@ pub struct ColumnInfo {
     pub not_null: bool,
     /// A CHECK of the table tests the column IS NOT NULL among its conjuncts: a write of NULL fails.
     pub checked_not_null: bool,
-    pub pk: bool,
-    pub generated: bool,
-    pub hidden: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -109,7 +100,6 @@ pub struct Sel {
     pub limit: Option<Node>,
     pub offset: Option<Node>,
     pub distinct: bool,
-    pub has_agg: bool,
     pub aggregate: bool,
     pub values: bool,
     pub window: bool,
@@ -136,7 +126,6 @@ pub struct From {
     pub alias: Option<String>,
     /// On the nullable side of an outer join.
     pub outer: bool,
-    pub cross: bool,
     /// Joined by a RIGHT or FULL JOIN, which keeps the rows of the side before it that match nothing.
     pub right: bool,
     /// Before a RIGHT or FULL JOIN, which null-extends it.
@@ -171,7 +160,6 @@ pub struct Dml {
     pub set: Vec<SetItem>,
     #[serde(rename = "where")]
     pub where_: Option<Node>,
-    pub from_items: i64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -197,7 +185,6 @@ pub struct Node {
     pub op: String,
     /// `sqlite3ExprAffinity`: integer, real, text, blob, numeric or none.
     pub aff: String,
-    pub can_be_null: bool,
     /// A WHERE term that came from an outer join's ON clause, which SQLite moves into the WHERE:
     /// it restricts the join's right side (the cursor `join`) and removes no row.
     pub outer_on: bool,
@@ -228,7 +215,6 @@ pub struct Node {
     pub register: bool,
     /// The column's collation, which a comparison with it uses where the column decides.
     pub coll: Option<String>,
-    pub resolved: Option<bool>,
     // variable, function
     pub name: Option<String>,
     pub value: Option<String>,
@@ -238,7 +224,6 @@ pub struct Node {
     /// A window call: one with an OVER clause.
     pub over: bool,
     pub distinct: bool,
-    pub infix: bool,
     pub args: Vec<Node>,
     /// An aggregate's own ORDER BY, or a window call's.
     pub order_by: Vec<Node>,
@@ -252,8 +237,6 @@ pub struct Node {
     pub exclude: Option<String>,
     /// A window call with a FILTER.
     pub filter: bool,
-    // cast
-    pub to: Option<String>,
     // operands
     pub left: Option<Box<Node>>,
     pub right: Option<Box<Node>>,
