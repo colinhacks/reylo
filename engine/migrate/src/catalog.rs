@@ -223,6 +223,15 @@ fn acl(column: &str, owner: &str, kind: char) -> String {
     )
 }
 
+/// The privileges an object's owner has by default and has taken from itself, comma-separated, or
+/// null: compared without naming the owner, so that one role's database compares with another's.
+pub(crate) fn owner_lacks(column: &str, owner: &str, kind: char) -> String {
+    format!(
+        "(select string_agg(d.privilege_type, ',' order by d.privilege_type) from aclexplode(acldefault('{kind}', {owner})) d
+           where d.grantee = {owner} and not exists (select 1 from aclexplode(coalesce({column}, acldefault('{kind}', {owner}))) x where x.grantee = {owner} and x.privilege_type = d.privilege_type))"
+    )
+}
+
 /// The settings that change how a name or a value renders, pinned for the read: a role's or a
 /// database's own DateStyle, say, would otherwise read as a change to every default it renders.
 const PINNED: [(&str, &str); 7] = [
@@ -258,8 +267,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
 
     for r in db
         .rows(&format!(
-            "select n.nspname as name, {} as acl, obj_description(n.oid, 'pg_namespace') as comment from pg_namespace n where {ns} and {} and {}",
+            "select n.nspname as name, {} as acl, {} as owner_lacks, obj_description(n.oid, 'pg_namespace') as comment from pg_namespace n where {ns} and {} and {}",
             acl("n.nspacl", "n.nspowner", 'n'),
+            owner_lacks("n.nspacl", "n.nspowner", 'n'),
             not_extension("pg_namespace", "n"),
             not_platform("n.nspowner")
         ))
@@ -269,6 +279,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         lines.push(format!("schema {name}"));
         if let Some(acl) = r.get("acl") {
             lines.push(format!("grant schema {name} {acl}"));
+        }
+        if let Some(lacks) = r.get("owner_lacks") {
+            lines.push(format!("owner lacks schema {name} {lacks}"));
         }
         if let Some(comment) = r.get("comment") {
             lines.push(format!("comment schema {name} {}", json(comment)));
@@ -298,6 +311,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
               case when c.relkind = 'p' then pg_get_partkeydef(c.oid) end as partkey,
               (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
                  from aclexplode(c.relacl) x where x.grantee <> c.relowner) as acl,
+              {} as owner_lacks,
               obj_description(c.oid, 'pg_class') as comment,
               case when c.relkind in ('r', 'p') then case c.relreplident when 'f' then 'full' when 'n' then 'nothing'
                 when 'i' then (select format('using index %I', ic.relname) from pg_index i join pg_class ic on ic.oid = i.indexrelid where i.indrelid = c.oid and i.indisreplident) end end as replica,
@@ -306,6 +320,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             from pg_class c join pg_namespace n on n.oid = c.relnamespace
             where c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
               and not exists (select 1 from pg_depend e where e.classid = 'pg_type'::regclass and e.objid = c.reltype and e.deptype = 'e')",
+            owner_lacks("c.relacl", "c.relowner", 'r'),
             not_extension("pg_class", "c"),
             not_platform("c.relowner")
         ))
@@ -357,6 +372,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         }
         if let Some(acl) = r.get("acl") {
             lines.push(format!("grant {name} {acl}"));
+        }
+        if let Some(lacks) = r.get("owner_lacks") {
+            lines.push(format!("owner lacks {name} {lacks}"));
         }
         if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {name} {}", json(comment)));
@@ -620,37 +638,40 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     // Privileges on sequences, functions and types, and comments on what is not a relation.
     for r in db
         .rows(&format!(
-            "select 'sequence ' || format('%I.%I', n.nspname, c.relname) as name, {} as acl, obj_description(c.oid, 'pg_class') as comment
+            "select 'sequence ' || format('%I.%I', n.nspname, c.relname) as name, {} as acl, obj_description(c.oid, 'pg_class') as comment, {} as owner_lacks
             from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'S' and {ns} and {} and {}
-            union all select 'function ' || format('%s', p.oid::regprocedure), {}, obj_description(p.oid, 'pg_proc')
+            union all select 'function ' || format('%s', p.oid::regprocedure), {}, obj_description(p.oid, 'pg_proc'), {}
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {ns} and {} and {}
-            union all select 'type ' || format('%I.%I', n.nspname, t.typname), {}, obj_description(t.oid, 'pg_type')
+            union all select 'type ' || format('%I.%I', n.nspname, t.typname), {}, obj_description(t.oid, 'pg_type'), {}
             from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype in ('e', 'd', 'r', 'b') and t.typelem = 0 and {ns} and {} and {}
-            union all select 'index ' || format('%I.%I', n.nspname, c.relname), null, obj_description(c.oid, 'pg_class')
+            union all select 'index ' || format('%I.%I', n.nspname, c.relname), null, obj_description(c.oid, 'pg_class'), null
             from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('i', 'I') and {ns} and {} and {}
-            union all select 'constraint ' || format('%I', co.conname) || ' on ' || case when cc.oid is not null then format('%I.%I', cn.nspname, cc.relname) else format('%I.%I', tn.nspname, ct.typname) end, null, obj_description(co.oid, 'pg_constraint')
+            union all select 'constraint ' || format('%I', co.conname) || ' on ' || case when cc.oid is not null then format('%I.%I', cn.nspname, cc.relname) else format('%I.%I', tn.nspname, ct.typname) end, null, obj_description(co.oid, 'pg_constraint'), null
             from pg_constraint co left join pg_class cc on cc.oid = co.conrelid left join pg_namespace cn on cn.oid = cc.relnamespace
               left join pg_type ct on ct.oid = co.contypid left join pg_namespace tn on tn.oid = ct.typnamespace
             where co.contype <> 'n' and coalesce(cn.nspname, tn.nspname) not in ('pg_catalog', 'information_schema') and coalesce(cc.relname, '') <> '{history}'
-            union all select 'trigger ' || format('%I', tg.tgname) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(tg.oid, 'pg_trigger')
+            union all select 'trigger ' || format('%I', tg.tgname) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(tg.oid, 'pg_trigger'), null
             from pg_trigger tg join pg_class c on c.oid = tg.tgrelid join pg_namespace n on n.oid = c.relnamespace where not tg.tgisinternal and {ns}
-            union all select 'policy ' || format('%I', po.polname) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(po.oid, 'pg_policy')
+            union all select 'policy ' || format('%I', po.polname) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(po.oid, 'pg_policy'), null
             from pg_policy po join pg_class c on c.oid = po.polrelid join pg_namespace n on n.oid = c.relnamespace
-            union all select 'collation ' || format('%I.%I', n.nspname, co.collname), null, obj_description(co.oid, 'pg_collation')
+            union all select 'collation ' || format('%I.%I', n.nspname, co.collname), null, obj_description(co.oid, 'pg_collation'), null
             from pg_collation co join pg_namespace n on n.oid = co.collnamespace where {ns} and {}
-            union all select 'publication ' || format('%I', pb.pubname), null, obj_description(pb.oid, 'pg_publication') from pg_publication pb
-            union all select 'rule ' || format('%I', ru.rulename) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(ru.oid, 'pg_rewrite')
+            union all select 'publication ' || format('%I', pb.pubname), null, obj_description(pb.oid, 'pg_publication'), null from pg_publication pb
+            union all select 'rule ' || format('%I', ru.rulename) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(ru.oid, 'pg_rewrite'), null
             from pg_rewrite ru join pg_class c on c.oid = ru.ev_class join pg_namespace n on n.oid = c.relnamespace where ru.rulename <> '_RETURN' and {ns}
-            union all select 'event trigger ' || format('%I', et.evtname), null, obj_description(et.oid, 'pg_event_trigger') from pg_event_trigger et where {}
-            union all select 'foreign data wrapper ' || format('%I', w.fdwname), {}, obj_description(w.oid, 'pg_foreign_data_wrapper') from pg_foreign_data_wrapper w where {}
-            union all select 'server ' || format('%I', sv.srvname), {}, obj_description(sv.oid, 'pg_foreign_server') from pg_foreign_server sv where {}",
+            union all select 'event trigger ' || format('%I', et.evtname), null, obj_description(et.oid, 'pg_event_trigger'), null from pg_event_trigger et where {}
+            union all select 'foreign data wrapper ' || format('%I', w.fdwname), {}, obj_description(w.oid, 'pg_foreign_data_wrapper'), null from pg_foreign_data_wrapper w where {}
+            union all select 'server ' || format('%I', sv.srvname), {}, obj_description(sv.oid, 'pg_foreign_server'), null from pg_foreign_server sv where {}",
             acl("c.relacl", "c.relowner", 's'),
+            owner_lacks("c.relacl", "c.relowner", 's'),
             not_extension("pg_class", "c"),
             not_platform("c.relowner"),
             acl("p.proacl", "p.proowner", 'f'),
+            owner_lacks("p.proacl", "p.proowner", 'f'),
             not_extension("pg_proc", "p"),
             not_platform("p.proowner"),
             acl("t.typacl", "t.typowner", 'T'),
+            owner_lacks("t.typacl", "t.typowner", 'T'),
             not_extension("pg_type", "t"),
             not_platform("t.typowner"),
             not_extension("pg_class", "c"),
@@ -667,6 +688,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         let name = r.text("name");
         if let Some(acl) = r.get("acl") {
             lines.push(format!("grant {name} {acl}"));
+        }
+        if let Some(lacks) = r.get("owner_lacks") {
+            lines.push(format!("owner lacks {name} {lacks}"));
         }
         if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {name} {}", json(comment)));

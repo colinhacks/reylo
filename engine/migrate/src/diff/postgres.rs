@@ -1874,14 +1874,36 @@ fn acl_in(acl: &str, kind: char, owner: &str, schema: Option<&str>) -> String {
            from pg_default_acl d, aclexplode(d.defaclacl) x where d.defaclrole = {owner} and d.defaclobjtype = '{object}' and d.defaclnamespace in (0, {}) and x.grantee <> {owner})",
         schema.unwrap_or("0")
     );
-    format!("format('%s', json_build_array({}, {}, {implied}))", explode(&format!("coalesce({acl}, acldefault('{kind}', {owner}))")), explode(&format!("acldefault('{kind}', {owner})")))
+    // What the owner has taken from itself, and how a statement names it: the role the plan runs
+    // as, where it owns the object, as `current_user`.
+    let lacks = format!(
+        "(select json_agg(d.privilege_type order by d.privilege_type) from aclexplode(acldefault('{kind}', {owner})) d
+           where d.grantee = {owner} and not exists (select 1 from aclexplode(coalesce({acl}, acldefault('{kind}', {owner}))) x where x.grantee = {owner} and x.privilege_type = d.privilege_type))"
+    );
+    let spelled = format!("case when {owner} = {} then 'current_user' else quote_ident(pg_get_userbyid({owner})) end", crate::catalog::runner());
+    format!("format('%s', json_build_array({}, {}, {implied}, {lacks}, {spelled}))", explode(&format!("coalesce({acl}, acldefault('{kind}', {owner}))")), explode(&format!("acldefault('{kind}', {owner})")))
 }
 
 /// One object per privilege the object `name` (`on` says what it is: `table`, `function`, …)
 /// grants beyond those it has by default, and one per default privilege it has revoked: a new
 /// object has its defaults, which the plan revokes where the target has. `privileges` is `acl`'s.
 fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
-    let lists: Vec<Option<Vec<serde_json::Value>>> = serde_json::from_str(privileges).unwrap_or_default();
+    let parts: Vec<serde_json::Value> = serde_json::from_str(privileges).unwrap_or_default();
+    // What the owner has taken from itself, revoked after the object is made or its owner set.
+    let owner = parts.get(4).and_then(|v| v.as_str()).unwrap_or("current_user").to_string();
+    for privilege in parts.get(3).and_then(|v| v.as_array()).cloned().unwrap_or_default().iter().filter_map(|p| p.as_str()) {
+        s.add(Object {
+            id: format!("revoke {privilege} on {name} from its owner"),
+            kind: Some(Kind::Grant),
+            owner: Some(id.to_string()),
+            def: String::new(),
+            create: vec![format!("revoke {} on {on} {name} from {owner}", privilege.to_lowercase())],
+            drop: vec![format!("grant {} on {on} {name} to {owner}", privilege.to_lowercase())],
+            deps: [format!("owner {id}")].into_iter().collect(),
+            ..Object::default()
+        });
+    }
+    let lists: Vec<Option<Vec<serde_json::Value>>> = parts.iter().take(3).map(|v| serde_json::from_value(v.clone()).ok()).collect();
     let (have, default) = (lists.first().cloned().flatten().unwrap_or_default(), lists.get(1).cloned().flatten().unwrap_or_default());
     let key = |g: &serde_json::Value| (g["grantee"].as_str().unwrap_or_default().to_string(), g["privilege"].as_str().unwrap_or_default().to_string(), g["grantable"].as_bool().unwrap_or(false));
     let (have, default): (BTreeSet<_>, BTreeSet<_>) = (have.iter().map(key).collect(), default.iter().map(key).collect());
@@ -1931,8 +1953,8 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
 /// anon`), which a column has none of by default. `privileges` is `acl`'s, `table` the column's
 /// table and `id` the column's.
 fn column_grants(s: &mut Schema, privileges: &str, table: &str, column: &str, id: &str) {
-    let lists: Vec<Option<Vec<serde_json::Value>>> = serde_json::from_str(privileges).unwrap_or_default();
-    for g in lists.first().cloned().flatten().unwrap_or_default() {
+    let parts: Vec<serde_json::Value> = serde_json::from_str(privileges).unwrap_or_default();
+    for g in parts.first().and_then(|v| v.as_array()).cloned().unwrap_or_default() {
         let (grantee, privilege, grantable) = (g["grantee"].as_str().unwrap_or_default(), g["privilege"].as_str().unwrap_or_default().to_lowercase(), g["grantable"].as_bool().unwrap_or(false));
         s.add(Object {
             id: format!("grant {privilege} ({column}) on {table} to {grantee}"),
