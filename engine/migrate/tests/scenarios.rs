@@ -2688,6 +2688,7 @@ on!(
     a_rename_to_a_name_that_needs_quotes,
     an_index_left_invalid_by_a_cut_off_build_is_dropped_and_built_again,
     a_renamed_tables_sequence_keeps_counting,
+    an_enum_label_a_partition_uses_is_committed_first,
     a_foreign_table_is_renamed_as_stated,
     a_partitioned_table_is_renamed_with_its_partitions,
     a_table_renamed_onto_a_views_name_drops_the_view_first,
@@ -3140,6 +3141,30 @@ mod adversarial {
         assert!(p.rows("select 1 from pg_index where not indisvalid").await.is_empty());
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_has!(p.output(), "Up to date");
+    }
+
+    pub async fn an_enum_label_a_partition_uses_is_committed_first(mut p: P) {
+        let v1 = "create type region as enum ('eu', 'us'); create table t (id int, r region) partition by list (r); create table t_eu partition of t for values in ('eu');";
+        let v2 = "create type region as enum ('eu', 'us', 'ap'); create table t (id int, r region) partition by list (r); create table t_eu partition of t for values in ('eu'); create table t_ap partition of t for values in ('ap');";
+        p.schema(v1);
+        p.file("20261027100000_regions.sql", v1);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into t values (1, 'eu')").await;
+        // Postgres refuses a label added and used in one transaction, and the type can't be made
+        // again under a partition key: the label is a migration of its own, before the partition.
+        p.schema(v2);
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "ap", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let made: Vec<String> = p.files().into_iter().filter(|f| f.contains("_ap")).collect();
+        assert_eq!(made.len(), 2, "{made:?}");
+        let first = std::fs::read_to_string(p.dir.join("migrations").join(&made[0])).unwrap();
+        let second = std::fs::read_to_string(p.dir.join("migrations").join(&made[1])).unwrap();
+        assert!(first.contains("add value 'ap'") && !first.contains("partition of"), "{first}");
+        assert!(second.contains("partition of t for values in ('ap')"), "{second}");
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into t values (2, 'ap')").await;
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
     pub async fn a_renamed_tables_sequence_keeps_counting(mut p: P) {

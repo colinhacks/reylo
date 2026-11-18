@@ -2894,8 +2894,9 @@ fn described(loss: &str) -> String {
 /// one per statement, each with the comments written above it.
 #[cfg(feature = "cli")]
 fn plan_files(plan: &crate::diff::Plan, d: Dialect) -> Vec<String> {
+    // A file per transaction: one, or more where the plan commits partway.
     if d != Dialect::Mysql {
-        return vec![plan.sql()];
+        return plan.transactions().iter().map(|t| t.sql()).collect();
     }
     let mut files: Vec<String> = Vec::new();
     let mut pending = String::new();
@@ -3512,7 +3513,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         let pieces: Vec<String> = if d == Dialect::Mysql {
             plan.runnable().cloned().collect()
         } else {
-            vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")]
+            plan.transactions().iter().map(|t| t.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")).collect()
         };
         let mut failed = None;
         for sql in pieces {
@@ -3912,6 +3913,10 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
     result
 }
 
+/// What a push that failed after committing part of its plan says: an enum's labels, which what
+/// follows them uses, are committed first.
+const COMMITTED: &str = "The plan commits partway (an enum's new labels, before what uses them), so its first part is in place.";
+
 /// Why `take_to` left the database as it was.
 enum Unreached {
     /// The plan ran, but the database didn't then read as the target: how it differs.
@@ -3943,8 +3948,12 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
             Ok(Settled { renames, plan, .. }) => (renames, plan),
             Err(problems) => return Ok(Err(Unreached::Refused(problems))),
         };
+        let mut committed = false;
         for s in plan.runnable().chain(then) {
-            db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await?;
+            if let Err(e) = db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await {
+                return Err(if committed { Error(format!("{}\n{COMMITTED}", e.0)) } else { e });
+            }
+            committed |= s == crate::diff::COMMIT;
         }
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
@@ -4847,7 +4856,12 @@ async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Optio
 async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, applied: &[Migration], schema_sql: &str, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
     let d = db.dialect();
     let fail = |m: &str, error: String, log: Log<'_>| {
-        let problem = Problem::new("db-push-failed", m.to_string()).note(error);
+        let partway = error.contains(COMMITTED);
+        let problem = Problem::new("db-push-failed", m.to_string()).note(error.replace(&format!("\n{COMMITTED}"), ""));
+        if partway {
+            print_problems(&[problem.note(COMMITTED)], log);
+            return Ok(1);
+        }
         if d == Dialect::Mysql {
             print_problems(&[problem.note("MySQL commits each statement, so part of the push may be in place.")], log);
             return Ok(1);

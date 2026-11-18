@@ -1741,6 +1741,18 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // trigger's condition, an index's predicate, a function, and a partition's bound over a column
     // of the type. A label added in the plan that one of them uses can't be added in place: Postgres
     // refuses a value added in the transaction that uses it.
+    // The columns a partitioned table is partitioned by.
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for r in db
+        .rows(
+            "select format('%I.%I', n.nspname, c.relname) as rel, format('%I', a.attname) as col
+            from pg_partitioned_table p join pg_class c on c.oid = p.partrelid join pg_namespace n on n.oid = c.relnamespace
+              join pg_attribute a on a.attrelid = p.partrelid and a.attnum = any(p.partattrs::int2[])",
+        )
+        .await?
+    {
+        keys.insert(format!("column {}.{}", r.text("rel"), r.text("col")));
+    }
     let enum_type = |d: &String| s.objects.get(d).is_some_and(|t| t.def.starts_with("enum ("));
     let mut uses: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut enums_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -1755,13 +1767,70 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             }
         }
     }
+    // An enum a table is partitioned by can't be made again under it: a label its partitions use
+    // is added and committed before them, and each partition waits for the type's change.
+    let mut keyed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for o in s.objects.values().filter(|o| keys.contains(&o.id)) {
+        for t in o.deps.iter().filter(|d| enum_type(d)) {
+            keyed.entry(o.owner.clone().unwrap_or_default()).or_default().insert(t.clone());
+        }
+    }
+    let mut waits: Vec<(String, BTreeSet<String>)> = Vec::new();
     for o in s.objects.values().filter(|o| o.kind == Some(Kind::Table)) {
         let Some(parent) = o.def.lines().find_map(|l| l.strip_prefix("partition of ")).and_then(|l| l.split_once(' ')).map(|(p, _)| format!("table {p}")) else { continue };
         for t in enums_of.get(&parent).into_iter().flatten() {
             uses.entry(t.clone()).or_default().push(format!("{USES}{}", o.def.replace('\n', " ")));
         }
+        if let Some(types) = keyed.get(&parent) {
+            waits.push((o.id.clone(), types.clone()));
+        }
+    }
+    for (id, types) in waits {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.deps.extend(types);
+        }
+    }
+    for t in keyed.into_values().flatten() {
+        uses.entry(t).or_default().push(PARTITION_KEY.to_string());
     }
     for (id, lines) in uses {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra.extend(lines);
+        }
+    }
+    // What else an enum made again takes to the new type: a function taking or giving it is made
+    // again on the new type and the old one dropped, a domain over it is made again with its
+    // columns moved to it, and a composite type's attribute of it changes type, the columns of the
+    // composite type moved through their text around the change.
+    let split = |id: &str| -> Option<(String, String)> {
+        let rest = id.strip_prefix("column ")?;
+        let column = super::last_written(rest);
+        Some((rest.strip_suffix(column.as_str())?.strip_suffix('.')?.to_string(), column))
+    };
+    let users = |s: &Schema, ty: &str| -> String {
+        s.objects
+            .values()
+            .filter(|c| c.kind == Some(Kind::Column) && c.deps.contains(ty) && c.owner.as_deref().is_some_and(|w| w.starts_with("table ")))
+            .filter_map(|c| split(&c.id).map(|(t, c)| format!("{t}|{c}")))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let mut carried: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for t in s.objects.values().filter(|o| o.def.starts_with("enum (")).map(|o| o.id.clone()).collect::<Vec<_>>() {
+        let mut lines = Vec::new();
+        for f in s.objects.values().filter(|o| o.kind == Some(Kind::Function) && o.deps.contains(&t)) {
+            lines.push(format!("{TAKES}{}\t{}", f.create.join(";\n"), f.drop.join(";\n")));
+        }
+        for d in s.objects.values().filter(|o| o.def.starts_with("domain ") && o.deps.contains(&t)) {
+            lines.push(format!("{DOMAIN}{}\t{}\t{}", d.id.trim_start_matches("type "), d.create.join(";\n"), users(&s, &d.id)));
+        }
+        for a in s.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.deps.contains(&t) && o.owner.as_deref().is_some_and(|w| w.starts_with("type "))) {
+            let (Some(owner), Some((_, attribute))) = (a.owner.as_deref(), split(&a.id)) else { continue };
+            lines.push(format!("{ATTRIBUTE}{}\t{attribute}\t{}", owner.trim_start_matches("type "), users(&s, owner)));
+        }
+        carried.insert(t, lines);
+    }
+    for (id, lines) in carried {
         if let Some(o) = s.objects.get_mut(&id) {
             o.extra.extend(lines);
         }
@@ -2159,6 +2228,22 @@ const AGAIN: &str = "again ";
 /// A view's definition that names an enum's labels, carried by the enum.
 const USES: &str = "uses ";
 
+/// What an enum carries of what uses it beside its columns: a function taking or giving it (its
+/// create and its drop), a domain over it (its name, create and columns), and a composite type's
+/// attribute of it (the type, the attribute, and the type's columns), each tab-separated.
+const TAKES: &str = "takes ";
+const DOMAIN: &str = "domain of ";
+const ATTRIBUTE: &str = "attribute of ";
+
+/// Whether a line an enum carries is one of its columns (`table|column|type|default`), not what
+/// else it carries.
+fn is_column_line(l: &str) -> bool {
+    ![AROUND, AGAIN, USES, TAKES, DOMAIN, ATTRIBUTE, PARTITION_KEY].iter().any(|p| l.starts_with(p))
+}
+
+/// What an enum a table is partitioned by carries: it can't be made again.
+const PARTITION_KEY: &str = "partition key";
+
 fn around_line(o: &Object) -> String {
     format!("{AROUND}{}\t{}\t{}\t{}", o.id, o.def.replace(['\t', '\n'], " "), o.drop.join("; "), o.create.join("; "))
 }
@@ -2331,7 +2416,7 @@ fn swap_enum(name: &str, create: &str, columns: &[String], targets: &[String]) -
     let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
     let old = if schema.is_empty() { aside.clone() } else { format!("{schema}.{aside}") };
     let mut out = vec![format!("alter type {name} rename to {aside}"), create.to_string()];
-    for c in columns.iter().filter(|c| !c.starts_with(AROUND) && !c.starts_with(AGAIN) && !c.starts_with(USES)) {
+    for c in columns.iter().filter(|c| is_column_line(c)) {
         let parts: Vec<&str> = c.splitn(4, '|').collect();
         let [table, column, ty, default] = parts[..] else { continue };
         let text = if ty.ends_with("[]") { "text[]" } else { "text" };
@@ -2349,6 +2434,50 @@ fn swap_enum(name: &str, create: &str, columns: &[String], targets: &[String]) -
     }
     out.push(format!("drop type {old}"));
     out
+}
+
+/// What an enum made again (`name`, set aside as `<name>__old`) takes to its new type, as the
+/// statements after the type is made and those before the old one is dropped: each function
+/// taking or giving it made again, each domain over it and the composite types' attributes of it.
+fn carried_over(name: &str, from: &Object, to: &Object) -> (Vec<String>, Vec<String>) {
+    let (_, bare) = name.rsplit_once('.').unwrap_or(("", name));
+    let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
+    let fields = |o: &Object, what: &str| -> Vec<Vec<String>> { o.extra.iter().filter_map(|l| l.strip_prefix(what)).map(|l| l.split('\t').map(String::from).collect()).collect() };
+    let columns = |list: &str| -> Vec<(String, String)> { list.split(',').filter_map(|c| c.split_once('|')).map(|(t, c)| (t.to_string(), c.to_string())).collect() };
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    // A function's old signature names the type set aside, which its drop names it by.
+    for f in fields(to, TAKES) {
+        before.extend(f.first().into_iter().flat_map(|c| c.split(";\n").map(String::from)));
+    }
+    for f in fields(from, TAKES) {
+        if let Some(drop) = f.get(1) {
+            let (head, args) = drop.split_once('(').unwrap_or((drop.as_str(), ""));
+            after.push(format!("{head}({}", super::swap_name(args, bare, &aside)));
+        }
+    }
+    for d in fields(to, DOMAIN) {
+        let [domain, create, users] = &d[..] else { continue };
+        let (schema, bare_domain) = domain.rsplit_once('.').unwrap_or(("", domain));
+        let set_aside = if bare_domain.ends_with('"') { format!("{}__old\"", bare_domain.trim_end_matches('"')) } else { format!("{bare_domain}__old") };
+        before.push(format!("alter domain {domain} rename to {set_aside}"));
+        before.extend(create.split(";\n").map(String::from));
+        for (table, column) in columns(users) {
+            before.push(format!("alter table {table} alter column {column} type {domain} using {column}::text::{domain}"));
+        }
+        after.push(format!("drop domain {}", if schema.is_empty() { set_aside } else { format!("{schema}.{set_aside}") }));
+    }
+    for a in fields(to, ATTRIBUTE) {
+        let [composite, attribute, users] = &a[..] else { continue };
+        let users = columns(users);
+        for (table, column) in &users {
+            before.push(format!("alter table {table} alter column {column} type text using {column}::text"));
+        }
+        before.push(format!("alter type {composite} alter attribute {attribute} type {name}"));
+        for (table, column) in &users {
+            before.push(format!("alter table {table} alter column {column} type {composite} using {column}::{composite}"));
+        }
+    }
+    (before, after)
 }
 
 pub struct PostgresAlterer {
@@ -2667,19 +2796,28 @@ impl Alterer for PostgresAlterer {
                 // A label added in a transaction can't be used in it (a default, a check), as a
                 // label of a type made in it can: one the target uses is added by making the type again.
                 let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().filter(|x| !x.starts_with(AGAIN)).any(|x| x.contains(l.as_str())));
-                if used || kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y) {
+                let reorders = kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y);
+                // Under a partition key the type stays: a label used is added, and committed
+                // before what uses it, a migration of its own.
+                let keyed = to.extra.iter().any(|l| l == PARTITION_KEY);
+                if (used && !keyed) || reorders {
                     let (unmake, remake) = around(from, to);
                     let mut out = unmake;
                     // The columns both have: one the plan drops is gone before, one it adds comes after.
-                    let plain = |l: &&String| !l.starts_with(AROUND) && !l.starts_with(AGAIN) && !l.starts_with(USES);
+                    let plain = |l: &&String| is_column_line(l);
                     let kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2)))).cloned().collect();
                     // Each with the default the target gives it, which is set back where unchanged.
                     let targets: Vec<String> = kept.iter().filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2))).cloned()).collect();
                     let mut swap = swap_enum(name, &to.create[0], &kept, &targets);
                     let last = swap.pop();
+                    let (before, after) = carried_over(name, from, to);
+                    let made = swap.drain(..2.min(swap.len())).collect::<Vec<_>>();
+                    out.extend(made);
+                    out.extend(before);
                     out.extend(swap);
                     out.extend(remake);
                     out.extend(to.extra.iter().filter_map(|l| l.strip_prefix(AGAIN)).map(String::from));
+                    out.extend(after);
                     out.extend(last);
                     return Some(out);
                 }
@@ -2695,6 +2833,9 @@ impl Alterer for PostgresAlterer {
                             None => out.push(format!("alter type {name} add value {label}")),
                         },
                     }
+                }
+                if used && keyed {
+                    out.push(super::COMMIT.to_string());
                 }
                 Some(out)
             }

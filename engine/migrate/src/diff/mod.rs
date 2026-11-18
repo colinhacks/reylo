@@ -252,7 +252,26 @@ pub struct Plan {
     pub narrowings: Vec<(String, String)>,
 }
 
+/// A statement of a plan that commits the transaction and begins the next: what follows uses what
+/// came before in a way Postgres refuses within one transaction (a label added to an enum). A
+/// migration file ends at it, and a push commits there.
+pub const COMMIT: &str = "commit;\nbegin";
+
 impl Plan {
+    /// The plan as the plans each transaction runs: one, or several where it commits partway, the
+    /// first with what the whole loses.
+    pub fn transactions(&self) -> Vec<Plan> {
+        let mut out = vec![Plan { losses: self.losses.clone(), renames: self.renames.clone(), narrowings: self.narrowings.clone(), ..Plan::default() }];
+        for s in &self.statements {
+            if s == COMMIT {
+                out.push(Plan::default());
+            } else if let Some(last) = out.last_mut() {
+                last.statements.push(s.clone());
+            }
+        }
+        out
+    }
+
     /// The plan as a migration file: what it loses as comments, then each statement.
     pub fn sql(&self) -> String {
         let mut out = String::new();
