@@ -40,3 +40,6 @@ begin
   raise exception 'a CHECK on array_position stored an array of two dimensions';
 exception when feature_not_supported then
 end $$;
+-- The CHECK keeps out SQL NULL, not JSON null, which a cast to a number array makes NULL.
+create table documents (id int primary key, a jsonb[] check (array_position(a, null) is null));
+insert into documents values (1, array['null'::jsonb]), (2, array['1'::jsonb]);

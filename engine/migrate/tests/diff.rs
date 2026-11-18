@@ -2,7 +2,8 @@
 //! the database as it is, `v2.sql` the schema it should have. Each case builds both, plans from
 //! one to the other, runs the plan on the first, and requires its catalog to equal the second's
 //! and every table both have to keep its own rows, value for value (a partitioned table's are its partitions'); `server.sql`, where a case has one, makes what it
-//! needs of the server itself (a role). The plan is kept beside the case as `plan.sql`,
+//! needs of the server itself (a role), and `check.sql` runs after the plan, so a case can require
+//! what no catalog shows (an identity that gives an unused value next). The plan is kept beside the case as `plan.sql`,
 //! compared like the oracle's expected output: `REYLO_BLESS=1` writes it. Postgres's cases run
 //! against the server `REYLO_TEST_PG` names, and are skipped where it is not set.
 
@@ -64,7 +65,14 @@ async fn values(db: &mut Db, before: Option<&[Rows]>, renamed: &std::collections
             continue;
         }
         let select = columns.iter().enumerate().map(|(k, ((_, ty), now))| format!("({now}::{ty})::text as v{k}")).collect::<Vec<_>>().join(", ");
-        let mut rows: Vec<Vec<String>> = match db.rows(&format!("select {select} from only {table}")).await {
+        // A column whose type has no cast back to the one it had (an enum made another) is read as text.
+        let as_text = columns.iter().enumerate().map(|(k, (_, now))| format!("{now}::text as v{k}")).collect::<Vec<_>>().join(", ");
+        let read = match db.rows(&format!("select {select} from only {table}")).await {
+            Ok(rows) => Ok(rows),
+            Err(_) if before.is_some() => db.rows(&format!("select {as_text} from only {table}")).await,
+            Err(e) => Err(e),
+        };
+        let mut rows: Vec<Vec<String>> = match read {
             Ok(rows) => rows.iter().map(|r| (0..columns.len()).map(|k| r.get(&format!("v{k}")).map(String::from).unwrap_or_else(|| "NULL".into())).collect()).collect(),
             Err(e) => vec![vec![format!("unreadable: {e}")]],
         };
@@ -198,6 +206,8 @@ async fn postgres() {
             }
         }
         let rows_after = values(&mut from, Some(&rows_before), &renamed, &skip).await;
+        let check = read(&case.join("check.sql"));
+        let checked = if failed.is_none() && !check.is_empty() { from.exec(&check).await.err() } else { None };
         let changed: Vec<String> = rows_before
             .iter()
             .filter_map(|b| {
@@ -223,6 +233,9 @@ async fn postgres() {
         }
         if !changed.is_empty() {
             problems.push(format!("values changed: {}", changed.join("; ")));
+        }
+        if let Some(e) = checked {
+            problems.push(format!("check.sql failed after the plan: {e}"));
         }
         if !bless && read(&expected) != text {
             problems.push(format!("the plan is not plan.sql's (REYLO_BLESS=1 writes it):\n{text}"));

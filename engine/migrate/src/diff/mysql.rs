@@ -243,6 +243,17 @@ impl Column {
     }
 
     /// The definition as a statement writes it, its collation left out where it is the table's.
+    /// How it is generated: `stored`, `virtual`, or neither.
+    fn generation(&self) -> Option<&'static str> {
+        let rest = self.rest.to_ascii_lowercase();
+        let after = &rest[rest.find("generated always as")?..];
+        if after.contains(" virtual") {
+            Some("virtual")
+        } else {
+            Some("stored")
+        }
+    }
+
     fn written(&self, table_collation: Option<&str>) -> String {
         let mut c = self.clone();
         if table_collation == Some(c.collation.as_str()) {
@@ -332,7 +343,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     let mut infos: BTreeMap<(String, String), Row> = BTreeMap::new();
     for r in db
         .rows(&format!(
-            "select table_name as t, column_name as c, column_type as type, collation_name as collation, generation_expression as gen
+            "select table_name as t, column_name as c, column_type as type, collation_name as collation, generation_expression as gen,
+              case when extra like '%DEFAULT_GENERATED%' then column_default end as expression
             from information_schema.columns where table_schema = database() and table_name <> '{history}'"
         ))
         .await?
@@ -391,12 +403,6 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         fk.cols.push(r.text("col").into());
         fk.refs.push(r.text("rc").into());
     }
-    // A foreign key's own index: named as the key, on exactly its columns. Adding the key makes it
-    // and dropping the key leaves it, so it goes with the key rather than the table's body.
-    let fk_index = |t: &str, n: &str, fk: &Fk| -> bool {
-        let key = (t.to_string(), n.to_string());
-        parts.get(&key).is_some_and(|p| *p == fk.cols) && !unique.contains(&key) && n != "PRIMARY"
-    };
     // A key between tables that reach each other through keys: neither table can be dropped while
     // the other's key stands, so such a key is dropped by a statement of its own, before either,
     // where every other key goes with its table.
@@ -421,7 +427,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     };
     let in_cycle: BTreeSet<(String, String)> = fks.iter().filter(|((t, _), fk)| fk.ref_schema == ctx.db && fk.ref_table != *t && reaches(&fk.ref_table, t)).map(|(k, _)| k.clone()).collect();
 
-    let tables = db.rows(&format!("select table_name as name, table_type as type from information_schema.tables where table_schema = database() and table_name <> '{history}' order by table_name")).await?;
+    let tables = db.rows(&format!("select table_name as name, table_type as type, table_collation as collation from information_schema.tables where table_schema = database() and table_name <> '{history}' order by table_name")).await?;
     let views: BTreeSet<String> = tables.iter().filter(|r| r.text("type") == "VIEW").map(|r| r.text("name").to_string()).collect();
     for r in tables.iter().filter(|r| r.text("type") != "VIEW") {
         let name = r.text("name").to_string();
@@ -429,8 +435,22 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let text = first(db.rows(&format!("show create table {}", backtick(&name))).await?, "Create Table");
         let mut body = parse_table(&ctx, &text, &name, &infos, &checks);
         body.q = q.clone();
-        let owned: BTreeSet<String> = fks.iter().filter(|((t, n), fk)| *t == name && fk_index(t, n, fk)).map(|((_, n), _)| n.clone()).collect();
-        body.indexes.retain(|(i, _, _)| !owned.contains(i));
+        // A table's default collation, which `show create table` leaves out where it is its
+        // character set's own, and which says the character set too.
+        if let Some(collation) = r.get("collation") {
+            body.options.retain(|(k, _)| k != "charset" && k != "collate");
+            body.options.push(("collate".into(), collation.to_string()));
+            body.options.sort();
+        }
+        // A foreign key's own index: named as the key, on exactly its columns, which adding the key
+        // makes where no index serves it. It stays in the table's body as any index does, so that
+        // the body's change swaps the index that serves a key for another in one statement, which
+        // MySQL takes where it refuses either alone; a new table, or a new key, leaves it to the key.
+        let keys: Vec<String> = fks.keys().filter(|(t, _)| *t == name).map(|(_, n)| n.clone()).collect();
+        let owned: Vec<String> = fks.iter().filter(|((t, n), fk)| *t == name && parts.get(&(t.clone(), n.clone())).is_some_and(|p| *p == fk.cols) && !unique.contains(&(t.clone(), n.clone())) && n != "PRIMARY").map(|((_, n), _)| n.clone()).collect();
+        let key_lines = vec![format!("{KEYS}{}", json!(keys)), format!("{OWN}{}", json!(owned))];
+        let mut made = body.clone();
+        made.indexes.retain(|(i, _, _)| !owned.contains(i));
         let id = format!("table {name}");
         let def = body.to_json();
         // Every column is an object of its own, which carries no statement: the table's own
@@ -454,11 +474,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 inline: true,
                 deps,
                 change: Change::Alter { blocks: false },
-                extra: vec![def.clone()],
+                extra: [vec![def.clone()], key_lines.clone()].concat(),
                 ..Object::default()
             });
         }
-        s.add(Object { id: id.clone(), kind: Some(Kind::Table), create: vec![create_table(&ctx, &body)], drop: vec![format!("drop table {q}")], def, change: Change::Alter { blocks: false }, ..Object::default() });
+        s.add(Object { id: id.clone(), kind: Some(Kind::Table), create: vec![create_table(&ctx, &made)], drop: vec![format!("drop table {q}")], def, change: Change::Alter { blocks: false }, extra: key_lines, ..Object::default() });
 
         // Foreign keys, from the server's rendering of each.
         for element in elements(&text) {
@@ -484,9 +504,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 deps.extend(fk.refs.iter().map(|c| format!("column {}.{c}", fk.ref_table)));
             }
             let fq = ctx.ident(&fk_name);
+            // MySQL renames an index it made for a key to the name of the next key that uses it:
+            // renamed to itself as the key goes, it is the table's own, and keeps its name when a
+            // key is added again (a key's actions change by dropping it and adding it).
             let mut drop = format!("alter table {q} drop foreign key {fq}");
-            if owned.contains(&fk_name) {
-                drop += &format!(", drop index {fq}");
+            let serving = parts.iter().filter(|((t, i), p)| *t == name && i != "PRIMARY" && *i != fk_name && p.len() >= fk.cols.len() && p[..fk.cols.len()] == fk.cols[..]);
+            for ((_, i), _) in serving {
+                let iq = ctx.ident(i);
+                drop += &format!(", rename index {iq} to {iq}");
             }
             s.add(Object {
                 id: format!("foreign key {name}.{fk_name}"),
@@ -732,6 +757,26 @@ fn generated_from(attributes: &str, expression: &str) -> String {
     attributes.to_string()
 }
 
+/// A column's attributes with its default's parenthesized expression replaced by `expression`.
+fn default_from(attributes: &str, expression: &str) -> String {
+    let tokens = tokenize(attributes, Dialect::Mysql);
+    let Some(k) = tokens.windows(2).position(|w| w[0].upper() == "DEFAULT" && w[1].text == "(") else { return attributes.to_string() };
+    let mut depth = 0;
+    for t in &tokens[k + 1..] {
+        match t.text.as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    return format!("{}({expression}){}", &attributes[..tokens[k + 1].start], &attributes[t.end..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    attributes.to_string()
+}
+
 /// What follows the elements of a `create table` the server rendered: its options and partitioning.
 fn after_elements(text: &str) -> String {
     let text = open_version_comments(text);
@@ -767,6 +812,13 @@ fn parse_table(ctx: &Ctx, text: &str, table: &str, infos: &BTreeMap<(String, Str
             let after = match info.map(|i| i.text("gen")).filter(|g| !g.is_empty()) {
                 Some(gen) => generated_from(after, &stored_text(gen)),
                 None => after.to_string(),
+            };
+            // An expression default as it was written: `show create table` prints a literal
+            // converted to the character set of what it meets (`uuid()`'s utf8mb3), which reads
+            // back as another expression.
+            let after = match info.and_then(|i| i.get("expression")).filter(|e| !e.is_empty()) {
+                Some(expression) => default_from(&after, &stored_text(expression)),
+                None => after,
             };
             body.columns.push(Column {
                 q: ctx.ident(&name),
@@ -850,9 +902,17 @@ fn column_rest(text: &str) -> String {
     let tokens = tokenize(text, Dialect::Mysql);
     let mut ranges = Vec::new();
     let mut k = 0;
+    // Only the column's own: a default's or a generated column's expression keeps its casts'.
+    let mut depth = 0;
     while k < tokens.len() {
+        match tokens[k].text.as_str() {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            _ => {}
+        }
         let w = tokens[k].upper();
         let width = match (w.as_str(), tokens.get(k + 1).map(Token::upper).as_deref()) {
+            _ if depth > 0 => 0,
             ("CHARACTER", Some("SET")) => 3,
             ("CHARSET" | "COLLATE", _) => 2,
             ("DEFAULT", Some("NULL")) => 2,
@@ -1001,7 +1061,7 @@ fn renamed_parts(text: &str, map: &BTreeMap<String, String>) -> String {
 
 /// The statements that take a table from one body to the other: one `alter table` with a clause
 /// per change, and the change of its partitioning, which MySQL takes only as a statement of its own.
-fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String> {
+fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeSet<String>) -> Vec<String> {
     let pairs = pairs.to_vec();
     let map: BTreeMap<String, String> = pairs.iter().map(|(old, new)| (old.clone(), to.column(new).map(|c| c.q.clone()).unwrap_or_default())).collect();
     let old_of: BTreeMap<&str, &str> = pairs.iter().map(|(o, n)| (n.as_str(), o.as_str())).collect();
@@ -1026,6 +1086,15 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
             clauses.push(format!("drop column {}", c.q));
         }
     }
+    // A column made or unmade virtual, or moved between virtual and stored, which MySQL won't
+    // modify, is dropped and added again in the statement: a virtual column's values are computed,
+    // and a column made virtual has its values computed from then on.
+    let remade = |was: &Column, now: &Column| was.generation() != now.generation() && (was.generation() == Some("virtual") || now.generation() == Some("virtual"));
+    for c in &to.columns {
+        if let Some(was) = from.column(&c.name).filter(|was| !old_of.contains_key(c.name.as_str()) && remade(was, c)) {
+            clauses.push(format!("drop column {}", was.q));
+        }
+    }
     // A column is written without its collation where it takes the table's default, unless the
     // default changes in this statement, which MySQL applies before the columns.
     let collation = (from.option("collate") == to.option("collate")).then(|| to.option("collate").unwrap_or_default());
@@ -1041,11 +1110,15 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
     for c in &to.columns {
         match from.column(old_of.get(c.name.as_str()).copied().unwrap_or(&c.name)) {
             Some(was) if old_of.contains_key(c.name.as_str()) || was.def() == c.def() => {}
+            Some(was) if remade(was, c) => clauses.push(format!("add column {}", c.written(collation))),
             Some(_) => clauses.push(format!("modify column {}", c.written(collation))),
             None => clauses.push(format!("add column {}", c.written(collation))),
         }
     }
-    for (name, _, def) in &to.indexes {
+    // An index a new key would make is left to it, unless this statement drops one: another key
+    // may need it until the new one is in place, so both go in the same statement.
+    let swaps = clauses.iter().any(|c| c.starts_with("drop index ") || c == "drop primary key");
+    for (name, _, def) in to.indexes.iter().filter(|(n, _, _)| swaps || !made.contains(n)) {
         if from.indexes.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| index_now(d) != *def) {
             clauses.push(format!("add {def}"));
         }
@@ -1069,16 +1142,33 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
             });
         }
     }
+    // InnoDB adds one FULLTEXT index a statement: each after the first is a statement of its own.
+    let fulltext: Vec<usize> = clauses.iter().enumerate().filter(|(_, c)| c.starts_with("add fulltext ")).map(|(k, _)| k).skip(1).collect();
+    let mut later: Vec<String> = fulltext.iter().rev().map(|k| clauses.remove(*k)).collect::<Vec<_>>();
+    later.reverse();
     let mut out = Vec::new();
     match clauses.len() {
         0 => {}
         1 => out.push(format!("alter table {} {}", to.q, clauses[0])),
         _ => out.push(format!("alter table {}\n  {}", to.q, clauses.join(",\n  "))),
     }
+    out.extend(later.iter().map(|c| format!("alter table {} {c}", to.q)));
     if from.partition != to.partition {
         out.push(if to.partition.is_empty() { format!("alter table {} remove partitioning", to.q) } else { format!("alter table {} {}", to.q, to.partition) });
     }
     out
+}
+
+/// What a table and its columns carry beside the body: the names of the table's foreign keys, and
+/// of the indexes those keys made for themselves, each a JSON list.
+const KEYS: &str = "foreign keys ";
+const OWN: &str = "indexes of keys ";
+
+/// The indexes a new foreign key makes as it is added, which the table's own change leaves to it.
+fn made_by_keys(from: &[String], to: &[String]) -> BTreeSet<String> {
+    let list = |extra: &[String], what: &str| -> BTreeSet<String> { extra.iter().find_map(|l| l.strip_prefix(what)).and_then(|l| serde_json::from_str::<Vec<String>>(l).ok()).unwrap_or_default().into_iter().collect() };
+    let had = list(from, KEYS);
+    list(to, OWN).into_iter().filter(|n| !had.contains(n)).collect()
 }
 
 #[derive(Default)]
@@ -1134,6 +1224,17 @@ impl Alterer for MysqlAlterer {
         if from.kind != Some(Kind::Column) {
             return None;
         }
+        // A column that stops being virtual keeps none of the values it computed, and one that
+        // becomes generated computes its values in place of those it holds.
+        let generated = |def: &str| {
+            let def = def.to_ascii_lowercase();
+            def.find("generated always as").map(|at| if def[at..].contains(" virtual") { "virtual" } else { "stored" })
+        };
+        match (generated(&from.def), generated(&to.def)) {
+            (Some("virtual"), None) => return Some("stops being a virtual column, which leaves its rows without the values it computed".into()),
+            (None, Some(_)) => return Some("becomes a generated column, which replaces its values with the expression's".into()),
+            _ => {}
+        }
         let (a, b) = (type_of(&from.def), type_of(&to.def));
         let why = super::narrowing(&type_class(&a), &type_class(&b))?;
         Some(format!("changes from {a} to {b}, which {why}"))
@@ -1156,7 +1257,7 @@ impl Alterer for MysqlAlterer {
             return None;
         }
         let last = pairs.iter().map(|(_, n)| n.as_str()).max()?;
-        Some(if new == last { alter_table(&a, &b, &pairs) } else { Vec::new() })
+        Some(if new == last { alter_table(&a, &b, &pairs, &made_by_keys(&from.extra, &to.extra)) } else { Vec::new() })
     }
 
     fn alter(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
@@ -1165,7 +1266,7 @@ impl Alterer for MysqlAlterer {
                 let (a, b) = (Body::from_json(&from.def)?, Body::from_json(&to.def)?);
                 let pairs = self.pairs(to.id.strip_prefix("table ")?, &a, &b);
                 // Where a column is renamed, the rename writes the table's statement.
-                Some(if pairs.is_empty() { alter_table(&a, &b, &pairs) } else { Vec::new() })
+                Some(if pairs.is_empty() { alter_table(&a, &b, &pairs, &made_by_keys(&from.extra, &to.extra)) } else { Vec::new() })
             }
             // The table's statement changes the column.
             Kind::Column => Some(Vec::new()),
@@ -1197,6 +1298,7 @@ mod tests {
         assert_eq!(stored_text(r#"json_schema_valid(_utf8mb4\'{"enum":["it\\\'s","cafÃ©"]}\',`w`)"#), r#"json_schema_valid(_utf8mb4'{"enum":["it\'s","café"]}',`w`)"#);
         assert_eq!(generated_from("int GENERATED ALWAYS AS ((`n` * 2)) VIRTUAL", "(`n` * 3)"), "int GENERATED ALWAYS AS ((`n` * 3)) VIRTUAL");
         assert_eq!(column_rest("character set latin1 collate latin1_bin default null comment 'x'"), "comment 'x'");
+        assert_eq!(column_rest("collate utf8mb4_bin default (cast(_utf8mb4'foo' as char charset binary))"), "default (cast(_utf8mb4'foo' as char charset binary))");
     }
 
     #[test]

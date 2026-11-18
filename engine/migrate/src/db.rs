@@ -1,5 +1,5 @@
 //! The databases `reylo migrate` works on: the target, through the connection code the type check
-//! uses (`reylo-engine-native`), and the shadows it builds beside it. A shadow is a scratch database
+//! uses (`reylo-engine`), and the shadows it builds beside it. A shadow is a scratch database
 //! on the target's own server (`create database`), so it has the target's engine, version and
 //! extensions; SQLite's live in memory. The connection that creates a shadow holds a session lock
 //! named after it for the whole run, and the lock dies with the session, so a run that is killed
@@ -92,6 +92,13 @@ pub(crate) fn mysql_error(e: mysql_async::Error) -> Error {
     }
 }
 
+/// A server's refusal to create a shadow database, with what to do about it: each shadow is a new
+/// database, so a role that may not create one needs a server where it may (PlanetScale, Vitess,
+/// and some managed roles).
+pub(crate) fn cannot_create(e: Error) -> Error {
+    Error(format!("{e}. Each shadow database is a new database on this server: give the role the right to create databases, or set shadow_url in .reylo.yaml to a server where it has it"))
+}
+
 #[cfg(feature = "cli")]
 pub(crate) fn sqlite_error(e: rusqlite::Error) -> Error {
     Error(e.to_string())
@@ -156,13 +163,13 @@ pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Resul
 /// failure messages), without the server version it reports.
 #[cfg(feature = "cli")]
 pub(crate) async fn open_postgres(url: &str) -> Result<tokio_postgres::Client, Error> {
-    reylo_engine_native::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
+    reylo_engine::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
 }
 
 /// A connection to the MySQL database a URL names, as the engine opens one.
 #[cfg(feature = "cli")]
 pub(crate) async fn open_mysql(url: &str) -> Result<mysql_async::Conn, Error> {
-    reylo_engine_native::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
+    reylo_engine::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
 }
 
 impl Db {
@@ -632,7 +639,11 @@ impl Server {
                     Some((cs, co)) => format!(" character set {cs} collate {co}"),
                     None => String::new(),
                 };
-                admin.query_drop(format!("create database `{name}`{charset}")).await.map_err(mysql_error)?;
+                admin.query_drop(format!("create database `{name}`{charset}")).await.map_err(|e| match &e {
+                    // ER_DBACCESS_DENIED_ERROR and ER_SPECIFIC_ACCESS_DENIED_ERROR: no CREATE on the database.
+                    mysql_async::Error::Server(s) if s.code == 1044 || s.code == 1227 => cannot_create(mysql_error(e)),
+                    _ => mysql_error(e),
+                })?;
                 let db = Db::Mysql(crate::db::open_mysql(&with_database(url, &name)).await?);
                 Ok(Shadow { db, name })
             }
@@ -649,10 +660,11 @@ impl Server {
         let name = random_name();
         admin.batch_execute(&format!("select pg_advisory_lock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
         let made = async {
-            match template {
-                Some(t) => admin.batch_execute(&format!("create database \"{name}\" template \"{t}\"")).await.map_err(pg_error)?,
-                None => admin.batch_execute(&format!("create database \"{name}\"{create}")).await.map_err(pg_error)?,
-            }
+            let made = match template {
+                Some(t) => admin.batch_execute(&format!("create database \"{name}\" template \"{t}\"")).await,
+                None => admin.batch_execute(&format!("create database \"{name}\"{create}")).await,
+            };
+            made.map_err(|e| if e.code() == Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE) { cannot_create(pg_error(e)) } else { pg_error(e) })?;
             for s in settings.iter() {
                 let Some((key, value)) = s.split_once('=') else { continue };
                 let value = if PG_LISTS.contains(&key) {
@@ -780,9 +792,14 @@ impl Server {
                     if !free {
                         continue;
                     }
-                    admin.batch_execute(&format!("drop database if exists \"{name}\" with (force)")).await.map_err(pg_error)?;
+                    // Another role's (a teammate's, on a shared server) is that role's to drop.
+                    let drop = admin.batch_execute(&format!("drop database if exists \"{name}\" with (force)")).await;
                     admin.batch_execute(&format!("select pg_advisory_unlock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
-                    dropped += 1;
+                    match drop {
+                        Ok(()) => dropped += 1,
+                        Err(e) if e.code() == Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE) => {}
+                        Err(e) => return Err(pg_error(e)),
+                    }
                 }
             }
             Server::Mysql { admin, .. } => {
@@ -792,8 +809,11 @@ impl Server {
                     if free != Some(1) {
                         continue;
                     }
-                    admin.query_drop(format!("drop database if exists `{name}`")).await.map_err(mysql_error)?;
-                    dropped += 1;
+                    match admin.query_drop(format!("drop database if exists `{name}`")).await {
+                        Ok(()) => dropped += 1,
+                        Err(mysql_async::Error::Server(s)) if s.code == 1044 => {}
+                        Err(e) => return Err(mysql_error(e)),
+                    }
                 }
             }
             Server::Sqlite => {}

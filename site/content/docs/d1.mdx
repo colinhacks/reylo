@@ -12,7 +12,7 @@ Reylo runs on D1 in a Cloudflare Worker. D1 is SQLite, so everything on the [SQL
 | Database | D1, through its binding |
 | Bundler | Vite, with Cloudflare's Vite plugin |
 | Tests | Vitest inside workerd, with Cloudflare's Vitest plugin |
-| Postgres and MySQL in a Worker | Neon's serverless driver and PlanetScale's need nothing more. postgres.js, `pg`, `mysql2` and `mariadb` need Node's APIs: a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag. Through Hyperdrive, MySQL takes [`mariadb`](/mysql#mariadb), since Hyperdrive refuses the statements `mysql2` prepares ([Cloudflare Hyperdrive](/hyperdrive)) |
+| Postgres and MySQL in a Worker | Neon's serverless driver and PlanetScale's need nothing more. postgres.js, `pg`, `mysql2` and `mariadb` need Node's APIs: a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag. Through Hyperdrive, which refuses prepared statements, Reylo runs [`mysql2`](/mysql#mysql2) through `query()` ([Cloudflare Hyperdrive](/hyperdrive)) |
 | Example | [cloudflare-workers](https://github.com/reylosql/reylo/tree/main/examples/cloudflare-workers), a Worker with D1 and a Durable Object that runs locally with no Cloudflare account |
 
 <Details summary="View the schema behind the examples" id="schema">

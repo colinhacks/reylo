@@ -2090,7 +2090,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reylo"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -2110,20 +2110,32 @@ dependencies = [
 
 [[package]]
 name = "reylo-build"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
- "reylo-codegen",
+ "glob",
+ "mysql_async",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "reylo-engine",
+ "reylo-engine-core",
+ "rusqlite",
+ "serde_json",
+ "sha2 0.10.9",
+ "syn 2.0.119",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]
 name = "reylo-cli"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "flate2",
  "regex",
- "reylo-codegen",
+ "reylo-build",
+ "reylo-engine",
  "reylo-engine-core",
- "reylo-engine-native",
  "reylo-migrate",
  "serde_json",
  "serde_yaml",
@@ -2134,73 +2146,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "reylo-codegen"
-version = "0.8.0-beta.0"
-dependencies = [
- "glob",
- "mysql_async",
- "prettyplease",
- "proc-macro2",
- "quote",
- "reylo-engine",
- "reylo-engine-core",
- "reylo-engine-native",
- "rusqlite",
- "serde_json",
- "sha2 0.10.9",
- "syn 2.0.119",
- "tokio",
- "tokio-postgres",
-]
-
-[[package]]
 name = "reylo-engine"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "mysql_async",
+ "reylo-engine-build",
  "reylo-engine-core",
  "reylo-engine-mysql",
  "reylo-engine-postgres",
  "reylo-engine-sqlite",
- "rusqlite",
- "serde_json",
- "tokio-postgres",
-]
-
-[[package]]
-name = "reylo-engine-build"
-version = "0.8.0-beta.0"
-
-[[package]]
-name = "reylo-engine-core"
-version = "0.8.0-beta.0"
-dependencies = [
- "libc",
- "reylo-engine-build",
- "serde",
- "serde_json",
- "serde_yaml",
-]
-
-[[package]]
-name = "reylo-engine-mysql"
-version = "0.8.0-beta.0"
-dependencies = [
- "reylo-engine-build",
- "reylo-engine-core",
- "reylo-sqlparser",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "reylo-engine-native"
-version = "0.8.0-beta.0"
-dependencies = [
- "mysql_async",
- "reylo-engine",
- "reylo-engine-build",
- "reylo-engine-core",
  "rusqlite",
  "rustls",
  "rustls-pki-types",
@@ -2213,8 +2167,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "reylo-engine-build"
+version = "0.8.0"
+
+[[package]]
+name = "reylo-engine-core"
+version = "0.8.0"
+dependencies = [
+ "libc",
+ "reylo-engine-build",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
+name = "reylo-engine-mysql"
+version = "0.8.0"
+dependencies = [
+ "reylo-engine-build",
+ "reylo-engine-core",
+ "reylo-sqlparser",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "reylo-engine-postgres"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
@@ -2228,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-sqlite"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "cc",
  "reylo-engine-build",
@@ -2239,24 +2219,24 @@ dependencies = [
 
 [[package]]
 name = "reylo-macros"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "reylo-codegen",
+ "reylo-build",
  "serde_json",
  "syn 2.0.119",
 ]
 
 [[package]]
 name = "reylo-migrate"
-version = "0.8.0-beta.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "mysql_async",
  "prost",
  "regex",
- "reylo-engine-native",
+ "reylo-engine",
  "reylo-pg-query",
  "rusqlite",
  "serde",
@@ -3387,13 +3367,12 @@ dependencies = [
 
 [[package]]
 name = "tokio-postgres-rustls"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27d684bad428a0f2481f42241f821db42c54e2dc81d8c00db8536c506b0a0144"
+checksum = "4c2ad44aa0ae96db89c4742212ed41645b2f597311ff6e1945542a4d9fadc2fb"
 dependencies = [
- "const-oid 0.9.6",
- "ring",
  "rustls",
+ "sha2 0.11.0",
  "tokio",
  "tokio-postgres",
  "tokio-rustls",

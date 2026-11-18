@@ -1,0 +1,10 @@
+create temp table reylo_aside_users as select id, age from users;
+create temp table reylo_aside_users_sequence as select seq from sqlite_sequence where name = 'users';
+drop table users;
+create table users (id integer primary key autoincrement, age integer, name text, constraint some_check check("users"."age" > 21));
+insert into users (id, age) select id, age from temp.reylo_aside_users;
+drop table temp.reylo_aside_users;
+delete from sqlite_sequence where name = 'users';
+insert into sqlite_sequence (name, seq) select 'users', seq from temp.reylo_aside_users_sequence;
+drop table temp.reylo_aside_users_sequence;
+create index users_age on users (age);

@@ -583,7 +583,10 @@ const callbackPool = mysqlCallbacks.createPool(process.env.DATABASE_URL);
 await getUser.run(callbackPool, { id: 1 });
 ```
 
-Reylo runs each query through the `execute()` method of `mysql2`, which prepares the statement first. Cloudflare Hyperdrive refuses prepared statements, so through Hyperdrive use [`mariadb`](#mariadb).
+Reylo runs each query through the `execute()` method of `mysql2`, which prepares the statement first. Where the server refuses prepared statements, as Cloudflare Hyperdrive does, Reylo writes the values into the statement itself and runs it through `query()`, which prepares nothing:
+
+- A `FLOAT` column comes back with the 6 significant digits MySQL sends as text, so `1.100000023841858` reads as `1.1`.
+- An app's `queryFormat` would rewrite each statement, so it is refused there, and so is a value holding a character outside ASCII on a connection whose charset is not UTF-8, since another charset can write one as a quote or a backslash.
 
 ### `mariadb`
 

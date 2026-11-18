@@ -10,9 +10,9 @@ Reylo runs in a Worker on Postgres and MySQL through Hyperdrive, Cloudflare's co
 | | |
 | --- | --- |
 | Postgres | `pg` or postgres.js, with the binding's connection string, and Drizzle over `pg` |
-| MySQL | `mariadb`, not `mysql2`: Hyperdrive refuses the prepared statements Reylo runs `mysql2` through |
+| MySQL | `mysql2` or `mariadb`, with the binding's `host`, `port`, `user`, `password` and `database` |
 | The type check reads | Your development database, through [`direct_url`](/configuration#direct_url), never Hyperdrive |
-| Node's APIs | `pg`, postgres.js and `mariadb` need a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag |
+| Node's APIs | `pg`, postgres.js, `mysql2` and `mariadb` need a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag |
 
 ## Postgres
 
@@ -35,9 +35,9 @@ export default {
 
 ## MySQL
 
-Connect with the `mariadb` driver, from the binding's `host`, `port`, `user`, `password` and `database` ([`mariadb`](/mysql#mariadb)).
+Connect `mysql2` or `mariadb` from the binding's `host`, `port`, `user`, `password` and `database`.
 
-The `mysql2` driver fails on every query through Hyperdrive, since Reylo runs it through prepared statements, which Hyperdrive refuses. Reylo runs `mariadb` without them.
+Hyperdrive refuses prepared statements, so Reylo runs `mysql2` there through `query()`, with each value written into the statement ([`mysql2`](/mysql#mysql2)). Reylo runs `mariadb` without prepared statements wherever it runs ([`mariadb`](/mysql#mariadb)).
 
 ## Schema changes
 

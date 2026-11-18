@@ -4266,8 +4266,8 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
 /// since Postgres reports one only where every element has it.
 pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
     let level = |element: Type| crate::types::ArrayType::of(crate::types::Slot::non_null(element));
-    let Type { kind, label, comment } = registry.render_typmod(col.type_oid, col.typmod);
-    let named = |kind| Type { kind, label: label.clone(), comment: comment.clone() };
+    let Type { kind, label, comment, title } = registry.render_typmod(col.type_oid, col.typmod);
+    let named = |kind| Type { kind, label: label.clone(), comment: comment.clone(), title: title.clone() };
     match (col.nested, kind) {
         (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
             let mut inner = match element {

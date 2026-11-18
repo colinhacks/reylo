@@ -2326,10 +2326,11 @@ fn there(opts: &Options) -> Result<(), Error> {
 }
 
 /// `reylo migrate status`: what this database ran, what's pending and what changed, and every check
-/// the files can answer: their names, git's conflict markers, whether each runs atomically and
-/// replays in a shadow, the lock against them, and schema.sql against the checksum the lock holds. It
-/// reads, writes nothing and needs no shadow. It exits 1 where the database and the files aren't in
-/// step: a migration pending, cut off, edited or deleted, a change made by hand, or a check that fails.
+/// the files can answer: their names, git's conflict markers, whether each runs atomically and holds
+/// nothing a shadow can't replay (read from its text), the lock against them, and schema.sql against
+/// the checksum the lock holds. It reads, writes nothing and needs no shadow. It exits 1 where the
+/// database and the files aren't in step: a migration pending, cut off, edited or deleted, a change
+/// made by hand, or a check that fails.
 #[cfg(feature = "cli")]
 pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     if let Some(code) = refuse_old_lock(opts, log) {
@@ -2385,7 +2386,7 @@ async fn status_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
         rows.row(log, &paint("dim", "·"), &f.name, "pending");
         listed.push(serde_json::json!({ "name": f.name, "state": "pending" }));
     }
-    // The files: their names, conflict markers, atomicity and whether each replays.
+    // The files: their names, conflict markers, atomicity and what a shadow can't replay.
     let mut problems = file_problems(opts, &files, &strays, schema_sql.as_deref(), d);
     // Each check that holds, or can't be made, as a line; one that fails is a refusal, below the rest.
     let mut said: Vec<String> = Vec::new();
@@ -2594,7 +2595,8 @@ async fn lock_from_history_on(db: &mut Db, server: &mut Server, opts: &Options, 
 
 /// `reylo db reset`: rebuilds a development database from its migrations. Everything on it is dropped,
 /// with its rows, but a platform's own objects and the extensions the project's files don't create;
-/// the history is emptied; and every migration runs as `reylo migrate dev` runs it. Never in CI.
+/// the history is emptied; and every migration runs as `reylo migrate dev` runs it. What `dev` would
+/// refuse of the files and the lock, it refuses first, with nothing dropped. Never in CI.
 #[cfg(feature = "cli")]
 pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
     if let Some(code) = refuse_old_lock(opts, log) {
@@ -2605,22 +2607,38 @@ pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, 
     }
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
-    let result = match emptied(&mut db, &mut server, opts, log).await {
-        Ok(0) => match dev_on(&mut db, &mut server, 0, opts, "", log).await {
-            Ok(0) => {
-                let ran = read_history(&mut db).await.map(|h| h.iter().filter(|r| r.applied).count()).unwrap_or(0);
-                if ran > 0 {
-                    log(&format!("{} Rebuilt from {ran} migration{}", paint("green", "✓"), if ran == 1 { "" } else { "s" }));
-                }
-                Ok(0)
-            }
-            other => other,
-        },
-        other => other,
-    };
+    let result = reset_on(&mut db, &mut server, opts, log).await;
     db.close().await;
     server.close().await;
     result
+}
+
+#[cfg(feature = "cli")]
+async fn reset_on(db: &mut Db, server: &mut Server, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    // What dev checks before it changes anything, over the history the reset leaves it, which is none;
+    // and a migrations directory that is gone, which this database ran migrations from.
+    let (files, strays) = opts.migrations()?;
+    let mut problems = file_problems(opts, &files, &strays, opts.schema_text().as_deref(), db.dialect());
+    problems.extend(missing_dir(opts, &read_history(db).await?));
+    if problems.is_empty() {
+        problems.extend(dev_lock_notes(opts, &files, &[]).err());
+    }
+    if !problems.is_empty() {
+        return Ok(refuse(&problems, log));
+    }
+    match emptied(db, server, opts, log).await? {
+        0 => {}
+        code => return Ok(code),
+    }
+    match dev_on(db, server, 0, opts, "", log).await? {
+        0 => {}
+        code => return Ok(code),
+    }
+    let ran = read_history(db).await.map(|h| h.iter().filter(|r| r.applied).count()).unwrap_or(0);
+    if ran > 0 {
+        log(&format!("{} Rebuilt from {ran} migration{}", paint("green", "✓"), if ran == 1 { "" } else { "s" }));
+    }
+    Ok(0)
 }
 
 /// Takes the database to what an empty shadow holds, and forgets its history: in the same transaction
@@ -3056,6 +3074,11 @@ fn table_rename_statements(d: Dialect, current: &crate::diff::Schema, target: &c
         let (old, new) = (bare(old_id), bare(new_id));
         if !was_stated {
             out.push(format!("-- {old} is renamed {new}, keeping its rows. If they are two tables, drop the one and create the other instead."));
+        }
+        // A view the target replaces with the table takes the name first: it goes before the rename,
+        // with what is made on it, which the plan makes again where the target has it.
+        if let Some(view) = new_id.strip_prefix("table ").and_then(|n| current.objects.get(&format!("view {n}"))) {
+            out.extend(view.drop.iter().map(|drop| if d == Dialect::Postgres { format!("{drop} cascade") } else { drop.clone() }));
         }
         out.push(format!("alter {}table {from_w} rename to {new_name}", if foreign { "foreign " } else { "" }));
         names.push((old, new, old_id.clone(), new_id.clone()));
@@ -3787,6 +3810,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         return Ok(0);
     }
     let sql = schema_as_sql(opts, schemas).await?;
+    let made_dir = !opts.dir.exists();
     std::fs::create_dir_all(&opts.dir)?;
     std::fs::write(&opts.schema, &sql)?;
     let init = opts.dir.join(INIT);
@@ -3796,9 +3820,21 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     let schema = Some(lock::schema_sum(&entries[0].sum, &sql));
     lock::write(&opts.lock, &lock::Lock { schema, entries })?;
     // init.sql is recorded as run, which the tree says; what recording it prints is said only where
-    // it didn't.
+    // it didn't. One that can't start (no shadow database can be made) leaves no project behind, so
+    // that init runs again once it can.
     let mut said: Vec<String> = Vec::new();
-    let code = history_push(opts, &mut |l: &str| said.push(l.to_string())).await?;
+    let code = match history_push(opts, &mut |l: &str| said.push(l.to_string())).await {
+        Ok(code) => code,
+        Err(e) => {
+            for file in [&opts.schema, &init, &opts.lock] {
+                let _ = std::fs::remove_file(file);
+            }
+            if made_dir {
+                let _ = std::fs::remove_dir(&opts.dir);
+            }
+            return Err(e);
+        }
+    };
     log(&format!("{} Started {home} from {}", paint("green", "✓"), shown_url(&opts.url)));
     log(&format!("  {home}"));
     log(&entry(branch(false), &file_name(&opts.schema), "this database's schema"));

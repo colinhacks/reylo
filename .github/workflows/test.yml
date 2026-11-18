@@ -63,7 +63,7 @@ jobs:
           # Every database, or the ones the change reaches.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-engine-native -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-codegen -p reylo --features reylo/mysql,reylo/sqlite'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-build -p reylo --features reylo/mysql,reylo/sqlite'
             echo 'shards=["postgres","sqlite","mysql-1","mysql-2","mysql-slow"]'
             echo playground=true
           }
@@ -81,7 +81,7 @@ jobs:
           # Core, the crate the oracle answers through, the oracle's own code, the build, the code lists the
           # oracle reads, the format's schema and examples the engine's tests and the oracle read, the validators'
           # measurements the engine's tests read, and CI itself reach every database.
-          if grep -qE '^(\.cargo/|engine/(core|build-support|facade|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+          if grep -qE '^(\.cargo/|engine/(core|build-support|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -106,7 +106,7 @@ jobs:
           # The binary's own crates, the migrations and the command line, which link every database.
           $binary && tests="$tests -p reylo-migrate -p reylo-cli"
           # The Rust crate on each of its databases, whose own tests (tests/migrate.rs) run on all three.
-          $rust && tests="$tests -p reylo-codegen -p reylo --features reylo/mysql,reylo/sqlite"
+          $rust && tests="$tests -p reylo-build -p reylo --features reylo/mysql,reylo/sqlite"
           if [ -z "$tests" ]; then
             { echo engine=false; echo tests=; echo 'shards=[]'; } >> "$GITHUB_OUTPUT"
           else
@@ -186,10 +186,21 @@ jobs:
     env:
       REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
       REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
+      REYLO_TEST_PG_TLS: postgres://postgres:reylo@127.0.0.1:55434/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # A Postgres that takes TLS and asks for a password, as a hosted one does, for the test of channel
+      # binding, which needs both. A service cannot take the server's flags, so it is started here; the
+      # image's own snake-oil certificate serves, since the test checks no certificate.
+      - name: Start a Postgres over TLS
+        run: |
+          docker run -d --name reylo-pg-tls -p 55434:5432 -e POSTGRES_PASSWORD=reylo postgres:18 \
+            -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+          for _ in $(seq 60); do docker exec reylo-pg-tls pg_isready -h 127.0.0.1 -U postgres > /dev/null && exit 0; sleep 1; done
+          docker logs reylo-pg-tls
+          exit 1
       - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
         with:
           nub-version: "0.9.6"

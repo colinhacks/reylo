@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(
             document(&Value::Object(line)),
             r#"file: queries/get_user.sql
-$schema: https://reylo.dev/typedefs/0.1.0.json
+$schema: https://reylo.dev/typedefs/0.1.1.json
 dialect: { name: postgres, version: "18.1" }
 sql: |-
   -- One user, by id.

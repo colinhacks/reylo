@@ -2,3 +2,4 @@
 --   alter table users drop column full_name;
 --   alter table users add column name text not null;
 alter table users rename column full_name to name;
+alter table users rename constraint users_full_name_not_null to users_name_not_null;

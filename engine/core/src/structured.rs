@@ -1792,6 +1792,7 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
                 optional: m.omittable(),
                 default: None,
                 comment: None,
+                title: None,
             })
             .collect();
         // The column list against the table: only once the database took every type.
