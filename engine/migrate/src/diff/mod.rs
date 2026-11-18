@@ -888,7 +888,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     needs.extend(o.after.iter());
                 }
                 for c in to.objects.values() {
-                    if c.inline && c.owner.as_deref() == Some(id.as_str()) && matches!(op, Op::Create(_)) {
+                    if c.inline && c.owner.as_deref() == Some(id.as_str()) && matches!(op, Op::Create(_)) && created_with_owner(&c.id) {
                         needs.extend(c.deps.iter().filter(|d| *d != id));
                     }
                 }
