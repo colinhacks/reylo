@@ -1146,15 +1146,23 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
     let fulltext: Vec<usize> = clauses.iter().enumerate().filter(|(_, c)| c.starts_with("add fulltext ")).map(|(k, _)| k).skip(1).collect();
     let mut later: Vec<String> = fulltext.iter().rev().map(|k| clauses.remove(*k)).collect::<Vec<_>>();
     later.reverse();
+    // A table's partitioning changes apart from its body: where the body changes too, the old
+    // goes first, since a key the body changes may leave out a column it partitions by, and the
+    // new comes last, by the keys the body made. Alone, it is one statement.
     let mut out = Vec::new();
+    let repartitions = from.partition != to.partition;
+    let apart = repartitions && !from.partition.is_empty() && (to.partition.is_empty() || !clauses.is_empty());
+    if apart {
+        out.push(format!("alter table {} remove partitioning", to.q));
+    }
     match clauses.len() {
         0 => {}
         1 => out.push(format!("alter table {} {}", to.q, clauses[0])),
         _ => out.push(format!("alter table {}\n  {}", to.q, clauses.join(",\n  "))),
     }
     out.extend(later.iter().map(|c| format!("alter table {} {c}", to.q)));
-    if from.partition != to.partition {
-        out.push(if to.partition.is_empty() { format!("alter table {} remove partitioning", to.q) } else { format!("alter table {} {}", to.q, to.partition) });
+    if repartitions && !to.partition.is_empty() {
+        out.push(format!("alter table {} {}", to.q, to.partition));
     }
     out
 }
