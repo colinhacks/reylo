@@ -2683,6 +2683,7 @@ on!(
     a_renamed_tables_sequence_keeps_counting,
     a_foreign_table_is_renamed_as_stated,
     a_partitioned_table_is_renamed_with_its_partitions,
+    a_table_renamed_onto_a_views_name_drops_the_view_first,
     partitions_made_at_run_time_are_data,
     the_fingerprint_leaves_out_only_what_is_a_childs,
     a_comment_above_a_cut_off_build_is_read_past,
@@ -3118,6 +3119,16 @@ mod adversarial {
         p.output();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    pub async fn a_table_renamed_onto_a_views_name_drops_the_view_first(mut p: P) {
+        p.file("20261027100000_data.sql", "create table t_data (id int, name text); create view data as select * from t_data; create view q as select * from data;");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into t_data values (1, 'a')").await;
+        // The view goes, with the view on it, before the table takes its name; the plan makes q again.
+        p.schema("create table data (id int, name text); create view q as select * from data;");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select name from q").await.len(), 1);
     }
 
     pub async fn a_partitioned_table_is_renamed_with_its_partitions(mut p: P) {

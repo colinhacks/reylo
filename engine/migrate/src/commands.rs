@@ -3075,6 +3075,11 @@ fn table_rename_statements(d: Dialect, current: &crate::diff::Schema, target: &c
         if !was_stated {
             out.push(format!("-- {old} is renamed {new}, keeping its rows. If they are two tables, drop the one and create the other instead."));
         }
+        // A view the target replaces with the table takes the name first: it goes before the rename,
+        // with what is made on it, which the plan makes again where the target has it.
+        if let Some(view) = new_id.strip_prefix("table ").and_then(|n| current.objects.get(&format!("view {n}"))) {
+            out.extend(view.drop.iter().map(|drop| if d == Dialect::Postgres { format!("{drop} cascade") } else { drop.clone() }));
+        }
         out.push(format!("alter {}table {from_w} rename to {new_name}", if foreign { "foreign " } else { "" }));
         names.push((old, new, old_id.clone(), new_id.clone()));
     }

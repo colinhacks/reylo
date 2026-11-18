@@ -2299,7 +2299,9 @@ impl Alterer for PostgresAlterer {
                 if used || kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y) {
                     let (unmake, remake) = around(from, to);
                     let mut out = unmake;
-                    let mut swap = swap_enum(name, &to.create[0], &from.extra);
+                    // The columns both have: one the plan drops is gone before, one it adds comes after.
+                    let kept: Vec<String> = from.extra.iter().filter(|c| !c.starts_with(AROUND) && to.extra.iter().any(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2)))).cloned().collect();
+                    let mut swap = swap_enum(name, &to.create[0], &kept);
                     let last = swap.pop();
                     out.extend(swap);
                     out.extend(remake);
