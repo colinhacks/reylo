@@ -588,9 +588,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             crate::catalog::identity_options("a"),
             if version >= 180000 {
                 "coalesce((select co.connoinherit from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), false) as noinherit,
+                  (select format('%I', co.conname) from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]) as nn_name,
                   coalesce((select co.convalidated from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), true)"
             } else {
-                "false as noinherit, true"
+                "false as noinherit, null as nn_name, true"
             },
             acl("a.attacl", 'c', "c.relowner"),
             not_extension("pg_class", "c"),
@@ -601,6 +602,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         columns.entry(oid(&r, "rel")).or_default().push(r);
     }
 
+    // Each table's columns' defaults and not nulls, by name: a partition's that differ are its own.
+    let names: BTreeMap<u32, String> = rels.iter().map(|r| (oid(r, "oid"), r.text("name").to_string())).collect();
+    let mut column_states: BTreeMap<(String, String), (Option<String>, bool)> = BTreeMap::new();
+    for (rel, cols) in &columns {
+        for c in cols {
+            column_states.insert((names.get(rel).cloned().unwrap_or_default(), c.text("name").to_string()), (c.get("def").filter(|_| c.text("generated").is_empty()).map(String::from), c.flag("notnull")));
+        }
+    }
     for r in &rels {
         let rel = oid(r, "oid");
         let name = r.text("name").to_string();
@@ -609,6 +618,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let cols = columns.remove(&rel).unwrap_or_default();
         let partition = r.get("bound").is_some();
         let mut col_defs = Vec::new();
+        // What a partition says of its columns where its parent says otherwise.
+        let mut overrides = Vec::new();
+        let mut late_not_nulls: Vec<String> = Vec::new();
         for c in &cols {
             let col_id = format!("column {name}.{}", c.text("name"));
             let target = if matches!(kind, "v" | "m") { id.clone() } else { col_id.clone() };
@@ -653,12 +665,19 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             if matches!(kind, "v" | "m") {
                 continue;
             }
-            let made = column_def(c, kind == "c");
+            // A not null left unvalidated (Postgres 18), which no column definition can write: the
+            // column is made without it, and it is added after, by its name, not valid.
+            let unvalidated = c.flag("notnull") && !c.flag("nn_valid") && !c.flag("noinherit");
+            let full = column_def(c, kind == "c");
+            let made = if unvalidated { full.trim_end_matches(" not null").to_string() } else { full.clone() };
+            let add_not_null = format!("alter table {name} add constraint {} not null {} not valid", c.text("nn_name"), c.text("name"));
+            if unvalidated {
+                late_not_nulls.push(add_not_null.clone());
+            }
             if c.flag("local") || !partition {
                 col_defs.push(format!("{} {made}", c.text("name")));
             }
-            // A not null left unvalidated (Postgres 18), which no column definition can write.
-            let def = if c.flag("notnull") && !c.flag("nn_valid") { format!("{made} not valid") } else { made.clone() };
+            let def = if unvalidated { format!("{full} not valid") } else { full.clone() };
             if c.flag("local") {
                 let caution = (c.flag("notnull") && c.get("def").is_none() && c.text("identity").is_empty() && kind != "c")
                     .then(|| format!("{} is not null with no default, so adding it fails on a table that has rows: give it a default, or add it nullable, fill it, then set not null", c.text("name")));
@@ -668,7 +687,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     kind: Some(Kind::Column),
                     owner: Some(id.clone()),
                     def: def.clone(),
-                    create: vec![if kind == "c" { format!("alter type {name} add attribute {} {made}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }],
+                    create: [Some(if kind == "c" { format!("alter type {name} add attribute {} {made}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }), unvalidated.then(|| add_not_null.clone())].into_iter().flatten().collect(),
+                    extra: c.get("nn_name").map(|n| vec![format!("not null name {n}")]).unwrap_or_default(),
                     drop: vec![if kind == "c" { format!("alter type {name} drop attribute {}", c.text("name")) } else { format!("alter table {name} drop column {}", c.text("name")) }],
                     inline: true,
                     change: Change::Alter { blocks: true },
@@ -676,7 +696,24 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 });
             } else if partition {
                 // A partition's column is its parent's, made, changed and dropped with it: an
-                // object with no statement of its own, so that a partition detached keeps it.
+                // object with no statement of its own, so that a partition detached keeps it, but
+                // for a default or a not null of its own.
+                let parent = r.get("parent").and_then(|p| column_states.get(&(p.to_string(), c.text("name").to_string())));
+                let mine = (c.get("def").filter(|_| c.text("generated").is_empty()).map(String::from), c.flag("notnull"));
+                if let Some((default, not_null)) = parent {
+                    let mut said = Vec::new();
+                    if mine.0 != *default {
+                        if let Some(d) = &mine.0 {
+                            said.push(format!("default {d}"));
+                        }
+                    }
+                    if mine.1 && !not_null {
+                        said.push("not null".to_string());
+                    }
+                    if !said.is_empty() {
+                        overrides.push(format!("{} {}", c.text("name"), said.join(" ")));
+                    }
+                }
                 s.add(Object {
                     id: col_id,
                     kind: Some(Kind::Column),
@@ -685,6 +722,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     inline: true,
                     change: Change::Alter { blocks: true },
                     extra: vec!["partition".into()],
+                    deps: r.get("parent").map(|p| format!("column {p}.{}", c.text("name"))).into_iter().collect(),
                     ..Object::default()
                 });
             }
@@ -709,7 +747,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 let foreign = if kind == "f" { "foreign " } else { "" };
                 let head = format!("create {unlogged}{foreign}table {name}");
                 let body = match (r.get("bound"), r.get("parent")) {
-                    (Some(bound), Some(parent)) => format!("{head} partition of {parent} {bound}"),
+                    (Some(bound), Some(parent)) if overrides.is_empty() => format!("{head} partition of {parent} {bound}"),
+                    (Some(bound), Some(parent)) => format!("{head} partition of {parent} (\n  {}\n) {bound}", overrides.join(",\n  ")),
                     (None, Some(parent)) => format!("{head} (\n  {}\n) inherits ({parent})", col_defs.join(",\n  ")),
                     _ => format!("{head} (\n  {}\n)", col_defs.join(",\n  ")),
                 };
@@ -735,7 +774,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         };
         // A table's own properties change in place; a view or a composite type is replaced.
         let change = if object_kind == Kind::Table { Change::Alter { blocks: false } } else { Change::Replace };
-        s.add(Object { id: id.clone(), kind: Some(object_kind), def, create: vec![create], drop: vec![drop], change, extra, ..Object::default() });
+        let mut create = vec![create];
+        create.extend(late_not_nulls);
+        s.add(Object { id: id.clone(), kind: Some(object_kind), def, create, drop: vec![drop], change, extra, ..Object::default() });
         // Row-level security, enabled, forced on the table's owner, or both: each is set on its own.
         if r.flag("rls") || r.flag("force") {
             s.add(Object {
@@ -2187,8 +2228,24 @@ impl Alterer for PostgresAlterer {
                 let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
                 Some(vec![format!("alter type {ty} alter attribute {name} type {}{collate}", b.ty)])
             }
-            // A partition's column changes with its parent's.
-            Kind::Column if to.extra.iter().any(|l| l == "partition") => Some(vec![]),
+            // A partition's column changes with its parent's, but for a default or a not null of
+            // its own, set after the parent's.
+            Kind::Column if to.extra.iter().any(|l| l == "partition") => {
+                let (a, b) = (parse_column(&from.def), parse_column(&to.def));
+                let at = format!("alter table {table} alter column {name}");
+                let mut out = Vec::new();
+                if a.ty == b.ty && a.generated.is_none() && b.generated.is_none() && a.identity.is_none() && b.identity.is_none() {
+                    match (&a.default, &b.default) {
+                        (Some(_), None) => out.push(format!("{at} drop default")),
+                        (x, Some(y)) if x.as_ref() != Some(y) => out.push(format!("{at} set default {y}")),
+                        _ => {}
+                    }
+                    if a.not_null != b.not_null {
+                        out.push(format!("{at} {} not null", if b.not_null { "set" } else { "drop" }));
+                    }
+                }
+                Some(out)
+            }
             Kind::Column => {
                 let (a, mut b) = (parse_column(&from.def), parse_column(&to.def));
                 // The text `schema.sql` declared its default and generation with, where it is known.
@@ -2297,11 +2354,15 @@ impl Alterer for PostgresAlterer {
                     }
                     _ => {}
                 }
-                // A NOT NULL kept from the table's children is added as a constraint of its own.
-                if a.not_null && (!b.not_null || a.no_inherit != b.no_inherit) {
+                // A NOT NULL kept from the table's children is added as a constraint of its own, and
+                // so is one left unvalidated, by its name; setting not null validates one.
+                if a.not_null && (!b.not_null || a.no_inherit != b.no_inherit || (b.not_valid && !a.not_valid)) {
                     out.push(format!("{at} drop not null"));
                 }
-                if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit || (a.not_valid && !b.not_valid)) && !not_null_done {
+                if b.not_null && b.not_valid && (!a.not_null || !a.not_valid) {
+                    let nn = to.extra.iter().find_map(|l| l.strip_prefix("not null name ")).unwrap_or_default();
+                    out.push(format!("alter table {table} add constraint {nn} not null {name} not valid"));
+                } else if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit || (a.not_valid && !b.not_valid)) && !not_null_done {
                     out.push(if b.no_inherit { format!("alter table {table} add not null {name} no inherit") } else { format!("{at} set not null") });
                 }
                 Some(out)
