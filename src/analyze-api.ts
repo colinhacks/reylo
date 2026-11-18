@@ -13,7 +13,7 @@ import { placeholdersOf, untypedParams } from "./module-types.ts";
 import { dialectOf, PROJECT_FILE, resolveProject, sqlitePath, sqliteUrlProblem, type Dialect as Database } from "./project.ts";
 
 /** The format version `analyze` writes, as the URL of its JSON Schema (spec/typedefs.schema.json), which the type holds to the spec's. */
-const SCHEMA: StatementDescriptor["$schema"] = "https://reylo.dev/typedefs/0.1.0.json";
+const SCHEMA: StatementDescriptor["$schema"] = "https://reylo.dev/typedefs/0.1.1.json";
 
 /** What a statement's untyped parameters answer to: whether each is an error, and the project file its message names. */
 type Strict = { params: boolean; file: string };
