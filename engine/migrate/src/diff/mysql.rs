@@ -243,6 +243,17 @@ impl Column {
     }
 
     /// The definition as a statement writes it, its collation left out where it is the table's.
+    /// How it is generated: `stored`, `virtual`, or neither.
+    fn generation(&self) -> Option<&'static str> {
+        let rest = self.rest.to_ascii_lowercase();
+        let after = &rest[rest.find("generated always as")?..];
+        if after.contains(" virtual") {
+            Some("virtual")
+        } else {
+            Some("stored")
+        }
+    }
+
     fn written(&self, table_collation: Option<&str>) -> String {
         let mut c = self.clone();
         if table_collation == Some(c.collation.as_str()) {
@@ -332,7 +343,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     let mut infos: BTreeMap<(String, String), Row> = BTreeMap::new();
     for r in db
         .rows(&format!(
-            "select table_name as t, column_name as c, column_type as type, collation_name as collation, generation_expression as gen
+            "select table_name as t, column_name as c, column_type as type, collation_name as collation, generation_expression as gen,
+              case when extra like '%DEFAULT_GENERATED%' then column_default end as expression
             from information_schema.columns where table_schema = database() and table_name <> '{history}'"
         ))
         .await?
@@ -421,7 +433,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     };
     let in_cycle: BTreeSet<(String, String)> = fks.iter().filter(|((t, _), fk)| fk.ref_schema == ctx.db && fk.ref_table != *t && reaches(&fk.ref_table, t)).map(|(k, _)| k.clone()).collect();
 
-    let tables = db.rows(&format!("select table_name as name, table_type as type from information_schema.tables where table_schema = database() and table_name <> '{history}' order by table_name")).await?;
+    let tables = db.rows(&format!("select table_name as name, table_type as type, table_collation as collation from information_schema.tables where table_schema = database() and table_name <> '{history}' order by table_name")).await?;
     let views: BTreeSet<String> = tables.iter().filter(|r| r.text("type") == "VIEW").map(|r| r.text("name").to_string()).collect();
     for r in tables.iter().filter(|r| r.text("type") != "VIEW") {
         let name = r.text("name").to_string();
@@ -429,6 +441,13 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let text = first(db.rows(&format!("show create table {}", backtick(&name))).await?, "Create Table");
         let mut body = parse_table(&ctx, &text, &name, &infos, &checks);
         body.q = q.clone();
+        // A table's default collation, which `show create table` leaves out where it is its
+        // character set's own, and which says the character set too.
+        if let Some(collation) = r.get("collation") {
+            body.options.retain(|(k, _)| k != "charset" && k != "collate");
+            body.options.push(("collate".into(), collation.to_string()));
+            body.options.sort();
+        }
         let owned: BTreeSet<String> = fks.iter().filter(|((t, n), fk)| *t == name && fk_index(t, n, fk)).map(|((_, n), _)| n.clone()).collect();
         body.indexes.retain(|(i, _, _)| !owned.contains(i));
         let id = format!("table {name}");
@@ -732,6 +751,26 @@ fn generated_from(attributes: &str, expression: &str) -> String {
     attributes.to_string()
 }
 
+/// A column's attributes with its default's parenthesized expression replaced by `expression`.
+fn default_from(attributes: &str, expression: &str) -> String {
+    let tokens = tokenize(attributes, Dialect::Mysql);
+    let Some(k) = tokens.windows(2).position(|w| w[0].upper() == "DEFAULT" && w[1].text == "(") else { return attributes.to_string() };
+    let mut depth = 0;
+    for t in &tokens[k + 1..] {
+        match t.text.as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    return format!("{}({expression}){}", &attributes[..tokens[k + 1].start], &attributes[t.end..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    attributes.to_string()
+}
+
 /// What follows the elements of a `create table` the server rendered: its options and partitioning.
 fn after_elements(text: &str) -> String {
     let text = open_version_comments(text);
@@ -767,6 +806,13 @@ fn parse_table(ctx: &Ctx, text: &str, table: &str, infos: &BTreeMap<(String, Str
             let after = match info.map(|i| i.text("gen")).filter(|g| !g.is_empty()) {
                 Some(gen) => generated_from(after, &stored_text(gen)),
                 None => after.to_string(),
+            };
+            // An expression default as it was written: `show create table` prints a literal
+            // converted to the character set of what it meets (`uuid()`'s utf8mb3), which reads
+            // back as another expression.
+            let after = match info.and_then(|i| i.get("expression")).filter(|e| !e.is_empty()) {
+                Some(expression) => default_from(&after, &stored_text(expression)),
+                None => after,
             };
             body.columns.push(Column {
                 q: ctx.ident(&name),
@@ -850,9 +896,17 @@ fn column_rest(text: &str) -> String {
     let tokens = tokenize(text, Dialect::Mysql);
     let mut ranges = Vec::new();
     let mut k = 0;
+    // Only the column's own: a default's or a generated column's expression keeps its casts'.
+    let mut depth = 0;
     while k < tokens.len() {
+        match tokens[k].text.as_str() {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            _ => {}
+        }
         let w = tokens[k].upper();
         let width = match (w.as_str(), tokens.get(k + 1).map(Token::upper).as_deref()) {
+            _ if depth > 0 => 0,
             ("CHARACTER", Some("SET")) => 3,
             ("CHARSET" | "COLLATE", _) => 2,
             ("DEFAULT", Some("NULL")) => 2,
@@ -1026,6 +1080,15 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
             clauses.push(format!("drop column {}", c.q));
         }
     }
+    // A column made or unmade virtual, or moved between virtual and stored, which MySQL won't
+    // modify, is dropped and added again in the statement: a virtual column's values are computed,
+    // and a column made virtual has its values computed from then on.
+    let remade = |was: &Column, now: &Column| was.generation() != now.generation() && (was.generation() == Some("virtual") || now.generation() == Some("virtual"));
+    for c in &to.columns {
+        if let Some(was) = from.column(&c.name).filter(|was| !old_of.contains_key(c.name.as_str()) && remade(was, c)) {
+            clauses.push(format!("drop column {}", was.q));
+        }
+    }
     // A column is written without its collation where it takes the table's default, unless the
     // default changes in this statement, which MySQL applies before the columns.
     let collation = (from.option("collate") == to.option("collate")).then(|| to.option("collate").unwrap_or_default());
@@ -1041,6 +1104,7 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String
     for c in &to.columns {
         match from.column(old_of.get(c.name.as_str()).copied().unwrap_or(&c.name)) {
             Some(was) if old_of.contains_key(c.name.as_str()) || was.def() == c.def() => {}
+            Some(was) if remade(was, c) => clauses.push(format!("add column {}", c.written(collation))),
             Some(_) => clauses.push(format!("modify column {}", c.written(collation))),
             None => clauses.push(format!("add column {}", c.written(collation))),
         }
@@ -1197,6 +1261,7 @@ mod tests {
         assert_eq!(stored_text(r#"json_schema_valid(_utf8mb4\'{"enum":["it\\\'s","cafÃ©"]}\',`w`)"#), r#"json_schema_valid(_utf8mb4'{"enum":["it\'s","café"]}',`w`)"#);
         assert_eq!(generated_from("int GENERATED ALWAYS AS ((`n` * 2)) VIRTUAL", "(`n` * 3)"), "int GENERATED ALWAYS AS ((`n` * 3)) VIRTUAL");
         assert_eq!(column_rest("character set latin1 collate latin1_bin default null comment 'x'"), "comment 'x'");
+        assert_eq!(column_rest("collate utf8mb4_bin default (cast(_utf8mb4'foo' as char charset binary))"), "default (cast(_utf8mb4'foo' as char charset binary))");
     }
 
     #[test]
