@@ -45,7 +45,7 @@ Where vendors' tables for a name differ, it stands for the widest of them, so a 
 
    A new kind may come in a minor version too, since a consumer that does not know it reads it as rule 6 says.
 
-   Some fields neither widen nor narrow: a type's `title` and `comment`, and a field's `title`, `comment` and `read_only` describe the type, never which values it holds. A field's `write_only` narrows: values the source gives back never hold the field, which is optional for that reason. They may come in a minor version too.
+   Some fields neither widen nor narrow: a type's `title` and `comment`, and a field's `title` and `comment`, describe the type, never which values it holds. They may come in a minor version too.
 
 2. **A type is what the database guarantees**, never only what was declared: a SQLite column that is not STRICT is the union of what its affinity stores. A bound or a list of values appears only when it is true of every finite value, the `infinity` and `nan` flags speaking for the rest: from a type modifier, a validated CHECK on a column read straight from its table, a domain's check, or a constant the statement writes, which makes the column an `enum` of the constants it holds. A constraint that is not validated is not reported, and neither is a domain's NOT NULL, which an outer join defeats. A value a database stores only under a lax setting its default refuses is not typed, and a client that meets one refuses it: MySQL's zero and partial dates (`0000-00-00`, `2026-00-15`) and the empty error value of its enums. So is a Postgres array deeper than the one dimension its type is written with: Postgres keeps any number of dimensions in an array column, and the format writes the array flat, as almost every column holds it.
 
@@ -70,7 +70,6 @@ Where vendors' tables for a name differ, it stands for the widest of them, so a 
      - a table's columns are never optional, and `unique` and `order` appear only where its cardinality is `many`, each naming its columns, and `order` each once;
      - a UUID's versions are 1 to 8, in order, each once;
      - a field's `default` appears only beside `optional`;
-     - a field's `read_only` never sits beside its `write_only`, and its `write_only` appears only beside `optional`;
      - a duration's `max` writes each part above zero, with no leading zero, and its minutes and seconds below 60, and the duration has a `tick` exactly when that `max` has a time part.
 
 8. **Versions are semantic**, and a descriptor names its own in `$schema`. A patch version changes no descriptor; a minor version may add a kind or a narrowing field, which a consumer of the version before stays sound ignoring (rules 1 and 6); a major version may change anything. Before 1.0.0 the minor number stands for the major one and the patch number for the minor one: 0.2.0 may change anything 0.1.0 says, and 0.1.1 only what a minor version may.

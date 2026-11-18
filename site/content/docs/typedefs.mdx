@@ -386,7 +386,7 @@ Its `elements` are always there. Its `optional_elements` may be missing from the
 
 Named fields, in order.
 
-Each field is a slot with a `name`. It may be `optional`, its key left out, with a `default` the key takes when it is. A struct holds exactly its fields, unless `extra` lets it hold other keys too, each a value in its slot. A field may have a `title`. It may be `read_only`, where the source manages its value, or `write_only`, where the values the source gives back never hold it, which makes it optional.
+Each field is a slot with a `name`. It may be `optional`, its key left out, with a `default` the key takes when it is. A struct holds exactly its fields, unless `extra` lets it hold other keys too, each a value in its slot. A field may have a `title`.
 
 <TypeDef holds={["{ \"x\": 1, \"y\": 2 }"]} types={{"postgres": ["a composite type", "point", "line", "box", "path", "circle"]}}>
 
@@ -406,15 +406,6 @@ Each field is a slot with a `name`. It may be `optional`, its key left out, with
   "fields": [
     { "name": "id", "type": { "kind": "integer", "bits": 64 } },
     { "name": "role", "optional": true, "default": "member", "comment": "What the user may do", "type": { "kind": "enum", "type": { "kind": "text" }, "values": ["admin", "member"] } }
-  ]
-}
-
-// An id the source assigns, and a password replies never hold
-{
-  "kind": "struct",
-  "fields": [
-    { "name": "id", "read_only": true, "type": { "kind": "uuid" } },
-    { "name": "password", "optional": true, "write_only": true, "type": { "kind": "text" } }
   ]
 }
 

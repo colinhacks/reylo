@@ -449,10 +449,6 @@ export interface Field extends Slot {
   comment?: string;
   /** A short name for the field, as JSON Schema's `title`. */
   title?: string;
-  /** The source manages the value, such as an id it assigns: a value sent to it in this field may be ignored or refused, as JSON Schema's `readOnly` says. It says nothing of whether the field is present, which `optional` says. Never beside `write_only`. */
-  read_only?: true;
-  /** Values the source gives back never hold the field, such as a password, as JSON Schema's `writeOnly` says. Only beside `optional`, since one direction never holds it, so a consumer that ignores this reads the field as one that may be absent. */
-  write_only?: true;
 }
 
 /** A statement's parameter. Where the statement writes it whole into a column, its type is that column's: `insert into t (price) values (:price)` into a decimal of scale 2 gives `price` that scale, though the database describes the parameter with none and would round 1.234. That is stricter than the server, never looser. */

@@ -1373,14 +1373,6 @@
         "title": {
           "description": "A short name for the field, as JSON Schema's `title`.",
           "type": "string"
-        },
-        "read_only": {
-          "description": "The source manages the value, such as an id it assigns: a value sent to it in this field may be ignored or refused, as JSON Schema's `readOnly` says. It says nothing of whether the field is present, which `optional` says. Never beside `write_only`.",
-          "const": true
-        },
-        "write_only": {
-          "description": "Values the source gives back never hold the field, such as a password, as JSON Schema's `writeOnly` says. Only beside `optional`, since one direction never holds it, so a consumer that ignores this reads the field as one that may be absent.",
-          "const": true
         }
       },
       "required": [
