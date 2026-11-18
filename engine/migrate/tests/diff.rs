@@ -64,7 +64,14 @@ async fn values(db: &mut Db, before: Option<&[Rows]>, renamed: &std::collections
             continue;
         }
         let select = columns.iter().enumerate().map(|(k, ((_, ty), now))| format!("({now}::{ty})::text as v{k}")).collect::<Vec<_>>().join(", ");
-        let mut rows: Vec<Vec<String>> = match db.rows(&format!("select {select} from only {table}")).await {
+        // A column whose type has no cast back to the one it had (an enum made another) is read as text.
+        let as_text = columns.iter().enumerate().map(|(k, (_, now))| format!("{now}::text as v{k}")).collect::<Vec<_>>().join(", ");
+        let read = match db.rows(&format!("select {select} from only {table}")).await {
+            Ok(rows) => Ok(rows),
+            Err(_) if before.is_some() => db.rows(&format!("select {as_text} from only {table}")).await,
+            Err(e) => Err(e),
+        };
+        let mut rows: Vec<Vec<String>> = match read {
             Ok(rows) => rows.iter().map(|r| (0..columns.len()).map(|k| r.get(&format!("v{k}")).map(String::from).unwrap_or_else(|| "NULL".into())).collect()).collect(),
             Err(e) => vec![vec![format!("unreadable: {e}")]],
         };

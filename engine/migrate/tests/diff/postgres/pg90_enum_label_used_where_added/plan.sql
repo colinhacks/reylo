@@ -1,0 +1,12 @@
+alter type mood rename to mood__old;
+create type mood as enum ('happy', 'sad', 'meh');
+alter table t alter column m type mood using m::text::mood;
+drop type mood__old;
+alter type st rename to st__old;
+create type st as enum ('a', 'b', 'c');
+alter table t alter column s drop default;
+alter table t alter column s type st using s::text::st;
+alter table t alter column s set default 'a'::st;
+drop type st__old;
+alter table t add column m2 mood default 'meh';
+alter table t alter column s set default 'c';
