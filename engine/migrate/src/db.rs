@@ -792,9 +792,14 @@ impl Server {
                     if !free {
                         continue;
                     }
-                    admin.batch_execute(&format!("drop database if exists \"{name}\" with (force)")).await.map_err(pg_error)?;
+                    // Another role's (a teammate's, on a shared server) is that role's to drop.
+                    let drop = admin.batch_execute(&format!("drop database if exists \"{name}\" with (force)")).await;
                     admin.batch_execute(&format!("select pg_advisory_unlock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
-                    dropped += 1;
+                    match drop {
+                        Ok(()) => dropped += 1,
+                        Err(e) if e.code() == Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE) => {}
+                        Err(e) => return Err(pg_error(e)),
+                    }
                 }
             }
             Server::Mysql { admin, .. } => {
@@ -804,8 +809,11 @@ impl Server {
                     if free != Some(1) {
                         continue;
                     }
-                    admin.query_drop(format!("drop database if exists `{name}`")).await.map_err(mysql_error)?;
-                    dropped += 1;
+                    match admin.query_drop(format!("drop database if exists `{name}`")).await {
+                        Ok(()) => dropped += 1,
+                        Err(mysql_async::Error::Server(s)) if s.code == 1044 => {}
+                        Err(e) => return Err(mysql_error(e)),
+                    }
                 }
             }
             Server::Sqlite => {}
