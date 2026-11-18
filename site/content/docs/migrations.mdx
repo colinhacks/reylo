@@ -58,7 +58,7 @@ Chained hashes in the lock catch a migration edited, deleted or reordered, befor
 </Feature>
 <Feature icon="database" title="Dialect-agnostic">
 
-Supports Postgres, MySQL and SQLite, with one set of commands.
+Supports Postgres, MySQL and SQLite, Turso Cloud included, with one set of commands.
 
 </Feature>
 </Features>
@@ -301,7 +301,7 @@ direct_url: ${DATABASE_URL}
 shadow_url: null
 ```
 
-To migrate another database, pass `--url`.
+To migrate another database, pass `--url`. On Turso Cloud, that's its `libsql://` URL with your auth token ([Turso](/turso#migrations)).
 
 ### Shadow databases
 
@@ -325,7 +325,7 @@ Each database makes them its own way:
 
 - **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
-- **SQLite:** in memory. There's nothing to grant.
+- **SQLite:** in memory, Turso Cloud's included. There's nothing to grant.
 
 On Supabase, each shadow also gets what Supabase made in your database: its extensions, and its own schemas such as `auth` and `storage`. A migration that references `auth.users`, or adds a policy on `storage.objects`, replays as it runs.
 

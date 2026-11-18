@@ -4,7 +4,9 @@
 //! ones are chosen to break it: ways a shadow can differ from the target that are not the
 //! migrations' doing, objects the comparison does not read, and commands that record what they did
 //! not run. Postgres's and MySQL's run against the servers `REYLO_TEST_PG` and `REYLO_TEST_MYSQL`
-//! name, and are skipped where the variable is not set; SQLite's always run.
+//! name, and are skipped where the variable is not set; SQLite's always run. Turso's are SQLite's on a
+//! libSQL server, over HTTP: each scenario starts a server of its own, the `sqld` that
+//! `REYLO_TEST_SQLD` names, and is skipped where the variable is not set.
 
 use reylo_migrate::catalog::catalog;
 use reylo_migrate::db::{with_database, Db, Row, Server};
@@ -29,6 +31,55 @@ struct P {
     lines: Vec<String>,
     t: Types,
     strict: bool,
+    /// The libSQL server a Turso scenario's database is on, stopped with the scenario.
+    server: Option<Sqld>,
+}
+
+/// A libSQL server of one scenario's own, with an empty database, on a free port.
+struct Sqld(std::process::Child);
+
+impl Sqld {
+    /// The server, and the URL that names its database; None where `REYLO_TEST_SQLD` is not set.
+    fn start(dir: &std::path::Path) -> Option<(Sqld, String)> {
+        let Ok(binary) = std::env::var("REYLO_TEST_SQLD") else {
+            eprintln!("skipped: no sqld for turso");
+            return None;
+        };
+        // A port another test takes between the probe and the server's bind fails the server at
+        // once, which tries the next one.
+        for _ in 0..5 {
+            let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+            let log = std::fs::File::create(dir.join("sqld.log")).unwrap();
+            let mut child = std::process::Command::new(&binary)
+                .arg("--db-path")
+                .arg(dir.join(format!("data-{port}.sqld")))
+                .args(["--http-listen-addr", &format!("127.0.0.1:{port}")])
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
+                .spawn()
+                .unwrap_or_else(|e| panic!("cannot start {binary}: {e}"));
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_secs(30) {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    return Some((Sqld(child), format!("libsql://127.0.0.1:{port}?tls=0")));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        panic!("sqld did not start: {}", std::fs::read_to_string(dir.join("sqld.log")).unwrap_or_default());
+    }
+}
+
+impl Drop for Sqld {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 fn base(d: Dialect) -> Option<String> {
@@ -72,7 +123,16 @@ impl P {
             Dialect::Mysql => Types { id: "bigint auto_increment primary key", text: "varchar(200)", int: "bigint" },
             Dialect::Sqlite => Types { id: "integer primary key", text: "text", int: "integer" },
         };
-        Some(P { d, dir, url, name, lines: vec![], t, strict: false })
+        Some(P { d, dir, url, name, lines: vec![], t, strict: false, server: None })
+    }
+
+    /// A project and a fresh database on a libSQL server of its own (Turso's dialect, SQLite).
+    async fn turso() -> Option<P> {
+        let mut p = P::new(Dialect::Sqlite).await?;
+        let (server, url) = Sqld::start(&p.dir)?;
+        p.url = url;
+        p.server = Some(server);
+        Some(p)
     }
 
     /// A second project directory of the same dialect, with no database of its own yet.
@@ -85,11 +145,16 @@ impl P {
             Dialect::Postgres => Types { id: p.t.id, text: p.t.text, int: p.t.int },
             _ => Types { id: p.t.id, text: p.t.text, int: p.t.int },
         };
-        let url = match p.d {
-            Dialect::Sqlite => format!("sqlite:{}", dir.join("dev.db").display()),
-            _ => p.url.clone(),
+        let (url, server) = match p.d {
+            // A libSQL server's sibling gets an empty server, as a file's gets an empty file.
+            Dialect::Sqlite if p.server.is_some() => {
+                let (server, url) = Sqld::start(&dir).unwrap();
+                (url, Some(server))
+            }
+            Dialect::Sqlite => (format!("sqlite:{}", dir.join("dev.db").display()), None),
+            _ => (p.url.clone(), None),
         };
-        P { d: p.d, dir, url, name: p.name.clone(), lines: vec![], t, strict: p.strict }
+        P { d: p.d, dir, url, name: p.name.clone(), lines: vec![], t, strict: p.strict, server }
     }
 
     fn opts(&self) -> Options {
@@ -327,6 +392,10 @@ macro_rules! for_each_dialect {
             #[tokio::test(flavor = "current_thread")]
             async fn sqlite() {
                 if let Some(p) = super::P::new(super::Dialect::Sqlite).await { super::$scenario(p).await }
+            }
+            #[tokio::test(flavor = "current_thread")]
+            async fn turso() {
+                if let Some(p) = super::P::turso().await { super::$scenario(p).await }
             }
         }
     )*};
@@ -2628,6 +2697,12 @@ async fn create_drafts_one_migration_cached_or_not(mut p: P) {
 // Adversarial cases, on the server databases they concern.
 
 macro_rules! on {
+    (Turso, $($scenario:ident),* $(,)?) => {$(
+        #[tokio::test(flavor = "current_thread")]
+        async fn $scenario() {
+            if let Some(p) = P::turso().await { adversarial::$scenario(p).await }
+        }
+    )*};
     ($dialect:ident, $($scenario:ident),* $(,)?) => {$(
         #[tokio::test(flavor = "current_thread")]
         async fn $scenario() {
@@ -2676,6 +2751,10 @@ mod on_mysql {
     on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url);
 }
 on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
+mod on_turso {
+    use super::*;
+    on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
+}
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_deploy);
 on!(Mysql, a_table_comment_is_no_clause_of_its_table);
 on!(Mysql, a_reserved_word_stays_quoted);
@@ -3618,4 +3697,22 @@ async fn reylo_run_refuses_a_file_that_is_not_there() {
     assert_eq!(code, 1, "{}", p.peek());
     assert_has!(p.output(), r"✗ No SQLite database at [^\n]*\n\nNothing was changed\.");
     assert!(!p.dir.join("prod.sqlitee").exists(), "a file was made");
+}
+
+/// A libSQL server ends a stream left idle: one outside a transaction is opened again, as a new
+/// connection, and one inside a transaction is an error, since the server rolled it back.
+#[tokio::test(flavor = "current_thread")]
+async fn a_turso_connection_left_idle_opens_again_outside_a_transaction() {
+    let Some(p) = P::turso().await else { return };
+    let mut idle = Db::connect(&p.url, &p.dir).await.unwrap();
+    let mut open = Db::connect(&p.url, &p.dir).await.unwrap();
+    idle.exec("create table t (a integer)").await.unwrap();
+    open.exec("begin").await.unwrap();
+    open.exec("insert into t values (1)").await.unwrap();
+    // sqld ends a stream idle for ten seconds.
+    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    assert_eq!(idle.rows("select count(*) as n from t").await.unwrap()[0].text("n"), "0");
+    let e = open.exec("commit").await.unwrap_err();
+    assert!(e.0.contains("idle too long"), "{e}");
+    assert_eq!(idle.rows("select count(*) as n from t").await.unwrap()[0].text("n"), "0", "the transaction was rolled back");
 }

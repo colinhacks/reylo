@@ -1,7 +1,7 @@
 //! The databases `reylo migrate` works on: the target, through the connection code the type check
 //! uses (`reylo-engine`), and the shadows it builds beside it. A shadow is a scratch database
 //! on the target's own server (`create database`), so it has the target's engine, version and
-//! extensions; SQLite's live in memory. The connection that creates a shadow holds a session lock
+//! extensions; SQLite's live in memory, a libSQL server's (Turso's) among them. The connection that creates a shadow holds a session lock
 //! named after it for the whole run, and the lock dies with the session, so a run that is killed
 //! leaves a shadow nobody holds, which the next run drops before it builds its own.
 
@@ -49,6 +49,9 @@ pub enum Db {
     Mysql(mysql_async::Conn),
     #[cfg(feature = "cli")]
     Sqlite(rusqlite::Connection),
+    /// A libSQL server's database, Turso Cloud's among them, over HTTP.
+    #[cfg(feature = "cli")]
+    Libsql(crate::libsql::Remote),
     /// A database the host holds the connection to, as a Rust app's own pool through
     /// `reylo::migrate!()`.
     Host(Box<dyn Session>),
@@ -178,6 +181,7 @@ impl Db {
         match Dialect::of_url(url)? {
             Dialect::Postgres => Ok(Db::Postgres(crate::db::open_postgres(url).await?)),
             Dialect::Mysql => Ok(Db::Mysql(crate::db::open_mysql(url).await?)),
+            Dialect::Sqlite if crate::libsql::is_url(url) => Ok(Db::Libsql(crate::libsql::Remote::open(url)?)),
             Dialect::Sqlite => Ok(Db::Sqlite(rusqlite::Connection::open(sqlite_path(url, base)).map_err(sqlite_error)?)),
         }
     }
@@ -189,7 +193,7 @@ impl Db {
             #[cfg(feature = "cli")]
             Db::Mysql(_) => Dialect::Mysql,
             #[cfg(feature = "cli")]
-            Db::Sqlite(_) => Dialect::Sqlite,
+            Db::Sqlite(_) | Db::Libsql(_) => Dialect::Sqlite,
             Db::Host(session) => session.dialect(),
         }
     }
@@ -237,6 +241,8 @@ impl Db {
                     .map_err(sqlite_error)?;
                 Ok(rows.into_iter().map(|values| Row { columns: columns.clone(), values }).collect())
             }
+            #[cfg(feature = "cli")]
+            Db::Libsql(remote) => remote.rows(sql),
         }
     }
 
@@ -250,6 +256,8 @@ impl Db {
             Db::Mysql(conn) => conn.query_drop(sql).await.map_err(mysql_error),
             #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute_batch(sql).map_err(sqlite_error),
+            #[cfg(feature = "cli")]
+            Db::Libsql(remote) => remote.exec(sql),
         }
     }
 
@@ -281,13 +289,19 @@ impl Db {
             }
             #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute(sql, rusqlite::params_from_iter(params.iter())).map(|_| ()).map_err(sqlite_error),
+            #[cfg(feature = "cli")]
+            Db::Libsql(remote) => remote.exec_with(sql, params),
         }
     }
 
     pub async fn close(self) {
         #[cfg(feature = "cli")]
-        if let Db::Mysql(conn) = self {
-            let _ = conn.disconnect().await;
+        match self {
+            Db::Mysql(conn) => {
+                let _ = conn.disconnect().await;
+            }
+            Db::Libsql(remote) => remote.close(),
+            _ => {}
         }
     }
 
@@ -906,6 +920,7 @@ mod url_tests {
         assert_eq!(shown_url("postgres://u:pa/ss@host/app"), "postgres://host/app");
         assert_eq!(shown_url("postgres://host/app?password=secret"), "postgres://host/app");
         assert_eq!(shown_url("sqlite:./app.db?mode=rwc"), "sqlite:./app.db");
+        assert_eq!(shown_url("libsql://app-acme.turso.io?authToken=secret"), "libsql://app-acme.turso.io");
         // An @ past the host is no part of the credentials, where a connection is made.
         assert_eq!(with_database("postgres://u@host/d@b", "x"), "postgres://u@host/x");
         assert_eq!(with_database("postgres://host/app?application_name=a@b", "x"), "postgres://host/x?application_name=a@b");
