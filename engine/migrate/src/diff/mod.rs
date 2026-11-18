@@ -92,6 +92,9 @@ pub struct Object {
     pub extra: Vec<String>,
     /// An object the server drops it with, which is not its owner: a serial column's sequence.
     pub goes_with: Option<String>,
+    /// Objects it is made after that it doesn't depend on: a partitioned table's index, made after
+    /// the partitions' indexes it attaches as it is made.
+    pub after: BTreeSet<String>,
 }
 
 /// How an object's definition changes when it differs.
@@ -272,8 +275,8 @@ impl Plan {
 /// The objects `id` is dropped with: its owners, and what the server drops it with, nearest first.
 fn owners<'a>(schema: &'a Schema, id: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
-    let mut queue: Vec<&str> = schema.objects.get(id).into_iter().flat_map(|o| o.owner.as_deref().into_iter().chain(o.goes_with.as_deref())).collect();
-    while let Some(next) = queue.pop() {
+    let mut queue: std::collections::VecDeque<&str> = schema.objects.get(id).into_iter().flat_map(|o| o.owner.as_deref().into_iter().chain(o.goes_with.as_deref())).collect();
+    while let Some(next) = queue.pop_front() {
         if out.contains(&next) {
             continue;
         }
@@ -729,11 +732,31 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             dependents.entry(owner.as_str()).or_default().push(id.as_str());
         }
     }
+    // What goes with an object made again goes and comes back too: a partition's index with its
+    // table's.
+    let mut goers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (id, o) in &from.objects {
+        if let Some(with) = &o.goes_with {
+            goers.entry(with.as_str()).or_default().push(id.as_str());
+        }
+    }
     let mut queue: Vec<String> = drops.iter().cloned().chain(blocking.iter().cloned()).collect();
     let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
     while let Some(id) = queue.pop() {
         let replaced = drops.contains(&id) && creates.contains(&id);
         let gone = drops.contains(&id) && !creates.contains(&id);
+        if replaced {
+            for goer in goers.get(id.as_str()).into_iter().flatten() {
+                if to.objects.contains_key(*goer) && !(drops.contains(*goer) && creates.contains(*goer)) {
+                    alters.remove(*goer);
+                    drops.insert(goer.to_string());
+                    creates.insert(goer.to_string());
+                    if seen.insert(goer.to_string()) {
+                        queue.push(goer.to_string());
+                    }
+                }
+            }
+        }
         for dependent in dependents.get(id.as_str()).into_iter().flatten() {
             let d = &from.objects[*dependent];
             let owned = d.owner.as_deref() == Some(id.as_str());
@@ -855,6 +878,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     }
                 }
                 needs.extend(o.owner.iter());
+                if matches!(op, Op::Create(_)) {
+                    needs.extend(o.after.iter());
+                }
                 for c in to.objects.values() {
                     if c.inline && c.owner.as_deref() == Some(id.as_str()) && matches!(op, Op::Create(_)) {
                         needs.extend(c.deps.iter().filter(|d| *d != id));

@@ -830,15 +830,20 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select i.indexrelid as oid, i.indrelid as rel, format('%I.%I', n.nspname, c.relname) as name, pg_get_indexdef(i.indexrelid) as def,
               (select h.inhparent from pg_inherits h where h.inhrelid = i.indexrelid) as parent,
               exists (select 1 from pg_constraint co where co.conindid = i.indexrelid) as keyed,
-              exists (select 1 from pg_inherits h where h.inhparent = i.indexrelid) as attached
+              exists (select 1 from pg_inherits h where h.inhparent = i.indexrelid) as attached,
+              (select pi.indisvalid from pg_inherits h join pg_index pi on pi.indexrelid = h.inhparent where h.inhrelid = i.indexrelid) as parent_valid,
+              i.indisvalid as valid, t.relkind = 'p' as partitioned
             from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid
             where {ns} and {} and {} and t.relname <> '{history}'",
             not_extension("pg_class", "c"),
             not_platform("t.relowner")
         ))
         .await?;
-    // A partitioned table's index is made on it alone (`on only`), then each partition's index is
-    // attached to it, which goes with it: as many as the database has, named as it names them.
+    // A partitioned table's index that every partition's index is attached to is made on the table
+    // itself, after those, which it attaches as it is made, keeping their names; one that some
+    // partition has none for is made on the table alone (`on only`), and each partition's index is
+    // attached to it after. A partition's index goes with its table's, and a partition made by the
+    // plan takes its table's indexes with it.
     for pass in [false, true] {
         for r in &indexes {
             let index = oid(r, "oid");
@@ -850,18 +855,33 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             let id = format!("index {}", r.text("name"));
             ids.class.insert(index, id.clone());
             let def = r.text("def").to_string();
-            let mut o = Object { id, kind: Some(Kind::Index), owner: Some(table.clone()), def: def.clone(), create: vec![def.clone()], drop: vec![format!("drop index {}", r.text("name"))], ..Object::default() };
+            let mut o = Object { id: id.clone(), kind: Some(Kind::Index), owner: Some(table.clone()), def: def.clone(), create: vec![def.clone()], drop: vec![format!("drop index {}", r.text("name"))], ..Object::default() };
             if r.flag("attached") {
-                o.extra.push(format!("rendering {def}"));
+                let made = if r.flag("valid") { def.replacen(" ON ONLY ", " ON ", 1) } else { def.clone() };
+                o.create = vec![made.clone()];
+                o.extra.push(format!("rendering {made}"));
+            }
+            // A partitioned table's index is valid once every partition's is attached to it: one the
+            // target has valid where this one isn't is made again, attaching them as it is made.
+            if r.flag("partitioned") && !r.flag("valid") {
+                o.def.push_str("\n(invalid)");
             }
             if let Some(parent) = r.get("parent").and_then(|p| p.parse::<u32>().ok()).and_then(|p| ids.class.get(&p).cloned()) {
                 let parent_name = parent.split_once(' ').map(|(_, n)| n.to_string()).unwrap_or_default();
                 o.def = format!("{def}\nattached to {parent_name}");
-                o.create.push(format!("alter index {parent_name} attach partition {}", r.text("name")));
                 o.extra.push(format!("attached to {parent_name}"));
                 o.goes_with = Some(parent.clone());
-                o.deps.insert(parent);
+                o.inline = true;
                 o.change = Change::Alter { blocks: false };
+                if r.flag("parent_valid") {
+                    if let Some(p) = s.objects.get_mut(&parent) {
+                        p.after.insert(id.clone());
+                    }
+                } else {
+                    o.create.push(format!("alter index {parent_name} attach partition {}", r.text("name")));
+                    o.deps.insert(parent);
+                    o.extra.push("attached by statement".into());
+                }
             }
             s.add(o);
         }
@@ -2578,7 +2598,9 @@ impl Alterer for PostgresAlterer {
                 // An index of a partition, alone, is attached to its table's index in place.
                 let attached = |o: &Object| o.extra.iter().find_map(|l| l.strip_prefix("attached to ")).map(String::from);
                 let plain = |o: &Object| bare(&o.def).split("\nattached to ").next().unwrap_or_default().to_string();
+                // Under an index the target has valid, the one made with it attaches it as it is made.
                 match (attached(from), attached(to)) {
+                    (None, Some(_)) if plain(from) == plain(to) && !to.extra.iter().any(|l| l == "attached by statement") => Some(vec![]),
                     (None, Some(parent)) if plain(from) == plain(to) => Some(vec![format!("alter index {parent} attach partition {}", to.id.strip_prefix("index ")?)]),
                     _ => None,
                 }
