@@ -1,5 +1,5 @@
-//! The request and response vocabulary every host speaks: the loader's `src/engine.ts`, the
-//! parity check's copy of it (`pg-extension/parity/engine.ts`), and the oracle.
+//! The request and response vocabulary every host speaks: the loader's `src/engine.ts` and the
+//! oracle.
 //!
 //! `analyze` is a replay: the host calls it with the answers it has, the engine either returns
 //! the analysis or the list of things it still needs — statements to describe, catalog queries
@@ -217,7 +217,7 @@ pub struct Analysis {
     /// The result key: output columns, by name, that identify each row of the result, since no two
     /// rows the statement returns agree on all of them (a NULL counting as equal to another NULL).
     /// Only for a result that can hold more than one row: `None` where the cardinality is `one` or
-    /// `maybeOne`, which says as much, and where no key is proven, which is always sound.
+    /// `at_most_one`, which says as much, and where no key is proven, which is always sound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<Vec<String>>,
     /// Every set of output columns no two rows agree on all of, as `key` is, none inside another,
