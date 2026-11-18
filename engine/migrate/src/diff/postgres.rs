@@ -689,7 +689,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             if unvalidated {
                 later.push(add_not_null.clone());
             }
-            if c.flag("local") || !partition {
+            // A column a table inherits is no part of its statement unless the table declares it
+            // too: a partition's, or an inheriting table's, comes from its parent.
+            if c.flag("local") {
                 col_defs.push(format!("{} {made}", c.text("name")));
             }
             let def = if unvalidated { format!("{full} not valid") } else { full.clone() };
@@ -703,7 +705,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     owner: Some(id.clone()),
                     def: def.clone(),
                     create: [Some(if kind == "c" { format!("alter type {name} add attribute {} {made}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }), unvalidated.then(|| add_not_null.clone())].into_iter().flatten().collect(),
-                    extra: c.get("nn_name").map(|n| format!("not null name {n}")).into_iter().chain(c.get("identity_name").map(|n| format!("{IDENTITY_SEQUENCE}{n}"))).chain((kind == "p").then(|| "partitioned".to_string())).collect(),
+                    extra: c
+                        .get("nn_name")
+                        .map(|n| format!("not null name {n}"))
+                        .into_iter()
+                        .chain(c.get("identity_name").map(|n| format!("{IDENTITY_SEQUENCE}{n}")))
+                        .chain((kind == "p").then(|| "partitioned".to_string()))
+                        .chain((!c.text("generated").is_empty()).then(|| super::GENERATED.to_string()))
+                        .collect(),
                     drop: vec![if kind == "c" { format!("alter type {name} drop attribute {}", c.text("name")) } else { format!("alter table {name} drop column {}", c.text("name")) }],
                     inline: true,
                     change: Change::Alter { blocks: true },
@@ -1467,6 +1476,18 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         });
     }
 
+    // A partition's copy of its parent's constraint is no object of its own, which Postgres makes
+    // and drops with the parent's, but a comment on it is: made again where the parent's is.
+    let mut copies: BTreeMap<u32, (String, String, u32)> = BTreeMap::new();
+    for r in db
+        .rows(
+            "select co.oid, format('%I.%I', n.nspname, c.relname) as rel, format('%I', co.conname) as name, co.conparentid as parent
+            from pg_constraint co join pg_class c on c.oid = co.conrelid join pg_namespace n on n.oid = c.relnamespace where not co.conislocal and co.conparentid <> 0",
+        )
+        .await?
+    {
+        copies.insert(oid(&r, "oid"), (r.text("rel").to_string(), r.text("name").to_string(), oid(&r, "parent")));
+    }
     // Comments on what is not a relation or a column, which are read with them.
     for r in db
         .rows(
@@ -1479,6 +1500,25 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         )
         .await?
     {
+        if let (Some((rel, name, parent)), Some(text)) = (copies.get(&oid(&r, "objoid")).filter(|_| r.text("cls") == "pg_constraint"), r.get("description")) {
+            let mut up = *parent;
+            while let Some((_, _, p)) = copies.get(&up) {
+                up = *p;
+            }
+            let Some(key) = ids.constraints.get(&up) else { continue };
+            s.add(Object {
+                id: format!("comment constraint {rel}.{name}"),
+                kind: Some(Kind::Comment),
+                owner: Some(format!("table {rel}")),
+                def: text.to_string(),
+                create: vec![format!("comment on constraint {name} on {rel} is {}", literal(text))],
+                drop: vec![format!("comment on constraint {name} on {rel} is null")],
+                deps: [key.clone()].into_iter().collect(),
+                change: Change::Alter { blocks: false },
+                ..Object::default()
+            });
+            continue;
+        }
         let Some(target) = ids.of(r.text("cls"), oid(&r, "objoid"), 0) else { continue };
         let (kind, name) = target.split_once(' ').unwrap_or_default();
         let on_table = |rest: &str| {
@@ -1697,10 +1737,27 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             o.extra.extend(lines);
         }
     }
-    // A view that names an enum's label uses it, as a default or a check does.
+    // What names an enum's label uses it, as a default or a check does: a view, a policy, a
+    // trigger's condition, an index's predicate, a function, and a partition's bound over a column
+    // of the type. A label added in the plan that one of them uses can't be added in place: Postgres
+    // refuses a value added in the transaction that uses it.
+    let enum_type = |d: &String| s.objects.get(d).is_some_and(|t| t.def.starts_with("enum ("));
     let mut uses: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for o in s.objects.values().filter(|o| o.kind == Some(Kind::View)) {
-        for t in o.deps.iter().filter(|d| s.objects.get(*d).is_some_and(|t| t.def.starts_with("enum ("))) {
+    let mut enums_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for o in s.objects.values() {
+        for t in o.deps.iter().filter(|d| enum_type(d)) {
+            if o.kind == Some(Kind::Column) {
+                if let Some(table) = &o.owner {
+                    enums_of.entry(table.clone()).or_default().insert(t.clone());
+                }
+            } else {
+                uses.entry(t.clone()).or_default().push(format!("{USES}{}", o.def.replace('\n', " ")));
+            }
+        }
+    }
+    for o in s.objects.values().filter(|o| o.kind == Some(Kind::Table)) {
+        let Some(parent) = o.def.lines().find_map(|l| l.strip_prefix("partition of ")).and_then(|l| l.split_once(' ')).map(|(p, _)| format!("table {p}")) else { continue };
+        for t in enums_of.get(&parent).into_iter().flatten() {
             uses.entry(t.clone()).or_default().push(format!("{USES}{}", o.def.replace('\n', " ")));
         }
     }
@@ -1732,6 +1789,25 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
     Ok(s)
+}
+
+/// A list of string literals, `'a', 'b, c'`, each as written: the commas inside a literal are its own.
+fn literal_list(list: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quoted) = (Vec::new(), String::new(), false);
+    for ch in list.chars() {
+        match ch {
+            '\'' => {
+                quoted = !quoted;
+                cur.push(ch);
+            }
+            ',' if !quoted => out.push(std::mem::take(&mut cur).trim().to_string()),
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
 }
 
 /// A qualified name's schema and name, as the reader writes them (`public."My Table"`).
@@ -2584,7 +2660,7 @@ impl Alterer for PostgresAlterer {
             }
             Kind::Type if to.def.starts_with("enum (") && from.def.starts_with("enum (") => {
                 // New labels only, the old ones kept in their order: each added beside its neighbour.
-                let labels = |def: &str| -> Vec<String> { def.trim_start_matches("enum (").trim_end_matches(')').split(", ").map(String::from).collect() };
+                let labels = |def: &str| -> Vec<String> { literal_list(def.trim_start_matches("enum (").trim_end_matches(')')) };
                 let (a, b) = (labels(&from.def), labels(&to.def));
                 let kept: Vec<&String> = b.iter().filter(|l| a.contains(l)).collect();
                 let name = to.id.strip_prefix("type ")?;
@@ -2842,6 +2918,11 @@ mod tests {
         assert_eq!(kind, "by default");
         assert_eq!(options.get("increment by").map(String::as_str), Some("10"));
         assert_eq!(options.get("minvalue").map(String::as_str), Some("-200"));
+    }
+
+    #[test]
+    fn reads_a_list_of_literals_with_commas_in_them() {
+        assert_eq!(literal_list("'a', 'b, c', 'it''s', 'd|e'"), vec!["'a'", "'b, c'", "'it''s'", "'d|e'"]);
     }
 
     #[test]

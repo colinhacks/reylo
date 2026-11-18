@@ -183,6 +183,9 @@ pub enum TypeClass {
     Other,
 }
 
+/// What a generated column's object carries, whose values are its expression's.
+pub const GENERATED: &str = "generated";
+
 /// What a change of a column's values from one type to another loses without failing, written
 /// after "which": None where every value is kept or the change fails on one it can't hold.
 pub fn narrowing(from: &TypeClass, to: &TypeClass) -> Option<String> {
@@ -766,7 +769,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             // never made again for it: it changes in place, as its own definition says, or the
             // drop fails on the database.
             if gone {
-                let holds_nothing = matches!(d.kind, Some(Kind::Constraint | Kind::Index | Kind::View | Kind::Trigger | Kind::Policy | Kind::Rule | Kind::Statistics | Kind::Function | Kind::Operator | Kind::Cast));
+                let holds_nothing = matches!(d.kind, Some(Kind::Constraint | Kind::Index | Kind::View | Kind::Trigger | Kind::Policy | Kind::Rule | Kind::Statistics | Kind::Function | Kind::Operator | Kind::Cast | Kind::Comment));
                 if owned || !holds_nothing || drops.contains(*dependent) || alters.contains_key(*dependent) || !to.objects.contains_key(*dependent) {
                     continue;
                 }
@@ -782,6 +785,17 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             // rebuilds an index or a constraint itself. A column of a type changed so changes
             // type too, and so blocks what is on it.
             if !replaced && d.kind == Some(Kind::Column) && !owned {
+                // A generated column reading the column is made again around the change, which
+                // the server refuses under it: it holds nothing of its own.
+                if d.extra.iter().any(|l| l == GENERATED) && to.objects.contains_key(*dependent) && !drops.contains(*dependent) {
+                    alters.remove(*dependent);
+                    drops.insert(dependent.to_string());
+                    creates.insert(dependent.to_string());
+                    if seen.insert(dependent.to_string()) {
+                        queue.push(dependent.to_string());
+                    }
+                    continue;
+                }
                 if seen.insert(dependent.to_string()) {
                     queue.push(dependent.to_string());
                 }
@@ -1041,7 +1055,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // A foreign table's rows are its server's.
                 let table = if o.kind == Some(Kind::Column) { o.owner.as_ref().and_then(|t| from.objects.get(t)) } else { Some(o) };
                 let foreign = table.is_some_and(|t| t.extra.iter().any(|l| l.starts_with("shape foreign")));
-                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign {
+                // A generated column's values are its expression's, which loses nothing.
+                let generated = o.extra.iter().any(|l| l == GENERATED);
+                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign && !generated {
                     plan.losses.push(id.clone());
                 }
                 plan.statements.extend(o.drop.clone());
