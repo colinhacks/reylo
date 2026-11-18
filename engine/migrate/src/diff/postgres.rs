@@ -2329,7 +2329,11 @@ impl Alterer for PostgresAlterer {
 
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
         let (a, b) = (parse_column(&from.def).ty, parse_column(&to.def).ty);
-        let why = super::narrowing(&type_class(&a), &type_class(&b))?;
+        // An array's elements change as values of their type do, a value made an array of one
+        // among them.
+        let element = |t: &str| t.strip_suffix("[]").unwrap_or(t).to_string();
+        let (x, y) = if b.ends_with("[]") { (element(&a), element(&b)) } else { (a.clone(), b.clone()) };
+        let why = super::narrowing(&type_class(&x), &type_class(&y))?;
         Some(format!("changes from {a} to {b}, which {why}"))
     }
 
@@ -2429,8 +2433,16 @@ impl Alterer for PostgresAlterer {
                     let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
                     let element = b.ty.strip_suffix("[]").filter(|_| !a.ty.ends_with("[]"));
                     if let Some(element) = element {
-                        // A value becomes an array of one element, and a null stays null.
-                        let value = if self.casts(&a.ty, element) { format!("{name}::{element}") } else { format!("{name}::text::{element}") };
+                        // A value becomes an array of one element, and a null stays null. Where the
+                        // server converts the value in assignment, it does here too, refusing one
+                        // the element's type can't hold rather than cutting it to fit.
+                        let value = if self.assigns(&a.ty, element) {
+                            name.clone()
+                        } else if self.casts(&a.ty, element) {
+                            format!("{name}::{element}")
+                        } else {
+                            format!("{name}::text::{element}")
+                        };
                         out.push(format!("{at} type {}{collate} using case when {name} is null then null else array[{value}] end", b.ty));
                     } else if self.assigns(&a.ty, &b.ty) {
                         out.push(format!("{at} type {}{collate}", b.ty));
@@ -2786,5 +2798,17 @@ mod tests {
         assert_eq!(kind, "by default");
         assert_eq!(options.get("increment by").map(String::as_str), Some("10"));
         assert_eq!(options.get("minvalue").map(String::as_str), Some("-200"));
+    }
+
+    #[test]
+    fn a_value_made_an_array_narrows_as_its_element_does() {
+        let alterer = PostgresAlterer { version: 180000, assignment: BTreeSet::new(), strings: BTreeSet::new(), explicit: BTreeSet::new() };
+        let column = |def: &str| Object { id: "column public.t.c".into(), kind: Some(Kind::Column), def: def.into(), ..Object::default() };
+        let narrows = |a: &str, b: &str| alterer.narrows(&column(a), &column(b));
+        assert!(narrows("timestamp without time zone", "date[]").is_some_and(|w| w.contains("keeps only the date")));
+        assert!(narrows("numeric", "numeric(5,1)[]").is_some_and(|w| w.contains("rounds to 1 decimal places")));
+        assert!(narrows("numeric[]", "numeric(5,1)[]").is_some());
+        assert_eq!(narrows("integer", "integer[]"), None);
+        assert_eq!(narrows("bytea", "bytea[]"), None);
     }
 }
