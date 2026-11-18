@@ -1814,10 +1814,11 @@ pub fn derived_renames(current: &Schema, target: &Schema, renamed: &[(String, St
             });
         }
         // Each identity's sequence, which Postgres names after the table and keeps through its
-        // rename, where the target's is named after the new one.
+        // rename, where the target's is named after the new one. A partition's identity is its
+        // parent's, with no sequence of its own.
         let old_rel = old_table.strip_prefix("table ").unwrap_or(old_table);
         let (schema, _) = last(old_rel);
-        for o in current.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(old_table.as_str()) && parse_column(&o.def).identity.is_some()) {
+        for o in current.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(old_table.as_str()) && parse_column(&o.def).identity.is_some() && !o.extra.iter().any(|l| l == "partition")) {
             let Some(column) = o.id.strip_prefix(&format!("column {old_rel}.")) else { continue };
             let Some(t) = target.objects.get(&format!("column {new_rel}.{column}")).filter(|t| parse_column(&t.def).identity.is_some()) else { continue };
             let column = column.strip_prefix('"').and_then(|c| c.strip_suffix('"')).map(|c| c.replace("\"\"", "\"")).unwrap_or_else(|| column.to_string());
@@ -2511,11 +2512,11 @@ impl Alterer for PostgresAlterer {
                 }
                 match (&a.identity, &b.identity) {
                     (None, Some(kind)) => {
-                        let kind = identity_sequence(to).map(|n| named_identity(kind, &n)).unwrap_or_else(|| kind.clone());
-                        out.push(format!("{at} add {kind}"));
+                        let named = identity_sequence(to).map(|n| named_identity(kind, &n)).unwrap_or_else(|| kind.clone());
+                        out.push(format!("{at} add {named}"));
                         // A new identity starts past the rows the table holds, or its first insert
                         // collides; one that counts down is left where it starts.
-                        let (_, options) = identity_parts(&kind);
+                        let (_, options) = identity_parts(kind);
                         let sequence = format!("pg_get_serial_sequence({}, {})", literal(&table), literal(&name.replace('"', "")));
                         match (options.get("increment by").map(|i| i.starts_with('-')), options.get("start with").or(options.get("minvalue"))) {
                             (Some(true), _) => {}
