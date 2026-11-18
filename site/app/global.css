@@ -866,59 +866,6 @@ a.reylo-compare-name:hover {
   color: var(--color-fd-error, #f85149);
 }
 
-/* The feature cards of Reylo Migrate's landing page (components/feature-cards.tsx). */
-.reylo-features {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-  margin: 1.5rem 0;
-}
-
-.reylo-feature {
-  border: 1px solid var(--color-fd-border);
-  border-radius: 0.75rem;
-  background: var(--color-fd-card);
-  padding: 1rem 1.1rem 1.1rem;
-}
-
-.reylo-feature-wide {
-  grid-column: 1 / -1;
-}
-
-.reylo-feature svg,
-.reylo-choice svg {
-  flex: none;
-  width: 1.125rem;
-  height: 1.125rem;
-  color: var(--color-fd-primary);
-}
-
-.reylo-feature-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0 -1.1rem 0.7rem;
-  padding: 0 1.1rem 0.75rem;
-  border-bottom: 1px solid var(--color-fd-border);
-  font-size: 0.9375rem;
-  font-weight: 600;
-  line-height: 1.35;
-  color: var(--color-fd-foreground);
-}
-
-.reylo-feature p,
-.reylo-choice p {
-  margin: 0;
-  font-size: 0.875rem;
-  line-height: 1.5;
-  color: var(--color-fd-muted-foreground);
-}
-
-.reylo-feature code,
-.reylo-choice code {
-  white-space: nowrap;
-}
-
 /* A figure's caption (components/migrations-diagram.tsx): one line under it, centred. */
 #nd-page .prose .reylo-figure-caption {
   margin-top: 0.75rem;
@@ -926,100 +873,6 @@ a.reylo-compare-name:hover {
   font-size: 0.875rem;
   line-height: 1.5;
   color: var(--color-fd-muted-foreground);
-}
-
-/* A choice between two ways (components/feature-cards.tsx): a card two columns wide, its name
-   over the two ways, and an "or" on the seam between them, which lies across it on a phone. */
-.reylo-choice {
-  grid-column: 1 / -1;
-  border: 1px solid var(--color-fd-border);
-  border-radius: 0.75rem;
-  background: var(--color-fd-card);
-}
-
-.reylo-choice > .reylo-feature-title {
-  margin: 0;
-  padding: 1rem 1.1rem 0.75rem;
-}
-
-.reylo-choice-ways {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-}
-
-.reylo-choice-way {
-  position: relative;
-  padding: 0.85rem 1.1rem 1.1rem;
-}
-
-/* The two ways keep clear of the "or" on the seam between them. */
-.reylo-choice-way:first-child {
-  padding-right: 1.6rem;
-}
-
-.reylo-choice-way + .reylo-choice-way {
-  padding-left: 1.6rem;
-}
-
-.reylo-choice-way + .reylo-choice-way {
-  border-left: 1px solid var(--color-fd-border);
-}
-
-.reylo-choice-way-title {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 0.45rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  line-height: 1.35;
-  color: var(--color-fd-foreground);
-}
-
-.reylo-choice-or {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  transform: translate(-50%, -50%);
-  display: grid;
-  place-items: center;
-  width: 1.65rem;
-  height: 1.65rem;
-  border: 1px solid var(--color-fd-border);
-  border-radius: 999px;
-  background: var(--color-fd-card);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.6875rem;
-  line-height: 1;
-  color: var(--color-fd-muted-foreground);
-}
-
-@media (max-width: 639px) {
-  .reylo-features {
-    grid-template-columns: 1fr;
-  }
-
-  .reylo-choice-ways {
-    grid-template-columns: 1fr;
-  }
-
-  .reylo-choice-way:first-child {
-    padding-right: 1.1rem;
-    padding-bottom: 1.4rem;
-  }
-
-  .reylo-choice-way + .reylo-choice-way {
-    border-left: 0;
-    border-top: 1px solid var(--color-fd-border);
-    padding-top: 1.5rem;
-    padding-left: 1.1rem;
-  }
-
-  .reylo-choice-or {
-    top: 0;
-    left: 50%;
-  }
 }
 
 /* The vertical stepper (components/steps.tsx): a numbered dot per step, joined by a line. */
@@ -1236,18 +1089,18 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 }
 
 /* ── Reylo Migrate's landing page (components/migrate-landing.tsx) ─────────────
-   A page of its own at /migrate, outside the docs' layout: a nav, a split hero (the headline and
-   install command left, a schema change and the terminal that migrates it right), the feature
-   cards, and a foot. The editor and the terminal stay dark on either theme, as an editor and a
-   terminal are. */
+   A page of its own at /migrate, outside the docs' layout: a nav; a type-led hero, the mark large
+   and faint behind it; one row per feature, its words beside a terminal or an editor, the sides
+   alternating; an install line again; and a foot. The editors and terminals stay dark on either
+   theme, as an editor and a terminal are. */
 .ml {
-  --ml-y: var(--color-fd-primary);
   --ml-win: hsl(0 0% 8.5%);
   --ml-win-bar: hsl(0 0% 9.5%);
   --ml-win-border: hsl(0 0% 17%);
   --ml-win-fg: hsl(0 0% 86%);
   --ml-win-dim: hsl(0 0% 45%);
   min-height: 100vh;
+  overflow-x: clip;
   background: var(--color-fd-background);
   color: var(--color-fd-foreground);
   font-family: var(--font-text);
@@ -1258,11 +1111,25 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   font-size: 0.88em;
 }
 
-.ml-nav {
-  max-width: 1344px;
-  height: 4rem;
+.ml p code {
+  padding: 0.08em 0.35em;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.375rem;
+  background: var(--color-fd-secondary);
+}
+
+.ml-nav,
+.ml-hero,
+.ml-row,
+.ml-end,
+.ml-foot {
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 0 3rem;
+  padding-inline: 3rem;
+}
+
+.ml-nav {
+  height: 4rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1273,7 +1140,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   align-items: center;
   gap: 0.625rem;
   font: 600 1rem/1 'Orbitron', var(--font-text);
-  color: var(--ml-y);
+  color: var(--color-fd-primary);
 }
 
 .ml-brand svg {
@@ -1293,90 +1160,91 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   color: var(--color-fd-foreground);
 }
 
+/* The hero: the words left, the mark large and faint on the right, behind them. */
 .ml-hero {
   position: relative;
-  max-width: 1344px;
-  margin: 0 auto;
-  padding: 4.5rem 3rem 6rem;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 640px;
-  gap: 3.5rem;
-  align-items: center;
+  padding-top: 6rem;
+  padding-bottom: 7rem;
 }
 
-.dark .ml-hero::before {
-  content: '';
+.ml-ghost {
   position: absolute;
-  right: -10%;
-  top: -10%;
-  width: 70%;
-  height: 120%;
-  background: radial-gradient(closest-side, rgb(251 196 14 / 0.09), transparent 70%);
+  top: 7rem;
+  right: -2rem;
+  width: 34rem;
+  height: auto;
+  color: var(--color-fd-primary);
+  opacity: 0.08;
   pointer-events: none;
 }
 
-.ml-copy {
+.ml-eyebrow {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  font: 600 0.8125rem/1 'Orbitron', var(--font-text);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-fd-primary);
+}
+
+.ml-eyebrow svg {
+  height: 0.875rem;
+  width: auto;
 }
 
 .ml-h1 {
-  margin: 0 0 1.5rem;
-  font-size: 4rem;
+  position: relative;
+  max-width: 13ch;
+  margin: 1.75rem 0 2rem;
+  font-size: 6.25rem;
   font-weight: 600;
-  line-height: 1.04;
-  letter-spacing: -0.025em;
+  line-height: 0.98;
+  letter-spacing: -0.04em;
   text-wrap: balance;
 }
 
+.dark .ml-h1 {
+  color: hsl(0 0% 98%);
+}
+
+.ml-h1 em {
+  font-style: normal;
+  color: var(--color-fd-primary);
+}
+
 .ml-lede {
-  max-width: 31rem;
-  margin: 0 0 2.5rem;
-  font-size: 1.25rem;
+  position: relative;
+  max-width: 38rem;
+  margin: 0 0 2.75rem;
+  font-size: 1.375rem;
   line-height: 1.55;
   color: var(--color-fd-muted-foreground);
   text-wrap: pretty;
 }
 
-.ml-actions {
-  display: flex;
-  align-items: flex-end;
-  gap: 1.375rem;
-  flex-wrap: wrap;
-}
-
 .ml-install {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  position: relative;
 }
 
-.ml-seg {
+.ml-big {
   display: flex;
-  gap: 0.25rem;
-  font-size: 0.8125rem;
-}
-
-.ml-seg button {
-  padding: 0.1875rem 0.5625rem;
-  border-radius: 0.375rem;
-  color: var(--color-fd-muted-foreground);
-}
-
-.ml-seg button.on {
-  color: var(--color-fd-foreground);
-  background: var(--color-fd-secondary);
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
 }
 
 .ml-cmd {
   display: inline-flex;
   align-items: center;
-  gap: 0.75rem;
-  height: 3rem;
-  padding: 0 0.5rem 0 1.125rem;
+  gap: 1rem;
+  height: 4rem;
+  padding: 0 0.625rem 0 1.5rem;
   border: 1px solid var(--color-fd-border);
-  border-radius: 0.75rem;
+  border-radius: 0.875rem;
   background: var(--color-fd-card);
-  font: 500 0.9375rem/1 var(--font-code);
+  font: 500 1.25rem/1 var(--font-code);
   white-space: nowrap;
 }
 
@@ -1388,8 +1256,8 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 .ml-copybtn {
   display: grid;
   place-items: center;
-  width: 2.125rem;
-  height: 2.125rem;
+  width: 2.625rem;
+  height: 2.625rem;
   border-radius: 0.5rem;
   color: var(--color-fd-muted-foreground);
 }
@@ -1414,10 +1282,11 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  height: 3rem;
-  padding: 0 1.25rem;
+  height: 4rem;
+  padding: 0 1.5rem;
   border: 1px solid var(--color-fd-border);
-  border-radius: 0.75rem;
+  border-radius: 0.875rem;
+  font-size: 1.0625rem;
   font-weight: 500;
 }
 
@@ -1425,11 +1294,69 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   background: var(--color-fd-accent);
 }
 
-.ml-stage {
-  position: relative;
-  height: 516px;
+.ml-alt {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  color: var(--color-fd-muted-foreground);
 }
 
+.ml-alt button {
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.3125rem;
+  font: 0.84rem var(--font-code);
+  color: var(--color-fd-muted-foreground);
+}
+
+.ml-alt button:hover,
+.ml-alt button.on {
+  color: var(--color-fd-foreground);
+  background: var(--color-fd-secondary);
+}
+
+/* A feature row: the words in one column, what it does in the other, the sides alternating. */
+.ml-row {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  align-items: center;
+  gap: 5rem;
+  padding-block: 5.5rem;
+}
+
+.ml-flip {
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+}
+
+.ml-flip .ml-row-text {
+  order: 2;
+}
+
+.ml-row-text h2,
+.ml-end h2 {
+  margin: 0 0 1.25rem;
+  font-size: 2.75rem;
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.ml-row-text p,
+.ml-end p {
+  margin: 0;
+  font-size: 1.1875rem;
+  line-height: 1.6;
+  color: var(--color-fd-muted-foreground);
+  text-wrap: pretty;
+}
+
+.ml-row-visual {
+  min-width: 0;
+}
+
+/* Windows: an editor or a terminal, with a title bar. */
 .ml-win {
   border: 1px solid var(--ml-win-border);
   border-radius: 0.875rem;
@@ -1472,29 +1399,92 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   background: hsl(0 0% 20%);
 }
 
-.ml-editor {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 1;
-  width: 420px;
-}
-
+/* A terminal holds the height of its whole session, so the row never grows as it plays. */
 .ml-terminal {
-  position: absolute;
-  top: 196px;
-  right: 0;
-  z-index: 2;
-  width: 610px;
-  height: 320px;
+  min-height: 0;
 }
 
 .ml-code,
-.ml-term {
+.ml-term,
+.ml-sql {
   margin: 0;
   font: 400 0.84rem/1.7 var(--font-code);
   font-variant-ligatures: none;
   white-space: pre;
+  overflow-x: auto;
+}
+
+.ml-term {
+  display: grid;
+  padding: 1.125rem 1.25rem 1.25rem;
+  line-height: 1.62;
+}
+
+.ml-ln {
+  min-height: 1.62em;
+}
+
+.ml-ps {
+  color: var(--ml-win-dim);
+}
+
+.ml-c {
+  color: hsl(0 0% 98%);
+}
+
+.ml-ok {
+  color: hsl(150 40% 60%);
+}
+
+.ml-er {
+  color: hsl(2 70% 68%);
+}
+
+.ml-wn {
+  color: #fbc40e;
+}
+
+.ml-mu {
+  color: hsl(0 0% 63%);
+}
+
+.ml-kw {
+  color: #f97583;
+}
+
+.ml-ty {
+  color: #9ecbff;
+}
+
+.ml-cur {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.15em;
+  margin-left: 1px;
+  vertical-align: -0.2em;
+  background: #fbc40e;
+  animation: ml-blink 1s steps(1) infinite;
+}
+
+@keyframes ml-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* The first row: the editor, and the terminal under it overlapping its corner. */
+.ml-pair {
+  position: relative;
+}
+
+.ml-editor {
+  width: 72%;
+}
+
+.ml-under {
+  position: relative;
+  z-index: 1;
+  margin: -1.5rem 0 0 14%;
 }
 
 .ml-code {
@@ -1534,86 +1524,55 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   visibility: hidden;
 }
 
-.ml-term {
-  padding: 1.125rem 1.25rem 1.25rem;
-  line-height: 1.62;
+/* The second row: the kinds as tabs over an editor. */
+.ml-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--ml-win-border);
 }
 
-.ml-ln {
-  min-height: 1.62em;
-}
-
-.ml-ps {
-  color: var(--ml-win-dim);
-}
-
-.ml-c {
-  color: hsl(0 0% 98%);
-}
-
-.ml-ok {
-  color: hsl(150 40% 60%);
-}
-
-.ml-mu {
+.ml-tabs button {
+  /* The label sat 0.84px high in its box (optical-spacing's ink-align.mjs, 2026-11-17). */
+  padding: calc(0.3125rem + 0.4px) 0.625rem calc(0.3125rem - 0.4px);
+  border-radius: 0.4375rem;
+  font-size: 0.8125rem;
   color: hsl(0 0% 63%);
 }
 
-.ml-kw {
-  color: #f97583;
+.ml-tabs button:hover {
+  color: hsl(0 0% 92%);
 }
 
-.ml-ty {
-  color: #9ecbff;
+.ml-tabs button.on {
+  background: hsl(0 0% 14%);
+  color: hsl(0 0% 98%);
 }
 
-.ml-cur {
-  display: inline-block;
-  width: 0.6em;
-  height: 1.15em;
-  margin-left: 1px;
-  vertical-align: -0.2em;
-  background: #fbc40e;
-  animation: ml-blink 1s steps(1) infinite;
+.ml-sql {
+  min-height: 11rem;
+  padding: 1.25rem 1.375rem;
 }
 
-@keyframes ml-blink {
-  50% {
-    opacity: 0;
-  }
+.ml-end {
+  padding-block: 6rem 7rem;
+  text-align: center;
 }
 
-.ml-features {
-  max-width: 1344px;
-  margin: 0 auto;
-  padding: 4rem 3rem 5rem;
-  border-top: 1px solid var(--color-fd-border);
+.ml-end p {
+  margin-bottom: 2.25rem;
 }
 
-.ml-features .reylo-features {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 1rem;
-  margin: 0;
-}
-
-.ml-features .reylo-choice {
-  grid-column: span 3;
-}
-
-.ml-features .reylo-feature {
-  grid-column: span 2;
-}
-
-.ml-features .reylo-feature:nth-last-child(-n + 2) {
-  grid-column: span 3;
+.ml-end .ml-big,
+.ml-end .ml-alt {
+  justify-content: center;
 }
 
 .ml-foot {
-  max-width: 1344px;
-  margin: 0 auto;
-  padding: 2rem 3rem 3rem;
   display: flex;
   gap: 1.75rem;
+  padding-block: 2rem 3rem;
   border-top: 1px solid var(--color-fd-border);
   font-size: 0.875rem;
   color: var(--color-fd-muted-foreground);
@@ -1623,50 +1582,55 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   margin-left: auto;
 }
 
-@media (max-width: 1199px) {
-  .ml-hero {
+@media (max-width: 1023px) {
+  .ml-h1 {
+    font-size: 4.5rem;
+  }
+
+  .ml-ghost {
+    display: none;
+  }
+
+  .ml-row,
+  .ml-flip {
     grid-template-columns: minmax(0, 1fr);
+    gap: 2.5rem;
+    padding-block: 3.5rem;
   }
 
-  .ml-stage {
-    width: 640px;
-    max-width: 100%;
-  }
-
-  .ml-features .reylo-features {
-    grid-template-columns: 1fr;
-  }
-
-  .ml-features .reylo-features > * {
-    grid-column: auto !important;
+  .ml-flip .ml-row-text {
+    order: 0;
   }
 }
 
 @media (max-width: 699px) {
   .ml-nav,
   .ml-hero,
-  .ml-features,
+  .ml-row,
+  .ml-end,
   .ml-foot {
     padding-inline: 1.25rem;
   }
 
   .ml-h1 {
-    font-size: 2.75rem;
+    font-size: 3rem;
   }
 
-  .ml-stage {
-    height: auto;
+  .ml-row-text h2,
+  .ml-end h2 {
+    font-size: 2rem;
   }
 
-  .ml-editor,
-  .ml-terminal {
-    position: static;
+  .ml-cmd {
+    font-size: 0.95rem;
+  }
+
+  .ml-editor {
     width: auto;
   }
 
-  .ml-terminal {
-    height: 300px;
-    margin-top: 1rem;
+  .ml-under {
+    margin: 1rem 0 0;
   }
 
   .ml-foot {
@@ -1674,26 +1638,18 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   }
 }
 
-.dark .ml-h1 {
-  color: hsl(0 0% 98%);
+/* The whole session, drawn invisibly, and the session so far over it in the same cell. */
+.ml-hold,
+.ml-live {
+  grid-area: 1 / 1;
 }
 
-/* Each icon beside a label, levelled by its ink against the label's cap band, as optical-spacing's
-   ink-align.mjs measured them on /migrate (2026-11-17): the cards' icons sat 0.31px low against
-   their 15px titles, the split icon of "Explicit drops" 0.69px; the docs link's arrow 0.38px high;
-   the editor bar's file icon 0.38px low. A transform moves no layout. */
-.reylo-feature-title svg {
-  translate: 0 -0.3px;
+.ml-hold {
+  visibility: hidden;
 }
 
-.reylo-feature-title svg[data-icon='split'] {
-  translate: 0 -0.7px;
-}
-
-.ml-docs svg {
-  translate: 0 0.375px;
-}
-
+/* The file icon in an editor's bar sat 0.63px high against the file name's cap band
+   (optical-spacing's ink-align.mjs, 2026-11-17). A transform moves no layout. */
 .ml-bar svg {
-  translate: 0 -0.375px;
+  translate: 0 0.625px;
 }
