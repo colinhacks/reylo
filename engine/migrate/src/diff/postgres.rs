@@ -844,6 +844,19 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // partition has none for is made on the table alone (`on only`), and each partition's index is
     // attached to it after. A partition's index goes with its table's, and a partition made by the
     // plan takes its table's indexes with it.
+    // A parent whose partition holds another index like the one attached to it is made on its
+    // table alone, and that one attached by name: made on the table, it would attach either.
+    let unnamed = |r: &Row| {
+        let bare = super::last_written(r.text("name"));
+        r.text("def").replacen(&format!(" INDEX {bare} ON "), " INDEX ON ", 1)
+    };
+    let mut by_name_only: BTreeSet<String> = BTreeSet::new();
+    for r in indexes.iter().filter(|r| r.get("parent").is_some()) {
+        if indexes.iter().any(|o| o.text("rel") == r.text("rel") && o.text("oid") != r.text("oid") && unnamed(o) == unnamed(r)) {
+            by_name_only.insert(r.text("parent").to_string());
+        }
+    }
+    let valid = |index: &str| indexes.iter().find(|r| r.text("oid") == index).is_some_and(|r| r.flag("valid")) && !by_name_only.contains(index);
     for pass in [false, true] {
         for r in &indexes {
             let index = oid(r, "oid");
@@ -857,7 +870,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             let def = r.text("def").to_string();
             let mut o = Object { id: id.clone(), kind: Some(Kind::Index), owner: Some(table.clone()), def: def.clone(), create: vec![def.clone()], drop: vec![format!("drop index {}", r.text("name"))], ..Object::default() };
             if r.flag("attached") {
-                let made = if r.flag("valid") { def.replacen(" ON ONLY ", " ON ", 1) } else { def.clone() };
+                let made = if valid(r.text("oid")) { def.replacen(" ON ONLY ", " ON ", 1) } else { def.clone() };
                 o.create = vec![made.clone()];
                 o.extra.push(format!("rendering {made}"));
             }
@@ -873,7 +886,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 o.goes_with = Some(parent.clone());
                 o.inline = true;
                 o.change = Change::Alter { blocks: false };
-                if r.flag("parent_valid") {
+                if valid(r.text("parent")) {
                     if let Some(p) = s.objects.get_mut(&parent) {
                         p.after.insert(id.clone());
                     }

@@ -818,7 +818,13 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
         apart.extend(from.objects.values().filter(|o| o.owner.as_deref() == Some(kept.id.as_str()) && drops.contains(&o.id)).map(|o| o.id.clone()));
     }
     let dropped_with_owner = |id: &str| !apart.contains(id) && owners(from, id).iter().any(|o| drops.contains(*o));
-    let created_with_owner = |id: &str| to.objects[id].inline && to.objects[id].owner.as_deref().is_some_and(|o| creates.contains(o));
+    // What goes with another object is made with its owner only where that one is there already:
+    // a new partition takes its table's indexes then, while a partition's index under an index the
+    // plan makes too is made by name, before that one attaches it.
+    let created_with_owner = |id: &str| {
+        let o = &to.objects[id];
+        o.inline && o.owner.as_deref().is_some_and(|w| creates.contains(w)) && o.goes_with.as_deref().is_none_or(|g| !creates.contains(g))
+    };
 
     let mut ops: Vec<Op> = Vec::new();
     for id in &drops {
