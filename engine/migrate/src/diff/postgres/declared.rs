@@ -724,7 +724,8 @@ pub(super) fn apply(schema: &mut Schema, declared: &Declared) {
         }
         match o.kind {
             Some(Kind::Column) => {
-                let old = bare(&o.def).to_string();
+                // As the column's statements write it: an unvalidated not null is the table's to say.
+                let old = bare(&o.def).trim_end_matches(" not valid").to_string();
                 let mut c = parse_column(&old);
                 let mut extra = Vec::new();
                 if let (Some(_), Some(text)) = (&c.default, declared.expressions.get(&format!("default {}", o.id))) {

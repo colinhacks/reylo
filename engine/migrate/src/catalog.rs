@@ -388,6 +388,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
               concat_ws(' ', case when a.attstorage <> t.typstorage then 'storage=' || a.attstorage::text end, case when a.attcompression <> '' then 'compression=' || a.attcompression::text end,
                 case when coalesce(a.attstattarget, -1) >= 0 then 'statistics=' || a.attstattarget end) as settings,
               exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.connoinherit and nn.conkey = array[a.attnum]) as noinherit,
+              exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and not nn.convalidated and nn.conkey = array[a.attnum]) as nn_invalid,
               (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
                  from aclexplode(a.attacl) x where x.grantee <> c.relowner) as acl
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
@@ -404,6 +405,10 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         let mut parts = vec![format!("column {column} {}", r.text("type"))];
         if r.flag("notnull") {
             parts.push(if r.flag("noinherit") { "not null no inherit".into() } else { "not null".into() });
+            // Postgres 18's not null left unvalidated against the rows.
+            if r.flag("nn_invalid") {
+                parts.push("not valid".into());
+            }
         }
         let options = r.get("identity_options").map(|o| format!(" ({o})")).unwrap_or_default();
         match (r.text("identity"), r.text("generated")) {

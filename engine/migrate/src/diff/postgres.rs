@@ -574,7 +574,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select a.attrelid as rel, a.attnum as num, format('%I', a.attname) as name, format_type(a.atttypid, a.atttypmod) as type, a.attnotnull as notnull,
               pg_get_expr(d.adbin, d.adrelid) as def, d.oid as defoid, a.attidentity as identity, {} as identity_options, a.attgenerated as generated, a.attislocal as local,
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
-              col_description(a.attrelid, a.attnum) as comment, {} as noinherit, {} as acl,
+              col_description(a.attrelid, a.attnum) as comment, {} as nn_valid, {} as acl,
               case when a.attstorage <> t.typstorage then case a.attstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end end as storage,
               case t.typstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end as type_storage,
               case a.attcompression when 'p' then 'pglz' when 'l' then 'lz4' end as compression,
@@ -586,7 +586,12 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             // Postgres 18 records a column's NOT NULL as a constraint, which may be kept from the
             // table's children (NO INHERIT).
             crate::catalog::identity_options("a"),
-            if version >= 180000 { "coalesce((select co.connoinherit from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), false)" } else { "false" },
+            if version >= 180000 {
+                "coalesce((select co.connoinherit from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), false) as noinherit,
+                  coalesce((select co.convalidated from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), true)"
+            } else {
+                "false as noinherit, true"
+            },
             acl("a.attacl", 'c', "c.relowner"),
             not_extension("pg_class", "c"),
             not_platform("c.relowner")
@@ -648,10 +653,12 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             if matches!(kind, "v" | "m") {
                 continue;
             }
-            let def = column_def(c, kind == "c");
+            let made = column_def(c, kind == "c");
             if c.flag("local") || !partition {
-                col_defs.push(format!("{} {def}", c.text("name")));
+                col_defs.push(format!("{} {made}", c.text("name")));
             }
+            // A not null left unvalidated (Postgres 18), which no column definition can write.
+            let def = if c.flag("notnull") && !c.flag("nn_valid") { format!("{made} not valid") } else { made.clone() };
             if c.flag("local") {
                 let caution = (c.flag("notnull") && c.get("def").is_none() && c.text("identity").is_empty() && kind != "c")
                     .then(|| format!("{} is not null with no default, so adding it fails on a table that has rows: give it a default, or add it nullable, fill it, then set not null", c.text("name")));
@@ -661,7 +668,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     kind: Some(Kind::Column),
                     owner: Some(id.clone()),
                     def: def.clone(),
-                    create: vec![if kind == "c" { format!("alter type {name} add attribute {} {def}", c.text("name")) } else { format!("alter table {name} add column {} {def}", c.text("name")) }],
+                    create: vec![if kind == "c" { format!("alter type {name} add attribute {} {made}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }],
                     drop: vec![if kind == "c" { format!("alter type {name} drop attribute {}", c.text("name")) } else { format!("alter table {name} drop column {}", c.text("name")) }],
                     inline: true,
                     change: Change::Alter { blocks: true },
@@ -1934,11 +1941,17 @@ struct Column {
     not_null: bool,
     /// Its NOT NULL kept from the table's children.
     no_inherit: bool,
+    /// Its NOT NULL not validated against the rows (Postgres 18).
+    not_valid: bool,
 }
 
 fn parse_column(def: &str) -> Column {
     let mut c = Column::default();
     let mut rest = bare(def).to_string();
+    if let Some(r) = rest.strip_suffix(" not valid") {
+        c.not_valid = true;
+        rest = r.to_string();
+    }
     if let Some(r) = rest.strip_suffix(" no inherit") {
         c.no_inherit = true;
         rest = r.to_string();
@@ -2167,7 +2180,13 @@ impl Alterer for PostgresAlterer {
             _ => (String::new(), String::new()),
         };
         match to.kind? {
-            Kind::Column if to.owner.as_deref().is_some_and(|o| o.starts_with("type ")) => None,
+            // A composite type's attribute takes another type in place.
+            Kind::Column if to.owner.as_deref().is_some_and(|o| o.starts_with("type ")) => {
+                let b = parse_column(&to.def);
+                let ty = to.owner.as_deref()?.strip_prefix("type ")?;
+                let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
+                Some(vec![format!("alter type {ty} alter attribute {name} type {}{collate}", b.ty)])
+            }
             // A partition's column changes with its parent's.
             Kind::Column if to.extra.iter().any(|l| l == "partition") => Some(vec![]),
             Kind::Column => {
@@ -2282,7 +2301,7 @@ impl Alterer for PostgresAlterer {
                 if a.not_null && (!b.not_null || a.no_inherit != b.no_inherit) {
                     out.push(format!("{at} drop not null"));
                 }
-                if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit) && !not_null_done {
+                if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit || (a.not_valid && !b.not_valid)) && !not_null_done {
                     out.push(if b.no_inherit { format!("alter table {table} add not null {name} no inherit") } else { format!("{at} set not null") });
                 }
                 Some(out)

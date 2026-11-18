@@ -788,7 +788,12 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     // An object goes with its owner: a dropped table's columns need no statement of their own, and
     // a created table's inline columns neither, unless the drops depend on each other in a circle
     // that dropping one of them first breaks.
-    let apart = drops_apart(from, &drops);
+    let mut apart = drops_apart(from, &drops);
+    // An object the target keeps that would go with one it drops (a sequence a dropped table's
+    // column owns) is cut loose first: what ties it there goes on its own, before that drop.
+    for kept in from.objects.values().filter(|o| o.goes_with.is_some() && !drops.contains(&o.id) && owners(from, &o.id).iter().any(|w| drops.contains(*w))) {
+        apart.extend(from.objects.values().filter(|o| o.owner.as_deref() == Some(kept.id.as_str()) && drops.contains(&o.id)).map(|o| o.id.clone()));
+    }
     let dropped_with_owner = |id: &str| !apart.contains(id) && owners(from, id).iter().any(|o| drops.contains(*o));
     let created_with_owner = |id: &str| to.objects[id].inline && to.objects[id].owner.as_deref().is_some_and(|o| creates.contains(o));
 
