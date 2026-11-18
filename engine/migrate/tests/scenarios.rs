@@ -2752,6 +2752,10 @@ mod adversarial {
     pub async fn a_role_that_is_no_superuser_runs_every_command(mut p: P) {
         p.exec("do $$ begin create role madv_hosted login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
         p.exec(&format!("alter database {} owner to madv_hosted", p.name)).await;
+        // A shadow another role's run left on the server, which this role may not drop.
+        let theirs = format!("reylo_shadow_theirs{}", COUNTER.fetch_add(1, Ordering::Relaxed));
+        p.exec(&format!("create database {theirs}")).await;
+        let admin = p.url.clone();
         p.url = as_role(&p.url, "madv_hosted");
         p.exec("create table users (id int primary key)").await;
         let opts = p.opts();
@@ -2765,6 +2769,9 @@ mod adversarial {
         assert_eq!(p.status().await, 0, "{}", p.peek());
         p.schema(&format!("{}\nalter table posts add column title text;\n", std::fs::read_to_string(p.dir.join("schema.sql")).unwrap()));
         assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        let mut db = Db::connect(&admin, &p.dir).await.unwrap();
+        let _ = db.exec(&format!("drop database if exists {theirs}")).await;
+        db.close().await;
     }
 
     /// A role that may not create a database (PlanetScale's, some managed ones') can make no shadow:
