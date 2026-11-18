@@ -10,12 +10,11 @@ import { CodeCopyButton } from './code-copy';
 import { CodeTabs } from './code-tabs';
 import { Details } from './details';
 import { Heading } from './heading';
-import { LandingEnd } from './landing';
 
 /**
  * The MDX components every page gets: Fumadocs' defaults; headings with the link icon in the left
  * margin and the copy-as-Markdown button (./heading.tsx); accordions whose closed items are in the
- * HTML (./accordion.tsx); Fumadocs' tabs, every panel rendered; the quiet `<Details>`; `<LandingEnd>`, the rule that ends a one-page site's landing (./landing.tsx); the callout
+ * HTML (./accordion.tsx); Fumadocs' tabs, every panel rendered; the quiet `<Details>`; the callout
  * with its header bar (./callout.tsx); code-tab groups that put a shared file name at the end of the
  * strip (./code-tabs.tsx); and Twoslash's popups, opening fast. A site spreads its own components
  * over these (its variant tabs, its agent card with its title, its figures).
@@ -36,7 +35,6 @@ export function docsMdxComponents(components?: MDXComponents) {
     Accordions,
     Callout,
     Details,
-    LandingEnd,
     Tab: (props: ComponentProps<typeof Tab>) => <Tab forceMount {...props} />,
     Tabs,
     CodeBlockTabs: CodeTabs,

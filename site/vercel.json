@@ -126,7 +126,7 @@
       }
     },
     {
-      "src": "^/(typescript|rust|inference|configuration|migrate|compare|faq|postgres|mysql|sqlite|prisma)$",
+      "src": "^/(typescript|rust|inference|configuration|compare|faq|postgres|mysql|sqlite|prisma)$",
       "has": [
         {
           "type": "header",
@@ -135,6 +135,21 @@
         }
       ],
       "dest": "/$1.md",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept"
+      }
+    },
+    {
+      "src": "^/migrate/docs$",
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "^(?!.*text/html.*text/(?:x-)?markdown).*text/(?:x-)?markdown.*$"
+        }
+      ],
+      "dest": "/migrate.md",
       "headers": {
         "Content-Type": "text/markdown; charset=utf-8",
         "Vary": "Accept"
@@ -154,7 +169,7 @@
     },
     {
       "source": "/migrations",
-      "destination": "/migrate",
+      "destination": "/migrate/docs",
       "permanent": true
     },
     {

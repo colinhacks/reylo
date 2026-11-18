@@ -4,7 +4,6 @@ import type { ReactNode } from 'react';
 import { CompareTable } from './compare-table';
 import { Completion } from './completion';
 import { Dialect, DialectSwitch, DialectTabs } from './dialect-tabs';
-import { Choice, Feature, Features, Way } from './feature-cards';
 import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
@@ -47,11 +46,6 @@ export function getMDXComponents(components?: MDXComponents) {
     LanguageSwitch,
     LanguagePanels,
     LanguagePanel,
-    // The cards under /migrate's title (components/feature-cards.tsx).
-    Features,
-    Feature,
-    Choice,
-    Way,
     // The vertical stepper on /migrate (components/steps.tsx).
     Steps,
     Step,

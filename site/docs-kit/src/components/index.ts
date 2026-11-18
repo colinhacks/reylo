@@ -5,6 +5,5 @@ export { CodeTabs } from './code-tabs';
 export { CopyAgentPrompt } from './copy-agent-prompt';
 export { Details } from './details';
 export { Heading } from './heading';
-export { LandingEnd } from './landing';
 export { docsMdxComponents } from './mdx';
 export { Variant, VariantSwitch, VariantTabs } from './variant-tabs';

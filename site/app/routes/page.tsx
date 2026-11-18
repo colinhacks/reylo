@@ -9,7 +9,7 @@ import { HeroTitle } from '@/components/hero';
 import { getMDXComponents } from '@/components/mdx';
 import { HeroActions } from '@/components/hero';
 import { loadPage } from '@/lib/content';
-import { compareTitle, docsTitle, githubUrl, markdownPath, pageGroups, pageLinks, pageTitle, siteTitle, siteUrl } from '@/lib/layout.shared';
+import { compareTitle, docsTitle, docsUrl, githubUrl, migrateDocsUrl, markdownPath, pageGroups, pageLinks, pageTitle, siteTitle, siteUrl } from '@/lib/layout.shared';
 import { movedAnchorsScript } from '@/lib/moved-anchors';
 import { ogAlt, ogSize } from '@/lib/og';
 import { source } from '@/lib/source';
@@ -33,8 +33,9 @@ const CENTERED: Record<string, string> = {
  * (lib/content.ts). The link preview's URL carries a hash of the text of the image's route, so that
  * a change to the card changes the URL and the caches of X and Slack fetch the new card.
  */
-export async function loader({ params }: Route.LoaderArgs) {
-  const slug = params.slug ?? '';
+export async function loader({ params, request }: Route.LoaderArgs) {
+  // Reylo Migrate's docs have an address of their own, /migrate/docs (app/routes.ts).
+  const slug = params.slug ?? (new URL(request.url).pathname.replace(/\/$/, '') === migrateDocsUrl ? 'migrate' : '');
   const page = source.getPage(slug ? [slug] : []);
   if (!page) throw new Response('Not found', { status: 404 });
   const card = await readFile('app/routes/opengraph-image.tsx');
@@ -44,7 +45,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   return {
     slug,
     path: page.path,
-    url: page.url,
+    url: docsUrl(page.url),
     title: page.data.title,
     description: page.data.description ?? '',
     tree: source.getPageTree(),
@@ -114,7 +115,7 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
   const files = use(loadPage(path));
   const components = getMDXComponents(slug === '' ? { HeroActions: () => <HeroActions agentPrompt={agentPrompt} /> } : undefined);
   const main = slug === '';
-  // Reylo Migrate is a site of its own, on one page: its own title, as the main page's is, and no
+  // Reylo Migrate's docs are a site of their own, on one page under its landing page (/migrate): no
   // list of the docs' pages, so docs-kit draws its table of contents on the left.
   const standalone = STANDALONE.has(slug);
   // A page named for a file (`.reylo.yaml`) is titled in code, as the list writes it.
@@ -134,7 +135,7 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       // The tree's names are the pages' titles, plain strings, so it reaches the browser as it is
       // (Fumadocs' serializer would wrap each name in a span of its own).
       tree={tree as Root}
-      title={main || standalone ? <HeroTitle>{title}</HeroTitle> : code ? <code>{title}</code> : title}
+      title={main ? <HeroTitle>{title}</HeroTitle> : code ? <code>{title}</code> : title}
       // An h4 (Usage's database under `.run()`) stays on the page but out of the table.
       // A page with one heading or none has no table of contents: a column listing one entry tells the
       // reader nothing.

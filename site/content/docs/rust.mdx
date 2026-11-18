@@ -557,7 +557,7 @@ let ran = reylo::migrate!().run(&pool).await?;
 
 The macro compiles your project's migrations into the crate, with their lock and `reylo/schema.sql`. Then `.run()` does what `reylo migrate deploy` does, on the pool's database: it runs each locked migration the database hasn't, in order, each in a transaction with its row in the history table.
 
-It refuses, running nothing, where the [command](/migrate#cli-reylo-migrate) would: on a draft the lock doesn't list yet, a migration edited since the database ran it, or a schema changed by hand since the last deploy. Its error says why, with the fix, as the command prints it.
+It refuses, running nothing, where the [command](/migrate/docs#cli-reylo-migrate) would: on a draft the lock doesn't list yet, a migration edited since the database ran it, or a schema changed by hand since the last deploy. Its error says why, with the fix, as the command prints it.
 
 A migration that fails rolls back with its row, and those before it stay applied: the error's `.applied()` lists them.
 

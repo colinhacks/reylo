@@ -43,7 +43,7 @@ const icons: Record<string, ReactNode> = {
   ),
 };
 
-/** The cards that list a page's features under its title: two across, one on a phone. */
+/** The cards that list Reylo Migrate's features on its landing page (components/migrate-landing.tsx). */
 export function Features({ children }: { children: ReactNode }) {
   return <div className="reylo-features">{children}</div>;
 }
@@ -53,12 +53,12 @@ function named(text: string): ReactNode {
   return text.split('`').map((part, k) => (k % 2 ? <code key={k}>{part}</code> : part));
 }
 
-/** A feature that is a choice between two ways: a card two columns wide, its name over the two ways, an "or" on the seam between them. lib/markdown.ts writes it as a list item. */
+/** A feature that is a choice between two ways: a card two columns wide, its name over the two ways, an "or" on the seam between them. */
 export function Choice({ icon, title, children }: { icon: keyof typeof icons; title: string; children: ReactNode }) {
   return (
     <div className="reylo-choice">
       <div className="reylo-feature-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-icon={icon}>
           {icons[icon]}
         </svg>
         {title}
@@ -83,12 +83,12 @@ export function Way({ title, or, children }: { title: string; or?: boolean; chil
   );
 }
 
-/** One feature: an icon and a name on one line, then a sentence or two; `wide` spans both columns. lib/markdown.ts writes it as a list item. */
+/** One feature: an icon and a name on one line, then a sentence or two; `wide` spans the row. */
 export function Feature({ icon, title, wide, children }: { icon: keyof typeof icons; title: string; wide?: boolean; children: ReactNode }) {
   return (
     <div className={wide ? 'reylo-feature reylo-feature-wide' : 'reylo-feature'}>
       <div className="reylo-feature-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-icon={icon}>
           {icons[icon]}
         </svg>
         {title}
