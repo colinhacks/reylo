@@ -60,7 +60,9 @@ pub fn elsewhere(args: &[String]) -> Option<i32> {
 }
 
 /// The nearest `Cargo.lock` at or above `dir`, and the version it locks the `reylo` crate at, where
-/// it locks one from a registry or git, the newest where it locks several.
+/// it locks one from a registry or git, the newest where it locks several. A `version` that is not
+/// one Cargo writes ([`is_version`]) locks nothing: it names the cache directory and the release
+/// whose binary runs, and a path there would run whatever file it reaches.
 fn locked(dir: &Path) -> Option<(PathBuf, String)> {
     let lock = dir.ancestors().map(|d| d.join("Cargo.lock")).find(|p| p.is_file())?;
     let text = std::fs::read_to_string(&lock).ok()?;
@@ -68,11 +70,23 @@ fn locked(dir: &Path) -> Option<(PathBuf, String)> {
     for package in text.split("[[package]]").skip(1) {
         let field = |key: &str| package.lines().find_map(|l| l.trim().strip_prefix(key)?.trim().strip_prefix('=')?.trim().strip_prefix('"')?.strip_suffix('"').map(str::to_string));
         if field("name").as_deref() == Some("reylo") && field("source").is_some() {
-            found.extend(field("version"));
+            found.extend(field("version").filter(|v| is_version(v)));
         }
     }
     found.sort_by(|a, b| numbers(a).cmp(&numbers(b)));
     Some((lock, found.pop()?))
+}
+
+/// Whether `version` is a version as Cargo writes one: three numbers between dots, then a
+/// pre-release or build part of letters, digits, `.`, `-` and `+`. So it is one name in a directory
+/// and one segment of a URL, never a path.
+fn is_version(version: &str) -> bool {
+    let (core, rest) = match version.find(['-', '+']) {
+        Some(at) => version.split_at(at),
+        None => (version, ""),
+    };
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
 }
 
 /// A version's numbers, to order versions by; a pre-release's suffix ranks it with its release.
@@ -172,7 +186,7 @@ fn run(binary: &Path, args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{locked, numbers};
+    use super::{is_version, locked, numbers};
 
     #[test]
     fn a_projects_lock_names_the_version_it_runs() {
@@ -191,5 +205,27 @@ mod tests {
         assert_eq!(locked(&nested), None);
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(numbers("0.10.0") > numbers("0.9.1"));
+    }
+
+    #[test]
+    fn a_version_that_is_a_path_locks_nothing() {
+        let dir = std::env::temp_dir().join(format!("reylo-matched-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = |version: &str| format!("[[package]]\nname = \"reylo\"\nversion = \"{version}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n");
+        // A path in place of the version would be joined to the cache directory and run from there.
+        for version in ["/tmp/payload", "../../payload", "0.8.2/../../payload", "C:\\payload", "0.8", "0.8.x", ""] {
+            assert!(!is_version(version), "{version}");
+            std::fs::write(dir.join("Cargo.lock"), lock(version)).unwrap();
+            assert_eq!(locked(&dir), None, "{version}");
+        }
+        for version in ["0.8.2", "0.8.0-beta.0", "1.0.0-rc.1+build.5", "10.20.30"] {
+            assert!(is_version(version), "{version}");
+            std::fs::write(dir.join("Cargo.lock"), lock(version)).unwrap();
+            assert_eq!(locked(&dir).map(|(_, v)| v), Some(version.to_string()), "{version}");
+        }
+        // One the lock holds beside a real version is passed over, not run.
+        std::fs::write(dir.join("Cargo.lock"), format!("{}{}", lock("0.8.2"), lock("9.9.9/../../payload"))).unwrap();
+        assert_eq!(locked(&dir).map(|(_, v)| v), Some("0.8.2".to_string()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
