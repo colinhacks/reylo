@@ -165,7 +165,10 @@ async fn postgres() {
                 *t = new.clone();
             }
         }
+        // The plan runs in one transaction, as a migration and a push run it: what Postgres
+        // refuses within one (a label added and used) fails here too.
         let mut failed = None;
+        from.exec("begin").await.unwrap();
         for s in &moves {
             if let Err(e) = from.exec(s).await {
                 failed = Some(format!("{s}: {e}"));
@@ -179,6 +182,11 @@ async fn postgres() {
                 failed = Some(format!("{s}: {e}"));
                 break;
             }
+        }
+        if failed.is_some() {
+            from.exec("rollback").await.unwrap();
+        } else if let Err(e) = from.exec("commit").await {
+            failed = Some(format!("commit: {e}"));
         }
         plan.statements.splice(0..0, moves);
         let text = plan.sql();
