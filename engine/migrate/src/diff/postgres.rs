@@ -304,7 +304,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select t.oid, format('%I.%I', n.nspname, t.typname) as name, t.typtype as kind,
               format('%s', (select json_agg(e.enumlabel order by e.enumsortorder) from pg_enum e where e.enumtypid = t.oid)) as labels,
               case when t.typtype = 'd' then format_type(t.typbasetype, t.typtypmod) end as base, t.typnotnull as notnull, t.typdefault as def,
-              (select string_agg(format(' constraint %I %s', c.conname, pg_get_constraintdef(c.oid)), '' order by c.conname) from pg_constraint c where c.contypid = t.oid and c.contype = 'c') as checks,
+              (select string_agg(format(' constraint %I %s', c.conname, pg_get_constraintdef(c.oid)), '' order by c.conname) from pg_constraint c where c.contypid = t.oid and c.contype = 'c' and c.convalidated) as checks,
+
               format('%s', (select json_agg(json_build_array(format('%I', c.conname), pg_get_constraintdef(c.oid)) order by c.conname) from pg_constraint c where c.contypid = t.oid and c.contype = 'c')) as checklist,
               case when t.typtype = 'd' and t.typcollation <> 0 and t.typcollation <> (select b.typcollation from pg_type b where b.oid = t.typbasetype)
                 then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = t.typcollation) end as collation,
@@ -323,6 +324,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let name = r.text("name");
         let id = format!("type {name}");
         ids.types.insert(oid(&r, "oid"), id.clone());
+        // A domain's checks left unvalidated, which no `create domain` can make.
+        let unvalidated: Vec<(String, String)> = serde_json::from_str::<Vec<(String, String)>>(r.text("checklist")).unwrap_or_default().into_iter().filter(|(_, d)| d.ends_with(" NOT VALID")).collect();
         let (def, create, change) = match r.text("kind") {
             "e" => {
                 let labels: Vec<String> = serde_json::from_str(r.text("labels")).unwrap_or_default();
@@ -339,7 +342,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     if r.flag("notnull") { " not null" } else { "" },
                     r.text("checks")
                 );
-                (def.clone(), format!("create {}", def.replacen("domain ", &format!("domain {name} as "), 1)), Change::Alter { blocks: false })
+                let unvalidated: String = unvalidated.iter().map(|(n, d)| format!(" constraint {n} {d}")).collect();
+                (format!("{def}{unvalidated}"), format!("create {}", def.replacen("domain ", &format!("domain {name} as "), 1)), Change::Alter { blocks: false })
             }
             _ => (format!("range ({})", r.text("range")), format!("create type {name} as range ({})", r.text("range")), Change::Replace),
         };
@@ -372,7 +376,16 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 extra.push(format!("{}|{}|{}|{}", c.text("rel"), c.text("col"), c.text("type"), c.text("def")));
             }
         }
-        s.add(Object { id, kind: Some(Kind::Type), def, create: vec![create], drop: vec![format!("drop type {name}")], change, extra, ..Object::default() });
+        // A check left unvalidated is added after the domain is made, which can't take one.
+        let mut create = vec![create];
+        create.extend(unvalidated.iter().map(|(n, d)| format!("alter domain {name} add constraint {n} {d}")));
+        s.add(Object { id, kind: Some(Kind::Type), def, create, drop: vec![format!("drop type {name}")], change, extra, ..Object::default() });
+    }
+    // A domain's checks are the domain's: what they call, it depends on.
+    for r in db.rows("select co.oid, co.contypid from pg_constraint co where co.contypid <> 0").await? {
+        if let Some(t) = ids.types.get(&oid(&r, "contypid")).cloned() {
+            ids.constraints.insert(oid(&r, "oid"), t);
+        }
     }
 
     // Sequences not owned by an identity column; the column a sequence is owned by is an object
@@ -492,7 +505,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select co.oid, co.conindid, format('%I.%I', n.nspname, c.relname) as rel, c.oid as reloid, format('%I', co.conname) as name,
               pg_get_constraintdef(co.oid, false) as def, co.condeferrable as deferrable, co.condeferred as deferred, co.convalidated as validated, co.contype as type
             from pg_constraint co join pg_class c on c.oid = co.conrelid join pg_namespace n on n.oid = c.relnamespace
-            where co.contype <> 'n' and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}",
+            where co.contype not in ('n', 't') and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}",
             not_platform("c.relowner"),
             not_extension("pg_constraint", "co")
         ))
@@ -665,14 +678,15 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         // A table's own properties change in place; a view or a composite type is replaced.
         let change = if object_kind == Kind::Table { Change::Alter { blocks: false } } else { Change::Replace };
         s.add(Object { id: id.clone(), kind: Some(object_kind), def, create: vec![create], drop: vec![drop], change, extra, ..Object::default() });
-        if r.flag("rls") {
+        // Row-level security, enabled, forced on the table's owner, or both: each is set on its own.
+        if r.flag("rls") || r.flag("force") {
             s.add(Object {
                 id: format!("rls {name}"),
                 kind: Some(Kind::Rls),
                 owner: Some(id.clone()),
-                def: if r.flag("force") { "force".into() } else { String::new() },
-                create: [Some(format!("alter table {name} enable row level security")), r.flag("force").then(|| format!("alter table {name} force row level security"))].into_iter().flatten().collect(),
-                drop: vec![format!("alter table {name} disable row level security"), format!("alter table {name} no force row level security")],
+                def: [r.flag("rls").then_some("enable"), r.flag("force").then_some("force")].into_iter().flatten().collect::<Vec<_>>().join(" "),
+                create: [r.flag("rls").then(|| format!("alter table {name} enable row level security")), r.flag("force").then(|| format!("alter table {name} force row level security"))].into_iter().flatten().collect(),
+                drop: [r.flag("rls").then(|| format!("alter table {name} disable row level security")), r.flag("force").then(|| format!("alter table {name} no force row level security"))].into_iter().flatten().collect(),
                 change: Change::Alter { blocks: false },
                 ..Object::default()
             });
@@ -746,15 +760,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select p.oid, p.prokind as kind, {} as acl, format('%s', p.oid::regprocedure) as ident, format('%I.%I', n.nspname, p.proname) as qname, pg_get_function_result(p.oid) as result, pg_get_function_arguments(p.oid) as args,
               case when p.prokind <> 'a' then pg_get_functiondef(p.oid) end as def,
-              case when p.prokind = 'a' then (select concat_ws(', ', 'sfunc = ' || format('%s', a.aggtransfn::regproc), 'stype = ' || format_type(a.aggtranstype, null),
-                  case when a.aggfinalfn <> 0 then 'finalfunc = ' || format('%s', a.aggfinalfn::regproc) end,
-                  case when a.aggcombinefn <> 0 then 'combinefunc = ' || format('%s', a.aggcombinefn::regproc) end,
-                  case when a.agginitval is not null then 'initcond = ' || quote_literal(a.agginitval) end,
-                  case when a.aggsortop <> 0 then 'sortop = ' || format('%s', a.aggsortop::regoperator) end)
-                from pg_aggregate a where a.aggfnoid = p.oid) end as agg
+              case when p.prokind = 'a' then ({}) end as agg
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace
             where p.prokind in ('f', 'p', 'w', 'a') and {ns} and {} and {} and not {}",
             acl_in("p.proacl", 'f', "p.proowner", Some("p.pronamespace")),
+            crate::catalog::aggregate_options("p"),
             not_extension("pg_proc", "p"),
             not_platform("p.proowner"),
             made_with("pg_proc", "p")
@@ -769,9 +779,12 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "a" => "aggregate",
             _ => "function",
         };
+        // An aggregate of no arguments is written `(*)` wherever it is named.
+        let star = |text: &str| if word == "aggregate" && text.ends_with("()") { format!("{}(*)", &text[..text.len() - 2]) } else { text.to_string() };
         let (def, create) = if word == "aggregate" {
             let def = format!("aggregate ({})", r.text("agg"));
-            (def, format!("create aggregate {}({}) ({})", r.text("qname"), r.text("args"), r.text("agg")))
+            let args = if r.text("args").is_empty() { "*" } else { r.text("args") };
+            (def, format!("create aggregate {}({args}) ({})", r.text("qname"), r.text("agg")))
         } else {
             let text = r.text("def").trim().to_string();
             (text.clone(), text)
@@ -783,7 +796,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             // alterer decides.
             def: format!("{def}\n-- result {}; arguments {}", r.text("result"), r.text("args")),
             create: vec![create],
-            drop: vec![format!("drop {word} {ident}")],
+            drop: vec![format!("drop {word} {}", star(&ident))],
             change: Change::Alter { blocks: false },
             ..Object::default()
         });
@@ -1126,19 +1139,21 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
 
     // Publications: what each publishes, from the tables and schemas it names.
     // Postgres 15 publishes some of a table's columns, its rows that match a filter, and schemas.
-    let (columns, schemas) = if version >= 150000 {
+    // The columns a table's list names, by name, which a publication depends on.
+    let (columns, schemas, listed) = if version >= 150000 {
         (
             "coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = c.oid and a.attnum = any(pr.prattrs::int2[])) || ')', '') || coalesce(' where (' || pg_get_expr(pr.prqual, c.oid) || ')', '')",
             "(select json_agg(format('%I', n.nspname) order by n.nspname) from pg_publication_namespace pn join pg_namespace n on n.oid = pn.pnnspid where pn.pnpubid = p.oid)",
+            "coalesce((select json_agg(format('%I', a.attname)) from pg_attribute a where a.attrelid = c.oid and a.attnum = any(pr.prattrs::int2[])), '[]'::json)",
         )
     } else {
-        ("''", "null::json")
+        ("''", "null::json", "'[]'::json")
     };
     for r in db
         .rows(&format!(
             "select format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root,
               concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end) as publish,
-              format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}) order by 1) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
+              format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}, {listed}) order by 1) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
               format('%s', {schemas}) as schemas
             from pg_publication p where {}",
             not_platform("p.pubowner")
@@ -1146,14 +1161,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .await?
     {
         let name = r.text("name");
-        let tables: Vec<(String, String)> = serde_json::from_str(r.text("tables")).unwrap_or_default();
+        let tables: Vec<(String, String, Vec<String>)> = serde_json::from_str(r.text("tables")).unwrap_or_default();
         let in_schemas: Vec<String> = serde_json::from_str(r.text("schemas")).unwrap_or_default();
         let mut what = Vec::new();
         if r.flag("all_tables") {
             what.push("all tables".to_string());
         }
         if !tables.is_empty() {
-            what.push(format!("table {}", tables.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(", ")));
+            what.push(format!("table {}", tables.iter().map(|(_, t, _)| t.as_str()).collect::<Vec<_>>().join(", ")));
         }
         if !in_schemas.is_empty() {
             what.push(format!("tables in schema {}", in_schemas.join(", ")));
@@ -1170,8 +1185,12 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             if what.is_empty() { String::new() } else { format!(" for {}", what.join(", ")) },
             if with.is_empty() { String::new() } else { format!(" with ({})", with.join(", ")) }
         );
-        let deps = tables.iter().map(|(t, _)| format!("table {t}")).chain(in_schemas.iter().map(|n| format!("schema {n}"))).collect();
-        let mut objects: Vec<String> = tables.iter().map(|(_, t)| format!("table {t}")).collect();
+        let deps = tables
+            .iter()
+            .flat_map(|(t, _, listed)| std::iter::once(format!("table {t}")).chain(listed.iter().map(move |c| format!("column {t}.{c}"))))
+            .chain(in_schemas.iter().map(|n| format!("schema {n}")))
+            .collect();
+        let mut objects: Vec<String> = tables.iter().map(|(_, t, _)| format!("table {t}")).collect();
         objects.extend(in_schemas.iter().map(|n| format!("tables in schema {n}")));
         let extra = vec![format!("all {}", r.flag("all_tables")), format!("objects {}", objects.join(", ")), format!("with {}", with.join(", ")), format!("publish {}", r.text("publish"))];
         // After the tables it names, among the last objects made.
@@ -1201,11 +1220,15 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     {
         let Some(target) = ids.of(r.text("cls"), oid(&r, "objoid"), 0) else { continue };
         let (kind, name) = target.split_once(' ').unwrap_or_default();
-        let on_table = |rest: &str| rest.rsplit_once('.').map(|(table, name)| format!("{name} on {table}"));
+        let on_table = |rest: &str| {
+            let name = super::last_written(rest);
+            rest.strip_suffix(name.as_str()).and_then(|t| t.strip_suffix('.')).map(|table| format!("{name} on {table}"))
+        };
         let on = match (r.text("cls"), kind) {
             ("pg_namespace", "schema") => Some(format!("schema {name}")),
             ("pg_type", "type") if r.text("typtype") == "d" => Some(format!("domain {name}")),
             ("pg_type", "type") => Some(format!("type {name}")),
+            ("pg_proc", "function") if r.text("prokind") == "a" && name.ends_with("()") => Some(format!("aggregate {}(*)", &name[..name.len() - 2])),
             ("pg_proc", "function") => Some(format!("{} {name}", match r.text("prokind") { "p" => "procedure", "a" => "aggregate", _ => "function" })),
             ("pg_constraint", "constraint") => on_table(name).map(|n| format!("constraint {n}")),
             ("pg_trigger", "trigger") => on_table(name).map(|n| format!("trigger {n}")),
@@ -1295,7 +1318,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // What each object depends on, as the server records it.
     for r in db
         .rows(
-            "select format('%s', d.classid::regclass) as cls, d.objid, d.objsubid, format('%s', d.refclassid::regclass) as rcls, d.refobjid, d.refobjsubid
+            "select format('%s', d.classid::regclass) as cls, d.objid, d.objsubid, format('%s', d.refclassid::regclass) as rcls, d.refobjid, d.refobjsubid, d.deptype
             from pg_depend d where d.deptype in ('n', 'a') and d.objid >= 16384 and d.refobjid >= 16384",
         )
         .await?
@@ -1303,7 +1326,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let from = ids.of(r.text("cls"), oid(&r, "objid"), r.text("objsubid").parse().unwrap_or(0));
         let to = ids.of(r.text("rcls"), oid(&r, "refobjid"), r.text("refobjsubid").parse().unwrap_or(0));
         if let (Some(from), Some(to)) = (from, to) {
-            if from != to {
+            // A sequence a column owns goes with the column, which its owner object says, while the
+            // column's default uses the sequence: made first, and dropped after the default goes.
+            let owned_by = r.text("deptype") == "a" && from.starts_with("sequence ") && to.starts_with("column ");
+            if from != to && !owned_by {
                 if let Some(o) = s.objects.get_mut(&from) {
                     o.deps.insert(to);
                 }
@@ -1317,6 +1343,33 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         if let Some(owner) = o.owner.clone() {
             if tables.contains(&owner) && o.kind == Some(Kind::Column) {
                 o.deps.retain(|d| !d.starts_with(&format!("column {}.", owner.trim_start_matches("table "))) && *d != owner);
+            }
+        }
+    }
+    // A check that calls a function of its own table's row can't be made with the table, before the
+    // function: it is added after both.
+    let late: Vec<(String, String)> = s
+        .objects
+        .values()
+        .filter(|o| o.kind == Some(Kind::Constraint) && o.inline)
+        .filter(|o| {
+            let table = o.owner.clone().unwrap_or_default();
+            o.deps.iter().any(|d| d.starts_with("function ") && s.objects.get(d).is_some_and(|f| f.deps.contains(&table)))
+        })
+        .map(|o| (o.id.clone(), o.owner.clone().unwrap_or_default()))
+        .collect();
+    for (id, table) in late {
+        let Some(o) = s.objects.get_mut(&id) else { continue };
+        o.inline = false;
+        let line = o.create.first().and_then(|c| c.split_once(" add ")).map(|(_, l)| l.to_string()).unwrap_or_default();
+        if let Some(t) = s.objects.get_mut(&table) {
+            if let Some(create) = t.create.first_mut() {
+                for (from, to) in [(format!("\n  {line},"), String::new()), (format!(",\n  {line}\n"), "\n".to_string())] {
+                    if create.contains(&from) {
+                        *create = create.replacen(&from, &to, 1);
+                        break;
+                    }
+                }
             }
         }
     }
@@ -2087,9 +2140,17 @@ impl Alterer for PostgresAlterer {
                 }
                 Some(out)
             }
-            Kind::Rls => {
+            Kind::Rls if to.id.starts_with("rls ") => {
                 let name = to.id.strip_prefix("rls ")?;
-                Some(vec![if to.def == "force" { format!("alter table {name} force row level security") } else { format!("alter table {name} no force row level security") }])
+                let has = |o: &Object, what: &str| o.def.split(' ').any(|w| w == what);
+                let mut out = Vec::new();
+                if has(from, "enable") != has(to, "enable") {
+                    out.push(format!("alter table {name} {} row level security", if has(to, "enable") { "enable" } else { "disable" }));
+                }
+                if has(from, "force") != has(to, "force") {
+                    out.push(format!("alter table {name} {} row level security", if has(to, "force") { "force" } else { "no force" }));
+                }
+                Some(out)
             }
             Kind::Comment => Some(to.create.clone()),
             Kind::Function => {

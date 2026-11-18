@@ -583,13 +583,13 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
 
     for r in db
         .rows(&format!(
-            "select format('aggregate %s sfunc=%s stype=%s%s%s kind=%s', p.oid::regprocedure, a.aggtransfn::regproc, format_type(a.aggtranstype, null),
-              coalesce(' initcond=' || a.agginitval, ''), case when a.aggfinalfn <> 0 then ' final=' || format('%s', a.aggfinalfn::regproc) else '' end, a.aggkind) as line
+            "select format('aggregate %s (%s) kind=%s', p.oid::regprocedure, ({}), a.aggkind) as line
             from pg_aggregate a join pg_proc p on p.oid = a.aggfnoid join pg_namespace n on n.oid = p.pronamespace
             where {ns} and {} and {}
             union all select 'rule ' || pg_get_ruledef(r.oid, false) from pg_rewrite r join pg_class c on c.oid = r.ev_class join pg_namespace n on n.oid = c.relnamespace
             where r.rulename <> '_RETURN' and {ns} and {}
             union all select 'statistics ' || pg_get_statisticsobjdef(s.oid) from pg_statistic_ext s join pg_namespace n on n.oid = s.stxnamespace where {ns} and {}",
+            aggregate_options("p"),
             not_extension("pg_proc", "p"),
             not_platform("p.proowner"),
             not_platform("c.relowner"),
@@ -749,6 +749,37 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         }
     }
     Ok(lines)
+}
+
+/// An aggregate's options as `create aggregate` writes them, every one the server keeps: SQL that
+/// gives them as one string for the aggregate whose `pg_proc` row is `proc`.
+pub(crate) fn aggregate_options(proc: &str) -> String {
+    let modify = |column: &str| format!("case {column} when 'r' then 'read_only' when 's' then 'shareable' else 'read_write' end");
+    format!(
+        "select concat_ws(', ', 'sfunc = ' || format('%s', a.aggtransfn::regproc), 'stype = ' || format_type(a.aggtranstype, null),
+            case when a.aggtransspace <> 0 then 'sspace = ' || a.aggtransspace end,
+            case when a.aggfinalfn <> 0 then 'finalfunc = ' || format('%s', a.aggfinalfn::regproc) end,
+            case when a.aggfinalextra then 'finalfunc_extra' end,
+            case when a.aggfinalfn <> 0 then 'finalfunc_modify = ' || {} end,
+            case when a.aggcombinefn <> 0 then 'combinefunc = ' || format('%s', a.aggcombinefn::regproc) end,
+            case when a.aggserialfn <> 0 then 'serialfunc = ' || format('%s', a.aggserialfn::regproc) end,
+            case when a.aggdeserialfn <> 0 then 'deserialfunc = ' || format('%s', a.aggdeserialfn::regproc) end,
+            case when a.agginitval is not null then 'initcond = ' || quote_literal(a.agginitval) end,
+            case when a.aggmtransfn <> 0 then 'msfunc = ' || format('%s', a.aggmtransfn::regproc) end,
+            case when a.aggminvtransfn <> 0 then 'minvfunc = ' || format('%s', a.aggminvtransfn::regproc) end,
+            case when a.aggmtranstype <> 0 then 'mstype = ' || format_type(a.aggmtranstype, null) end,
+            case when a.aggmtransspace <> 0 then 'msspace = ' || a.aggmtransspace end,
+            case when a.aggmfinalfn <> 0 then 'mfinalfunc = ' || format('%s', a.aggmfinalfn::regproc) end,
+            case when a.aggmfinalextra then 'mfinalfunc_extra' end,
+            case when a.aggmfinalfn <> 0 then 'mfinalfunc_modify = ' || {} end,
+            case when a.aggminitval is not null then 'minitcond = ' || quote_literal(a.aggminitval) end,
+            case when a.aggsortop <> 0 then 'sortop = ' || (select format('operator(%I.%s)', sn.nspname, so.oprname) from pg_operator so join pg_namespace sn on sn.oid = so.oprnamespace where so.oid = a.aggsortop) end,
+            case {proc}.proparallel when 's' then 'parallel = safe' when 'r' then 'parallel = restricted' end,
+            case when a.aggkind = 'h' then 'hypothetical' end)
+          from pg_aggregate a where a.aggfnoid = {proc}.oid",
+        modify("a.aggfinalmodify"),
+        modify("a.aggmfinalmodify")
+    )
 }
 
 /// What a Postgres schema holds that Reylo reads by name alone, so that a change to its definition is
