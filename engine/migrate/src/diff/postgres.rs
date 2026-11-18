@@ -846,11 +846,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // plan takes its table's indexes with it.
     // A parent whose partition holds another index like the one attached to it is made on its
     // table alone, and that one attached by name: made on the table, it would attach either.
-    // Postgres matches them without their names or storage options.
-    static OPTIONS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" WITH \([^)]*\)").expect("a valid pattern"));
+    // Postgres matches them without their names, storage options, sort order or nulls placement.
+    static LOOSE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" WITH \([^)]*\)| DESC\b| ASC\b| NULLS (FIRST|LAST)\b").expect("a valid pattern"));
     let unnamed = |r: &Row| {
         let bare = super::last_written(r.text("name"));
-        OPTIONS.replace_all(&r.text("def").replacen(&format!(" INDEX {bare} ON "), " INDEX ON ", 1), "").into_owned()
+        LOOSE.replace_all(&r.text("def").replacen(&format!(" INDEX {bare} ON "), " INDEX ON ", 1), "").into_owned()
     };
     let mut by_name_only: BTreeSet<String> = BTreeSet::new();
     for r in indexes.iter().filter(|r| r.get("parent").is_some()) {
