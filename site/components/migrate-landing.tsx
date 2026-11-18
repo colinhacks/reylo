@@ -40,57 +40,51 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </header>
 
       <Row n={1} title="The world's most advanced multi-dialect diff engine" visual={<SchemaToMigration />}>
-        <p>
-          Edit <code>schema.sql</code> and run one command. Reylo Migrate compares what your migrations make with what you declared, on Postgres, MySQL and SQLite, and writes the difference as plain SQL, yours to read and edit.
-        </p>
+        <p>Edit <code>schema.sql</code> and run one command. Reylo Migrate writes the difference as plain SQL, on Postgres, MySQL and SQLite.</p>
       </Row>
 
       <Row n={2} title="Use the full power of your database" visual={<SchemaKinds />} flip>
-        <p>Enums, domains, generated columns, exclusion constraints, partial indexes, materialized views, functions, triggers, row level security and grants, declared as you would on the database itself.</p>
+        <p>Views, functions, triggers, policies, checks and computed columns. Declare them as you would on the database itself.</p>
       </Row>
 
       <Row n={3} title="Elegantly unambiguous" visual={<Term lines={RENAMES} />}>
-        <p>
-          Where a change could be a rename or a drop, Reylo Migrate asks you to say which: <code>--rename</code> keeps the rows, and <code>--drop</code> lets them go.
-        </p>
+        <p>When a change could be a rename or a drop, you say which. A rename keeps the rows, and a drop lets them go.</p>
       </Row>
 
       <Row n={4} title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
-        <p>
-          A push takes your development database to <code>schema.sql</code> as you edit, with <code>--watch</code> on every save, and the migration comes when the change is right.
-        </p>
+        <p>Push <code>schema.sql</code> to your development database on every save. Write the migration once the change is right.</p>
       </Row>
 
-      <Row n={5} title="Schemaless mode" visual={<Term lines={SCHEMALESS} />}>
-        <p>
-          Delete <code>schema.sql</code>, and your migrations are your schema. Write each one by hand, or change your development database and let Reylo Migrate write what it has that your migrations don't.
-        </p>
+      <Row n={5} title="A database per branch" visual={<BranchConfig />}>
+        <p>Your project file can run a command. Point each git branch at a development database of its own.</p>
       </Row>
 
-      <Row n={6} title="A lockfile for one history" visual={<LockFile />} flip>
-        <p>
-          The lock lists your migrations in order, each line's checksum chained to the one before. Two branches that each add a migration conflict in git, before anything deploys.
-        </p>
+      <Row n={6} title="Schemaless mode" visual={<Term lines={SCHEMALESS} />} flip>
+        <p>Delete <code>schema.sql</code>, and your migrations are your schema. Write them by hand, or from changes to your development database.</p>
       </Row>
 
-      <Row n={7} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />}>
-        <p>Delete the lock, and migrations run in name order. A migration that sorts before one a database already ran is replayed in both orders on a shadow database, and refused where the two end differently.</p>
+      <Row n={7} title="A lockfile for one history" visual={<LockFile />}>
+        <p>The lock keeps one order, each line chained to the last. Two branches that each add a migration conflict in git, before anything deploys.</p>
       </Row>
 
-      <Row n={8} title="Dry runs before every deploy" visual={<Term lines={DRY_RUN} />} flip>
-        <p>
-          Your migrations replay on throwaway shadow databases: against production's schema, against <code>schema.sql</code>, and with what's pending tried on top. Nothing runs on yours.
-        </p>
+      <Row n={8} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />} flip>
+        <p>Delete the lock, and migrations run in name order. A migration merged late is tried in both orders first.</p>
       </Row>
 
-      <Row n={9} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />}>
-        <p>Chained checksums in the lock catch a migration edited, deleted or reordered, and each migration stores a fingerprint of the schema it leaves. A column added in a dashboard no longer matches it, so the deploy refuses and shows the change, with the ways to keep it.</p>
+      <Row n={9} title="Dry runs before every deploy" visual={<Term lines={DRY_RUN} />}>
+        <p>Every pending migration is tried on a throwaway shadow database first. Nothing runs on yours.</p>
       </Row>
 
-      <Row n={10} title="Start from the database you have" visual={<Term lines={INIT} />} flip>
-        <p>
-          One command reads your database and writes its <code>schema.sql</code>, a first migration, and the lock, with that migration recorded as already run.
-        </p>
+      <Row n={10} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />} flip>
+        <p>Chained checksums catch an edited migration, and a fingerprint catches a change made by hand. The deploy stops and shows what changed.</p>
+      </Row>
+
+      <Row n={11} title="Runs on your host" visual={<Hosts />}>
+        <p>Postgres, MySQL and SQLite, on your own server or a hosted one.</p>
+      </Row>
+
+      <Row n={12} title="Start from the database you have" visual={<Term lines={INIT} />} flip>
+        <p>One command reads your database and writes its <code>schema.sql</code>, a first migration and the lock.</p>
       </Row>
 
       <section className="ml-end">
@@ -462,6 +456,36 @@ function SchemaToMigration() {
   );
 }
 
+/** The project file pointing each git branch at its own development database, through a command it runs. */
+function BranchConfig() {
+  return (
+    <div className="ml-win" aria-hidden="true">
+      <div className="ml-bar">
+        <FileIcon />
+        .reylo.yaml
+      </div>
+      <pre className="ml-sql ml-lock">
+        <span className="ml-mu"># a development database for each git branch</span>
+        {'\n'}
+        {kw('direct_url:')} postgres://localhost:5432/app_{ty('$(git branch --show-current)')}
+      </pre>
+    </div>
+  );
+}
+
+/** The hosts the docs cover Reylo Migrate on, as names on tiles. */
+const HOSTS = ['Supabase', 'Neon', 'PlanetScale', 'Cloudflare D1', 'Durable Objects', 'Your own server'];
+
+function Hosts() {
+  return (
+    <div className="ml-hosts">
+      {HOSTS.map((h) => (
+        <span key={h}>{h}</span>
+      ))}
+    </div>
+  );
+}
+
 /** reylo/reylo.lock as the docs show it: the schema's checksum, and each migration with its chained checksum. */
 function LockFile() {
   return (
@@ -488,34 +512,32 @@ function LockFile() {
 /** What schema.sql can declare, one kind at a time, from the docs' examples. */
 const KINDS: { name: string; sql: ReactNode }[] = [
   {
-    name: 'Enums and domains',
+    name: 'Views',
     sql: (
       <>
-        {kw('create type')} mood {kw('as enum')} ({ty("'sad'")}, {ty("'ok'")}, {ty("'happy'")});{'\n'}
-        {kw('create domain')} email {kw('as')} {ty('text')} {kw('check')} (value {kw('like')} {ty("'%@%'")});
+        {kw('create view')} active_users {kw('as')}{'\n'}
+        {'  '}
+        {kw('select')} id, email {kw('from')} users {kw('where')} deleted_at {kw('is null')};{'\n'}
+        {'\n'}
+        {kw('create materialized view')} daily_signups {kw('as')}{'\n'}
+        {'  '}
+        {kw('select')} date_trunc({ty("'day'")}, created_at) {kw('as')} day, count(*){'\n'}
+        {'  '}
+        {kw('from')} users {kw('group by')} 1;
       </>
     ),
   },
   {
-    name: 'Exclusion constraints',
+    name: 'Functions',
     sql: (
       <>
-        {kw('create table')} bookings ({'\n'}
-        {'  '}room {ty('integer')} {kw('not null')},{'\n'}
-        {'  '}during {ty('tstzrange')} {kw('not null')},{'\n'}
+        {kw('create function')} slugify(t {ty('text')}) {kw('returns')} {ty('text')}{'\n'}
         {'  '}
-        {kw('exclude using')} gist (room {kw('with')} =, during {kw('with')} &&){'\n'}
-        );
-      </>
-    ),
-  },
-  {
-    name: 'Partial indexes',
-    sql: (
-      <>
-        {kw('create index')} users_unverified {kw('on')} users (created_at){'\n'}
+        {kw('language')} sql {kw('immutable')} {kw('as')} {'$$'}{'\n'}
+        {'    '}
+        {kw('select')} lower(regexp_replace(t, {ty("'[^a-z0-9]+'")}, {ty("'-'")}, {ty("'gi'")})){'\n'}
         {'  '}
-        {kw('where')} verified_at {kw('is null')};
+        {'$$'};
       </>
     ),
   },
@@ -523,8 +545,8 @@ const KINDS: { name: string; sql: ReactNode }[] = [
     name: 'Triggers',
     sql: (
       <>
-        {kw('create function')} touch() {kw('returns trigger language')} plpgsql {kw('as')} $${'\n'}
-        {kw('begin')} new.updated_at := now(); {kw('return')} new; {kw('end')} $$;{'\n'}
+        {kw('create function')} touch() {kw('returns trigger language')} plpgsql {kw('as')} {'$$'}{'\n'}
+        {kw('begin')} new.updated_at := now(); {kw('return')} new; {kw('end')} {'$$'};{'\n'}
         {'\n'}
         {kw('create trigger')} users_touch {kw('before update on')} users{'\n'}
         {'  '}
@@ -533,13 +555,88 @@ const KINDS: { name: string; sql: ReactNode }[] = [
     ),
   },
   {
-    name: 'Row level security',
+    name: 'Indexes',
+    sql: (
+      <>
+        {kw('create index')} users_unverified {kw('on')} users (created_at){'\n'}
+        {'  '}
+        {kw('where')} verified_at {kw('is null')};{'\n'}
+        {'\n'}
+        {kw('create unique index')} users_email {kw('on')} users (lower(email));
+      </>
+    ),
+  },
+  {
+    name: 'Policies',
     sql: (
       <>
         {kw('alter table')} documents {kw('enable row level security')};{'\n'}
         {kw('create policy')} documents_own {kw('on')} documents{'\n'}
         {'  '}
         {kw('using')} (owner_id = current_setting({ty("'app.user_id'")})::{ty('integer')});
+      </>
+    ),
+  },
+  {
+    name: 'Checks',
+    sql: (
+      <>
+        {kw('create table')} bookings ({'\n'}
+        {'  '}seats {ty('integer')} {kw('not null check')} (seats {'>'} 0),{'\n'}
+        {'  '}starts_at {ty('timestamptz')} {kw('not null')},{'\n'}
+        {'  '}ends_at {ty('timestamptz')} {kw('not null')},{'\n'}
+        {'  '}
+        {kw('check')} (ends_at {'>'} starts_at){'\n'}
+        );
+      </>
+    ),
+  },
+  {
+    name: 'Computed',
+    sql: (
+      <>
+        {kw('create table')} line_items ({'\n'}
+        {'  '}price {ty('numeric')} {kw('not null')},{'\n'}
+        {'  '}qty {ty('integer')} {kw('not null')},{'\n'}
+        {'  '}total {ty('numeric')} {kw('generated always as')} (price * qty) {kw('stored')}{'\n'}
+        );
+      </>
+    ),
+  },
+  {
+    name: 'JSON Schema',
+    sql: (
+      <>
+        {kw('create table')} events ({'\n'}
+        {'  '}payload {ty('jsonb')} {kw('not null check')} (jsonb_matches_schema({ty("'{")}{'\n'}
+        {'    '}
+        {ty('"type": "object",')}
+        {'\n'}
+        {'    '}
+        {ty('"properties": { "x": { "type": "integer" } },')}
+        {'\n'}
+        {'    '}
+        {ty('"required": ["x"]')}
+        {'\n'}
+        {'  '}
+        {ty("}'")}, payload)){'\n'}
+        );
+      </>
+    ),
+  },
+  {
+    name: 'And more',
+    sql: (
+      <>
+        {kw('create extension if not exists')} btree_gist;{'\n'}
+        {kw('create type')} mood {kw('as enum')} ({ty("'sad'")}, {ty("'ok'")}, {ty("'happy'")});{'\n'}
+        {kw('create domain')} email {kw('as')} {ty('text')} {kw('check')} (value {kw('like')} {ty("'%@%'")});{'\n'}
+        {kw('create type')} floatrange {kw('as range')} (subtype = {ty('float8')});{'\n'}
+        {kw('create table')} rooms (room {ty('int')}, during {ty('tstzrange')},{'\n'}
+        {'  '}
+        {kw('exclude using')} gist (room {kw('with')} =, during {kw('with')} &&));{'\n'}
+        {kw('grant select on')} active_users {kw('to')} reporting;{'\n'}
+        {kw('comment on table')} users {kw('is')} {ty("'The people who sign in'")};
       </>
     ),
   },

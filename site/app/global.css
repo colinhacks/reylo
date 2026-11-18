@@ -1111,11 +1111,9 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   font-size: 0.88em;
 }
 
+/* Code in the copy: plain mono, a shade brighter than the words around it, with no chip. */
 .ml p code {
-  padding: 0.08em 0.35em;
-  border: 1px solid var(--color-fd-border);
-  border-radius: 0.375rem;
-  background: var(--color-fd-secondary);
+  color: var(--color-fd-foreground);
 }
 
 .ml-nav,
@@ -1358,7 +1356,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   min-width: 0;
 }
 
-/* The accent: each row's number in the yellow, and a faint yellow glow behind what it shows. */
+/* The accent: each row's number in the yellow, which by night gives off the site's saber light. */
 .ml-num {
   display: block;
   margin-bottom: 1rem;
@@ -1367,17 +1365,16 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   color: var(--color-fd-primary);
 }
 
-.dark .ml-row-visual::before {
-  content: '';
-  position: absolute;
-  inset: -12% -8%;
-  z-index: 0;
-  background: radial-gradient(closest-side, rgb(251 196 14 / 0.07), transparent 75%);
-  pointer-events: none;
+.dark .ml-num {
+  text-shadow: 0 0 10px rgb(255 184 0 / 0.55);
 }
 
-.ml-row-visual > * {
-  position: relative;
+.dark .ml-brand {
+  text-shadow: 0 0 10px rgb(255 184 0 / 0.45);
+}
+
+.dark .ml-brand svg {
+  filter: drop-shadow(0 0 4px rgb(255 200 31 / 0.55));
 }
 
 /* Windows: an editor or a terminal, with a title bar. */
@@ -1730,4 +1727,23 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-lock {
   min-height: 0;
+}
+
+/* The hosts, as tiles in a grid of three. */
+.ml-hosts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ml-hosts span {
+  display: grid;
+  place-items: center;
+  height: 5.5rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.875rem;
+  background: var(--color-fd-card);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--color-fd-foreground);
 }
