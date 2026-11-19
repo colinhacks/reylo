@@ -259,6 +259,12 @@ impl Column {
         if table_collation == Some(c.collation.as_str()) {
             c.collation.clear();
         }
+        // MySQL shows a nullable AUTO_INCREMENT column without its NULL, and makes one written so
+        // NOT NULL.
+        let words: Vec<&str> = c.rest.split_whitespace().collect();
+        if words.contains(&"auto_increment") && !words.windows(2).any(|w| w == ["not", "null"]) && !words.contains(&"null") {
+            c.rest = format!("null {}", c.rest);
+        }
         format!("{} {}", self.q, c.def())
     }
 }
@@ -354,7 +360,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     let mut checks: BTreeMap<(String, String), String> = BTreeMap::new();
     for r in db
         .rows(
-            "select tc.table_name as t, tc.constraint_name as n, cc.check_clause as clause, tc.enforced
+            "select tc.table_name as t, tc.constraint_name as n, cc.check_clause as clause, tc.enforced as enforced
             from information_schema.table_constraints tc join information_schema.check_constraints cc
               on cc.constraint_schema = tc.constraint_schema and cc.constraint_name = tc.constraint_name
             where tc.table_schema = database() and tc.constraint_type = 'CHECK'",
@@ -846,6 +852,11 @@ fn parse_table(ctx: &Ctx, text: &str, table: &str, infos: &BTreeMap<(String, Str
             }
         }
     }
+    // MySQL keeps an expression as it was written, and a column's name in another case is the same
+    // column: each is written as the table names it.
+    for (_, _, def) in body.indexes.iter_mut().filter(|(_, _, d)| d.contains("((")) {
+        *def = columns_as_named(def, &body.columns);
+    }
     // In name order, the primary key first, so that two tables of the same indexes have one body
     // whatever order they were made in.
     body.indexes.sort_by(|a, b| (a.0 != "PRIMARY", &a.0).cmp(&(b.0 != "PRIMARY", &b.0)));
@@ -855,7 +866,7 @@ fn parse_table(ctx: &Ctx, text: &str, table: &str, infos: &BTreeMap<(String, Str
     let mut k = 0;
     while k < tokens.len() {
         if tokens[k].upper() == "PARTITION" && tokens.get(k + 1).is_some_and(|t| t.upper() == "BY") {
-            body.partition = ctx.tidy(&close[tokens[k].start..], TABLE_TEXT);
+            body.partition = columns_as_named(&ctx.tidy(&close[tokens[k].start..], TABLE_TEXT), &body.columns);
             break;
         }
         // `KEY=VALUE`, where the key may be two words (`DEFAULT CHARSET`) and the value a list.
@@ -1067,17 +1078,50 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
     let old_of: BTreeMap<&str, &str> = pairs.iter().map(|(o, n)| (n.as_str(), o.as_str())).collect();
     let mut clauses = Vec::new();
 
+    // A column made or unmade virtual, or moved between virtual and stored, which MySQL won't
+    // modify, is dropped and added again in the statement: a virtual column's values are computed,
+    // and a column made virtual has its values computed from then on. A generated column reading
+    // it goes and comes back after it, since one can read only those defined before it, and so do
+    // the checks and indexes reading either, which hold the drop back.
+    let remade = |was: &Column, now: &Column| was.generation() != now.generation() && (was.generation() == Some("virtual") || now.generation() == Some("virtual"));
+    let kept = |c: &Column| from.column(&c.name).filter(|_| !old_of.contains_key(c.name.as_str()));
+    let mut remade_columns: BTreeSet<String> = to.columns.iter().filter(|c| kept(c).is_some_and(|was| remade(was, c))).map(|c| c.name.clone()).collect();
+    loop {
+        let more: Vec<String> = to.columns.iter().filter(|c| !remade_columns.contains(&c.name) && c.generation().is_some() && kept(c).is_some() && remade_columns.iter().any(|r| reads(&c.rest, r))).map(|c| c.name.clone()).collect();
+        if more.is_empty() {
+            break;
+        }
+        remade_columns.extend(more);
+    }
+    // A column whose spatial reference changes, which MySQL won't change under a spatial index.
+    let srid = |c: &Column| c.rest.split_whitespace().skip_while(|w| *w != "srid").nth(1).map(String::from);
+    let resrid: BTreeSet<String> = to.columns.iter().filter(|c| kept(c).is_some_and(|was| srid(was) != srid(c))).map(|c| c.name.clone()).collect();
+    let checks_on = |def: &str| remade_columns.iter().any(|r| reads(def, r));
+    let indexes_on = |def: &str| remade_columns.iter().chain(&resrid).any(|r| reads(def, r));
+    // A spatial index goes in a statement before the one that changes its column's reference,
+    // which MySQL refuses while the index stands, even in the same statement.
+    let mut first: Vec<String> = Vec::new();
+
     // A check that reads a renamed column is dropped and added again in the same statement, which
     // MySQL requires; an index on one follows the column by itself.
     for (name, q, def) in &from.checks {
-        if to.checks.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| d != def) {
+        if to.checks.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| d != def) || checks_on(def) {
             clauses.push(format!("drop check {q}"));
         }
     }
     let plain = |def: &str| !def.contains("((");
     let index_now = |def: &str| if plain(def) { renamed_parts(def, &map) } else { def.to_string() };
+    // An index made visible or invisible, and nothing else, changes in place.
+    let seen_only = |a: &str, b: &str| a != b && unseen(a).0 == unseen(b).0;
     for (name, q, def) in &from.indexes {
-        if to.indexes.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| *d != index_now(def)) {
+        let now = to.indexes.iter().find(|(n, _, _)| n == name);
+        if let Some((_, _, d)) = now.filter(|(_, _, d)| seen_only(&index_now(def), d) && !indexes_on(def)) {
+            clauses.push(format!("alter index {q} {}", if d.ends_with(" invisible") { "invisible" } else { "visible" }));
+            continue;
+        }
+        if resrid.iter().any(|r| reads(def, r)) && name != "PRIMARY" {
+            first.push(format!("drop index {q}"));
+        } else if now.is_none_or(|(_, _, d)| *d != index_now(def)) || indexes_on(def) {
             clauses.push(if name == "PRIMARY" { "drop primary key".to_string() } else { format!("drop index {q}") });
         }
     }
@@ -1086,12 +1130,8 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
             clauses.push(format!("drop column {}", c.q));
         }
     }
-    // A column made or unmade virtual, or moved between virtual and stored, which MySQL won't
-    // modify, is dropped and added again in the statement: a virtual column's values are computed,
-    // and a column made virtual has its values computed from then on.
-    let remade = |was: &Column, now: &Column| was.generation() != now.generation() && (was.generation() == Some("virtual") || now.generation() == Some("virtual"));
     for c in &to.columns {
-        if let Some(was) = from.column(&c.name).filter(|was| !old_of.contains_key(c.name.as_str()) && remade(was, c)) {
+        if let Some(was) = kept(c).filter(|_| remade_columns.contains(&c.name)) {
             clauses.push(format!("drop column {}", was.q));
         }
     }
@@ -1109,8 +1149,8 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
     }
     for c in &to.columns {
         match from.column(old_of.get(c.name.as_str()).copied().unwrap_or(&c.name)) {
+            Some(_) if !old_of.contains_key(c.name.as_str()) && remade_columns.contains(&c.name) => clauses.push(format!("add column {}", c.written(collation))),
             Some(was) if old_of.contains_key(c.name.as_str()) || was.def() == c.def() => {}
-            Some(was) if remade(was, c) => clauses.push(format!("add column {}", c.written(collation))),
             Some(_) => clauses.push(format!("modify column {}", c.written(collation))),
             None => clauses.push(format!("add column {}", c.written(collation))),
         }
@@ -1118,13 +1158,21 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
     // An index a new key would make is left to it, unless this statement drops one: another key
     // may need it until the new one is in place, so both go in the same statement.
     let swaps = clauses.iter().any(|c| c.starts_with("drop index ") || c == "drop primary key");
-    for (name, _, def) in to.indexes.iter().filter(|(n, _, _)| swaps || !made.contains(n)) {
-        if from.indexes.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| index_now(d) != *def) {
+    // A column made AUTO_INCREMENT needs a key in the statement that makes it so, which one a
+    // foreign key would make only after.
+    let counts: Vec<&String> = to.columns.iter().filter(|c| c.rest.split_whitespace().any(|w| w == "auto_increment") && from.column(&c.name).is_none_or(|was| !was.rest.split_whitespace().any(|w| w == "auto_increment"))).map(|c| &c.name).collect();
+    let keys_a_count = |def: &str| counts.iter().any(|c| reads(def, c));
+    for (name, _, def) in to.indexes.iter().filter(|(n, _, d)| swaps || !made.contains(n) || keys_a_count(d)) {
+        let was = from.indexes.iter().find(|(n, _, _)| n == name);
+        if was.is_some_and(|(_, _, d)| seen_only(&index_now(d), def) && !indexes_on(d)) {
+            continue;
+        }
+        if was.is_none_or(|(_, _, d)| index_now(d) != *def || indexes_on(d)) {
             clauses.push(format!("add {def}"));
         }
     }
     for (name, _, def) in &to.checks {
-        if from.checks.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| d != def) {
+        if from.checks.iter().find(|(n, _, _)| n == name).is_none_or(|(_, _, d)| d != def || checks_on(d)) {
             clauses.push(format!("add {def}"));
         }
     }
@@ -1135,9 +1183,11 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
     }
     for (key, _) in &from.options {
         if to.option(key).is_none() {
+            // An option of a number takes 0 for its default: MySQL's grammar refuses `default` there.
             clauses.push(match key.as_str() {
                 "comment" => "comment=''".to_string(),
-                "key_block_size" => "key_block_size=0".to_string(),
+                "key_block_size" | "checksum" | "delay_key_write" | "max_rows" | "min_rows" | "avg_row_length" | "autoextend_size" => format!("{key}=0"),
+                "engine_attribute" | "secondary_engine_attribute" => format!("{key}=''"),
                 _ => format!("{key}=default"),
             });
         }
@@ -1150,6 +1200,9 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
     // goes first, since a key the body changes may leave out a column it partitions by, and the
     // new comes last, by the keys the body made. Alone, it is one statement.
     let mut out = Vec::new();
+    if !first.is_empty() {
+        out.push(format!("alter table {} {}", to.q, first.join(", ")));
+    }
     let repartitions = from.partition != to.partition;
     let apart = repartitions && !from.partition.is_empty() && (to.partition.is_empty() || !clauses.is_empty());
     if apart {
@@ -1198,6 +1251,47 @@ impl MysqlAlterer {
     /// made one, else its rule.
     fn pairs(&self, table: &str, from: &Body, to: &Body) -> Vec<(String, String)> {
         self.decided.of(table).unwrap_or_else(|| renames(from, to))
+    }
+}
+
+/// `text` with each name after its first parenthesis that names one of `columns` in another case
+/// written as the column is named.
+fn columns_as_named(text: &str, columns: &[Column]) -> String {
+    let Some(open) = text.find('(') else { return text.to_string() };
+    let mut out = text[..open].to_string();
+    let mut at = open;
+    for t in tokenize(&text[open..], Dialect::Mysql) {
+        let (start, end) = (open + t.start, open + t.end);
+        out.push_str(&text[at..start]);
+        let bare = match t.kind {
+            TokenKind::Word => Some(t.text.clone()),
+            TokenKind::Quoted => Some(t.text.trim_matches('`').replace("``", "`")),
+            _ => None,
+        };
+        match bare.and_then(|b| columns.iter().find(|c| c.name != b && c.name.eq_ignore_ascii_case(&b))) {
+            Some(c) => out.push_str(&c.q),
+            None => out.push_str(&text[start..end]),
+        }
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+/// Whether a definition reads the column named `column`, by any token naming it.
+fn reads(text: &str, column: &str) -> bool {
+    tokenize(text, Dialect::Mysql).iter().any(|t| match t.kind {
+        TokenKind::Word => t.text.eq_ignore_ascii_case(column),
+        TokenKind::Quoted => t.text.trim_matches('`').replace("``", "`").eq_ignore_ascii_case(column),
+        _ => false,
+    })
+}
+
+/// An index's definition without its visibility, and whether it is invisible.
+fn unseen(def: &str) -> (&str, bool) {
+    match def.strip_suffix(" invisible") {
+        Some(base) => (base, true),
+        None => (def, false),
     }
 }
 
@@ -1252,15 +1346,28 @@ fn holds_all(a: &str, b: &str) -> bool {
     };
     // The digits of an integer type's widest value, and a sign.
     let digits = |n: u32, unsigned: bool| [0, 3, 5, 8, 10, 0, 0, 0, 20][n as usize] - u32::from(!unsigned && n == 8) + u32::from(!unsigned);
-    let text = |n: &str| match n {
-        "tinytext" => Some(63),
-        "text" => Some(16383),
-        "mediumtext" | "longtext" => Some(u32::MAX),
-        _ => None,
+    // The most characters a value of a string type can hold (each of one byte), and the fewest
+    // it is sure to hold (each of four, in utf8mb4): a change keeps every value where the source's
+    // most fit the target's fewest.
+    let most = |n: &str, args: &[u32]| -> Option<u64> {
+        match n {
+            "char" | "varchar" => Some(u64::from(args.first().copied().unwrap_or(1))),
+            "tinytext" => Some(255),
+            "text" => Some(65_535),
+            "mediumtext" => Some(16_777_215),
+            "longtext" => Some(4_294_967_295),
+            _ => None,
+        }
     };
-    let chars = |n: &str, args: &[u32]| match n {
-        "char" | "varchar" => args.first().copied().or(Some(1)),
-        _ => text(n),
+    let fewest = |n: &str, args: &[u32]| -> Option<u64> {
+        match n {
+            "char" | "varchar" => Some(u64::from(args.first().copied().unwrap_or(1))),
+            "tinytext" => Some(63),
+            "text" => Some(16_383),
+            "mediumtext" => Some(4_194_303),
+            "longtext" => Some(1_073_741_823),
+            _ => None,
+        }
     };
     let set = |t: &str| -> Vec<String> { t.find('(').map(|o| t[o + 1..t.len().saturating_sub(1)].split(',').map(|l| l.trim().to_string()).collect()).unwrap_or_default() };
     let precision = |args: &[u32]| args.first().copied().unwrap_or(0);
@@ -1279,16 +1386,16 @@ fn holds_all(a: &str, b: &str) -> bool {
         }
         (p, "double" | "real") if bytes(p).is_some() => ya.is_empty() && bytes(p).unwrap() <= 4 && (!yu || xu),
         (p, "float") if bytes(p).is_some() => ya.is_empty() && bytes(p).unwrap() <= 2 && (!yu || xu),
-        (p, q) if bytes(p).is_some() && chars(q, &ya).is_some() => chars(q, &ya).unwrap() >= digits(bytes(p).unwrap(), xu),
+        (p, q) if bytes(p).is_some() && fewest(q, &ya).is_some() => fewest(q, &ya).unwrap() >= u64::from(digits(bytes(p).unwrap(), xu)),
         ("decimal" | "numeric", "decimal" | "numeric") => {
             let (p1, s1) = (xa.first().copied().unwrap_or(10), xa.get(1).copied().unwrap_or(0));
             let (p2, s2) = (ya.first().copied().unwrap_or(10), ya.get(1).copied().unwrap_or(0));
             (!yu || xu) && s2 >= s1 && p2 - s2 >= p1 - s1
         }
         ("float", "double" | "real") => xa.is_empty() && ya.is_empty() && (!yu || xu),
-        ("char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext", q) if chars(q, &ya).is_some() => {
+        ("char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext", q) if fewest(q, &ya).is_some() => {
             // A char drops the trailing spaces a varchar or text value has.
-            chars(q, &ya).unwrap() >= chars(&x, &xa).unwrap() && (x == "char" || y != "char")
+            fewest(q, &ya).unwrap() >= most(&x, &xa).unwrap() && (x == "char" || y != "char")
         }
         ("varbinary", "varbinary") => ya.first().copied().unwrap_or(0) >= xa.first().copied().unwrap_or(0),
         ("varbinary", "blob" | "mediumblob" | "longblob") => true,
@@ -1417,10 +1524,10 @@ mod tests {
 
     #[test]
     fn a_change_that_keeps_every_value_needs_no_strict_mode() {
-        for (a, b) in [("tinyint", "int"), ("int unsigned", "bigint"), ("int", "decimal(12,0)"), ("smallint", "varchar(6)"), ("varchar(10)", "text"), ("char(4)", "varchar(4)"), ("decimal(5,2)", "decimal(7,3)"), ("enum('a','b')", "enum('b','a','c')"), ("date", "datetime"), ("datetime(3)", "datetime(6)"), ("float", "double"), ("int", "longtext")] {
+        for (a, b) in [("tinyint", "int"), ("int unsigned", "bigint"), ("int", "decimal(12,0)"), ("smallint", "varchar(6)"), ("varchar(10)", "text"), ("text", "mediumtext"), ("tinytext", "varchar(255)"), ("char(4)", "varchar(4)"), ("decimal(5,2)", "decimal(7,3)"), ("enum('a','b')", "enum('b','a','c')"), ("date", "datetime"), ("datetime(3)", "datetime(6)"), ("float", "double"), ("int", "longtext")] {
             assert!(holds_all(a, b), "{a} to {b}");
         }
-        for (a, b) in [("int", "tinyint"), ("int", "int unsigned"), ("int unsigned", "int"), ("varchar(10)", "varchar(3)"), ("varchar(4)", "char(4)"), ("decimal(5,2)", "decimal(5,1)"), ("enum('a','b')", "enum('a')"), ("datetime", "timestamp"), ("datetime(6)", "datetime"), ("double", "float"), ("bigint", "double"), ("int", "varchar(5)")] {
+        for (a, b) in [("tinytext", "varchar(63)"), ("longtext", "mediumtext"), ("varchar(20000)", "text"), ("int", "tinyint"), ("int", "int unsigned"), ("int unsigned", "int"), ("varchar(10)", "varchar(3)"), ("varchar(4)", "char(4)"), ("decimal(5,2)", "decimal(5,1)"), ("enum('a','b')", "enum('a')"), ("datetime", "timestamp"), ("datetime(6)", "datetime"), ("double", "float"), ("bigint", "double"), ("int", "varchar(5)")] {
             assert!(!holds_all(a, b), "{a} to {b}");
         }
         let column = |def: &str| Object { kind: Some(Kind::Column), def: def.into(), ..Object::default() };

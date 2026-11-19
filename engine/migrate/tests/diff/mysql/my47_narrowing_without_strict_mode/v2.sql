@@ -3,5 +3,6 @@ create table readings (
   level tinyint,
   code varchar(3),
   kind enum('low', 'mid'),
-  ratio decimal(4,2)
+  ratio decimal(4,2),
+  note varchar(63)
 );

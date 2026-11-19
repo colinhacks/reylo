@@ -1617,6 +1617,20 @@ fn created_extensions(opts: &Options) -> Vec<String> {
     texts.iter().flat_map(|t| extensions_in(t)).collect()
 }
 
+/// The schemas the project's own files create.
+fn created_schemas(opts: &Options) -> Vec<String> {
+    static SCHEMA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_$-]+)"?"#).expect("a valid pattern"));
+    let mut texts = vec![opts.schema_text().unwrap_or_default()];
+    texts.extend(opts.migrations().map(|(files, _)| files.into_iter().map(|f| f.sql).collect::<Vec<_>>()).unwrap_or_default());
+    texts
+        .iter()
+        .flat_map(|t| {
+            let uncommented = crate::sql::tokenize(t, Dialect::Postgres).iter().map(|token| token.text.clone()).collect::<Vec<_>>().join(" ");
+            SCHEMA.captures_iter(&uncommented).map(|c| c[1].to_string()).filter(|s| !s.eq_ignore_ascii_case("authorization")).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The extensions a text creates.
 fn extensions_in(text: &str) -> Vec<String> {
     static EXTENSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+extension\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_-]+)"?"#).expect("a valid pattern"));
@@ -1644,6 +1658,7 @@ async fn shadow_server(db: &mut Db, opts: &Options) -> Result<Server, Error> {
     let mut server = Server::open(db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    server.leave_schemas(created_schemas(opts));
     Ok(server)
 }
 
@@ -3632,6 +3647,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    server.leave_schemas(created_schemas(opts));
     db.close().await;
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
     let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;

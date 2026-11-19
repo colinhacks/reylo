@@ -2792,6 +2792,7 @@ on!(
     Postgres,
     a_partition_of_a_run_time_partition_is_data,
     an_extension_in_a_schema_of_its_own_is_dumped_after_it,
+    an_extension_left_in_a_schema_of_the_projects_own_stops_no_push,
     a_partition_dropped_at_run_time_is_data,
     init_creates_the_extensions_its_schema_uses,
     a_dump_keeps_a_function_body_as_written,
@@ -3825,6 +3826,16 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.url = q.url.clone();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(q.history().await, ["init.sql"]);
+    }
+
+    pub async fn an_extension_left_in_a_schema_of_the_projects_own_stops_no_push(mut p: P) {
+        p.schema("create schema ext;\ncreate extension pg_trgm with schema ext;\ncreate table t (id int);");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        // schema.sql stops declaring the extension, which the database keeps, and still makes its
+        // schema: the shadow leaves the extension out, as it does one the project makes.
+        p.schema("create schema ext;\ncreate table t (id int, n int);");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*)::text as n from information_schema.columns where table_name = 't' and column_name = 'n'").await[0].text("n"), "1");
     }
 
     pub async fn a_dump_keeps_a_function_body_as_written(mut p: P) {

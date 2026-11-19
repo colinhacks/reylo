@@ -3,7 +3,8 @@
 //! each case builds both, plans from one to the other, runs the plan on the first, and requires its
 //! catalog to equal the second's, every table both have to keep its rows, and every column kept to
 //! keep its values, unless the plan says it loses or narrows them or the case's `changes.txt` names
-//! the table. A case's `sql_mode` file is the mode its sessions run in. `server.sql` makes
+//! the table. A case's `sql_mode` file is the mode its sessions run in. Its v1 and v2 must differ to
+//! the comparator, unless `alike.txt` says why they read alike. `server.sql` makes
 //! what a case needs of the server itself (an account), and `check.sql`, where a case has one,
 //! runs after the plan, so a case can require what no catalog shows (an AUTO_INCREMENT counter
 //! past the rows). The plan is kept beside the case as `plan.sql`: `REYLO_BLESS=1` writes it.
@@ -145,6 +146,10 @@ async fn mysql() {
         from.script(&read(&case.join("v1.sql"))).await.unwrap_or_else(|e| panic!("{name}: v1.sql: {e}"));
         from.script(&read(&case.join("seed.sql"))).await.unwrap_or_else(|e| panic!("{name}: seed.sql: {e}"));
         to.script(&read(&case.join("v2.sql"))).await.unwrap_or_else(|e| panic!("{name}: v2.sql: {e}"));
+        // The two schemas differ to the comparator, or the case checks nothing it could miss; a
+        // case alike on purpose says why in `alike.txt`.
+        let (a_only, b_only) = differences(&mut from, &mut to).await;
+        let vacuous = a_only.is_empty() && b_only.is_empty() && read(&case.join("alike.txt")).is_empty();
         let before = counts(&mut from).await;
         let rows_before = values(&mut from).await;
         let plan = diff::plan(&diff::mysql::read(&mut from).await.unwrap(), &diff::mysql::read(&mut to).await.unwrap(), alterer);
@@ -172,6 +177,9 @@ async fn mysql() {
             std::fs::write(&expected, &text).unwrap();
         }
         let mut problems = Vec::new();
+        if vacuous {
+            problems.push("v1 and v2 are alike to the comparator (a case alike on purpose says why in alike.txt)".to_string());
+        }
         if let Some(f) = failed {
             problems.push(format!("the plan failed at {f}"));
         }

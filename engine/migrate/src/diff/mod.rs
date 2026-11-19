@@ -753,6 +753,14 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             creates.insert(id.clone());
         }
     }
+    // An index attached to one the plan drops goes with it: one the target keeps is made again after.
+    for (id, o) in &from.objects {
+        if o.kind == Some(Kind::Index) && o.goes_with.as_ref().is_some_and(|g| drops.contains(g)) && to.objects.contains_key(id) && !drops.contains(id) {
+            alters.remove(id);
+            drops.insert(id.clone());
+            creates.insert(id.clone());
+        }
+    }
     // What a change makes again itself is no change of its own, and what needs it waits for that
     // change.
     let mut taken_by: BTreeMap<String, String> = BTreeMap::new();
@@ -945,14 +953,19 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     for (id, statements) in alters.iter_mut() {
         let (Some(a), Some(b)) = (from.objects.get(id), to.objects.get(id)) else { continue };
         let calls_back = b.deps.iter().any(|d| creates.contains(d) && to.objects.get(d).is_some_and(|f| f.kind == Some(Kind::Function) && f.deps.contains(id)));
-        if b.kind != Some(Kind::Column) || !calls_back {
+        // A default calling a function whose other overload the plan drops, which the call would
+        // name too while both stand: it goes before that one is dropped, and comes back after.
+        let base = |f: &str| f.split('(').next().unwrap_or(f).to_string();
+        let swapped = b.deps.iter().any(|g| creates.contains(g) && to.objects.get(g).is_some_and(|g| g.kind == Some(Kind::Function)) && a.deps.iter().any(|f| f != g && drops.contains(f) && !creates.contains(f) && base(f) == base(g)));
+        if b.kind != Some(Kind::Column) || !(calls_back || swapped) {
             continue;
         }
-        let Some(set) = alterer.unhook(a, b).and_then(|(_, set)| set.into_iter().next()) else { continue };
+        let Some((unset, set)) = alterer.unhook(a, b) else { continue };
+        let Some(set) = set.into_iter().next() else { continue };
         let Some(at) = set.find(" set default ").map(|k| set[..k + 13].to_string()) else { continue };
         let (later, now): (Vec<String>, Vec<String>) = statements.drain(..).partition(|s| s.starts_with(&at));
         *statements = now;
-        hooks.insert(id.clone(), (vec![], if later.is_empty() { vec![set] } else { later }));
+        hooks.insert(id.clone(), (if swapped { unset } else { vec![] }, if later.is_empty() { vec![set] } else { later }));
         deferred.insert(id.clone());
     }
 
@@ -979,6 +992,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     }
 
     let renamed_as: BTreeMap<&str, &str> = renames.iter().map(|(new, (old, _))| (old.as_str(), new.as_str())).collect();
+    // The names the plan drops relations and types under, each with the object holding it.
+    let named_alike = |k: Option<Kind>| matches!(k, Some(Kind::Table | Kind::View | Kind::Sequence | Kind::Index | Kind::Type));
+    let name_of = |id: &str| id.split_once(' ').map(|(_, n)| n.to_string());
+    let dropped_names: BTreeMap<String, String> = drops.iter().filter(|d| !creates.contains(*d) && named_alike(from.objects[*d].kind)).filter_map(|d| Some((name_of(d)?, d.clone()))).collect();
     // The attributes the plan gives each composite type.
     let mut members_made: BTreeMap<&str, Vec<&String>> = BTreeMap::new();
     for id in &creates {
@@ -1029,6 +1046,13 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 needs.extend(o.owner.iter());
                 if matches!(op, Op::Create(_)) {
                     needs.extend(o.after.iter());
+                }
+                // A table, view, sequence, index or type made under a name one the plan drops holds
+                // (a table's row type is a type of its name) is made after that drop.
+                if matches!(op, Op::Create(_)) && named_alike(o.kind) {
+                    if let Some(j) = name_of(id).and_then(|n| dropped_names.get(&n)).and_then(|d| find(Op::Drop(d.clone()))) {
+                        after[k].insert(j);
+                    }
                 }
                 // What needs an object a change makes again waits for that change.
                 for d in needs.clone() {
@@ -1143,9 +1167,15 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             }
             Op::Unhook(_) => {}
             Op::Rehook(id) => {
-                // After what the default reads is back, and the column's own change.
+                // After what the default reads is back, what it read is gone, and the column's own
+                // change.
                 for d in &to.objects[id].deps {
                     if let Some(j) = create_of(d) {
+                        after[k].insert(j);
+                    }
+                }
+                for d in from.objects.get(id).into_iter().flat_map(|o| &o.deps) {
+                    if let Some(j) = find(Op::Drop(d.clone())) {
                         after[k].insert(j);
                     }
                 }
