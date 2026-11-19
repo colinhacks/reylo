@@ -473,6 +473,9 @@ pub enum Ty {
     /// `text` when every operand is a string type: Postgres's `||` over strings. Over anything
     /// else (an array, `jsonb`, a string beside a number) the build names no type.
     Concat,
+    /// Nothing the build can name, of `array_append` and `array_prepend`, which add a value to an
+    /// array as one element ([`items_nullable`]).
+    Appends,
     /// The operands' type when they all agree on a number type the built-in arithmetic has an
     /// operator of that type for (`int4 + int4` is `int4`), `%` having none for a float: an
     /// arithmetic operator over two values of one type, or a prefix sign.
@@ -1073,7 +1076,7 @@ pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array:
             Some(false) if may_hold_jsonb_items(inner, leaves) => None,
             items => items,
         },
-        Expr::Every(operands, _) | Expr::Any(operands, _) => join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array))),
+        Expr::Every(operands, ty) | Expr::Any(operands, ty) => operands_items(operands, *ty, leaves, is_array),
         // A column's array holds what the leaf probe says of its elements, which a CHECK settles
         // (`array_position(tags, NULL) IS NULL`), so `coalesce(tags, '{}')` keeps it.
         Expr::Leaf(i) => leaves.and_then(|l| l.get(*i)).and_then(|c| c.nullable_items),
@@ -1082,7 +1085,7 @@ pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array:
         Expr::Call(call) => match (call.fact(leaves), &call.claim) {
             (None, _) | (Some(_), Claim::NonNull(_)) => None,
             (Some(_), Claim::Array(_)) => array_items(&call.args, leaves, is_array),
-            (Some(_), Claim::Every(..)) => join_items(call.args.iter().map(|o| items_nullable(o, leaves, is_array))),
+            (Some(_), Claim::Every(_, ty)) => operands_items(&call.args, *ty, leaves, is_array),
             (Some(_), Claim::Removed(true)) => Some(false),
             (Some(_), Claim::Removed(false)) => call.args.first().and_then(|a| items_nullable(a, leaves, is_array)),
         },
@@ -1181,6 +1184,48 @@ fn reads_unread(expr: &Expr) -> bool {
         Expr::NonNull(_) | Expr::Unknown | Expr::Leaf(_) | Expr::Row(..) => false,
         Expr::Call(call) => call.args.iter().any(reads_unread),
         Expr::Trusted(t) => reads_unread(&t.then) || reads_unread(&t.otherwise),
+    }
+}
+
+/// What the operands of an [`Expr::Every`] or an [`Expr::Any`] of type `ty` say of the elements
+/// of the array it is: each operand's own elements, as a `CASE`'s or a `coalesce`'s arrays. `||`,
+/// `array_append` and `array_prepend` also take a value that is no array, which is one element of
+/// the result: where an operand of one is of a type that is no array for certain it is such an
+/// element, which may be NULL where the operand may, and where its type is not known it may be
+/// either, and says nothing, unless it builds an array. A string literal there is an array beside
+/// an array (`tags || '{a}'`), whatever type it reads as alone, and holds what it spells.
+fn operands_items(operands: &[Expr], ty: Ty, leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> bool) -> Option<bool> {
+    if !matches!(ty, Ty::Concat | Ty::Appends) {
+        return join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array)));
+    }
+    join_items(operands.iter().map(|o| {
+        if spelled_array(o) || builds_array(o) {
+            return items_nullable(o, leaves, is_array);
+        }
+        let fact = resolve(o, leaves);
+        match fact.type_oid {
+            // A non-null element adds no NULL, but says nothing more of the others either.
+            Some(t) if !is_array(t) => (!fact.non_null).then_some(true),
+            Some(_) => items_nullable(o, leaves, is_array),
+            None => None,
+        }
+    }))
+}
+
+/// Whether an expression is a string literal that spells an array (`'{a,b}'`), as
+/// [`Reader::read`] reads one.
+fn spelled_array(expr: &Expr) -> bool {
+    matches!(expr, Expr::Every(operands, Ty::Is(oid::TEXT)) if matches!(operands.as_slice(), [Expr::Array { .. }]))
+}
+
+/// Whether an expression is an array the statement builds: `ARRAY[…]` or `array_agg(…)`, as it
+/// is or narrowed.
+fn builds_array(expr: &Expr) -> bool {
+    match expr {
+        Expr::Array { .. } => true,
+        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::NotJsonbItems(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => builds_array(inner),
+        Expr::Call(call) => matches!(call.claim, Claim::Array(_)),
+        _ => false,
     }
 }
 
@@ -1594,7 +1639,7 @@ impl Ty {
     fn of(self, facts: &[Fact]) -> Option<u32> {
         match self {
             Ty::Is(o) => Some(o),
-            Ty::Unknown => None,
+            Ty::Unknown | Ty::Appends => None,
             Ty::Shared => {
                 let first = facts.first()?.type_oid?;
                 facts.iter().all(|f| f.type_oid == Some(first)).then_some(first)
@@ -2071,6 +2116,7 @@ impl Reader<'_> {
                 let claim = Claim::Removed(is_null_literal(&f.args[1]));
                 Expr::Call(Box::new(Call { check: Check::builtin(), args, claim }))
             }
+            (Dialect::Postgres, "array_append" | "array_prepend", 2) if self.trust.builtin(&name) => Expr::Every(self.args(f, projection), Ty::Appends),
             (Dialect::Postgres, n, _) if POSTGRES_TOTAL.contains(&n) && self.trust.builtin(n) => {
                 let ty = if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown };
                 Expr::Every(self.args(f, projection), ty)
@@ -2167,6 +2213,7 @@ impl Reader<'_> {
             (n, 1) if POSTGRES_FRAME_VALUES.contains(&n) && f.over.as_deref().is_some_and(|over| frame_holds_current_row(over, self.windows)) => (Claim::Every(None, Ty::Unknown), None),
             (n, 1..) if POSTGRES_FIRST_ARG.contains(&n) => (Claim::Every(Some(1), Ty::Is(oid::TEXT)), None),
             (n, 1..) if POSTGRES_TOTAL_FOR.iter().any(|(name, _)| *name == n) => (Claim::Every(None, Ty::Unknown), POSTGRES_TOTAL_FOR.iter().find(|(name, _)| *name == n).map(|(_, t)| (0, *t))),
+            ("array_append" | "array_prepend", 2) => (Claim::Every(None, Ty::Appends), None),
             (n, _) if POSTGRES_TOTAL.contains(&n) => (Claim::Every(None, if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown }), None),
             _ => return None,
         })
@@ -4466,6 +4513,16 @@ mod tests {
         assert_eq!(items("SELECT (SELECT ARRAY[p.id, NULL] FROM posts p LIMIT 1) AS x FROM users u", &[]), Some(true));
         // The literal is still text where it stands for text.
         assert_eq!(resolve(&claim("SELECT '{x}' AS a"), None), Fact { non_null: true, type_oid: Some(oid::TEXT) });
+        // `||`, `array_append` and `array_prepend` add a value that is no array as one element,
+        // NULL where it is; a literal beside an array is an array, and one in a CASE is text.
+        assert_eq!(items("SELECT ARRAY['a'] || '{x}'", &[]), Some(false));
+        assert_eq!(items("SELECT ARRAY['a'] || '{NULL}'", &[]), Some(true));
+        assert_eq!(items("SELECT ARRAY['a', 'b'] || CASE WHEN id > 1 THEN '{x}' END FROM t", &[]), Some(true));
+        assert_eq!(items("SELECT array_append(ARRAY[a], a) FROM t", &[col(false, oid::INT4), col(true, oid::INT4)]), Some(true));
+        assert_eq!(items("SELECT array_append(ARRAY[a], a) FROM t", &[col(false, oid::INT4), col(false, oid::INT4)]), None);
+        assert_eq!(items("SELECT array_prepend(a, ARRAY[1]) FROM t", &[col(true, oid::INT4)]), Some(true));
+        // An element of no type the build names may be NULL, though it is made of arrays.
+        assert_eq!(items("SELECT array_append(ARRAY[a], CASE WHEN a > 0 THEN cardinality(ARRAY[a]) END) FROM t", &[col(false, oid::INT4), col(false, oid::INT4), col(false, oid::INT4)]), None);
         // A cast keeps its operand's elements, but where it takes a JSON null to NULL: on
         // PostgreSQL 18 `ARRAY['null'::jsonb]::int[]` is `{NULL}`.
         assert_eq!(items("SELECT ARRAY[1]::text[]", &[]), Some(false));

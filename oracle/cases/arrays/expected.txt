@@ -1,6 +1,7 @@
 agg_inner.sql: many () -> { id: int4, emails: text(¬NUL)[] } key (id)
 agg_left.sql: many () -> { id: int4, emails: text(¬NUL)?[] } key (id)
 any_param.sql: many (emails: text(¬NUL)?[]) -> { id: int4 } key (id)
+appended.sql: many () -> { tagged: text(¬NUL)?[]?, appended: int4?[]?, prepended: int4?[]?, doc: json { a: text(¬NUL)?[]? }, literal: text(¬NUL)[] }
 columns.sql: at_most_one (id: int4) -> { tags: text(¬NUL)?[], scores: int4?[]? }
 constructors.sql: at_most_one (id: int4) -> { nicks: text(¬NUL)?[], emails: text(¬NUL)[], nums: int4[] }
 deeper.sql: many () -> { cube: int4?[][][], rows_agg: int4[][], rows_built: int4[][], wrapped: int4?[][], scalars: int4[] }
