@@ -1,3 +1,4 @@
+-- file 1 of 8
 set check_function_bodies = off;
 create type post_status as enum ('draft', 'published', 'archived');
 alter table posts add column published_at timestamp with time zone;
@@ -6,12 +7,23 @@ alter table posts add column tags text[] default '{}' not null;
 alter table profiles add column deleted_at timestamp with time zone;
 alter table profiles add column handle character varying(30);
 alter table profiles add column updated_at timestamp with time zone;
-alter table posts add constraint published_has_date check (status <> 'published' or published_at is not null);
-alter table profiles add constraint profiles_handle_key unique (handle);
-alter table profiles add constraint profiles_name_check check (char_length(name) between 1 and 100);
-create index posts_author on posts (author) where status <> 'archived';
-create index posts_search on posts using gin (to_tsvector('english', title || ' ' || body));
-create index posts_tags on posts using gin (tags);
+alter table posts add constraint published_has_date check (status <> 'published' or published_at is not null) not valid;
+reset check_function_bodies;
+-- file 2 of 8
+create unique index concurrently profiles_handle_key on profiles (handle);
+-- file 3 of 8
+set check_function_bodies = off;
+alter table profiles add constraint profiles_handle_key unique using index profiles_handle_key;
+alter table profiles add constraint profiles_name_check check (char_length(name) between 1 and 100) not valid;
+reset check_function_bodies;
+-- file 4 of 8
+create index concurrently posts_author on posts (author) where status <> 'archived';
+-- file 5 of 8
+create index concurrently posts_search on posts using gin (to_tsvector('english', title || ' ' || body));
+-- file 6 of 8
+create index concurrently posts_tags on posts using gin (tags);
+-- file 7 of 8
+set check_function_bodies = off;
 create view published_posts with (security_invoker = true) as
   select p.id, p.title, a.name as author_name, p.published_at
   from posts p join profiles a on a.id = p.author
@@ -31,3 +43,6 @@ create policy posts_write on posts for all using (author = (select current_profi
 alter table posts enable row level security;
 comment on table posts is 'What profiles write';
 reset check_function_bodies;
+-- file 8 of 8
+alter table posts validate constraint published_has_date;
+alter table profiles validate constraint profiles_name_check;
