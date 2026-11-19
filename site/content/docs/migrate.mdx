@@ -346,6 +346,7 @@ Commands:
   migrate new <name>       Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
+    --blocking             Accept a statement that blocks writes while it reads every row
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
@@ -413,7 +414,14 @@ Writes the next migration, from your change to `schema.sql`.
 - It first checks that your development database ran each migration as it now reads. One edited or deleted since, such as a branch's after you switch away from it, is refused until `reylo migrate dev` settles it.
 - With no `schema.sql`, it writes what your development database has that your migrations don't make ([Schemaless mode](/migrate/docs#schemaless-mode)).
 - The file is yours: read it, and add the data changes a schema can't say.
+- On Postgres, a new constraint or index never blocks writes: it's added without reading the rows, then checked in a migration of its own. A table rewrite waits for `--blocking`, and a statement gives up a busy lock after half a second, then tries again.
 - It names anything in `schema.sql` that Reylo Migrate compares by name only, or not at all, such as a text search configuration or a security label. Write a change to those by hand.
+
+To accept a statement that rewrites a table, blocking its writes while it does:
+
+```terminal
+$ reylo migrate new widen_amount --blocking
+```
 
 Nothing is dropped until you name it. A change that drops a table or column, or changes a type so that values are lost, is refused:
 
@@ -851,6 +859,8 @@ To migrate another database, pass `--url`:
 $ reylo migrate status --url $PROD_URL
 ```
 
+On Turso Cloud, that's its `libsql://` URL with your auth token ([Turso](/turso#migrations)).
+
 Many commands rely on a shadow database: a throwaway database beside yours, where Reylo Migrate runs your migrations, reads the schema they make, and drops it.
 
 That's why hand-written SQL counts, and why there's no snapshot file to keep in step. You don't set anything up: on a local database you're a superuser on, you'll never notice them. Writing and repairing migrations need one, and a deploy doesn't:
@@ -871,7 +881,7 @@ Each database makes them its own way:
 
 - **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
-- **SQLite:** in memory. There's nothing to grant.
+- **SQLite:** in memory, Turso Cloud's included. There's nothing to grant.
 
 On Supabase, each shadow also gets what Supabase made in your database: its extensions, and its own schemas such as `auth` and `storage`. A migration that references `auth.users`, or adds a policy on `storage.objects`, replays as it runs.
 

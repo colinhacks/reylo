@@ -13,7 +13,7 @@ Reylo writes the type of every parameter and column it [analyzes](/inference#how
 
 Each type is an object with a `kind`.
 
-The other fields narrow the kind: a size, bounds, a pattern, a character set. A program reads `kind` and the fields it needs, and ignores the rest, since a field it doesn't know can only narrow. A few fields widen a type instead, each named under its kind below.
+Most other fields narrow the kind: a size, bounds, a pattern, a character set. A program reads `kind` and the fields it needs, and ignores the rest, since a field it doesn't know can only narrow the type or describe it. A few fields widen a type instead, each named under its kind below.
 
 ```jsonc
 // A 32-bit integer from 0 to 150, which Postgres calls int4
@@ -23,7 +23,7 @@ The other fields narrow the kind: a size, bounds, a pattern, a character set. A 
 - **Values inside a type are strings**, in the kind's canonical text, so a 64-bit bound or a date survives any encoding. Counts, such as `bits`, and code points are numbers.
 - **A flag appears only when it's true.** Its absence means false.
 - **A label is the database's name** for the type, where it has one. It never changes what the type means.
-- **A comment** is the documentation the source keeps on a named type, and **a title** is a short name for it, as JSON Schema's `title`. Neither says anything of the values.
+- **A comment** is the documentation the source keeps on a named type, and **a title** is a short name written for a reader, as JSON Schema's `title`, while the label is the name the database knows the type by. Neither says anything of the values.
 
 ### Slots
 
@@ -414,6 +414,14 @@ Each field is a slot with a `name`. It may be `optional`, its key left out, with
   "kind": "struct",
   "fields": [{ "name": "id", "type": { "kind": "integer", "bits": 64 } }],
   "extra": { "type": { "kind": "text" } }
+}
+
+// A title on the struct and on a field, beside the database's name for the type
+{
+  "kind": "struct",
+  "title": "Mailing address",
+  "label": "public.address",
+  "fields": [{ "name": "zip", "title": "ZIP code", "type": { "kind": "text" } }]
 }
 ```
 

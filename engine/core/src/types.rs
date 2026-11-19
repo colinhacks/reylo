@@ -1172,7 +1172,8 @@ impl Type {
     /// its name (else its kind), then what narrows it in parentheses: an enum's values
     /// (`varchar('a' | 'b')`, `int4(1)`), a size (`varchar(≤255)`, `bytes(=6)`), a decimal's
     /// precision and scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`)
-    /// and divisor (`int4(×5)`), a uuid's versions (`uuid(v7)`), a text's encoding and code points.
+    /// and divisor (`int4(×5)`), a uuid's versions (`uuid(v7)`), a text's encoding, code points and
+    /// format (`text(email)`). A map is its key and value, then how many keys it holds (`map(text => int4, ≤64)`).
     /// An array is its element and `[]`, `?` after an element that may be null (`text?[]`), and a
     /// set its element in braces (`set{text}`, and `{int4}` for one a Postgres array type or no name names); a struct is its fields (`point{ x: float8, y: float8 }`,
     /// `?` after a field that may be null and before one that may be absent); a table its cardinality
@@ -1217,6 +1218,7 @@ impl Type {
                 }
                 facts.extend(t.pattern.as_ref().map(|p| format!("/{p}/")));
                 facts.extend(t.media_type.clone());
+                facts.extend(t.format.clone());
                 with(facts)
             }
             Kind::Bytes(b) => with(size(&b.size).into_iter().chain(b.media_type.clone()).collect()),
@@ -1286,7 +1288,10 @@ impl Type {
                 items.extend(t.rest.as_ref().map(|r| format!("...{}", slot_short(r))));
                 format!("({})", items.join(", "))
             }
-            Kind::Map(m) => format!("{}({} => {})", label(), slot_short(&m.key), slot_short(&m.value)),
+            Kind::Map(m) => {
+                let keys = m.size.as_ref().map(|s| format!(", {}", short_size(s))).unwrap_or_default();
+                format!("{}({} => {}{keys})", label(), slot_short(&m.key), slot_short(&m.value))
+            }
             Kind::Time(t) if t.offset => format!("{}(offset)", label()),
             Kind::ZonedDateTime(z) if z.offset_only => format!("{}(offset)", label()),
             Kind::Range(r) | Kind::Multirange(r) if self.label.is_none() => format!("{}({})", self.kind.name(), r.subtype.short()),
@@ -1815,8 +1820,10 @@ mod tests {
         assert_eq!(round_trip(json!({"kind": "tuple", "elements": [{"type": {"kind": "integer", "bits": 32}}], "optional_elements": [{"nullable": true, "type": {"kind": "text"}}], "rest": {"type": {"kind": "boolean"}}})).short(), "(int32, text?=, ...boolean)");
         assert_eq!(round_trip(json!({"kind": "struct", "fields": [{"name": "id", "type": {"kind": "integer", "bits": 32}}, {"name": "tag", "optional": true, "default": "none", "comment": "What it is", "type": {"kind": "text"}}], "extra": {"type": {"kind": "text"}}})).short(), "{ id: int32, tag?: text, *: text }");
         round_trip(json!({"kind": "struct", "title": "User", "fields": [{"name": "id", "title": "Id", "type": {"kind": "uuid"}}, {"name": "password", "type": {"kind": "text", "format": "password"}}]}));
-        round_trip(json!({"kind": "text", "format": "email"}));
-        round_trip(json!({"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "integer", "bits": 32}}, "size": {"max": 64}}));
+        assert_eq!(round_trip(json!({"kind": "text", "format": "email"})).short(), "text(email)");
+        assert_eq!(round_trip(json!({"kind": "text", "size": {"max": 255}, "media_type": "text/plain", "format": "email", "label": "varchar"})).short(), "varchar(≤255, text/plain, email)");
+        assert_eq!(round_trip(json!({"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "integer", "bits": 32}}, "size": {"max": 64}})).short(), "map(text => int32, ≤64)");
+        assert_eq!(round_trip(json!({"kind": "map", "label": "hstore", "key": {"type": {"kind": "text"}}, "value": {"nullable": true, "type": {"kind": "text"}}})).short(), "hstore(text => text?)");
         assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "boolean"}, "values": ["true"]})).short(), "boolean(true)");
         assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "integer", "bits": 32, "label": "int4"}, "values": ["1", "2"]})).short(), "int4(1 | 2)");
         assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "text", "size": {"max": 20}, "label": "varchar"}, "values": ["a", "b"]})).short(), "varchar(≤20, 'a' | 'b')");
