@@ -540,6 +540,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     let inherited_from: BTreeSet<String> = rels.iter().filter(|r| r.get("bound").is_none()).filter_map(|r| r.get("parent")).flat_map(names_in).collect();
     // The composite types tables are made of, whose attributes change on those tables too.
     let typed_by: BTreeSet<String> = rels.iter().filter_map(|r| r.get("of_type").map(String::from)).collect();
+    let mut typed_tables: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for r in rels.iter().filter(|r| r.get("of_type").is_some()) {
+        typed_tables.entry(r.text("of_type").to_string()).or_default().push(r.text("name").to_string());
+    }
 
     // Constraints of tables (not the not-null ones Postgres 18 records, which the columns carry, and
     // not those a partition or a child takes from its parent, even where it declares one alike too),
@@ -867,6 +871,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                         .chain((c.flag("inherited") && !partition).then(|| "inherited".to_string()))
                         .chain((kind == "f").then(|| "foreign".to_string()))
                         .chain((!cascade.is_empty()).then(|| CASCADE.to_string()))
+                        .chain(typed_tables.get(&name).into_iter().flatten().filter(|_| kind == "c").map(|t| format!("{TYPED_TABLE}{t}{SEP}{name}")))
                         .chain((kind == "r" && inherited_from.contains(&name)).then(|| INHERITED_FROM.to_string()))
                         .chain((c.flag("inherited") && !partition).then(|| format!("{PARENTS}{}", r.text("parent"))))
                         .collect(),
@@ -3806,6 +3811,19 @@ impl Alterer for PostgresAlterer {
                 let ty = to.owner.as_deref()?.strip_prefix("type ")?;
                 let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
                 let cascade = if to.extra.iter().any(|l| l == CASCADE) { " cascade" } else { "" };
+                // A type tables are made of changes their columns with it, but with no conversion of
+                // their values: where the server assigns no value of the old type to the new, each
+                // leaves its type around the change, its column converted as any column's.
+                let a = parse_column(&from.def);
+                let tables: Vec<&str> = to.extra.iter().filter_map(|l| l.strip_prefix(TYPED_TABLE)?.split_once(SEP)).map(|(t, _)| t).filter(|t| from.extra.iter().any(|l| l.strip_prefix(TYPED_TABLE).is_some_and(|f| f.split(SEP).next() == Some(*t)))).collect();
+                if !cascade.is_empty() && !tables.is_empty() && a.ty != b.ty && !self.assigns(&a.ty, &b.ty) {
+                    let value = if self.casts(&a.ty, &b.ty) { format!("{name}::{}", b.ty) } else { format!("{name}::text::{}", b.ty) };
+                    let mut out: Vec<String> = tables.iter().map(|t| format!("alter table {t} not of")).collect();
+                    out.extend(tables.iter().map(|t| format!("alter table {t} alter column {name} type {}{collate} using {value}", b.ty)));
+                    out.push(format!("alter type {ty} alter attribute {name} type {}{collate}", b.ty));
+                    out.extend(tables.iter().map(|t| format!("alter table {t} of {ty}")));
+                    return Some(through_text(&columns_both(&used_by(from), &used_by(to)), &out));
+                }
                 Some(through_text(&columns_both(&used_by(from), &used_by(to)), &[format!("alter type {ty} alter attribute {name} type {}{collate}{cascade}", b.ty)]))
             }
             // A partition's column changes with its parent's, but for a default or a not null of

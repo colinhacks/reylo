@@ -698,6 +698,11 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     follow(&mut decided, &mut followers);
     let stated: BTreeSet<String> = decided.values().filter(|(_, was_stated)| *was_stated).map(|(old, _)| old.clone()).collect();
     let taken: BTreeSet<String> = decided.keys().cloned().collect();
+    // A column a table takes from another (a parent's) is renamed with that one, never on its own:
+    // none is guessed renamed, or the rename of one.
+    let held = |s: &Schema, id: &str| s.objects.get(id).is_some_and(|c| c.deps.iter().any(|d| s.objects.get(d).is_some_and(|x| x.kind == Some(Kind::Column) && x.owner != c.owner)));
+    let gone: Vec<(String, (String, String))> = gone.into_iter().filter(|(id, _)| stated.contains(id) || !held(from, id)).collect();
+    let come: Vec<(String, (String, String))> = come.into_iter().filter(|(id, _)| decided.contains_key(id) || !held(to, id)).collect();
     for (old_id, (table, def)) in gone.iter().filter(|(id, _)| !stated.contains(id) && !dropped.contains(id)) {
         if !to.objects.contains_key(table) {
             continue;
@@ -1361,6 +1366,15 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     }
                     if from.objects.get(d).is_some_and(|c| c.kind == Some(Kind::Column)) && held_by_another(d) {
                         down.extend(dependents.get(d).into_iter().flatten().copied());
+                    } else if !reach.contains(&d) {
+                        // What is on a child's column it takes along goes or changes before it.
+                        if let Some(j) = drop_of(d).filter(|j| *j != k) {
+                            after[k].insert(j);
+                        }
+                        let now = renamed_as.get(d).map(|n| n.to_string()).unwrap_or_else(|| d.to_string());
+                        if let Some(j) = find(Op::Alter(now)) {
+                            after[k].insert(j);
+                        }
                     }
                 }
                 // A column another table takes from this one (a child's), on a table that keeps it,
