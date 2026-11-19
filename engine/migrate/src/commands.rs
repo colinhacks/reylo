@@ -428,7 +428,11 @@ async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Err
 /// a session lock on Postgres and MySQL, held until the connection closes. SQLite's own locks would
 /// stop the app's queries for the length of the check, so a SQLite database is locked through a
 /// file named after its path in the user's temporary directory, which every checkout and worktree
-/// of theirs that opens the database shares, held while the answer lives.
+/// of theirs that opens the database shares, held while the answer lives. A libSQL server (Turso's)
+/// has no lock a session holds either: its database is locked the same way, through a file named
+/// after its URL, which holds runs on this machine apart. Two runs on different machines at once are
+/// held apart by the server's own write lock and the history, whose row each migration writes in
+/// its own transaction: one of the two fails, changing nothing.
 async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Error> {
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_lock(hashtextextended('reylo_migrate', 0))").await.map(|_| None),
@@ -442,11 +446,15 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
             Ok(None)
         }
         Dialect::Sqlite => {
-            let path = crate::db::sqlite_path(&opts.url, &opts.root);
-            if path == ":memory:" {
-                return Ok(None);
-            }
-            let canonical = std::fs::canonicalize(&path).map(|p| p.to_string_lossy().into_owned()).unwrap_or(path);
+            let canonical = if crate::libsql::is_url(&opts.url) {
+                crate::libsql::identity(&opts.url).to_ascii_lowercase()
+            } else {
+                let path = crate::db::sqlite_path(&opts.url, &opts.root);
+                if path == ":memory:" {
+                    return Ok(None);
+                }
+                std::fs::canonicalize(&path).map(|p| p.to_string_lossy().into_owned()).unwrap_or(path)
+            };
             let mut digest = crate::cache::Sha256::new();
             digest.part(canonical.as_bytes());
             let dir = std::env::temp_dir().join(format!("reylo-migrate-locks{}", user_suffix()));
@@ -2428,6 +2436,8 @@ fn missing_file(opts: &Options) -> Result<Option<(PathBuf, &'static str)>, Error
 
 fn missing_at(url: &str, root: &Path) -> Result<Option<(PathBuf, &'static str)>, Error> {
     let (path, which) = match Dialect::of_url(url)? {
+        // A libSQL server's database is there for as long as the server is.
+        Dialect::Sqlite if crate::libsql::is_url(url) => return Ok(None),
         Dialect::Sqlite => (crate::db::sqlite_path(url, root), "SQLite"),
         _ => return Ok(None),
     };
