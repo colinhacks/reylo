@@ -3,7 +3,8 @@
 //! the vectors it indexes; `alter table … alter column`), which Reylo's SQLite (rusqlite's) refuses.
 //! So a project whose SQL uses it ([`crate::libsql::uses_own_sql`]) works on its development file
 //! here, and every shadow of a libSQL database, a Turso one among them, is made here: the engine is
-//! the one Turso's `libsql-ffi` crate carries, SQLite 3.47.0, as Turso Cloud's server runs.
+//! the one Turso's `libsql-ffi` crate carries, SQLite 3.47.0, with the sqlean extensions Turso
+//! Cloud's server loads (math, stats, text, crypto, fuzzy, uuid, regexp), as it runs them.
 //! `csrc/reylo_libsql.c` compiles it with its API private, beside the binary's other SQLites.
 
 use crate::db::Row;
@@ -219,5 +220,10 @@ mod tests {
         db.backup_to(&mut copy).unwrap();
         assert_eq!(copy.rows("select count(*) as n from docs").unwrap()[0].text("n"), "1");
         assert_eq!(db.exec("select * from nope").unwrap_err().0, "no such table: nope");
+        // The extensions Turso Cloud loads, as it answers them.
+        let r = &db.rows("select floor(1.5) as f, percentile(1, 50) as p, median(1) as m, length(uuid4()) as u, hex(sha256('a')) as h, fuzzy_leven('a', 'b') as l, text_length('a') as t, regexp_like('a', 'a') as r").unwrap()[0];
+        assert_eq!([r.text("f"), r.text("p"), r.text("m"), r.text("u"), r.text("l"), r.text("t"), r.text("r")], ["1", "1", "1", "36", "1", "1", "1"]);
+        assert_eq!(r.text("h"), "CA978112CA1BBDCAFAC231B39A23DC4DA786EFF8147C4E72B9807785AFEE48BB");
+        assert!(db.rows("select geopoly_area('[[0,0],[1,0],[0,1],[0,0]]')").is_err(), "Turso Cloud has no geopoly");
     }
 }

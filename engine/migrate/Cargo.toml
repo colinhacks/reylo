@@ -8,7 +8,7 @@ license = "MIT AND blessing"
 # The amalgamation `build.rs` compiles is no source of this repository: libSQL's, which the prepare
 # step writes into `.libsql/` and the package carries, so that a build from crates.io needs no step
 # of ours.
-include = ["Cargo.toml", "build.rs", "src/**/*.rs", "csrc/**", ".libsql/sqlite3-private.c"]
+include = ["Cargo.toml", "build.rs", "src/**/*.rs", "csrc/**", ".libsql/sqlite3-private.c", ".libsql/sqlite3.h", ".libsql/sqlite3ext.h", ".libsql/sqlean/**"]
 repository.workspace = true
 homepage.workspace = true
 description = "Reylo's migrations: hand-written SQL migrations checked against the declared schema in shadow databases before they run: on Postgres, MySQL and SQLite (Turso's among it) over the connections of the native engine."

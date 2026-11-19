@@ -115,7 +115,7 @@ steps:
 
 - Every `reylo migrate` and `reylo db` command runs on Turso Cloud, and on any libSQL server: a `libsql://`, `https://` or `http://` URL, as `@libsql/client` takes it. Add `?tls=0` to a `libsql://` URL for a server without TLS.
 - From code, pass the same URL: `migrate({ url })` ([API](/migrate/docs#api)).
-- Shadow databases are in memory, on libSQL's own engine: SQLite 3.47.0, as Turso Cloud runs, with libSQL's SQL.
+- Shadow databases are in memory, on libSQL's own engine as Turso Cloud runs it: SQLite 3.47.0, libSQL's SQL, and the functions Turso Cloud adds, such as `floor`, `percentile`, `uuid4` and `regexp_like`.
 - Migrations can use libSQL's own SQL, such as a vector index (`libsql_vector_idx`) or `alter table … alter column`. When your migrations or `schema.sql` do, `reylo migrate dev` and every other command open your local file on libSQL's engine too.
 - Each migration runs in one transaction with its history row. Two deploys on one machine take turns; two on different machines at once don't, and one of them fails, changing nothing.
 

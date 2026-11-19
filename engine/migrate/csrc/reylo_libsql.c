@@ -8,6 +8,38 @@
 #define SQLITE_EXTERN
 #include "sqlite3-private.c"
 
+/* The sqlean extensions Turso Cloud loads into every connection (uuid, crypto, fuzzy, math, stats,
+ * text, regexp), as libsql-ffi loads them: `SQLITE_EXTRA_INIT` registers them as an automatic
+ * extension when the engine starts. Their sources, compiled apart (build.rs), reach the engine only
+ * through the table of routines an extension is handed, which `reylo_libsql_api` holds, never
+ * through the private API's names. */
+const sqlite3_api_routines *reylo_libsql_api = 0;
+#include "crypto/extension.h"
+#include "fuzzy/extension.h"
+#include "math/extension.h"
+#include "stats/extension.h"
+#include "text/extension.h"
+#include "uuid/extension.h"
+#include "regexp/extension.h"
+
+static int reylo_libsql_sqlean(sqlite3 *db, char **err, const sqlite3_api_routines *api) {
+  (void)err;
+  reylo_libsql_api = api;
+  crypto_init(db);
+  fuzzy_init(db);
+  math_init(db);
+  stats_init(db);
+  text_init(db);
+  uuid_init(db);
+  regexp_init(db);
+  return SQLITE_OK;
+}
+
+int reylo_libsql_extra_init(const char *unused) {
+  (void)unused;
+  return sqlite3_auto_extension((void (*)(void))reylo_libsql_sqlean);
+}
+
 int reylo_libsql_open(const char *path, sqlite3 **db) {
   return sqlite3_open_v2(path, db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, 0);
 }
