@@ -5,8 +5,6 @@ create domain good_mood as mood constraint good_mood_check check ((value <> 'ok'
 alter table t alter column g type good_mood using g::text::good_mood;
 alter table t alter column e type text using e::text;
 alter type entry alter attribute m type mood;
-alter table t alter column e type entry using e::entry;
+alter table t alter column e type entry using e::text::entry;
 drop domain good_mood__old;
 drop type mood__old;
-alter domain good_mood drop constraint good_mood_check;
-alter domain good_mood add constraint good_mood_check check (value <> 'ok');

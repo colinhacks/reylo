@@ -1,0 +1,11 @@
+alter table t alter column x drop default;
+alter table t alter column x type jsonb using to_jsonb(x);
+alter type p drop attribute c;
+alter type p add attribute b integer;
+alter type p add attribute c text;
+alter table t alter column x type p using case when x is null then null else jsonb_populate_record(null::p, x) end;
+alter table t alter column x set default row(1, null::integer, 'z'::text)::p;
+alter type q drop attribute c;
+alter type q add attribute b integer;
+alter type q add attribute c integer;
+alter table t alter column x set default row(1, null, 'z')::p;

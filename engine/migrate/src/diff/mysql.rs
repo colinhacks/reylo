@@ -1182,9 +1182,18 @@ fn made_by_keys(from: &[String], to: &[String]) -> BTreeSet<String> {
 #[derive(Default)]
 pub struct MysqlAlterer {
     decided: super::Decided,
+    /// Whether the session's sql_mode is not strict, so that a column changed to a type that can't
+    /// hold one of its values clamps or cuts the value short where a strict one fails the change.
+    clamps: bool,
 }
 
 impl MysqlAlterer {
+    /// The alterer for a session whose sql_mode is `mode`.
+    pub fn for_mode(mode: &str) -> MysqlAlterer {
+        let strict = mode.split(',').any(|m| matches!(m.trim(), "STRICT_TRANS_TABLES" | "STRICT_ALL_TABLES" | "TRADITIONAL"));
+        MysqlAlterer { clamps: !strict, ..MysqlAlterer::default() }
+    }
+
     /// The columns of a table renamed between two of its bodies: the planner's decision where it
     /// made one, else its rule.
     fn pairs(&self, table: &str, from: &Body, to: &Body) -> Vec<(String, String)> {
@@ -1220,6 +1229,84 @@ fn type_class(def: &str) -> super::TypeClass {
     }
 }
 
+/// Whether every value of the MySQL type `a` is a value of `b` too, so that a change from one to the
+/// other keeps every value under any sql_mode. Where it can't tell, no.
+fn holds_all(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim().to_lowercase(), b.trim().to_lowercase());
+    if a == b {
+        return true;
+    }
+    let parse = |t: &str| -> (String, Vec<u32>, bool) {
+        let name: String = t.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+        let args = t.find('(').and_then(|o| Some(&t[o + 1..o + t[o..].find(')')?])).map(|x| x.split(',').filter_map(|n| n.trim().parse().ok()).collect()).unwrap_or_default();
+        (name, args, t.split_whitespace().any(|w| w == "unsigned"))
+    };
+    let ((x, xa, xu), (y, ya, yu)) = (parse(&a), parse(&b));
+    let bytes = |n: &str| match n {
+        "tinyint" => Some(1),
+        "smallint" => Some(2),
+        "mediumint" => Some(3),
+        "int" | "integer" => Some(4),
+        "bigint" => Some(8),
+        _ => None,
+    };
+    // The digits of an integer type's widest value, and a sign.
+    let digits = |n: u32, unsigned: bool| [0, 3, 5, 8, 10, 0, 0, 0, 20][n as usize] - u32::from(!unsigned && n == 8) + u32::from(!unsigned);
+    let text = |n: &str| match n {
+        "tinytext" => Some(63),
+        "text" => Some(16383),
+        "mediumtext" | "longtext" => Some(u32::MAX),
+        _ => None,
+    };
+    let chars = |n: &str, args: &[u32]| match n {
+        "char" | "varchar" => args.first().copied().or(Some(1)),
+        _ => text(n),
+    };
+    let set = |t: &str| -> Vec<String> { t.find('(').map(|o| t[o + 1..t.len().saturating_sub(1)].split(',').map(|l| l.trim().to_string()).collect()).unwrap_or_default() };
+    let precision = |args: &[u32]| args.first().copied().unwrap_or(0);
+    match (x.as_str(), y.as_str()) {
+        (p, q) if bytes(p).is_some() && bytes(q).is_some() => {
+            let (m, n) = (bytes(p).unwrap(), bytes(q).unwrap());
+            match (xu, yu) {
+                (false, true) => false,
+                (true, false) => n > m,
+                _ => n >= m,
+            }
+        }
+        (p, "decimal" | "numeric") if bytes(p).is_some() => {
+            let (dp, ds) = (ya.first().copied().unwrap_or(10), ya.get(1).copied().unwrap_or(0));
+            (!yu || xu) && dp - ds >= digits(bytes(p).unwrap(), true)
+        }
+        (p, "double" | "real") if bytes(p).is_some() => ya.is_empty() && bytes(p).unwrap() <= 4 && (!yu || xu),
+        (p, "float") if bytes(p).is_some() => ya.is_empty() && bytes(p).unwrap() <= 2 && (!yu || xu),
+        (p, q) if bytes(p).is_some() && chars(q, &ya).is_some() => chars(q, &ya).unwrap() >= digits(bytes(p).unwrap(), xu),
+        ("decimal" | "numeric", "decimal" | "numeric") => {
+            let (p1, s1) = (xa.first().copied().unwrap_or(10), xa.get(1).copied().unwrap_or(0));
+            let (p2, s2) = (ya.first().copied().unwrap_or(10), ya.get(1).copied().unwrap_or(0));
+            (!yu || xu) && s2 >= s1 && p2 - s2 >= p1 - s1
+        }
+        ("float", "double" | "real") => xa.is_empty() && ya.is_empty() && (!yu || xu),
+        ("char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext", q) if chars(q, &ya).is_some() => {
+            // A char drops the trailing spaces a varchar or text value has.
+            chars(q, &ya).unwrap() >= chars(&x, &xa).unwrap() && (x == "char" || y != "char")
+        }
+        ("varbinary", "varbinary") => ya.first().copied().unwrap_or(0) >= xa.first().copied().unwrap_or(0),
+        ("varbinary", "blob" | "mediumblob" | "longblob") => true,
+        ("tinyblob", "blob" | "mediumblob" | "longblob") | ("blob", "mediumblob" | "longblob") | ("mediumblob", "longblob") => true,
+        ("enum", "enum") | ("set", "set") => {
+            let to = set(&b);
+            set(&a).iter().all(|l| to.contains(l))
+        }
+        ("date", "datetime") => true,
+        ("datetime", "datetime") | ("timestamp", "timestamp" | "datetime") | ("time", "time") => precision(&ya) >= precision(&xa),
+        ("year", q) => bytes(q).is_some_and(|n| n >= 2),
+        ("bit", "bit") => ya.first().copied().unwrap_or(1) >= xa.first().copied().unwrap_or(1),
+        ("json", "longtext") => true,
+        (_, "longtext") => bytes(&x).is_some() || matches!(x.as_str(), "decimal" | "numeric" | "float" | "double" | "date" | "datetime" | "timestamp" | "time" | "year"),
+        _ => false,
+    }
+}
+
 /// The type a column's definition opens with: `decimal(10,2) unsigned` of `decimal(10,2) unsigned not null`.
 fn type_of(def: &str) -> String {
     let words: Vec<&str> = def.split_whitespace().collect();
@@ -1244,8 +1331,14 @@ impl Alterer for MysqlAlterer {
             _ => {}
         }
         let (a, b) = (type_of(&from.def), type_of(&to.def));
-        let why = super::narrowing(&type_class(&a), &type_class(&b))?;
-        Some(format!("changes from {a} to {b}, which {why}"))
+        if let Some(why) = super::narrowing(&type_class(&a), &type_class(&b)) {
+            return Some(format!("changes from {a} to {b}, which {why}"));
+        }
+        // Other changes fail on a value the new type can't hold, but only under a strict sql_mode.
+        if self.clamps && !holds_all(&a, &b) {
+            return Some(format!("changes from {a} to {b}, which clamps or cuts short a value it can't hold, since this session's sql_mode isn't strict"));
+        }
+        None
     }
 
     fn decide(&self, renames: &[(String, String)]) {
@@ -1320,5 +1413,19 @@ mod tests {
         assert_eq!(body.option("comment"), Some("'People'"));
         assert_eq!(body.option("auto_increment"), None);
         assert_eq!(body.partition, "partition by hash (id) partitions 2");
+    }
+
+    #[test]
+    fn a_change_that_keeps_every_value_needs_no_strict_mode() {
+        for (a, b) in [("tinyint", "int"), ("int unsigned", "bigint"), ("int", "decimal(12,0)"), ("smallint", "varchar(6)"), ("varchar(10)", "text"), ("char(4)", "varchar(4)"), ("decimal(5,2)", "decimal(7,3)"), ("enum('a','b')", "enum('b','a','c')"), ("date", "datetime"), ("datetime(3)", "datetime(6)"), ("float", "double"), ("int", "longtext")] {
+            assert!(holds_all(a, b), "{a} to {b}");
+        }
+        for (a, b) in [("int", "tinyint"), ("int", "int unsigned"), ("int unsigned", "int"), ("varchar(10)", "varchar(3)"), ("varchar(4)", "char(4)"), ("decimal(5,2)", "decimal(5,1)"), ("enum('a','b')", "enum('a')"), ("datetime", "timestamp"), ("datetime(6)", "datetime"), ("double", "float"), ("bigint", "double"), ("int", "varchar(5)")] {
+            assert!(!holds_all(a, b), "{a} to {b}");
+        }
+        let column = |def: &str| Object { kind: Some(Kind::Column), def: def.into(), ..Object::default() };
+        assert_eq!(MysqlAlterer::for_mode("ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES").narrows(&column("int"), &column("tinyint")), None);
+        assert!(MysqlAlterer::for_mode("NO_ENGINE_SUBSTITUTION").narrows(&column("int"), &column("tinyint")).is_some());
+        assert_eq!(MysqlAlterer::for_mode("").narrows(&column("int"), &column("bigint")), None);
     }
 }

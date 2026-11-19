@@ -459,9 +459,14 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     // Constraints (not the not-null ones Postgres 18 records, which the columns carry).
     for r in db
         .rows(&format!(
-            "select case when c.oid is not null then format('%I.%I', n.nspname, c.relname) else format('%I.%I', tn.nspname, t.typname) end as rel, co.conname as name,
+            "select case when c.oid is not null then format('%I.%I', n.nspname, c.relname) else format('%I.%I', tn.nspname, t.typname) end as rel,
+              -- A foreign key's copy for each partition of the table it references is named in the
+              -- order the partitions were made: it is read as its key's, for that partition.
+              case when pc.conrelid = co.conrelid then pc.conname || ' for ' || format('%I.%I', fn.nspname, fc.relname) else co.conname end as name,
               pg_get_constraintdef(co.oid, false) as def, co.condeferrable as deferrable, co.condeferred as deferred, co.convalidated as validated
             from pg_constraint co
+            left join pg_constraint pc on pc.oid = co.conparentid
+            left join pg_class fc on fc.oid = co.confrelid left join pg_namespace fn on fn.oid = fc.relnamespace
             left join pg_class c on c.oid = co.conrelid left join pg_namespace n on n.oid = c.relnamespace
             left join pg_type t on t.oid = co.contypid left join pg_namespace tn on tn.oid = t.typnamespace
             where co.contype <> 'n' and coalesce(n.nspname, tn.nspname) not in ('pg_catalog', 'information_schema') and coalesce(c.relname, '') <> '{history}'

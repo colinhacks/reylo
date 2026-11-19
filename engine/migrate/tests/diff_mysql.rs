@@ -1,7 +1,9 @@
 //! The MySQL diff engine's cases, `tests/diff/mysql/<case>/`, as `tests/diff.rs` runs Postgres's:
 //! `v1.sql` (with `seed.sql`'s rows) is the database as it is, `v2.sql` the schema it should have;
 //! each case builds both, plans from one to the other, runs the plan on the first, and requires its
-//! catalog to equal the second's and every table both have to keep its rows. `server.sql` makes
+//! catalog to equal the second's, every table both have to keep its rows, and every column kept to
+//! keep its values, unless the plan says it loses or narrows them or the case's `changes.txt` names
+//! the table. A case's `sql_mode` file is the mode its sessions run in. `server.sql` makes
 //! what a case needs of the server itself (an account), and `check.sql`, where a case has one,
 //! runs after the plan, so a case can require what no catalog shows (an AUTO_INCREMENT counter
 //! past the rows). The plan is kept beside the case as `plan.sql`: `REYLO_BLESS=1` writes it.
@@ -120,7 +122,6 @@ async fn mysql() {
     };
     let here = std::env::temp_dir();
     let mut admin = Db::connect(&base, &here).await.unwrap();
-    let alterer = diff::mysql::MysqlAlterer::default();
     let bless = std::env::var("REYLO_BLESS").is_ok();
     let mut failures = Vec::new();
     for (n, case) in cases().into_iter().enumerate() {
@@ -132,12 +133,21 @@ async fn mysql() {
         }
         let mut from = Db::connect(&with_database(&base, &a), &here).await.unwrap();
         let mut to = Db::connect(&with_database(&base, &b), &here).await.unwrap();
+        // A case's `sql_mode` file is the mode its sessions run in, which the alterer reads.
+        let mode = read(&case.join("sql_mode")).trim().to_string();
+        if !mode.is_empty() {
+            for db in [&mut from, &mut to] {
+                db.exec(&format!("set session sql_mode = '{mode}'")).await.unwrap();
+            }
+        }
+        let alterer = diff::alterer(&mut from).await.unwrap();
+        let alterer = alterer.as_ref();
         from.script(&read(&case.join("v1.sql"))).await.unwrap_or_else(|e| panic!("{name}: v1.sql: {e}"));
         from.script(&read(&case.join("seed.sql"))).await.unwrap_or_else(|e| panic!("{name}: seed.sql: {e}"));
         to.script(&read(&case.join("v2.sql"))).await.unwrap_or_else(|e| panic!("{name}: v2.sql: {e}"));
         let before = counts(&mut from).await;
         let rows_before = values(&mut from).await;
-        let plan = diff::plan(&diff::mysql::read(&mut from).await.unwrap(), &diff::mysql::read(&mut to).await.unwrap(), &alterer);
+        let plan = diff::plan(&diff::mysql::read(&mut from).await.unwrap(), &diff::mysql::read(&mut to).await.unwrap(), alterer);
         let text = plan.sql();
         let mut failed = None;
         for s in plan.runnable() {
@@ -147,11 +157,13 @@ async fn mysql() {
             }
         }
         let (only_a, only_b) = differences(&mut from, &mut to).await;
-        let again = diff::plan(&diff::mysql::read(&mut from).await.unwrap(), &diff::mysql::read(&mut to).await.unwrap(), &alterer).sql();
+        let again = diff::plan(&diff::mysql::read(&mut from).await.unwrap(), &diff::mysql::read(&mut to).await.unwrap(), alterer).sql();
         let after = counts(&mut from).await;
         let lost: Vec<String> = before.iter().filter(|(t, n)| after.iter().any(|(u, m)| u == t && m != n)).map(|(t, n)| format!("{t}: {n} rows before")).collect();
-        // Every column a table keeps keeps its values, where the case doesn't say the change rewrites them.
-        let skip: Vec<String> = read(&case.join("changes.txt")).lines().filter_map(|l| l.split_whitespace().next()).map(|t| t.to_lowercase()).collect();
+        // Every column a table keeps keeps its values, where neither the plan (as a loss or a
+        // narrowing) nor the case (`changes.txt`) says the change rewrites them.
+        let declared = plan.losses.iter().chain(plan.narrowings.iter().map(|(c, _)| c)).filter_map(|id| id.strip_prefix("column ")?.rsplit_once('.').map(|(t, _)| t.trim_matches('`').to_lowercase()));
+        let skip: Vec<String> = read(&case.join("changes.txt")).lines().filter_map(|l| l.split_whitespace().next()).map(|t| t.to_lowercase()).chain(declared).collect();
         let rewritten: Vec<String> = if failed.is_none() { changed(&rows_before, &values(&mut from).await).into_iter().filter(|t| !skip.contains(t)).collect() } else { vec![] };
         let check = read(&case.join("check.sql"));
         let checked = if failed.is_none() && !check.is_empty() { from.script(&check).await.err() } else { None };
@@ -185,8 +197,11 @@ async fn mysql() {
         let c = format!("diff_{}_{n}_c", std::process::id());
         recreate(&mut admin, &c).await;
         let mut back = Db::connect(&with_database(&base, &c), &here).await.unwrap();
+        if !mode.is_empty() {
+            back.exec(&format!("set session sql_mode = '{mode}'")).await.unwrap();
+        }
         back.script(&read(&case.join("v1.sql"))).await.unwrap();
-        let reverse = diff::plan(&diff::mysql::read(&mut to).await.unwrap(), &diff::mysql::read(&mut back).await.unwrap(), &alterer);
+        let reverse = diff::plan(&diff::mysql::read(&mut to).await.unwrap(), &diff::mysql::read(&mut back).await.unwrap(), alterer);
         let mut failed = None;
         for s in reverse.runnable() {
             if let Err(e) = to.exec(s).await {
@@ -195,7 +210,7 @@ async fn mysql() {
             }
         }
         let (only_a, only_b) = differences(&mut to, &mut back).await;
-        let again = diff::plan(&diff::mysql::read(&mut to).await.unwrap(), &diff::mysql::read(&mut back).await.unwrap(), &alterer).sql();
+        let again = diff::plan(&diff::mysql::read(&mut to).await.unwrap(), &diff::mysql::read(&mut back).await.unwrap(), alterer).sql();
         if failed.is_some() || !only_a.is_empty() || !only_b.is_empty() || !again.is_empty() {
             let mut lines: Vec<String> = failed.into_iter().map(|f| format!("  failed at {f}")).collect();
             lines.extend(only_a.iter().map(|l| format!("  - {l}")).chain(only_b.iter().map(|l| format!("  + {l}"))));
