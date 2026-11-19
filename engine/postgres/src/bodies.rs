@@ -1268,7 +1268,9 @@ fn replacement(sql: &str, opaque: &[(usize, usize)], call: &Call, f: &Function, 
                 let relations: Vec<String> = analyzed.iter().flat_map(|a| a.read_set.iter().cloned()).collect();
                 let catalog = postgres::catalog(host, &functions, &relations);
                 let trust = postgres::trust(host);
-                let (Some(catalog), Some(trust)) = (catalog, trust) else { return None };
+                let (Some(mut catalog), Some(mut trust)) = (catalog, trust) else { return None };
+                trust.null_equals = crate::infer::compares_with_null(&text);
+                catalog.null_equals = trust.null_equals;
                 if cardinality::exactly_one(&text, Dialect::Postgres, &trust, &catalog).is_err() {
                     return Some(None);
                 }

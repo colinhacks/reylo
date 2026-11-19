@@ -579,7 +579,7 @@ pub fn describe(sql: &str, host: &Host) -> Lazy<Result<DescribedStatement, DbErr
     host.on_engine_stack(|host| {
         let engine = Engine::new(host);
         let parsed = analyze::analyze(sql).ok();
-        let trust = trust(host);
+        let trust = trust(host).map(|trust| Trust { null_equals: infer::compares_with_null(sql), ..trust });
         let relations = relations_of(parsed.as_ref());
         engine.described(sql, parsed.as_ref(), &relations, trust.as_ref(), &[]).map(|r| r.map(|(_, described)| described))
     })
@@ -616,7 +616,7 @@ pub fn shaped(sql: &str, host: &Host) -> Lazy<Result<ShapedStatement, DbError>> 
     host.on_engine_stack(|host| {
         let engine = Engine::new(host);
         let parsed = analyze::analyze(sql).ok();
-        let trust = trust(host);
+        let trust = trust(host).map(|trust| Trust { null_equals: infer::compares_with_null(sql), ..trust });
         let relations = relations_of(parsed.as_ref());
         let described = engine.described(sql, parsed.as_ref(), &relations, trust.as_ref(), &[]);
         let columns = columns_where(true, sql, host);
@@ -717,6 +717,7 @@ fn columns_where(needed: bool, sql: &str, host: &Host) -> Lazy<Columns> {
 /// What the trust check says that the row-count proof reads: whether `=` is only the built-in
 /// one, which operators a user defined, and which types no user's cast function targets.
 fn trusted(catalog: &mut Catalog, trust: &Trust) {
+    catalog.null_equals = trust.null_equals;
     catalog.equality_shadowed = !trust.builtin("=");
     catalog.user_operators = trust.shadowed.clone();
     catalog.cast_targets = trust.cast_targets.clone();
@@ -903,6 +904,7 @@ impl<'a> Engine<'a> {
         let trust = trust(self.host).zip(nullable.clone()).map(|(mut trust, nullable)| {
             trust.non_null_params = true;
             trust.nullable_params = nullable;
+            trust.null_equals = infer::compares_with_null(&rewritten.sql);
             trust
         });
         let operators = set_returning_operators(self.host);
@@ -4353,6 +4355,10 @@ fn same_value_is_equal(ty: &Type, in_json: bool) -> bool {
 /// test that rests on one does not prove the joined row exists.
 fn witness_holds(witness: &analyze::Witness, relation: &str, columns: &[Vec<Value>], trust: &Trust) -> bool {
     use crate::resolution::Operand;
+    // Under `transform_null_equals`, `x = NULL` is `x IS NULL`, which holds of NULL.
+    if trust.null_equals && witness.calls.iter().any(infer::StrictCall::null_equality) {
+        return false;
+    }
     // A domain's column, or one the catalog does not report, is of no type the build vouches for.
     let read = || -> Option<Operand> {
         let name = witness.column.last()?;

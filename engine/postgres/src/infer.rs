@@ -561,6 +561,10 @@ pub struct Trust {
     /// Whether the database holds no nondeterministic collation, so no value can bring one to a
     /// comparison. A host that did not ask leaves it unset.
     pub deterministic_only: bool,
+    /// Whether the statement compares a value with a bare NULL by `=` ([`compares_with_null`]),
+    /// which `transform_null_equals` turns into `IS NULL`: no such comparison is then a strict
+    /// test, which a probe's NULL in place of a parameter stands for otherwise.
+    pub null_equals: bool,
 }
 
 impl Trust {
@@ -3293,6 +3297,9 @@ impl Reader<'_> {
             if out.iter().any(|n| n.column == strict.column && n.checks.is_empty()) {
                 continue;
             }
+            if self.trust.null_equals && strict.calls.iter().any(StrictCall::null_equality) {
+                continue;
+            }
             let mut checks = Vec::new();
             if strict.calls.iter().any(|c| self.trust.call_checked(c)) && (self.dialect != Dialect::Postgres || self.trust.overloads.is_none()) {
                 continue;
@@ -3403,6 +3410,44 @@ impl Strict {
         self.calls.push(StrictCall { kind, name: name.to_string(), args });
         self
     }
+}
+
+impl StrictCall {
+    /// Whether the call is `=` with a bare NULL on a side ([`compares_with_null`]).
+    pub(crate) fn null_equality(&self) -> bool {
+        self.kind == Kind::Infix && self.name == "=" && self.args.iter().any(is_null_constant)
+    }
+}
+
+/// Whether a node is a NULL constant as written, with no cast: what `transform_null_equals` reads
+/// beside `=`.
+pub(crate) fn is_null_constant(node: &Node) -> bool {
+    matches!(node.node.as_ref(), Some(NodeEnum::AConst(c)) if c.isnull)
+}
+
+/// Whether a statement compares a value with a bare NULL by `=` anywhere (`x = NULL`, `NULL = x`).
+/// Under the setting `transform_null_equals`, which a database or a role may set, Postgres reads
+/// such a comparison as `x IS NULL`, true of the rows where `x` is NULL; without it the comparison
+/// is never true. Either way it pins no key and narrows no column, though a probe writes `x = NULL`
+/// for `x = $1`, which does: in a statement that holds one, no `= NULL` is read as either.
+pub fn compares_with_null(sql: &str) -> bool {
+    fn walk(v: &serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Object(map) => {
+                let found = map.get("AExpr").is_some_and(|e| {
+                    let op = e.get("kind").and_then(serde_json::Value::as_i64) == Some(protobuf::AExprKind::AexprOp as i64);
+                    let equals = e.get("name").and_then(serde_json::Value::as_array).is_some_and(|n| n.len() == 1 && n[0].pointer("/node/String/sval").and_then(serde_json::Value::as_str) == Some("="));
+                    let null = |side: &str| e.get(side).and_then(|s| s.pointer("/node/AConst/isnull")).and_then(serde_json::Value::as_bool) == Some(true);
+                    op && equals && (null("lexpr") || null("rexpr"))
+                });
+                found || map.values().any(walk)
+            }
+            serde_json::Value::Array(items) => items.iter().any(walk),
+            _ => false,
+        }
+    }
+    let Ok(parsed) = crate::stack::parse(sql) else { return true };
+    walk(&serde_json::to_value(&parsed.protobuf).unwrap_or_default())
 }
 
 /// The columns a predicate at the top level of a WHERE, or of an inner join's ON clause, is strict

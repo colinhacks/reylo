@@ -121,6 +121,9 @@ pub struct Catalog {
     /// Function names with a volatile overload (`provolatile = 'v'`). A volatile call is evaluated
     /// for each row, so `id = random_id()` is no value a key can be pinned to.
     pub volatile: HashSet<String>,
+    /// Whether the statement compares a value with a bare NULL by `=`, which `transform_null_equals`
+    /// reads as `IS NULL`: `id = NULL` then pins no key ([`crate::infer::compares_with_null`]).
+    pub null_equals: bool,
     /// Operator names a user or an extension defined, as the trust check reports them: such an
     /// operator may be the one a comparison or an arithmetic resolves to, and may be volatile.
     pub user_operators: HashSet<String>,
@@ -3382,8 +3385,10 @@ fn catalog_name(rv: &protobuf::RangeVar) -> String {
 ///   column, on the other side has the type `type_of` gives it, from the catalog.
 /// - A volatile call is evaluated for each row, so `id = floor(random() * 3)::int` can match
 ///   several rows ([`calls_volatile`]).
+/// - A bare NULL is no value where the statement compares one by `=` ([`Catalog::null_equals`]):
+///   under `transform_null_equals`, `id = NULL` is `id IS NULL`, which every NULL key matches.
 fn equality_bounds(catalog: &Catalog, relation: &str, column: &str, value: &protobuf::Node, type_of: &dyn Fn(&protobuf::Node) -> Option<u32>) -> bool {
-    if mentions(value, "CollateClause") || calls_volatile(value, catalog) {
+    if mentions(value, "CollateClause") || calls_volatile(value, catalog) || (catalog.null_equals && infer::is_null_constant(value)) {
         return false;
     }
     let Some(column_type) = catalog.column_types.get(relation).and_then(|types| types.get(column)).copied() else { return true };
