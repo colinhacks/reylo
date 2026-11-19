@@ -254,10 +254,10 @@ fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target
     let mut out = Vec::new();
     match statement {
         Statement::Query(q) => compared_query(q, &[], names, &mut out),
-        Statement::Update(update) => compared_select(&[&update.table], update.selection.iter().collect(), &[], names, &mut out),
+        Statement::Update(update) => compared_select(&[&update.table], update.selection.iter().collect(), None, &[], names, &mut out),
         Statement::Delete(delete) => {
             let (ast::FromTable::WithFromKeyword(from) | ast::FromTable::WithoutKeyword(from)) = &delete.from;
-            compared_select(&from.iter().collect::<Vec<_>>(), delete.selection.iter().collect(), &[], names, &mut out);
+            compared_select(&from.iter().collect::<Vec<_>>(), delete.selection.iter().collect(), None, &[], names, &mut out);
         }
         _ => {}
     }
@@ -278,7 +278,27 @@ fn compared_query<'a>(q: &'a Query, outer: &[Cte<'a>], names: &Names, out: &mut 
 
 fn compared_body<'a>(body: &'a SetExpr, ctes: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
     match body {
-        SetExpr::Select(s) => compared_select(&s.from.iter().collect::<Vec<_>>(), s.selection.iter().chain(s.having.iter()).collect(), ctes, names, out),
+        SetExpr::Select(s) => {
+            // In a HAVING the server reads a bare name as the select list's alias before the FROM's
+            // column of that name: an alias of anything but that column itself names no column.
+            let aliases: Vec<String> = s
+                .projection
+                .iter()
+                .filter_map(|item| match item {
+                    SelectItem::ExprWithAlias { expr, alias } => {
+                        let itself = match expr {
+                            Expr::Identifier(i) => i.value.eq_ignore_ascii_case(&alias.value),
+                            Expr::CompoundIdentifier(parts) => parts.last().is_some_and(|p| p.value.eq_ignore_ascii_case(&alias.value)),
+                            _ => false,
+                        };
+                        (!itself).then(|| alias.value.to_ascii_lowercase())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let having = s.having.as_ref().map(|having| (having, aliases));
+            compared_select(&s.from.iter().collect::<Vec<_>>(), s.selection.iter().collect(), having, ctes, names, out)
+        }
         SetExpr::SetOperation { left, right, .. } => {
             compared_body(left, ctes, names, out);
             compared_body(right, ctes, names, out);
@@ -292,8 +312,9 @@ fn compared_body<'a>(body: &'a SetExpr, ctes: &[Cte<'a>], names: &Names, out: &m
 /// its HAVING and its joins' ON clauses, and those inside its derived tables. A column of a
 /// derived table or a WITH query is read through to each table column it passes through unchanged
 /// ([`crate::mysql_keys::output_origins`]): one, or one per side of a set operation, whose types
-/// [`typed`] keeps only where they agree.
-fn compared_select<'a>(from: &[&'a TableWithJoins], filters: Vec<&'a Expr>, ctes: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
+/// [`typed`] keeps only where they agree. Beside the HAVING, the select list's aliases, which a
+/// bare name there reads first.
+fn compared_select<'a>(from: &[&'a TableWithJoins], filters: Vec<&'a Expr>, having: Option<(&'a Expr, Vec<String>)>, ctes: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
     // The tables by the name the statement reads each by; `plain` where every item is a table.
     let mut tables: Vec<(String, String)> = Vec::new();
     let mut derived: Vec<(String, &Query, &[Cte], Vec<String>)> = Vec::new();
@@ -403,6 +424,13 @@ fn compared_select<'a>(from: &[&'a TableWithJoins], filters: Vec<&'a Expr>, ctes
     });
     for filter in filters.into_iter().chain(ons) {
         walk(filter, names, &column, out);
+    }
+    if let Some((having, aliases)) = having {
+        let unaliased = |e: &Expr| match e {
+            Expr::Identifier(i) if aliases.iter().any(|a| a.eq_ignore_ascii_case(&i.value)) => Vec::new(),
+            _ => column(e),
+        };
+        walk(having, names, &unaliased, out);
     }
 }
 
@@ -1088,6 +1116,13 @@ mod tests {
         assert_eq!(param_types("delete from t where big = :b", 8), [p("b", "bigint")]);
         // An expression of the column is not the column: `big + 1` is the prepare's.
         assert_eq!(param_types("select id from t where big + 1 = :b limit :n", 8), [p("b", "int32"), p("n", "int32")]);
+        // A HAVING reads a bare name as the select list's alias first, and an alias of anything but
+        // the column itself is no column.
+        assert_eq!(param_types("select count(*) as big from t having big = :b", 8), [p("b", "int32")]);
+        assert_eq!(param_types("select id as Flag from t having flag = :f", 8), [p("f", "int32")]);
+        assert_eq!(param_types("select big from t having big = :b", 8), [p("b", "bigint")]);
+        assert_eq!(param_types("select t.big as big from t having big = :b", 8), [p("b", "bigint")]);
+        assert_eq!(param_types("select count(*) as big from t where big = :w having big > :h", 8), [p("w", "bigint"), p("h", "int32")]);
     }
 
     /// The tables `sql` reads and writes, as [`super::tables`] names them.

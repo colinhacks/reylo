@@ -467,7 +467,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 
 **Integers**
 
-MySQL reports every integer parameter as a `BIGINT`, so Reylo types it from the column it's compared with or written to. Elsewhere it uses MySQL's type, as for `limit`:
+MySQL reports every integer parameter as a `BIGINT`, so Reylo types it from the column it's compared with or written to (in a `having`, a name is the select list's alias before it's a column, as MySQL reads it). Elsewhere it uses MySQL's type, as for `limit`:
 
 <InferenceCard>
 
