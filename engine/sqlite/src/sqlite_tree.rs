@@ -19,9 +19,16 @@ use std::sync::Mutex;
 /// The serializer keeps one schema replay and one capture in globals, so calls are serialized.
 static LOCK: Mutex<()> = Mutex::new(());
 
+/// The version of the tree's format, which the walker writes as the tree's first member
+/// (`REYLO_TREE_VERSION` in `csrc/reylo_sqlite.c`): a tree of another is refused, by both numbers,
+/// before anything in it is read. A change to what either side reads or writes moves both.
+pub const TREE_VERSION: u32 = 1;
+
 #[derive(Debug, Deserialize)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 pub struct Tree {
+    #[serde(deserialize_with = "tree_version")]
+    pub version: u32,
     // Absent, with `columns`, `params`, `readonly` and `tables`, when `error` is set.
     /// The top-level SELECT, or the SELECT that feeds an INSERT.
     #[serde(default)]
@@ -489,6 +496,15 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for Noting<'_, A> {
     }
 }
 
+/// The tree's version, refused unless it is [`TREE_VERSION`].
+fn tree_version<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let version = u32::deserialize(d)?;
+    if version != TREE_VERSION {
+        return Err(de::Error::custom(format!("the tree is of version {version}, and this engine reads version {TREE_VERSION}")));
+    }
+    Ok(version)
+}
+
 /// A member the walker always writes, null or not. Serde reads a missing `Option` as `None`, unless
 /// a function of the member's own reads it, as this one does, changing nothing else.
 fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
@@ -567,7 +583,7 @@ mod tests {
         let column = json!({ "op": "column", "aff": "none", "outerOn": false, "innerOn": false, "cursor": 0, "index": 0, "register": false, "table": "t", "column": "a", "declared": "", "affinity": "blob", "coll": "BINARY", "notNull": false, "rowid": false, "generated": false, "subtype": false, "outer": false, "strict": false, "view": false });
         let from = json!({ "cursor": 0, "table": "t", "alias": null, "outer": false, "right": false, "leftOfRight": false, "tabFunc": false, "args": [], "cte": false, "recursive": false, "view": false, "virtual": false, "subquery": null, "on": null });
         let statement = json!({ "columns": [{ "name": "a", "named": false, "expr": column }], "from": [from], "where": null, "groupBy": [], "having": null, "orderBy": [], "limit": null, "offset": null, "distinct": false, "aggregate": false, "values": false, "window": false });
-        json!({ "statement": statement, "dml": null, "returning": null, "columns": [{ "name": "a", "declared": null }], "params": [], "readonly": true, "tables": {}, "schemaErrors": [] })
+        json!({ "version": TREE_VERSION, "statement": statement, "dml": null, "returning": null, "columns": [{ "name": "a", "declared": null }], "params": [], "readonly": true, "tables": {}, "schemaErrors": [] })
     }
 
     fn read(tree: &Value) -> Result<Tree, String> {
@@ -596,6 +612,16 @@ mod tests {
         t["statement"]["columns"][0]["expr"] = json!({ "op": "column", "aff": "none", "outerOn": false, "innerOn": false, "cursor": 0, "index": 0, "table": null, "register": false });
         assert!(read(&t).is_ok());
         // A failed statement's tree has no statement.
-        assert!(read(&json!({ "error": { "message": "no such table: x", "offset": 14 }, "schemaErrors": [] })).is_ok());
+        assert!(read(&json!({ "version": TREE_VERSION, "error": { "message": "no such table: x", "offset": 14 }, "schemaErrors": [] })).is_ok());
+    }
+
+    #[test]
+    fn a_tree_of_another_version_is_refused_by_both_numbers() {
+        let mut t = tree();
+        t["version"] = json!(TREE_VERSION + 1);
+        let refused = read(&t).unwrap_err();
+        assert!(refused.contains(&format!("the tree is of version {}, and this engine reads version {TREE_VERSION}", TREE_VERSION + 1)), "{refused}");
+        t.as_object_mut().unwrap().remove("version");
+        assert!(read(&t).unwrap_err().contains("missing field `version`"));
     }
 }

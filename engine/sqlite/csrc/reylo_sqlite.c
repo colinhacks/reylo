@@ -832,6 +832,11 @@ static char *missingSchema(const char *zSql, const char *zMsg, int *piOfst, int 
   return 0;
 }
 
+/* The version of the tree's format, reylo_sqlite_analyze's first member: TREE_VERSION in
+** src/sqlite_tree.rs, which refuses a tree of another. A change to what either side reads or writes
+** moves both. */
+#define REYLO_TREE_VERSION 1
+
 /* How deep the user's statement may nest: see reylo_sqlite_analyze. */
 #define REYLO_SQLITE_EXPR_DEPTH 350
 
@@ -841,8 +846,8 @@ static char *missingSchema(const char *zSql, const char *zMsg, int *piOfst, int 
 ** the same statement as the application runs it, names them (zSql when it is null), and the functions of the
 ** host's SQLite (azHost[i] taking aHostArg[i] arguments, of type zHostType[i]; nHost is negative
 ** when the host did not list them, and every function this build has is then taken to exist).
-** Returns a JSON document (free with reylo_sqlite_free): { statement, dml, returning, tables,
-** columns, params, readonly, error, schemaErrors }.
+** Returns a JSON document (free with reylo_sqlite_free): { version, statement, dml, returning,
+** tables, columns, params, readonly, error, schemaErrors }.
 */
 char *reylo_sqlite_analyze(
   const char *const *azDdl, int nDdl, const char *zSql, const char *zSent, const char *const *azFn, const int *aFnArg, int nFn,
@@ -856,6 +861,7 @@ char *reylo_sqlite_analyze(
   rc = openSchema(azDdl, nDdl, azFn, aFnArg, nFn, azHost, aHostArg, zHostType, nHost, schemaErrors);
   closeArr(schemaErrors);
   sqlite3_str_appendchar(out, 1, '{');
+  kv_int(out, "version", REYLO_TREE_VERSION);
   if( rc!=SQLITE_OK ){
     key(out, "error"); sqlite3_str_appendall(out, "{\"message\":\"cannot open the schema replay\",\"offset\":-1},");
     key(out, "schemaErrors"); sqlite3_str_appendall(out, sqlite3_str_value(schemaErrors) ? sqlite3_str_value(schemaErrors) : "[]");
