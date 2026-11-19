@@ -3991,6 +3991,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             } else {
                 ("''", "null")
             };
+            // Whether a publication publishes its tables' stored generated columns is Postgres 18's.
+            let generated = if version >= 180000 { "case when p.pubgencols = 's' then ', publish_generated_columns = stored' else '' end" } else { "''" };
             for r in db
                 .rows(&format!(
                     "select 0 as k, et.evtname::text as name, format('CREATE EVENT TRIGGER %I ON %s', et.evtname, et.evtevent)
@@ -4007,8 +4009,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                           (select string_agg(format('TABLE %I.%I', n.nspname, c.relname) || {columns}, ', ' order by n.nspname, c.relname)
                             from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid),
                           {schemas}), '') end, '')
-                        || format(' WITH (publish = %L%s)', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end,
-                          case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end), case when p.pubviaroot then ', publish_via_partition_root = true' else '' end),
+                        || format(' WITH (publish = %L%s%s)', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end,
+                          case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end), case when p.pubviaroot then ', publish_via_partition_root = true' else '' end, {generated}),
                       null,
                       case when p.pubowner <> {me} then format('ALTER PUBLICATION %I OWNER TO %I', p.pubname, pg_get_userbyid(p.pubowner)) end,
                       case when obj_description(p.oid, 'pg_publication') is not null then format('COMMENT ON PUBLICATION %I IS %L', p.pubname, obj_description(p.oid, 'pg_publication')) end

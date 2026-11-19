@@ -2810,6 +2810,7 @@ on!(
 on!(Mysql, a_recurring_event_is_in_the_dump);
 on!(Mysql, init_makes_a_function_before_the_view_that_calls_it);
 on!(Postgres, init_writes_the_foreign_servers_its_tables_use);
+on!(Postgres, init_keeps_a_publications_generated_columns);
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
@@ -4060,6 +4061,25 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.url = q.url.clone();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(q.history().await, ["init.sql"]);
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// A Postgres 18 publication that publishes its tables' stored generated columns: init writes the
+    /// setting, and a new database's publication publishes them too.
+    pub async fn init_keeps_a_publications_generated_columns(mut p: P) {
+        if p.rows("select 1 where current_setting('server_version_num')::int >= 180000").await.is_empty() {
+            eprintln!("skipped: publish_generated_columns is Postgres 18's");
+            return;
+        }
+        p.exec("create table t (id int primary key, n int generated always as (id * 2) stored)").await;
+        p.exec("create publication stored_pub for table t with (publish_generated_columns = stored)").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        assert_has!(std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap(), r"(?i)publish_generated_columns = stored");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(q.rows("select pubgencols::text as g from pg_publication where pubname = 'stored_pub'").await[0].text("g"), "s");
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
