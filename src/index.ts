@@ -271,6 +271,7 @@ function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: 
     key: def.key,
     ordered: def.ordered,
     cardinality,
+    value: def.value,
     codecs: def.codecs,
     libraries: def.libraries,
     structured: def.structured,

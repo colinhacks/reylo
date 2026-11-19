@@ -2,7 +2,8 @@
 // as and a parameter of that family takes, in place of the one representation of src/values.ts. A
 // family is a kind of the type descriptor format (spec/index.ts). A codec reaches every position
 // Reylo decodes itself: a row's columns, an array's elements, a Postgres row value's fields, a
-// tagged union's value, a structured parameter's members. A value inside a JSON document the
+// ClickHouse tuple's elements, by name or by place, and a map's pairs, a tagged union's value, a
+// structured parameter's members. A value inside a JSON document the
 // statement builds is the document's, and keeps the type JSON gives it. Every codec is exact or
 // refuses a value it cannot hold: a number refuses a decimal a double does not hold, and a Temporal
 // class refuses what no Temporal value is (`infinity`, MySQL's zero date, Postgres's `24:00:00`, an
@@ -64,13 +65,14 @@ export type Codec = "decimal:number" | `decimal:${DecimalLibrary}` | "bytes:stri
 
 /**
  * Where a value's codecs stand: a codec for the value itself, or the parts that hold one, an
- * array's elements, a struct's or a structured parameter's fields by name, a map's keys and
- * values, a tagged union's value by its tag.
+ * array's elements, a struct's or a structured parameter's fields by name, a tuple's elements by
+ * their place (null where one holds none), a tagged union's value by its tag.
  */
 export type Plan =
   | Codec
   | { readonly array: Plan }
   | { readonly fields: Readonly<Record<string, Plan>> }
+  | { readonly elements: readonly (Plan | null)[] }
   | { readonly tags: Readonly<Record<string, Plan>> }
   | { readonly geometry: GeometryFormat; readonly srid: number };
 
@@ -208,9 +210,15 @@ export function planOf(t: EngineType, dialect: Dialect, codecs: Codecs, param = 
       const element = planOf(t.element.type, dialect, codecs, param);
       return element === undefined ? undefined : { array: element };
     }
+    case "tuple": {
+      // A ClickHouse tuple without names is an array of its elements, each at its place.
+      if (dialect !== "clickhouse") return undefined;
+      const elements = t.elements.map((e) => planOf(e.type, dialect, codecs, param) ?? null);
+      return elements.some((e) => e !== null) ? { elements } : undefined;
+    }
     case "struct": {
-      // A Postgres row value and a structured parameter are objects of their fields.
-      if (dialect !== "postgres" && !param) return undefined;
+      // A Postgres row value, a ClickHouse tuple with names and a structured parameter are objects of their fields.
+      if (dialect !== "postgres" && dialect !== "clickhouse" && !param) return undefined;
       const fields = Object.fromEntries(t.fields.flatMap((f) => {
         const plan = planOf(f.type, dialect, codecs, param);
         return plan === undefined ? [] : [[f.name, plan]];
@@ -250,6 +258,8 @@ export function planLibraries(plan: Plan, into = new Set<Library>()): Set<Librar
   } else if ("array" in plan) planLibraries(plan.array, into);
   else if ("geometry" in plan) {
     // GeoJSON is plain objects, typed by @types/geojson alone.
+  } else if ("elements" in plan) {
+    for (const p of plan.elements) if (p !== null) planLibraries(p, into);
   } else for (const p of Object.values("fields" in plan ? plan.fields : plan.tags)) planLibraries(p, into);
   return into;
 }
@@ -442,9 +452,9 @@ export function decodeCodec(codec: Codec, v: unknown, column: string, libraries?
   }
 }
 
-/** Whether a plan's value is an array itself, an array's or a vector's, so that an array element is one value of it, not a further level of a Postgres array. */
+/** Whether a plan's value is an array itself, an array's, a tuple's or a vector's, so that an array element is one value of it, not a further level of a Postgres array. */
 function nestsArray(plan: Plan): boolean {
-  return typeof plan === "object" ? "array" in plan : VECTOR_CLASS[plan] !== undefined;
+  return typeof plan === "object" ? "array" in plan || "elements" in plan : VECTOR_CLASS[plan] !== undefined;
 }
 
 /** The typed array of each vector codec, as `Object.prototype.toString` names its values. */
@@ -471,6 +481,7 @@ export function decodePlan(plan: Plan, v: unknown, column: string, libraries?: L
     const element = (e: unknown): unknown => (Array.isArray(e) && !nestsArray(plan.array) ? e.map(element) : decodePlan(plan.array, e, column, libraries));
     return Array.isArray(v) ? v.map(element) : v;
   }
+  if ("elements" in plan) return Array.isArray(v) ? v.map((e, i) => (plan.elements[i] == null ? e : decodePlan(plan.elements[i], e, column, libraries))) : v;
   if (typeof v !== "object") return v;
   if ("fields" in plan) {
     // A spread copies a field named `__proto__` as the own property it is.
@@ -635,6 +646,7 @@ export function encodePlan(plan: Plan, v: unknown, name: string, dialect: Dialec
     const element = (e: unknown): unknown => (Array.isArray(e) && !nestsArray(plan.array) ? e.map(element) : encodePlan(plan.array, e, name, dialect, libraries));
     return Array.isArray(v) ? v.map(element) : v;
   }
+  if ("elements" in plan) return Array.isArray(v) ? v.map((e, i) => (plan.elements[i] == null ? e : encodePlan(plan.elements[i], e, name, dialect, libraries))) : v;
   if (typeof v !== "object") return v;
   if ("fields" in plan) {
     const o = { ...(v as Record<string, unknown>) };

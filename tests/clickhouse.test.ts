@@ -90,6 +90,11 @@ const VALUES: [name: string, sql: string, value: unknown][] = [
   ["at9", "toDateTime64('2026-01-01 12:34:56.123456789', 9, 'UTC')", "2026-01-01T12:34:56.123456789Z"],
   ["before", "toDateTime64('1969-12-31 23:59:58.5', 3, 'UTC')", "1969-12-31T23:59:58.500Z"],
   ["at0", "toDateTime64('2026-01-01 00:00:00', 0, 'UTC')", "2026-01-01T00:00:00Z"],
+  // A count of ticks ClickHouse's own text gives up on is still the instant it counts to, its year written as ISO 8601 extends one.
+  ["far", "reinterpret(toInt64(3093496444800), 'DateTime64(0, \\'UTC\\')')", "+099999-01-01T00:00:00Z"],
+  ["ancient", "reinterpret(toInt64(-70000000000), 'DateTime64(0, \\'UTC\\')')", "-000249-10-15T19:33:20Z"],
+  ["farthest", "reinterpret(toInt64('9223372036854775807'), 'DateTime64(0, \\'UTC\\')')", "+292277026596-12-04T15:30:07Z"],
+  ["earliest", "reinterpret(toInt64('-9223372036854775808'), 'DateTime64(3, \\'UTC\\')')", "-292275055-05-16T16:47:04.192Z"],
   ["role", "CAST('member', 'Enum8(\\'admin\\' = 1, \\'member\\' = -2)')", "member"],
   ["wide_role", "CAST('b', 'Enum16(\\'a\\' = 1, \\'b\\' = 300)')", "b"],
   ["list", "[toUInt16(1), 2]", [1, 2]],
@@ -137,12 +142,32 @@ const PARAMS: [type: string, name: string, value: unknown, back?: unknown][] = [
   ["DateTime64(9, 'UTC')", "at9", "2026-01-01T12:34:56.123456789Z"],
   ["DateTime64(3)", "before", "1969-12-31T23:59:58.500Z"],
   ["DateTime64(3, 'UTC')", "at_short", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00.000Z"],
+  // ClickHouse reads a number of under five digits as a year, so the first hours of 1970 go with zeros before them.
+  ["DateTime('UTC')", "epoch", "1970-01-01T00:00:00Z"],
+  ["DateTime('UTC')", "epoch_9s", "1970-01-01T00:00:09Z"],
+  ["DateTime64(0, 'UTC')", "epoch_5s", "1970-01-01T00:00:05Z"],
+  ["DateTime64(0)", "before_5s", "1969-12-31T23:59:55Z"],
+  ["DateTime64(3, 'UTC')", "at_1000s", "1970-01-01T00:16:40.000Z"],
+  ["DateTime64(3, 'Asia/Tokyo')", "tokyo_before", "1969-12-31T23:59:58.750Z"],
+  ["DateTime64(3, 'Asia/Tokyo')", "tokyo_after", "1970-01-01T00:00:00.250Z"],
+  // It reads -0.5 as half a second after 1970, so the second before goes as its date and time, to a type that names UTC.
+  ["DateTime64(3, 'UTC')", "half_before", "1969-12-31T23:59:59.500Z"],
+  ["DateTime64(6, 'Etc/UTC')", "micro_before", "1969-12-31T23:59:59.999999Z"],
+  ["Nullable(DateTime64(1, 'UTC'))", "tenth_before", "1969-12-31T23:59:59.9Z"],
+  ["DateTime64(3, 'UTC')", "far", "+099999-01-01T00:00:00.000Z"],
+  ["DateTime64(3, 'UTC')", "year_one", "0001-01-01T00:00:00.000Z"],
+  ["Float32", "f32", 0.5],
+  ["Float32", "f32_most", 3.4028234663852886e38],
   ["Array(String)", "strings", ["it's", "b\tc\\", ""]],
   ["Array(Nullable(UInt8))", "holes", [1, null]],
   ["Array(Array(UInt64))", "nested_list", [[1n], []]],
   ["Array(Decimal(18, 2))", "decimals", ["1.5", "-2.25"]],
   ["Array(DateTime64(3, 'UTC'))", "instants", ["2026-01-01T00:00:00.500Z"]],
   ["Array(DateTime('UTC'))", "seconds", ["2026-01-01T00:00:00Z"]],
+  ["Array(DateTime64(3, 'UTC'))", "instants_near", ["1969-12-31T23:59:59.500Z", "1970-01-01T00:00:00.000Z", "1970-01-01T00:16:40.000Z", "1969-12-31T23:43:20.250Z"]],
+  ["Array(DateTime('UTC'))", "seconds_near", ["1970-01-01T00:00:00Z", "1970-01-01T00:00:05Z"]],
+  ["Map(String, DateTime64(2, 'UTC'))", "map_before", [{ key: "a", value: "1969-12-31T23:59:59.99Z" }]],
+  ["Tuple(DateTime('UTC'), DateTime64(0, 'UTC'))", "tuple_near", ["1970-01-01T00:00:07Z", "1970-01-01T00:00:05Z"]],
   ["Array(Date)", "days", ["2026-01-02"]],
   ["Array(UUID)", "uuids", ["61f0c404-5cb3-11e7-907b-a6006ad3dba0"]],
   ["Array(Bool)", "flags", [true, false]],
@@ -226,6 +251,15 @@ test("ClickHouse: a value its parameter's type cannot hold is refused before the
     for (const [type, value] of [["UInt8", 300], ["UInt8", -1], ["UInt8", 1.5], ["Int8", "1"], ["Int64", 2n ** 63n], ["Decimal(18, 2)", "1.239"], ["Decimal(4, 2)", "100"], ["Date", "1960-01-01"], ["Date", "2026-02-30"], ["Date32", "2300-01-01"]] as const) await refused(type, value);
     // An instant names its zone, and keeps the digits its type has.
     for (const [type, value] of [["DateTime", "2026-01-01 12:00:00"], ["DateTime", "2026-01-01T12:00:00.5Z"], ["DateTime", "2107-01-01T00:00:00Z"], ["DateTime64(3)", "2026-01-01T12:00:00.1234Z"], ["DateTime64(3)", "2026-01-01T12:00:00 America/New_York"]] as const) await refused(type, value);
+    // A date that is none of the calendar's would roll over to another, and an instant past 64 bits of nanoseconds wrap.
+    for (const [type, value] of [["DateTime", "2026-02-30T00:00:00Z"], ["DateTime", "2026-13-01T00:00:00Z"], ["DateTime", "2026-01-01T24:00:00Z"], ["DateTime64(3)", "2026-01-01T23:59:60Z"], ["DateTime", "2026-01-01T00:00:00+99:99"], ["DateTime64(9)", "2300-01-01T00:00:00Z"]] as const) await refused(type, value);
+    // ClickHouse reads -0.5 as half a second after 1970, and the second's date and time in the type's own zone.
+    await assert.rejects(byHand("SELECT {p:DateTime64(3)} AS p", ["p"]).run(client, { p: "1969-12-31T23:59:59.500Z" }), /^TypeError: Parameter "p" has the ClickHouse type DateTime64\(3\), which ClickHouse reads an instant within the second before 1970 for only where the type names UTC, as DateTime64\(3, 'UTC'\) does; got "1969-12-31T23:59:59.500Z"\.$/);
+    await refused("Array(DateTime64(6, 'Asia/Tokyo'))", ["1969-12-31T23:59:59.999999Z"]);
+    // A number past 2^53 - 1 is not the digits written, a float past 32 bits is an infinity there, and half a surrogate pair goes as U+FFFD.
+    for (const [type, value] of [["UInt64", 2 ** 60], ["Int128", -(2 ** 53)], ["Float32", 1e40], ["Float32", -3.5e38], ["BFloat16", 1e39], ["String", "\ud800"], ["FixedString(8)", "x\udfffy"], ["Array(String)", ["a\ud83d"]]] as const) await refused(type, value);
+    // A member under another name would go as NULL, and one too many as nothing.
+    for (const [type, value] of [["Tuple(a UInt8, note Nullable(String))", { a: 1, Note: "x" }], ["Tuple(a UInt8, note Nullable(String))", { a: 1 }], ["Tuple(a UInt8)", { a: 1, b: 2 }], ["Map(String, UInt8)", [{ key: "k", value: 1, extra: 2 }]]] as const) await refused(type, value);
     for (const [type, value] of [["FixedString(2)", "abc"], ["Enum8('a' = 1)", "b"], ["String", 1], ["String", null], ["Array(UInt8)", [1, null]], ["Tuple(UInt8, UInt8)", [1]], ["UUID", "nope"], ["Bool", 1], ["Map(String, UInt8)", { k: 1 }]] as const) await refused(type, value);
     await assert.rejects(byHand("SELECT {p:JSON} AS p", ["p"]).run(client, { p: {} }), /Parameter "p" has the ClickHouse type JSON, which Reylo does not write/);
     // The place inside the parameter is named.
@@ -247,6 +281,21 @@ test("ClickHouse: an error is the server's, whether the statement fails at once 
     const late = await byHand("SELECT throwIf(number = 100000, 'boom – déjà vu €') AS x FROM numbers(200000) SETTINGS max_block_size = 1000").try(client, {});
     assert.deepEqual([late.error?.code, late.error?.number], ["FUNCTION_THROW_IF_VALUE_IS_NON_ZERO", 395]);
     assert.match(late.error!.message, /^boom – déjà vu €/);
+    // What `.run()` throws for it has the message, the number and the name the client's own error has for one that fails at once.
+    await assert.rejects(byHand("SELECT throwIf(number = 100000, 'late') AS x FROM numbers(200000) SETTINGS max_block_size = 1000").run(client, {}), (e: Error & { code?: string; type?: string }) => /^late/.test(e.message) && !/Code: |\(version /.test(e.message) && e.code === "395" && e.type === "FUNCTION_THROW_IF_VALUE_IS_NON_ZERO");
+    // A parameter goes as a field of the request, and the server takes 128 KiB of one: its error names neither the parameter nor the limit.
+    const long = await byHand("SELECT length({p:String}) AS n", ["p"]).try(client, { p: "x".repeat(140_000) });
+    assert.deepEqual([long.error?.code, long.error?.number], ["POCO_EXCEPTION", 1000]);
+    assert.match(long.error!.message, /Field value too long: the parameter "p" is 140000 bytes as ClickHouse's text, and the server takes 131072 of one unless its http_max_field_value_size is raised\./);
+    // A format the statement names itself outranks the one Reylo asks for.
+    await assert.rejects(byHand("SELECT 1 AS x SETTINGS default_format = 'JSONEachRow'").run(client, {}), /^TypeError: The statement returned its result in the format JSONEachRow, and Reylo reads RowBinaryWithNamesAndTypes: take the format out/);
+    // A session that writes each type as bytes gives no name to read.
+    const bytes = driver("@clickhouse/client").createClient({ url: CLICKHOUSE!, clickhouse_settings: { output_format_binary_encode_types_in_binary_format: 1 } });
+    try {
+      await assert.rejects(byHand("SELECT 1 AS x").run(bytes, {}), /whose name Reylo cannot read\. Where the session's setting output_format_binary_encode_types_in_binary_format is 1/);
+    } finally {
+      await bytes.close();
+    }
     // Anything that is no client of ClickHouse's is refused by what one is.
     await assert.rejects(byHand("SELECT 1 AS n").run({ query() {} } as never, {}), /a client of @clickhouse\/client or @clickhouse\/client-web/);
   } finally {
@@ -320,6 +369,26 @@ test("ClickHouse: a select is typed from the server's own description, nullabili
     } finally {
       await web.close();
     }
+  } finally {
+    await db.drop();
+  }
+});
+
+test("ClickHouse: the project's codecs reach the values inside a tuple, an array and a map, in a result and in a parameter", { skip: clickhouseLive, timeout: 120_000 }, async () => {
+  const db = await clickhouseDatabase("reylo_clickhouse_codecs");
+  try {
+    const root = project(db.url);
+    writeFileSync(join(root, ".reylo.yaml"), "js:\n  codecs:\n    decimal: number\n");
+    const sql = "SELECT CAST((toDecimal64('12.34', 2), 'a'), 'Tuple(price Decimal(12, 2), label String)') AS named, (toDecimal64('1.5', 2), toUInt8(7)) AS unnamed, [toDecimal64('2.25', 2)] AS list, map('k', toDecimal64('3.5', 1)) AS priced, [(toDecimal64('4.5', 1), 'x')] AS pairs, {p:Tuple(Decimal(9, 2), Array(Decimal(9, 2)))} AS given, {q:Decimal(9, 2)} AS q";
+    const out = await declarations(root, { "nested.sql": sql });
+    assert.deepEqual(types(out["nested.sql"]!), {
+      params: "{ p: [number, number[]]; q: number }",
+      row: "{ named: { price: number; label: string }; unnamed: [number, number]; list: number[]; priced: { key: string; value: number }[]; pairs: [number, string][]; given: [number, number[]]; q: number }",
+    });
+    // Each value is the type its declaration says, and a parameter's goes back as its type's text.
+    const nested = await built(root, "nested", sql);
+    assert.deepEqual([await nested.run(db.client, { p: [1.25, [2.5]], q: 0.5 })].flat(), [{ named: { price: 12.34, label: "a" }, unnamed: [1.5, 7], list: [2.25], priced: [{ key: "k", value: 3.5 }], pairs: [[4.5, "x"]], given: [1.25, [2.5]], q: 0.5 }]);
+    await assert.rejects(nested.run(db.client, { p: ["1.25", []], q: 0.5 }), /takes a number, as js.codecs.decimal in the project file says/);
   } finally {
     await db.drop();
   }

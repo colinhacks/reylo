@@ -201,6 +201,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly ordered?: boolean | undefined;
   /** How many rows the statement returns, which a query's Standard Query says beside its `decode`. */
   readonly cardinality?: "many" | "one" | "maybeOne" | "none" | undefined;
+  /** Whether the result is its one column's values, a column the statement gives no name, so that whatever name the database makes up for it says nothing. */
+  readonly value?: boolean | undefined;
   /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts). */
   readonly codecs?: Readonly<Record<string, Plan>> | undefined;
   /** The classes the codecs build values with, which the module imports from the app's install (src/codecs.ts). */

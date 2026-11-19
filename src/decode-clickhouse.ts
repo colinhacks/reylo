@@ -9,9 +9,12 @@
 //
 // - an integer of up to 32 bits is a number, and a wider one, to `UInt256`, a BigInt;
 // - a `Decimal` is its exact text as ClickHouse writes it, without the zeros its scale pads with;
+// - a `Float32` is the number it holds, exactly, as a `Float32Array` gives one: 0.1 stored in one
+//   reads 0.10000000149011612, where ClickHouse prints the shortest text that reads back, `0.1`;
 // - a `Date` or `Date32` is `YYYY-MM-DD`, and a `DateTime` or `DateTime64` the instant in UTC with
 //   `Z`, to its type's digits (`2026-01-02T03:04:05.123Z`): the zone in a type's name is how the
-//   column prints, and no part of a value;
+//   column prints, and no part of a value. A year outside 0000 to 9999 is written with its sign and
+//   six digits, as ISO 8601 writes one;
 // - a `String` or `FixedString` is its bytes read as UTF-8, a `UUID` its text, an `IPv4` or `IPv6`
 //   its address as ClickHouse writes it, and an `Enum8` or `Enum16` its label;
 // - an `Array` is an array, a `Tuple` with names an object and one without an array, a `Map` its
@@ -26,7 +29,9 @@
 // Reylo writes itself from the type in the placeholder, as a `param_` field of the request: a
 // tuple in parentheses, a map in braces, an instant as its seconds since 1970, which no zone
 // changes, and NULL as `\N`. ClickHouse wraps an integer outside its type's range without an
-// error (300 as a `UInt8` is 44), so each is held to its range first.
+// error (300 as a `UInt8` is 44), so each is held to its range first, and so is every other value
+// the server would change and say nothing: a decimal's digits, a float past a `Float32`, a date
+// that is none of the calendar's, a string that is no text.
 import { DecodeError, describe, ParameterError, type Columns, type Kind } from "./values.ts";
 import { canonical, decimalOf, integerOf, parseType, plain, typeName, type Named } from "./clickhouse-types.ts";
 import { lexPlaceholders } from "./lex.ts";
@@ -173,11 +178,40 @@ function ipv6Text(bytes: Uint8Array, start: number): string {
   return `${out}${out.endsWith(":") ? "" : ":"}${bytes[start + 12]}.${bytes[start + 13]}.${bytes[start + 14]}.${bytes[start + 15]}`;
 }
 
-/** The date `days` after 1970-01-01. */
-const dateText = (days: number): string => new Date(days * 86_400_000).toISOString().slice(0, 10);
+const two = (n: number): string => (n < 10 ? `0${n}` : String(n));
 
-/** The instant `seconds` after 1970-01-01T00:00:00Z, to the second. */
-const secondText = (seconds: number): string => new Date(seconds * 1000).toISOString().slice(0, 19);
+/**
+ * The date `days` after 1970-01-01, by the calendar's own arithmetic where JavaScript's Date holds
+ * no such day or writes its year otherwise: a year outside 0000 to 9999 takes its sign and six
+ * digits or more, as ISO 8601 extends a year.
+ */
+function dateText(days: number): string {
+  // 0000-01-01 to 9999-12-31, which a Date writes as four digits.
+  if (days >= -719528 && days <= 2932896) return new Date(days * 86_400_000).toISOString().slice(0, 10);
+  // The day's place in its 400 years, which begin on a 1 March.
+  const z = days + 719468;
+  const era = Math.floor(z / 146097);
+  const dayOfEra = z - era * 146097;
+  const yearOfEra = Math.floor((dayOfEra - Math.floor(dayOfEra / 1460) + Math.floor(dayOfEra / 36524) - Math.floor(dayOfEra / 146096)) / 365);
+  const dayOfYear = dayOfEra - (365 * yearOfEra + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100));
+  const fromMarch = Math.floor((5 * dayOfYear + 2) / 153);
+  const day = dayOfYear - Math.floor((153 * fromMarch + 2) / 5) + 1;
+  const month = fromMarch < 10 ? fromMarch + 3 : fromMarch - 9;
+  const year = yearOfEra + era * 400 + (month <= 2 ? 1 : 0);
+  return `${year < 0 ? "-" : "+"}${String(Math.abs(year)).padStart(6, "0")}-${two(month)}-${two(day)}`;
+}
+
+/** The instant `seconds` after 1970-01-01T00:00:00Z, to the second: any a 64-bit count of seconds holds. */
+function secondText(seconds: number | bigint): string {
+  const s = BigInt(seconds);
+  let days = s / 86400n;
+  let rest = Number(s % 86400n);
+  if (rest < 0) {
+    days -= 1n;
+    rest += 86400;
+  }
+  return `${dateText(Number(days))}T${two(Math.floor(rest / 3600))}:${two(Math.floor(rest / 60) % 60)}:${two(rest % 60)}`;
+}
 
 /** What reads a value of `type` from a result's bytes, for the column `column`. */
 function readerOf(type: Named, column: string): Read {
@@ -259,7 +293,7 @@ function readerOf(type: Named, column: string): Read {
           seconds -= 1n;
           past += second;
         }
-        return `${secondText(Number(seconds))}${digits === 0 ? "" : `.${past.toString().padStart(digits, "0")}`}Z`;
+        return `${secondText(seconds)}${digits === 0 ? "" : `.${past.toString().padStart(digits, "0")}`}Z`;
       };
     }
     case "Enum8":
@@ -337,9 +371,12 @@ function midStreamError(bytes: Uint8Array, tag: string | undefined): Error | und
   const body = tail.slice(start, close).replace(/\n\d+ \S+$/, "");
   const raw = new Uint8Array(body.length);
   for (let i = 0; i < body.length; i++) raw[i] = body.charCodeAt(i);
-  const message = utf8(raw).trim();
-  const code = /^Code: (\d+)\./.exec(message)?.[1];
-  const type = /\(([A-Z][A-Z0-9_]+)\)(?: \(version .*\))?\s*$/.exec(message)?.[1];
+  const text = utf8(raw).trim();
+  const code = /^Code: (\d+)\./.exec(text)?.[1];
+  const type = /\(([A-Z][A-Z0-9_]+)\)(?: \(version .*\))?\s*$/.exec(text)?.[1];
+  // The message as the client's own error has it for a statement that fails at once: without the
+  // code it opens with, and the name and version it ends with, which the error carries apart.
+  const message = text.replace(/^Code: \d+\.\s*(?:DB::Exception:\s*)?/, "").replace(/\s*\(version .*\)\s*$/, "").replace(/\s*\([A-Z][A-Z0-9_]+\)\s*$/, "").trim();
   return Object.assign(new Error(message), { code, type });
 }
 
@@ -395,19 +432,23 @@ function rowsOf(bytes: Uint8Array, query: QueryModule<"clickhouse">): unknown[] 
   for (let i = 0; i < width; i++) names.push(r.text(r.varint()));
   const types: string[] = [];
   for (let i = 0; i < width; i++) types.push(r.text(r.varint()));
+  const parsed = types.map((type, i) => {
+    const read = parseType(type);
+    // A session with output_format_binary_encode_types_in_binary_format writes each type as bytes, and no name.
+    if (read === undefined) throw new DecodeError(`Column "${names[i]}" has the type ${JSON.stringify(type)}, whose name Reylo cannot read. Where the session's setting output_format_binary_encode_types_in_binary_format is 1, a type comes as bytes and no name: leave it at 0.`);
+    return read;
+  });
   const columns: Columns | undefined = query.columns;
   if (columns !== undefined) {
     if (columns.length !== width) throw changed(query, `${width} column${width === 1 ? "" : "s"} where the type check read ${columns.length}`);
     columns.forEach(([name, , described], i) => {
-      if (name !== names[i]) throw changed(query, `the column "${names[i]}" where the type check read "${name}"`);
+      // The one column of a statement that returns a value has no name the value goes by, and
+      // ClickHouse's name for an expression holds each constant in it, a parameter's value too.
+      if (name !== names[i] && !query.value) throw changed(query, `the column "${names[i]}" where the type check read "${name}"`);
       if (described !== undefined && canonical(described) !== canonical(types[i]!)) throw changed(query, `the column "${name}" as ${types[i]} where the type check read ${described}`);
     });
   }
-  const reads = types.map((type, i) => {
-    const parsed = parseType(type);
-    if (parsed === undefined) throw new DecodeError(`Column "${names[i]}" has the type ${type}, whose name Reylo cannot read.`);
-    return readerOf(parsed, names[i]!);
-  });
+  const reads = parsed.map((type, i) => readerOf(type, names[i]!));
   const build = query.row ?? rowOf(names);
   const rows: unknown[] = [];
   while (r.at < bytes.length) {
@@ -435,6 +476,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const INSTANT = /^([+-]?\d{4,6})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?\s*(?:(Z)|([+-])(\d{2})(?::?(\d{2}))?(?::?(\d{2}))?)$/i;
 const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+/** Half of a surrogate pair with no other half, which no encoding of text holds. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
+/** A zone's name that is UTC's own, or one of its other names. */
+const UTC = /^(?:Etc\/)?(?:UTC|UCT|GMT|Zulu|Universal|Greenwich)$/;
 
 /** The days from 1970-01-01 to a date, or undefined where its text is no date of the calendar. */
 function daysOf(text: string): number | undefined {
@@ -470,6 +515,8 @@ function valueText(type: Named, v: unknown, name: string, path = ""): string {
     const max = integer.unsigned ? 2n ** BigInt(integer.bits) - 1n : 2n ** BigInt(integer.bits - 1) - 1n;
     // ClickHouse wraps a number outside the range into it, without an error.
     if (n < min || n > max) fail(`which holds ${min} to ${max}`);
+    // A number past 2^53 - 1 is the nearest one a double holds, and not the digits written.
+    if (typeof v === "number" && !Number.isSafeInteger(v)) fail("which takes a number to 2^53 - 1, where one stops being exact, and a BigInt past it");
     return n.toString();
   }
   const decimal = decimalOf(t);
@@ -490,12 +537,16 @@ function valueText(type: Named, v: unknown, name: string, path = ""): string {
     case "Float64":
     case "BFloat16":
       if (typeof v !== "number") fail("which takes a number");
+      // ClickHouse reads a number past a 32-bit float as an infinity, without an error.
+      if (t.name !== "Float64" && Number.isFinite(v) && !Number.isFinite(Math.fround(v as number))) fail("which holds -3.4028235e38 to 3.4028235e38");
       return Number.isNaN(v) ? "nan" : v === Infinity ? "inf" : v === -Infinity ? "-inf" : Object.is(v, -0) ? "-0" : String(v);
     case "String":
       if (typeof v !== "string") fail("which takes a string");
+      if (LONE_SURROGATE.test(v as string)) fail("which takes text, and half of a surrogate pair is none: it would go as U+FFFD");
       return stringText(v as string, top);
     case "FixedString": {
       if (typeof v !== "string") fail("which takes a string");
+      if (LONE_SURROGATE.test(v as string)) fail("which takes text, and half of a surrogate pair is none: it would go as U+FFFD");
       const a = t.args[0];
       const length = a !== undefined && "number" in a ? Number(a.number) : 0;
       if (utf8Bytes(v as string).length > length) fail(`which holds ${length} byte${length === 1 ? "" : "s"}`);
@@ -528,34 +579,56 @@ function valueText(type: Named, v: unknown, name: string, path = ""): string {
       const m = typeof v === "string" ? INSTANT.exec(v.trim()) : null;
       if (!m) fail('which takes the instant as a string with its offset or Z ("2026-01-02T03:04:05.123Z")');
       const [, year, month, day, hour, minute, second = "0", fraction = "", , sign, offsetHours = "0", offsetMinutes = "0", offsetSeconds = "0"] = m!;
-      const offset = (sign === "-" ? -1 : 1) * (Number(offsetHours) * 3600 + Number(offsetMinutes) * 60 + Number(offsetSeconds));
       const local = new Date(0);
       local.setUTCFullYear(Number(year), Number(month) - 1, Number(day));
       local.setUTCHours(Number(hour), Number(minute), Number(second), 0);
+      // A date that is none of the calendar's (30 February, hour 24, second 60) rolls over to another, without an error.
+      const calendar = local.getUTCFullYear() === Number(year) && local.getUTCMonth() === Number(month) - 1 && local.getUTCDate() === Number(day) && local.getUTCHours() === Number(hour) && local.getUTCMinutes() === Number(minute) && local.getUTCSeconds() === Number(second);
+      if (!calendar || Number(offsetHours) > 23 || Number(offsetMinutes) > 59 || Number(offsetSeconds) > 59) fail('which takes an instant of the calendar ("2026-01-02T03:04:05.123Z")');
+      const offset = (sign === "-" ? -1 : 1) * (Number(offsetHours) * 3600 + Number(offsetMinutes) * 60 + Number(offsetSeconds));
       // The digits past the type's own would be dropped, without an error.
       if (fraction.slice(digits).replace(/0+$/, "") !== "") fail(`which keeps ${digits} digit${digits === 1 ? "" : "s"} after the second`);
-      const ticks = (BigInt(local.getTime() / 1000) - BigInt(offset)) * 10n ** BigInt(digits) + BigInt(fraction.slice(0, digits).padEnd(digits, "0") || "0");
+      const second64 = 10n ** BigInt(digits);
+      const ticks = (BigInt(local.getTime() / 1000) - BigInt(offset)) * second64 + BigInt(fraction.slice(0, digits).padEnd(digits, "0") || "0");
+      // Its seconds since 1970, which no zone changes, in five digits or more: ClickHouse reads a
+      // shorter number as a year, and refuses it.
       if (t.name === "DateTime") {
         if (ticks < 0n || ticks > 4294967295n) fail("which holds 1970-01-01T00:00:00Z to 2106-02-07T06:28:15Z");
-        return ticks.toString();
+        return ticks.toString().padStart(5, "0");
       }
-      // Its seconds since 1970 and the digits after them, which no zone changes.
+      if (ticks < -(2n ** 63n) || ticks >= 2n ** 63n) fail("whose 64 bits hold no instant so far from 1970");
       const negative = ticks < 0n;
-      const magnitude = (negative ? -ticks : ticks).toString().padStart(digits + 1, "0");
-      const text = `${negative ? "-" : ""}${digits === 0 ? magnitude : `${magnitude.slice(0, -digits)}.${magnitude.slice(-digits)}`}`;
-      return quote(text);
+      const magnitude = negative ? -ticks : ticks;
+      const past = (of: bigint) => (digits === 0 ? "" : `.${of.toString().padStart(digits, "0")}`);
+      if (negative && magnitude < second64) {
+        // ClickHouse reads `-0.5` as half a second after 1970: the sign of a number whose whole
+        // part is zero is lost. The second before 1970 is written as its date and time, which a
+        // type reads in its own zone, so only a type that names UTC reads the instant meant.
+        const zone = t.args[1];
+        if (!(zone !== undefined && "text" in zone && UTC.test(zone.text))) fail(`which ClickHouse reads an instant within the second before 1970 for only where the type names UTC, as DateTime64(${digits}, 'UTC') does`);
+        return quote(`1969-12-31 23:59:59${past(second64 - magnitude)}`);
+      }
+      return quote(`${negative ? "-" : ""}${(magnitude / second64).toString().padStart(5, "0")}${past(magnitude % second64)}`);
     }
     case "Array":
       if (!Array.isArray(v)) fail("which takes an array");
       return `[${(v as unknown[]).map((e, i) => valueText(inner(0), e, name, `${path}[${i}]`)).join(",")}]`;
     case "Tuple": {
       const named = t.args.length > 0 && t.args.every((a) => "member" in a);
+      if (named && !Array.isArray(v) && typeof v === "object") {
+        // A member under another name would go as NULL where the member takes one, and one too many as nothing.
+        const members = t.args.map((a) => ("member" in a ? a.member : ""));
+        const missing = members.find((member) => !Object.hasOwn(v as object, member) || (v as Record<string, unknown>)[member] === undefined);
+        if (missing !== undefined) fail(`which has the member ${JSON.stringify(missing)}, and the value has none`);
+        const unknown = Object.keys(v as object).find((key) => !members.includes(key));
+        if (unknown !== undefined) fail(`which has no member ${JSON.stringify(unknown)}`);
+      }
       const values = Array.isArray(v) ? v : named && typeof v === "object" ? t.args.map((a) => (v as Record<string, unknown>)["member" in a ? a.member : ""]) : fail(named ? "which takes an object of its members" : "which takes an array of its elements");
       if (values.length !== t.args.length) fail(`which has ${t.args.length} element${t.args.length === 1 ? "" : "s"}`);
       return `(${t.args.map((a, i) => valueText("member" in a ? a.of : inner(i), values[i], name, "member" in a ? `${path}.${a.member}` : `${path}[${i}]`)).join(",")})`;
     }
     case "Map": {
-      if (!Array.isArray(v) || !v.every((e) => e !== null && typeof e === "object" && "key" in e && "value" in e)) fail("which takes an array of its pairs, each { key, value }");
+      if (!Array.isArray(v) || !v.every((e) => e !== null && typeof e === "object" && "key" in e && "value" in e && Object.keys(e).length === 2)) fail("which takes an array of its pairs, each { key, value } and no more");
       return `{${(v as { key: unknown; value: unknown }[]).map((e, i) => `${valueText(inner(0), e.key, name, `${path}[${i}].key`)}:${valueText(inner(1), e.value, name, `${path}[${i}].value`)}`).join(",")}}`;
     }
     default:
@@ -591,6 +664,25 @@ function isClient(c: AnyClient): boolean {
   return typeof c.exec === "function" && typeof c.query === "function" && typeof c.insert === "function" && typeof c.command === "function";
 }
 
+/**
+ * The error of a request the server refused for its size, with the parameter that made it so: a
+ * parameter goes as a field of the request, and the server takes 128 KiB of one unless its
+ * `http_max_field_value_size` says otherwise. The server's own text names neither.
+ */
+function tooLong(error: unknown, names: readonly string[], settings: Readonly<Record<string, string>>): Error | undefined {
+  const message = error instanceof Error ? error.message : "";
+  if (!/Field value too long|URI (?:invalid or )?too long/i.test(message)) return undefined;
+  let longest: { name: string; bytes: number } | undefined;
+  for (const name of names) {
+    const bytes = utf8Bytes(settings[`param_${name}`] ?? "").length;
+    if (longest === undefined || bytes > longest.bytes) longest = { name, bytes };
+  }
+  if (longest === undefined) return undefined;
+  const code = /Code: (\d+)/.exec(message)?.[1];
+  const own = message.replace(/^Poco::Exception\.\s*Code: \d+,\s*(?:e\.code\(\) = \d+,\s*)?/, "").trim();
+  return Object.assign(new Error(`${own}: the parameter "${longest.name}" is ${longest.bytes} bytes as ClickHouse's text, and the server takes 131072 of one unless its http_max_field_value_size is raised. Send fewer values at a time.`, { cause: error }), code === undefined ? {} : { code });
+}
+
 /** A ClickHouse statement's rows on an `@clickhouse/client` client, or undefined on any other client. */
 async function runClickhouse(c: Client, query: QueryModule<"clickhouse">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
   if (!isClient(c)) return undefined;
@@ -601,8 +693,20 @@ async function runClickhouse(c: Client, query: QueryModule<"clickhouse">, { text
     if (type === undefined) throw new ParameterError(`Parameter "${name}" has no type in the statement: a ClickHouse parameter is written with one, as {${name}:UInt64}.`);
     settings[`param_${name}`] = valueText(type, values[i], name);
   });
-  const response = await c.exec({ query: text, clickhouse_settings: settings });
-  const tag = (response?.response_headers as Record<string, unknown> | undefined)?.["x-clickhouse-exception-tag"];
+  let response: { stream?: unknown; response_headers?: unknown } | undefined;
+  try {
+    response = await c.exec({ query: text, clickhouse_settings: settings });
+  } catch (error) {
+    throw tooLong(error, names, settings) ?? error;
+  }
+  const headers = response?.response_headers as Record<string, unknown> | undefined;
+  const tag = headers?.["x-clickhouse-exception-tag"];
+  // A statement's own SETTINGS clause outranks the request's, and a format it names is the result's.
+  const format = headers?.["x-clickhouse-format"];
+  if (typeof format === "string" && format !== "" && format !== FORMAT) {
+    await bytesOf(response?.stream);
+    throw new DecodeError(`${query.source ?? "The statement"} returned its result in the format ${format}, and Reylo reads ${FORMAT}: take the format out of the statement's SETTINGS (default_format).`);
+  }
   const { bytes, error } = await bytesOf(response?.stream);
   const failed = midStreamError(bytes, typeof tag === "string" ? tag : undefined);
   if (failed) throw failed;
