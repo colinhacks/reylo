@@ -1,0 +1,12 @@
+create table p (a int, b int) partition by range (a);
+create index p_a on p (a);
+create table p1 partition of p for values from (0) to (10);
+create table p2 (a int, b int);
+create index p2_kept on p2 (a);
+alter table p attach partition p2 for values from (10) to (20);
+create table q (a int) partition by range (a);
+create table q1 (a int);
+alter table only q attach partition q1 for values from (0) to (10);
+create index qi on only q (a);
+create index q1_a_idx on q1 (a);
+alter index qi attach partition q1_a_idx;
