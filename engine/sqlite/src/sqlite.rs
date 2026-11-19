@@ -3607,6 +3607,32 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_replay_reaches_no_file_and_sets_no_pragma() {
+        // A row of sqlite_schema may hold more than one statement: SQLite loads the first, and the
+        // replay runs the text whole.
+        let dir = std::env::temp_dir().join(format!("reylo-sqlite-replay-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (attached, vacuumed) = (dir.join("attached.db"), dir.join("vacuumed.db"));
+        let ddl = vec![
+            format!("create table t (a integer not null); attach '{}' as x; create table x.y (z)", attached.display()),
+            format!("create table u (b); vacuum into '{}'", vacuumed.display()),
+            "create table v (c); pragma hard_heap_limit = 1; create table w (d)".to_string(),
+        ];
+        // A refused statement ends its row's replay, which a statement that fails on what it would
+        // have made says (the replay's own steps are reported with the analysis that made it).
+        let refused = analyze_ddl("select d from w", &ddl, &Extras::default()).analysis;
+        let messages: Vec<&str> = refused.diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(messages.first(), Some(&"no such table: w"), "{messages:?}");
+        assert!(messages.contains(&"The schema replay skipped statement 1: not authorized"), "{messages:?}");
+        assert!(messages.contains(&"The schema replay skipped statement 3: not authorized"), "{messages:?}");
+        assert!(!attached.exists() && !vacuumed.exists());
+        // What each row made before the refused statement is there.
+        let a = analyze_ddl("select a, b, c from t, u, v", &ddl, &Extras::default()).analysis;
+        assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_tree_describes_the_schema_tables_alone_and_no_with_query() {
         // A WITH query's table belongs to the statement, which frees it as the prepare ends,
         // before the serializer lists the tables: read then, a recursive one nested in another,

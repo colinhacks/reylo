@@ -671,9 +671,12 @@ static int internalTable(const char *zDdl, const char *zErr){
   int n, ok = 0;
   if( zErr==0 ) return 0;
   if( strncmp(zErr, zReserved, sizeof(zReserved)-1)==0 ){
+    /* Defensive mode makes the schema read-only whatever this says; replayAuth stays on. */
+    sqlite3_db_config(gDb, SQLITE_DBCONFIG_DEFENSIVE, 0, (int*)0);
     sqlite3_db_config(gDb, SQLITE_DBCONFIG_WRITABLE_SCHEMA, 1, (int*)0);
     ok = sqlite3_exec(gDb, zDdl, 0, 0, &zErr2)==SQLITE_OK;
     sqlite3_db_config(gDb, SQLITE_DBCONFIG_WRITABLE_SCHEMA, 0, (int*)0);
+    sqlite3_db_config(gDb, SQLITE_DBCONFIG_DEFENSIVE, 1, (int*)0);
     if( !ok && zErr2 ){
       n = (int)strlen(zErr2);
       ok = n>(int)sizeof(zExists) && strcmp(&zErr2[n-(sizeof(zExists)-1)], zExists)==0;
@@ -693,6 +696,17 @@ static int internalTable(const char *zDdl, const char *zErr){
     }
   }
   return ok;
+}
+
+/* What the schema replay may run: anything but an ATTACH, a DETACH (VACUUM INTO attaches the file
+** it writes) or a PRAGMA given a value, none of which a schema needs, and which may reach past the
+** connection (hard_heap_limit sets the whole process's, temp_store_directory names a directory). A
+** PRAGMA that only reads is let through: FTS3 and R*Tree read page_size as they create a table. */
+static int replayAuth(void *pArg, int code, const char *z1, const char *z2, const char *z3, const char *zInside){
+  (void)pArg; (void)z1; (void)z3; (void)zInside;
+  if( code==SQLITE_ATTACH || code==SQLITE_DETACH ) return SQLITE_DENY;
+  if( code==SQLITE_PRAGMA && z2!=0 ) return SQLITE_DENY;
+  return SQLITE_OK;
 }
 
 /* Replays the DDL into a fresh in-memory database; errors are reported, not fatal. The host's
@@ -719,6 +733,13 @@ static int openSchema(
   sqlite3_free(gDdlKey); gDdlKey = zKey;
   rc = sqlite3_open(":memory:", &gDb);
   if( rc!=SQLITE_OK ) return rc;
+  /* The replay runs whatever text the database's sqlite_schema holds, more than one statement to a
+  ** row included, and a database file is anyone's to commit, opened by the type check in an editor
+  ** and in CI: nothing it runs may reach past this in-memory connection. The connection attaches no
+  ** database, ever, since a statement is only prepared on it; while the DDL replays, defensive mode
+  ** is on and replayAuth refuses what it refuses. A refused statement ends its row's replay there,
+  ** reported in errors as any failed step is ("not authorized"). */
+  sqlite3_limit(gDb, SQLITE_LIMIT_ATTACHED, 0);
   installHooks(0);
   for(i=0; i<nFn; i++){
     /* Deterministic and innocuous: whatever the host's own flags, the replay accepts every place
@@ -738,6 +759,8 @@ static int openSchema(
     if( rc!=SQLITE_OK ) functionError(errors, azHost[i]);
   }
   sqlite3_free(aMissing);
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DEFENSIVE, 1, (int*)0);
+  sqlite3_set_authorizer(gDb, replayAuth, 0);
   for(i=0; i<nDdl; i++){
     char *zErr = 0;
     int nTry, rcExec = SQLITE_OK;
@@ -763,6 +786,10 @@ static int openSchema(
     }
     sqlite3_free(zErr);
   }
+  /* The statement is prepared as the application's SQLite prepares it, which writes a virtual
+  ** table's shadow table directly unless the application turns defensive mode on itself. */
+  sqlite3_set_authorizer(gDb, 0, 0);
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DEFENSIVE, 0, (int*)0);
   /* A double-quoted word that names no column is a string to SQLite only where the build allows
   ** it. better-sqlite3, node:sqlite, libSQL and Turso build without it (SQLITE_DQS=0) and refuse
   ** `select "hello"`, so a statement is prepared without it too. The replay above keeps it, since
