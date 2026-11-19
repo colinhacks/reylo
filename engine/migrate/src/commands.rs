@@ -951,7 +951,7 @@ fn same_statements(a: &str, b: &str, d: Dialect) -> bool {
 /// runs, since no comparison of schemas can see whether its rows were written.
 fn data_statements(sql: &str, d: Dialect) -> Vec<String> {
     let statements = split_statements(sql, d);
-    statements.iter().enumerate().filter(|(k, s)| changes_data(s) && !copies_a_rebuild(&statements, *k)).map(|(_, s)| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
+    statements.iter().enumerate().filter(|(k, s)| changes_data(s, d) && !copies_a_rebuild(&statements, *k)).map(|(_, s)| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
 }
 
 /// Whether statement `k` of a file is a rebuild's own copy of a table's rows, which a database the

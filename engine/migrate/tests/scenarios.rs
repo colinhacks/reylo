@@ -2951,6 +2951,21 @@ async fn a_commit_a_server_reads_past_a_version_comment_is_refused() {
     assert_eq!(p.history().await, ["20261027100000_t.sql"]);
 }
 
+/// A server that skips a version comment ends it at its `*/` without reading a `#` in it, and runs
+/// the COMMIT after it: the migration is refused as that server reads it, before any of it runs.
+#[tokio::test(flavor = "current_thread")]
+async fn a_commit_after_a_skipped_comment_that_holds_a_line_comment_is_refused() {
+    let Some(mut p) = P::new(Dialect::Mysql).await else { return };
+    p.file("20261027100000_t.sql", "create table t (id bigint primary key);");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.file("20261027110000_rows.sql", "insert into t values (1);\nSELECT 1 /*!99999 # */; COMMIT;\ninsert into t values (1);");
+    p.output();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"✗ 20261027110000_rows\.sql can't run atomically\n  It has its own commit");
+    assert!(p.rows("select id from t").await.is_empty(), "none of it ran");
+    assert_eq!(p.history().await, ["20261027100000_t.sql"]);
+}
+
 mod adversarial {
     use super::*;
 

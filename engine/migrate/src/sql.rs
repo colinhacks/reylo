@@ -24,9 +24,6 @@ pub struct Token {
     /// Its byte range in the text it was read from.
     pub start: usize,
     pub end: usize,
-    /// On MySQL, the version of the executable comment it is written in (`50001` in `/*!50001 … */`),
-    /// below which a server skips it.
-    pub gate: Option<u64>,
 }
 
 impl Token {
@@ -78,12 +75,47 @@ pub fn gates(sql: &str, dialect: Dialect) -> Vec<String> {
     lex(sql, dialect).1.into_iter().map(|(start, end)| sql[start..end].to_string()).collect()
 }
 
-/// The tokens of `sql`, and the byte range of each executable comment's opening. MySQL runs the
-/// text of `/*! … */`, and of `/*!50001 … */` on a server of that version or later (mysqldump writes
-/// views, triggers and routines that way, one statement often over several such comments), so its
-/// text is read as code, each token with the version its comment asks for: what decides whether a
-/// statement is safe holds it to every way a server can read it ([`read_every_way`]).
+/// The tokens of `sql` as a server that runs every executable comment reads it, and the byte range
+/// of each such comment's opening. MySQL runs the text of `/*! … */`, and of `/*!50001 … */` on a
+/// server of that version or later (mysqldump writes views, triggers and routines that way, one
+/// statement often over several such comments), so its text is read as code. What decides whether
+/// a statement is safe holds it to every way a server can read it ([`read_every_way`]).
 fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
+    lex_on(sql, dialect, None)
+}
+
+/// The version an executable comment opened at `at` asks for, as MySQL reads it: six digits, or
+/// five, after `/*!`; fewer are no version, and are code. With where its text starts.
+fn version_at(b: &[u8], at: usize) -> (Option<u64>, usize) {
+    let digits = b[at + 3..].iter().take(6).take_while(|c| c.is_ascii_digit()).count();
+    match digits {
+        5 | 6 => (std::str::from_utf8(&b[at + 3..at + 3 + digits]).ok().and_then(|v| v.parse().ok()), at + 3 + digits),
+        _ => (None, at + 3),
+    }
+}
+
+/// Where a comment a server skips ends, from `from`, as MySQL ends it: at its `*/`, reading nothing
+/// in it, but a `/*` in it opens one more comment, whose own `*/` it ends at first.
+fn skipped_to(b: &[u8], from: usize, nest: bool) -> usize {
+    let mut j = from;
+    while j < b.len() {
+        if nest && b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
+            j = skipped_to(b, j + 2, false);
+            continue;
+        }
+        if b[j] == b'*' && b.get(j + 1) == Some(&b'/') {
+            return j + 2;
+        }
+        j += 1;
+    }
+    b.len()
+}
+
+/// The tokens of `sql` as a MySQL server of version `server` reads it (every executable comment
+/// run, for None): a comment that asks for a later version is skipped as that server skips it,
+/// unread, and every other one's text is read as code, with what follows it in the state its text
+/// leaves, as the server reads it.
+fn lex_on(sql: &str, dialect: Dialect, server: Option<u64>) -> (Vec<Token>, Vec<(usize, usize)>) {
     let b = sql.as_bytes();
     let n = b.len();
     let mysql = dialect == Dialect::Mysql;
@@ -91,9 +123,8 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
     let mut out = Vec::new();
     let mut openings = Vec::new();
     let mut executable = false;
-    let mut gate: Option<u64> = None;
     let mut i = 0;
-    let push = |kind: TokenKind, start: usize, end: usize, gate: Option<u64>, out: &mut Vec<Token>| out.push(Token { kind, text: sql[start..end].to_string(), start, end, gate });
+    let push = |kind: TokenKind, start: usize, end: usize, out: &mut Vec<Token>| out.push(Token { kind, text: sql[start..end].to_string(), start, end });
     while i < n {
         let ch = b[i];
         let next = b.get(i + 1).copied();
@@ -103,19 +134,18 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
         }
         if executable && ch == b'*' && next == Some(b'/') {
             executable = false;
-            gate = None;
             i += 2;
             continue;
         }
         if mysql && !executable && ch == b'/' && next == Some(b'*') && b.get(i + 2) == Some(&b'!') {
-            let mut j = i + 3;
-            while j < n && b[j].is_ascii_digit() {
-                j += 1;
+            let (version, text) = version_at(b, i);
+            if version.zip(server).is_some_and(|(v, s)| v > s) {
+                i = skipped_to(b, i + 3, true);
+                continue;
             }
-            openings.push((i, j));
+            openings.push((i, text));
             executable = true;
-            gate = (j > i + 3).then(|| sql[i + 3..j].parse().unwrap_or(u64::MAX));
-            i = j;
+            i = text;
             continue;
         }
         // Comments. MySQL reads `--` as a comment only before whitespace or a control character.
@@ -158,7 +188,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
             if j < n && b[j] == b'$' {
                 let tag = &sql[i..=j];
                 i = sql[j + 1..].find(tag).map_or(n, |at| j + 1 + at + tag.len());
-                push(TokenKind::Str, start, i, gate, &mut out);
+                push(TokenKind::Str, start, i, &mut out);
                 continue;
             }
         }
@@ -183,7 +213,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
                 j += 1;
             }
             i = j.min(n);
-            push(TokenKind::Str, start, i, gate, &mut out);
+            push(TokenKind::Str, start, i, &mut out);
             continue;
         }
         // Quoted names.
@@ -202,7 +232,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
                 j += 1;
             }
             i = j.min(n);
-            push(TokenKind::Quoted, start, i, gate, &mut out);
+            push(TokenKind::Quoted, start, i, &mut out);
             continue;
         }
         if ch.is_ascii_digit() || (ch == b'.' && next.is_some_and(|c| c.is_ascii_digit())) {
@@ -211,7 +241,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
                 j += 1;
             }
             i = j;
-            push(TokenKind::Number, start, i, gate, &mut out);
+            push(TokenKind::Number, start, i, &mut out);
             continue;
         }
         if is_word_start(ch) {
@@ -220,19 +250,19 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
                 j += 1;
             }
             i = j;
-            push(TokenKind::Word, start, i, gate, &mut out);
+            push(TokenKind::Word, start, i, &mut out);
             continue;
         }
         // Two-character operators read as one symbol, so `::` and `||` stay whole.
         if i + 1 < n && matches!(&b[i..i + 2], b"::" | b"||" | b"<=" | b">=" | b"<>" | b"!=" | b"->" | b"=>") {
             i += 2;
-            push(TokenKind::Symbol, start, i, gate, &mut out);
+            push(TokenKind::Symbol, start, i, &mut out);
             continue;
         }
         // One character, whole even where it is not ASCII.
         let width = sql[i..].chars().next().map_or(1, char::len_utf8);
         i += width;
-        push(TokenKind::Symbol, start, i, gate, &mut out);
+        push(TokenKind::Symbol, start, i, &mut out);
     }
     (out, openings)
 }
@@ -262,21 +292,30 @@ pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<Statement> {
     split(sql, dialect, &tokens, &openings)
 }
 
-/// Each way a MySQL server can read `tokens`, by its version: every executable comment's text in,
-/// then, from the highest version down, the text of each comment a server older than its version
-/// skips left out. A server's version picks exactly one; tokens with no version have one reading.
-fn readings(tokens: &[Token]) -> Vec<Vec<Token>> {
-    let mut gates: Vec<u64> = tokens.iter().filter_map(|t| t.gate).collect();
-    gates.sort_unstable_by(|a, b| b.cmp(a));
-    gates.dedup();
-    std::iter::once(None).chain(gates.into_iter().map(Some)).map(|below| tokens.iter().filter(|t| !matches!((t.gate, below), (Some(g), Some(b)) if g >= b)).cloned().collect()).collect()
+/// The versions of MySQL server that read `sql` differently: one that runs every executable
+/// comment (None), then one just older than each version a comment asks for. Which comments open is
+/// itself a matter of the reading (an opening inside a comment a server skips opens nothing), so the
+/// versions are taken from every `/*!` and its digits in the text: a reading more than needed, never
+/// one less. A server's version reads `sql` as one of them does.
+fn servers(sql: &str, dialect: Dialect) -> Vec<Option<u64>> {
+    let b = sql.as_bytes();
+    let mut versions: Vec<u64> = if dialect == Dialect::Mysql { sql.match_indices("/*!").filter_map(|(at, _)| version_at(b, at).0).collect() } else { vec![] };
+    versions.sort_unstable_by(|a, b| b.cmp(a));
+    versions.dedup();
+    std::iter::once(None).chain(versions.into_iter().map(|v| Some(v.saturating_sub(1)))).collect()
 }
 
-/// The statements of `sql` as each server that reads it differently reads them ([`readings`]),
-/// which every check of what is safe holds it to: the text sent stays the text as written.
+/// The statements of `sql` as each server that reads it differently reads them ([`servers`]), each
+/// lexed as that server lexes it, which every check of what is safe holds it to: the text sent stays
+/// the text as written.
 fn read_every_way(sql: &str, dialect: Dialect) -> Vec<Vec<Statement>> {
-    let (tokens, openings) = lex(sql, dialect);
-    readings(&tokens).iter().map(|tokens| split(sql, dialect, tokens, &openings)).collect()
+    servers(sql, dialect)
+        .into_iter()
+        .map(|server| {
+            let (tokens, openings) = lex_on(sql, dialect, server);
+            split(sql, dialect, &tokens, &openings)
+        })
+        .collect()
 }
 
 fn split(sql: &str, dialect: Dialect, tokens: &[Token], openings: &[(usize, usize)]) -> Vec<Statement> {
@@ -550,8 +589,8 @@ re!(DATA, r"^(INSERT|UPDATE|DELETE|MERGE|COPY|CALL|DO|SELECT|WITH|TRUNCATE|REPLA
 
 /// Whether the statement changes data rather than schema, however a server reads it: what no
 /// shadow can see happened.
-pub fn changes_data(statement: &Statement) -> bool {
-    readings(&statement.tokens).iter().any(|tokens| DATA.is_match(&head_of(tokens, 1)))
+pub fn changes_data(statement: &Statement, dialect: Dialect) -> bool {
+    read_every_way(&statement.text, dialect).iter().flatten().any(|s| DATA.is_match(&head(s, 1)))
 }
 
 /// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`.
@@ -635,7 +674,34 @@ mod tests {
         let body = "/*!90000 CREATE PROCEDURE p() BEGIN */ INSERT INTO b VALUES (1); INSERT INTO b VALUES (2) /*!90000 ; END */";
         assert!(atomicity_problem(body, m).unwrap().contains("several statements on others"));
         // A statement that changes data on any server is data.
-        assert!(changes_data(&split_statements("/*!99999 CREATE TABLE x (id int) */ DELETE FROM t", m)[0]));
+        assert!(changes_data(&split_statements("/*!99999 CREATE TABLE x (id int) */ DELETE FROM t", m)[0], m));
+    }
+
+    #[test]
+    fn a_comment_a_server_skips_ends_where_that_server_ends_it() {
+        let m = Dialect::Mysql;
+        let commit = |sql: &str| atomicity_problem(sql, m).is_some_and(|p| p.contains("its own commit"));
+        // A server older than 99999 skips each comment to its `*/` without reading a `#`, a `-- ` or
+        // a quote inside it, and runs what follows.
+        assert!(shadow_problem("/*!99999 # */ USE app;", m).is_some());
+        assert!(commit("SELECT 1 /*!99999 # */; COMMIT;\nSELECT 2;"));
+        assert!(commit("SELECT 1 /*!99999 ' */; COMMIT; -- '\nSELECT 2;"));
+        let five = "/*!99999 # */ USE app;\nSELECT 1 /*!99999 # */; COMMIT;\nSELECT 2;\nSELECT 1 /*!99999 ' */; COMMIT; -- '\nSELECT 2;";
+        assert!(shadow_problem(five, m).is_some() && atomicity_problem(five, m).is_some());
+        assert!(shadow_problem("/*!99999 -- */ USE app;", m).is_some());
+        assert!(commit("SELECT 1 /*!99999 -- */; COMMIT;\nSELECT 2;"));
+        assert!(commit("SELECT 1 /*!99999 -- ' */; COMMIT; -- '\nSELECT 2;"));
+        assert!(commit("SELECT 1 /*!99999 `*/; COMMIT; -- `\nSELECT 2"));
+        // It nests one `/* … */` of its own, so it ends at the `*/` after that one's.
+        assert!(commit("SELECT 1 /*!99999 /* */ ' */; COMMIT; -- '\nSELECT 2"));
+        assert_eq!(atomicity_problem("SELECT 1 /*!99999 /* ; COMMIT; */ */ ; SELECT 3", m), None);
+        // A COMMIT that only a server of 99999 or later runs is refused as that server reads it.
+        assert!(commit("SELECT 1 /*!99999 /* */ ; COMMIT; */ ; SELECT 3"));
+        // A server that runs the comment reads a `#` in it to the end of the line, past its `*/`.
+        assert!(commit("SELECT 1 /*!50001 , 2 # */\n */; COMMIT"));
+        // Fewer than five digits are no version: the comment always runs, the digits with it.
+        assert_eq!(tokenize("SELECT 1 /*!9 , 2 */", m).iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["SELECT", "1", "9", ",", "2"]);
+        assert_eq!(gates("/*!9 , 2 */ /*!800001 , 3 */", m), ["/*!", "/*!800001"]);
     }
 
     #[test]
