@@ -699,7 +699,7 @@ Reylo infers how many rows a query returns from its keys, aggregates, `limit 1` 
 - **`BEFORE` row triggers** can skip a row by returning `NULL`, so a write they fire on returns a row or `null`. A PL/pgSQL trigger whose every `return` returns `new`, or `old` on an update or a delete, skips nothing.
 - **Nondeterministic collations** bound nothing: compared under one, where `'a'` can equal `'A'`, a unique key matches more than one row.
 - **A `varchar` key** compared with a value Reylo can't type, as `coalesce(:code::char(3), 'x')`, bounds nothing: beside a `char` value Postgres compares the column as `char`, where trailing blanks don't count.
-- **SQL functions** bound a key only where their body calls nothing volatile, whatever their label: a `stable` function that calls `random()` runs again for each row a scan reads.
+- **SQL functions** bound a key only where their body calls nothing volatile, whatever their label: a `stable` function that calls `random()` runs again for each row a scan reads. So does one whose body reaches something volatile through another SQL function, a view, an operator or an argument's default, or samples a table without `repeatable`. A function in another language, such as PL/pgSQL, is taken at its label.
 - **A comparison with a bare `null`** by `=` bounds no key and keeps no column from being null: with `transform_null_equals` on, Postgres reads `x = null` as `x is null`.
 
 ## Parameters

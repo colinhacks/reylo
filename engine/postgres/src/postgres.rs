@@ -497,7 +497,10 @@ fn analyze_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let inner = Engine::new(host);
     let read = inner.run(&text, &inner_lexed, &inner_marked)?;
     let (declared, found) = (engine.column_oids.borrow(), inner.column_oids.borrow());
-    let (mut analysis, narrowed) = narrowed(analysis, &declared, read, &found);
+    // A function whose body belies its label runs again for each call, where its body in place is a
+    // subquery the server may run once: what that says of the rows holds of the expansion alone.
+    let rows = engine.belied.borrow().is_empty();
+    let (mut analysis, narrowed) = narrowed(analysis, &declared, read, &found, rows);
     analysis.notes = expanded.notes;
     // The tables the body reads and the functions read through, which no parse of the statement
     // as written gives.
@@ -515,8 +518,9 @@ fn analyze_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
 /// What the statement with its functions' bodies in place says of `analysis`, where it describes to
 /// the same columns of the same types: a column not null, a type it holds more of (a JSON shape), the
 /// smaller of the two cardinalities. Each claim is the statement's own, so taking either is sound.
-/// With whether it changed anything.
-fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u32]) -> (Analysis, bool) {
+/// What it says of the rows (the cardinality, the keys, the order) only where `rows`. With whether
+/// it changed anything.
+fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u32], rows: bool) -> (Analysis, bool) {
     let same = declared == found && analysis.columns.len() == read.columns.len() && analysis.columns.iter().zip(&read.columns).all(|(a, b)| a.name == b.name);
     if !same || read.columns.is_empty() {
         return (analysis, false);
@@ -528,6 +532,9 @@ fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u
         column.nullable &= body.nullable;
         column.ty = body.ty;
         column.comment = column.comment.take().or(body.comment);
+    }
+    if !rows {
+        return (analysis, changed);
     }
     let rank = |c: &Cardinality| match c {
         Cardinality::None => 0,
@@ -839,6 +846,8 @@ struct Engine<'a> {
     comments: RefCell<Comments>,
     /// The type of each column the main statement's describe reports.
     column_oids: RefCell<Vec<u32>>,
+    /// The functions the statement calls whose label their body belies ([`crate::bodies::belied_labels`]).
+    belied: RefCell<Vec<String>>,
     budget: Cell<usize>,
 }
 
@@ -858,7 +867,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), written_facts: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES), column_oids: RefCell::new(Vec::new()) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), written_facts: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES), column_oids: RefCell::new(Vec::new()), belied: RefCell::new(Vec::new()) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -957,7 +966,7 @@ impl<'a> Engine<'a> {
         if let Some(rows) = view_rows {
             merge_keys(&mut catalog, build_catalog(&operators, rows));
         }
-        crate::bodies::belied_labels(&mut catalog, self.host)?;
+        *self.belied.borrow_mut() = crate::bodies::belied_labels(&mut catalog, self.host)?;
         catalog.views = view_definitions;
         catalog.not_null = self.not_null_columns();
         catalog.param_types = raw.params.clone();
