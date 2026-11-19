@@ -156,7 +156,7 @@ test("every command that reads or writes the lock refuses it under its old name,
   for (const args of LOCK_COMMANDS) {
     const r = reylo(root, args);
     assert.equal(r.status, 1, `${args.join(" ")}: ${r.err}${r.out}`);
-    assert.match(r.out, /^✗ reylo\/reylo-lock\.yaml is the lock's old name: it is reylo\/reylo\.lock now\n[\s\S]*\n  Rename it:\n    git mv reylo\/reylo-lock\.yaml reylo\/reylo\.lock\n\nNothing was changed\.\n$/, args.join(" "));
+    assert.match(r.out, /^✗ The lock's old name is reylo\/reylo-lock\.yaml: it is reylo\/reylo\.lock now\n[\s\S]*\n  Rename it:\n    git mv reylo\/reylo-lock\.yaml reylo\/reylo\.lock\n\nNothing was changed\.\n$/, args.join(" "));
     assert.deepEqual(files(), before, args.join(" "));
   }
   const json = JSON.parse(reylo(root, ["migrate", "deploy", "--json"]).out) as { ok: boolean; problems: { code: string; fixes: { commands: string[] }[] }[] };
@@ -175,7 +175,7 @@ test("every command that reads or writes the lock refuses a project that holds i
   for (const args of LOCK_COMMANDS) {
     const r = reylo(root, args);
     assert.equal(r.status, 1, `${args.join(" ")}: ${r.err}${r.out}`);
-    assert.match(r.out, /^✗ reylo\/reylo-lock\.yaml and reylo\/reylo\.lock are both here\n[\s\S]*\n    git rm reylo\/reylo-lock\.yaml\n\nNothing was changed\.\n$/, args.join(" "));
+    assert.match(r.out, /^✗ Both reylo\/reylo-lock\.yaml and reylo\/reylo\.lock are here\n[\s\S]*\n    git rm reylo\/reylo-lock\.yaml\n\nNothing was changed\.\n$/, args.join(" "));
     assert.deepEqual(files(), before, args.join(" "));
   }
   assert.equal((JSON.parse(reylo(root, ["migrate", "status", "--json"]).out) as { problems: { code: string }[] }).problems[0]!.code, "lock-old-name");
