@@ -8,10 +8,15 @@
 //! `dialect` file says `sqlite` runs in a fresh SQLite file instead. A case whose `dialect` file
 //! says `mysql` runs in a database of its own on the MySQL server `--mysql-url` (or
 //! `ORACLE_MYSQL_URL`) names, also a throwaway one, which it refuses on port 3306; how its host
-//! answers the engine and how its runs are isolated is in `mysql.rs`. A case with a `min_version`
-//! file (a `server_version_num`, such as `180000`, or for MySQL the version as one number, such
-//! as `80400`) is skipped on an older server. A MySQL case's `sql_mode` file sets its sessions'
-//! `sql_mode`.
+//! answers the engine and how its runs are isolated is in `mysql.rs`. A case's `min_version` file
+//! holds versions (a `server_version_num`, such as `180000`, or for MySQL the version as one
+//! number, such as `80400`): a line with a version alone skips the case on an older server, and a
+//! line `<file> <version>` skips that statement there, whose lines in the case's files are then not
+//! compared. Where a server of an older series answers a statement differently and the analysis is
+//! right for it, the case's `expected-<series>.txt` (`expected-14.txt`, `expected-8.0.txt`) stands
+//! in for its `expected.txt` on that series, as `unchecked-<series>.txt` and `errors-<series>.txt`
+//! do for the others; `--bless` writes the file a run is compared with. A MySQL case's `sql_mode`
+//! file sets its sessions' `sql_mode`.
 //!
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
@@ -176,7 +181,8 @@ async fn oracle() -> ExitCode {
     for case in &cases {
         let dialect = fs::read_to_string(case.join("dialect")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "postgres".into());
         let timeout_ms = fs::read_to_string(case.join("timeout")).ok().and_then(|s| s.trim().parse::<u64>().ok()).filter(|ms| *ms > 0).unwrap_or(timeout_ms);
-        let min = fs::read_to_string(case.join("min_version")).ok().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
+        let (min, statement_mins) = min_versions(case);
+        let mut on = On::default();
         let outcome = if dialect == "sqlite" {
             run_sqlite(case, timeout_ms, &given, &mut dumped)
         } else if dialect == "mysql" {
@@ -198,7 +204,9 @@ async fn oracle() -> ExitCode {
                 println!("{}: skipped (server {} < {min})", case.display(), server.version);
                 continue;
             }
-            mysql::run(case, server, keep, timeout_ms, &given, &mut dumped, statements(case)).await
+            let v = server.version as i32;
+            on = On::new(case, format!("{}.{}", v / 10000, v / 100 % 100), v, statement_mins);
+            mysql::run(case, server, keep, timeout_ms, &given, &mut dumped, on.statements(case)).await
         } else {
             if admin.is_none() {
                 let Some(url) = url.as_deref() else {
@@ -218,23 +226,29 @@ async fn oracle() -> ExitCode {
                 println!("{}: skipped (server {version} < {min})", case.display());
                 continue;
             }
-            run_postgres(case, client, config, keep, timeout_ms, &given, &mut dumped).await
+            on = On::new(case, (version / 10000).to_string(), *version, statement_mins);
+            run_postgres(case, client, config, &on, keep, timeout_ms, &given, &mut dumped).await
         };
+        if bless && !on.skipped.is_empty() {
+            println!("{}: FAILED: not blessed, since --bless would drop the lines of the statement(s) min_version skips on this server", case.display());
+            failed += 1;
+            continue;
+        }
         // Every type the case's statements were given holds to the format's rules, whatever else
         // fails the case.
-        let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
+        let files: Vec<String> = on.statements(case).into_iter().map(|(file, _)| file).collect();
         let typed = validity::check(case, &files, &dumped);
         match outcome {
             Ok((lines, unchecked)) => {
                 never_ran += unchecked.len();
-                if !bless && !case.join("unchecked.txt").is_file() {
+                if !bless && !on.path(case, "unchecked").is_file() {
                     unnamed += unchecked.len();
                 }
                 print_unchecked(case, lines.len(), &unchecked);
                 // Every verdict is printed, whichever fails the case.
-                let matched = check(case, &lines, bless);
-                let narrowed = errors::check(case, &errors::lines(case, &files, &dumped), bless);
-                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed || !typed {
+                let matched = check(case, &lines, bless, &on);
+                let narrowed = errors::check(case, &errors::lines(case, &files, &dumped), bless, &on);
+                if !coverage(case, &unchecked, bless, strict_coverage, &on) || !matched || !narrowed || !typed {
                     failed += 1;
                 }
             }
@@ -274,6 +288,60 @@ fn cases(paths: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// A case's `min_version` file: the version a line holds alone, below which the case is skipped,
+/// and each `<file> <version>` line, below which that statement is.
+fn min_versions(case: &Path) -> (i32, Vec<(String, i32)>) {
+    let mut min = 0;
+    let mut statements = Vec::new();
+    for line in fs::read_to_string(case.join("min_version")).unwrap_or_default().lines() {
+        match line.split_whitespace().collect::<Vec<_>>()[..] {
+            [version] => min = version.parse().unwrap_or(0),
+            [file, version] => statements.push((file.to_string(), version.parse().unwrap_or(0))),
+            _ => {}
+        }
+    }
+    (min, statements)
+}
+
+/// The server a case runs on, as the case's files see it: its series, whose own files stand in
+/// for the case's where it has them, and the statements `min_version` skips on it.
+#[derive(Default)]
+struct On {
+    series: Option<String>,
+    skipped: Vec<String>,
+}
+
+impl On {
+    fn new(case: &Path, series: String, version: i32, statement_mins: Vec<(String, i32)>) -> On {
+        let skipped: Vec<String> = statement_mins.into_iter().filter(|(_, min)| version < *min).map(|(file, _)| file).collect();
+        if !skipped.is_empty() {
+            println!("{}: note: skipped on server {version}, below their min_version: {}", case.display(), skipped.join(", "));
+        }
+        On { series: Some(series), skipped }
+    }
+
+    /// The case's statements that run on this server.
+    fn statements(&self, case: &Path) -> Vec<(String, String)> {
+        statements(case).into_iter().filter(|(file, _)| !self.skipped.contains(file)).collect()
+    }
+
+    /// The case's `<name>-<series>.txt` where it has one, else its `<name>.txt`.
+    fn path(&self, case: &Path, name: &str) -> PathBuf {
+        self.series.as_ref().map(|series| case.join(format!("{name}-{series}.txt"))).filter(|path| path.is_file()).unwrap_or_else(|| case.join(format!("{name}.txt")))
+    }
+
+    /// The text of the case's file `name` without the lines of the statements skipped here, or
+    /// None where the case has no such file.
+    fn read(&self, case: &Path, name: &str) -> Option<String> {
+        let text = fs::read_to_string(self.path(case, name)).ok()?;
+        if self.skipped.is_empty() {
+            return Some(text);
+        }
+        let skipped = |line: &str| self.skipped.iter().any(|file| line.strip_prefix(file.as_str()).is_some_and(|rest| rest.starts_with(": ")));
+        Some(text.lines().filter(|line| !skipped(line)).map(|line| format!("{line}\n")).collect())
+    }
+}
+
 /// The statements of a case, by file name.
 fn statements(case: &Path) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = fs::read_dir(case)
@@ -290,15 +358,14 @@ fn statements(case: &Path) -> Vec<(String, String)> {
 }
 
 /// Compare a case's lines with its `expected.txt`, or write them there under `--bless`.
-fn check(case: &Path, lines: &[String], bless: bool) -> bool {
-    let path = case.join("expected.txt");
+fn check(case: &Path, lines: &[String], bless: bool, on: &On) -> bool {
     let actual = lines.join("\n") + "\n";
     if bless {
-        fs::write(&path, &actual).expect("expected.txt is writable");
+        fs::write(on.path(case, "expected"), &actual).expect("expected.txt is writable");
         println!("{}: blessed {} statement(s)", case.display(), lines.len());
         return true;
     }
-    let Ok(expected) = fs::read_to_string(&path) else {
+    let Some(expected) = on.read(case, "expected") else {
         println!("{}: sound ({} statement(s), no expected.txt)", case.display(), lines.len());
         return true;
     };
@@ -324,8 +391,8 @@ fn check(case: &Path, lines: &[String], bless: bool) -> bool {
 /// Compare the statements of a case that never ran with its `unchecked.txt`, or write them there
 /// under `--bless`. Without that file a statement that never ran fails the case under
 /// `--strict-coverage` alone.
-fn coverage(case: &Path, unchecked: &[String], bless: bool, strict: bool) -> bool {
-    let path = case.join("unchecked.txt");
+fn coverage(case: &Path, unchecked: &[String], bless: bool, strict: bool, on: &On) -> bool {
+    let path = on.path(case, "unchecked");
     if bless {
         // An empty unchecked.txt says that every statement of the case ran, and stays.
         if !unchecked.is_empty() || path.is_file() {
@@ -333,7 +400,7 @@ fn coverage(case: &Path, unchecked: &[String], bless: bool, strict: bool) -> boo
         }
         return true;
     }
-    let Ok(expected) = fs::read_to_string(&path) else {
+    let Some(expected) = on.read(case, "unchecked") else {
         if strict && !unchecked.is_empty() {
             println!("{}: FAILED: --strict-coverage, and no unchecked.txt names the {} statement(s) that never ran", case.display(), unchecked.len());
             return false;
@@ -427,12 +494,12 @@ async fn postgres_case(case: &Path, admin: &Client, admin_config: &Config) -> Re
     Ok((db, client))
 }
 
-async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, keep: bool, timeout_ms: u64, given: &Map<String, Value>, dumped: &mut Map<String, Value>) -> Result<(Vec<String>, Vec<String>), String> {
+async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, on: &On, keep: bool, timeout_ms: u64, given: &Map<String, Value>, dumped: &mut Map<String, Value>) -> Result<(Vec<String>, Vec<String>), String> {
     let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let (db, client) = postgres_case(case, admin, admin_config).await?;
     let mut lines = Vec::new();
     let mut analyzed = Vec::new();
-    for (file, sql) in statements(case) {
+    for (file, sql) in on.statements(case) {
         let analysis = match given.get(&format!("{name}/{file}")) {
             Some(answer) => answer.clone(),
             None => analyze_postgres(&client, &sql).await.map_err(|e| format!("{file}: {e}"))?,
