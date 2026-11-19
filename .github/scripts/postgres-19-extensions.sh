@@ -29,7 +29,10 @@ curl -fsSL https://download.osgeo.org/postgis/source/postgis-3.7.0.tar.gz | tar 
 (
   cd "$work/postgis-3.7.0"
   ./configure --with-pgconfig="$pg_config" --without-protobuf --without-raster --without-topology > /dev/null
-  make -j"$(nproc)" > /dev/null
+  # The whole tree's make also writes topology's upgrade script, which fails with no topology built, so the
+  # libraries, the extension and its scripts are built by their own targets.
+  for d in deps liblwgeom libpgcommon postgis; do [ ! -f "$d/Makefile" ] || make -C "$d" -j"$(nproc)" > /dev/null; done
+  make -C extensions postgis_extension_helper.sql > /dev/null
   make -C postgis DESTDIR="$stage" install > /dev/null
   make -C extensions/postgis DESTDIR="$stage" install > /dev/null
 )
