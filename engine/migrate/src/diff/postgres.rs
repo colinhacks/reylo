@@ -400,7 +400,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 if c.flag("own") {
                     extra.push([c.text("rel"), c.text("col"), c.text("type"), c.text("def")].join(SEP));
                 } else {
-                    extra.push(format!("{HELD_COLUMN}{}{SEP}{}", c.text("rel"), c.text("col")));
+                    extra.push(format!("{HELD_COLUMN}{}{SEP}{}{SEP}{}{SEP}{}", c.text("rel"), c.text("col"), c.text("type"), c.text("def")));
                 }
             }
         }
@@ -879,9 +879,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                         .chain((c.flag("inherited") && !partition).then(|| "inherited".to_string()))
                         .chain((kind == "f").then(|| "foreign".to_string()))
                         .chain((!cascade.is_empty()).then(|| CASCADE.to_string()))
-                        .chain(typed_tables.get(&name).into_iter().flatten().filter(|_| kind == "c").map(|t| format!("{TYPED_TABLE}{t}{SEP}{name}")))
+                        .chain(typed_tables.get(&name).into_iter().flatten().filter(|_| kind == "c").map(|t| format!("{TYPED_TABLE}{t}{SEP}{name}{SEP}{}", column_states.get(&(t.clone(), c.text("name").to_string())).is_some_and(|(d, _)| d.is_some()))))
                         .chain((kind == "r" && inherited_from.contains(&name)).then(|| INHERITED_FROM.to_string()))
                         .chain((c.flag("inherited") && !partition).then(|| format!("{PARENTS}{}", r.text("parent"))))
+                        .chain(r.get("parent").filter(|_| !partition).map(|p| format!("{TABLE_PARENTS}{p}")))
                         .collect(),
                     // A column a parent has too changes type with the parent's, before its own change.
                     deps: if c.flag("inherited") && !partition { holders(c.text("name")) } else { BTreeSet::new() },
@@ -903,7 +904,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     def: def.clone(),
                     inline: true,
                     change: Change::Alter { blocks: true },
-                    extra: vec!["inherited".to_string(), format!("{PARENTS}{}", r.text("parent"))],
+                    extra: vec!["inherited".to_string(), format!("{PARENTS}{}", r.text("parent")), format!("{TABLE_PARENTS}{}", r.text("parent"))],
                     deps: holders(c.text("name")),
                     ..Object::default()
                 });
@@ -2108,7 +2109,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         } else if o.kind != Some(Kind::Column) {
             continue;
         }
-        let lines: Vec<String> = on.iter().filter_map(|a| s.objects.get(a)).map(|a| around_line(a)).collect();
+        // A partition's index under one made again goes and comes with it.
+        let lines: Vec<String> = on.iter().filter_map(|a| s.objects.get(a)).filter(|a| !a.goes_with.as_ref().is_some_and(|g| on.contains(g))).map(|a| around_line(a)).collect();
         if let Some(o) = s.objects.get_mut(&id) {
             o.extra.extend(lines);
         }
@@ -2928,7 +2930,7 @@ fn is_column_line(l: &str) -> bool {
 }
 
 /// What an enum carries of a column of it a table holds from another (a partition's, a child's):
-/// its table and its name.
+/// its table, name, type and default, the default its own.
 const HELD_COLUMN: &str = "held column ";
 
 /// What an enum a composite type has an attribute of carries for each table made of that type: the
@@ -2945,6 +2947,8 @@ const PARTITION_KEY: &str = "partition key";
 const TABLE_COLUMN: &str = "column of table ";
 /// The tables a column a table only inherits comes from, in their order.
 const PARENTS: &str = "parents ";
+/// The tables a column's table inherits from, in their order.
+const TABLE_PARENTS: &str = "parents of its table ";
 /// A composite type that tables are made of.
 const TYPED_BY: &str = "tables are of it";
 
@@ -3721,10 +3725,15 @@ impl Alterer for PostgresAlterer {
             return None;
         }
         let table = from.owner.as_deref()?.strip_prefix("table ")?;
-        // It leaves every parent and takes each again in its order, which keeps the order of its
-        // parents and leaves the column its own whichever of them held it.
-        let parents = from.extra.iter().find_map(|l| l.strip_prefix(PARENTS)).map(names_in).unwrap_or_else(|| gone.owner.as_deref().and_then(|w| w.strip_prefix("table ")).map(|p| vec![p.to_string()]).unwrap_or_default());
-        Some((parents.iter().map(|p| format!("alter table {table} no inherit {p}")).collect(), parents.iter().map(|p| format!("alter table {table} inherit {p}")).collect()))
+        // It leaves every parent it keeps and takes each again in its order, which keeps the order
+        // of its parents and leaves the column its own whichever of them held it. A parent it is
+        // not to keep its own change leaves.
+        let parents = |o: &Object| o.extra.iter().find_map(|l| l.strip_prefix(TABLE_PARENTS)).map(names_in).unwrap_or_default();
+        let kept: Vec<String> = parents(from).into_iter().filter(|p| parents(to).contains(p)).collect();
+        if kept.is_empty() {
+            return None;
+        }
+        Some((kept.iter().map(|p| format!("alter table {table} no inherit {p}")).collect(), kept.iter().map(|p| format!("alter table {table} inherit {p}")).collect()))
     }
 
     fn releases(&self, from: &Object, to: &Object) -> bool {
@@ -3850,6 +3859,10 @@ impl Alterer for PostgresAlterer {
                 if !cascade.is_empty() && !tables.is_empty() && a.ty != b.ty && !self.assigns(&a.ty, &b.ty) {
                     let value = if self.casts(&a.ty, &b.ty) { format!("{name}::{}", b.ty) } else { format!("{name}::text::{}", b.ty) };
                     let mut out: Vec<String> = tables.iter().map(|t| format!("alter table {t} not of")).collect();
+                    // Its default, which the conversion takes no `using` to, goes first: the column's
+                    // own change sets the target's after.
+                    let defaulted = |t: &str| to.extra.iter().chain(&from.extra).filter_map(|l| l.strip_prefix(TYPED_TABLE)).any(|l| l.split(SEP).next() == Some(t) && l.ends_with(&format!("{SEP}true")));
+                    out.extend(tables.iter().filter(|t| defaulted(t)).map(|t| format!("alter table {t} alter column {name} drop default")));
                     out.extend(tables.iter().map(|t| format!("alter table {t} alter column {name} type {}{collate} using {value}", b.ty)));
                     out.push(format!("alter type {ty} alter attribute {name} type {}{collate}", b.ty));
                     out.extend(tables.iter().map(|t| format!("alter table {t} of {ty}")));
@@ -3999,7 +4012,13 @@ impl Alterer for PostgresAlterer {
                         } else {
                             format!("{name}::text::{element}")
                         };
-                        out.push(format!("{at} type {}{collate} using case when {name} is null then null else array[{value}] end", b.ty));
+                        // A table others inherit from writes no `case`, which Postgres 18 can't take
+                        // to a child that holds the column at another position.
+                        if to.extra.iter().any(|l| l == INHERITED_FROM) {
+                            out.push(format!("{at} type {}{collate} using nullif(array[{value}], array[null]::{})", b.ty, b.ty));
+                        } else {
+                            out.push(format!("{at} type {}{collate} using case when {name} is null then null else array[{value}] end", b.ty));
+                        }
                     } else if self.assigns(&a.ty, &b.ty) {
                         out.push(format!("{at} type {}{collate}", b.ty));
                     } else if self.casts(&a.ty, &b.ty) {
@@ -4134,8 +4153,27 @@ impl Alterer for PostgresAlterer {
                     };
                     // A column the target holds from another table (one that is to be a partition)
                     // is one both have.
-                    let held = |c: &str| to.extra.iter().filter_map(|l| l.strip_prefix(HELD_COLUMN)).any(|h| h.splitn(2, SEP).eq(c.splitn(3, SEP).take(2)));
-                    let kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))) || entering(c) || held(c)).cloned().collect();
+                    let held = |c: &str| to.extra.iter().filter_map(|l| l.strip_prefix(HELD_COLUMN)).any(|h| h.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2)));
+                    let mut kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))) || entering(c) || held(c)).cloned().collect();
+                    // A column a table holds from another and has as its own in the target (its
+                    // table leaves the other first) converts as its own; one it holds in both keeps
+                    // its own default off while the other's conversion reaches it, and back after.
+                    let held_lines = |o: &Object| -> Vec<Vec<String>> { o.extra.iter().filter_map(|l| l.strip_prefix(HELD_COLUMN)).map(|h| h.split(SEP).map(String::from).collect()).collect() };
+                    let mut held_off = Vec::new();
+                    let mut held_back = Vec::new();
+                    for h in held_lines(from) {
+                        let (Some(t), Some(c)) = (h.first(), h.get(1)) else { continue };
+                        let own_after = to.extra.iter().filter(plain).find(|l| l.splitn(3, SEP).take(2).eq([t.as_str(), c.as_str()]));
+                        if own_after.is_some() {
+                            kept.push([t.clone(), c.clone(), h.get(2).cloned().unwrap_or_default(), h.get(3).cloned().unwrap_or_default()].join(SEP));
+                        } else if let Some(default) = h.get(3).filter(|d| !d.is_empty()) {
+                            held_off.push(format!("alter table only {t} alter column {c} drop default"));
+                            let kept_default = held_lines(to).into_iter().any(|g| g.first() == Some(t) && g.get(1) == Some(c) && g.get(3) == Some(default));
+                            if kept_default {
+                                held_back.push(format!("alter table only {t} alter column {c} set default {}", default.replace(&format!("::{}__old", name), &format!("::{name}"))));
+                            }
+                        }
+                    }
                     // Each with the default the target gives it, which is set back where unchanged.
                     let targets: Vec<String> = kept.iter().filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))).cloned()).collect();
                     let mut swap = swap_enum(name, &to.create[0], &kept, &targets);
@@ -4147,6 +4185,7 @@ impl Alterer for PostgresAlterer {
                     let typed = |o: &Object| -> BTreeSet<(String, String)> { o.extra.iter().filter_map(|l| l.strip_prefix(TYPED_TABLE)?.split_once(SEP)).map(|(t, c)| (t.to_string(), c.to_string())).collect() };
                     let typed: Vec<(String, String)> = typed(from).intersection(&typed(to)).cloned().collect();
                     out.extend(made);
+                    out.extend(held_off);
                     out.extend(typed.iter().map(|(t, _)| format!("alter table {t} not of")));
                     out.extend(before);
                     out.extend(swap);
@@ -4154,6 +4193,7 @@ impl Alterer for PostgresAlterer {
                     out.extend(to.extra.iter().filter_map(|l| l.strip_prefix(AGAIN)).map(String::from));
                     out.extend(after);
                     out.extend(typed.iter().map(|(t, c)| format!("alter table {t} of {c}")));
+                    out.extend(held_back);
                     out.extend(last);
                     return Some(out);
                 }
