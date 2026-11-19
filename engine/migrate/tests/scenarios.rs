@@ -2678,6 +2678,7 @@ on!(
 );
 on!(Mysql, a_recurring_event_is_in_the_dump);
 on!(Mysql, init_makes_a_function_before_the_view_that_calls_it);
+on!(Postgres, init_writes_the_foreign_servers_its_tables_use);
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
@@ -3755,6 +3756,20 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.exec("create function twice(x int) returns int deterministic no sql return x * 2").await;
         p.exec("create view v as select id, twice(n) as n2 from t").await;
         assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(q.history().await, ["init.sql"]);
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// A foreign server is in no schema, so a dump of the schemas leaves it out, and with it what its
+    /// foreign tables are made on.
+    pub async fn init_writes_the_foreign_servers_its_tables_use(mut p: P) {
+        p.exec("create foreign data wrapper madv_w options (debug 'true'); create server madv_s type 'pg' version '18' foreign data wrapper madv_w options (host 'db.example', dbname 'app')").await;
+        p.exec("create foreign table users (id int, email text) server madv_s options (table_name 'users'); create table notes (id int primary key, body text)").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        assert_has!(std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap(), r"(?i)create server madv_s");
         let q = P::new(p.d).await.unwrap();
         p.url = q.url.clone();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());

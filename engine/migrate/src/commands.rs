@@ -3871,6 +3871,31 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 }
                 kept.push(format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {}", r.text("name"), r.text("schema")));
             }
+            // Foreign data wrappers and servers, which are in no schema, so pg_dump writes them only for a
+            // whole database: what the dumped schemas' foreign tables are made on, an extension's and the
+            // platform's own aside. User mappings stay out, since their options hold passwords.
+            let options = |column: &str| format!("coalesce(' OPTIONS (' || (select string_agg(format('%I %L', split_part(x, '=', 1), substr(x, strpos(x, '=') + 1)), ', ') from unnest({column}) x) || ')', '')");
+            for r in db
+                .rows(&format!(
+                    "select 0 as k, w.oid as id, format('CREATE FOREIGN DATA WRAPPER %I', w.fdwname) || coalesce(' HANDLER ' || nullif(w.fdwhandler::oid, 0)::regproc::text, '')
+                        || coalesce(' VALIDATOR ' || nullif(w.fdwvalidator::oid, 0)::regproc::text, '') || {} as s
+                      from pg_foreign_data_wrapper w where {} and {}
+                    union all
+                    select 1, s.oid, format('CREATE SERVER %I', s.srvname) || coalesce(' TYPE ' || quote_literal(s.srvtype), '') || coalesce(' VERSION ' || quote_literal(s.srvversion), '')
+                        || format(' FOREIGN DATA WRAPPER %I', w.fdwname) || {}
+                      from pg_foreign_server s join pg_foreign_data_wrapper w on w.oid = s.srvfdw where {} and {}
+                    order by k, id",
+                    options("w.fdwoptions"),
+                    crate::catalog::not_extension("pg_foreign_data_wrapper", "w"),
+                    crate::catalog::not_platform("w.fdwowner"),
+                    options("s.srvoptions"),
+                    crate::catalog::not_extension("pg_foreign_server", "s"),
+                    crate::catalog::not_platform("s.srvowner")
+                ))
+                .await?
+            {
+                kept.push(r.text("s").to_string());
+            }
             // What every new database has already: its public schema, as initdb makes it.
             const AS_MADE: [&str; 4] = ["CREATE SCHEMA public", "CREATE SCHEMA IF NOT EXISTS public", "ALTER SCHEMA public OWNER TO pg_database_owner", "COMMENT ON SCHEMA public IS 'standard public schema'"];
             for statement in crate::sql::split_statements(&text, Dialect::Postgres) {
