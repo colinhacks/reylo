@@ -6,7 +6,7 @@ title: "When the schema changes"
 
 Reylo warns when a query's types may no longer hold.
 
-Your types are inferred from your development database when you build. A migration or a hand change after that can make a query return values its types rule out, such as a `null` from a column typed `string`. So on its first run, each query compares the columns it reads with the ones it was built against, and warns:
+A migration or a hand change after a build can make a query return values its types rule out, so each query compares the columns it reads with the ones it was built against, and warns:
 
 ```text
 reylo: users.email has changed since get_user.sql was built (it was text not null, and is now text), so its types may be out of date until the next build.

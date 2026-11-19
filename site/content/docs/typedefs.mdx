@@ -150,8 +150,6 @@ Its `precision` counts its digits, and its scale the digits after the point. A d
 
 ### `text`
 
-Text.
-
 With no `encoding`, it's any valid Unicode text. An `encoding` names the character set its values are held in, from a [fixed list](#specification), and `ill_formed` lets them be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise, and a `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole. A `format` names what the text is, by JSON Schema's format names or a source's own, and a program that doesn't know one ignores it.
 
 <TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext"], "sqlite": ["text"]}}>
@@ -183,9 +181,7 @@ With no `encoding`, it's any valid Unicode text. An `encoding` names the charact
 
 ### `bytes`
 
-Bytes.
-
-The type states their length where it fixes one.
+A value's length is stated where the type fixes one.
 
 <TypeDef holds={["0x0102", "0x"]} types={{"postgres": ["bytea", "macaddr", "macaddr8"], "mysql": ["binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob"], "sqlite": ["blob"]}}>
 
@@ -623,8 +619,6 @@ It may name its model, its spatial reference, its subtype and its coordinates.
 </TypeDef>
 
 ### `xml`
-
-[XML](https://www.w3.org/TR/xml/).
 
 A document with one root, or with `fragment` several.
 
