@@ -708,5 +708,8 @@ jobs:
           set -o pipefail
           nub run test 2>&1 | tee "$RUNNER_TEMP/test.log"
           grep -q '^ℹ skipped 0$' "$RUNNER_TEMP/test.log" || { echo "::error::a test was skipped"; exit 1; }
+      - name: Print Postgres 19's logs
+        if: failure()
+        run: tail -n 200 "$RUNNER_TEMP/postgres.log" "$RUNNER_TEMP/postgres-tls.log"
       - if: always()
         run: sccache --show-stats
