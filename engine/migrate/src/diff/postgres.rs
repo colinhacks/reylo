@@ -3253,7 +3253,9 @@ impl Alterer for PostgresAlterer {
                 if a.generated != b.generated || a.identity != b.identity {
                     let own = |o: &Object, def: String| Object { def, extra: o.extra.iter().filter(|l| *l != "inherited").cloned().collect(), ..o.clone() };
                     let after_parent = Column { ty: b.ty.clone(), collation: b.collation.clone(), ..a.clone() };
-                    return self.alter(&own(from, render_column(&after_parent)), &own(to, to.def.clone()));
+                    // Its not null still to validate stays so, which the rendering leaves out.
+                    let def = format!("{}{}", render_column(&after_parent), if a.not_valid { " not valid" } else { "" });
+                    return self.alter(&own(from, def), &own(to, to.def.clone()));
                 }
                 let at = format!("alter table {table} alter column {name}");
                 let mut out = Vec::new();
