@@ -2,12 +2,12 @@ agg_column_default.sql: many () -> { ids: jsonb? }
 agg_empty_array.sql: one () -> { ids: jsonb int8[] }
 agg_empty_array_cast.sql: one () -> { ids: jsonb int8[] }
 agg_object_default.sql: one () -> { ids: jsonb }
-grouped_filter.sql: many () -> { j: jsonb { name: text(¬NUL), ids: jsonb } }
+grouped_filter.sql: many () -> { j: jsonb { name: text(¬NUL), ids: jsonb? } }
 nested_empty_array.sql: many () -> { j: jsonb { ids: int8[] } }
-nested_object_default.sql: many () -> { j: jsonb { ids: jsonb } }
+nested_object_default.sql: many () -> { j: jsonb { ids: jsonb? } }
 object_never_null.sql: many () -> { j: jsonb { id: int8 } }
 param_decimal_default.sql: many (1: int4?) -> { j: jsonb { x: unknown?, id: int8 } }
 param_default.sql: many (1: text(¬NUL)?, 2: int4?) -> { j: jsonb { q: text(¬NUL)?, n: int4?, id: int8 } }
-sibling_aggregate.sql: one () -> { j: jsonb { ids: jsonb, titles: text(¬NUL)[]? } }
+sibling_aggregate.sql: one () -> { j: jsonb { ids: jsonb?, titles: text(¬NUL)[]? } }
 subquery_object_default.sql: many () -> { j: jsonb }
 unexplained_beside_column.sql: many () -> { j: jsonb { name: text(¬NUL), titles: unknown? } }

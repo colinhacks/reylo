@@ -34,7 +34,3 @@ export default {
 ## MySQL
 
 Hyperdrive refuses prepared statements, so Reylo runs `mysql2` there through `query()`, with each value written into the statement ([`mysql2`](/mysql#mysql2)). Reylo runs `mariadb` without prepared statements wherever it runs ([`mariadb`](/mysql#mariadb)).
-
-## Schema changes
-
-Hyperdrive caches reads for 60 seconds by default, so the [check against schema changes](/typescript#when-the-schema-changes) sees a change about a minute after it lands.

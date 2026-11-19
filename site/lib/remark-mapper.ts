@@ -9,7 +9,6 @@ import { pageFiles } from './page-files.ts';
 import { rustContent } from './rust-content.ts';
 import { isErrorExample, renderErrors } from './sql-errors.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
-import { lexPlaceholders } from '../../src/lex.ts';
 
 export { pageFiles };
 
@@ -124,13 +123,34 @@ export type Block = {
 export const hashOf = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 16);
 
 /**
+ * Each statement written once for every dialect, as SQL Server's examples show it, by the shared
+ * text's hash: only the engine's lexer knows which `:name` is a placeholder, so `nub run capture`
+ * (scripts/capture-types.ts) writes these from it, into lib/sql-modules.json's `$native`, and the
+ * build reads them there. While a capture runs, `nativeFrom` holds its lexer.
+ */
+let nativeTexts: Record<string, string> | undefined;
+let nativeFrom: ((sql: string) => string) | undefined;
+
+/** Writes each SQL Server copy with `lex` from now on, for the capture, which then saves them (`capturedNative`). */
+export function captureNative(lex: (sql: string) => string) {
+  nativeFrom = lex;
+  nativeTexts = {};
+}
+
+/** The SQL Server copies a capture wrote, by the shared text's hash. */
+export const capturedNative = (): Record<string, string> => Object.fromEntries(Object.entries(nativeTexts ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+
+/**
  * A statement written once for every dialect as SQL Server's examples show it, each `:name` in
  * T-SQL's own `@name` (the rule for examples in AGENTS.md); the block itself where it has none.
  */
 export function nativeText(sql: string): string {
-  const colon = lexPlaceholders(sql, 'sqlserver').placeholders.filter((p) => sql[p.start] === ':');
-  for (const p of colon.reverse()) sql = `${sql.slice(0, p.start)}@${sql.slice(p.start + 1)}`;
-  return sql;
+  if (nativeFrom) return (nativeTexts![hashOf(sql)] = nativeFrom(sql));
+  if (!sql.includes(':')) return sql;
+  nativeTexts ??= ((readModules() as { $native?: Record<string, string> }).$native ?? {});
+  const text = nativeTexts[hashOf(sql)];
+  if (text === undefined) throw new Error(`lib/sql-modules.json holds no SQL Server copy of the statement written for every dialect that starts ${JSON.stringify(sql.slice(0, 60))}; run \`nub run capture\` in site/ (with the scratch databases running), then build again.`);
+  return text;
 }
 function nativeCopy(code: Code): Code {
   const value = nativeText(code.value);

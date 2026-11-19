@@ -3205,6 +3205,7 @@
               "type": {
                 "kind": "datetime",
                 "tick": "1/1000000",
+                "min": "0000-01-01T00:00:00",
                 "label": "datetime"
               }
             }
@@ -3438,6 +3439,7 @@
               "type": {
                 "kind": "datetime",
                 "tick": "1/1000000",
+                "min": "0000-01-01T00:00:00",
                 "label": "datetime"
               }
             }
@@ -3640,6 +3642,7 @@
                 "type": {
                   "kind": "datetime",
                   "tick": "1",
+                  "min": "0000-01-01T00:00:00",
                   "label": "datetime"
                 },
                 "nullable": true
@@ -3785,6 +3788,7 @@
               "name": "ships_on",
               "type": {
                 "kind": "date",
+                "min": "0000-01-01",
                 "label": "date"
               },
               "nullable": true

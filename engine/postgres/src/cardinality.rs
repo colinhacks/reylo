@@ -121,6 +121,13 @@ pub struct Catalog {
     /// Function names with a volatile overload (`provolatile = 'v'`). A volatile call is evaluated
     /// for each row, so `id = random_id()` is no value a key can be pinned to.
     pub volatile: HashSet<String>,
+    /// Whether the statement compares a value with a bare NULL by `=`, which `transform_null_equals`
+    /// reads as `IS NULL`: `id = NULL` then pins no key ([`crate::infer::compares_with_null`]).
+    pub null_equals: bool,
+    /// Function names with a user's or an extension's `language sql` overload labelled `stable` or
+    /// `immutable`, whose body may call something volatile all the same; [`crate::bodies::belied_labels`]
+    /// reads which, and those join `volatile`.
+    pub labelled: HashSet<String>,
     /// Operator names a user or an extension defined, as the trust check reports them: such an
     /// operator may be the one a comparison or an arithmetic resolves to, and may be volatile.
     pub user_operators: HashSet<String>,
@@ -496,12 +503,16 @@ pub const COLUMNS_QUERY: &str = concat!(
 );
 
 /// `$1` is `text[]` of function names: `(proname, has a set-returning overload, has a volatile
-/// overload)`, an aggregate volatile where a function it runs is, whatever its own label, which
-/// Postgres writes as immutable for every aggregate.
+/// overload, has a user's or an extension's `language sql` overload not labelled volatile)`, an
+/// aggregate volatile where a function it runs is, whatever its own label, which Postgres writes as
+/// immutable for every aggregate. The label of a `language sql` function is only its author's word,
+/// which its body may belie ([`crate::bodies::belied_labels`]).
 pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog.bool_or(p.proretset), pg_catalog.bool_or(p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" \
       OR EXISTS (SELECT 1 FROM pg_catalog.pg_aggregate a JOIN pg_catalog.pg_proc f \
         ON f.oid OPERATOR(pg_catalog.=) ANY (ARRAY[a.aggtransfn::pg_catalog.oid, a.aggfinalfn::pg_catalog.oid, a.aggcombinefn::pg_catalog.oid, a.aggmtransfn::pg_catalog.oid, a.aggminvtransfn::pg_catalog.oid, a.aggmfinalfn::pg_catalog.oid]) \
-        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")) \
+        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")), \
+    pg_catalog.bool_or(p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.provolatile OPERATOR(pg_catalog.<>) 'v'::pg_catalog.\"char\" \
+      AND EXISTS (SELECT 1 FROM pg_catalog.pg_language l WHERE l.oid OPERATOR(pg_catalog.=) p.prolang AND l.lanname OPERATOR(pg_catalog.=) 'sql'::pg_catalog.name)) \
     FROM pg_catalog.pg_proc p WHERE p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) GROUP BY p.proname";
 
 /// Every operator some set-returning function implements.
@@ -1873,7 +1884,10 @@ fn outer_column_type(c: &protobuf::ColumnRef, catalog: &Catalog) -> Option<u32> 
 /// A node as JSON with what the comparison of two spellings must ignore: every `location`, the
 /// qualifier `alias` on a column (`u.email` is `email` when read for `u`), and a cast to a text
 /// type around a string literal, which the server prints for a literal the statement may leave
-/// to take the column's type.
+/// to take the column's type. Only a cast that leaves the literal's value as it is: one with no
+/// type modifier, which would cut it to a length (`'ab'::varchar(1)` is `'a'`), and to `bpchar`
+/// only where the literal ends in no blank, which a `bpchar` drops where it meets `text` (`text_col
+/// = 'a  '::bpchar` compares with `'a'`).
 fn normalized(node: &protobuf::Node, alias: &str) -> Value {
     fn walk(v: &mut Value, alias: &str) {
         match v {
@@ -1887,9 +1901,16 @@ fn normalized(node: &protobuf::Node, alias: &str) -> Value {
                 }
                 let literal = map.get("TypeCast").and_then(|t| {
                     let arg = t.get("arg")?.get("node")?;
-                    let name = t.get("type_name")?.get("names")?.as_array()?.last()?.get("node")?.get("String")?.get("sval")?.as_str()?;
-                    let text = ["text", "varchar", "bpchar"].contains(&name) && arg.get("AConst").and_then(|c| c.get("val")).is_some_and(|v| v.get("Sval").is_some());
-                    text.then(|| arg.clone())
+                    let type_name = t.get("type_name")?;
+                    let name = type_name.get("names")?.as_array()?.last()?.get("node")?.get("String")?.get("sval")?.as_str()?;
+                    let empty = |key: &str| type_name.get(key).and_then(Value::as_array).is_none_or(Vec::is_empty);
+                    let string = arg.get("AConst").and_then(|c| c.get("val")).and_then(|v| v.get("Sval")).and_then(|s| s.get("sval")).and_then(Value::as_str)?;
+                    let kept = match name {
+                        "text" | "varchar" => empty("typmods"),
+                        "bpchar" => empty("typmods") && empty("array_bounds") && !string.ends_with(' '),
+                        _ => false,
+                    };
+                    kept.then(|| arg.clone())
                 });
                 if let Some(arg) = literal {
                     map.remove("TypeCast");
@@ -1995,7 +2016,8 @@ fn output_type(sub: &SelectStmt, name: &str, ctes: &[String], catalog: &Catalog)
 }
 
 /// The type of a scalar subquery's one column, where it is a column of the one relation the
-/// subquery reads: `(SELECT author_id FROM posts WHERE id = $1)`.
+/// subquery reads (`(SELECT author_id FROM posts WHERE id = $1)`), or an expression whose type the
+/// build names without the subquery's columns (`(SELECT lower($1))`).
 fn scalar_type(l: &protobuf::SubLink, ctes: &[String], catalog: &Catalog) -> Option<u32> {
     if l.sub_link_type != protobuf::SubLinkType::ExprSublink as i32 {
         return None;
@@ -2003,7 +2025,15 @@ fn scalar_type(l: &protobuf::SubLink, ctes: &[String], catalog: &Catalog) -> Opt
     let Some(NodeEnum::SelectStmt(sub)) = l.subselect.as_deref()?.node.as_ref() else { return None };
     let [target] = sub.target_list.as_slice() else { return None };
     let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { return None };
-    let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref()?.node.as_ref() else { return None };
+    let value = r.val.as_deref()?;
+    let Some(NodeEnum::ColumnRef(c)) = value.node.as_ref() else {
+        // An expression's type where the build names it without the subquery's columns
+        // (`(select lower(:e))`).
+        return match value_type(value, catalog, &|_| None) {
+            ValueType::Is(t) => Some(t),
+            _ => None,
+        };
+    };
     projected(sub, c, ctes, catalog)
 }
 
@@ -3372,8 +3402,10 @@ fn catalog_name(rv: &protobuf::RangeVar) -> String {
 ///   column, on the other side has the type `type_of` gives it, from the catalog.
 /// - A volatile call is evaluated for each row, so `id = floor(random() * 3)::int` can match
 ///   several rows ([`calls_volatile`]).
+/// - A bare NULL is no value where the statement compares one by `=` ([`Catalog::null_equals`]):
+///   under `transform_null_equals`, `id = NULL` is `id IS NULL`, which every NULL key matches.
 fn equality_bounds(catalog: &Catalog, relation: &str, column: &str, value: &protobuf::Node, type_of: &dyn Fn(&protobuf::Node) -> Option<u32>) -> bool {
-    if mentions(value, "CollateClause") || calls_volatile(value, catalog) {
+    if mentions(value, "CollateClause") || calls_volatile(value, catalog) || (catalog.null_equals && infer::is_null_constant(value)) {
         return false;
     }
     let Some(column_type) = catalog.column_types.get(relation).and_then(|types| types.get(column)).copied() else { return true };
@@ -3447,29 +3479,75 @@ fn value_type(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&proto
     }
 }
 
+/// The built-ins whose every overload over a string, or over an untyped argument, which the
+/// string category takes, returns `text`: of their first argument, the rest being counts, patterns
+/// and replacements (`lower(range)` is a bound, `substring(bit …)` a bit string, `btrim(bytea)` a
+/// `bytea`, none of them a string).
+const TEXT_OF_A_STRING: &[&str] = &[
+    "lower", "upper", "initcap", "casefold", "btrim", "ltrim", "rtrim", "replace", "left", "right", "substr", "substring", "lpad", "rpad",
+    "translate", "repeat", "reverse", "split_part", "regexp_replace", "quote_ident",
+];
+/// The built-ins that return `text` whatever their arguments are.
+const TEXT_ALWAYS: &[&str] = &["concat", "concat_ws", "format", "md5", "to_char", "quote_literal", "quote_nullable"];
+/// The string types, each of which a string function takes as `text`.
+const STRING_TYPES: &[u32] = &[oid::TEXT, oid::VARCHAR, oid::BPCHAR, oid::NAME];
+
 /// The type a call over values the build types is, where the call can only be the built-in one:
-/// `lower` and `upper` of a string are `text` (an untyped argument takes `lower(text)`, the
-/// string category being the one an unknown argument picks), and `+`, `-`, `*`, `/` and `%` over
-/// integers are the wider integer (`int2 + int4` is `int4`, either side `int8` is `int8`), an
-/// untyped side taking the other's type. Only a name the trust check read and no user or
-/// extension defined, and only where no function of theirs converts a built-in type implicitly,
-/// which a built-in's candidate may run on its operand. The operands here are of built-in types or
-/// untyped, so a cast of theirs from a type of theirs reaches none of them.
+/// the string functions of [`TEXT_OF_A_STRING`] over a string, or an untyped argument, which takes
+/// the string category, and those of [`TEXT_ALWAYS`], are `text`, and so is `||` of two strings;
+/// and `+`, `-`, `*`, `/` and `%` over integers are the wider integer (`int2 + int4` is `int4`,
+/// either side `int8` is `int8`), an untyped side taking the other's type. Only a name the trust
+/// check read and no user or extension defined, and only where no function of theirs converts a
+/// built-in type implicitly, which a built-in's candidate may run on its operand. The operands
+/// here are of built-in types or untyped, so a cast of theirs from a type of theirs reaches none
+/// of them. A `coalesce`, `nullif`, `greatest`, `least` or `CASE` of values that are each `text`
+/// or `varchar`, or untyped, is of their type, `text` where they differ or none has one, as the
+/// server resolves them; a `bpchar` or a value of no type the build names among them leaves it
+/// unnamed.
 fn built_in_result(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&protobuf::Node) -> Option<u32>) -> Option<u32> {
     const INTEGERS: &[u32] = &[oid::INT2, oid::INT4, oid::INT8];
     let built_in = |name: &str| !catalog.user_operators.contains(name) && catalog.overloads.as_ref().is_some_and(|o| !o.0.casts_built_in_implicitly());
+    let string = |n: &protobuf::Node| match value_type(n, catalog, type_of) {
+        ValueType::Adapts => true,
+        ValueType::Is(t) => STRING_TYPES.contains(&t),
+        ValueType::Unnamed => false,
+    };
+    // The type of values the server resolves to one: `text` or `varchar` each, or untyped.
+    let common = |values: &[&protobuf::Node]| -> Option<u32> {
+        let mut found: Option<u32> = None;
+        for v in values {
+            match value_type(v, catalog, type_of) {
+                ValueType::Adapts => {}
+                ValueType::Is(t) if [oid::TEXT, oid::VARCHAR].contains(&t) => found = Some(if found.is_some_and(|f| f != t) { oid::TEXT } else { t }),
+                _ => return None,
+            }
+        }
+        Some(found.unwrap_or(oid::TEXT))
+    };
     match value.node.as_ref()? {
         NodeEnum::FuncCall(f) => {
             let name = infer::builtin_name(&f.funcname)?;
             let plain = f.agg_order.is_empty() && f.agg_filter.is_none() && f.over.is_none() && !f.agg_within_group && !f.agg_star && !f.agg_distinct && !f.func_variadic;
-            let [arg] = f.args.as_slice() else { return None };
-            let string = match value_type(arg, catalog, type_of) {
-                ValueType::Adapts => true,
-                ValueType::Is(t) => [oid::TEXT, oid::VARCHAR].contains(&t),
-                ValueType::Unnamed => false,
-            };
-            let named = matches!(arg.node.as_ref(), Some(NodeEnum::NamedArgExpr(_)));
-            (plain && !named && string && ["lower", "upper"].contains(&name.as_str()) && infer::postgres_function_names().contains(&name.as_str()) && built_in(&name)).then_some(oid::TEXT)
+            let named = f.args.iter().any(|a| matches!(a.node.as_ref(), Some(NodeEnum::NamedArgExpr(_))));
+            let first = f.args.first()?;
+            let text = TEXT_ALWAYS.contains(&name.as_str()) || (TEXT_OF_A_STRING.contains(&name.as_str()) && string(first));
+            (plain && !named && text && infer::postgres_function_names().contains(&name.as_str()) && built_in(&name)).then_some(oid::TEXT)
+        }
+        NodeEnum::AExpr(e) if e.kind == protobuf::AExprKind::AexprOp as i32 && infer::builtin_name(&e.name).as_deref() == Some("||") => {
+            let (l, r) = (e.lexpr.as_deref()?, e.rexpr.as_deref()?);
+            (string(l) && string(r) && built_in("||")).then_some(oid::TEXT)
+        }
+        NodeEnum::AExpr(e) if e.kind == protobuf::AExprKind::AexprNullif as i32 => common(&[e.lexpr.as_deref()?, e.rexpr.as_deref()?]),
+        NodeEnum::CoalesceExpr(c) => common(&c.args.iter().collect::<Vec<_>>()),
+        NodeEnum::MinMaxExpr(m) => common(&m.args.iter().collect::<Vec<_>>()),
+        NodeEnum::CaseExpr(c) => {
+            let mut results: Vec<&protobuf::Node> = Vec::new();
+            for when in &c.args {
+                let Some(NodeEnum::CaseWhen(w)) = when.node.as_ref() else { return None };
+                results.push(w.result.as_deref()?);
+            }
+            results.extend(c.defresult.as_deref());
+            common(&results)
         }
         NodeEnum::AExpr(e) if e.kind == protobuf::AExprKind::AexprOp as i32 => {
             let name = infer::builtin_name(&e.name)?;
@@ -3512,8 +3590,10 @@ const CAST_TYPES: &[(&str, u32)] = &[
 
 /// Column types that no implicit cast converts with loss, so a value of any type bounds them:
 /// the server converts the value, or converts the column exactly (`int4` to `float8`, `date` to
-/// `timestamp`, `varchar` to `text`), or refuses the comparison.
-const ANY_VALUE_TYPES: &[u32] = &[oid::INT2, oid::INT4, oid::BOOL, oid::UUID, oid::DATE, oid::TEXT, oid::VARCHAR];
+/// `timestamp`), or refuses the comparison. Not `varchar`: beside a value of type `bpchar` the
+/// server converts the column to `bpchar`, whose `=` ignores trailing blanks, so `'a '` and `'a'`
+/// match one value.
+const ANY_VALUE_TYPES: &[u32] = &[oid::INT2, oid::INT4, oid::BOOL, oid::UUID, oid::DATE, oid::TEXT];
 
 /// Whether a column of type `column` compared with a value of type `value` uses an equality of the
 /// column's btree operator family on the column as it is: the cross-type members of `integer_ops`,
@@ -4011,6 +4091,45 @@ mod tests {
         // A write reads the same keys.
         assert!(matches!(dml("delete from posts where title = $1 and score is null returning id", &Trust::default(), &c), Some(Ok(_))));
         assert!(matches!(dml("delete from posts where title = $1 returning id", &Trust::default(), &c), Some(Err(_))));
+    }
+
+    #[test]
+    fn a_partial_index_counts_only_where_the_where_writes_its_literal_as_the_same_value() {
+        let mut c = joined();
+        // `… on pidx (email) where status = 'a  '`, over a text column, as the catalog reports it.
+        c.partial_keys.insert("pidx".into(), vec![(vec!["email".into()], "status = 'a  '::text".into())]);
+        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
+        assert_eq!(at("select id from pidx where email = $1 and status = 'a  '"), Ok(()));
+        assert_eq!(at("select id from pidx where email = $1 and status = 'a  '::varchar"), Ok(()));
+        // A cast that changes the literal compares another value: a length cuts it, and `bpchar`
+        // drops its trailing blanks where it meets `text`.
+        assert!(at("select id from pidx where email = $1 and status = 'a  '::bpchar").is_err());
+        assert!(at("select id from pidx where email = $1 and status = 'a  '::char(1)").is_err());
+        assert!(at("select id from pidx where email = $1 and status = 'a  '::varchar(1)").is_err());
+        // A `bpchar` of a literal with no trailing blank is the same value.
+        c.partial_keys.insert("pidx".into(), vec![(vec!["email".into()], "status = 'a'::text".into())]);
+        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
+        assert_eq!(at("select id from pidx where email = $1 and status = 'a'::bpchar"), Ok(()));
+    }
+
+    #[test]
+    fn a_varchar_key_is_pinned_by_a_value_that_is_text_for_certain() {
+        let mut c = joined();
+        c.unique_keys.insert("vk".into(), vec![vec!["vc".into()]]);
+        c.column_types.insert("vk".into(), [("id".to_string(), oid::INT4), ("vc".to_string(), oid::VARCHAR)].into_iter().collect());
+        c.param_types = vec![oid::TEXT, oid::BOOL];
+        // No collation is nondeterministic, which a subquery's value could bring otherwise.
+        c.deterministic_only = true;
+        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
+        assert_eq!(at("select v.id from vk v where v.vc = coalesce($1, '')"), Ok(()));
+        assert_eq!(at("select v.id from vk v where v.vc = case when $2 then $1 end"), Ok(()));
+        assert_eq!(at("select v.id from vk v where v.vc = (select coalesce($1, 'x'))"), Ok(()));
+        // Beside a `bpchar` the server compares the column as `bpchar`, whose `=` ignores trailing
+        // blanks: 'a' and 'a ' are one value there.
+        assert!(at("select v.id from vk v where v.vc = coalesce($1::bpchar, 'x')").is_err());
+        assert!(at("select v.id from vk v where v.vc = nullif($1::bpchar, '')").is_err());
+        assert!(at("select v.id from vk v where v.vc = greatest($1::bpchar, 'a')").is_err());
+        assert!(at("select v.id from vk v where v.vc = (select $1::bpchar)").is_err());
     }
 
     #[test]

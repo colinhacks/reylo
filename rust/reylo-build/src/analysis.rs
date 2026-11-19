@@ -2,7 +2,8 @@
 //! schema, else from the engine replayed against the database, else, where the database cannot be
 //! reached or no URL names it, from the newest entry `reylo/.cache/` holds for the statement. The
 //! connection is the engine's own (`reylo_engine`), which reads the URL as the loader does,
-//! TLS included.
+//! TLS included. A statement built from `reylo/.cache/` without the database's schema to hold it to
+//! says so on standard error, once per process and reason, in the loader's words.
 //!
 //! The cache is the TypeScript loader's (`src/analyze.ts`): the same file names, the same entry and
 //! the same schema fingerprint, so a crate and a package in one directory would share it.
@@ -162,32 +163,32 @@ impl Dialect {
 /// project is the one `dir` is in: the crate's directory for the macro and a build script, the
 /// `.sql` file's for the generator.
 pub fn analyze(dir: &Path, sql: &str) -> Result<(Dialect, Value), String> {
-    let Located { root, cache, url, missing } = locate(dir)?;
-    let queries = cache.join("queries");
-    let Some(url) = url else {
+    let located = locate(dir)?;
+    let queries = located.cache.join("queries");
+    let Some(url) = located.url.clone() else {
         // No URL: whichever database the cache holds an analysis of the statement for.
         for dialect in [Dialect::Postgres, Dialect::Sqlite, Dialect::Mysql] {
             let Some(key) = statement_key(dialect, sql) else { continue };
             if let Some(entry) = newest_entry(&queries, &key, "") {
-                return Ok((dialect, entry));
+                unverified(&located, "no database URL is set", &entry);
+                return Ok((dialect, entry["analysis"].clone()));
             }
         }
-        return Err(missing);
+        return Err(located.missing);
     };
     let dialect = Dialect::of(&url)?;
-    let _ = (&root, &cache);
     let analysis = match dialect {
         #[cfg(feature = "postgres")]
         Dialect::Postgres => runtime()?.block_on(async {
             let mut guard = session(&POSTGRES, &url);
-            postgres(&cache, &queries, sql, guard.as_mut().expect("made by session")).await
+            postgres(&located, &queries, sql, guard.as_mut().expect("made by session")).await
         })?,
         #[cfg(feature = "sqlite")]
-        Dialect::Sqlite => sqlite(&root, &cache, &queries, &url, sql)?,
+        Dialect::Sqlite => sqlite(&located, &queries, &url, sql)?,
         #[cfg(feature = "mysql")]
         Dialect::Mysql => runtime()?.block_on(async {
             let mut guard = session(&MYSQL, &url);
-            mysql(&cache, &queries, sql, guard.as_mut().expect("made by session")).await
+            mysql(&located, &queries, sql, guard.as_mut().expect("made by session")).await
         })?,
         #[allow(unreachable_patterns)]
         off => return Err(off.off()),
@@ -208,6 +209,8 @@ struct Located {
     cache: PathBuf,
     /// `direct_url`, else `DATABASE_URL`, from the environment or the `.env` files.
     url: Option<String>,
+    /// Where the URL came from, for a message: `"direct_url" in .reylo.yaml, DB_PASSWORD in .env`.
+    source: String,
     /// What to say where no URL is set.
     missing: String,
 }
@@ -223,9 +226,9 @@ fn locate(manifest: &Path) -> Result<Located, String> {
         return Ok(located.clone());
     }
     let project = reylo_engine::project::Project::resolve(manifest, std::env::vars().collect())?;
-    let url = project.type_check_url()?.map(|(url, _)| url);
+    let (url, source) = project.type_check_url()?.map_or((None, String::new()), |(url, source)| (Some(url), source));
     let cache = project.root.join(project.config.dir.as_deref().unwrap_or("reylo")).join(".cache");
-    let located = Located { root: project.root.clone(), cache, url, missing: project.missing_url() };
+    let located = Located { root: project.root.clone(), cache, url, source, missing: project.missing_url() };
     held.retain(|(m, _, _)| m != manifest);
     held.push((manifest.to_path_buf(), Instant::now(), located.clone()));
     Ok(located)
@@ -270,7 +273,7 @@ pub fn watched(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[cfg(feature = "postgres")]
-async fn postgres(cache: &Path, queries: &Path, sql: &str, session: &mut Session<Client, reylo_engine::clients::tokio_postgres::Describe>) -> Result<Value, String> {
+async fn postgres(located: &Located, queries: &Path, sql: &str, session: &mut Session<Client, reylo_engine::clients::tokio_postgres::Describe>) -> Result<Value, String> {
     let statement = statement_key(Dialect::Postgres, sql).expect("the feature builds the engine");
     let server = server(&session.url);
     let schema = match session.fresh() {
@@ -292,7 +295,7 @@ async fn postgres(cache: &Path, queries: &Path, sql: &str, session: &mut Session
     // Out of reach: the entries are used as they are.
     let schema = match schema {
         Ok(schema) => schema,
-        Err(why) => return offline(queries, &statement, &server, &why),
+        Err(why) => return offline(located, queries, &statement, &server, &located.cannot_connect(&session.url, &why)),
     };
     let own = queries.join(format!("{statement}-{}.json", &sha256(&server)[..16]));
     if let Some(entry) = current(&own, &schema) {
@@ -300,11 +303,11 @@ async fn postgres(cache: &Path, queries: &Path, sql: &str, session: &mut Session
     }
     let client = match postgres_client(&mut session.conn, &session.url).await {
         Ok(client) => client,
-        Err(Failure::Unreachable(why)) => return offline(queries, &statement, &server, &why),
+        Err(Failure::Unreachable(why)) => return offline(located, queries, &statement, &server, &located.cannot_connect(&session.url, &why)),
         Err(other) => return Err(other.to_string()),
     };
     let analysis = reylo_engine::clients::tokio_postgres::analyze(client, sql, &mut session.answers).await.map_err(|e| e.to_string())?;
-    remember(cache, &own, Dialect::Postgres, &schema, &analysis)
+    remember(&located.cache, &own, Dialect::Postgres, &schema, &analysis)
 }
 
 /// The session's client, connected again where the server closed it.
@@ -317,7 +320,7 @@ async fn postgres_client<'c>(conn: &'c mut Option<Client>, url: &str) -> Result<
 }
 
 #[cfg(feature = "mysql")]
-async fn mysql(cache: &Path, queries: &Path, sql: &str, session: &mut Session<mysql_async::Conn, reylo_engine::clients::mysql_async::Describe>) -> Result<Value, String> {
+async fn mysql(located: &Located, queries: &Path, sql: &str, session: &mut Session<mysql_async::Conn, reylo_engine::clients::mysql_async::Describe>) -> Result<Value, String> {
     let statement = statement_key(Dialect::Mysql, sql).expect("the feature builds the engine");
     let server = server(&session.url);
     let schema = match session.fresh() {
@@ -342,7 +345,7 @@ async fn mysql(cache: &Path, queries: &Path, sql: &str, session: &mut Session<my
     };
     let schema = match schema {
         Ok(schema) => schema,
-        Err(why) => return offline(queries, &statement, &server, &why),
+        Err(why) => return offline(located, queries, &statement, &server, &located.cannot_connect(&session.url, &why)),
     };
     let own = queries.join(format!("{statement}-{}.json", &sha256(&server)[..16]));
     if let Some(entry) = current(&own, &schema) {
@@ -350,7 +353,7 @@ async fn mysql(cache: &Path, queries: &Path, sql: &str, session: &mut Session<my
     }
     let conn = match mysql_conn(&mut session.conn, &session.url).await {
         Ok(conn) => conn,
-        Err(Failure::Unreachable(why)) => return offline(queries, &statement, &server, &why),
+        Err(Failure::Unreachable(why)) => return offline(located, queries, &statement, &server, &located.cannot_connect(&session.url, &why)),
         Err(other) => return Err(other.to_string()),
     };
     let analysis = reylo_engine::clients::mysql_async::analyze(conn, sql, &mut session.answers).await;
@@ -358,7 +361,7 @@ async fn mysql(cache: &Path, queries: &Path, sql: &str, session: &mut Session<my
         // The connection may be what failed: the next statement opens a new one.
         session.conn = None;
     }
-    remember(cache, &own, Dialect::Mysql, &schema, &analysis.map_err(|e| e.to_string())?)
+    remember(&located.cache, &own, Dialect::Mysql, &schema, &analysis.map_err(|e| e.to_string())?)
 }
 
 /// The fingerprint's rows as the loader reads them, each value as mysql2 decodes it; the outer
@@ -389,13 +392,13 @@ async fn mysql_conn<'c>(conn: &'c mut Option<mysql_async::Conn>, url: &str) -> R
 }
 
 #[cfg(feature = "sqlite")]
-fn sqlite(root: &Path, cache: &Path, queries: &Path, url: &str, sql: &str) -> Result<Value, String> {
+fn sqlite(located: &Located, queries: &Path, url: &str, sql: &str) -> Result<Value, String> {
     let statement = statement_key(Dialect::Sqlite, sql).expect("the feature builds the engine");
-    let path = PathBuf::from(reylo_engine::project::sqlite_path(url, root).map_err(|why| format!("Cannot read the SQLite URL {url}: {why}."))?);
+    let path = PathBuf::from(reylo_engine::project::sqlite_path(url, &located.root).map_err(|why| format!("Cannot read the SQLite URL {url}: {why}."))?);
     let server = path.to_string_lossy().to_string();
     // A file that is gone is a database that cannot be reached: the entries are used as they are.
     if !path.exists() {
-        return offline(queries, &statement, &server, &format!("{} does not exist", path.display()));
+        return offline(located, queries, &statement, &server, &located.cannot_connect(url, "it does not exist"));
     }
     let conn = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let rows = {
@@ -421,12 +424,80 @@ fn sqlite(root: &Path, cache: &Path, queries: &Path, url: &str, sql: &str) -> Re
         return Ok(entry);
     }
     let analysis = reylo_engine::clients::rusqlite::analyze(&conn, sql, &mut AnswerCache::default()).map_err(|e| e.to_string())?;
-    remember(cache, &own, Dialect::Sqlite, &schema, &analysis)
+    remember(&located.cache, &own, Dialect::Sqlite, &schema, &analysis)
 }
 
-/// Where the database cannot be reached: this server's entry for the statement, else the newest.
-fn offline(queries: &Path, statement: &str, server: &str, why: &str) -> Result<Value, String> {
-    newest_entry(queries, statement, server).ok_or_else(|| format!("Cannot reach the database ({why}); reylo/.cache/ has no analysis of this statement, so build once where the database can be reached."))
+/// Where the database cannot be reached (`found` says which, and why): this server's entry for the
+/// statement, else the newest.
+fn offline(located: &Located, queries: &Path, statement: &str, server: &str, found: &str) -> Result<Value, String> {
+    let entry = newest_entry(queries, statement, server).ok_or_else(|| format!("{}{}; {} has no analysis of this statement, so build once where the database can be reached.", found[..1].to_uppercase(), &found[1..], located.cache_name()))?;
+    unverified(located, found, &entry);
+    Ok(entry["analysis"].clone())
+}
+
+impl Located {
+    /// The cache as a message names it, from the project's root: `reylo/.cache`.
+    fn cache_name(&self) -> String {
+        self.cache.strip_prefix(&self.root).map_or_else(|_| self.cache.display().to_string(), |p| p.to_string_lossy().replace('\\', "/"))
+    }
+
+    /// Where the database was looked for, and where its URL came from; never the credentials.
+    fn cannot_connect(&self, url: &str, why: &str) -> String {
+        match Dialect::of(url) {
+            Ok(Dialect::Sqlite) => format!("cannot open the database {} ({}): {why}", reylo_engine::project::sqlite_path(url, &self.root).unwrap_or_else(|_| url.to_string()), self.source),
+            _ => format!("cannot connect to the database at {} ({}): {why}", place(url), self.source),
+        }
+    }
+}
+
+/// The database as a person names it: its host, port and database.
+fn place(url: &str) -> String {
+    let Some((_, rest)) = url.split_once("://") else { return "the database".to_string() };
+    let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (authority, path) = rest.find('/').map_or((rest, ""), |at| rest.split_at(at));
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = if host.is_empty() { query.split('&').find_map(|p| p.strip_prefix("host=")).unwrap_or("localhost") } else { host };
+    format!("{host}{path}")
+}
+
+/// Says that a statement was built from `entry` in the cache without the database's schema to hold
+/// it to, once per process and reason, as the loader says it (`warnUnverified` in `src/loader.ts`):
+/// on standard error, or as a warning Cargo shows where a build script asked, whose standard error
+/// Cargo keeps to itself.
+fn unverified(located: &Located, found: &str, entry: &Value) {
+    static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let mut said = SAID.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if said.iter().any(|s| s == found) {
+        return;
+    }
+    said.push(found.to_string());
+    let line = unverified_line(found, &located.cache_name(), entry);
+    // Cargo sets HOST and TARGET for a build script alone.
+    if std::env::var_os("HOST").is_some() && std::env::var_os("TARGET").is_some() {
+        println!("cargo:warning={line}");
+    } else {
+        eprintln!("{line}");
+    }
+}
+
+fn unverified_line(found: &str, cache: &str, entry: &Value) -> String {
+    let day = entry["at"].as_u64().map_or_else(String::new, |at| format!(", analyzed {}", utc_day(at)));
+    format!("reylo: {found}; building from {cache}/{day}")
+}
+
+/// The UTC day of a time in milliseconds since 1970, as `YYYY-MM-DD` (the proleptic Gregorian
+/// calendar's, by days from the epoch).
+fn utc_day(ms: u64) -> String {
+    let z = (ms / 86_400_000) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// The entry's analysis, where it was made against the schema the database has now.
@@ -475,7 +546,7 @@ fn read_entry(file: &Path) -> Option<Value> {
 fn newest_entry(queries: &Path, statement: &str, server_name: &str) -> Option<Value> {
     if !server_name.is_empty() {
         if let Some(entry) = read_entry(&queries.join(format!("{statement}-{}.json", &sha256(server_name)[..16]))) {
-            return Some(entry["analysis"].clone());
+            return Some(entry);
         }
     }
     let prefix = format!("{statement}-");
@@ -485,7 +556,6 @@ fn newest_entry(queries: &Path, statement: &str, server_name: &str) -> Option<Va
         .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
         .filter_map(|e| read_entry(&e.path()))
         .max_by_key(|entry| entry["at"].as_u64().unwrap_or(0))
-        .map(|entry| entry["analysis"].clone())
 }
 
 fn write_entry(cache: &Path, file: &Path, entry: &Value) {
@@ -507,7 +577,23 @@ fn write_entry(cache: &Path, file: &Path, entry: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::old_lock;
+    use super::{old_lock, place, unverified_line, utc_day};
+    use serde_json::json;
+
+    #[test]
+    fn a_build_from_the_cache_says_so_in_the_loaders_words() {
+        assert_eq!(utc_day(0), "1970-01-01");
+        assert_eq!(utc_day(951_782_400_000), "2000-02-29");
+        assert_eq!(utc_day(1_779_148_799_999), "2026-05-18");
+        let entry = json!({"at": 1_779_148_799_999u64, "analysis": {}});
+        assert_eq!(unverified_line("no database URL is set", "reylo/.cache", &entry), "reylo: no database URL is set; building from reylo/.cache/, analyzed 2026-05-18");
+        assert_eq!(unverified_line("no database URL is set", "reylo/.cache", &json!({"analysis": {}})), "reylo: no database URL is set; building from reylo/.cache/");
+        // Where, never the credentials.
+        assert_eq!(place("postgres://app:secret@db.internal:5432/shop?sslmode=require"), "db.internal:5432/shop");
+        assert_eq!(place("mysql://root@127.0.0.1:3306"), "127.0.0.1:3306");
+        assert_eq!(place("postgres:///shop?host=/var/run/postgresql"), "/var/run/postgresql/shop");
+        assert_eq!(place("postgres:///shop"), "localhost/shop");
+    }
 
     #[test]
     fn the_lock_under_its_old_name_is_refused_alone_or_beside_the_lock() {

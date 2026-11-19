@@ -1,111 +1,79 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lexPlaceholders } from "../src/lex.ts";
 import { defineQuery } from "../src/index.ts";
 import { engine as load, type Dialect } from "../src/engine.ts";
+import { handWritten } from "./helpers.ts";
 import { pgPool } from "./stand-ins.ts";
 
-const names = (sql: string, dialect: "postgres" | "mysql" | "sqlite" = "postgres") => lexPlaceholders(sql, dialect).params;
-
-test("the named forms, the dialect's own positional form, and a position is its number", () => {
-  assert.deepEqual(names("select :a, @b, $c, :a, arr[lo:hi]"), ["a"]);
-  assert.deepEqual(names("select $1, $2, $1, j ? 'k'"), ["1", "2"]);
-  assert.deepEqual(names("select ?, ?", "mysql"), ["1", "2"]);
-  assert.deepEqual(names("select @x, $1 from t", "mysql"), []);
-  // SQLite's own `@name` and `$name` name parameters there, and the name drops the prefix.
-  assert.deepEqual(names("select @a.b, a@c, @d, @a.b", "sqlite"), ["a.b", "d"]);
-  assert.deepEqual(names("select $a, a$b", "sqlite"), ["a"]);
-  // A bare `?` is one past the largest number before it, as SQLite numbers it.
-  assert.deepEqual(names("select ?5, ?, ?2", "sqlite"), ["2", "5", "6"]);
-  // Positional parameters bind by number, whatever order the statement names them in.
-  assert.deepEqual(names("select $2::text, $1::int"), ["1", "2"]);
-});
-
-test("a colon that opens a Postgres subscript is a slice, not a parameter", () => {
-  // No expression starts with a colon inside a subscript, so `tags[:n]` is `tags[1:n]` there,
-  // with whitespace or a comment before the colon, after a name, a quoted name, a parenthesis, a
-  // subscript or a placeholder.
-  assert.deepEqual(names("select arr[:hi], arr[ :hi], arr[/* c */:hi], \"a\"[:hi], (f(x))[:pg_t.tgnargs], m[1][:hi], arr[1:hi], :a[:hi] from t where x = :x"), ["a", "x"]);
-  // A parameter as the subscript is parenthesized; a slice's bound after its colon is a parameter.
-  assert.deepEqual(names("select arr[(:i)], arr[ : :hi], arr[1 : :b], arr[:i + 0] from t"), ["i", "hi", "b"]);
-  // An array constructor's bracket follows `array` or another bracket, and holds parameters.
-  assert.deepEqual(names("select array[:a, :b], ARRAY[[:c], [:d]], x = any(array[:e]) from t"), ["a", "b", "c", "d", "e"]);
-  // MySQL has no slices: a colon after no name character opens a parameter there. SQLite reads
-  // `[:lo]` as a quoted name, the alias of `arr`.
-  assert.deepEqual(names("select arr[:lo] from t", "mysql"), ["lo"]);
-  assert.deepEqual(names("select arr[:lo] from t", "sqlite"), []);
-});
-
-test("MySQL text is read as a session in the default sql_mode reads it", () => {
-  // A backslash escapes the character after it, in either quote: a placeholder after `\'` is
-  // still in the string, and one after `'\\'` is not.
-  assert.deepEqual(names("select 'it\\'s :not', 'a\\\\', :x, \"say \\\":no\", 'a\\nb' from t where id = :id", "mysql"), ["x", "id"]);
-  // Postgres and SQLite read the backslash as a character.
-  assert.deepEqual(names("select 'C:\\', :x"), ["x"]);
-  assert.deepEqual(names("select 'C:\\', :x", "sqlite"), ["x"]);
-  assert.deepEqual(names("select 'C:\\', :x", "mysql"), []);
-  // `#` starts a line comment; `--` does only before a space or a control character, or at the end.
-  assert.deepEqual(names("select :a # :b\n, :c", "mysql"), ["a", "c"]);
-  assert.deepEqual(names("select :a --:b", "mysql"), ["a", "b"]);
-  assert.deepEqual(names("select :a -- :b\n, :c --\t:d\n, 1--", "mysql"), ["a", "c"]);
-  assert.deepEqual(names("select :a --:b"), ["a"]);
-  // A block comment ends at its first `*/`, and backquotes quote a name that escapes nothing.
-  assert.deepEqual(names("select /* a /* b */ :x", "mysql"), ["x"]);
-  assert.deepEqual(names("select `a\\`, `:b`, :x", "mysql"), ["x"]);
-});
-
-test("MySQL text is read as a session in another sql_mode reads it, given that mode", () => {
-  const params = (sql: string, backslashEscapes: boolean, ansiQuotes: boolean) => lexPlaceholders(sql, "mysql", { backslashEscapes, ansiQuotes }).params;
-  // Under NO_BACKSLASH_ESCAPES a backslash is a character, so the literal ends at its next quote.
-  assert.deepEqual(params("select 'C:\\', :x, \"a\\\", :y", false, false), ["x", "y"]);
-  assert.deepEqual(params("select 'it''s :not', :x", false, false), ["x"]);
-  // Under ANSI_QUOTES a double-quoted word is a name, which escapes nothing.
-  assert.deepEqual(params("select \"a\\\", :x", true, true), ["x"]);
-  assert.deepEqual(params("select 'it\\'s :not', \":no\", :x", true, true), ["x"]);
-});
-
-test("the runtime's lexer agrees with the engine's", async () => {
+test("the engine's lexer answers alike through its long-lived child and its one-shot form", async () => {
   // Every database's engine lexes every dialect: the lexer is the core's.
   const engine = await load("sqlite");
-  const statements: [string, Dialect][] = [
-    ["select 'it\\'s :not', 'a\\\\', :x, \"say \\\":no\", `n:m`, 'a\\nb' from t where id = :id # :c\n and :d --:e\n -- :f\n /* :g */ :h", "mysql"],
-    ["select ?, '?', \"\\\"?\", ? -- ?\n # ?\n", "mysql"],
-    ["select 'C:\\', :x, \"q\"\":y\", `:z`, ':w' -- :v\n /* :u */ from t where a = :a.b", "postgres"],
-    ["select tags[:n], tags[ :m], (f(x))[:pg_t.tgnargs], \"q\"[:k], array[:a, :b], tags[(:c)], tags[1::int:d] from t where y = :y", "postgres"],
-    ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite"],
-    ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite"],
-    ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite"],
-    ["select [a]]:b] as x, N'it''s @y', @@rowcount, @p, @g.STDistance(@h), @a$b#c, $action -- @v\n /* @u */ from [t]", "sqlserver"],
-    ["select [n:m], :p, geography::Point(:lat, 1, 4326) from t", "sqlserver"],
-    ["declare @since datetime2 = dateadd(day, -@days, sysutcdatetime()), @t table (id int)\nselect @N = count(*) from @t where id > @min\nexec dbo.find @id = @id, @Since = @since -- @x\n", "sqlserver"],
-    ["declare @a int = case when @flag = 1 then 2 else 3 end, @b int = 4\nbegin declare @c int = case @f when 1 then case when @g = 2 then 1 end else 0 end, @d int = 1 end\nselect @b, @d, @e", "sqlserver"],
+  const statements: [string, Dialect, string[]][] = [
+    ["select 'it\\'s :not', 'a\\\\', :x, \"say \\\":no\", `n:m`, 'a\\nb' from t where id = :id # :c\n and :d --:e\n -- :f\n /* :g */ :h", "mysql", ["x", "id", "d", "e", "h"]],
+    ["select ?, '?', \"\\\"?\", ? -- ?\n # ?\n", "mysql", ["1", "2"]],
+    ["select 'C:\\', :x, \"q\"\":y\", `:z`, ':w' -- :v\n /* :u */ from t where a = :a.b", "postgres", ["x", "a.b"]],
+    ["select tags[:n], tags[ :m], (f(x))[:pg_t.tgnargs], \"q\"[:k], array[:a, :b], tags[(:c)], tags[1::int:d] from t where y = :y", "postgres", ["a", "b", "c", "y"]],
+    ["select E'it\\'s :not', $$costs $2 or :more$$, $q$:no$q$ as note, :id::int as id", "postgres", ["id"]],
+    ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite", ["3", "4"]],
+    ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite", ["x", "y"]],
+    ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite", ["p", "z"]],
+    ["merge t using s on t.id = s.id when matched then update set v = :v output $action, inserted.[a:b], @@rowcount, $12.50, geography::Point(:lat, 1, 4326);", "sqlserver", ["v", "lat"]],
+    ["select @a$b#c, @g.STDistance(@h) from t", "sqlserver", ["a$b#c", "g", "h"]],
+    ["declare @since datetime2 = dateadd(day, -@days, sysutcdatetime()), @t table (id int); select id from orders where placed_at > @since and user_id = @user", "sqlserver", ["days", "user"]],
+    ["declare @a int = case when @flag = 1 then 2 else 3 end, @b int = 4; select @b as b", "sqlserver", ["flag"]],
+    ["select [a]]:b] as x, N'it''s :y', e'\\' as z, :p from [t]", "sqlserver", ["p"]],
   ];
-  for (const [sql, dialect] of statements) {
-    const ours = lexPlaceholders(sql, dialect);
-    // Through the engine's long-lived child, and through its one-shot form (a text of its own, so that neither answers from what the other kept).
-    for (const theirs of [await engine.lexAsync(sql, dialect), engine.lex(`${sql}\n`, dialect)]) {
-      assert.deepEqual(ours.params, theirs.params, `${dialect}: ${sql}`);
-      assert.deepEqual(ours.placeholders, theirs.placeholders, `${dialect}: ${sql}`);
-    }
+  for (const [sql, dialect, params] of statements) {
+    // A text of its own for the one-shot form, so that neither answers from what the other kept.
+    const [kept, once] = [await engine.lexAsync(sql, dialect), engine.lex(`${sql}\n`, dialect)];
+    assert.deepEqual(kept.params, params, `${dialect}: ${sql}`);
+    assert.deepEqual(once.params, kept.params, `${dialect}: ${sql}`);
+    assert.deepEqual(once.placeholders, kept.placeholders, `${dialect}: ${sql}`);
   }
 });
 
-// Without the engine's rewritten statement (a query defined by hand) the runtime rewrites it itself.
+test("a statement written by hand compiles through the engine's lexer, as a build step compiles one", () => {
+  // An `E''` string with an escaped quote and a dollar quote holding `$2` and `:more` hold no placeholder.
+  const pg = handWritten("select E'it\\'s :not' as s, $$costs $2 or :more$$ as note, :id::int as id, :name as name", "postgres");
+  assert.equal(pg.text, "select E'it\\'s :not' as s, $$costs $2 or :more$$ as note, $1::int as id, $2 as name");
+  assert.deepEqual([pg.params, pg.order], [["id", "name"], ["id", "name"]]);
+  assert.deepEqual(pg.marks.map(([start, end]) => pg.text.slice(start, end)), ["$1", "$2"]);
+  // MySQL and SQLite take one `?` per placeholder, a repeated name repeated in the binding order.
+  for (const dialect of ["mysql", "sqlite"] as const) {
+    const q = handWritten("select :id as id, ':no' as s, :name as name, :id as again", dialect);
+    assert.equal(q.text, "select ? as id, ':no' as s, ? as name, ? as again");
+    assert.deepEqual([q.params, q.order], [["id", "name"], ["id", "name", "id"]]);
+    assert.deepEqual(q.marks.map(([start, end]) => q.text.slice(start, end)), ["?", "?", "?"]);
+  }
+  // SQL Server binds by name: each placeholder is `@p_n`, its place in the binding order.
+  const ss = handWritten("select @id as id, '@no' as s, @name as name", "sqlserver");
+  assert.equal(ss.text, "select @p_1 as id, '@no' as s, @p_2 as name");
+  assert.deepEqual([ss.params, ss.order], [["id", "name"], ["id", "name"]]);
+  // A mark is a JavaScript offset, past a character UTF-8 writes in more than one byte.
+  const wide = handWritten("select 'é€😀' as s, :id as id", "mysql");
+  assert.equal(wide.text.slice(...wide.marks[0]!), "?");
+});
+
 const capture = () => {
   const calls: { text: string; values?: unknown[] | undefined }[] = [];
   return { calls, client: pgPool((text: string, values: unknown[]) => (calls.push({ text, values }), { rows: [{}] })) };
 };
 
-test("run binds positional parameters by number", async () => {
+test("a query defined by hand is taken as written: its statement in the database's own placeholders, and params its binding order", async () => {
   const { calls, client } = capture();
   const q = defineQuery<{ 1: number; 2: string }, {}, "one", "postgres">({ dialect: "postgres", sql: "select $2::text, $1::int", params: ["1", "2"], cardinality: "one" });
+  assert.equal(q.sql, "select $2::text, $1::int");
   await q.run(client, { 1: 7, 2: "z" });
-  assert.deepEqual(calls, [{ text: "select $2::text, $1::int", values: [7, "z"] }]);
+  // Reylo's own placeholders are no placeholders to the run time, which reads none off the text.
+  const named = defineQuery<{ id: number }, {}, "one", "postgres">({ dialect: "postgres", sql: "select :id::int", params: ["id"], cardinality: "one" });
+  assert.equal(named.sql, "select :id::int");
+  await named.run(client, { id: 1 });
+  assert.deepEqual(calls, [{ text: "select $2::text, $1::int", values: [7, "z"] }, { text: "select :id::int", values: [1] }]);
 });
 
 test("with binds a client; the parameters may be left out when the statement takes none", async () => {
   const { calls, client } = capture();
-  const q = defineQuery<{ id: number }, {}, "one", "postgres">({ dialect: "postgres", sql: "select :id::int", params: ["id"], cardinality: "one" });
+  const q = defineQuery<{ id: number }, {}, "one", "postgres">({ dialect: "postgres", ...handWritten("select :id::int", "postgres"), cardinality: "one" });
   const get = q.with(client);
   assert.equal(calls.length, 0);
   await get({ id: 1 });
@@ -115,11 +83,4 @@ test("with binds a client; the parameters may be left out when the statement tak
   // @ts-expect-error a statement that takes parameters needs them
   await q.run(client).catch(() => {});
   assert.deepEqual(calls.slice(0, 3), [{ text: "select $1::int", values: [1] }, { text: "select 1", values: [] }, { text: "select 1", values: [] }]);
-});
-
-test("a hand-built query whose params miss a placeholder is refused", async () => {
-  const { calls, client } = capture();
-  const q = defineQuery<{ id: number }, {}, "one", "postgres">({ dialect: "postgres", sql: "select $1", params: ["id"], cardinality: "one" });
-  await assert.rejects(q.run(client, { id: 1 }), /placeholder \$1 is parameter "1"/);
-  assert.equal(calls.length, 0);
 });

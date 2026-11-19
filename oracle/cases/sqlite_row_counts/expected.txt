@@ -34,6 +34,7 @@ outer_aggregate_scalar.sql: many () -> { n: int64? }
 own_aggregate_derived.sql: many () -> { id: INTEGER, n: int64 }
 own_aggregate_limit.sql: many () -> { id: INTEGER, n: int64 }
 own_aggregate_limited.sql: many () -> { n: int64 }
+scan.sql: many () -> { id: INTEGER, name: TEXT(text(UTF-8, ill-formed) | bytes), email: TEXT(text(UTF-8, ill-formed) | bytes)? }
 scan_limit_1.sql: at_most_one () -> { id: INTEGER, name: TEXT(text(UTF-8, ill-formed) | bytes), email: TEXT(text(UTF-8, ill-formed) | bytes)? }
 scan_limit_5.sql: many () -> { id: INTEGER, name: TEXT(text(UTF-8, ill-formed) | bytes), email: TEXT(text(UTF-8, ill-formed) | bytes)? }
 scan_limit_negative.sql: many () -> { id: INTEGER, name: TEXT(text(UTF-8, ill-formed) | bytes), email: TEXT(text(UTF-8, ill-formed) | bytes)? }

@@ -3,13 +3,14 @@
 // Run with ./setup.sh done: node probes/cross-dialect.ts
 import { createRequire } from "node:module";
 import { defineQuery } from "../../../src/index.ts";
+import { handWritten } from "../lib/hand-written.ts";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const mariadb = require("mariadb-3");
 const postgres = require("postgres-3");
-const pgQ = defineQuery<any, any, "one", "postgres">({ dialect: "postgres", sql: "select id, name from driver_matrix.people where id = :id", params: ["id"], cardinality: "one" });
-const myQ = defineQuery<any, any, "one", "mysql">({ dialect: "mysql", sql: "select id, name from driver_matrix.people where id = :id", params: ["id"], cardinality: "one" });
-const sqQ = defineQuery<any, any, "one", "sqlite">({ dialect: "sqlite", sql: "select id, name from people where id = :id", params: ["id"], cardinality: "one" });
+const pgQ = defineQuery<any, any, "one", "postgres">({ dialect: "postgres", ...handWritten("select id, name from driver_matrix.people where id = :id", "postgres"), cardinality: "one" });
+const myQ = defineQuery<any, any, "one", "mysql">({ dialect: "mysql", ...handWritten("select id, name from driver_matrix.people where id = :id", "mysql"), cardinality: "one" });
+const sqQ = defineQuery<any, any, "one", "sqlite">({ dialect: "sqlite", ...handWritten("select id, name from people where id = :id", "sqlite"), cardinality: "one" });
 
 const pool = mariadb.createPool({ host: "127.0.0.1", port: 33406, user: "root", password: "porg", database: "driver_matrix", allowPublicKeyRetrieval: true });
 const sql = postgres(process.env.DM_PG_URL ?? "postgres://localhost:5432/postgres", { max: 1 });

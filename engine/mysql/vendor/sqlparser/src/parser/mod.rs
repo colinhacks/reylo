@@ -3529,6 +3529,8 @@ impl<'a> Parser<'a> {
             Token::Minus => Some(BinaryOperator::Minus),
             Token::Mul => Some(BinaryOperator::Multiply),
             Token::Mod => Some(BinaryOperator::Modulo),
+            // Reylo's copy: `||` as MySQL's OR, where the dialect reads it so.
+            Token::StringConcat if dialect.supports_double_pipe_or_operator() => Some(BinaryOperator::Or),
             Token::StringConcat => Some(BinaryOperator::StringConcat),
             Token::Pipe => Some(BinaryOperator::BitwiseOr),
             Token::Caret => {

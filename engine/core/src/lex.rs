@@ -206,7 +206,8 @@ fn find_bytes(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 
 /// How a MySQL session reads strings, by its `sql_mode`. The default is the server's default
 /// mode, which is also how `sqlparser`'s MySQL dialect reads them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MysqlText {
     /// A backslash in a string escapes the character after it (`'it\'s'`), unless the mode has
     /// NO_BACKSLASH_ESCAPES.

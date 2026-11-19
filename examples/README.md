@@ -23,12 +23,12 @@ Open the example for your setup and read its README's "How Reylo is wired in": e
 
 ```sh
 npm install reylo
-npm install -D typescript@beta
+npm install -D typescript@next
 ```
 
 Each README's "In your own project" lists anything else that exists only because the example lives in this repository, such as the Turbopack root in Next.js.
 
-The examples pin TypeScript to `7.1.0-beta` exactly: a range such as `^7.1.0-beta`, which `npm install -D typescript@beta` writes, also takes the 7.1 nightlies, which sort above the beta.
+The examples pin TypeScript to one 7.1 nightly exactly, `7.1.0-dev.20261118.1`: a range such as `^7.1.0-dev.20261118.1`, which `npm install -D typescript@next` writes, also takes every later nightly.
 
 ## Running one here
 

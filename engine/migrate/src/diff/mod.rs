@@ -33,7 +33,10 @@ pub async fn alterer(db: &mut Db) -> Result<Box<dyn Alterer>, Error> {
             let version = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
             Box::new(postgres::PostgresAlterer::read(db, version).await?)
         }
-        Dialect::Mysql => Box::new(mysql::MysqlAlterer::default()),
+        Dialect::Mysql => {
+            let mode = db.rows("select @@session.sql_mode as m").await?.first().map(|r| r.text("m").to_string()).unwrap_or_default();
+            Box::new(mysql::MysqlAlterer::for_mode(&mode))
+        }
         Dialect::Sqlite => Box::new(sqlite::SqliteAlterer::default()),
         Dialect::Sqlserver => Box::new(sqlserver::SqlserverAlterer),
     })
@@ -168,6 +171,33 @@ pub trait Alterer: Send {
         let _ = (from, to);
         true
     }
+    /// Whether a blocking change of `from` to `to` changes the object under the functions that
+    /// depend on it (an enum made again, a column's type), so that each is made again around the
+    /// change rather than left on what it was, or refusing the change.
+    fn remakes(&self, from: &Object, to: &Object) -> bool {
+        let _ = (from, to);
+        false
+    }
+    /// The objects a change of `from` to `to` makes again itself (an enum's domains, a composite
+    /// type's attributes it puts in order), which the plan then leaves alone.
+    fn takes_along(&self, from: &Object, to: &Object) -> Vec<String> {
+        let _ = (from, to);
+        Vec::new()
+    }
+    /// The columns, of other objects, that a change of `from` to `to` converts in place (through text,
+    /// around a type's attribute changing under them), whose views, policies, rules, triggers and
+    /// function bodies then go and come back around it, as a column's whose type changes do.
+    fn converts(&self, from: &Object, to: &Object) -> Vec<String> {
+        let _ = (from, to);
+        Vec::new()
+    }
+    /// Where a column's default reads an object made again (a function), the statements that take
+    /// the default off before the object goes, and those that set the target's after it is back,
+    /// which keep the column and its rows; None where it can't (and the column is made again).
+    fn unhook(&self, from: &Object, to: &Object) -> Option<(Vec<String>, Vec<String>)> {
+        let _ = (from, to);
+        None
+    }
     /// The plan's statements once ordered, for the settings that let them run in that order: a
     /// Postgres function's body calls others the server keeps no record of, so no order is safe.
     fn finish(&self, statements: &mut Vec<String>) {
@@ -197,6 +227,9 @@ pub enum TypeClass {
     Jsonb,
     Other,
 }
+
+/// What a generated column's object carries, whose values are its expression's.
+pub const GENERATED: &str = "generated";
 
 /// What a change of a column's values from one type to another loses without failing, written
 /// after "which": None where every value is kept or the change fails on one it can't hold.
@@ -246,6 +279,9 @@ enum Op {
     Drop(String),
     Alter(String),
     Create(String),
+    /// A column's default taken off before what it reads is made again, and set after.
+    Unhook(String),
+    Rehook(String),
 }
 
 /// What a plan does. A statement that opens with `--` is a comment for the person reading the
@@ -264,7 +300,26 @@ pub struct Plan {
     pub narrowings: Vec<(String, String)>,
 }
 
+/// A statement of a plan that commits the transaction and begins the next: what follows uses what
+/// came before in a way Postgres refuses within one transaction (a label added to an enum). A
+/// migration file ends at it, and a push commits there.
+pub const COMMIT: &str = "commit;\nbegin";
+
 impl Plan {
+    /// The plan as the plans each transaction runs: one, or several where it commits partway, the
+    /// first with what the whole loses.
+    pub fn transactions(&self) -> Vec<Plan> {
+        let mut out = vec![Plan { losses: self.losses.clone(), renames: self.renames.clone(), narrowings: self.narrowings.clone(), ..Plan::default() }];
+        for s in &self.statements {
+            if s == COMMIT {
+                out.push(Plan::default());
+            } else if let Some(last) = out.last_mut() {
+                last.statements.push(s.clone());
+            }
+        }
+        out
+    }
+
     /// The plan as a migration file: what it loses as comments, then each statement.
     pub fn sql(&self) -> String {
         let mut out = String::new();
@@ -682,8 +737,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     let mut drops: BTreeSet<String> = BTreeSet::new();
     let mut creates: BTreeSet<String> = BTreeSet::new();
     let mut alters: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    // Altered in a way that what depends on it can block (`Alterer::refused_by`).
+    // Altered in a way that what depends on it can block (`Alterer::refused_by`), and of those, made again.
     let mut blocking: BTreeSet<String> = BTreeSet::new();
+    let mut remade: BTreeSet<String> = BTreeSet::new();
     for (id, a) in &from.objects {
         match to.objects.get(id) {
             None if left.contains(id) => {}
@@ -692,8 +748,12 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             }
             Some(b) if a.def != b.def => match (&b.change, alterer.alter(a, b)) {
                 (Change::Alter { blocks }, Some(statements)) => {
-                    if *blocks && alterer.blocks(a, b) {
+                    let remakes = alterer.remakes(a, b);
+                    if (*blocks && alterer.blocks(a, b)) || remakes {
                         blocking.insert(id.clone());
+                    }
+                    if remakes {
+                        remade.insert(id.clone());
                     }
                     alters.insert(id.clone(), statements);
                 }
@@ -708,6 +768,37 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     for id in to.objects.keys() {
         if !from.objects.contains_key(id) {
             creates.insert(id.clone());
+        }
+    }
+    // An index attached to one the plan drops goes with it: one the target keeps is made again after.
+    for (id, o) in &from.objects {
+        if o.kind == Some(Kind::Index) && o.goes_with.as_ref().is_some_and(|g| drops.contains(g)) && to.objects.contains_key(id) && !drops.contains(id) {
+            alters.remove(id);
+            drops.insert(id.clone());
+            creates.insert(id.clone());
+        }
+    }
+    // What a change makes again itself is no change of its own, and what needs it waits for that
+    // change.
+    let mut taken_by: BTreeMap<String, String> = BTreeMap::new();
+    for id in alters.keys().cloned().collect::<Vec<_>>() {
+        for along in alterer.takes_along(&from.objects[&id], &to.objects[&id]) {
+            taken_by.insert(along.clone(), id.clone());
+            alters.remove(&along);
+            drops.remove(&along);
+            creates.remove(&along);
+        }
+    }
+    // What a change converts in place blocks as a column whose type changes does.
+    let mut converted: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for id in alters.keys() {
+        let columns: Vec<String> = alterer.converts(&from.objects[id], &to.objects[id]).into_iter().filter(|c| from.objects.contains_key(c) && to.objects.contains_key(c)).collect();
+        for c in &columns {
+            blocking.insert(c.clone());
+            remade.insert(c.clone());
+        }
+        if !columns.is_empty() {
+            converted.insert(id.clone(), columns);
         }
     }
 
@@ -757,6 +848,8 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             goers.entry(with.as_str()).or_default().push(id.as_str());
         }
     }
+    // The columns whose defaults are taken off and set again around what they read.
+    let mut hooks: BTreeMap<String, (Vec<String>, Vec<String>)> = BTreeMap::new();
     let mut queue: Vec<String> = drops.iter().cloned().chain(blocking.iter().cloned()).collect();
     let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
     while let Some(id) = queue.pop() {
@@ -783,7 +876,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             // never made again for it: it changes in place, as its own definition says, or the
             // drop fails on the database.
             if gone {
-                let holds_nothing = matches!(d.kind, Some(Kind::Constraint | Kind::Index | Kind::View | Kind::Trigger | Kind::Policy | Kind::Rule | Kind::Statistics | Kind::Function | Kind::Operator | Kind::Cast));
+                let holds_nothing = matches!(d.kind, Some(Kind::Constraint | Kind::Index | Kind::View | Kind::Trigger | Kind::Policy | Kind::Rule | Kind::Statistics | Kind::Function | Kind::Operator | Kind::Cast | Kind::Comment));
                 if owned || !holds_nothing || drops.contains(*dependent) || alters.contains_key(*dependent) || !to.objects.contains_key(*dependent) {
                     continue;
                 }
@@ -795,17 +888,45 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 }
                 continue;
             }
+            // A column whose default calls a function made again keeps its rows: the default goes
+            // before the function, and comes back after.
+            let generated = d.extra.iter().any(|l| l == GENERATED);
+            if replaced && d.kind == Some(Kind::Column) && !owned && !generated && from.objects[&id].kind == Some(Kind::Function) && !drops.contains(*dependent) {
+                if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.unhook(d, t)) {
+                    hooks.insert(dependent.to_string(), hook);
+                    continue;
+                }
+            }
             // A blocking change refuses what its alterer says (views, rules, policies and triggers on
             // it, where the server rebuilds an index or a constraint itself). A column of a type
             // changed so changes type too, and so blocks what is on it, but for one the alterer says
             // the change refuses, as SQL Server's computed columns refuse a change to what they read.
             if !replaced && d.kind == Some(Kind::Column) && !owned && !alterer.refused_by(d) {
+                // A generated column reading the column is made again around the change, which
+                // the server refuses under it: it holds nothing of its own.
+                if d.extra.iter().any(|l| l == GENERATED) && to.objects.contains_key(*dependent) && !drops.contains(*dependent) {
+                    alters.remove(*dependent);
+                    drops.insert(dependent.to_string());
+                    creates.insert(dependent.to_string());
+                    if seen.insert(dependent.to_string()) {
+                        queue.push(dependent.to_string());
+                    }
+                    continue;
+                }
+                // A column of a type made again changes type, under what reads it.
+                if remade.contains(&id) {
+                    remade.insert(dependent.to_string());
+                }
                 if seen.insert(dependent.to_string()) {
                     queue.push(dependent.to_string());
                 }
                 continue;
             }
-            if !replaced && !owned && !alterer.refused_by(d) {
+            // A type made again takes the functions that take or give it along, and a column's
+            // new type those whose bodies read it: each is made again around the change, as what
+            // is on a column is.
+            let made_again = remade.contains(&id) && d.kind == Some(Kind::Function);
+            if !replaced && !owned && !made_again && !alterer.refused_by(d) {
                 continue;
             }
             if !replaced && owned {
@@ -844,6 +965,28 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
         o.inline && o.owner.as_deref().is_some_and(|w| creates.contains(w)) && o.goes_with.as_deref().is_none_or(|g| !creates.contains(g))
     };
 
+    // A column whose new default calls a function the plan makes, which reads the column, changes
+    // first, the function is made, and then the default is set.
+    let mut deferred: BTreeSet<String> = BTreeSet::new();
+    for (id, statements) in alters.iter_mut() {
+        let (Some(a), Some(b)) = (from.objects.get(id), to.objects.get(id)) else { continue };
+        let calls_back = b.deps.iter().any(|d| creates.contains(d) && to.objects.get(d).is_some_and(|f| f.kind == Some(Kind::Function) && f.deps.contains(id)));
+        // A default calling a function whose other overload the plan drops, which the call would
+        // name too while both stand: it goes before that one is dropped, and comes back after.
+        let base = |f: &str| f.split('(').next().unwrap_or(f).to_string();
+        let swapped = b.deps.iter().any(|g| creates.contains(g) && to.objects.get(g).is_some_and(|g| g.kind == Some(Kind::Function)) && a.deps.iter().any(|f| f != g && drops.contains(f) && !creates.contains(f) && base(f) == base(g)));
+        if b.kind != Some(Kind::Column) || !(calls_back || swapped) {
+            continue;
+        }
+        let Some((unset, set)) = alterer.unhook(a, b) else { continue };
+        let Some(set) = set.into_iter().next() else { continue };
+        let Some(at) = set.find(" set default ").map(|k| set[..k + 13].to_string()) else { continue };
+        let (later, now): (Vec<String>, Vec<String>) = statements.drain(..).partition(|s| s.starts_with(&at));
+        *statements = now;
+        hooks.insert(id.clone(), (if swapped { unset } else { vec![] }, if later.is_empty() { vec![set] } else { later }));
+        deferred.insert(id.clone());
+    }
+
     let mut ops: Vec<Op> = Vec::new();
     for id in &drops {
         if !dropped_with_owner(id) {
@@ -861,8 +1004,24 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             ops.push(Op::Create(id.clone()));
         }
     }
+    for id in hooks.keys() {
+        ops.push(Op::Unhook(id.clone()));
+        ops.push(Op::Rehook(id.clone()));
+    }
 
     let renamed_as: BTreeMap<&str, &str> = renames.iter().map(|(new, (old, _))| (old.as_str(), new.as_str())).collect();
+    // The names the plan drops relations and types under, each with the object holding it.
+    let named_alike = |k: Option<Kind>| matches!(k, Some(Kind::Table | Kind::View | Kind::Sequence | Kind::Index | Kind::Type));
+    let name_of = |id: &str| id.split_once(' ').map(|(_, n)| n.to_string());
+    let dropped_names: BTreeMap<String, String> = drops.iter().filter(|d| !creates.contains(*d) && named_alike(from.objects[*d].kind)).filter_map(|d| Some((name_of(d)?, d.clone()))).collect();
+    // The attributes the plan gives each composite type.
+    let mut members_made: BTreeMap<&str, Vec<&String>> = BTreeMap::new();
+    for id in &creates {
+        let o = &to.objects[id];
+        if let Some(owner) = o.owner.as_deref().filter(|w| o.kind == Some(Kind::Column) && to.objects.get(*w).is_some_and(|t| t.kind == Some(Kind::Type))) {
+            members_made.entry(owner).or_default().push(id);
+        }
+    }
     // The edges: an op runs after every op in `after[op]`.
     let index: BTreeMap<Op, usize> = ops.iter().cloned().enumerate().map(|(k, op)| (op, k)).collect();
     let mut after: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); ops.len()];
@@ -906,12 +1065,49 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 if matches!(op, Op::Create(_)) {
                     needs.extend(o.after.iter());
                 }
+                // A table, view, sequence, index or type made under a name one the plan drops holds
+                // (a table's row type is a type of its name) is made after that drop.
+                if matches!(op, Op::Create(_)) && named_alike(o.kind) {
+                    if let Some(j) = name_of(id).and_then(|n| dropped_names.get(&n)).and_then(|d| find(Op::Drop(d.clone()))) {
+                        after[k].insert(j);
+                    }
+                }
+                // What needs an object a change makes again waits for that change.
+                for d in needs.clone() {
+                    if let Some(x) = taken_by.get(d.as_str()).filter(|x| *x != id) {
+                        if let Some(j) = find(Op::Alter(x.clone())) {
+                            after[k].insert(j);
+                        }
+                    }
+                }
+                // What needs a composite type needs the attributes the plan gives it.
+                for d in needs.clone() {
+                    needs.extend(members_made.get(d.as_str()).into_iter().flatten().filter(|m| **m != id));
+                }
+                // What is on a column a change converts comes back after it.
+                for (x, columns) in &converted {
+                    if x != id && o.deps.iter().any(|d| columns.contains(d)) {
+                        if let Some(j) = find(Op::Alter(x.clone())) {
+                            after[k].insert(j);
+                        }
+                    }
+                }
                 for c in to.objects.values() {
                     if c.inline && c.owner.as_deref() == Some(id.as_str()) && matches!(op, Op::Create(_)) && created_with_owner(&c.id) {
                         needs.extend(c.deps.iter().filter(|d| *d != id));
                     }
                 }
                 for d in needs {
+                    // A default the column sets after the function it calls is made.
+                    if deferred.contains(id) && to.objects.get(d.as_str()).is_some_and(|f| f.kind == Some(Kind::Function)) {
+                        continue;
+                    }
+                    // A function reads a column by its name and type: one whose other properties
+                    // change (a default that calls it) is there for it already.
+                    let kept_column = |d: &str| from.objects.get(d).is_some_and(|c| c.kind == Some(Kind::Column)) && !remade.contains(d) && !renames.contains_key(d);
+                    if o.kind == Some(Kind::Function) && kept_column(d.as_str()) {
+                        continue;
+                    }
                     if let Some(j) = create_of(d) {
                         if j != k {
                             after[k].insert(j);
@@ -928,12 +1124,49 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         }
                     }
                 }
-                // An alter after the changes of what stops depending on it (a column moved to
-                // another enum, before the one it leaves is made again).
+                // An alter after the changes of the columns leaving a type that holds what it
+                // changes (a composite type with an attribute of an enum, a domain over it).
                 if matches!(op, Op::Alter(_)) {
                     for dependent in dependents.get(id.as_str()).into_iter().flatten() {
-                        let leaves = from.objects[*dependent].deps.contains(id) && to.objects.get(*dependent).is_some_and(|d| !d.deps.contains(id));
+                        let d = &from.objects[*dependent];
+                        let holder = match d.kind {
+                            Some(Kind::Column) => d.owner.as_deref().filter(|w| from.objects.get(*w).is_some_and(|t| t.kind == Some(Kind::Type))),
+                            Some(Kind::Type) => Some(*dependent),
+                            _ => None,
+                        };
+                        for user in holder.and_then(|h| dependents.get(h)).into_iter().flatten() {
+                            let holder = holder.unwrap_or_default().to_string();
+                            // One leaving for what the change makes again comes after it instead.
+                            let leaves = from.objects[*user].deps.contains(&holder) && to.objects.get(*user).is_some_and(|u| !u.deps.contains(&holder) && !u.deps.contains(id) && !u.deps.iter().any(|d| taken_by.get(d) == Some(id)));
+                            if let Some(j) = find(Op::Alter(user.to_string())).filter(|_| leaves) {
+                                after[k].insert(j);
+                            }
+                        }
+                    }
+                }
+                // An alter after the changes of what stops depending on it (a column moved to
+                // another enum, before the one it leaves is made again), but for what moves to an
+                // object the change makes again.
+                if matches!(op, Op::Alter(_)) {
+                    for dependent in dependents.get(id.as_str()).into_iter().flatten() {
+                        let leaves = from.objects[*dependent].deps.contains(id) && to.objects.get(*dependent).is_some_and(|d| !d.deps.contains(id) && !d.deps.iter().any(|x| taken_by.get(x) == Some(id)));
                         if let Some(j) = find(Op::Alter(dependent.to_string())).filter(|_| leaves) {
+                            after[k].insert(j);
+                        }
+                    }
+                }
+                // A type's change after the drops of its own attributes, which it is made without.
+                if from.objects.get(id.as_str()).is_some_and(|t| t.kind == Some(Kind::Type)) {
+                    for a in from.objects.values().filter(|a| a.owner.as_deref() == Some(id.as_str()) && a.kind == Some(Kind::Column)) {
+                        if let Some(j) = find(Op::Drop(a.id.clone())) {
+                            after[k].insert(j);
+                        }
+                    }
+                }
+                // A change that converts columns after the drops of what is on them.
+                for c in converted.get(id.as_str()).into_iter().flatten() {
+                    for dependent in dependents.get(c.as_str()).into_iter().flatten() {
+                        if let Some(j) = drop_of(dependent) {
                             after[k].insert(j);
                         }
                     }
@@ -942,8 +1175,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // column whose type changes).
                 if matches!(op, Op::Alter(_)) {
                     // A sequence owned by the column blocks no change of it, and goes after the
-                    // change takes the column's default off it.
-                    for dependent in dependents.get(id.as_str()).into_iter().flatten().filter(|d| from.objects[**d].kind != Some(Kind::SequenceOwner)) {
+                    // change takes the column's default off it; a function reading the column
+                    // blocks only a change of its type.
+                    let column_kept = from.objects.get(id.as_str()).is_some_and(|o| o.kind == Some(Kind::Column)) && !remade.contains(id.as_str());
+                    for dependent in dependents.get(id.as_str()).into_iter().flatten().filter(|d| from.objects[**d].kind != Some(Kind::SequenceOwner) && !(column_kept && from.objects[**d].kind == Some(Kind::Function))) {
                         let mut reach = vec![*dependent];
                         if from.objects[*dependent].kind == Some(Kind::Column) {
                             reach.extend(dependents.get(dependent).into_iter().flatten());
@@ -954,6 +1189,24 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                             }
                         }
                     }
+                }
+            }
+            Op::Unhook(_) => {}
+            Op::Rehook(id) => {
+                // After what the default reads is back, what it read is gone, and the column's own
+                // change.
+                for d in &to.objects[id].deps {
+                    if let Some(j) = create_of(d) {
+                        after[k].insert(j);
+                    }
+                }
+                for d in from.objects.get(id).into_iter().flat_map(|o| &o.deps) {
+                    if let Some(j) = find(Op::Drop(d.clone())) {
+                        after[k].insert(j);
+                    }
+                }
+                if let Some(j) = find(Op::Alter(id.clone())) {
+                    after[k].insert(j);
                 }
             }
             Op::Drop(id) => {
@@ -971,6 +1224,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         if j != k {
                             after[k].insert(j);
                         }
+                    }
+                    if let Some(j) = find(Op::Unhook(dependent.to_string())) {
+                        after[k].insert(j);
                     }
                     // A dependent renamed changes under its new name.
                     let now = renamed_as.get(*dependent).map(|n| n.to_string()).unwrap_or_else(|| dependent.to_string());
@@ -1023,6 +1279,8 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             Op::Drop(id) => (0, -(from.objects[id].kind.map_or(0, |k| k as i32)), id.clone()),
             Op::Alter(id) => (1, to.objects[id].kind.map_or(0, |k| k as i32), id.clone()),
             Op::Create(id) => (1, to.objects[id].kind.map_or(0, |k| k as i32), id.clone()),
+            Op::Unhook(id) => (0, -(Kind::Column as i32), id.clone()),
+            Op::Rehook(id) => (1, Kind::ColumnSetting as i32, id.clone()),
         }
     };
     let mut done = vec![false; ops.len()];
@@ -1061,7 +1319,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // A foreign table's rows are its server's.
                 let table = if o.kind == Some(Kind::Column) { o.owner.as_ref().and_then(|t| from.objects.get(t)) } else { Some(o) };
                 let foreign = table.is_some_and(|t| t.extra.iter().any(|l| l.starts_with("shape foreign")));
-                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign && !computed {
+                // A generated column's values are its expression's, which loses nothing.
+                let generated = o.extra.iter().any(|l| l == GENERATED);
+                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign && !computed && !generated {
                     plan.losses.push(id.clone());
                 }
                 plan.statements.extend(o.drop.clone());
@@ -1091,6 +1351,8 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 }
                 plan.statements.extend(o.create.iter().cloned());
             }
+            Op::Unhook(id) => plan.statements.extend(hooks[id].0.iter().cloned()),
+            Op::Rehook(id) => plan.statements.extend(hooks[id].1.iter().cloned()),
         }
     }
     alterer.finish(&mut plan.statements);

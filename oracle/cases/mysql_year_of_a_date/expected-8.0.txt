@@ -1,0 +1,2 @@
+year_of_a_date.sql: many () -> { y: bigint | int?, yt: bigint | int?, kept: year(0..2155) }
+year_through_functions.sql: many () -> { c: bigint | int, m: bigint | int? }

@@ -35,7 +35,9 @@ import { queryErrorType, reyloImport, standardColumnsType } from '../../src/modu
 import type { Analysis } from '../../src/engine.ts';
 import { analysisWithBases } from '../../src/engine-type.ts';
 import { descriptor } from '../../src/analyze-api.ts';
-import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
+import { captureNative, capturedNative, collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
+import { EngineCore } from '../../src/engine-core.ts';
+import { nativeBinary } from '../../src/native.ts';
 import { sitePages } from '../lib/page-files.ts';
 import { isErrorExample, type Errors } from '../lib/sql-errors.ts';
 import { schemaType } from './schema-type.ts';
@@ -296,6 +298,22 @@ let analyzed = 0;
 // Each inference card's statement, with the engine's own analysis of it, for its type descriptor and Rust types.
 const inference: { dialect: Dialect; name: string; hash: string; raw: Analysis }[] = [];
 
+// A statement written once for every dialect is shown on SQL Server with T-SQL's own `@name` for
+// each `:name` the engine's lexer reads as a placeholder; the build reads these back from
+// lib/sql-modules.json's `$native` (lib/remark-mapper.ts, `nativeText`).
+const lexer = new EngineCore((request) => {
+  const run = spawnSync(nativeBinary(), ['engine', 'sqlserver', 'call'], { input: request, encoding: 'utf8' });
+  if (run.status !== 0) throw new Error(`the engine exited with ${run.status ?? run.signal}: ${run.stderr}`);
+  return run.stdout;
+});
+captureNative((sql) => {
+  // The engine's offsets are UTF-8 bytes.
+  const bytes = Buffer.from(sql, 'utf8');
+  const colons = lexer.lex(sql, 'sqlserver').placeholders.map((p) => bytes.subarray(0, p.start).toString('utf8').length).filter((at) => sql[at] === ':');
+  for (const at of colons.reverse()) sql = `${sql.slice(0, at)}@${sql.slice(at + 1)}`;
+  return sql;
+});
+
 try {
   for (const page of pages) {
     const shown = path.relative(site, page[0]!).startsWith('..') ? page[0]! : path.relative(site, page[0]!);
@@ -489,7 +507,7 @@ const sorted = Object.fromEntries(
   ORDER.filter((d) => modules[d]).map((d) => [d, Object.fromEntries(Object.entries(modules[d]!).sort(([a], [b]) => a.localeCompare(b)).map(([name, byHash]) => [name, Object.fromEntries(Object.entries(byHash).sort(([a], [b]) => a.localeCompare(b)))]))]),
 );
 const out = path.join(site, 'lib', 'sql-modules.json');
-writeFileSync(out, JSON.stringify({ $comment: 'Written by `nub run capture` (scripts/capture-types.ts); read by lib/remark-mapper.ts. Never edit by hand.', ...sorted }, null, 2) + '\n');
+writeFileSync(out, JSON.stringify({ $comment: 'Written by `nub run capture` (scripts/capture-types.ts); read by lib/remark-mapper.ts. Never edit by hand.', $native: capturedNative(), ...sorted }, null, 2) + '\n');
 const byName = <T,>(entries: Record<string, T>) => Object.fromEntries(Object.entries(entries).sort(([a], [b]) => a.localeCompare(b)));
 const failed = Object.fromEntries(ORDER.filter((d) => failures[d]).map((d) => [d, byName(Object.fromEntries(Object.entries(failures[d]!).map(([name, byHash]) => [name, byName(byHash)])))]));
 writeFileSync(path.join(site, 'lib', 'sql-errors.json'), JSON.stringify({ $comment: 'Written by `nub run capture` (scripts/capture-types.ts): the errors the content mapper gives each error example. Read by lib/sql-errors.ts. Never edit by hand.', ...failed }, null, 2) + '\n');

@@ -1,2 +1,1 @@
 backticked_coalesce.sql: the engine refused it: reylo6: FUNCTION reylo_oracle_mysql_qualified_names.coalesce does not exist. Check the 'Function Name Parsing and Resolution' section in the Reference Manual (ER_FUNC_INEXISTENT_NAME_COLLISION)
-backticked_count_subquery.sql: Subquery returns more than 1 row (1242)

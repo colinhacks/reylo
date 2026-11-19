@@ -7,6 +7,7 @@
 // Nothing here changes a value: a value the database would round, truncate or read in a zone
 // nobody chose is refused.
 import type { EngineType, JsonSchema } from "./engine-type.ts";
+import type { Marks } from "./execute.ts";
 import { validate, withDefaults } from "./json-schema.ts";
 import { columnKind, describe, given, hstoreText, ParameterError, postgresInterval, postgresLiteral, postgresYear, zoned } from "./values.ts";
 
@@ -402,16 +403,25 @@ function write(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** The statement with each list of a structured parameter written again for the keys present (MySQL): an entry stays when its key is required or present. */
-export function variant(text: string, structured: Structured, fields: readonly RowField[], present: ReadonlySet<string>): string {
+/**
+ * The statement with each list of a structured parameter written again for the keys present
+ * (MySQL): an entry stays when its key is required or present. A list holds no placeholder, so
+ * each placeholder's mark after one moves by what the list lost.
+ */
+export function variant(text: string, marks: Marks | undefined, structured: Structured, fields: readonly RowField[], present: ReadonlySet<string>): { text: string; marks: Marks | undefined } {
   const lists = [...structured.lists].sort((a, b) => b.start - a.start);
   let out = text;
+  const moves: (readonly [end: number, by: number])[] = [];
   for (const list of lists) {
-    const kept = list.entries.filter((_, k) => {
-      const f = fields[k];
-      return f === undefined || !f.optional || present.has(f.name);
-    });
-    out = out.slice(0, list.start) + kept.join(", ") + out.slice(list.end);
+    const kept = list.entries
+      .filter((_, k) => {
+        const f = fields[k];
+        return f === undefined || !f.optional || present.has(f.name);
+      })
+      .join(", ");
+    out = out.slice(0, list.start) + kept + out.slice(list.end);
+    moves.push([list.end, kept.length - (list.end - list.start)]);
   }
-  return out;
+  const moved = (at: number) => at + moves.reduce((by, [end, n]) => (at >= end ? by + n : by), 0);
+  return { text: out, marks: marks?.map(([start, end]) => [moved(start), moved(end)] as const) };
 }

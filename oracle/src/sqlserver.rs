@@ -25,7 +25,7 @@
 //! type each value comes back as, which is what a driver decodes by: a column the engine types
 //! `int` that comes back as a `bigint` contradicts it.
 
-use crate::seed::{assignments, contradiction, key_repeats, length_contradiction, out_of_order, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
+use crate::seed::{assignments, contradiction_written, key_repeats, length_contradiction, out_of_order, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use reylo_engine::AnswerCache;
 use reylo_engine_core::types::{Kind, SizeUnit, Type};
 use reylo_engine::sqlserver::Conn;
@@ -149,6 +149,32 @@ pub async fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, 
     }
     let unchecked = crate::seeded(case, lines.len(), report.map_err(|e| format!("seeding: {e}"))?)?;
     Ok((lines, unchecked))
+}
+
+/// Each mutation of a statement of `case`: the engine's analysis of it with the mutation's value put
+/// in, run over the case's states as `run` runs a statement, so that the problem it names is
+/// reported (`--mutate`).
+pub async fn mutate(case: &Path, server: &mut Server, timeout_ms: u64, mutations: &[(usize, &crate::Mutation)]) -> Result<Report, String> {
+    let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let db = format!("reylo_oracle_{}", name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect::<String>());
+    drop_database(&mut server.admin, &db).await.map_err(|e| format!("drop {db}: {e}"))?;
+    exec(&mut server.admin, &format!("create database [{db}]")).await.map_err(|e| format!("create {db}: {e}"))?;
+    let url = with_database(&server.url, &db);
+    let setup = fs::read_to_string(case.join("setup.sql")).map_err(|e| e.to_string())?;
+    let mut conn = session(&url).await?;
+    for batch in batches(&setup) {
+        exec(&mut conn, &batch).await.map_err(|e| format!("setup.sql: {e}"))?;
+    }
+    let mut analyzed = Vec::new();
+    for (n, m) in mutations {
+        let sql = fs::read_to_string(case.join(&m.file)).map_err(|e| format!("{}: {e}", m.file))?;
+        let analysis = analyze(&mut conn, &sql).await.map_err(|e| format!("{}: {e}", m.file))?;
+        analyzed.push((m.label(*n), sql, m.apply(analysis)?));
+    }
+    drop(conn);
+    let report = check(&url, &analyzed, timeout_ms).await;
+    let _ = drop_database(&mut server.admin, &db).await;
+    report
 }
 
 async fn analyze(conn: &mut Conn, sql: &str) -> Result<Value, String> {
@@ -790,7 +816,7 @@ pub async fn check(url: &str, statements: &[(String, String, Value)], timeout_ms
                     p
                 })
                 .collect();
-            for values in assignments(&pools) {
+            for values in assignments(&pools, &"null".to_string()) {
                 if broken {
                     let mut ignore = Vec::new();
                     (conn, _) = seeded_session(url, &tables, scenario, &mut refused, &mut ignore).await?;
@@ -836,7 +862,7 @@ pub async fn check(url: &str, statements: &[(String, String, Value)], timeout_ms
                         }
                         for (row, texts) in rows.iter().zip(&as_text) {
                             if row.len() != columns.len() {
-                                problems.push(format!("{file}: typed {} columns, returned {} with ({shown})", columns.len(), row.len()));
+                                problems.push(format!("{file}: typed with {} column(s), returned {} with ({shown})", columns.len(), row.len()));
                                 break;
                             }
                             for (i, (value, text)) in row.iter().zip(texts).enumerate() {
@@ -852,7 +878,7 @@ pub async fn check(url: &str, statements: &[(String, String, Value)], timeout_ms
                                 let money = matches!(ty.label.as_deref(), Some("money" | "smallmoney"));
                                 let why = variant_contradiction(ty, value)
                                     .or_else(|| sized_contradiction(ty, value, text))
-                                    .or_else(|| if money || matches!(value, ColumnData::F32(_) | ColumnData::F64(_)) { None } else { contradiction(&columns[i]["type"], text, nullable, ',') });
+                                    .or_else(|| if money || matches!(value, ColumnData::F32(_) | ColumnData::F64(_)) { None } else { contradiction_written(&columns[i]["type"], text, nullable, ',', true) });
                                 if let Some(why) = why {
                                     problems.push(format!("{file}: column {name} {why} with ({shown})"));
                                 }

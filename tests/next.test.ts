@@ -75,7 +75,7 @@ function app(main: string): string {
     join(root, "tsconfig.json"),
     JSON.stringify({
       compilerOptions: { target: "esnext", module: "nodenext", types: [], strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true },
-      contentMappers: [{ package: "reylo", extensions: [".sql"] }],
+      contentMappers: [{ package: "reylo" }],
       include: ["*.ts"],
     }),
   );

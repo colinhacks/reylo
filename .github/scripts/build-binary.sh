@@ -46,16 +46,17 @@ case "$target" in
     ;;
 esac
 
-# rustup, where the runner's image has none (the arm64 images are younger than the others).
+# rustup, where the runner's image has none (the arm64 images are younger than the others), with
+# no toolchain of its own: rust-toolchain.toml names the one the build uses.
 if ! command -v rustup > /dev/null; then
   case "$target" in
     *-windows-*)
       host=x86_64-pc-windows-msvc
       [ "$(uname -m)" = aarch64 ] && host=aarch64-pc-windows-msvc
       curl -fsSL -o "$RUNNER_TEMP/rustup-init.exe" "https://static.rust-lang.org/rustup/dist/$host/rustup-init.exe"
-      "$RUNNER_TEMP/rustup-init.exe" -y --profile minimal --default-toolchain stable
+      "$RUNNER_TEMP/rustup-init.exe" -y --profile minimal --default-toolchain none
       ;;
-    *) curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable ;;
+    *) curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none ;;
   esac
   export PATH="$HOME/.cargo/bin:$PATH"
 fi
@@ -72,6 +73,8 @@ case "$target" in
     ;;
 esac
 
+# The toolchain rust-toolchain.toml pins, whatever the runner's own is, then the platform's target in it.
+rustup toolchain install
 rustup target add "$target"
 engine/build.sh --prepare
 cargo build --release --locked -p reylo-cli --target "$target"

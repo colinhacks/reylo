@@ -2583,6 +2583,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "tokio",
  "tokio-postgres",
  "ureq",
@@ -2627,7 +2628,6 @@ name = "reylo-sqlparser"
 version = "0.63.0"
 dependencies = [
  "log",
- "reylo-engine-build",
 ]
 
 [[package]]

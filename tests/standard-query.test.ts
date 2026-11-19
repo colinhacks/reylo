@@ -14,7 +14,7 @@ import { columnKind, kindType, ParameterError } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import type { StandardQueryV1 } from "../src/standard-query.ts";
 import type { Dialect } from "../src/execute.ts";
-import { closeSessions, declarations, DRIVERS, PG, pgLive, INDEX, transform } from "./helpers.ts";
+import { closeSessions, declarations, DRIVERS, handWritten, PG, pgLive, INDEX, transform } from "./helpers.ts";
 
 // Every import is a Standard Query: `~standard.query` holds the statement, its database, and the
 // two mappings a driver calls, `encode` (the input to the values it binds, each in the database's
@@ -303,7 +303,7 @@ export function positionalSignature(ordered: DeclaredOrdered, plain: Query<{}, {
 }
 
 test("a query defined by hand without its columns cannot decode, and says so", () => {
-  const bare = defineQuery<{ id: number }, { id: number }, "many", "postgres">({ dialect: "postgres", sql: "select :id::int as id", params: ["id"] });
+  const bare = defineQuery<{ id: number }, { id: number }, "many", "postgres">({ dialect: "postgres", ...handWritten("select :id::int as id", "postgres") });
   assert.equal(bare["~standard"].query.text, "select $1::int as id");
   assert.deepEqual(bare["~standard"].query.encode({ id: 1 }), ["1"]);
   assert.throws(() => bare["~standard"].query.decode([["1"]]), /without its columns/);

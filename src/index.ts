@@ -1,13 +1,13 @@
 // The runtime query object behind `import query from "./file.sql"`.
 // Types come from the content mapper; values come from the runtime loader.
-import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type Runtime, type SyncClientFor } from "./execute.ts";
+import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type Marks, type QueryModule, type Runtime, type SyncClientFor } from "./execute.ts";
+import type { SqlMode } from "./engine-core.ts";
 import type { Libraries, Plan } from "./codecs.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
 import type { Checks } from "./checks.ts";
-import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns, type JsonNumbers } from "./values.ts";
 import type { QueryError } from "./query-error.ts";
 import { postgres } from "./decode.ts";
@@ -168,11 +168,16 @@ export type QueryDefinition = {
   params: readonly string[];
   /**
    * The statement as the engine compiled it for the database, the query's `sql`, and its binding
-   * order: every build step puts them in the module. A query defined by hand without them is
-   * compiled from `sql` by the run time's own lexer.
+   * order: every build step puts them in the module. A query defined by hand without them is taken
+   * as written: `sql` is the statement the database receives, in its own placeholders (`$1` on
+   * Postgres, `?` on MySQL and SQLite), and `params` its binding order, one name per value.
    */
   text?: string;
   order?: readonly string[];
+  /** Each placeholder's place in `text` (else `sql`), `[start, end]` at JavaScript's offsets, in text order, as the engine found them: a build step writes them for Postgres and MySQL. Slonik, whose tag takes the statement in pieces, and mysql2 on a server that refuses prepared statements, where Reylo writes the values into the text, refuse a query without them. */
+  marks?: Marks;
+  /** How the MySQL session the statement was built on reads strings, where another `sql_mode` would read it otherwise: a build step writes it, and Reylo writes values into the text only on a session that reads it the same way. */
+  sqlMode?: SqlMode;
   /** Each parameter's type, by name, as the engine found it: every build step puts it in the module, and a driver that binds some values wrong gets them converted by it. */
   inputs?: Inputs;
   /** Each output column's name and kind (src/values.ts), in order: every build step puts them in the module, and the run time gives each value its kind by them. */
@@ -191,8 +196,6 @@ export type QueryDefinition = {
   libraries?: Libraries;
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
   structured?: readonly Structured[];
-  /** The catalog facts the statement relied on, which the run time checks before it runs (src/fresh.ts). */
-  fresh?: Fresh;
   /** The `.sql` file, relative to the project's root and written with `/`: the query's `source`. Every build step puts it in the module. */
   source?: string;
   /** Whether a Postgres array column may hold nested arrays, as a build step writes where the project file says `allow_nested_arrays: true`: none is refused. */
@@ -264,6 +267,8 @@ function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: 
     params: def.params,
     text: def.text,
     order: def.order,
+    marks: def.marks,
+    sqlMode: def.sqlMode,
     inputs: def.inputs,
     columns: def.columns,
     nonFinite: def.nonFinite,
@@ -274,20 +279,14 @@ function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: 
     codecs: def.codecs,
     libraries: def.libraries,
     structured: def.structured,
-    fresh: def.fresh,
     source: def.source,
     sqlcommenter: def.sqlcommenter,
     nestedArrays: def.nestedArrays,
     checks: def.checks,
   };
-  let compiled: string | undefined;
   const query: Query<Params, Row, C, D> = {
     dialect,
-    // A query defined by hand is compiled when its `sql` is first read, so a placeholder its
-    // `params` misses fails there and in `run`, not where it is defined.
-    get sql() {
-      return (compiled ??= compile(module).text);
-    },
+    sql: compile(module).text,
     raw: def.sql,
     params: def.params,
     source: def.source,
