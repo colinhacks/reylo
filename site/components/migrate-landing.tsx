@@ -35,7 +35,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
           <h1 className="ml-h1">
             <span>SQL-first</span> <em>schema and migrations.</em>
           </h1>
-          <p className="ml-lede">Model your schema in plain SQL, on Postgres, MySQL and SQLite.</p>
+          <p className="ml-lede">Model your schema in <code>schema.sql</code>. Generate migrations, or write your own. Works on Postgres, MySQL and SQLite.</p>
           <Install />
         </div>
         <div className="ml-hero-visual">
@@ -43,16 +43,16 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         </div>
       </header>
 
-      <Row n={1} title="The world's most advanced multi-dialect diff engine" visual={<DialectMigrations />}>
-        <p>Edit <code>schema.sql</code> and run one command. The change comes back as a draft migration in plain SQL, yours to edit.</p>
+      <Row n={1} title="The most advanced cross-dialect diff engine" visual={<DialectMigrations />}>
+        <p>Edit <code>schema.sql</code>, then generate a migration with one command. Editable as needed.</p>
       </Row>
 
       <Row n={2} title="Use the full power of your database" visual={<SchemaKinds />} flip>
-        <p>Views, functions, triggers, policies, checks and computed columns. Declare them as you would on the database itself.</p>
+        <p>No lossy or limited DSLs. Declare views, functions, triggers, policies, checks, computed columns, and more.</p>
       </Row>
 
-      <Row n={3} title="Elegantly unambiguous" visual={<Term lines={RENAMES} />}>
-        <p>When a change could be a rename or a drop, you say which. A rename keeps the rows, and a drop lets them go.</p>
+      <Row n={3} title="Explicit disambiguation" visual={<Term lines={RENAMES} />}>
+        <p>When schema changes are ambiguous, Reylo asks you for clarification. Use <code>--drop</code> or <code>--rename</code> to disambiguate.</p>
       </Row>
 
       <Row n={4} title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
@@ -219,29 +219,41 @@ type Line = { prompt: boolean; text: string; cursor?: boolean };
 /** Every line of a session at once: what the page renders first, and what a reader who asked for less motion keeps. */
 const finished = (script: Script): Line[] => script.filter((l) => l !== '#edit').map((l) => (l.startsWith('$ ') ? { prompt: true, text: l.slice(2) } : { prompt: false, text: l }));
 
-/** Plays a script on timers: each command typed, its output a line at a time, a pause, and again. */
+/**
+ * Plays a script on timers, as a terminal shows it: the prompt and its cursor waiting, a command typed
+ * at it, the output a line at a time, and the next prompt the moment the output ends; a pause, and
+ * again.
+ */
 function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
   const [lines, setLines] = useState<Line[]>(() => finished(script));
   useEffect(() => {
     if (stillPlease()) return;
     let alive = true;
     const sleep = (ms: number) => new Promise<void>((resolve, reject) => setTimeout(() => (alive ? resolve() : reject(new Error('stopped'))), ms));
+    const prompt: Line = { prompt: true, text: '', cursor: true };
+    // After line k, where only blank lines stand before the next command, an edit or the end, the
+    // output is over: those blank lines and the next prompt print at once. Returns the last line used.
+    const promptAfter = (k: number): number => {
+      let j = k + 1;
+      while (j < script.length && script[j] === '') j++;
+      if (j < script.length && !script[j].startsWith('$ ') && script[j] !== '#edit') return k;
+      const blanks = script.slice(k + 1, j).map((): Line => ({ prompt: false, text: '' }));
+      setLines((ls) => [...ls, ...blanks, prompt]);
+      return j - 1;
+    };
     (async () => {
       for (;;) {
         onEdit?.(false);
-        setLines([]);
+        setLines([prompt]);
         await sleep(700);
-        for (const l of script) {
+        for (let k = 0; k < script.length; k++) {
+          const l = script[k];
           if (l === '#edit') {
             await sleep(500);
             onEdit?.(true);
-          } else if (!l.startsWith('$ ')) {
-            await sleep(l === '' ? 250 : 110);
-            setLines((ls) => [...ls, { prompt: false, text: l }]);
-          } else {
+          } else if (l.startsWith('$ ')) {
             const text = l.slice(2);
             await sleep(450);
-            setLines((ls) => [...ls, { prompt: true, text: '', cursor: true }]);
             for (let i = 1; i <= text.length; i++) {
               await sleep(24 + Math.random() * 40);
               const typed = text.slice(0, i);
@@ -249,9 +261,13 @@ function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
             }
             await sleep(350);
             setLines((ls) => [...ls.slice(0, -1), { prompt: true, text }]);
+            k = promptAfter(k);
+          } else {
+            await sleep(l === '' ? 250 : 110);
+            setLines((ls) => [...ls, { prompt: false, text: l }]);
+            k = promptAfter(k);
           }
         }
-        setLines((ls) => [...ls, { prompt: true, text: '', cursor: true }]);
         await sleep(5000);
       }
     })().catch(() => {});
@@ -320,7 +336,6 @@ const RENAMES: Script = [
   '  ! users.bio → about is written as a rename, keeping its rows',
   "    If they're different columns, delete the file, then:",
   '      reylo migrate new about --drop users.bio',
-  '',
   '$ reylo migrate new tidy',
   '✗ These 2 look like renames, but each changes more than its name',
   '',
@@ -338,10 +353,8 @@ const RENAMES: Script = [
 const SCHEMALESS: Script = [
   "$ reylo run 'alter table users add column bio text'",
   '✓ alter table users add column bio text',
-  '',
   '$ reylo migrate new add_bio',
   '✓ Wrote reylo/migrations/20261104140347_add_bio.sql',
-  '',
   '$ reylo migrate dev',
   'Applying to postgres://localhost:5432/app',
   '  + 20261104140347_add_bio.sql  recorded: already in place',
@@ -351,7 +364,6 @@ const SCHEMALESS: Script = [
 const LOCK_FREE: Script = [
   '$ reylo migrate status',
   '· No lock: migrations run in name order (reylo migrate lock writes one)',
-  '',
   '$ reylo migrate deploy',
   '✗ 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran, and the two orders end differently',
   '  + a fresh database: column users.nick text',
@@ -366,7 +378,6 @@ const PUSH: Script = [
   '  + alter table users add column nick text;',
   '✓ This database matches reylo/schema.sql',
   '! Not in a migration yet: reylo migrate new <name> writes it',
-  '',
   '$ reylo migrate dev',
   'Applying to postgres://localhost:5432/app',
   "  ↺ 20261104120000_tags.sql   rewound: it isn't in the migrations",
@@ -405,7 +416,6 @@ const MIGRATE: Script = [
   '#edit',
   '$ reylo migrate new add_bio',
   '✓ Wrote reylo/migrations/20261104140347_add_bio.sql',
-  '',
   '$ reylo migrate dev',
   'Applying to postgres://localhost:5432/app',
   '  ✓ 20261104140347_add_bio.sql  applied · 4 ms',
