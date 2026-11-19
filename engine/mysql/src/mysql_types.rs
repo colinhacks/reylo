@@ -70,13 +70,19 @@ pub(crate) fn bits(length: Option<u32>) -> Type {
     Type::new(Kind::Array(ArrayType { size: length.map(|n| Size::exact(n.into())), ..ArrayType::of(Slot::non_null(Type::boolean())) })).named("bit")
 }
 
+/// The earliest day a `DATE` or a `DATETIME` holds: MySQL's default `sql_mode` refuses a zero
+/// date and a partial one, not a day of year 0000, which date arithmetic also reaches
+/// (`last_day('0000-02-01')`).
+const EARLIEST: &str = "0000-01-01";
+
 /// A `DATETIME`: wall-clock time with no zone.
 pub(crate) fn datetime() -> Type {
-    Type::new(Kind::DateTime(DateTimeType { tick: MICROSECOND.into(), ..DateTimeType::default() })).named("datetime")
+    let bounds = Bounds { min: Some(format!("{EARLIEST}T00:00:00")), ..Bounds::default() };
+    Type::new(Kind::DateTime(DateTimeType { tick: MICROSECOND.into(), bounds, ..DateTimeType::default() })).named("datetime")
 }
 
 pub(crate) fn date() -> Type {
-    Type::new(Kind::Date(DateType::default())).named("date")
+    Type::new(Kind::Date(DateType { bounds: Bounds { min: Some(EARLIEST.into()), ..Bounds::default() }, ..DateType::default() })).named("date")
 }
 
 /// A `TIME`, which is a length of time, up to 838:59:59 either way.
@@ -386,6 +392,9 @@ mod tests {
         assert_eq!(unflagged(of(16, 0, 0, Some(1))).short(), "bit(boolean[])");
         assert_eq!(of(7, 0, 0, None).kind.name(), "instant");
         assert_eq!(of(12, 0, 0, None).kind.name(), "datetime");
+        // A DATE and a DATETIME hold year 0000, which the default sql_mode takes.
+        assert_eq!(serde_json::to_value(of(10, 0, 0, None)).unwrap(), serde_json::json!({"kind": "date", "min": "0000-01-01", "label": "date"}));
+        assert_eq!(serde_json::to_value(of(12, 0, 0, None)).unwrap()["min"], "0000-01-01T00:00:00");
         for code in [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 242, 245, 246, 249, 250, 251, 252, 253, 254, 255] {
             of(code, 0, 0, Some(5)).check().unwrap_or_else(|e| panic!("{code}: {e}"));
         }
@@ -443,7 +452,7 @@ mod tests {
         assert_eq!(decimal(1, 0, UNSIGNED), (Some(1), Some(0), Some(0)));
         assert_eq!(typed(column(246, 0, BINARY, 12, 2), None), serde_json::json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "label": "decimal"}));
         // datetime(3), datetime, timestamp(3), timestamp(0) and time(4).
-        assert_eq!(typed(column(12, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "datetime", "tick": "1/1000", "label": "datetime"}));
+        assert_eq!(typed(column(12, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "datetime", "tick": "1/1000", "min": "0000-01-01T00:00:00", "label": "datetime"}));
         assert_eq!(typed(column(12, 128, BINARY, 19, 0), None)["tick"], "1");
         assert_eq!(typed(column(7, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "instant", "tick": "1/1000", "min": "1970-01-01T00:00:01Z", "max": "2038-01-19T03:14:07.999Z", "label": "timestamp"}));
         assert_eq!(typed(column(7, 128, BINARY, 19, 0), None)["max"], "2038-01-19T03:14:07Z");

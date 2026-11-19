@@ -216,7 +216,7 @@ export const mysql_columns: Example = {
         { name: "flag", type: { kind: "integer", bits: 8, label: "tinyint(1)" } },
         { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", label: "timestamp" } },
         { name: "status", type: { kind: "enum", type: { kind: "text" }, values: ["b", "a"], label: "enum" } },
-        { name: "born", nullable: true, type: { kind: "date", label: "date" } },
+        { name: "born", nullable: true, type: { kind: "date", min: "0000-01-01", label: "date" } },
         { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, label: "varchar" } },
         { name: "body", nullable: true, type: { kind: "text", encoding: "UTF-8", size: { unit: "byte", max: 65535 }, label: "text" } },
         { name: "tags", nullable: true, type: { kind: "array", label: "set", distinct: true, element: { type: { kind: "enum", type: { kind: "text" }, values: ["a", "b"] } } } },

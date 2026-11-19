@@ -1215,7 +1215,7 @@ fn type_contradiction(ty: &Value, code: u8, charset: u16) -> Option<String> {
 }
 
 /// Why a value a run returned contradicts the engine's type for its column, if it does: a value
-/// none of the labels or the literals its type lists, a number outside its type's bounds, text or
+/// none of the labels or the literals its type lists, a number or a day outside its type's bounds, text or
 /// bytes of another length than the size says (text counted in the unit the size names, in the
 /// session's UTF-8), a DECIMAL of more digits than its precision or scale, or a time finer than its
 /// tick. The text protocol sends each
@@ -1242,6 +1242,9 @@ fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
     }
     // An enum's values are of its type, whose size and precision hold them too.
     let ty = ty.base();
+    if let Some(why) = day_contradiction(ty, value) {
+        return Some(why);
+    }
     match (&ty.kind, value) {
         (Kind::Text(TextType { size: Some(size), .. }), My::Bytes(_)) => {
             let (n, unit) = text_length(size, text()?);
@@ -1254,6 +1257,44 @@ fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
         (Kind::DateTime(DateTimeType { tick, .. }) | Kind::Instant(InstantType { tick, .. }) | Kind::Duration(DurationType { tick: Some(tick), .. }), My::Bytes(_)) => fraction_contradiction(tick, text()?),
         _ => None,
     }
+}
+
+/// Why a DATE's or a DATETIME's day is outside its type's range, if it is: 0001-01-01 to
+/// 9999-12-31 unless its bounds say otherwise, each bound read as the day it falls on, as MySQL's
+/// all fall on a day's start or end. A zero or partial date (`0000-00-00`, `2026-00-15`), which a
+/// client refuses whatever the type says, is no day.
+fn day_contradiction(ty: &Type, value: &My) -> Option<String> {
+    let bounds = match &ty.kind {
+        Kind::Date(date) => &date.bounds,
+        Kind::DateTime(datetime) => &datetime.bounds,
+        _ => return None,
+    };
+    let day = match value {
+        My::Date(year, month, day, ..) => (i64::from(*year), *month, *day),
+        My::Bytes(bytes) => day_of(std::str::from_utf8(bytes).ok()?)?,
+        _ => return None,
+    };
+    if day.1 == 0 || day.2 == 0 {
+        return None;
+    }
+    let (min, max) = (bounds.min.as_deref().unwrap_or("0001-01-01"), bounds.max.as_deref().unwrap_or("9999-12-31"));
+    let outside = day_of(min).is_some_and(|min| day < min) || day_of(max).is_some_and(|max| day > max);
+    outside.then(|| format!("typed from {min} to {max} holds {:04}-{:02}-{:02}", day.0, day.1, day.2))
+}
+
+/// The year, month and day an ISO 8601 date or date and time starts with, its year signed where it
+/// has a sign.
+fn day_of(text: &str) -> Option<(i64, u8, u8)> {
+    let (sign, rest) = match text.as_bytes().first()? {
+        b'-' => (-1, &text[1..]),
+        b'+' => (1, &text[1..]),
+        _ => (1, text),
+    };
+    let mut parts = rest.splitn(3, '-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.get(..2)?.parse().ok()?;
+    Some((sign * year, month, day))
 }
 
 /// A text's length in the unit its size counts, and that unit's name.
@@ -1495,6 +1536,17 @@ mod tests {
         assert_eq!(value_contradiction(&year, &My::Int(2155)), None);
         assert!(value_contradiction(&year, &My::Int(9999)).is_some());
         assert!(value_contradiction(&year, &bytes("9999")).is_some());
+        // A date's range, 0001-01-01 to 9999-12-31 where its bounds say nothing, in either protocol;
+        // a zero or partial date is none.
+        let date = ty(json!({ "kind": "date", "label": "date" }));
+        assert_eq!(value_contradiction(&date, &bytes("0001-01-01")), None);
+        assert!(value_contradiction(&date, &bytes("0000-12-31")).is_some());
+        assert!(value_contradiction(&date, &My::Date(0, 12, 31, 0, 0, 0, 0)).is_some());
+        assert_eq!(value_contradiction(&date, &bytes("0000-00-00")), None);
+        assert_eq!(value_contradiction(&date, &bytes("2026-00-15")), None);
+        let early = ty(json!({ "kind": "datetime", "tick": "1", "min": "0000-01-01T00:00:00", "label": "datetime" }));
+        assert_eq!(value_contradiction(&early, &bytes("0000-12-31 23:59:59")), None);
+        assert_eq!(value_contradiction(&early, &My::Date(9999, 12, 31, 23, 59, 59, 0)), None);
         // A DATETIME(3) in either protocol, and a TIME(0).
         let datetime = ty(json!({ "kind": "datetime", "tick": "1/1000", "label": "datetime" }));
         assert_eq!(value_contradiction(&datetime, &My::Date(2026, 1, 1, 12, 0, 0, 123_000)), None);
