@@ -19,7 +19,11 @@
 //! over both states: the edge state holds every pool whole, and the plain state leaves out the
 //! values of extreme magnitude (`'infinity'`, `NaN`, SQLite's largest integer), beside which a
 //! sum overflows, two dates cannot be subtracted and a series never ends, so a statement the edge
-//! state only ever makes fail is still checked.
+//! state only ever makes fail is still checked. Then every table is emptied in a third
+//! transaction, the rows of `setup.sql` included (a materialized view refreshed over them), and
+//! every statement runs once more, each parameter given its pool's first value that is not NULL:
+//! an aggregate over no rows, and a statement with no parameter that reads a whole table, meet no
+//! row only there. A problem found there says so.
 //!
 //! A statement runs once per assignment of its parameters, each parameter inlined as a literal
 //! cast to the type the server gave its placeholder, by oid, so a type outside `search_path`
@@ -31,7 +35,9 @@
 //!
 //! - a column the engine typed non-null holds no NULL, an array it typed with non-null elements
 //!   holds no NULL element, and a JSON field it typed non-null is never null;
-//! - a statement proven `one` returns exactly one row, and one proven `at_most_one` at most one;
+//! - a statement proven `one` returns exactly one row, one proven `at_most_one` at most one, and
+//!   one proven `none` no row;
+//! - a Postgres statement returns as many columns as the analysis types;
 //! - no two rows agree on every column of the result key, a NULL counting as equal to another;
 //! - where the order is total, no two rows in a row tie on every sort key: a sort key that is no
 //!   output column is read from a copy of the statement that also selects it.
@@ -56,20 +62,30 @@ pub struct Report {
 }
 
 /// A seeded state: the edge state holds every pool whole, the plain state leaves out the values of
-/// extreme magnitude.
+/// extreme magnitude, and the empty state holds no row in any table.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Scenario {
     Edges,
     Plain,
+    Empty,
 }
 
-pub(crate) const SCENARIOS: [Scenario; 2] = [Scenario::Edges, Scenario::Plain];
+pub(crate) const SCENARIOS: [Scenario; 3] = [Scenario::Edges, Scenario::Plain, Scenario::Empty];
 
 impl Scenario {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Scenario::Edges => "edge values",
             Scenario::Plain => "plain values",
+            Scenario::Empty => "no rows",
+        }
+    }
+
+    /// What a problem found in the state says after the values its run took.
+    pub(crate) fn shown(self) -> &'static str {
+        match self {
+            Scenario::Empty => "; every table empty",
+            _ => "",
         }
     }
 }
@@ -122,6 +138,17 @@ pub(crate) fn report(statements: &[(String, String, Value)], tallies: &[Tally], 
     problems.sort();
     problems.dedup();
     Report { problems, notes, unchecked }
+}
+
+/// Whether a run's row count breaks its analysis's cardinality: `one` is exactly one row,
+/// `at_most_one` one at most, and `none` none at all.
+pub(crate) fn beyond(cardinality: &str, rows: usize) -> bool {
+    match cardinality {
+        "one" => rows != 1,
+        "at_most_one" => rows > 1,
+        "none" => rows > 0,
+        _ => false,
+    }
 }
 
 /// One table's columns, in attribute order.
@@ -414,6 +441,31 @@ fn fresh_value(col: &Column, n: usize) -> Option<String> {
     })
 }
 
+/// Empty every table, inside the transaction the caller opened, and refresh every materialized view
+/// over them, which then holds what its query gives over no rows: what the seeding's note says.
+/// Each table that holds rows of its own is emptied alone, as a partitioned table's and a parent's
+/// rows are its partitions' and children's; a foreign table's rows are its server's, which keeps
+/// them.
+async fn empty(client: &Client) -> Result<String, String> {
+    let relations = client
+        .query("SELECT c.oid::regclass::text, c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'm', 'f') AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_' ORDER BY c.oid", &[])
+        .await
+        .map_err(|e| message(&e))?;
+    let of = |kind: &str| -> Vec<String> { relations.iter().filter(|r| r.get::<_, String>(1) == kind).map(|r| r.get::<_, String>(0)).collect() };
+    let tables = of("r");
+    if !tables.is_empty() {
+        let only: Vec<String> = tables.iter().map(|t| format!("ONLY {t}")).collect();
+        client.batch_execute(&format!("TRUNCATE {} CASCADE", only.join(", "))).await.map_err(|e| format!("emptying the tables: {}", message(&e)))?;
+    }
+    let mut kept = of("f");
+    for view in of("m") {
+        if !try_execute(client, &format!("REFRESH MATERIALIZED VIEW {view}")).await? {
+            kept.push(view);
+        }
+    }
+    Ok(if kept.is_empty() { "every table empty".into() } else { format!("every table empty, and {} as it was", kept.join(", ")) })
+}
+
 /// Whether `sql` runs, in a savepoint that keeps a failure from ending the transaction.
 async fn try_execute(client: &Client, sql: &str) -> Result<bool, String> {
     match client.batch_execute(&format!("SAVEPOINT v; {sql}; RELEASE SAVEPOINT v")).await {
@@ -431,6 +483,9 @@ struct Bound {
     casts: Vec<String>,
     /// The values of each parameter of the analysis, as literals of its type.
     pools: Vec<Vec<String>>,
+    /// How many columns the server's describe gives the statement's result, where it has
+    /// parameters.
+    described: Option<usize>,
 }
 
 /// Each statement's parameters, or why it cannot be run. The types are the server's own answer
@@ -459,7 +514,7 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
     let params = analysis["params"].as_array().cloned().unwrap_or_default();
     let order: Vec<&str> = analysis["rewritten"]["order"].as_array().map(|o| o.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     if params.is_empty() && order.is_empty() {
-        return Ok(Ok(Bound { casts: Vec::new(), pools: Vec::new() }));
+        return Ok(Ok(Bound { casts: Vec::new(), pools: Vec::new(), described: None }));
     }
     let rewritten = analysis["rewritten"]["sql"].as_str().unwrap_or(sql);
     client.batch_execute("SAVEPOINT p").await.map_err(|e| message(&e))?;
@@ -492,16 +547,41 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
         }
         pools.push(values);
     }
-    Ok(Ok(Bound { casts: types.into_iter().map(|t| t.ty).collect(), pools }))
+    Ok(Ok(Bound { casts: types.into_iter().map(|t| t.ty).collect(), pools, described: Some(statement.columns().len()) }))
 }
 
-/// A statement's parameters, several assignments: each takes the next value of every pool.
-fn assignments(pools: &[Vec<String>]) -> Vec<Vec<String>> {
+/// A statement's parameters, several assignments: each takes the next value of every pool; then
+/// again with the n-th parameter's pool turned n places on, so that two parameters of one type,
+/// whose pools are the same, also hold different values. `null` stands in for a pool with no value.
+fn assignments<T: Clone + PartialEq>(pools: &[Vec<T>], null: &T) -> Vec<Vec<T>> {
     if pools.is_empty() {
         return vec![Vec::new()];
     }
     let width = pools.iter().map(Vec::len).max().unwrap_or(1);
-    (0..width).map(|r| pools.iter().map(|p| p[r % p.len().max(1)].clone()).collect()).collect()
+    let mut out: Vec<Vec<T>> = Vec::new();
+    for turned in [false, true] {
+        for r in 0..width {
+            let row: Vec<T> = pools.iter().enumerate().map(|(n, p)| p.get((r + if turned { n } else { 0 }) % p.len().max(1)).cloned().unwrap_or_else(|| null.clone())).collect();
+            if !out.contains(&row) {
+                out.push(row);
+            }
+        }
+    }
+    out
+}
+
+/// The one assignment of the empty state: each pool's first value that is not NULL, or NULL where
+/// it holds no other.
+fn first_values<T: Clone + PartialEq>(pools: &[Vec<T>], null: &T) -> Vec<T> {
+    pools.iter().map(|p| p.iter().find(|v| *v != null).cloned().unwrap_or_else(|| null.clone())).collect()
+}
+
+/// Whether the rows a run over the simple protocol returned are rows a driver gets. Every driver
+/// sends a statement with parameters over the extended protocol, where the server returns the rows
+/// of the result its describe gives, and none where that result has no columns: a write an
+/// INSTEAD rule rewrites returns the rule's RETURNING over the simple protocol alone.
+fn reaches_a_driver(described: Option<usize>) -> bool {
+    described != Some(0)
 }
 
 /// Whether the server refused a run with a NOT NULL or a CHECK violation, which a NULL bound to a
@@ -554,17 +634,21 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
             .await
             .map_err(|e| message(&e))?;
         let outcome = async {
-            let mut bare = Vec::new();
-            let seeded = seed(client, &tables, scenario, &mut bare).await?;
-            let mut counts = Vec::with_capacity(seeded.len());
-            for (table, inserted) in &seeded {
-                // A table that refused every row may still hold the rows of setup.sql, or of its partitions.
-                let empty = *inserted == 0 && client.query_one(&format!("SELECT NOT EXISTS (SELECT FROM {table})"), &[]).await.map_err(|e| message(&e))?.get::<_, bool>(0);
-                counts.push(format!("{table} {inserted}{}", if empty { EMPTY } else { "" }));
-            }
-            notes.push(format!("seeded with {}: {}", scenario.name(), counts.join(", ")));
-            if scenario == Scenario::Edges && !bare.is_empty() {
-                notes.push(format!("no seed value for {}: the column holds NULL alone", bare.join(", ")));
+            if scenario == Scenario::Empty {
+                notes.push(format!("seeded with {}: {}", scenario.name(), empty(client).await?));
+            } else {
+                let mut bare = Vec::new();
+                let seeded = seed(client, &tables, scenario, &mut bare).await?;
+                let mut counts = Vec::with_capacity(seeded.len());
+                for (table, inserted) in &seeded {
+                    // A table that refused every row may still hold the rows of setup.sql, or of its partitions.
+                    let empty = *inserted == 0 && client.query_one(&format!("SELECT NOT EXISTS (SELECT FROM {table})"), &[]).await.map_err(|e| message(&e))?.get::<_, bool>(0);
+                    counts.push(format!("{table} {inserted}{}", if empty { EMPTY } else { "" }));
+                }
+                notes.push(format!("seeded with {}: {}", scenario.name(), counts.join(", ")));
+                if scenario == Scenario::Edges && !bare.is_empty() {
+                    notes.push(format!("no seed value for {}: the column holds NULL alone", bare.join(", ")));
+                }
             }
             client.batch_execute(&format!("SET LOCAL statement_timeout = {timeout_ms}")).await.map_err(|e| message(&e))?;
             for (((file, sql, analysis), tally), bound) in statements.iter().zip(tallies.iter_mut()).zip(&bound) {
@@ -600,7 +684,9 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                 // Where the capabilities name every table, each run is held to them: a table it
                 // writes rows of is one they say it writes, and a table it scans one they name.
                 let named = analysis["capabilities"]["tables"].as_object().cloned();
-                for values in assignments(&bound.pools) {
+                let runs = if scenario == Scenario::Empty { vec![first_values(&bound.pools, &"NULL".to_string())] } else { assignments(&bound.pools, &"NULL".to_string()) };
+                for values in runs {
+                    let shown = format!("{}{}", values.join(", "), scenario.shown());
                     let text = text_of(&values);
                     // The savepoint goes first on its own: a statement that does not parse fails
                     // the whole query text it is sent in, a savepoint written before it included.
@@ -619,7 +705,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                             if let Some(db) = e.as_db_error() {
                                 let fields = [("constraint", db.constraint()), ("table", db.table()), ("column", db.column()), ("dataType", db.datatype()), ("schema", db.schema())];
                                 if let Some(why) = crate::errors::contradiction(&analysis["errors"], db.code().code(), &fields) {
-                                    problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                                    problems.push(format!("{file}: {why} with ({shown})"));
                                 }
                             }
                             // A NULL the engine let a parameter take, which the database refuses
@@ -659,7 +745,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                                     }
                                 }
                                 for (i, why) in blamed {
-                                    problems.push(format!("{file}: parameter {} typed nullable, and the database refuses its NULL: {why} with ({})", params[i]["name"].as_str().unwrap_or("?"), values.join(", ")));
+                                    problems.push(format!("{file}: parameter {} typed nullable, and the database refuses its NULL: {why} with ({shown})", params[i]["name"].as_str().unwrap_or("?")));
                                 }
                             }
                             continue;
@@ -671,33 +757,52 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                             let (was_written, was_scanned) = before.get(table).copied().unwrap_or((0, 0));
                             let access = named.get(table).and_then(Value::as_str);
                             if written > was_written && access != Some("write") {
-                                problems.push(format!("{file}: capabilities say {} of {table}, and the run wrote {} of its rows with ({})", access.unwrap_or("nothing"), written - was_written, values.join(", ")));
+                                problems.push(format!("{file}: capabilities say {} of {table}, and the run wrote {} of its rows with ({shown})", access.unwrap_or("nothing"), written - was_written));
                             } else if scanned > was_scanned && access.is_none() {
-                                problems.push(format!("{file}: capabilities name no {table}, and the run scanned it with ({})", values.join(", ")));
+                                problems.push(format!("{file}: capabilities name no {table}, and the run scanned it with ({shown})"));
                             }
                         }
                     }
                     client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
                     tally.ran += 1;
-                    let rows: Vec<&tokio_postgres::SimpleQueryRow> = messages.iter().filter_map(|m| match m {
-                        tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
-                        _ => None,
-                    }).collect();
+                    let rows: Vec<&tokio_postgres::SimpleQueryRow> = if reaches_a_driver(bound.described) {
+                        messages.iter().filter_map(|m| match m {
+                            tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
+                            _ => None,
+                        }).collect()
+                    } else {
+                        Vec::new()
+                    };
                     let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
-                    if (cardinality == "at_most_one" && rows.len() > 1) || (cardinality == "one" && rows.len() != 1) {
-                        problems.push(format!("{file}: proven {cardinality}, returned {} rows with ({})", rows.len(), values.join(", ")));
+                    if beyond(cardinality, rows.len()) {
+                        problems.push(format!("{file}: proven {cardinality}, returned {} rows with ({shown})", rows.len()));
                     }
                     let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
+                    // As many columns as the server's row description gives, which a driver reads
+                    // them by: none where it sent none. A statement the analysis refused types
+                    // none, and is held to nothing here.
+                    let described = if reaches_a_driver(bound.described) {
+                        messages.iter().find_map(|m| match m {
+                            tokio_postgres::SimpleQueryMessage::RowDescription(described) => Some(described.len()),
+                            _ => None,
+                        })
+                    } else {
+                        None
+                    };
+                    let refused = columns.is_empty() && analysis["diagnostics"].as_array().is_some_and(|d| !d.is_empty());
+                    if !refused && described.unwrap_or(0) != columns.len() {
+                        problems.push(format!("{file}: typed with {} column(s), returned {} with ({shown})", columns.len(), described.unwrap_or(0)));
+                    }
                     if let Some(why) = key_repeats(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
-                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                        problems.push(format!("{file}: {why} with ({shown})"));
                     }
                     if let Some(why) = out_of_order(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
-                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                        problems.push(format!("{file}: {why} with ({shown})"));
                     }
                     match &probe {
                         Some((None, at)) => {
                             if let Some(why) = ties(&rows, at) {
-                                problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                                problems.push(format!("{file}: {why} with ({shown})"));
                             }
                         }
                         Some((Some(wrapped), at)) => {
@@ -711,11 +816,11 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                                         _ => None,
                                     }).collect();
                                     if let Some(why) = ties(&rows, at) {
-                                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                                        problems.push(format!("{file}: {why} with ({shown})"));
                                     }
                                 }
                                 Err(e) if e.code() == Some(&SqlState::QUERY_CANCELED) => {}
-                                Err(e) => problems.push(format!("{file}: ordered, and the copy that selects its sort keys failed: {} with ({})", message(&e), values.join(", "))),
+                                Err(e) => problems.push(format!("{file}: ordered, and the copy that selects its sort keys failed: {} with ({shown})", message(&e))),
                             }
                         }
                         None => {}
@@ -726,14 +831,14 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                             let name = col["name"].as_str().unwrap_or("?");
                             if value.is_none() {
                                 if !col["nullable"].as_bool().unwrap_or(false) {
-                                    problems.push(format!("{file}: column {name} typed non-null is NULL with ({})", values.join(", ")));
+                                    problems.push(format!("{file}: column {name} typed non-null is NULL with ({shown})"));
                                 }
                                 continue;
                             }
                             // The delimiter the catalog gives the array type, by its name without its schema.
                             let delimiter = col["type"]["label"].as_str().map(|n| n.rsplit('.').next().unwrap_or(n).trim_matches('"')).and_then(|t| delimiters.get(t)).copied().unwrap_or(',');
                             if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(false), delimiter) {
-                                problems.push(format!("{file}: column {name} {why} with ({})", values.join(", ")));
+                                problems.push(format!("{file}: column {name} {why} with ({shown})"));
                             }
                         }
                     }
@@ -925,8 +1030,9 @@ pub(crate) fn literal_contradiction(ty: &Type, text: &str) -> Option<String> {
 
 /// Why a value breaks what a CHECK holds it to, if it does: a number's bounds and divisor, a UUID's
 /// version, and a `like` or `ilike` pattern. A regular expression's dialect is the server's own, so it is left to
-/// the CHECK itself, which refused any row it does not match.
-fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
+/// the CHECK itself, which refused any row it does not match. A bound the type holds of itself, as
+/// MySQL's `YEAR`, is read the same way.
+pub(crate) fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
     let breaks = |bounds: &reylo_engine_core::types::Bounds| -> Option<String> {
         use std::cmp::Ordering::{Equal, Greater, Less};
         let cmp = |v: &str| decimal_cmp(text, v);
@@ -1298,10 +1404,11 @@ fn written_as_text(ty: &Type) -> bool {
 }
 
 /// Whether a JSON value inside a document is of the form Postgres writes a value of the type in
-/// there (the spec's facts): a boolean, a number for the integers but `oid` and for the floats and
-/// `numeric` (or the text of a non-finite one the type holds), an object for a row whose columns were not read,
-/// for an hstore and as GeoJSON for a geometry, and text for every other type the format names
-/// (a structured one written as its text among them). JSON, and a type the engine does not know,
+/// there (the spec's facts): a boolean, an integer for the integers but `oid`, a number for the
+/// floats and `numeric` (or the text of a non-finite one the type holds), an object for a row whose
+/// columns were not read, for an hstore and as GeoJSON for a geometry, a date, a time, a timestamp
+/// and a UUID as their text ([`written_form`]), and text for every other type the format names (a
+/// structured one written as its text among them). JSON, and a type the engine does not know,
 /// admit any value.
 fn json_admits(ty: &Type, json: &Value) -> bool {
     let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
@@ -1309,16 +1416,40 @@ fn json_admits(ty: &Type, json: &Value) -> bool {
         _ if written_as_text(ty) => json.is_string(),
         Kind::Boolean(_) => json.is_boolean(),
         Kind::Integer(_) if name == "oid" => json.is_string(),
-        Kind::Integer(_) => json.is_number(),
+        // A number written with a fraction or an exponent is no integer's.
+        Kind::Integer(_) => json.is_i64() || json.is_u64(),
         Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => {
             json.is_number() || (*nan && json.as_str() == Some("NaN")) || (*infinity && matches!(json.as_str(), Some("Infinity" | "-Infinity")))
         }
-        Kind::Text(_) | Kind::Uuid(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
+        Kind::Uuid(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) => json.as_str().is_some_and(|text| written_form(&ty.kind, text)),
+        Kind::Text(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
         Kind::Map(_) if name == "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
         Kind::Geometry(_) if name == "geometry" => json.get("type").is_some_and(Value::is_string),
         Kind::Geometry(_) => json.is_string(),
         Kind::Opaque if name == "record" => json.is_object(),
         Kind::Union(u) => u.members.iter().any(|m| json_admits(m, json)),
+        _ => true,
+    }
+}
+
+/// Whether a text is a value of a date, time, timestamp or UUID kind as Postgres writes one inside
+/// a document (`JsonEncodeDateTime`, in XSD's style): a year of four digits or more, ` BC` after one
+/// before the year 1, the fraction of a second where it is not zero, a UTC offset in hours and
+/// minutes and its seconds where they are not zero, an infinity where the type holds one, and a
+/// UUID in lowercase.
+fn written_form(kind: &Kind, text: &str) -> bool {
+    static FORMS: std::sync::OnceLock<[regex::Regex; 6]> = std::sync::OnceLock::new();
+    let [date, time, time_offset, timestamp, timestamp_offset, uuid] = FORMS.get_or_init(|| {
+        let (date, time, offset) = (r"\d{4,}-\d{2}-\d{2}", r"\d{2}:\d{2}:\d{2}(\.\d+)?", r"[+-]\d{2}:\d{2}(:\d{2})?");
+        [format!("^{date}( BC)?$"), format!("^{time}$"), format!("^{time}{offset}$"), format!("^{date}T{time}( BC)?$"), format!("^{date}T{time}{offset}( BC)?$"), "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$".to_string()].map(|form| regex::Regex::new(&form).expect("a form is a valid expression"))
+    });
+    let infinite = matches!(text, "infinity" | "-infinity");
+    match kind {
+        Kind::Date(d) => if infinite { d.infinity } else { date.is_match(text) },
+        Kind::Time(t) => (if t.offset { time_offset } else { time }).is_match(text),
+        Kind::DateTime(d) => if infinite { d.infinity } else { timestamp.is_match(text) },
+        Kind::Instant(i) => if infinite { i.infinity } else { timestamp_offset.is_match(text) },
+        Kind::Uuid(_) => uuid.is_match(text),
         _ => true,
     }
 }
@@ -1570,17 +1701,16 @@ pub fn check_sqlite<D: SqliteDb + ?Sized>(db: &D, statements: &[(String, String,
                         values
                     })
                     .collect();
-                let width = pools.iter().map(Vec::len).max().unwrap_or(1).max(1);
                 let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
                 let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
                 // Each `?` is the n-th name of `order`, and the value is that parameter's.
                 let bind = |values: &[rusqlite::types::Value]| -> Vec<rusqlite::types::Value> {
                     order.iter().map(|name| params.iter().position(|p| p["name"].as_str() == Some(name)).and_then(|i| values.get(i).cloned()).unwrap_or(rusqlite::types::Value::Null)).collect()
                 };
-                for r in 0..width {
-                    let values: Vec<rusqlite::types::Value> = pools.iter().map(|p| p.get(r % p.len().max(1)).cloned().unwrap_or(rusqlite::types::Value::Null)).collect();
+                let runs = if scenario == Scenario::Empty { vec![first_values(&pools, &rusqlite::types::Value::Null)] } else { assignments(&pools, &rusqlite::types::Value::Null) };
+                for values in runs {
                     let bound = bind(&values);
-                    let shown = bound.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join(", ");
+                    let shown = format!("{}{}", bound.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join(", "), scenario.shown());
                     db.run_batch("SAVEPOINT q").map_err(|e| e.to_string())?;
                     // The rows are checked as they come, so a statement that returns rows without
                     // end holds none of them. A row returned before an error or the timeout was
@@ -1651,7 +1781,7 @@ pub fn check_sqlite<D: SqliteDb + ?Sized>(db: &D, statements: &[(String, String,
                     match outcome {
                         Ok(()) => {
                             tally.ran += 1;
-                            if (cardinality == "at_most_one" && returned > 1) || (cardinality == "one" && returned != 1) {
+                            if beyond(cardinality, returned) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {returned} rows with ({shown})"));
                             }
                         }
@@ -1668,7 +1798,8 @@ pub fn check_sqlite<D: SqliteDb + ?Sized>(db: &D, statements: &[(String, String,
                                     problems.push(format!("{file}: {why} with ({shown})"));
                                 }
                             }
-                            if cardinality != "many" && returned > 1 {
+                            // A run that failed may have returned fewer rows than it would have, never more.
+                            if beyond(cardinality, returned) && (cardinality != "one" || returned > 1) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {returned} rows before it failed with ({shown})"));
                             }
                             // A NULL the engine let a parameter take, which SQLite refuses with a
@@ -1776,10 +1907,11 @@ fn built_contradiction(ty: &Value, value: &rusqlite::types::Value) -> Option<Str
 /// Why a value inside a document SQLite built contradicts its type: an INTEGER (a 64-bit column's
 /// too) is a JSON integer, a REAL a number, a TEXT a string, a NUMERIC a number or a string; an
 /// object has exactly its keys, each null only where it may be; a list's items likewise; a JSON
-/// Schema admits the value. Any JSON (`unknown`, `json` without a schema) admits null.
+/// Schema admits the value. A value of no known type admits null; a JSON value inside the document
+/// may be null only where it is nullable, as any other.
 fn built_value(ty: &Type, json: &Value, path: &str) -> Option<String> {
     let at = if path.is_empty() { "the top".to_string() } else { path.to_string() };
-    let admits_null = |t: &Type| t.is_unknown() || matches!(&t.kind, Kind::Json(JsonType { schema: None, content: None }));
+    let admits_null = |t: &Type| t.is_unknown();
     match &ty.kind {
         Kind::Integer(_) | Kind::Float(_) | Kind::Text(_) | Kind::Union(_) => {
             let fits = ty.members().iter().any(|m| match &m.kind {
@@ -1934,15 +2066,45 @@ fn sqlite_fresh(declared: &str, n: usize) -> rusqlite::types::Value {
     }
 }
 
-/// Open the transaction and seed it. When SQLite ends the transaction over a row's insert, the
-/// rows before it are gone too: the seeding starts again, without that row.
+/// Open the transaction and seed it, or empty every table in it for the empty state. When SQLite
+/// ends the transaction over a row's insert, the rows before it are gone too: the seeding starts
+/// again, without that row.
 fn begin_seeded<D: SqliteDb + ?Sized>(db: &D, tables: &[SqliteTable], scenario: Scenario, timeout_ms: u64, refused: &mut HashSet<(usize, usize)>) -> Result<String, String> {
     loop {
         db.run_batch("BEGIN").map_err(|e| e.to_string())?;
+        if scenario == Scenario::Empty {
+            return empty_sqlite(db, tables, timeout_ms);
+        }
         if let Some(seeded) = seed_sqlite(db, tables, scenario, timeout_ms, refused)? {
             return Ok(seeded);
         }
     }
+}
+
+/// Delete every table's rows, inside the transaction the caller opened, twice for the rows a
+/// trigger writes as others go; then rebuild an FTS table that indexes another table's rows from
+/// them, and empty a contentless one's index. What the seeding's note says.
+fn empty_sqlite<D: SqliteDb + ?Sized>(db: &D, tables: &[SqliteTable], timeout_ms: u64) -> Result<String, String> {
+    let quoted = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+    let mut kept = Vec::new();
+    for pass in 0..2 {
+        for table in tables {
+            let sql = match &table.rows {
+                Rows::Inserted => format!("delete from {}", quoted(&table.name)),
+                Rows::Rebuilt(_) if pass == 1 => format!("insert into {0} ({0}) values ('rebuild')", quoted(&table.name)),
+                Rows::Left if pass == 1 => format!("insert into {0} ({0}) values ('delete-all')", quoted(&table.name)),
+                _ => continue,
+            };
+            let outcome = with_deadline(db, timeout_ms.max(SEEDING_TIMEOUT_MS), || db.run_batch(&sql));
+            if db.in_autocommit() {
+                return Err(format!("emptying {} ended the transaction: {}", table.name, outcome.err().map(|e| e.to_string()).unwrap_or_default()));
+            }
+            if let (1, Err(e)) = (pass, outcome) {
+                kept.push(format!("{} ({e})", table.name));
+            }
+        }
+    }
+    Ok(if kept.is_empty() { "every table empty".into() } else { format!("every table empty but {}", kept.join(", ")) })
 }
 
 /// Seed every table with a base row and one row per pool value of each column; a row that breaks
@@ -2076,6 +2238,10 @@ mod tests {
         assert!(built_contradiction(&ty, &text(r#"{"id":1,"r":1,"doc":1,"tags":[],"pair":[1,2]}"#)).is_some_and(|why| why.contains("does not admit")));
         assert!(built_contradiction(&ty, &text("not json")).is_some_and(|why| why.contains("which is no JSON")));
         assert_eq!(built_contradiction(&ty, &Integer(1)).as_deref(), Some("typed as built JSON holds Integer(1), which is no text"));
+        // A JSON value inside the document may be JSON's null only where it is nullable.
+        let leaf = |nullable: bool| json!({"kind": "json", "content": {"type": {"kind": "struct", "fields": [{"name": "k", "type": {"kind": "json"}, "nullable": nullable}]}}});
+        assert_eq!(built_contradiction(&leaf(false), &text(r#"{"k":null}"#)).as_deref(), Some("has a null at .k, typed non-null"));
+        assert_eq!(built_contradiction(&leaf(true), &text(r#"{"k":null}"#)), None);
     }
 
     #[test]
@@ -2122,6 +2288,36 @@ mod tests {
         let bits: Type = serde_json::from_value(json!({"kind": "array", "label": "bit", "element": {"type": {"kind": "boolean"}}})).unwrap();
         assert_eq!(json_contradiction(&bits, &json!("101"), ".b"), None);
         assert!(json_contradiction(&bits, &json!([true]), ".b").is_some());
+    }
+
+    #[test]
+    fn a_leaf_inside_a_document_is_of_the_form_postgres_writes_its_type_in() {
+        let ty = |v: Value| serde_json::from_value::<Type>(v).unwrap();
+        let int4 = ty(json!({"kind": "integer", "bits": 32, "label": "int4"}));
+        assert!(json_admits(&int4, &json!(1)) && json_admits(&int4, &json!(-2147483648)));
+        for bad in [json!(1.5), json!(1.0), json!("1")] {
+            assert!(!json_admits(&int4, &bad), "{bad}");
+        }
+        assert!(json_admits(&ty(json!({"kind": "integer", "bits": 32, "label": "oid"})), &json!("1")));
+        let cases: [(Value, &[&str], &[&str]); 7] = [
+            (json!({"kind": "date", "infinity": true, "label": "date"}), &["2026-01-01", "0044-03-15 BC", "294276-12-31", "infinity", "-infinity"], &["2026-01-01T00:00:00", "2020-01-01T00:00:00-08:00", "26-01-01", "1/1/2026"]),
+            (json!({"kind": "date", "label": "date"}), &["2026-01-01"], &["infinity"]),
+            (json!({"kind": "datetime", "tick": "1/1000000", "infinity": true, "label": "timestamp"}), &["2026-01-01T12:00:00", "2026-01-01T12:00:00.5", "4714-11-24T00:00:00 BC", "-infinity"], &["2026-01-01 12:00:00", "2026-01-01T12:00:00+00:00", "2026-01-01"]),
+            (json!({"kind": "instant", "tick": "1/1000000", "infinity": true, "label": "timestamptz"}), &["2025-12-31T22:30:00-08:00", "2026-01-01T12:00:00.123456+05:30", "1799-12-31T19:03:58-04:56:02", "0044-03-15T12:00:00-07:52:58 BC", "infinity"], &["2026-01-01T12:00:00", "2026-01-01T12:00:00Z", "2026-01-01"]),
+            (json!({"kind": "time", "tick": "1/1000000", "label": "time"}), &["12:00:00", "24:00:00", "12:00:00.25"], &["12:00:00+05:30", "12:00", "1 day"]),
+            (json!({"kind": "time", "tick": "1/1000000", "offset": true, "label": "timetz"}), &["12:00:00.25+05:30", "12:00:00-08:00"], &["12:00:00"]),
+            (json!({"kind": "uuid", "label": "uuid"}), &["3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d"], &["3F2B5C1E-8D4A-4B6F-9C2D-1E0F5A6B7C8D", "{3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d}", "a"]),
+        ];
+        for (t, good, bad) in cases {
+            let t = ty(t);
+            for text in good {
+                assert!(json_admits(&t, &json!(text)), "{} admits {text}", t.short());
+            }
+            for text in bad {
+                assert!(!json_admits(&t, &json!(text)), "{} refuses {text}", t.short());
+            }
+            assert!(!json_admits(&t, &json!(1)), "{} refuses a number", t.short());
+        }
     }
 
     #[test]
@@ -2277,9 +2473,30 @@ mod tests {
     }
 
     #[test]
+    fn a_result_the_describe_gives_no_columns_returns_no_row_to_a_driver() {
+        assert!(!reaches_a_driver(Some(0)));
+        assert!(reaches_a_driver(Some(2)) && reaches_a_driver(None));
+    }
+
+    #[test]
+    fn a_row_count_is_held_to_the_cardinality() {
+        assert!(!beyond("one", 1) && beyond("one", 0) && beyond("one", 2));
+        assert!(!beyond("at_most_one", 0) && !beyond("at_most_one", 1) && beyond("at_most_one", 2));
+        assert!(!beyond("none", 0) && beyond("none", 1));
+        assert!(!beyond("many", 0) && !beyond("many", 3));
+    }
+
+    #[test]
     fn an_assignment_takes_the_next_value_of_every_pool() {
-        assert_eq!(assignments(&[]), [Vec::<String>::new()]);
-        let pools = [vec!["1".to_string(), "2".to_string(), "3".to_string()], vec!["'a'".to_string()]];
-        assert_eq!(assignments(&pools), [["1", "'a'"], ["2", "'a'"], ["3", "'a'"]]);
+        let pool = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<String>>();
+        let null = "NULL".to_string();
+        assert_eq!(assignments(&[], &null), [Vec::<String>::new()]);
+        assert_eq!(assignments(&[pool(&["1", "2", "3"]), pool(&["'a'"])], &null), [["1", "'a'"], ["2", "'a'"], ["3", "'a'"]]);
+        // Two parameters of one type hold the same values, then different ones.
+        let int4 = pool(&["NULL", "1", "2", "3"]);
+        assert_eq!(assignments(&[int4.clone(), int4.clone()], &null), [["NULL", "NULL"], ["1", "1"], ["2", "2"], ["3", "3"], ["NULL", "1"], ["1", "2"], ["2", "3"], ["3", "NULL"]]);
+        assert_eq!(assignments(&[int4.clone()], &null), [["NULL"], ["1"], ["2"], ["3"]]);
+        // The empty state's one assignment holds no NULL a pool can do without.
+        assert_eq!(first_values(&[int4, pool(&["NULL"])], &null), ["1", "NULL"]);
     }
 }

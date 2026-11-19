@@ -247,7 +247,34 @@ pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistr
     let mut unresolved = Vec::new();
     let ctx = ResolveCtx { probes, registry, param_oids, document: true };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
-    Resolved { ty: document(registry.through_json_casts(ty)), non_null, unresolved }
+    let mut ty = registry.through_json_casts(ty);
+    json_null_slots(&mut ty);
+    Resolved { ty: document(ty), non_null, unresolved }
+}
+
+/// Make every slot inside a document's content, at any depth, that may hold JSON's null nullable:
+/// a field of a row or an element of an array the statement puts in it whose type is JSON it did
+/// not build ([`may_be_json_null`]), which a document holds as a null, whatever `NOT NULL` or
+/// `CHECK` keeps SQL's NULL out of the column the value comes from.
+fn json_null_slots(ty: &mut Type) {
+    fn slot(nullable: &mut bool, ty: &mut Type) {
+        *nullable |= may_be_json_null(ty);
+        json_null_slots(ty);
+    }
+    match &mut ty.kind {
+        Kind::Struct(record) => {
+            for field in &mut record.fields {
+                slot(&mut field.nullable, &mut field.ty);
+            }
+            if let Some(extra) = record.extra.as_mut() {
+                slot(&mut extra.nullable, &mut extra.ty);
+            }
+        }
+        Kind::Array(array) => slot(&mut array.element.nullable, &mut array.element.ty),
+        Kind::Map(map) => slot(&mut map.value.nullable, &mut map.value.ty),
+        Kind::Json(JsonType { content: Some(content), .. }) => slot(&mut content.nullable, &mut content.ty),
+        _ => {}
+    }
 }
 
 /// Turn the shape of a whole row of no type the catalog has, or of an array of such rows, at a SQL
@@ -1500,7 +1527,8 @@ const WRAPPED: &str = "reylo_probe";
 /// `SELECT * FROM <around>, LATERAL (SELECT <items> FROM <from>) AS reylo_probe`: a probe whose
 /// FROM reads the items of `around` as a subquery reads a query around it.
 fn wrapped_text(version: i32, items: &[Node], around: &[Node], from: &[Node], filter: Option<&Node>, with: Option<&protobuf::WithClause>) -> Option<String> {
-    let inner = select_stmt(items, from, filter, &[])?;
+    let (items, filter, _) = without_params(version, items, filter, &[])?;
+    let inner = select_stmt(&items, from, filter.as_ref(), &[])?;
     let mut outer = around.to_vec();
     outer.push(Node {
         node: Some(NodeEnum::RangeSubselect(Box::new(protobuf::RangeSubselect {
@@ -1547,36 +1575,51 @@ fn select_stmt(items: &[Node], from: &[Node], filter: Option<&Node>, group: &[No
 
 /// [`select_text`] with a GROUP BY.
 fn grouped_select_text(version: i32, items: &[Node], from: &[Node], filter: Option<&Node>, group: &[Node], with: Option<&protobuf::WithClause>) -> Option<String> {
-    let mut select = select_stmt(items, from, filter, group)?;
-    let deparse = |select: &SelectStmt| {
-        let result = ParseResult {
-            version,
-            stmts: vec![RawStmt {
-                stmt: Some(Box::new(Node { node: Some(NodeEnum::SelectStmt(Box::new(select.clone()))) })),
-                stmt_location: 0,
-                stmt_len: 0,
-            }],
-        };
-        crate::stack::deparse(&result).ok()
-    };
-    let body = deparse(&select)?;
-    // A probe binds nothing, so a placeholder in its condition is NULL there: a test that is
-    // strict in a column stays strict (`u.id = NULL`), which is all the probe reads of it, and a
-    // condition the server cannot type proves nothing, the probe failing to describe.
-    let nulled = without_placeholders(&body);
+    let (items, filter, group) = without_params(version, items, filter, group)?;
+    let mut select = select_stmt(&items, from, filter.as_ref(), &group)?;
     // The statement's WITH queries go with a probe that reads one, and with nothing else, so a
     // probe that reads none can be described before the statement is. They keep their
-    // placeholders, which the describe pins to the types the statement's own describe gave them:
-    // a query that reads one is then the very text the statement's own read of it settled, and
-    // its columns come back settled, at no cost. Written NULL, it would be another statement,
-    // settled again, and a column selecting a placeholder would be nullable there.
-    let Some(with) = with.filter(|w| reads_with(&select, w)) else { return Some(nulled) };
-    select.with_clause = Some(with.clone());
-    let text = deparse(&select)?;
-    match text.strip_suffix(body.as_str()) {
-        Some(head) => Some(format!("{head}{nulled}")),
-        None => Some(without_placeholders(&text)),
+    // placeholders, as its FROM items do ([`without_params`]).
+    if let Some(with) = with.filter(|w| reads_with(&select, w)) {
+        select.with_clause = Some(with.clone());
     }
+    deparse_select(version, &select)
+}
+
+/// A SELECT as the library that parsed the statement prints it.
+fn deparse_select(version: i32, select: &SelectStmt) -> Option<String> {
+    let result = ParseResult {
+        version,
+        stmts: vec![RawStmt {
+            stmt: Some(Box::new(Node { node: Some(NodeEnum::SelectStmt(Box::new(select.clone()))) })),
+            stmt_location: 0,
+            stmt_len: 0,
+        }],
+    };
+    crate::stack::deparse(&result).ok()
+}
+
+/// A probe's select list, condition and GROUP BY with every placeholder in them written as NULL.
+/// A probe binds nothing, so a placeholder in its condition is NULL there: a test that is strict
+/// in a column stays strict (`u.id = NULL`), which is all the probe reads of it, and a condition
+/// the server cannot type proves nothing, the probe failing to describe. Its FROM items and WITH
+/// queries keep their placeholders, which the describe pins to the types the statement's own
+/// describe gave them: an item that reads one is then the very text the statement's own read of
+/// it settled. Written NULL, it would be another statement, in which a `CASE` whose other branch
+/// is the placeholder reads as one whose other branch is NULL, and a column selecting it as NULL.
+fn without_params(version: i32, items: &[Node], filter: Option<&Node>, group: &[Node]) -> Option<(Vec<Node>, Option<Node>, Vec<Node>)> {
+    let text = deparse_select(version, &select_stmt(items, &[], filter, group)?)?;
+    let nulled = without_placeholders(&text);
+    if nulled == text {
+        return Some((items.to_vec(), filter.cloned(), group.to_vec()));
+    }
+    let parsed = crate::stack::parse(&nulled).ok()?;
+    let Some(NodeEnum::SelectStmt(select)) = parsed.protobuf.stmts.into_iter().next().and_then(|s| s.stmt).and_then(|n| n.node) else { return None };
+    let items: Vec<Node> = select.target_list.into_iter().map(|t| match t.node {
+        Some(NodeEnum::ResTarget(rt)) => rt.val.map(|v| *v),
+        _ => None,
+    }).collect::<Option<_>>()?;
+    Some((items, select.where_clause.map(|w| *w), select.group_clause))
 }
 
 /// Whether `select` names one of the queries of `with`: a relation by the name of one, without a
@@ -1632,6 +1675,12 @@ struct ResolveCtx<'a> {
     /// Whether the shape is read as JSON, where a row is an object, which keeps the last of two
     /// fields of one name; a row at a SQL position is read by position, every field in its place.
     document: bool,
+}
+
+/// Whether a value of the type may be JSON's null: JSON the statement did not build, unless the
+/// JSON Schema a CHECK holds it to refuses null.
+fn may_be_json_null(ty: &Type) -> bool {
+    matches!(&ty.kind, Kind::Json(JsonType { content: None, .. })) && ty.schema().is_none_or(|schema| crate::schema_type::admits(&schema, &Value::Null))
 }
 
 /// `fields` with the last of each name, where the first of it stood.
@@ -1744,7 +1793,13 @@ impl ResolveCtx<'_> {
                     }));
                     (content(built.ty.clone()), built.non_null && !col.nullable)
                 }
-                Some((col, None)) if col.type_oid != oid::UNKNOWN => (self.column(col), !col.nullable),
+                // A json or jsonb value may be JSON's null (`'null'::jsonb`), which a document holds
+                // as a null, whatever the column's NOT NULL says; at the top it is the column's value.
+                Some((col, None)) if col.type_oid != oid::UNKNOWN => {
+                    let ty = self.column(col);
+                    let json_null = self.document && !path.is_empty() && may_be_json_null(&ty);
+                    (ty, !col.nullable && !json_null)
+                }
                 _ => {
                     unresolved.push(display_path(path));
                     (Type::unknown(), false)
@@ -1770,9 +1825,11 @@ impl ResolveCtx<'_> {
                                 self.column(col)
                             };
                             // A field is as the read with the row there has it: the outer join that
-                            // nulls the object nulls none of a row that exists.
+                            // nulls the object nulls none of a row that exists. In a document, a json
+                            // or jsonb column's JSON null is a null too.
                             let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
-                            Field::new(col.name.clone(), ty, col.nullable && present)
+                            let json_null = self.document && may_be_json_null(&ty);
+                            Field::new(col.name.clone(), ty, (col.nullable && present) || json_null)
                         })
                         .collect();
                     let fields = if self.document { last_of_each_name(fields) } else { fields };
@@ -2615,6 +2672,16 @@ mod tests {
     }
 
     #[test]
+    fn a_derived_table_keeps_its_placeholders_in_a_probe() {
+        // Written NULL, the CASE would read as one whose other branch is NULL, of the object's shape.
+        let p = shapes("SELECT json_build_object('k', x.o) AS o FROM (SELECT CASE WHEN a > 100 THEN jsonb_build_object('a', a) ELSE $1::jsonb END AS o FROM t) x WHERE x.o IS DISTINCT FROM $2");
+        assert_eq!(p.probes[0].sql, "SELECT x.o AS a0 FROM (SELECT CASE WHEN a > 100 THEN jsonb_build_object('a', a) ELSE $1::jsonb END AS o FROM t) x WHERE x.o IS DISTINCT FROM NULL");
+        // So does a join's condition, which is part of the FROM.
+        let q = shapes("SELECT json_build_object('a', u.id) AS o FROM users u JOIN posts p ON p.author_id = u.id AND p.score > $1");
+        assert_eq!(q.probes[0].sql, "SELECT u.id AS a0 FROM users u JOIN posts p ON p.author_id = u.id AND p.score > $1");
+    }
+
+    #[test]
     fn a_lateral_subquery_is_read_in_its_own_context_and_the_items_left_of_it() {
         let p = shapes("SELECT u.id, x.items FROM users u LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('sku', p.sku)) AS items FROM products p WHERE p.org_id = u.org_id) x ON true");
         assert_eq!(p.columns.len(), 1);
@@ -2711,7 +2778,7 @@ mod tests {
     const BYTEA: u32 = 17;
 
     fn column(name: &str, type_oid: u32, type_name: &str, nullable: bool) -> DescribedColumn {
-        DescribedColumn { name: name.into(), type_oid, typmod: -1, type_name: type_name.into(), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
+        DescribedColumn { name: name.into(), type_oid, typmod: -1, type_name: type_name.into(), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: false }
     }
 
     #[test]

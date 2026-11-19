@@ -9,10 +9,15 @@
 //! fork of SQLite, `libsql.rs`) where the case also has a `libsql` file. A case whose `dialect` file
 //! says `mysql` runs in a database of its own on the MySQL server `--mysql-url` (or
 //! `ORACLE_MYSQL_URL`) names, also a throwaway one, which it refuses on port 3306; how its host
-//! answers the engine and how its runs are isolated is in `mysql.rs`. A case with a `min_version`
-//! file (a `server_version_num`, such as `180000`, or for MySQL the version as one number, such
-//! as `80400`) is skipped on an older server. A MySQL case's `sql_mode` file sets its sessions'
-//! `sql_mode`.
+//! answers the engine and how its runs are isolated is in `mysql.rs`. A case's `min_version` file
+//! holds versions (a `server_version_num`, such as `180000`, or for MySQL the version as one
+//! number, such as `80400`): a line with a version alone skips the case on an older server, and a
+//! line `<file> <version>` skips that statement there, whose lines in the case's files are then not
+//! compared. Where a server of an older series answers a statement differently and the analysis is
+//! right for it, the case's `expected-<series>.txt` (`expected-14.txt`, `expected-8.0.txt`) stands
+//! in for its `expected.txt` on that series, as `unchecked-<series>.txt` and `errors-<series>.txt`
+//! do for the others; `--bless` writes the file a run is compared with. A MySQL case's `sql_mode`
+//! file sets its sessions' `sql_mode`.
 //!
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:25432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
@@ -21,6 +26,7 @@
 //!   cargo run -p reylo-oracle -- --url … --dump new.json oracle/cases      # write the answers
 //!   cargo run -p reylo-oracle -- --url … --strict-coverage oracle/cases    # fail on a statement that never ran
 //!   cargo run -p reylo-oracle -- --url … --timeout 2000 oracle/cases       # milliseconds per run
+//!   cargo run -p reylo-oracle -- --url … --mutate oracle/mutations.json oracle/cases  # each check can fail
 //!
 //! Each Postgres and MySQL statement is analyzed again under other session settings, and a case
 //! whose analysis changes fails: a descriptor never turns on the session.
@@ -28,6 +34,15 @@
 //! `--analyses` names a JSON object of analyses keyed `<case>/<file>`, which the seeding checks
 //! in place of the engine's own: how a check that passes shows it can fail, run on the answers of
 //! an engine that had a defect. `--dump` writes that object, for the cases of every dialect.
+//!
+//! `--mutate` names a JSON array of mutations, which shows that each check the oracle makes can
+//! fail: each entry names a statement (`statement`, as `<case>/<file>`), a JSON pointer into the
+//! engine's fresh analysis of it (`pointer`), the value put there (`value`), and a text that a
+//! problem the oracle then reports holds (`problem`); `check` says which check it is for. Of the
+//! cases named, each one an entry names is built, its statements of an entry analyzed and changed,
+//! and the changed analyses checked as any other, each under its own name; the run fails unless
+//! every entry's problem is reported. A case of the file's `cases` directory that no named case is
+//! (another shard's) is left for its own run.
 //!
 //! Every run of a statement is bounded: 5000 milliseconds, or `--timeout`, or the number in the
 //! case's `timeout` file, which wins. A run the timeout stopped is evidence of nothing.
@@ -94,6 +109,7 @@ async fn oracle() -> ExitCode {
     let mut timeout_ms: u64 = 5000;
     let mut given = Map::new();
     let mut dump: Option<PathBuf> = None;
+    let mut mutate: Option<PathBuf> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -113,6 +129,7 @@ async fn oracle() -> ExitCode {
                 }
             },
             "--dump" => dump = args.next().map(PathBuf::from),
+            "--mutate" => mutate = args.next().map(PathBuf::from),
             "--analyses" => {
                 let path = args.next().unwrap_or_default();
                 match fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) {
@@ -154,6 +171,9 @@ async fn oracle() -> ExitCode {
         eprintln!("no cases: name a case directory, or a directory of them");
         return ExitCode::from(2);
     }
+    if let Some(file) = mutate {
+        return mutations(&file, &cases, url.as_deref(), mysql_url.as_deref(), timeout_ms).await;
+    }
     let mut failed = 0;
     let mut never_ran = 0;
     let mut unnamed = 0;
@@ -163,7 +183,8 @@ async fn oracle() -> ExitCode {
     for case in &cases {
         let dialect = fs::read_to_string(case.join("dialect")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "postgres".into());
         let timeout_ms = fs::read_to_string(case.join("timeout")).ok().and_then(|s| s.trim().parse::<u64>().ok()).filter(|ms| *ms > 0).unwrap_or(timeout_ms);
-        let min = fs::read_to_string(case.join("min_version")).ok().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
+        let (min, statement_mins) = min_versions(case);
+        let mut on = On::default();
         let outcome = if dialect == "sqlite" {
             run_sqlite(case, timeout_ms, &given, &mut dumped)
         } else if dialect == "mysql" {
@@ -185,7 +206,9 @@ async fn oracle() -> ExitCode {
                 println!("{}: skipped (server {} < {min})", case.display(), server.version);
                 continue;
             }
-            mysql::run(case, server, keep, timeout_ms, &given, &mut dumped, statements(case)).await
+            let v = server.version as i32;
+            on = On::new(case, format!("{}.{}", v / 10000, v / 100 % 100), v, statement_mins);
+            mysql::run(case, server, keep, timeout_ms, &given, &mut dumped, on.statements(case)).await
         } else {
             if admin.is_none() {
                 let Some(url) = url.as_deref() else {
@@ -205,23 +228,29 @@ async fn oracle() -> ExitCode {
                 println!("{}: skipped (server {version} < {min})", case.display());
                 continue;
             }
-            run_postgres(case, client, config, keep, timeout_ms, &given, &mut dumped).await
+            on = On::new(case, (version / 10000).to_string(), *version, statement_mins);
+            run_postgres(case, client, config, &on, keep, timeout_ms, &given, &mut dumped).await
         };
+        if bless && !on.skipped.is_empty() {
+            println!("{}: FAILED: not blessed, since --bless would drop the lines of the statement(s) min_version skips on this server", case.display());
+            failed += 1;
+            continue;
+        }
         // Every type the case's statements were given holds to the format's rules, whatever else
         // fails the case.
-        let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
+        let files: Vec<String> = on.statements(case).into_iter().map(|(file, _)| file).collect();
         let typed = validity::check(case, &files, &dumped);
         match outcome {
             Ok((lines, unchecked)) => {
                 never_ran += unchecked.len();
-                if !bless && !case.join("unchecked.txt").is_file() {
+                if !bless && !on.path(case, "unchecked").is_file() {
                     unnamed += unchecked.len();
                 }
                 print_unchecked(case, lines.len(), &unchecked);
                 // Every verdict is printed, whichever fails the case.
-                let matched = check(case, &lines, bless);
-                let narrowed = errors::check(case, &errors::lines(case, &files, &dumped), bless);
-                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed || !typed {
+                let matched = check(case, &lines, bless, &on);
+                let narrowed = errors::check(case, &errors::lines(case, &files, &dumped), bless, &on);
+                if !coverage(case, &unchecked, bless, strict_coverage, &on) || !matched || !narrowed || !typed {
                     failed += 1;
                 }
             }
@@ -261,6 +290,60 @@ fn cases(paths: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// A case's `min_version` file: the version a line holds alone, below which the case is skipped,
+/// and each `<file> <version>` line, below which that statement is.
+fn min_versions(case: &Path) -> (i32, Vec<(String, i32)>) {
+    let mut min = 0;
+    let mut statements = Vec::new();
+    for line in fs::read_to_string(case.join("min_version")).unwrap_or_default().lines() {
+        match line.split_whitespace().collect::<Vec<_>>()[..] {
+            [version] => min = version.parse().unwrap_or(0),
+            [file, version] => statements.push((file.to_string(), version.parse().unwrap_or(0))),
+            _ => {}
+        }
+    }
+    (min, statements)
+}
+
+/// The server a case runs on, as the case's files see it: its series, whose own files stand in
+/// for the case's where it has them, and the statements `min_version` skips on it.
+#[derive(Default)]
+struct On {
+    series: Option<String>,
+    skipped: Vec<String>,
+}
+
+impl On {
+    fn new(case: &Path, series: String, version: i32, statement_mins: Vec<(String, i32)>) -> On {
+        let skipped: Vec<String> = statement_mins.into_iter().filter(|(_, min)| version < *min).map(|(file, _)| file).collect();
+        if !skipped.is_empty() {
+            println!("{}: note: skipped on server {version}, below their min_version: {}", case.display(), skipped.join(", "));
+        }
+        On { series: Some(series), skipped }
+    }
+
+    /// The case's statements that run on this server.
+    fn statements(&self, case: &Path) -> Vec<(String, String)> {
+        statements(case).into_iter().filter(|(file, _)| !self.skipped.contains(file)).collect()
+    }
+
+    /// The case's `<name>-<series>.txt` where it has one, else its `<name>.txt`.
+    fn path(&self, case: &Path, name: &str) -> PathBuf {
+        self.series.as_ref().map(|series| case.join(format!("{name}-{series}.txt"))).filter(|path| path.is_file()).unwrap_or_else(|| case.join(format!("{name}.txt")))
+    }
+
+    /// The text of the case's file `name` without the lines of the statements skipped here, or
+    /// None where the case has no such file.
+    fn read(&self, case: &Path, name: &str) -> Option<String> {
+        let text = fs::read_to_string(self.path(case, name)).ok()?;
+        if self.skipped.is_empty() {
+            return Some(text);
+        }
+        let skipped = |line: &str| self.skipped.iter().any(|file| line.strip_prefix(file.as_str()).is_some_and(|rest| rest.starts_with(": ")));
+        Some(text.lines().filter(|line| !skipped(line)).map(|line| format!("{line}\n")).collect())
+    }
+}
+
 /// The statements of a case, by file name.
 fn statements(case: &Path) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = fs::read_dir(case)
@@ -277,15 +360,14 @@ fn statements(case: &Path) -> Vec<(String, String)> {
 }
 
 /// Compare a case's lines with its `expected.txt`, or write them there under `--bless`.
-fn check(case: &Path, lines: &[String], bless: bool) -> bool {
-    let path = case.join("expected.txt");
+fn check(case: &Path, lines: &[String], bless: bool, on: &On) -> bool {
     let actual = lines.join("\n") + "\n";
     if bless {
-        fs::write(&path, &actual).expect("expected.txt is writable");
+        fs::write(on.path(case, "expected"), &actual).expect("expected.txt is writable");
         println!("{}: blessed {} statement(s)", case.display(), lines.len());
         return true;
     }
-    let Ok(expected) = fs::read_to_string(&path) else {
+    let Some(expected) = on.read(case, "expected") else {
         println!("{}: sound ({} statement(s), no expected.txt)", case.display(), lines.len());
         return true;
     };
@@ -311,8 +393,8 @@ fn check(case: &Path, lines: &[String], bless: bool) -> bool {
 /// Compare the statements of a case that never ran with its `unchecked.txt`, or write them there
 /// under `--bless`. Without that file a statement that never ran fails the case under
 /// `--strict-coverage` alone.
-fn coverage(case: &Path, unchecked: &[String], bless: bool, strict: bool) -> bool {
-    let path = case.join("unchecked.txt");
+fn coverage(case: &Path, unchecked: &[String], bless: bool, strict: bool, on: &On) -> bool {
+    let path = on.path(case, "unchecked");
     if bless {
         // An empty unchecked.txt says that every statement of the case ran, and stays.
         if !unchecked.is_empty() || path.is_file() {
@@ -320,7 +402,7 @@ fn coverage(case: &Path, unchecked: &[String], bless: bool, strict: bool) -> boo
         }
         return true;
     }
-    let Ok(expected) = fs::read_to_string(&path) else {
+    let Some(expected) = on.read(case, "unchecked") else {
         if strict && !unchecked.is_empty() {
             println!("{}: FAILED: --strict-coverage, and no unchecked.txt names the {} statement(s) that never ran", case.display(), unchecked.len());
             return false;
@@ -398,7 +480,9 @@ async fn connect_admin(url: &str) -> Result<(Client, Config, i32), String> {
     Ok((client, config, version.parse().unwrap_or(0)))
 }
 
-async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, keep: bool, timeout_ms: u64, given: &Map<String, Value>, dumped: &mut Map<String, Value>) -> Result<(Vec<String>, Vec<String>), String> {
+/// A database of the case's own on the server, dropped first if a run left it, and built by its
+/// `setup.sql`: its name and a session on it.
+async fn postgres_case(case: &Path, admin: &Client, admin_config: &Config) -> Result<(String, Client), String> {
     let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let db = format!("reylo_oracle_{}", name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect::<String>());
     // Two messages: in one, CREATE DATABASE would run inside the batch's implicit transaction.
@@ -409,9 +493,15 @@ async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, keep: 
     let client = connect(&config).await?;
     let setup = fs::read_to_string(case.join("setup.sql")).map_err(|e| e.to_string())?;
     client.batch_execute(&setup).await.map_err(|e| format!("setup.sql: {}", pg_message(&e)))?;
+    Ok((db, client))
+}
+
+async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, on: &On, keep: bool, timeout_ms: u64, given: &Map<String, Value>, dumped: &mut Map<String, Value>) -> Result<(Vec<String>, Vec<String>), String> {
+    let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let (db, client) = postgres_case(case, admin, admin_config).await?;
     let mut lines = Vec::new();
     let mut analyzed = Vec::new();
-    for (file, sql) in statements(case) {
+    for (file, sql) in on.statements(case) {
         let analysis = match given.get(&format!("{name}/{file}")) {
             Some(answer) => answer.clone(),
             None => analyze_postgres(&client, &sql).await.map_err(|e| format!("{file}: {e}"))?,
@@ -481,24 +571,31 @@ fn pg_message(e: &tokio_postgres::Error) -> String {
 // SQLite
 // ---------------------------------------------------------------------------------------------
 
-fn run_sqlite(case: &Path, timeout_ms: u64, given: &Map<String, Value>, dumped: &mut Map<String, Value>) -> Result<(Vec<String>, Vec<String>), String> {
+/// A fresh SQLite file for the case, built by its `setup.sql`: its path and a connection to it.
+fn sqlite_case(case: &Path) -> Result<(PathBuf, rusqlite::Connection), String> {
     let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let file = std::env::temp_dir().join(format!("reylo-oracle-{name}.db"));
     let _ = fs::remove_file(&file);
     let setup = fs::read_to_string(case.join("setup.sql")).map_err(|e| e.to_string())?;
     // A libSQL case's schema is made on libSQL, whose file the engine reads as the engine's program
-    // reads one, with rusqlite's SQLite, and its statements run on libSQL. Each connection is
-    // closed before the next is opened: two SQLite libraries in one process do not see each
-    // other's locks on a file.
-    let libsql = case.join("libsql").exists();
-    if libsql {
+    // reads one, with rusqlite's SQLite, and its statements run on libSQL (`check_sqlite_case`).
+    // Each connection is closed before the next is opened: two SQLite libraries in one process do
+    // not see each other's locks on a file.
+    if case.join("libsql").exists() {
         let lib = libsql::Connection::open(&file).map_err(|e| e.to_string())?;
         seed::SqliteDb::run_batch(&lib, &setup).map_err(|e| format!("setup.sql on libSQL {}: {e}", libsql::version()))?;
+        drop(lib);
+        let db = rusqlite::Connection::open(&file).map_err(|e| e.to_string())?;
+        return Ok((file, db));
     }
     let db = rusqlite::Connection::open(&file).map_err(|e| e.to_string())?;
-    if !libsql {
-        db.execute_batch(&setup).map_err(|e| format!("setup.sql: {e}"))?;
-    }
+    db.execute_batch(&setup).map_err(|e| format!("setup.sql: {e}"))?;
+    Ok((file, db))
+}
+
+fn run_sqlite(case: &Path, timeout_ms: u64, given: &Map<String, Value>, dumped: &mut Map<String, Value>) -> Result<(Vec<String>, Vec<String>), String> {
+    let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let (file, db) = sqlite_case(case)?;
     let mut lines = Vec::new();
     let mut analyzed = Vec::new();
     for (file_name, sql) in statements(case) {
@@ -511,23 +608,217 @@ fn run_sqlite(case: &Path, timeout_ms: u64, given: &Map<String, Value>, dumped: 
         analyzed.push((file_name, sql, analysis));
     }
     // A value that contradicts a type is a failure whatever expected.txt says.
-    let report = if libsql {
-        drop(db);
-        let lib = libsql::Connection::open(&file).map_err(|e| e.to_string())?;
-        seed::check_sqlite(&lib, &analyzed, timeout_ms)
-    } else {
-        let report = seed::check_sqlite(&db, &analyzed, timeout_ms);
-        drop(db);
-        report
-    };
+    let report = check_sqlite_case(case, &file, db, &analyzed, timeout_ms);
     let _ = fs::remove_file(&file);
     let unchecked = seeded(case, lines.len(), report.map_err(|e| format!("seeding: {e}"))?)?;
     Ok((lines, unchecked))
 }
 
+/// The case's statements run over its seeded states, on libSQL for a libSQL case, with the
+/// engine's connection to the file closed first.
+fn check_sqlite_case(case: &Path, file: &Path, db: rusqlite::Connection, analyzed: &[(String, String, Value)], timeout_ms: u64) -> Result<seed::Report, String> {
+    if case.join("libsql").exists() {
+        drop(db);
+        let lib = libsql::Connection::open(file).map_err(|e| e.to_string())?;
+        return seed::check_sqlite(&lib, analyzed, timeout_ms);
+    }
+    seed::check_sqlite(&db, analyzed, timeout_ms)
+}
+
 fn analyze_sqlite(db: &rusqlite::Connection, sql: &str) -> Result<Value, String> {
     let analysis = reylo_engine::clients::rusqlite::analyze(db, sql, &mut AnswerCache::default()).map_err(|e| e.to_string())?;
     serde_json::to_value(&analysis).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutations
+// ---------------------------------------------------------------------------------------------
+
+/// One entry of a `--mutate` file: a statement of a case, a JSON pointer into the engine's fresh
+/// analysis of it, the value put there, and a text that a problem the oracle reports must hold.
+pub(crate) struct Mutation {
+    pub(crate) case: String,
+    pub(crate) file: String,
+    pointer: String,
+    value: Value,
+    problem: String,
+}
+
+impl Mutation {
+    /// The entries of a `--mutate` file.
+    fn read(path: &Path) -> Result<Vec<Mutation>, String> {
+        let text = fs::read_to_string(path).map_err(|e| format!("--mutate {}: {e}", path.display()))?;
+        let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(&text) else { return Err(format!("--mutate {}: not a JSON array of mutations", path.display())) };
+        entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let field = |key: &str| entry[key].as_str().map(String::from).ok_or_else(|| format!("--mutate {}: mutation {} has no {key}", path.display(), i + 1));
+                let statement = field("statement")?;
+                let Some((case, file)) = statement.split_once('/') else { return Err(format!("--mutate {}: mutation {} names no <case>/<file>", path.display(), i + 1)) };
+                let value = entry.get("value").cloned().ok_or_else(|| format!("--mutate {}: mutation {} has no value", path.display(), i + 1))?;
+                Ok(Mutation { case: case.into(), file: file.into(), pointer: field("pointer")?, value, problem: field("problem")? })
+            })
+            .collect()
+    }
+
+    /// The name the changed statement runs under, the `n`-th of the file, which every problem it
+    /// raises starts with.
+    pub(crate) fn label(&self, n: usize) -> String {
+        format!("{} [mutation {n}]", self.file)
+    }
+
+    /// The analysis with the value at the pointer: in place of what is there, or as a new key of
+    /// the object that holds it.
+    pub(crate) fn apply(&self, mut analysis: Value) -> Result<Value, String> {
+        if let Some(at) = analysis.pointer_mut(&self.pointer) {
+            *at = self.value.clone();
+            return Ok(analysis);
+        }
+        let (parent, key) = self.pointer.rsplit_once('/').ok_or_else(|| format!("{}: {} is no JSON pointer", self.file, self.pointer))?;
+        match analysis.pointer_mut(parent) {
+            Some(Value::Object(object)) => {
+                object.insert(key.replace("~1", "/").replace("~0", "~"), self.value.clone());
+                Ok(analysis)
+            }
+            _ => Err(format!("{}: {} names nothing in its analysis", self.file, self.pointer)),
+        }
+    }
+}
+
+/// Run each mutation of `file` whose case is among `cases`, and report whether the oracle reported
+/// its problem.
+async fn mutations(file: &Path, cases: &[PathBuf], url: Option<&str>, mysql_url: Option<&str>, timeout_ms: u64) -> ExitCode {
+    let entries = match Mutation::read(file) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    // A case no named directory is may be another shard's, but it is one of the file's own cases.
+    let root = file.parent().unwrap_or(Path::new(".")).join("cases");
+    for (i, m) in entries.iter().enumerate() {
+        if !root.join(&m.case).join(&m.file).is_file() {
+            eprintln!("--mutate {}: mutation {} names {}/{}, which {} does not hold", file.display(), i + 1, m.case, m.file, root.display());
+            return ExitCode::from(2);
+        }
+    }
+    let (mut caught, mut missed) = (0, 0);
+    let mut admin: Option<(Client, Config, i32)> = None;
+    let mut mysql_server: Option<mysql::Server> = None;
+    for case in cases {
+        let name = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let mine: Vec<(usize, &Mutation)> = entries.iter().enumerate().filter(|(_, m)| m.case == name).map(|(i, m)| (i + 1, m)).collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let dialect = fs::read_to_string(case.join("dialect")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "postgres".into());
+        let timeout_ms = fs::read_to_string(case.join("timeout")).ok().and_then(|s| s.trim().parse::<u64>().ok()).filter(|ms| *ms > 0).unwrap_or(timeout_ms);
+        let report = if dialect == "sqlite" {
+            mutate_sqlite(case, &mine, timeout_ms)
+        } else if dialect == "mysql" {
+            if mysql_server.is_none() {
+                let Some(url) = mysql_url else {
+                    eprintln!("a MySQL case needs --mysql-url (or ORACLE_MYSQL_URL): a throwaway server, never a shared one");
+                    return ExitCode::from(2);
+                };
+                match mysql::connect(url).await {
+                    Ok(server) => mysql_server = Some(server),
+                    Err(e) => {
+                        eprintln!("cannot connect to {url}: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            mysql::mutate(case, mysql_server.as_mut().expect("connected above"), timeout_ms, &mine).await
+        } else {
+            if admin.is_none() {
+                let Some(url) = url else {
+                    eprintln!("a Postgres case needs --url (or ORACLE_URL): a throwaway server, never a shared one");
+                    return ExitCode::from(2);
+                };
+                match connect_admin(url).await {
+                    Ok(a) => admin = Some(a),
+                    Err(e) => {
+                        eprintln!("cannot connect to {url}: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            let (client, config, _) = admin.as_ref().expect("connected above");
+            mutate_postgres(case, client, config, timeout_ms, &mine).await
+        };
+        let report = match report {
+            Ok(report) => report,
+            Err(e) => {
+                println!("{}: FAILED: {e}", case.display());
+                missed += mine.len();
+                continue;
+            }
+        };
+        for (n, m) in &mine {
+            let label = m.label(*n);
+            let raised: Vec<&String> = report.problems.iter().filter(|p| p.starts_with(&format!("{label}: "))).collect();
+            match raised.iter().find(|p| p.contains(&m.problem)) {
+                Some(problem) => {
+                    caught += 1;
+                    println!("{}: mutation {n} ({} {}) caught: {problem}", case.display(), m.file, m.pointer);
+                }
+                None => {
+                    missed += 1;
+                    println!("{}: MISSED mutation {n} ({} {}): no problem says {:?}", case.display(), m.file, m.pointer, m.problem);
+                    for (_, why) in report.unchecked.iter().filter(|(file, _)| *file == label) {
+                        println!("    it never ran: {why}");
+                    }
+                    for problem in &raised {
+                        println!("    {problem}");
+                    }
+                }
+            }
+        }
+    }
+    println!("{} mutation(s), {missed} missed", caught + missed);
+    if missed > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// A Postgres case's mutations, checked over its seeded states as the case's statements are.
+async fn mutate_postgres(case: &Path, admin: &Client, admin_config: &Config, timeout_ms: u64, mutations: &[(usize, &Mutation)]) -> Result<seed::Report, String> {
+    let (db, client) = postgres_case(case, admin, admin_config).await?;
+    let mut analyzed = Vec::new();
+    let outcome = async {
+        for (n, m) in mutations {
+            let sql = fs::read_to_string(case.join(&m.file)).map_err(|e| format!("{}: {e}", m.file))?;
+            let analysis = analyze_postgres(&client, &sql).await.map_err(|e| format!("{}: {e}", m.file))?;
+            analyzed.push((m.label(*n), sql, m.apply(analysis)?));
+        }
+        seed::check(&client, &analyzed, timeout_ms).await
+    }
+    .await;
+    drop(client);
+    let _ = admin.batch_execute(&format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)")).await;
+    outcome
+}
+
+/// A SQLite case's mutations, checked over its seeded states as the case's statements are.
+fn mutate_sqlite(case: &Path, mutations: &[(usize, &Mutation)], timeout_ms: u64) -> Result<seed::Report, String> {
+    let (file, db) = sqlite_case(case)?;
+    let outcome = (|| {
+        let mut analyzed = Vec::new();
+        for (n, m) in mutations {
+            let sql = fs::read_to_string(case.join(&m.file)).map_err(|e| format!("{}: {e}", m.file))?;
+            let analysis = analyze_sqlite(&db, &sql).map_err(|e| format!("{}: {e}", m.file))?;
+            analyzed.push((m.label(*n), sql, m.apply(analysis)?));
+        }
+        Ok(analyzed)
+    })();
+    let outcome = outcome.and_then(|analyzed| check_sqlite_case(case, &file, db, &analyzed, timeout_ms));
+    let _ = fs::remove_file(&file);
+    outcome
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -598,5 +889,25 @@ fn comments(ty: &Type, path: &str, out: &mut Vec<String>) {
         }
         Kind::Union(u) => u.members.iter().for_each(|m| comments(m, path, out)),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_mutation_puts_its_value_at_its_pointer() {
+        let m = |pointer: &str, value: Value| Mutation { case: "c".into(), file: "s.sql".into(), pointer: pointer.into(), value, problem: String::new() };
+        let analysis = json!({"cardinality": "many", "columns": [{"name": "id", "nullable": true}]});
+        assert_eq!(m("/cardinality", json!("one")).apply(analysis.clone()).unwrap()["cardinality"], "one");
+        assert_eq!(m("/columns/0/nullable", json!(false)).apply(analysis.clone()).unwrap()["columns"][0]["nullable"], false);
+        // A key the analysis leaves out goes into the object that would hold it.
+        assert_eq!(m("/unique", json!([["id"]])).apply(analysis.clone()).unwrap()["unique"], json!([["id"]]));
+        assert_eq!(m("/columns/0/a~1b", json!(1)).apply(analysis.clone()).unwrap()["columns"][0]["a/b"], 1);
+        assert!(m("/columns/3/nullable", json!(false)).apply(analysis.clone()).is_err());
+        assert!(m("/params/0", json!(1)).apply(analysis).is_err());
+        assert_eq!(m("", json!(1)).label(3), "s.sql [mutation 3]");
     }
 }

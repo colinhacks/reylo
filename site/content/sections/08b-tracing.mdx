@@ -4,13 +4,11 @@ title: "Tracing"
 
 ## Observability
 
-Trace every query Reylo runs, and see when its schema changes.
+Trace every query Reylo runs.
 
 ### Tracing
 
-Reylo publishes every query it runs to a tracing channel.
-
-To add observability (o11y) to your queries, subscribe to Node's [tracing channel](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel) `reylo:query`, where Reylo publishes every query it runs, and wrap each one in a span:
+Subscribe to Node's [tracing channel](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel) `reylo:query`, and wrap each query in a span:
 
 ```ts twoslash
 type Span = { recordException(error: unknown): void; end(): void };

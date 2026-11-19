@@ -34,14 +34,14 @@ Misspell a column in `queries/get_user.sql` and run `nub run typecheck` again: t
 
 - In `package.json`, `reylo` is a dependency, because the preload runs in the app; `typescript` 7.1 is a dev dependency, used by the type check, and `reylo` brings the engine that analyzes each statement for the machine. The `postgres` package is the driver the app runs the queries with; the type check reads the schema over the engine's own connection.
 - In the `package.json` scripts, `typecheck` is `tsc --noEmit --runExternalCode`, the flag that lets `tsc` run the content mapper. The `start` script is `node --env-file-if-exists=.env --import reylo/register src/main.ts`: `--import reylo/register` turns each `.sql` import into a module as Node loads it, and `--env-file-if-exists` loads `.env` for the app. The `test` script is the same preload with `--test`, which Node passes to each test file's process, so `src/queries.test.ts` imports `.sql` files too.
-- In `tsconfig.json`, `contentMappers` names `reylo` for `.sql`, which types each import from the database, and for the project file, `.reylo.yaml` or `.reylo.yml`. The `include` option is `src` and `setup.ts`, so `setup.sql`, a script rather than one query, stays out of the type check.
+- In `tsconfig.json`, `contentMappers` names `reylo`, whose package lists the extensions it takes: `.sql`, which types each import from the database, and the project file, `.reylo.yaml` or `.reylo.yml`. The `include` option is `src` and `setup.ts`, so `setup.sql`, a script rather than one query, stays out of the type check.
 - The `.env` file sets `DATABASE_URL`, which Reylo reads for its analysis (the type check, the editor and the preload) and the app reads through `--env-file-if-exists`.
 - The `queries/*.sql` files hold one statement per file, with `:name` parameters, imported from `src/` with a relative path. The query `get_user.sql` resolves to a row or `null`, `list_posts.sql` to an array, and `create_post.sql`, an insert with `returning`, to the row it wrote.
 - In `.vscode/settings.json` and `.vscode/extensions.json`, the TypeScript 7 extension is pointed at this project's TypeScript, so the editor shows the queries' types and errors ([Editors](https://reylo.dev/#editors)). In Zed, `.zed/settings.json` does the same.
 
 ## In your own project
 
-- Install from npm instead of the `link:` dependencies: `npm install reylo` and `npm install -D typescript@beta`.
+- Install from npm instead of the `link:` dependencies: `npm install reylo` and `npm install -D typescript@next`.
 
 ## Notes
 

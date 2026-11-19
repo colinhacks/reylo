@@ -35,8 +35,10 @@ pub(crate) fn set_of(labels: Option<Vec<String>>) -> Type {
 }
 
 /// The labels of an `ENUM` or a `SET` column as `information_schema.columns` writes its
-/// `column_type`: `enum('it''s','a\\b')`, each label quoted, a quote inside it doubled and a
-/// backslash escaped. None for text of any other form.
+/// `column_type`: `enum('it''s','a\\b','x\ny')`, each label quoted, a quote inside it doubled, and
+/// a backslash, a line feed, a carriage return and a NUL written as a backslash and `\`, `n`, `r`
+/// or `0` (and `Z` for 0x1A, as a MySQL string reads it, which the server does not write there).
+/// None for text of any other form.
 pub(crate) fn labels(column_type: &str) -> Option<Vec<String>> {
     let open = column_type.find('(')?;
     let body = column_type[open + 1..].strip_suffix(')')?;
@@ -56,7 +58,13 @@ pub(crate) fn labels(column_type: &str) -> Option<Vec<String>> {
                     label.push('\'');
                 }
                 '\'' => break,
-                '\\' => label.push(chars.next()?),
+                '\\' => label.push(match chars.next()? {
+                    'n' => '\n',
+                    'r' => '\r',
+                    '0' => '\0',
+                    'Z' => '\u{1a}',
+                    c => c,
+                }),
                 c => label.push(c),
             }
         }
@@ -70,13 +78,19 @@ pub(crate) fn bits(length: Option<u32>) -> Type {
     Type::new(Kind::Array(ArrayType { size: length.map(|n| Size::exact(n.into())), ..ArrayType::of(Slot::non_null(Type::boolean())) })).named("bit")
 }
 
+/// The earliest day a `DATE` or a `DATETIME` holds: MySQL's default `sql_mode` refuses a zero
+/// date and a partial one, not a day of year 0000, which date arithmetic also reaches
+/// (`last_day('0000-02-01')`).
+const EARLIEST: &str = "0000-01-01";
+
 /// A `DATETIME`: wall-clock time with no zone.
 pub(crate) fn datetime() -> Type {
-    Type::new(Kind::DateTime(DateTimeType { tick: MICROSECOND.into(), ..DateTimeType::default() })).named("datetime")
+    let bounds = Bounds { min: Some(format!("{EARLIEST}T00:00:00")), ..Bounds::default() };
+    Type::new(Kind::DateTime(DateTimeType { tick: MICROSECOND.into(), bounds, ..DateTimeType::default() })).named("datetime")
 }
 
 pub(crate) fn date() -> Type {
-    Type::new(Kind::Date(DateType::default())).named("date")
+    Type::new(Kind::Date(DateType { bounds: Bounds { min: Some(EARLIEST.into()), ..Bounds::default() }, ..DateType::default() })).named("date")
 }
 
 /// A `TIME`, which is a length of time, up to 838:59:59 either way.
@@ -107,8 +121,9 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
         9 => integer(24, flags, "mediumint"),
         3 => integer(32, flags, "int"),
         8 => integer(64, flags, "bigint"),
-        // 0 and 1901 to 2155.
-        13 => Type::new(Kind::Integer(IntegerType { bits: 16, bounds: Bounds::between("0", "2155"), ..IntegerType::default() })).named("year"),
+        // A YEAR column holds 0 and 1901 to 2155 ([`declared`]), but the protocol's YEAR is any
+        // value of its type: `year(d)` is up to 9999.
+        13 => Type::new(Kind::Integer(IntegerType { bits: 16, ..IntegerType::default() })).named("year"),
         4 => Type::single().named("float"),
         5 => double(),
         0 | 246 => decimal(),
@@ -156,6 +171,8 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
 ///     is above 0, and the sign unless UNSIGNED.
 ///   - A time of p fractional digits ticks by 10^-p, and a `TIMESTAMP`'s latest value is cut to
 ///     them (`2038-01-19T03:14:07.999Z` at 3).
+///   - A `YEAR` holds 0 and 1901 to 2155, which an expression of its protocol type need not
+///     (`year(d)`).
 pub(crate) fn declared(ty: Type, c: &MysqlColumn, charset: Option<&str>) -> Type {
     let (length, decimals) = (c.length, c.decimals.filter(|&d| d <= 30));
     let fraction = decimals.filter(|&d| d <= 6);
@@ -183,6 +200,7 @@ pub(crate) fn declared(ty: Type, c: &MysqlColumn, charset: Option<&str>) -> Type
             None => Kind::Instant(instant),
         },
         (Kind::Duration(duration), _) => Kind::Duration(DurationType { tick: fraction.map(tick).or(duration.tick), ..duration }),
+        (Kind::Integer(integer), Some("year")) => Kind::Integer(IntegerType { bounds: Bounds::between("0", "2155"), ..integer }),
         (kind, _) => kind,
     };
     Type { kind, ..ty }
@@ -371,7 +389,7 @@ mod tests {
         assert_eq!(serde_json::to_value(of(8, UNSIGNED, 0, Some(20))).unwrap(), serde_json::json!({"kind": "integer", "bits": 64, "unsigned": true, "label": "bigint"}));
         assert_eq!(of(1, 0, 0, Some(1)).short(), "tinyint(1)");
         assert_eq!(of(1, 0, 0, Some(4)).short(), "tinyint");
-        assert_eq!(of(13, 0, 0, None).short(), "year(0..2155)");
+        assert_eq!(of(13, 0, 0, None).short(), "year");
         assert_eq!(of(254, ENUM, 255, None).short(), "enum");
         assert_eq!(of(254, SET, 255, None).short(), "set{text}");
         assert_eq!(serde_json::to_value(enumeration(labels("enum('x','y')"))).unwrap(), serde_json::json!({"kind": "enum", "type": {"kind": "text"}, "values": ["x", "y"], "label": "enum"}));
@@ -382,6 +400,9 @@ mod tests {
         assert_eq!(unflagged(of(16, 0, 0, Some(1))).short(), "bit(boolean[])");
         assert_eq!(of(7, 0, 0, None).kind.name(), "instant");
         assert_eq!(of(12, 0, 0, None).kind.name(), "datetime");
+        // A DATE and a DATETIME hold year 0000, which the default sql_mode takes.
+        assert_eq!(serde_json::to_value(of(10, 0, 0, None)).unwrap(), serde_json::json!({"kind": "date", "min": "0000-01-01", "label": "date"}));
+        assert_eq!(serde_json::to_value(of(12, 0, 0, None)).unwrap()["min"], "0000-01-01T00:00:00");
         for code in [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 242, 245, 246, 249, 250, 251, 252, 253, 254, 255] {
             of(code, 0, 0, Some(5)).check().unwrap_or_else(|e| panic!("{code}: {e}"));
         }
@@ -439,11 +460,13 @@ mod tests {
         assert_eq!(decimal(1, 0, UNSIGNED), (Some(1), Some(0), Some(0)));
         assert_eq!(typed(column(246, 0, BINARY, 12, 2), None), serde_json::json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "label": "decimal"}));
         // datetime(3), datetime, timestamp(3), timestamp(0) and time(4).
-        assert_eq!(typed(column(12, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "datetime", "tick": "1/1000", "label": "datetime"}));
+        assert_eq!(typed(column(12, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "datetime", "tick": "1/1000", "min": "0000-01-01T00:00:00", "label": "datetime"}));
         assert_eq!(typed(column(12, 128, BINARY, 19, 0), None)["tick"], "1");
         assert_eq!(typed(column(7, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "instant", "tick": "1/1000", "min": "1970-01-01T00:00:01Z", "max": "2038-01-19T03:14:07.999Z", "label": "timestamp"}));
         assert_eq!(typed(column(7, 128, BINARY, 19, 0), None)["max"], "2038-01-19T03:14:07Z");
         assert_eq!(typed(column(11, 128, BINARY, 15, 4), None), serde_json::json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/10000", "label": "time"}));
+        // A YEAR column holds 0 and 1901 to 2155.
+        assert_eq!(typed(column(13, 96, BINARY, 4, 0), None), serde_json::json!({"kind": "integer", "bits": 16, "min": "0", "max": "2155", "label": "year"}));
         // A type that takes no modifier, an ENUM, a SET and a FLOAT(7,2) among them, keeps its type.
         for c in [column(3, 0, BINARY, 11, 0), column(254, 256, 255, 8, 0), column(254, 2048, 255, 16, 0), column(4, 0, BINARY, 7, 2), column(10, 128, BINARY, 10, 0)] {
             assert_eq!(declared(of(c.r#type, c.flags, c.charset, c.length), &c, None), of(c.r#type, c.flags, c.charset, c.length));
@@ -466,6 +489,8 @@ mod tests {
     fn an_enums_and_a_sets_labels_are_read_from_the_column_type_the_catalog_writes() {
         assert_eq!(labels("enum('it''s','a\\\\b','x,y','\u{dc}n\u{ef}','')"), Some(vec!["it's".to_string(), "a\\b".into(), "x,y".into(), "\u{dc}n\u{ef}".into(), "".into()]));
         assert_eq!(labels("set('a','b c')"), Some(vec!["a".to_string(), "b c".into()]));
+        // A line feed, a carriage return and a NUL as 8.4.11 writes them; a tab and 0x1A it writes as they are.
+        assert_eq!(labels("enum('a\\nb','cr\\rx','n\\0ul','t\tab','z\u{1a}z')"), Some(vec!["a\nb".to_string(), "cr\rx".into(), "n\0ul".into(), "t\tab".into(), "z\u{1a}z".into()]));
         assert_eq!(labels("varchar(10)"), None);
         assert_eq!(labels("enum('a'"), None);
     }

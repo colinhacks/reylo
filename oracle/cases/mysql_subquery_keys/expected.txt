@@ -27,7 +27,7 @@ key_double_constant_cast.sql: at_most_one () -> { id: bigint }
 key_double_function.sql: many (x: double) -> { id: bigint }
 key_double_literal.sql: at_most_one () -> { id: bigint }
 key_dropped.sql: many (t: text) -> { title: text(≤65535) }
-key_exact_function.sql: at_most_one (x: int32) -> { id: bigint }
+key_exact_function.sql: many (x: int32) -> { id: bigint }
 key_fixed_inside.sql: at_most_one (p: bigint, t: varchar) -> { tag: varchar(≤100) }
 key_inside.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
 key_not_fixed_inside.sql: many (p: bigint, t: varchar) -> { tag: varchar(≤100) }

@@ -17,7 +17,7 @@ const author = await getAuthor.run(db, { id: 1 });
 
 <Callout title="Content mappers">
 
-Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in TypeScript 7.1 (currently [in beta](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/)), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
+Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) (currently in nightly builds), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
 
 </Callout>
 
@@ -27,12 +27,12 @@ Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/ty
 
 To install Reylo, you'll need:
 
-- **TypeScript 7.1 (currently in beta).** The first release with content mappers.
+- **TypeScript 7.1 (currently in nightly builds).** The first release with content mappers. The `tsconfig.json` entry below needs a nightly from 2026-11-12 or later.
 - **Node 24 or later.**
 - **macOS, Linux or Windows, on x64 or Arm64.** Reylo's engine is a native program, installed for your machine.
 - **A running dev database.** Reylo reads your current schema from it ([Database](#database) points Reylo at it):
-  - **Postgres** 14 to 18, including Neon and PGlite
-  - **MySQL** 8.0.22 or later, including PlanetScale
+  - **Postgres** 14 to 19, including Neon and PGlite
+  - **MySQL** 8.0.38 or later, including PlanetScale
   - **SQLite**, including Cloudflare D1 and Durable Objects, Turso and libSQL
 
 <AgentPrompt>
@@ -42,8 +42,8 @@ Set up Reylo in this project. Reylo lets TypeScript import .sql files, with type
 
 Each setup has a complete, working example project to copy, whose README's "How Reylo is wired in" lists every line Reylo needs. Install from npm, since the examples link local builds: https://github.com/reylosql/reylo/tree/main/examples
 
-1. Check the requirements and install Reylo, which brings its engine for the machine, and TypeScript 7.1 (currently in beta): https://reylo.dev/typescript#setup
-2. Add Reylo to tsconfig.json as a content mapper for the extensions .sql, .reylo.yaml and .reylo.yml, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/typescript#typescript
+1. Check the requirements and install Reylo, which brings its engine for the machine, and TypeScript 7.1 (currently typescript@next, a nightly from 2026-11-12 or later): https://reylo.dev/typescript#setup
+2. Add { "package": "reylo" } to the contentMappers of tsconfig.json, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/typescript#typescript
 3. Make .sql imports load wherever the project runs code, with Node's --import or the plugin for its runtime, bundler or framework: https://reylo.dev/typescript#plugins
    The example for that setup shows it end to end (node, nub, bun, vite, nextjs, esbuild, webpack, rspack, jest or cloudflare-workers): https://github.com/reylosql/reylo/tree/main/examples/<name>
    If the project runs on anything else, Reylo has no plugin for it yet: say so, and do not write one.
@@ -68,7 +68,7 @@ Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
 ```sh
 npm install reylo
-npm install -D typescript@beta
+npm install -D typescript@next
 ```
 
 ### TypeScript
@@ -78,9 +78,7 @@ Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo
 ```jsonc title="tsconfig.json"
 {
   "compilerOptions": { /* ... */ },
-  "contentMappers": [ // [!code ++]
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] } // [!code ++]
-  ] // [!code ++]
+  "contentMappers": [{ "package": "reylo" }] // [!code ++]
 }
 ```
 
@@ -189,7 +187,7 @@ const nextConfig: NextConfig = {
 export default withReylo(nextConfig);
 ```
 
-Your server code can now import `.sql` files, with Turbopack or webpack, and `next build` fails on a type error in a query or its caller.
+It works with Turbopack and webpack, and `next build` fails on a type error in a query or its caller.
 
 To type-check without building, run `next typegen` first, which writes the route types:
 
@@ -308,7 +306,7 @@ For a complete, working project, copy the example for your setup. Its README, un
 
 ### Database
 
-**Reylo requires a connection to a live dev database.** It retrieves the types of each compiled query, its parameters and its columns, from the database itself. Reylo finds your dev database through the `DATABASE_URL` environment variable, and the URL's scheme tells it which database you use:
+**Reylo requires a connection to a live dev database.** Reylo finds your dev database through the `DATABASE_URL` environment variable, and the URL's scheme tells it which database you use:
 
 ```sh title=".env" tab="Postgres" tab-group="dialect"
 # or postgresql://
@@ -428,8 +426,6 @@ Zed doesn't send `.sql` files to the language server, so an error inside one sho
 
 </Tab>
 </Tabs>
-
-Your editor then shows each error as you type, in a `.sql` file and in the TypeScript that imports it, and the type check reports the same:
 
 ```sql tab="get_user.sql" dialect="all" errors
 select id, nmae, email

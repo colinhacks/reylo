@@ -1796,3 +1796,73 @@ html #nd-page .prose table {
 .dk-pages-sheet .dk-pages-foot {
   padding-bottom: 0.75rem;
 }
+
+/* ── The pager ──────────────────────────────────────────────────────────────
+   The previous and next pages at the foot of a page (`Pager` in shell.tsx): two large cards side
+   by side, the previous on the left and the next on the right, each its direction over the page's
+   name; the border takes the accent on hover. A page with only one keeps it on its own side. */
+#nd-page .dk-pager {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 4rem;
+}
+
+#nd-page .dk-pager a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 1.125rem 1.25rem 1.25rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.875rem;
+  background: var(--color-fd-card);
+  text-decoration: none;
+  transition: border-color 120ms, background-color 120ms;
+}
+
+#nd-page .dk-pager a:hover {
+  border-color: color-mix(in oklab, var(--color-fd-primary) 70%, transparent);
+}
+
+#nd-page .dk-pager .dk-pager-next {
+  grid-column: 2;
+  align-items: flex-end;
+  text-align: right;
+}
+
+#nd-page .dk-pager-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .dk-pager-label svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  /* The arrows sat 0.63px low beside their labels (optical-spacing's ink-align.mjs, 2026-11-19). */
+  translate: 0 -0.625px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#nd-page .dk-pager-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-fd-headings);
+}
+
+@media (max-width: 639px) {
+  #nd-page .dk-pager {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #nd-page .dk-pager .dk-pager-next {
+    grid-column: 1;
+  }
+}

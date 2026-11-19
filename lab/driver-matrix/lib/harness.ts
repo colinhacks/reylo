@@ -11,6 +11,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { defineQuery } from "../../../src/index.ts";
+import { handWritten } from "./hand-written.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite";
 /** How `run` must answer on this client: the value itself (better-sqlite3, node:sqlite, bun:sqlite) or a promise. */
@@ -322,8 +323,9 @@ const array = (element: object, name?: string) => ({ kind: "array", element: { t
 export function queries(d: Dialect, typed = true) {
   const t = (n: string) => (d === "sqlite" ? n : `driver_matrix.${n}`);
   const cast = (p: string, ty: string) => (d === "postgres" ? `${p}::${ty}` : p);
+  // Each statement compiled by the engine's lexer, as a build step compiles it (./hand-written.ts).
   const q = (sql: string, params: string[], cardinality: "many" | "one" | "maybeOne" | "none" = "many", extra: Record<string, unknown> = {}) =>
-    defineQuery<any, any, any, any>({ dialect: d, sql, params, cardinality, ...extra, ...(typed ? {} : { inputs: undefined }) });
+    defineQuery<any, any, any, any>({ dialect: d, ...handWritten(sql, d, params), cardinality, ...extra, ...(typed ? {} : { inputs: undefined }) });
   const repeatedSql = `select id, name from ${t("people")} where id = :id and name = (select name from ${t("people")} where id = :id)`;
   const repeatedText =
     d === "postgres"
@@ -520,7 +522,7 @@ export function ignoreSentinel(e: unknown): void {
 /** An INSERT with its values written into the text, so the statement takes no parameters. */
 function literalInsert(d: Dialect, tag: string, n: number) {
   const table = d === "sqlite" ? "scratch" : "driver_matrix.scratch";
-  return defineQuery<any, any, any, any>({ dialect: d, sql: `insert into ${table} (tag, n) values ('${tag.replace(/'/g, "''")}', ${n})`, params: [], cardinality: "none" });
+  return defineQuery<any, any, any, any>({ dialect: d, ...handWritten(`insert into ${table} (tag, n) values ('${tag.replace(/'/g, "''")}', ${n})`, d, []), cardinality: "none" });
 }
 
 const S9 = "S9 unsupported client: run() rejects with reylo's TypeError";

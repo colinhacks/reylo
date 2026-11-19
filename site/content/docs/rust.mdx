@@ -29,8 +29,8 @@ To use Reylo in Rust, you'll need:
 
 - **sqlx 0.9 or 0.8**, with its Tokio runtime and your database's driver. SQLite needs sqlx 0.9.
 - **A running dev database.** Reylo reads your current schema from it each time the crate compiles:
-  - **Postgres** 14 to 18
-  - **MySQL** 8.0.22 or later
+  - **Postgres** 14 to 19
+  - **MySQL** 8.0.38 or later
   - **SQLite**
 
 <div className="dk-steps">
@@ -59,6 +59,8 @@ reylo = { version = "0.8", features = [
 ```
 
 A statement that reads a type whose feature is off fails to compile, and says which feature to turn on.
+
+Reylo's crates need Rust 1.94 or later, the oldest sqlx 0.9 builds on.
 
 On sqlx 0.8, turn off Reylo's default features and turn on `sqlx_0_8`:
 
@@ -453,6 +455,18 @@ So after `reylo db push` or `reylo migrate dev`, the next build types each state
 ```sh
 touch src/main.rs && cargo build
 ```
+
+### Without a database
+
+A build needs the database, or a cache of what it said.
+
+Each statement the attribute types is kept in `reylo/.cache/`, which git ignores. A build that can't reach the database, or has no `DATABASE_URL`, types the statement from there instead, and says so once:
+
+```text
+reylo: cannot connect to the database at localhost:5432/app (DATABASE_URL in .env): error connecting to server: Connection refused (os error 61); building from reylo/.cache/, analyzed 2026-11-18
+```
+
+That analysis is as old as its date, whatever the schema is now. A fresh checkout, as in CI, has no cache, so its build needs a database made by your migrations, or modules written by [codegen](#codegen), which build with none.
 
 ## Codegen
 

@@ -5,7 +5,7 @@ description: How to use Reylo with Turso. Queries on Turso Cloud through the lib
 
 <p className="dk-subheader">Reylo on Turso Cloud and Turso's own engine</p>
 
-Reylo runs queries on Turso. Turso Cloud runs libSQL, a fork of SQLite, so everything on the [SQLite](/sqlite) page holds for it. This page covers what's specific to Turso.
+Turso Cloud runs libSQL, a fork of SQLite, so everything on the [SQLite](/sqlite) page holds for it.
 
 | | |
 | --- | --- |
@@ -77,7 +77,7 @@ insert into users (name) values (:name)
 
 ## Local database
 
-The type check reads a local SQLite file, never a `libsql://` URL. Make one from a dump of your Turso database:
+Make a local SQLite file from a dump of your Turso database:
 
 ```sh
 turso db shell app .dump > dump.sql
@@ -100,7 +100,6 @@ direct_url: file:./dev.db
 - A `DATABASE_URL` that holds your `libsql://` URL fails the type check, which reads only `file:` and `sqlite:` URLs for SQLite. A `direct_url` wins over it.
 - In development, your app can open the same file: `createClient({ url: "file:dev.db" })` needs no auth token.
 - In CI, run your migrations into the file before the type check ([Deployment](/deployment#sqlite)). The job needs no Turso token.
-- Before a query runs, `.run()` reads the schema again through your client and warns if a column the query names has changed on Turso Cloud since the build ([When the schema changes](/typescript#when-the-schema-changes)).
 
 ## Migrations
 

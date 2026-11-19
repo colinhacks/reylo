@@ -29,3 +29,12 @@ create table pv_users (id int4 primary key, email text);
 create table pv_posts (id int4 primary key, tag text collate ci2, amount numeric);
 insert into pv_users values (97, 'lower'), (65, 'upper'), (1, 'one'), (3, 'three');
 insert into pv_posts values (1, 'a', 1), (2, 'A', 1.0);
+-- A varchar key compared with a bpchar value whose type the engine does not read: the server
+-- compares the column as bpchar, whose = ignores trailing blanks, so 'a', 'a ' and 'a  ' match.
+create table vk (id int primary key, vc varchar(10) unique);
+insert into vk values (1, 'a  '), (2, 'a '), (3, 'a');
+-- A partial unique index whose predicate a WHERE meets only with a literal a cast changes:
+-- 'a  '::bpchar meets a text column as 'a', which the index does not cover.
+create table pidx (id int primary key, email text, status text);
+create unique index pidx_active on pidx (email) where status = 'a  ';
+insert into pidx values (1, 'a', 'a'), (2, 'a', 'a'), (3, 'a', 'a  ');

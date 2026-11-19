@@ -88,7 +88,10 @@ macro_rules! relname {
 /// each type of a user's present, which [`OPERATORS_QUERY`] takes. One row `('runs', name, 'built in' or
 /// NULL)` for each volatile function, or aggregate over one, that a view or a policy a read reaches
 /// calls, read from the stored expression, since `pg_depend` records nothing for a built-in and every
-/// aggregate is labelled immutable ([`read_only`]). A policy's relations are among what a read reaches, and never among what a write does: it only reads them.
+/// aggregate is labelled immutable ([`read_only`]), and one `('calls', name)` for each function of
+/// a user's or an extension's not labelled volatile that one calls, whose body may still be
+/// ([`reached_functions`]). A materialized view is a stored relation: what its definition calls
+/// runs at a refresh, and a read of it reaches none of the relations it was made from. A policy's relations are among what a read reaches, and never among what a write does: it only reads them.
 pub const ERRORS_QUERY: &str = concat!(
     "WITH RECURSIVE \
     named(oid, written) AS ( \
@@ -103,10 +106,11 @@ pub const ERRORS_QUERY: &str = concat!(
     "), \
     edge(parent, child, read, written) AS ( \
       SELECT h.inhparent, h.inhrelid, true, true FROM pg_catalog.pg_inherits h \
-      UNION ALL SELECT q.ev_class, d.refobjid, true, true FROM pg_catalog.pg_rewrite q JOIN pg_catalog.pg_depend d \
+      UNION ALL SELECT q.ev_class, d.refobjid, true, true FROM pg_catalog.pg_rewrite q \
+        JOIN pg_catalog.pg_class v ON v.oid OPERATOR(pg_catalog.=) q.ev_class JOIN pg_catalog.pg_depend d \
         ON d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_rewrite"), " AND d.objid OPERATOR(pg_catalog.=) q.oid \
         AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refobjid OPERATOR(pg_catalog.<>) q.ev_class \
-        WHERE q.rulename OPERATOR(pg_catalog.=) '_RETURN'::pg_catalog.name \
+        WHERE q.rulename OPERATOR(pg_catalog.=) '_RETURN'::pg_catalog.name AND v.relkind OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" \
       UNION ALL SELECT k.confrelid, k.conrelid, false, true FROM pg_catalog.pg_constraint k WHERE $5::pg_catalog.bool AND k.contype OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
         AND (k.confdeltype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[]) OR k.confupdtype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[])) \
       UNION ALL SELECT y.polrelid, d.refobjid, true, false FROM pg_catalog.pg_policy y JOIN pg_catalog.pg_depend d \
@@ -144,7 +148,12 @@ pub const ERRORS_QUERY: &str = concat!(
       UNION SELECT y.oid FROM present p JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) p.oid CROSS JOIN LATERAL ( \
         SELECT t.typbasetype UNION ALL SELECT t.typelem UNION ALL SELECT t.typarray \
         UNION ALL SELECT a.atttypid FROM pg_catalog.pg_attribute a WHERE a.attrelid OPERATOR(pg_catalog.=) t.typrelid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
-        UNION ALL SELECT g.rngsubtype FROM pg_catalog.pg_range g WHERE g.rngtypid OPERATOR(pg_catalog.=) t.oid) AS y(oid) WHERE y.oid OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid) \
+        UNION ALL SELECT g.rngsubtype FROM pg_catalog.pg_range g WHERE g.rngtypid OPERATOR(pg_catalog.=) t.oid) AS y(oid) WHERE y.oid OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid), \
+    reached(oid) AS (SELECT DISTINCT (m.found[1])::pg_catalog.oid FROM r \
+      CROSS JOIN LATERAL (SELECT q.ev_action::pg_catalog.text FROM pg_catalog.pg_rewrite q JOIN pg_catalog.pg_class v ON v.oid OPERATOR(pg_catalog.=) q.ev_class \
+          WHERE q.ev_class OPERATOR(pg_catalog.=) r.oid AND q.rulename OPERATOR(pg_catalog.=) '_RETURN'::pg_catalog.name AND v.relkind OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" \
+        UNION ALL SELECT y.polqual::pg_catalog.text FROM pg_catalog.pg_policy y WHERE y.polrelid OPERATOR(pg_catalog.=) r.oid) AS t(tree) \
+      CROSS JOIN LATERAL pg_catalog.regexp_matches(t.tree, ':(?:funcid|opfuncid|aggfnoid|winfnoid) ([0-9]+)'::pg_catalog.text, 'g'::pg_catalog.text) AS m(found)) \
     SELECT 'open'::pg_catalog.text, 'a server newer than 19'::pg_catalog.text, NULL::pg_catalog.text, NULL::pg_catalog.text \
       WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.>=) '200000'::pg_catalog.numeric \
     UNION ALL SELECT 'open', 'trigger', g.tgname::pg_catalog.text, NULL FROM pg_catalog.pg_trigger g JOIN w ON g.tgrelid OPERATOR(pg_catalog.=) w.oid \
@@ -173,7 +182,8 @@ pub const ERRORS_QUERY: &str = concat!(
         OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_policy"), " \
           AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT p.oid FROM pg_catalog.pg_policy p JOIN rel ON p.polrelid OPERATOR(pg_catalog.=) rel.oid)) \
         OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_rewrite"), " \
-          AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT q.oid FROM pg_catalog.pg_rewrite q JOIN rel ON q.ev_class OPERATOR(pg_catalog.=) rel.oid))) \
+          AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT q.oid FROM pg_catalog.pg_rewrite q JOIN rel ON q.ev_class OPERATOR(pg_catalog.=) rel.oid \
+            JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) q.ev_class WHERE c.relkind OPERATOR(pg_catalog.<>) 'm'::pg_catalog.\"char\"))) \
     UNION ALL SELECT 'open', 'column type', t.typname::pg_catalog.text, 'reads' FROM pg_catalog.pg_attribute a JOIN rel ON a.attrelid OPERATOR(pg_catalog.=) rel.oid \
       JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
       WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped AND t.oid OPERATOR(pg_catalog.=) ANY (SELECT coded.oid FROM coded) \
@@ -221,14 +231,14 @@ pub const ERRORS_QUERY: &str = concat!(
         WHERE k.contype OPERATOR(pg_catalog.=) 'x'::pg_catalog.\"char\" \
     ) AS k(code, field, name) WHERE k.name IS NOT NULL \
     UNION ALL SELECT 'present', pg_catalog.textin(pg_catalog.oidout(p.oid)), NULL, NULL FROM present p WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid \
-    UNION ALL SELECT DISTINCT 'runs', p.proname::pg_catalog.text, CASE WHEN p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid THEN 'built in'::pg_catalog.text END, NULL FROM r \
-      CROSS JOIN LATERAL (SELECT q.ev_action::pg_catalog.text FROM pg_catalog.pg_rewrite q WHERE q.ev_class OPERATOR(pg_catalog.=) r.oid AND q.rulename OPERATOR(pg_catalog.=) '_RETURN'::pg_catalog.name \
-        UNION ALL SELECT y.polqual::pg_catalog.text FROM pg_catalog.pg_policy y WHERE y.polrelid OPERATOR(pg_catalog.=) r.oid) AS t(tree) \
-      CROSS JOIN LATERAL pg_catalog.regexp_matches(t.tree, ':(?:funcid|opfuncid|aggfnoid|winfnoid) ([0-9]+)'::pg_catalog.text, 'g'::pg_catalog.text) AS m(found) \
-      JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) (m.found[1])::pg_catalog.oid \
+    UNION ALL SELECT DISTINCT 'runs', p.proname::pg_catalog.text, CASE WHEN p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid THEN 'built in'::pg_catalog.text END, NULL FROM reached \
+      JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) reached.oid \
       WHERE p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" OR EXISTS (SELECT 1 FROM pg_catalog.pg_aggregate a JOIN pg_catalog.pg_proc f \
         ON f.oid OPERATOR(pg_catalog.=) ANY (ARRAY[a.aggtransfn::pg_catalog.oid, a.aggfinalfn::pg_catalog.oid, a.aggcombinefn::pg_catalog.oid, a.aggmtransfn::pg_catalog.oid, a.aggminvtransfn::pg_catalog.oid, a.aggmfinalfn::pg_catalog.oid]) \
-        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")"
+        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\") \
+    UNION ALL SELECT DISTINCT 'calls', p.proname::pg_catalog.text, NULL, NULL FROM reached \
+      JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) reached.oid \
+      WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.provolatile OPERATOR(pg_catalog.<>) 'v'::pg_catalog.\"char\""
 );
 
 /// Every operator a user or an extension defined, by name: the only ones [`OPERATORS_QUERY`] can find.
@@ -349,6 +359,15 @@ pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
     only_reads(&analysis.rewritten.sql, VOLATILE_READS, host)
 }
 
+/// The functions of a user's or an extension's, not labelled volatile, that a view or a policy a
+/// read of `sql` reaches calls, read from their stored expressions ([`ERRORS_QUERY`]'s `calls`
+/// rows): `Some(None)` where `sql` cannot be read so.
+pub(crate) fn reached_functions(sql: &str, host: &Host) -> Lazy<Option<Vec<String>>> {
+    let Some(request) = request(sql) else { return Some(None) };
+    let Some(rows) = catalog_rows(request, host)? else { return Some(None) };
+    Some(Some(rows.iter().filter(|row| row.first().and_then(Value::as_str) == Some("calls")).filter_map(|row| row.get(1).and_then(Value::as_str).map(String::from)).collect()))
+}
+
 /// Whether a function's body calls nothing volatile, by the same reading, and so could say `stable`:
 /// the built-ins that answer anew for each call count here, since a function that calls
 /// `clock_timestamp()` is rightly volatile.
@@ -396,8 +415,9 @@ fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
             }
             // A type of a user's the statement's objects hold, which [`OPERATORS_QUERY`] reads.
             Some("present") => {}
-            // What [`read_only`] reads: a built-in's errors are the server's own.
-            Some("runs") => {}
+            // What [`read_only`] and [`reached_functions`] read: a built-in's errors are the
+            // server's own, and a user's function a view or a policy calls opens a row of its own.
+            Some("runs") | Some("calls") => {}
             _ => return None,
         }
     }

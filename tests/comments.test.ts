@@ -154,7 +154,7 @@ test("the hover over a field of a query's row shows its column's comment", { ski
   try {
     const root = project(db.url, "postgres", "postgres");
     const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true };
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo", extensions: [".sql"] }], include: ["main.ts"] }));
+    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo" }], include: ["main.ts"] }));
     writeFileSync(join(root, "user.sql"), "select id, age, email from users where id = :id\n");
     const main = join(root, "main.ts");
     writeFileSync(main, `import getUser from "./user.sql";\n\nexport async function age(db: Parameters<typeof getUser.run>[0]) {\n  const user = await getUser.run(db, { id: 1 });\n  return user?.age;\n}\n`);

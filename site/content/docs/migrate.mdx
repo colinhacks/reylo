@@ -353,6 +353,8 @@ You give up:
 - **The same data everywhere.** No check can show that data written in two orders matches.
 - **Checksums.** A migration edited before any database ran it goes unseen.
 
+Only a missing lock turns it on. A `reylo.lock` that is there and can't be read is refused by every command.
+
 To turn the lock back on, run `reylo migrate lock`.
 
 ## CLI <code className="dk-aside">reylo migrate</code> [#cli-reylo-migrate]
@@ -400,7 +402,7 @@ The commands that change a database in ways no deploy wants, `migrate dev`, `db 
 
 ### `init`
 
-Starts your migrations from an existing database: it writes `schema.sql`, a first migration and the lock, and records that migration as run:
+Starts your migrations from an existing database:
 
 ```terminal
 $ reylo migrate init
@@ -508,7 +510,7 @@ $ reylo migrate new backfill
 
 ### `dev`
 
-Takes your development database to your migrations and writes the lock. It runs what's new and rewinds what no longer agrees, such as another branch's migration:
+Takes your development database to your migrations and writes the lock:
 
 ```terminal
 $ reylo migrate dev
@@ -571,7 +573,7 @@ When nothing changed since its last run, it skips the shadow databases.
 
 ### `deploy`
 
-Runs the lock's pending migrations, each in one transaction with its history row. On MySQL, where a schema change commits on its own, each migration holds one change.
+Runs the lock's pending migrations, each in one transaction with its history row. On MySQL, where a schema change commits on its own, each migration holds one change. A statement in MySQL's executable comments, as mysqldump writes them (`/*!50001 … */`), runs as written, and is checked as every version of MySQL reads it, with each comment's text run or skipped.
 
 ```terminal
 $ reylo migrate deploy
@@ -584,8 +586,6 @@ It needs no shadow database. It refuses to run:
 
 - **On an edited schema file.** A `schema.sql` that doesn't match the lock's checksum.
 - **On a database changed by hand.** Each migration stores a fingerprint of the schema, and a database that no longer matches it is refused, a hand-added index included.
-
-The refusal shows the change, with the ways to keep it:
 
 ```terminal
 $ reylo migrate deploy
@@ -693,17 +693,6 @@ $ reylo migrate history push --url $PROD_URL
 Recording on postgres://db.example.com/app
   + 20261104160000_users_email.sql  recorded: already in place
 ✓ Recorded 1 migration, running nothing
-```
-
-To keep a change made by hand, write it into `schema.sql` and a migration, then record it:
-
-```terminal
-# print what the database has, and copy the change into reylo/schema.sql
-$ reylo db introspect --url $PROD_URL
-
-$ reylo migrate new users_email
-$ reylo migrate dev
-$ reylo migrate history push --url $PROD_URL
 ```
 
 ### `history pull`
@@ -872,9 +861,11 @@ Most commands use shadow databases: throwaway databases where Reylo Migrate repl
 
 Each database makes them its own way:
 
-- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new. On Azure Database for PostgreSQL, list each extension your migrations create in the server's `azure.extensions` parameter first, or no shadow can create it.
+- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new. On Azure Database for PostgreSQL, list each extension your migrations create in the server's `azure.extensions` parameter first, or no shadow can create it. Timescale Cloud refuses `create database`, so point `shadow_url` at a server with TimescaleDB and `timescaledb_toolkit`, such as the `timescale/timescaledb-ha` image.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
 - **SQLite:** in memory, Turso Cloud's included. There's nothing to grant.
+
+A migration that would reach past its shadow is refused: one that changes a role, a database, a tablespace or a server setting, and on MySQL one that names a database, as in `app.users`. Code inside a `do` block or a function isn't checked, so keep it from changing those.
 
 On Supabase, each shadow also gets Supabase's extensions and schemas, such as `auth` and `storage`, so a migration that references `auth.users` replays as it runs.
 
@@ -898,7 +889,7 @@ import { migrate } from "reylo";
 const ran = await migrate();
 ```
 
-It runs `reylo migrate deploy`, resolves to the names of the migrations it ran, and rejects with the deploy's problems. Pass `url` for another database:
+It resolves to the names of the migrations it ran, and rejects with the deploy's problems. Pass `url` for another database:
 
 ```ts
 await migrate({ url: process.env.PRODUCTION_URL });

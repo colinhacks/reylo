@@ -1,0 +1,1 @@
+select payload from events

@@ -107,7 +107,6 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.
     if (kind === "int8") return { type: ["integer", "string"], format: "int64" };
     if (kind === "decimal") return { type: "string", format: "decimal" };
-    if (kind === "timestamp") return { type: "string", format: "date-time" };
   }
   // A SET inside a document is its text, its members joined by commas.
   if (inJson && isMysqlSet(t)) return { type: "string" };
@@ -225,7 +224,8 @@ export function ecmaPattern(source: string): string {
  * divisor on a JSON number, within what a JSON number writes exactly, an array's size on an
  * array, and a map's size, which counts its keys, on an object. A decimal given as its text takes
  * no bounds. A text parameter's exact size is a maximum, since `char(n)` pads a shorter value. A
- * size in code units or bytes has no equivalent.
+ * size in code units or bytes has no equivalent. A text's format is never written: it says nothing
+ * of the values, and a validator asserts a format it knows.
  */
 function withFacts(schema: Schema | JsonSchema, t: EngineType, input: boolean): Schema | JsonSchema {
   if (typeof schema !== "object" || schema === null) return schema;

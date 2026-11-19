@@ -227,13 +227,9 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     let numbered = lex::rewrite(sql, lexed, Target::Numbered);
     let rewritten = lex::rewrite(sql, lexed, Target::Question);
     let functions: Vec<(&str, i32)> = extras.total.iter().map(|f| (f.name.as_str(), f.arity)).collect();
-    // Triggers are not replayed (a body may call a function only the application registers);
-    // their headers say which statements a trigger can skip a row of. An INSTEAD OF trigger is
-    // replayed with an empty body, which is what lets a write to its view through.
-    let (triggers, mut replay): (Vec<String>, Vec<String>) = ddl.iter().cloned().partition(|s| trigger_header(s).is_some());
-    replay.extend(triggers.iter().filter_map(|s| instead_of_stub(s)));
+    let (triggers, replay) = replayed(ddl);
     let skipping = skipping_triggers(&triggers);
-    let listed: Option<Vec<tree::Listed>> = extras.host.as_ref().map(|host| host.iter().map(|f| (f.name.as_str(), f.arity, f.kind)).collect());
+    let listed = listed(extras.host.as_deref());
     // libSQL's `ALTER TABLE t ALTER COLUMN c TO <definition>` is prepared as the RENAME COLUMN of
     // the same column, which SQLite has, to a name no table has: it prepares where libSQL's does,
     // on an existing table and column, and the definition is libSQL's to read when it runs.
@@ -325,11 +321,11 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             ordered: false,
             value: false,
             rewritten,
+            sql_mode: None,
             style: lexed.style,
             diagnostics,
             unresolved: Vec::new(),
             structured: Vec::new(),
-            fresh: None,
             errors: None,
             capabilities: Some(capabilities),
             read_only: false,
@@ -385,11 +381,11 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         ordered: false,
         value: false,
         rewritten,
+        sql_mode: None,
         style: lexed.style,
         diagnostics,
         unresolved: Vec::new(),
         structured: Vec::new(),
-        fresh: None,
         errors: None,
         capabilities: Some(crate::capabilities::of_statement(&t)),
         read_only: false,
@@ -400,6 +396,39 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     crate::analysis::names(sql, Dialect::Sqlite, &mut analysis, result_targets(&t).as_deref(), &|_| None);
     let unique_keys = t.tables.iter().map(|(name, info)| (name.clone(), info.unique_keys.clone())).collect();
     SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys, booleans }
+}
+
+/// The schema's triggers, and what the engine replays of the schema. Triggers are not replayed (a
+/// body may call a function only the application registers); their headers say which statements a
+/// trigger can skip a row of. An INSTEAD OF trigger is replayed with an empty body, which is what
+/// lets a write to its view through.
+fn replayed(ddl: &[String]) -> (Vec<String>, Vec<String>) {
+    let (triggers, mut replay): (Vec<String>, Vec<String>) = ddl.iter().cloned().partition(|s| trigger_header(s).is_some());
+    replay.extend(triggers.iter().filter_map(|s| instead_of_stub(s)));
+    (triggers, replay)
+}
+
+/// The host's functions as the walker takes them.
+fn listed(host: Option<&[HostFunction]>) -> Option<Vec<tree::Listed<'_>>> {
+    host.map(|host| host.iter().map(|f| (f.name.as_str(), f.arity, f.kind)).collect())
+}
+
+/// Whether the table an INSERT writes declares its PRIMARY KEY or a UNIQUE ON CONFLICT REPLACE, as
+/// the embedded SQLite parsed the schema ([`tree::TableInfo::replaces`]), however its DDL spells
+/// the clause: the INSERT, with no OR clause of its own, then deletes the row it conflicts with,
+/// and a foreign key's action follows the delete. The statement is prepared again on the replay
+/// the analysis made, from the same answers. True where it does not prepare, or writes no table
+/// the tree describes.
+pub(crate) fn declares_replace(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+    let schema = host.query(DDL_QUERY, Vec::new(), Scope::Session);
+    let functions = host.query(FUNCTIONS_QUERY, Vec::new(), Scope::Session);
+    let (Ok(rows), functions) = (schema?, functions?) else { return Some(true) };
+    let ddl: Vec<String> = rows.iter().filter_map(|r| r.first().and_then(as_str)).map(String::from).collect();
+    let host_functions = functions.ok().and_then(|rows| host_functions(&rows));
+    let (_, replay) = replayed(&ddl);
+    let sql = &analysis.rewritten.sql;
+    let Ok(t) = tree::analyze(&replay, sql, sql, &[], listed(host_functions.as_deref()).as_deref()) else { return Some(true) };
+    Some(t.dml.as_ref().and_then(|dml| t.tables.get(&dml.table)).is_none_or(|info| info.replaces))
 }
 
 /// Whether a WITH query reads itself: an arm of its statement has a FROM item SQLite marks as the
@@ -415,7 +444,7 @@ fn reads_itself(sel: &Sel) -> bool {
     false
 }
 
-/// The tables the statement names, as SQLite resolved them, for the freshness facts: each table
+/// The tables the statement names, as SQLite resolved them, for its errors pass: each table
 /// and view a FROM clause reads, in subqueries, WITH queries and expressions too, and the table it
 /// writes. A view is named, never what it reads; a WITH query, a subquery and a table-valued
 /// function are no table. SQLite expands a view into a subquery as it does a derived table, and
@@ -926,9 +955,16 @@ fn in_json(t: &Ty) -> Ty {
     }
 }
 
-/// Whether a type already admits a JSON null, so a field of it needs no `| null`.
-fn admits_null(t: &Ty) -> bool {
-    matches!(t, Ty::Unknown | Ty::Json { schema: None })
+/// Whether a value may be JSON's null inside the JSON a function builds: one that may be NULL,
+/// which SQLite writes there as null, and any value of plain JSON, which may be the document `null`
+/// itself however NOT NULL it is (`json(doc)` where `doc` holds `'null'`), as on Postgres and
+/// MySQL. A value of no known type is left as it is: `unknown` already admits null.
+fn nullable_in_json(f: &JsonFact) -> bool {
+    match f.ty {
+        Ty::Unknown => false,
+        Ty::Json { schema: None } => true,
+        _ => !f.non_null,
+    }
 }
 
 /// The JSON Schema of a value inside a document SQLite built, as src/schema.ts spells SQLite's
@@ -1966,11 +2002,10 @@ impl Analyzer<'_> {
     fn shape_here(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         let name = self.builtin_name(n)?;
         let aggregate = n.agg || n.window;
-        // What a JSON function reads an argument as: a value that may be NULL is a null there,
-        // which `unknown` already admits.
+        // What a JSON function reads an argument as, and whether it may be a null there.
         let value = |x: &Node| {
             let f = self.json_fact(x, scope);
-            let nullable = !f.non_null && !admits_null(&f.ty);
+            let nullable = nullable_in_json(&f);
             (f.ty, nullable)
         };
         match name {
@@ -3633,6 +3668,51 @@ mod tests {
     }
 
     #[test]
+    fn a_key_declared_on_conflict_replace_is_read_from_sqlite_s_parse_however_the_ddl_spells_it() {
+        let replaces = |clause: &str| {
+            let ddl = vec![format!("create table p (id integer primary key, email text {clause})")];
+            let t = tree::analyze(&ddl, "insert into p (email) values (?1)", "insert into p (email) values (?)", &[], None).expect("the tree parses");
+            assert!(t.error.is_none(), "{clause}: {:?}", t.error);
+            t.tables["p"].replaces
+        };
+        for clause in ["unique on conflict replace", "unique on conflict\n  replace", "UNIQUE On Conflict RePlace", "unique on /* the old row goes */ conflict -- and is deleted\n replace"] {
+            assert!(replaces(clause), "{clause}");
+        }
+        // A NOT NULL's REPLACE writes the column's default, and deletes no row.
+        for clause in ["unique", "not null on conflict replace default '' unique", "unique on conflict ignore"] {
+            assert!(!replaces(clause), "{clause}");
+        }
+    }
+
+    #[test]
+    fn the_schema_replay_reaches_no_file_and_sets_no_pragma() {
+        // A row of sqlite_schema may hold more than one statement: SQLite loads the first, and the
+        // replay runs the text whole.
+        let dir = std::env::temp_dir().join(format!("reylo-sqlite-replay-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (attached, vacuumed) = (dir.join("attached.db"), dir.join("vacuumed.db"));
+        let ddl = vec![
+            format!("create table t (a integer not null); attach '{}' as x; create table x.y (z)", attached.display()),
+            format!("create table u (b); vacuum into '{}'", vacuumed.display()),
+            "create table v (c); pragma hard_heap_limit = 1; create table w (d)".to_string(),
+        ];
+        // What each row made before the refused statement is there.
+        let a = analyze_ddl("select a, b, c from t, u, v", &ddl, &Extras::default()).analysis;
+        assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+        assert!(!attached.exists() && !vacuumed.exists());
+        // A refused statement ends its row's replay, which every statement that fails on what it
+        // would have made says, the replay kept from the statement before included.
+        for _ in 0..2 {
+            let refused = analyze_ddl("select d from w", &ddl, &Extras::default()).analysis;
+            let messages: Vec<&str> = refused.diagnostics.iter().map(|d| d.message.as_str()).collect();
+            assert_eq!(messages.first(), Some(&"no such table: w"), "{messages:?}");
+            assert!(messages.contains(&"The schema replay skipped statement 1: not authorized"), "{messages:?}");
+            assert!(messages.contains(&"The schema replay skipped statement 3: not authorized"), "{messages:?}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_tree_describes_the_schema_tables_alone_and_no_with_query() {
         // A WITH query's table belongs to the statement, which frees it as the prepare ends,
         // before the serializer lists the tables: read then, a recursive one nested in another,
@@ -5168,18 +5248,28 @@ mod tests {
             "lag(json_array(id)) over (order by id)",
             "max(json_array(id), json_array(0))",
             "cast(json_array(id) as text)",
-            "json(doc)",
-            "json_extract(doc, '$.a')",
-            "doc -> '$.a'",
             "doc ->> '$.a'",
-            "json_set(doc, '$.a', 1)",
-            "json_quote(name)",
             "json_pretty(json_array(1))",
             "case when id > 1 then json_array(id) else 'x' end",
             "case when id > 1 then json_array(id) else json_object('a', 1) end",
         ] {
             let sql = format!("select json_object('a', {expr}) as o from (select *, json_array(id) as x from users) users, (select post from titled)");
             assert_eq!(json_typed(&sql), "o: { a: unknown }", "{expr}");
+        }
+        // Any JSON a function returns, which may be the document `null` itself, however NOT NULL
+        // the value it reads (`json(doc)` where `doc` holds `'null'`): a null there too.
+        for expr in ["json(doc)", "json_extract(doc, '$.a')", "doc -> '$.a'", "json_set(doc, '$.a', 1)", "json_quote(name)"] {
+            assert_eq!(json_typed(&format!("select json_object('a', {expr}) as o from users")), "o: { a: unknown | null }", "{expr}");
+        }
+        let not_null = vec!["create table js (id integer primary key, doc text not null check (json_valid(doc)), b blob not null check (json_valid(b, 8)))".to_string()];
+        for (expr, ty) in [
+            ("json_object('k', json(doc))", "{ k: unknown | null }"),
+            ("json_object('k', doc -> '$')", "{ k: unknown | null }"),
+            ("json_object('k', json_extract(doc, '$'))", "{ k: unknown | null }"),
+            ("json_object('k', json(b))", "{ k: unknown | null }"),
+            ("json_group_array(json(doc))", "(unknown | null)[]"),
+        ] {
+            assert_eq!(shown(&analyze_ddl(&format!("select {expr} as o from js"), &not_null, &Extras::default()).analysis), format!("o: {ty}"), "{expr}");
         }
         // A function the host registers over a built-in is its own, and may set the subtype.
         let host = Extras { total: vec![TotalFunction { name: "json_array".into(), arity: -1, returns: Affinity::Text }, TotalFunction { name: "html".into(), arity: 1, returns: Affinity::Text }], host: None };

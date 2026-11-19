@@ -1,0 +1,11 @@
+drop function r();
+drop function r2();
+alter type mood rename to mood__old;
+create type mood as enum ('a');
+alter table t alter column c type text using c::text;
+alter type pc alter attribute m type mood;
+alter table t alter column c type pc using c::text::pc;
+alter table t alter column m type mood using m::text::mood;
+drop type mood__old;
+create function r() returns bigint language sql stable begin atomic select count(m) from t; end;
+create function r2() returns bigint language sql stable begin atomic select count(c) from t; end;

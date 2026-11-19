@@ -1,0 +1,3 @@
+returning_merge_whole_rows.sql 180000
+returning_whole_rows_delete.sql 180000
+returning_whole_rows_upsert.sql 180000

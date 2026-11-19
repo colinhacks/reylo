@@ -1,3 +1,4 @@
+pipes_beside_derived.sql: many () -> { n: bigint?, label: varchar? }
 pipes_in_select.sql: many () -> { label: varchar? }
 pipes_join_strings.sql: at_most_one (a: varchar, b: varchar) -> { id: int }
 pipes_on_date_key.sql: at_most_one (a: varchar, b: varchar) -> { id: int }

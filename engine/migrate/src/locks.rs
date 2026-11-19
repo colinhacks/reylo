@@ -199,6 +199,19 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
             comments.push(statement.clone());
             continue;
         }
+        // Where the plan commits partway (an enum's label added before what uses it), a file ends.
+        if statement == crate::diff::COMMIT {
+            changed = true;
+            current.append(&mut comments);
+            if does_something(&current) {
+                current.extend(resets(&settings));
+                files.push(std::mem::take(&mut current));
+            } else {
+                current.retain(|s| s.starts_with("--"));
+            }
+            current.extend(settings.iter().cloned());
+            continue;
+        }
         let lower = statement.trim_start().to_ascii_lowercase();
         if lower.starts_with("set ") && !lower.starts_with("set local ") {
             let name = setting_name(statement);

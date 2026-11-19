@@ -8,6 +8,7 @@ import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
 import { MigrationsDiagram } from './migrations-diagram';
+import { SchemaQuery } from './schema-query';
 import { InferenceCard, InferenceCardPlay, InferenceCardRow, InferenceCardTypes, InferenceLanguage, InferenceLanguages, LanguagePanel, LanguagePanels, LanguageSwitch } from './inference-card';
 import { Pairs, Rules } from './value-pairs';
 
@@ -23,6 +24,8 @@ export function getMDXComponents(components?: MDXComponents) {
     HowItWorksDiagram,
     // The records and commands of Reylo Migrate, at the top of the Reylo Migrate page (components/migrations-diagram.tsx).
     MigrationsDiagram,
+    // A query's code block with its schema folded inside it (components/schema-query.tsx).
+    SchemaQuery,
     // The badges and "Copy agent prompt" under the main page's subheader (components/hero.tsx).
     HeroActions,
     // The looping editor recording under them (components/hero.tsx).
