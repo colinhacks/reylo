@@ -471,9 +471,11 @@ macro_rules! for_each_dialect {
                     if let Some(p) = super::P::new(super::Dialect::Sqlserver).await { let url = p.url.clone(); super::$scenario(p).await; super::forget(&url).await }
                 })
             }
-            #[tokio::test(flavor = "current_thread")]
-            async fn turso() {
-                if let Some(p) = super::P::turso().await { super::$scenario(p).await }
+            #[test]
+            fn turso() {
+                super::on_a_main_thread_stack(|| async {
+                    if let Some(p) = super::P::turso().await { super::$scenario(p).await }
+                })
             }
         }
     )*};
@@ -2823,9 +2825,11 @@ async fn create_drafts_one_migration_cached_or_not(mut p: P) {
 
 macro_rules! on {
     (Turso, $($scenario:ident),* $(,)?) => {$(
-        #[tokio::test(flavor = "current_thread")]
-        async fn $scenario() {
-            if let Some(p) = P::turso().await { adversarial::$scenario(p).await }
+        #[test]
+        fn $scenario() {
+            on_a_main_thread_stack(|| async {
+                if let Some(p) = P::turso().await { adversarial::$scenario(p).await }
+            })
         }
     )*};
     ($dialect:ident, $($scenario:ident),* $(,)?) => {$(
