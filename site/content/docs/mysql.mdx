@@ -417,7 +417,7 @@ Reylo infers how many rows a query returns from its keys, aggregates and `limit 
 
 - **A write returns nothing.** MySQL has no `returning`, so an `insert`, `update`, `delete` or `replace` is `void`, and so are a multi-table write and `select … into @variable`.
 - **`values row(…)`** of one row returns that row.
-- **A key matches exactly or not at all.** It doesn't count when MySQL compares it under a collation it picks (the connection's, beside a `cast(… as char)`), as doubles (beside a `float` or `double`, or a string beside a number), on a `TIMESTAMP`, which two instants can share when clocks go back, or under `WITH ROLLUP`.
+- **A key matches exactly or not at all.** It doesn't count when MySQL compares it under a collation it picks (the connection's, beside a `cast(… as char)`), as doubles (beside a `float` or `double`, a string beside a number, or arithmetic on a parameter beside a `BIGINT` or `DECIMAL`, since a driver may send the parameter as a double), on a `TIMESTAMP`, which two instants can share when clocks go back, or under `WITH ROLLUP`.
 - **An unnamed expression** among several columns is a type error where its text isn't an identifier, as with `count(*)`: MySQL names the column by that text, which a driver that writes values into the statement fills in. Name it with `as`.
 
 To read a new row's id, select `last_insert_id()` on the connection that ran the insert:

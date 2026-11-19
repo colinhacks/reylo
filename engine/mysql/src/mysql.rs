@@ -2366,8 +2366,16 @@ pub(crate) struct Keys {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Class {
     Text,
-    /// An integer or a decimal, which compare exactly.
+    /// An integer or a decimal, which compare exactly: as a column, a TINYINT to an INT or a YEAR,
+    /// each of whose values a double holds as well.
     Number,
+    /// A BIGINT, a DECIMAL or a BIT column: exact, but past 2^53 two of its values are one double.
+    Wide,
+    /// A number the statement computes from a placeholder (`? + 0`, `-?`, `abs(?)`), which is a
+    /// DOUBLE where the driver binds the placeholder as one, as mysql2's `execute()` binds every
+    /// number that is no integer of the placeholder's type. A key compares with it as a double,
+    /// which tells a narrow number's values apart and not a wide one's.
+    Computed,
     /// A FLOAT or a DOUBLE column, or a value read from a placeholder through one. An exact
     /// number compared with one compares as a double, where two integers past 2^53 are one value,
     /// so it pins no exact key. A constant of the kind is converted to the key's own type first,
@@ -2380,6 +2388,13 @@ pub(crate) enum Class {
     /// column by that time unless it looks the constant up in the index (it does not under
     /// IGNORE INDEX, or for an invisible index): no comparison is known to bound the rows.
     Instant,
+}
+
+impl Class {
+    /// Whether a column of this class is an exact number, which another compares with exactly.
+    pub(crate) fn exact(self) -> bool {
+        matches!(self, Class::Number | Class::Wide)
+    }
 }
 
 /// A catalog query of one table's name, asked of each of `tables` on its own, so that a later
@@ -2702,7 +2717,8 @@ fn same_name<'m, T>(map: &'m HashMap<String, T>, name: &str) -> Option<&'m T> {
 fn class_of(data_type: &str) -> Class {
     match data_type.to_ascii_lowercase().as_str() {
         "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext" | "enum" | "set" | "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" => Class::Text,
-        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "decimal" | "numeric" | "bit" | "year" => Class::Number,
+        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "year" => Class::Number,
+        "bigint" | "decimal" | "numeric" | "bit" => Class::Wide,
         "float" | "double" | "real" => Class::Real,
         "timestamp" => Class::Instant,
         _ => Class::Other,
@@ -2822,12 +2838,13 @@ pub(crate) fn one_before_limit(q: &Query) -> Result<(), String> {
 /// Whether a key column of this class compared with a value of this one compares the column as
 /// it is: a placeholder the caller binds with the column's own type, or a value of the column's
 /// class. A date or time column converts a constant to its own type. A FLOAT or DOUBLE key compared
-/// with an exact number converts the number, and its own values stay apart.
+/// with an exact number converts the number, and its own values stay apart, and so do a narrow
+/// number's beside a number computed from a placeholder, which may be a double.
 pub(crate) fn compares_as_is(key: Option<Class>, value: Option<Class>) -> bool {
     match (key, value) {
         (Some(Class::Instant), _) => false,
         (_, None) | (None | Some(Class::Other), _) => true,
-        (Some(Class::Real), Some(Class::Number)) => true,
+        (Some(Class::Real), Some(Class::Number | Class::Computed)) | (Some(Class::Number), Some(Class::Computed)) | (Some(Class::Wide), Some(Class::Number)) => true,
         (Some(k), Some(v)) => k == v,
     }
 }
@@ -2853,6 +2870,9 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
         "sha2", "hex", "to_base64", "from_base64", "date_format", "bin_to_uuid",
     ];
     const NUMBER: &[&str] = &["abs", "round", "floor", "ceil", "ceiling", "length", "char_length", "character_length"];
+    // Of those, the ones that answer a double for a double.
+    const FOLLOWS: &[&str] = &["abs", "round", "floor", "ceil", "ceiling"];
+    use ast::BinaryOperator::{Divide, Minus, Modulo, Multiply, MyIntegerDivide, Plus, StringConcat};
     Some(match e {
         Expr::Value(v) => match &v.value {
             ast::Value::Placeholder(_) => return None,
@@ -2861,15 +2881,21 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
             _ => Class::Other,
         },
         Expr::Nested(inner) => return value_class(inner),
-        // `-x`, `+x`, `NOT x` and `~x` are numbers.
+        // `-x`, `+x`, `NOT x` and `~x` are numbers, and the first two of a placeholder's value the
+        // value itself, a double where it is bound as one.
+        Expr::UnaryOp { op: ast::UnaryOperator::Minus | ast::UnaryOperator::Plus, expr } if bound_number(expr) => Class::Computed,
         Expr::UnaryOp { .. } => Class::Number,
-        Expr::BinaryOp { op: ast::BinaryOperator::Plus | ast::BinaryOperator::Minus | ast::BinaryOperator::Multiply | ast::BinaryOperator::Divide | ast::BinaryOperator::Modulo | ast::BinaryOperator::MyIntegerDivide, .. } => Class::Number,
+        // DIV answers a BIGINT whatever its operands.
+        Expr::BinaryOp { op: Plus | Minus | Multiply | Divide | Modulo, .. } if bound_number(e) => Class::Computed,
+        Expr::BinaryOp { op: Plus | Minus | Multiply | Divide | Modulo | MyIntegerDivide, .. } => Class::Number,
         // `a || b` where it joins strings (PIPES_AS_CONCAT; elsewhere the tree is not read).
-        Expr::BinaryOp { op: ast::BinaryOperator::StringConcat, .. } => Class::Text,
+        Expr::BinaryOp { op: StringConcat, .. } => Class::Text,
         Expr::Function(f) => {
             let name = builtin(f);
             if TEXT.contains(&name.as_str()) {
                 Class::Text
+            } else if FOLLOWS.contains(&name.as_str()) && bound_number(e) {
+                Class::Computed
             } else if NUMBER.contains(&name.as_str()) {
                 Class::Number
             } else {
@@ -2925,6 +2951,22 @@ fn approximate(e: &Expr) -> bool {
         // A numeric built-in returns a double for a double argument.
         Expr::Function(f) if ["abs", "round", "floor", "ceil", "ceiling", "truncate", "sign", "mod", "greatest", "least"].contains(&builtin(f).as_str()) => match &f.args {
             ast::FunctionArguments::List(list) => list.args.iter().any(|a| matches!(a, ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) if approximate(x))),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether an expression reads a placeholder other than through a cast to an exact number, which
+/// makes any value an exact number: a value a driver may bind as a DOUBLE.
+fn bound_number(e: &Expr) -> bool {
+    match e {
+        Expr::Value(v) => matches!(v.value, ast::Value::Placeholder(_)),
+        Expr::Cast { data_type, .. } if ["signed", "unsigned", "int", "bigint", "decimal", "numeric"].iter().any(|t| data_type.to_string().to_ascii_lowercase().starts_with(t)) => false,
+        Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } | Expr::Cast { expr: inner, .. } => bound_number(inner),
+        Expr::BinaryOp { left, right, .. } => bound_number(left) || bound_number(right),
+        Expr::Function(f) => match &f.args {
+            ast::FunctionArguments::List(list) => list.args.iter().any(|a| matches!(a, ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) if bound_number(x))),
             _ => false,
         },
         _ => false,
@@ -3150,6 +3192,15 @@ mod tests {
         assert_eq!(card("select count(*) as n from users limit 1, 5"), "at_most_one");
         assert_eq!(card("select id from users union all select user_id from posts"), "many");
         assert_eq!(card("select id from users where id = ? + 1"), "at_most_one");
+        // A number computed from a placeholder may be a double, which tells an INT's values apart
+        // and not a BIGINT's; an exact one pins either.
+        assert_eq!(card("select id from users where id = abs(-?)"), "at_most_one");
+        assert_eq!(card("select id from posts where id = ? + 0"), "many");
+        assert_eq!(card("select id from posts where id = -?"), "many");
+        assert_eq!(card("select id from posts where id = round(?)"), "many");
+        assert_eq!(card("select id from posts where id = ? div 1"), "at_most_one");
+        assert_eq!(card("select id from posts where id = cast(? as signed) + 1"), "at_most_one");
+        assert_eq!(card("select id from posts where id = ?"), "at_most_one");
         assert_eq!(card("select id from users u join posts p on p.user_id = u.id where u.id = p.user_id"), "many");
         // `RAND()` and `UUID()` are evaluated for each row, and a stored function may be too.
         assert_eq!(card("select id from users where id = floor(rand() * 3)"), "many");

@@ -18,3 +18,7 @@ create view user_names as select id, name from users;
 -- the two the wider character set's wins: utf8mb4 over a utf8mb3 or latin1 key, which then compares
 -- under the connection's collation, not its own.
 create table bins (id int primary key, mb3 varchar(10) character set utf8mb3 collate utf8mb3_bin not null unique, l1 varchar(10) character set latin1 collate latin1_bin unique);
+-- A driver that binds sends a number as a DOUBLE, and arithmetic over one is a DOUBLE, which a
+-- BIGINT or a DECIMAL key compares with as a double wherever the server does not look it up in the
+-- index: two values past 2^53 are one double. An INT's values are each a double of their own.
+create table wide (id int primary key, big bigint not null unique, exact decimal(30,10) unique);
