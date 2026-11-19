@@ -1210,13 +1210,27 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         lines.push(format!("view {} as {} check={} security={}", r.text("n"), strip(r.text("def")), r.text("opt"), r.text("sec")));
     }
 
+    // Each routine's parameters are read in a query of their own and joined here, not in a
+    // subquery correlated with the routines: Vitess, which PlanetScale's MySQL runs behind, plans
+    // that subquery apart from its outer query and refuses it ("query arguments missing for
+    // r_routine_schema").
+    let mut params: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in db
+        .rows(
+            "select specific_name as routine, parameter_mode as pmode, parameter_name as pname, dtd_identifier as ptype
+            from information_schema.parameters where specific_schema = database() and ordinal_position > 0 order by specific_name, ordinal_position",
+        )
+        .await?
+    {
+        // As `concat_ws(' ', …)` joins them: a null part is left out.
+        let text = [p.get("pmode"), p.get("pname"), p.get("ptype")].into_iter().flatten().collect::<Vec<_>>().join(" ");
+        params.entry(p.text("routine").to_string()).or_default().push(text);
+    }
     for r in db
         .rows(
-            "select r.routine_name as n, r.routine_type as type, r.dtd_identifier as ret, r.routine_definition as def, r.is_deterministic as det,
-              r.sql_data_access as access, r.security_type as sec,
-              (select group_concat(concat_ws(' ', p.parameter_mode, p.parameter_name, p.dtd_identifier) order by p.ordinal_position separator ', ')
-                 from information_schema.parameters p where p.specific_schema = r.routine_schema and p.specific_name = r.specific_name and p.ordinal_position > 0) as params
-            from information_schema.routines r where r.routine_schema = database()",
+            "select routine_name as n, specific_name as routine, routine_type as type, dtd_identifier as ret, routine_definition as def, is_deterministic as det,
+              sql_data_access as access, security_type as sec
+            from information_schema.routines where routine_schema = database()",
         )
         .await?
     {
@@ -1224,7 +1238,7 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
             "{} {}({}){} {} {} security={} as {}",
             r.text("type").to_lowercase(),
             r.text("n"),
-            r.text("params"),
+            params.get(r.text("routine")).map(|p| p.join(", ")).unwrap_or_default(),
             r.get("ret").map(|t| format!(" returns {t}")).unwrap_or_default(),
             if r.text("det") == "YES" { "deterministic" } else { "not deterministic" },
             r.text("access"),
