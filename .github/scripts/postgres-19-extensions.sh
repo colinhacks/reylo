@@ -19,10 +19,11 @@ clone() { # url dir commit
   git -C "$2" checkout -q "$3"
 }
 
-# pgvector, for the pgvector_types case and the spec's example of a vector column
+# pgvector, for the pgvector_types case and the spec's example of a vector column. Its default `-march=native`
+# would tie the cached build to the runner's CPU, and a runner without its instructions crashes the server.
 curl -fsSL https://github.com/pgvector/pgvector/archive/refs/tags/v0.8.7.tar.gz | tar xz -C "$work"
-make -C "$work/pgvector-0.8.7" PG_CONFIG="$pg_config" > /dev/null
-make -C "$work/pgvector-0.8.7" PG_CONFIG="$pg_config" DESTDIR="$stage" install > /dev/null
+make -C "$work/pgvector-0.8.7" PG_CONFIG="$pg_config" OPTFLAGS="" > /dev/null
+make -C "$work/pgvector-0.8.7" PG_CONFIG="$pg_config" OPTFLAGS="" DESTDIR="$stage" install > /dev/null
 
 # PostGIS 3.7.0, the first release that builds on Postgres 19, with the extension alone: no raster or topology
 curl -fsSL https://download.osgeo.org/postgis/source/postgis-3.7.0.tar.gz | tar xz -C "$work"
