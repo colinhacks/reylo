@@ -1137,6 +1137,14 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         }
                     }
                 }
+                // A type's change after the drops of its own attributes, which it is made without.
+                if from.objects.get(id.as_str()).is_some_and(|t| t.kind == Some(Kind::Type)) {
+                    for a in from.objects.values().filter(|a| a.owner.as_deref() == Some(id.as_str()) && a.kind == Some(Kind::Column)) {
+                        if let Some(j) = find(Op::Drop(a.id.clone())) {
+                            after[k].insert(j);
+                        }
+                    }
+                }
                 // A change that converts columns after the drops of what is on them.
                 for c in converted.get(id.as_str()).into_iter().flatten() {
                     for dependent in dependents.get(c.as_str()).into_iter().flatten() {

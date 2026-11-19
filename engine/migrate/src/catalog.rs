@@ -1342,12 +1342,17 @@ fn one_line(sql: &str) -> String {
 /// alike in any case, and MySQL keeps the case each was written in.
 fn fold_names(expression: &str) -> String {
     let mut out = String::with_capacity(expression.len());
-    let mut quoted = false;
+    // Inside a name, inside a string (`'…'`, where a backtick is text), and after a backslash in one.
+    let (mut name, mut string, mut escaped) = (false, false, false);
     for ch in expression.chars() {
-        if ch == '`' {
-            quoted = !quoted;
+        match ch {
+            _ if escaped => escaped = false,
+            '\\' if string => escaped = true,
+            '\'' if !name => string = !string,
+            '`' if !string => name = !name,
+            _ => {}
         }
-        if quoted {
+        if name {
             out.extend(ch.to_lowercase());
         } else {
             out.push(ch);
@@ -1358,6 +1363,13 @@ fn fold_names(expression: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn folds_quoted_names_and_leaves_strings() {
+        assert_eq!(fold_names("(`C` + 1)"), "(`c` + 1)");
+        assert_ne!(fold_names("json_extract(`j`, _utf8mb4'$.\"`A`\"')"), fold_names("json_extract(`j`, _utf8mb4'$.\"`a`\"')"));
+        assert_eq!(fold_names("concat('it\\'s `X`', `Y`)"), "concat('it\\'s `X`', `y`)");
+    }
     use super::*;
 
     #[test]

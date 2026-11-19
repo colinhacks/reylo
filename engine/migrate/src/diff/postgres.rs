@@ -2654,7 +2654,7 @@ fn column_def(c: &Row, attribute: bool) -> String {
 }
 
 /// A column's definition read back into its parts.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Column {
     ty: String,
     collation: Option<String>,
@@ -2973,8 +2973,9 @@ fn reorder_attributes(from: &Object, to: &Object) -> Option<(Vec<String>, Vec<St
     let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
     let aside = if schema.is_empty() { aside } else { format!("{schema}.{aside}") };
     let mut out = Vec::new();
+    // The copy is of the type as it is when this runs, after the plan drops what the target lacks.
     if !moved_columns.is_empty() {
-        out.push(format!("create type {aside} as ({})", a.iter().map(|(n, d)| format!("{n} {d}")).collect::<Vec<_>>().join(", ")));
+        out.push(format!("create type {aside} as ({})", a.iter().filter(|(n, _)| bn.contains(n)).map(|(n, d)| format!("{n} {d}")).collect::<Vec<_>>().join(", ")));
     }
     for m in &moved_columns {
         out.extend(m.defaultless());
@@ -3246,6 +3247,13 @@ impl Alterer for PostgresAlterer {
             // A column a parent has too changes type with the parent's: what is its own changes after.
             Kind::Column if to.extra.iter().any(|l| l == "inherited") => {
                 let (a, b) = (parse_column(&from.def), parse_column(&to.def));
+                // What the column declares of its own beside (a generated expression, an identity)
+                // changes as any column's, at the type its parent gives it.
+                if a.generated != b.generated || a.identity != b.identity {
+                    let own = Column { ty: a.ty.clone(), ..b.clone() };
+                    let plain = Object { def: render_column(&own), extra: to.extra.iter().filter(|l| *l != "inherited").cloned().collect(), ..to.clone() };
+                    return self.alter(from, &plain);
+                }
                 let at = format!("alter table {table} alter column {name}");
                 let mut out = Vec::new();
                 match (&a.default, &b.default) {

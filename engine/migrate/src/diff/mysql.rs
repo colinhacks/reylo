@@ -855,7 +855,7 @@ fn parse_table(ctx: &Ctx, text: &str, table: &str, infos: &BTreeMap<(String, Str
     // MySQL keeps an expression as it was written, and a column's name in another case is the same
     // column: each is written as the table names it.
     for (_, _, def) in body.indexes.iter_mut().filter(|(_, _, d)| d.contains("((")) {
-        *def = columns_as_named(def, &body.columns);
+        *def = columns_as_named(def, &body.columns, &ctx.reserved);
     }
     // In name order, the primary key first, so that two tables of the same indexes have one body
     // whatever order they were made in.
@@ -866,7 +866,7 @@ fn parse_table(ctx: &Ctx, text: &str, table: &str, infos: &BTreeMap<(String, Str
     let mut k = 0;
     while k < tokens.len() {
         if tokens[k].upper() == "PARTITION" && tokens.get(k + 1).is_some_and(|t| t.upper() == "BY") {
-            body.partition = columns_as_named(&ctx.tidy(&close[tokens[k].start..], TABLE_TEXT), &body.columns);
+            body.partition = columns_as_named(&ctx.tidy(&close[tokens[k].start..], TABLE_TEXT), &body.columns, &ctx.reserved);
             break;
         }
         // `KEY=VALUE`, where the key may be two words (`DEFAULT CHARSET`) and the value a list.
@@ -1255,8 +1255,9 @@ impl MysqlAlterer {
 }
 
 /// `text` with each name after its first parenthesis that names one of `columns` in another case
-/// written as the column is named.
-fn columns_as_named(text: &str, columns: &[Column]) -> String {
+/// written as the column is named. A bare word MySQL reserves is a keyword (`as`), never a column,
+/// which a statement would quote.
+fn columns_as_named(text: &str, columns: &[Column], reserved: &BTreeSet<String>) -> String {
     let Some(open) = text.find('(') else { return text.to_string() };
     let mut out = text[..open].to_string();
     let mut at = open;
@@ -1264,7 +1265,7 @@ fn columns_as_named(text: &str, columns: &[Column]) -> String {
         let (start, end) = (open + t.start, open + t.end);
         out.push_str(&text[at..start]);
         let bare = match t.kind {
-            TokenKind::Word => Some(t.text.clone()),
+            TokenKind::Word if !reserved.contains(&t.text.to_ascii_uppercase()) => Some(t.text.clone()),
             TokenKind::Quoted => Some(t.text.trim_matches('`').replace("``", "`")),
             _ => None,
         };
