@@ -119,7 +119,7 @@ function released(file: string): { tag: string; text: string } | undefined {
 }
 const release = released(publishedFile);
 if (release && lf(release.text) !== lf(outputs[1]![1])) {
-  console.error(`${path.relative(root, publishedFile)} is published by ${release.tag} and stays as it is there, so the schema cannot change under version ${version}: give spec/typedefs.schema.json a new version (its $id, and SCHEMA in engine/core/src/types.rs), as rule 8 of spec/README.md says.`);
+  console.error(`${path.relative(root, publishedFile).split(path.sep).join("/")} is published by ${release.tag} and stays as it is there, so the schema cannot change under version ${version}: give spec/typedefs.schema.json a new version (its $id, and SCHEMA in engine/core/src/types.rs), as rule 8 of spec/README.md says.`);
   process.exit(1);
 }
 const stale = outputs.filter(([file, text]) => !existsSync(file) || lf(readFileSync(file, "utf8")) !== lf(text));
