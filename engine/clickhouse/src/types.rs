@@ -314,12 +314,14 @@ impl Named {
 
 /// An integer type's width and whether it is unsigned, by its name.
 /// Whether ClickHouse, writing a value of the type `from` into a column of the type `to`, may
-/// change the value and raise no error: a number past the column's range wraps into it, as one
-/// read from a string does, a decimal's or an instant's digits past the column's are dropped, a
-/// float is rounded to a narrower one or cut to a whole number, a whole number or a decimal is
-/// rounded to the nearest float where it has more digits than a float keeps, a time is dropped
-/// from a date, and a NULL becomes the default of a column that takes none. A value the column
-/// cannot read at all is the server's error, and none of these.
+/// change the value and raise no error. A whole number outside the column's range wraps into it,
+/// as one read from a string does, or is cut to the column's nearest: a `UInt64` into a `UInt8`,
+/// a number into a `Bool`, a count of days or seconds into a `Date` or a `DateTime` and back. A
+/// decimal's or an instant's digits past the column's are dropped, a fraction is cut from a whole
+/// number, a number of more digits than a float keeps is rounded to the nearest float, a time is
+/// dropped from a date, and a NULL becomes the default of a column that takes none. An array's
+/// elements, a tuple's and a map's keys and values are each written the same way. A value the
+/// column cannot read at all is the server's error, and none of these.
 pub fn narrows(from: &Named, to: &Named) -> bool {
     let nullable = |t: &Named| match (t.name.as_str(), t.args.as_slice()) {
         ("Nullable", _) => true,
@@ -330,12 +332,23 @@ pub fn narrows(from: &Named, to: &Named) -> bool {
         return true;
     }
     let (from, to) = (from.bare(), to.bare());
-    // A decimal's digits after the point, and an instant's after the second.
-    let scale = |t: &Named| match t.name.as_str() {
-        "Decimal" => Some(t.number(1).unwrap_or(0)),
-        "Decimal32" | "Decimal64" | "Decimal128" | "Decimal256" => Some(t.number(0).unwrap_or(0)),
+    // The types a type holds values of, each in its place.
+    fn parts(t: &Named) -> Option<Vec<&Named>> {
+        matches!(t.name.as_str(), "Array" | "Tuple" | "Map").then(|| t.args.iter().filter_map(|a| if let Arg::Type(t) | Arg::Member(_, t) = a { Some(t) } else { None }).collect())
+    }
+    if let (Some(held), Some(into)) = (parts(from), parts(to)) {
+        return from.name == to.name && held.len() == into.len() && held.iter().zip(&into).any(|(held, into)| narrows(held, into));
+    }
+    // A decimal's digits, all of them and those after the point, and an instant's after the second.
+    let decimal = |t: &Named| match t.name.as_str() {
+        "Decimal" => Some((t.number(0).unwrap_or(10), t.number(1).unwrap_or(0))),
+        "Decimal32" => Some((9, t.number(0).unwrap_or(0))),
+        "Decimal64" => Some((18, t.number(0).unwrap_or(0))),
+        "Decimal128" => Some((38, t.number(0).unwrap_or(0))),
+        "Decimal256" => Some((76, t.number(0).unwrap_or(0))),
         _ => None,
     };
+    let scale = |t: &Named| decimal(t).map(|(_, scale)| scale);
     let ticks = |t: &Named| match t.name.as_str() {
         "DateTime64" => Some(t.number(0).unwrap_or(3)),
         "DateTime" => Some(0),
@@ -343,33 +356,61 @@ pub fn narrows(from: &Named, to: &Named) -> bool {
     };
     let float = |t: &Named| matches!(t.name.as_str(), "Float32" | "Float64" | "BFloat16");
     let text = |t: &Named| matches!(t.name.as_str(), "String" | "FixedString");
-    match (integer(&from.name), integer(&to.name)) {
-        // Every number of the one is a number of the other: as wide with the same sign, or wider and signed.
-        (Some((bits, unsigned)), Some((into, into_unsigned))) => return !(if unsigned == into_unsigned { into >= bits } else { unsigned && into > bits }),
-        (None, Some(_)) => return float(from) || text(from) || scale(from).is_some_and(|digits| digits > 0),
+    let dated = |t: &Named| matches!(t.name.as_str(), "Date" | "Date32" | "DateTime" | "DateTime64");
+    // A date into a date, and a time into a time or a date.
+    if dated(from) && dated(to) {
+        return match (ticks(from), ticks(to)) {
+            (Some(digits), Some(into)) => into < digits || (from.name == "DateTime64" && to.name == "DateTime"),
+            (Some(_), None) => true,
+            _ => from.name == "Date32" && to.name == "Date",
+        };
+    }
+    // The whole numbers a type holds, its least and its most: an integer's, a Bool's 0 and 1, a
+    // date's count of days, a time's of seconds, and a decimal's with no digit after the point.
+    let whole = |t: &Named| -> Option<(f64, f64)> {
+        if let Some((bits, unsigned)) = integer(&t.name) {
+            let top = 2f64.powi(bits as i32 - i32::from(!unsigned));
+            return Some((if unsigned { 0.0 } else { -top }, top - 1.0));
+        }
+        match (t.name.as_str(), decimal(t)) {
+            ("Bool", _) => Some((0.0, 1.0)),
+            ("Date", _) => Some((0.0, 65535.0)),
+            ("Date32", _) => Some((-25567.0, 120529.0)),
+            ("DateTime", _) => Some((0.0, 4294967295.0)),
+            (_, Some((digits, 0))) => {
+                let top = 10f64.powi(digits as i32) - 1.0;
+                Some((-top, top))
+            }
+            _ => None,
+        }
+    };
+    let fraction = scale(from).is_some_and(|digits| digits > 0);
+    match (whole(from), whole(to)) {
+        // Every number of the one is a number of the other.
+        (Some((least, most)), Some((into_least, into_most))) => return least < into_least || most > into_most,
+        // A fraction is cut off.
+        (None, Some(_)) if float(from) || fraction => return true,
+        // A number read from a string wraps as any other; a Bool's and a date's text is read as it is, or refused.
+        (None, Some(_)) => return text(from) && integer(&to.name).is_some(),
         _ => {}
     }
     if let Some(into) = scale(to) {
         return float(from) || text(from) || scale(from).is_some_and(|digits| digits > into);
     }
-    let width = |t: &Named| ["BFloat16", "Float32", "Float64"].iter().position(|name| *name == t.name);
-    if float(from) && float(to) {
-        return width(to) < width(from);
-    }
     if float(to) {
-        // The bits of a whole number a float holds exactly: 8, 24 and 53 of them.
-        let exact = [8, 24, 53][width(to).unwrap_or(0)];
-        return match integer(&from.name) {
-            Some((bits, unsigned)) => bits - u32::from(!unsigned) > exact,
+        let width = |t: &Named| ["BFloat16", "Float32", "Float64"].iter().position(|name| *name == t.name);
+        if float(from) {
+            return width(to) < width(from);
+        }
+        // The whole numbers a float holds exactly: to 2^8, 2^24 and 2^53.
+        let exact = 2f64.powi([8, 24, 53][width(to).unwrap_or(0)]);
+        return match whole(from) {
+            Some((least, most)) => most > exact || -least > exact,
             // A decimal fraction is no binary one.
-            None => scale(from).is_some(),
+            None => fraction,
         };
     }
-    match (ticks(from), ticks(to)) {
-        (Some(digits), Some(into)) => into < digits || (from.name == "DateTime64" && to.name == "DateTime"),
-        (Some(_), None) => matches!(to.name.as_str(), "Date" | "Date32"),
-        _ => from.name == "Date32" && to.name == "Date",
-    }
+    false
 }
 
 fn integer(name: &str) -> Option<(u32, bool)> {
@@ -544,13 +585,24 @@ mod tests {
             assert!(narrows(from, to), "{from} into {to}");
         }
         // A whole number of more bits than a float keeps is rounded to the nearest one, and so is a decimal.
-        for (from, to) in [("UInt32", "Float32"), ("Int32", "Float32"), ("UInt64", "Float64"), ("Int64", "Float64"), ("UInt16", "BFloat16"), ("Decimal(9, 2)", "Float64"), ("Nullable(Int64)", "Nullable(Float64)")] {
+        for (from, to) in [("UInt32", "Float32"), ("Int32", "Float32"), ("UInt64", "Float64"), ("Int64", "Float64"), ("UInt16", "BFloat16"), ("Decimal(9, 2)", "Float64"), ("Nullable(Int64)", "Nullable(Float64)"), ("Decimal(9, 0)", "Float32"), ("Decimal(18, 0)", "Float64"), ("DateTime", "Float32")] {
+            assert!(narrows(from, to), "{from} into {to}");
+        }
+        // A number into a Bool is true or false, and a count of days or seconds outside a date's or a time's is cut to it, as a date is into a narrower number.
+        for (from, to) in [("UInt8", "Bool"), ("Float64", "Bool"), ("Int32", "Date"), ("Int16", "Date32"), ("UInt64", "DateTime"), ("Int64", "DateTime"), ("Date", "UInt8"), ("DateTime", "UInt16"), ("Date32", "UInt32"), ("Decimal(18, 0)", "UInt8")] {
             assert!(narrows(from, to), "{from} into {to}");
         }
         // A NULL becomes the default of a column that takes none.
         assert!(narrows("Nullable(UInt8)", "UInt8") && narrows("LowCardinality(Nullable(String))", "String"));
+        // What an array, a tuple and a map hold is written the same way, each in its place.
+        for (from, to) in [("Array(UInt64)", "Array(UInt8)"), ("Tuple(UInt64, String)", "Tuple(UInt8, String)"), ("Tuple(n UInt8, at DateTime64(6))", "Tuple(n UInt8, at DateTime64(3))"), ("Map(String, UInt64)", "Map(String, UInt8)"), ("Array(Nullable(UInt8))", "Array(UInt8)"), ("Array(Array(Float64))", "Array(Array(Float32))")] {
+            assert!(narrows(from, to), "{from} into {to}");
+        }
+        for (from, to) in [("Array(UInt8)", "Array(UInt64)"), ("Tuple(a UInt8, b String)", "Tuple(a UInt16, b String)"), ("Map(String, UInt8)", "Map(LowCardinality(String), Nullable(UInt8))"), ("Array(String)", "Array(String)")] {
+            assert!(!narrows(from, to), "{from} into {to}");
+        }
         // The same type, a wider one, and one the server reads or refuses aloud.
-        for (from, to) in [("UInt8", "UInt8"), ("UInt8", "UInt64"), ("UInt8", "Int16"), ("UInt8", "Nullable(UInt8)"), ("String", "LowCardinality(String)"), ("Decimal(9, 2)", "Decimal(18, 4)"), ("Float32", "Float64"), ("BFloat16", "Float32"), ("DateTime", "DateTime64(3)"), ("Date", "Date32"), ("String", "Date"), ("String", "FixedString(2)"), ("UInt64", "Decimal(9, 2)"), ("UInt8", "String"), ("Decimal(9, 0)", "Int64"), ("UInt8", "Float32"), ("UInt16", "Float32"), ("Int16", "Float32"), ("UInt32", "Float64"), ("Int32", "Float64"), ("UInt8", "BFloat16"), ("String", "Float64")] {
+        for (from, to) in [("UInt8", "UInt8"), ("UInt8", "UInt64"), ("UInt8", "Int16"), ("UInt8", "Nullable(UInt8)"), ("String", "LowCardinality(String)"), ("Decimal(9, 2)", "Decimal(18, 4)"), ("Float32", "Float64"), ("BFloat16", "Float32"), ("DateTime", "DateTime64(3)"), ("Date", "Date32"), ("String", "Date"), ("String", "FixedString(2)"), ("UInt64", "Decimal(9, 2)"), ("UInt8", "String"), ("Decimal(9, 0)", "Int64"), ("UInt8", "Float32"), ("UInt16", "Float32"), ("Int16", "Float32"), ("UInt32", "Float64"), ("Int32", "Float64"), ("UInt8", "BFloat16"), ("String", "Float64"), ("Decimal(9, 0)", "Float64"), ("Decimal32(0)", "Float64"), ("Decimal(15, 0)", "Float64"), ("Decimal(9, 0)", "Int32"), ("Date", "Float32"), ("Bool", "UInt8"), ("String", "Bool"), ("UInt16", "Date"), ("UInt32", "DateTime"), ("Date", "UInt16"), ("DateTime", "Int64"), ("UInt16", "Date32"), ("Date", "DateTime")] {
             assert!(!narrows(from, to), "{from} into {to}");
         }
     }

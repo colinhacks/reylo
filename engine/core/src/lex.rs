@@ -171,7 +171,8 @@ fn whole_operand(sql: &str, opaque: &[(usize, usize)], from: usize, to: usize) -
         match c {
             _ if c.is_ascii_whitespace() => {}
             _ if is_name_char(c) => {
-                let end = name_end(b, at);
+                // A name or a number, whole: a `$` is a character of a ClickHouse name past its first.
+                let end = (at..b.len()).find(|&i| !(is_name_char(b[i]) || b[i] == b'$')).unwrap_or(b.len());
                 ended = !BEFORE_AN_OPERAND.iter().any(|word| sql[at..end].eq_ignore_ascii_case(word));
                 at = end;
                 continue;
@@ -1000,6 +1001,8 @@ mod tests {
         // A parameter inside the operand is one: in a call, after an operator or a word that takes an operand, and in brackets.
         assert_eq!(l("SELECT 1 ? abs(:n::Int32) : 0 AS v, c ? 1 + :m::Int32 : 0, c ? a AND :o::UInt8 : 0, c ? [:p::UInt8, 2] : [], (c ? 1 : 2) + :q::UInt8").params, ["n", "m", "o", "p", "q"]);
         assert_eq!(l("SELECT c ? {r:UInt8} :s::UInt8, c ? {t:Decimal(9, 2)} + 1 : 0").params, ["r", "t"]);
+        // A name with a `$` in it is one name, whatever word it ends with.
+        assert!(l("SELECT 1 ? a$and :b::UInt8, 1 ? a$b$ :c::UInt8 FROM (SELECT 1 AS a$and, 2 AS b, 3 AS a$b$, 4 AS c)").params.is_empty());
         // A `$` is a character of a name, a parameter's too, and opens a heredoc only where none stands before it.
         assert_eq!(l("SELECT 1 AS a$b$, {p:UInt8} AS q, 2 AS c$b$, {x$y:UInt8}").params, ["p", "x$y"]);
         // Its text: a backslash escapes in a string and a quoted name, `#` comments before a space

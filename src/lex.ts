@@ -171,7 +171,8 @@ function wholeOperand(sql: string, from: number, to: number): boolean | undefine
       if (tag) { const end = sql.indexOf(tag[0], i + tag[0].length); i = end === -1 ? to : end + tag[0].length; ended = true; continue; }
     }
     if (/[A-Za-z0-9_]/.test(ch)) {
-      const word = /^[A-Za-z0-9_]+/.exec(sql.slice(i))![0];
+      // A name or a number, whole: a `$` is a character of a ClickHouse name past its first.
+      const word = /^[A-Za-z0-9_$]+/.exec(sql.slice(i))![0];
       ended = !BEFORE_AN_OPERAND.has(word.toLowerCase());
       i += word.length;
       continue;
