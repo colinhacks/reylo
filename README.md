@@ -104,7 +104,7 @@ Point Reylo at your dev database with `DATABASE_URL`, in your environment or in 
 
 ```sh
 # .env
-DATABASE_URL=postgres://localhost:5432/app  # or mysql://…, or file:./app.db for SQLite
+DATABASE_URL=postgres://localhost:5432/app  # or mysql://… or sqlite:./path/to/your.db, etc
 ```
 
 To make `.sql` imports work at run time too, load Reylo where your code runs. On Node:

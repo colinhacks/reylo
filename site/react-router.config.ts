@@ -10,10 +10,12 @@ import { builtPage } from './lib/rust-content.ts';
 const pages = readdirSync('content/docs')
   .filter(builtPage)
   .map((name) => (name === 'index.mdx' ? '/' : `/${name.slice(0, -'.mdx'.length)}`));
+// Reylo Migrate's docs are migrate.mdx, at /migrate/docs, and /migrate is its landing page.
+const routes = [...pages.map((page) => (page === '/migrate' ? '/migrate/docs' : page)), '/migrate'];
 
 export default {
   ssr: false,
-  prerender: [...pages, ...pages.map((page) => `${page === '/' ? '/index' : page}.md`), '/404', '/play', '/play/og.png', '/play/api.md', '/llms.txt', '/robots.txt', '/sitemap.xml', '/manifest.webmanifest', '/opengraph-image.png'],
+  prerender: [...routes, ...pages.map((page) => `${page === '/' ? '/index' : page}.md`), '/404', '/play', '/play/og.png', '/play/api.md', '/llms.txt', '/robots.txt', '/sitemap.xml', '/manifest.webmanifest', '/opengraph-image.png'],
   buildEnd() {
     copyFileSync('build/client/404/index.html', 'build/client/404.html');
   },
