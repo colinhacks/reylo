@@ -70,7 +70,7 @@
 //! a second time with SQL_BUFFER_RESULT, which puts the whole result in a temporary table and
 //! changes nothing else; a problem found there says so.
 
-use reylo_engine_core::types::{BytesType, DateTimeType, DecimalType, DurationType, InstantType, JsonType, Kind, Size, SizeUnit, TextType, Type};
+use reylo_engine_core::types::{ArrayType, BytesType, DateTimeType, DecimalType, DurationType, InstantType, JsonType, Kind, Size, SizeUnit, TextType, Type};
 use crate::seed::{beyond, decimal_contradiction, fact_contradiction, length_contradiction, literal_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Statement, Value as My};
@@ -1272,8 +1272,8 @@ fn type_contradiction(ty: &Value, code: u8, charset: u16) -> Option<String> {
 /// Why a value a run returned contradicts the engine's type for its column, if it does: a value
 /// none of the labels or the literals its type lists, a number or a day outside its type's bounds, text or
 /// bytes of another length than the size says (text counted in the unit the size names, in the
-/// session's UTF-8), a DECIMAL of more digits than its precision or scale, or a time finer than its
-/// tick. The text protocol sends each
+/// session's UTF-8), a BIT of n bits in other than its (n + 7) / 8 bytes, a DECIMAL of more digits
+/// than its precision or scale, or a time finer than its tick. The text protocol sends each
 /// value as its text, and the binary one a number as itself, a DATETIME, a TIMESTAMP or a TIME as
 /// its parts and anything else as bytes.
 fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
@@ -1306,6 +1306,7 @@ fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
             length_contradiction(size, n, unit)
         }
         (Kind::Bytes(BytesType { size: Some(size), .. }), My::Bytes(bytes)) => length_contradiction(size, bytes.len() as u64, "bytes"),
+        (Kind::Array(ArrayType { size: Some(Size { exact: Some(n), .. }), .. }), My::Bytes(bytes)) if ty.label.as_deref() == Some("bit") => (bytes.len() as u64 != n.div_ceil(8)).then(|| format!("typed a BIT of {n} bits holds {} bytes", bytes.len())),
         (Kind::Decimal(decimal), My::Bytes(_)) => decimal_contradiction(decimal, text()?),
         (Kind::DateTime(DateTimeType { tick, .. }) | Kind::Instant(InstantType { tick, .. }), My::Date(.., micros)) => micros_contradiction(tick, *micros),
         (Kind::Duration(DurationType { tick: Some(tick), .. }), My::Time(.., micros)) => micros_contradiction(tick, *micros),
@@ -1377,7 +1378,8 @@ fn fraction_contradiction(tick: &str, text: &str) -> Option<String> {
 }
 
 /// Why a scalar inside a document contradicts its type's narrowing, if it does: a string longer
-/// than its text's size, bytes (`"base64:type15:…"`) of another length, a time finer than its tick,
+/// than its text's size, bytes (`"base64:type15:…"`) of another length, a BIT of n bits in other
+/// than its (n + 7) / 8 bytes (`"base64:type16:…"`), a time finer than its tick,
 /// or a DECIMAL of more digits than its type's, read where the number survives a double (a
 /// precision of at most 15 digits).
 fn scalar_contradiction(ty: &Type, json: &Value) -> Option<String> {
@@ -1386,15 +1388,21 @@ fn scalar_contradiction(ty: &Type, json: &Value) -> Option<String> {
             let (n, unit) = text_length(size, text);
             length_contradiction(size, n, unit)
         }
-        (Kind::Bytes(BytesType { size: Some(size), .. }), Value::String(text)) => {
-            let encoded: String = text.strip_prefix("base64:")?.split_once(':')?.1.chars().filter(|c| !c.is_whitespace()).collect();
-            let n = encoded.len() / 4 * 3 - encoded.chars().rev().take_while(|&c| c == '=').count();
-            length_contradiction(size, n as u64, "bytes")
+        (Kind::Bytes(BytesType { size: Some(size), .. }), Value::String(text)) => length_contradiction(size, base64_length(text)?, "bytes"),
+        (Kind::Array(ArrayType { size: Some(Size { exact: Some(n), .. }), .. }), Value::String(text)) if ty.label.as_deref() == Some("bit") => {
+            let len = base64_length(text)?;
+            (len != n.div_ceil(8)).then(|| format!("typed a BIT of {n} bits holds {len} bytes"))
         }
         (Kind::Decimal(decimal @ DecimalType { precision: Some(p), .. }), Value::Number(n)) if *p <= 15 => decimal_contradiction(decimal, &n.to_string()),
         (Kind::DateTime(DateTimeType { tick, .. }) | Kind::Instant(InstantType { tick, .. }) | Kind::Duration(DurationType { tick: Some(tick), .. }), Value::String(text)) => fraction_contradiction(tick, text),
         _ => None,
     }
+}
+
+/// How many bytes a document's `"base64:type<code>:…"` holds.
+fn base64_length(text: &str) -> Option<u64> {
+    let encoded: String = text.strip_prefix("base64:")?.split_once(':')?.1.chars().filter(|c| !c.is_whitespace()).collect();
+    Some((encoded.len() / 4 * 3 - encoded.chars().rev().take_while(|&c| c == '=').count()) as u64)
 }
 
 /// Why a JSON document contradicts the type the engine gave it, if it does: a null where the type
@@ -1607,6 +1615,12 @@ mod tests {
         let binary = ty(json!({ "kind": "bytes", "size": { "exact": 3 }, "label": "binary" }));
         assert_eq!(value_contradiction(&binary, &My::Bytes(vec![0x61, 0, 0])), None);
         assert!(value_contradiction(&binary, &My::Bytes(vec![0x61])).is_some());
+        // A BIT is sent as its bytes, a BIT(8) as one: the digits `65` of its number are two.
+        let bit8 = ty(json!({ "kind": "array", "size": { "exact": 8 }, "label": "bit", "element": { "type": { "kind": "boolean" } } }));
+        assert_eq!(value_contradiction(&bit8, &My::Bytes(vec![0x41])), None);
+        assert_eq!(value_contradiction(&bit8, &bytes("65")).as_deref(), Some("typed a BIT of 8 bits holds 2 bytes"));
+        let bit9 = ty(json!({ "kind": "array", "size": { "exact": 9 }, "label": "bit", "element": { "type": { "kind": "boolean" } } }));
+        assert_eq!(value_contradiction(&bit9, &My::Bytes(vec![1, 0])), None);
         let decimal = ty(json!({ "kind": "decimal", "precision": 4, "min_scale": 2, "max_scale": 2, "label": "decimal" }));
         assert_eq!(value_contradiction(&decimal, &bytes("-99.99")), None);
         assert!(value_contradiction(&decimal, &bytes("100.00")).is_some());
@@ -1641,6 +1655,9 @@ mod tests {
         assert!(scalar_contradiction(&datetime, &json!("2026-01-01 12:00:00.123400")).is_some());
         assert_eq!(scalar_contradiction(&binary, &json!("base64:type254:YQAA")), None);
         assert!(scalar_contradiction(&binary, &json!("base64:type254:YQ==")).is_some());
+        let bit8 = ty(json!({ "kind": "array", "size": { "exact": 8 }, "label": "bit", "element": { "type": { "kind": "boolean" } } }));
+        assert_eq!(scalar_contradiction(&bit8, &json!("base64:type16:QQ==")), None);
+        assert_eq!(scalar_contradiction(&bit8, &json!("base64:type16:NjU=")).as_deref(), Some("typed a BIT of 8 bits holds 2 bytes"));
         assert!(scalar_contradiction(&varchar, &json!("abc")).is_some());
         assert_eq!(scalar_contradiction(&decimal, &json!(99.5)), None);
         assert!(scalar_contradiction(&decimal, &json!(99.125)).is_some());

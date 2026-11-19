@@ -508,9 +508,13 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     // An IF or a CASE that returns a BIT's bytes under another type ([`bit_results`]).
     let bits = match &parsed {
         Some(Statement::Query(q)) => bit_results(q, &raw, host)?,
-        // In an unread query that calls IF or CASE, any column it computes of a type such a call
-        // over a BIT prepares as may hold the BIT's bytes.
-        _ if unread && branches(sql, lexed) => raw.columns.iter().enumerate().filter(|(_, c)| matches!(c.r#type, 0 | 4 | 5 | 16 | 246) && !table_column(c, views.as_ref())).map(|(i, _)| i).collect(),
+        // In an unread query, any column it computes as a BIT may hold a BIT's digits
+        // ([`BIT_DIGITS`]), and where it calls IF or CASE, any column of a type such a call over a
+        // BIT prepares as may hold the BIT's bytes.
+        _ if unread => {
+            let branched = branches(sql, lexed);
+            raw.columns.iter().enumerate().filter(|(_, c)| !table_column(c, views.as_ref()) && (c.r#type == 16 || branched && matches!(c.r#type, 0 | 4 | 5 | 246))).map(|(i, _)| i).collect()
+        }
         _ => Vec::new(),
     };
     // A JSON column a CHECK holds to a JSON Schema: the values the schema lets in.
@@ -1520,6 +1524,9 @@ fn uncorrelated(q: &Query, columns: &crate::mysql_shape::Columns) -> bool {
 /// the results that call an aggregate in one statement, grouped as the query is or not at all,
 /// the others in another, not grouped. Where the server does not prepare one, none of its results
 /// is known not to be a BIT.
+///
+/// So are the columns that call one of [`BIT_DIGITS`] and are prepared as a BIT: the value is the
+/// BIT's number in decimal digits, `65` for `b'01000001'` (measured on 8.4.11).
 fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> {
     const BIT: u32 = 16;
     /// The results of an IF or a CASE, through the ones that are an IF or a CASE themselves;
@@ -1557,15 +1564,19 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> 
         return Some(Vec::new());
     }
     let mut found: Vec<(usize, &Expr)> = Vec::new();
+    let mut bits: Vec<usize> = Vec::new();
     for (i, item) in select.projection.iter().enumerate() {
         let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else { continue };
+        if bit_digits(e) && raw.columns[i].r#type == BIT {
+            bits.push(i);
+            continue;
+        }
         let mut of = Vec::new();
         if results(e, &mut of) {
             // A literal and a placeholder are no BIT.
             found.extend(of.into_iter().filter(|e| !matches!(e, Expr::Value(_))).map(|e| (i, e)));
         }
     }
-    let mut bits: Vec<usize> = Vec::new();
     for aggregated in [false, true] {
         let part: Vec<&(usize, &Expr)> = found.iter().filter(|(_, e)| calls_aggregate(e) == aggregated).collect();
         if part.is_empty() {
@@ -1594,6 +1605,19 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> 
         }
     }
     Some(bits)
+}
+
+/// The functions that, given BITs alone, are prepared as a BIT and return the decimal digits of its
+/// number, where `max`, `min`, `nullif` and a subquery return its bytes (measured on 8.4.11).
+pub(crate) const BIT_DIGITS: &[&str] = &["coalesce", "ifnull", "greatest", "least", "any_value"];
+
+/// Whether `e` calls one of [`BIT_DIGITS`].
+pub(crate) fn bit_digits(e: &Expr) -> bool {
+    match e {
+        Expr::Nested(inner) => bit_digits(inner),
+        Expr::Function(f) => BIT_DIGITS.contains(&builtin(f).as_str()),
+        _ => false,
+    }
 }
 
 /// Whether the statement's code, outside its strings, names and comments, calls IF or writes a
@@ -2680,6 +2704,8 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
         }
         Shape::Column { probe, index } => match outcomes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
             Some(c) if plan.booleans.contains(&(*probe, *index)) => (Type::boolean(), c.flags & 1 != 0),
+            // A BIT's digits, written as a BIT's bytes ([`BIT_DIGITS`]).
+            Some(c) if c.r#type == 16 && plan.digits.contains(&(*probe, *index)) => (Type::unknown(), c.flags & 1 != 0),
             // A truth value is an integer to the server, so no other type is in doubt.
             Some(c) => {
                 let ty = defined_type(c, Some(views), None);

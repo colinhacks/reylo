@@ -44,6 +44,9 @@ pub struct Plan {
     /// The leaves the document may hold as `true` or `false` or as the server's integer: a truth
     /// value the document's function may read a copy of, and an expression not known to be a number.
     pub either: Vec<(usize, usize)>,
+    /// The leaves whose expression calls one of [`crate::mysql::BIT_DIGITS`], which over BITs alone
+    /// writes the digits of the BIT's number as a BIT's bytes.
+    pub digits: Vec<(usize, usize)>,
     /// The tables whose columns the plan needed and `columns` did not have: with them it may
     /// read a subquery's aggregate over a bare column as the subquery's own. The probes do not
     /// depend on the answer.
@@ -61,7 +64,7 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
     // aggregate's arguments valid under its GROUP BY, which a probe of them carries ([`group_of`]).
     let groups = group_of(select).into_iter().map(|g| (0, g)).collect();
     let rolled = usize::from(crate::mysql_nulls::rolls_up(&select.group_by));
-    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped, groups, in_aggregate: 0, rolled, rollups: (rolled > 0).then_some(0).into_iter().collect(), rowless: HashSet::new(), windows: select.named_window.clone() };
+    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), digits: Vec::new(), reads: Reads::Itself, grouped, groups, in_aggregate: 0, rolled, rollups: (rolled > 0).then_some(0).into_iter().collect(), rowless: HashSet::new(), windows: select.named_window.clone() };
     if b.may_be_rowless(select) {
         b.rowless.insert(0);
     }
@@ -91,7 +94,7 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
     let probes = b.drafts.iter().map(|d| Probe { sql: text(&d.with, &hint, &d.items, &d.from, group(d)), wider: d.wider.as_ref().map(|f| wider(d, f)) }).collect();
     b.wanted.sort_unstable();
     b.wanted.dedup();
-    Plan { columns, probes, booleans: b.booleans, either: b.either, wanted: b.wanted }
+    Plan { columns, probes, booleans: b.booleans, either: b.either, digits: b.digits, wanted: b.wanted }
 }
 
 /// The GROUP BY the probe of a query's own expressions outside an aggregate's arguments carries:
@@ -397,6 +400,7 @@ struct Builder<'a> {
     overflowed: bool,
     booleans: Vec<(usize, usize)>,
     either: Vec<(usize, usize)>,
+    digits: Vec<(usize, usize)>,
     /// How the function that writes the value now walked reads a truth value.
     reads: Reads,
     /// Whether the statement's SELECT has a plain GROUP BY, where no group is empty.
@@ -827,6 +831,9 @@ impl Builder<'_> {
             Written::Number => {}
             _ => self.either.push((probe, index)),
         }
+        if crate::mysql::bit_digits(e) {
+            self.digits.push((probe, index));
+        }
         // An aggregate's argument is read from its query's rows before they are grouped, which its
         // super-aggregate rows null nothing of and which exist wherever it is read. A query around
         // it that rolls up nulls its columns all the same.
@@ -1228,6 +1235,13 @@ mod tests {
         let plan = plan(&q, &Columns::new());
         assert_eq!(plan.probes[0].sql, "SELECT true, u.id > 0, u.id IN (1, 2), NOT (u.id = 1), u.id, u.name FROM users u");
         assert_eq!(plan.booleans, vec![(0, 0), (0, 1), (0, 2), (0, 3)]);
+    }
+
+    #[test]
+    fn a_call_that_writes_a_bits_digits_is_marked() {
+        let q = query("select json_object('c', coalesce(f.mask, f.mask), 'g', (greatest(f.mask, f.mask)), 'm', f.mask, 'n', nullif(f.mask, f.mask)) as o from flags f");
+        let plan = plan(&q, &Columns::new());
+        assert_eq!(plan.digits, vec![(0, 0), (0, 1)]);
     }
 
     #[test]
