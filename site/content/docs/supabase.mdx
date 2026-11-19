@@ -12,7 +12,7 @@ A Supabase project is a Postgres database, so everything on the [Postgres](/post
 | Dialect | Postgres |
 | The type check reads | The direct connection or the session pooler, and in development the database `supabase start` runs |
 | Drivers | postgres.js or `pg`, through any of Supabase's connections |
-| Migrations | The Supabase CLI's, in `supabase/migrations`, applied to the local database |
+| Migrations | The Supabase CLI's, in `supabase/migrations`, applied to the local database, or [`reylo migrate`](/migrate/docs) through the session pooler or the direct connection, never port 6543 |
 | JavaScript client | Calls Supabase's REST API, so `.run()` doesn't take it ([Drivers](#drivers)) |
 
 <Details summary="View the schema behind the examples" id="schema">
