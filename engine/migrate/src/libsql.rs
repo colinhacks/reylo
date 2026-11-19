@@ -68,6 +68,28 @@ pub fn identity(url: &str) -> String {
     bare.trim_end_matches('/').to_string()
 }
 
+/// Whether `sql` uses SQL of libSQL's own, which Reylo's SQLite refuses: a call to one of its
+/// vector functions (`libsql_vector_idx`, `vector`, `vector_distance_cos`, …), a vector type
+/// (`F32_BLOB(3)`), or `alter table … alter column`. A project whose migrations or schema.sql do
+/// runs its development file and shadows on libSQL's engine ([`crate::libsql_local`]). A word
+/// alone is no call: a column named `vector` stays SQLite's.
+pub fn uses_own_sql(sql: &str) -> bool {
+    use crate::sql::TokenKind::{Symbol, Word};
+    const CALLS: [&str; 14] = ["libsql_vector_idx", "vector", "vector32", "vector64", "vector16", "vectorb16", "vector8", "vector1bit", "vector_extract", "vector_distance_cos", "vector_distance_l2", "vector_top_k", "vector_concat", "vector_slice"];
+    const TYPES: [&str; 12] = ["f32_blob", "f64_blob", "f16_blob", "fb16_blob", "f8_blob", "f1bit_blob", "float32", "float64", "float16", "floatb16", "float8", "float1bit"];
+    let tokens = crate::sql::tokenize(sql, crate::Dialect::Sqlite);
+    let word = |i: usize| tokens.get(i).filter(|t| t.kind == Word).map(|t| t.text.to_ascii_lowercase());
+    let open = |i: usize| tokens.get(i).is_some_and(|t| t.kind == Symbol && t.text == "(");
+    (0..tokens.len()).any(|i| {
+        let Some(w) = word(i) else { return false };
+        if open(i + 1) && (CALLS.contains(&w.as_str()) || TYPES.contains(&w.as_str())) {
+            return true;
+        }
+        // `alter table <name> alter column`, the name qualified or not.
+        w == "alter" && word(i + 1).as_deref() == Some("table") && (i + 3..i + 6).any(|j| word(j).as_deref() == Some("alter") && word(j + 1).as_deref() == Some("column"))
+    })
+}
+
 /// One connection to a libSQL server: a stream it keeps from request to request.
 #[cfg(feature = "cli")]
 pub struct Remote {
@@ -393,6 +415,16 @@ mod tests {
         let error = Remote::open(&url).err().unwrap().0;
         assert!(error.contains("refused the auth token: JWT error: InvalidToken."), "{error}");
         assert!(!error.contains("secret-token") && !error.contains('{'), "{error}");
+    }
+
+    #[test]
+    fn tells_libsqls_own_sql_from_sqlites() {
+        assert!(uses_own_sql("create index docs_emb on docs (libsql_vector_idx(emb));"));
+        assert!(uses_own_sql("create table docs (id integer primary key, emb F32_BLOB(3));"));
+        assert!(uses_own_sql("ALTER TABLE main.docs ALTER COLUMN emb TO emb F32_BLOB(3) NOT NULL;"));
+        assert!(uses_own_sql("select id from vector_top_k('docs_emb', vector('[1,2,3]'), 5);"));
+        assert!(!uses_own_sql("create table t (vector text, f32_blob blob); alter table t add column note text;"));
+        assert!(!uses_own_sql("insert into t values ('libsql_vector_idx(x)'); -- vector(1)"));
     }
 
     #[test]

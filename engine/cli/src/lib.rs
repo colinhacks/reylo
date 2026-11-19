@@ -489,7 +489,7 @@ fn run_command(args: &[String]) -> Result<i32, String> {
         return Ok(2);
     }
     let mut log = print;
-    runtime().block_on(reylo_migrate::run_sql(&opts.url, &opts.root, &items, &mut log)).map_err(|e| e.0)
+    runtime().block_on(reylo_migrate::run_sql(&opts, &items, &mut log)).map_err(|e| e.0)
 }
 
 fn engine_command(args: &[String]) -> i32 {
