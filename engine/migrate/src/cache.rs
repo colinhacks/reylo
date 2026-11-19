@@ -544,10 +544,16 @@ pub(crate) async fn snapshot(db: &mut Db) -> Result<String, Error> {
             let vars = db.rows("select variable_name as k, variable_value as v from performance_schema.session_variables").await?;
             let mut out: Vec<String> = vars.iter().filter(|r| !MOVING.contains(&r.text("k"))).map(|r| format!("{}={}", r.text("k"), r.text("v"))).collect();
             out.sort();
-            let rest = db.rows("select (select count(*) from performance_schema.user_variables_by_thread where thread_id = ps_current_thread_id()) as u, current_user() as who, database() as db").await?;
-            if let Some(r) = rest.first() {
-                out.push(format!("{} {} {}", r.text("u"), r.text("who"), r.text("db")));
-            }
+            let rest = db.rows("select @@performance_schema as ps, current_user() as who, database() as db").await?;
+            let Some(r) = rest.first() else { return Ok(out.join("\n")) };
+            // With performance_schema off, skipping user variables is safe: MySQL never copies a shadow, and they end with the session.
+            let users = if r.text("ps") == "0" {
+                "-".to_string()
+            } else {
+                let u = db.rows("select count(*) as u from performance_schema.user_variables_by_thread where thread_id = ps_current_thread_id()").await?;
+                u.first().map(|u| u.text("u").to_string()).unwrap_or_default()
+            };
+            out.push(format!("{users} {} {}", r.text("who"), r.text("db")));
             Ok(out.join("\n"))
         }
         Dialect::Sqlite => {
