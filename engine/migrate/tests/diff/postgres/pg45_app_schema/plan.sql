@@ -8,12 +8,14 @@ alter table profiles add column deleted_at timestamp with time zone;
 alter table profiles add column handle character varying(30);
 alter table profiles add column updated_at timestamp with time zone;
 alter table posts add constraint published_has_date check (status <> 'published' or published_at is not null) not valid;
+reset check_function_bodies;
 -- file 2 of 8
 create unique index concurrently profiles_handle_key on profiles (handle);
 -- file 3 of 8
 set check_function_bodies = off;
 alter table profiles add constraint profiles_handle_key unique using index profiles_handle_key;
 alter table profiles add constraint profiles_name_check check (char_length(name) between 1 and 100) not valid;
+reset check_function_bodies;
 -- file 4 of 8
 create index concurrently posts_author on posts (author) where status <> 'archived';
 -- file 5 of 8
