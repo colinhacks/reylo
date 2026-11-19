@@ -60,6 +60,10 @@ reylo-build = { path = "rust/reylo-build", version = "=0.8.0", default-features 
 pg_query = { package = "reylo-pg-query", path = "engine/postgres/.patched/pg_query", version = "=18.0.0" }
 sqlparser = { package = "reylo-sqlparser", path = "engine/mysql/vendor/sqlparser", version = "=0.63.0", default-features = false }
 
+# Named pipes on Windows (blackbeam/mysql_async#422), until a release carries them.
+[patch.crates-io]
+mysql_async = { git = "https://github.com/colinhacks/mysql_async", rev = "51d1f604ac42ef6321372da72c4ce659df46878a" }
+
 [profile.release]
 # 3 rather than "s": 7 µs less CPU on a 50-row read (71 against 78 with the other fixes), for a
 # binary that links the engine 31 % larger (20.3 to 26.6 MB stripped, measured 2026-10-03). The

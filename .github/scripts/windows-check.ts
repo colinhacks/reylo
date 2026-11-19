@@ -159,8 +159,8 @@ if (pg && certs) {
   // MySQL over TCP and over a named pipe, as mysql2's socketPath names one on Windows; Postgres's
   // socket directory, which Node cannot open on Windows, is refused with what to write instead.
   check("MySQL over TCP", "mysql://root@127.0.0.1:53306/reylo_windows", { tsc: false });
-  // The engine connects over TCP alone, and the loader bridges a named pipe to it (src/host-url.ts).
-  check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`)}`, { tsc: false, analyze: false });
+  // The loader bridges the pipe (src/host-url.ts); `reylo analyze`, with no Node host, opens it in the engine.
+  check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`)}`, { tsc: false });
   check("Postgres, a socket directory", "postgres://postgres@/reylo_windows?host=/tmp", { tsc: false, refused: /names the Unix socket \/tmp\/\.s\.PGSQL\.5432, which Node cannot open on Windows/ });
 }
 
