@@ -316,10 +316,9 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     if !json {
         let mut sql = None;
         let code = run_group(command, &parsed, &mut print, &mut sql);
-        // The schema alone on stdout, so that it can be saved with a redirect; coloured only where
-        // stdout is a terminal.
+        // The schema alone on stdout, so that it can be saved with a redirect.
         if let Some(sql) = sql {
-            print!("{}", reylo_migrate::terminal::highlight(&sql));
+            print!("{sql}");
         }
         return code;
     }
@@ -397,8 +396,9 @@ fn run_group(command: &str, parsed: &Args, log: reylo_migrate::commands::Log<'_>
                     reylo_migrate::db_push(&opts, in_ci, &push, &mut log).await
                 }
             }
+            // Coloured only where stdout is a terminal, so never with --json.
             "db introspect" => reylo_migrate::db_introspect(&opts, &parsed.schemas).await.map(|text| {
-                *sql = Some(text);
+                *sql = Some(reylo_migrate::terminal::highlight(&text, reylo_migrate::Dialect::of_url(&opts.url).unwrap_or(reylo_migrate::Dialect::Postgres)));
                 0
             }),
             "db reset" => reylo_migrate::db_reset(&opts, in_ci, &mut log).await,

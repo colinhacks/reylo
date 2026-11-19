@@ -3,6 +3,7 @@
 //! coloured by its tokens. The command line turns each on only for a terminal, so that a pipe or a
 //! redirected file receives the plain text, byte for byte.
 
+use crate::Dialect;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -115,15 +116,33 @@ pub fn println(text: &str) {
     let _ = out.flush();
 }
 
-/// `text` cut to `columns` characters, so that the spinner's line never wraps, which would leave
-/// a line behind that a repaint can't reach.
+/// `text` cut to `columns` of the terminal's cells, so that the spinner's line never wraps, which
+/// would leave a line behind that a repaint can't reach.
 fn fitted(text: &str, columns: usize) -> String {
-    if text.chars().count() <= columns {
+    if text.chars().map(cells).sum::<usize>() <= columns {
         return text.to_string();
     }
-    let mut cut: String = text.chars().take(columns.saturating_sub(1)).collect();
+    let mut cut = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        if used + cells(c) + 1 > columns {
+            break;
+        }
+        used += cells(c);
+        cut.push(c);
+    }
     cut.push('…');
     cut
+}
+
+/// The cells a terminal gives `c`: two for an East Asian wide character or an emoji, none for a
+/// combining mark, else one.
+fn cells(c: char) -> usize {
+    match c as u32 {
+        0x0300..=0x036F | 0x200B..=0x200F | 0xFE00..=0xFE0F => 0,
+        0x1100..=0x115F | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xA000..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F300..=0x1F64F | 0x1F900..=0x1F9FF | 0x20000..=0x3FFFD => 2,
+        _ => 1,
+    }
 }
 
 /// The terminal's width in columns, from stderr's terminal; 80 where it can't be read.
@@ -165,20 +184,20 @@ impl Token {
     }
 }
 
-/// `sql` with ANSI colours on its tokens where lines carry colours ([`crate::commands::set_color`]);
-/// else `sql` itself.
-pub fn highlight(sql: &str) -> String {
+/// `sql`, as `dialect` reads it, with ANSI colours on its tokens where lines carry colours
+/// ([`crate::commands::set_color`]); else `sql` itself.
+pub fn highlight(sql: &str, dialect: Dialect) -> String {
     if !crate::commands::color() {
         return sql.to_string();
     }
-    colored(sql)
+    colored(sql, dialect)
 }
 
 /// `sql` with ANSI colours on its tokens. Each line of a token is coloured on its own, so that no
 /// colour runs on past a line's end. Without its escapes it is `sql`, byte for byte.
-pub fn colored(sql: &str) -> String {
+pub fn colored(sql: &str, dialect: Dialect) -> String {
     let mut out = String::with_capacity(sql.len() * 2);
-    for (kind, text) in tokens(sql) {
+    for (kind, text) in tokens(sql, dialect) {
         match kind.code() {
             None => out.push_str(text),
             Some(code) => {
@@ -198,13 +217,13 @@ pub fn colored(sql: &str) -> String {
 
 /// The tokens of `sql`, in order, which together are `sql`. A dollar-quoted body (a function's) is
 /// read as SQL itself, between its delimiters.
-pub fn tokens(sql: &str) -> Vec<(Token, &str)> {
+pub fn tokens(sql: &str, dialect: Dialect) -> Vec<(Token, &str)> {
     let mut out = Vec::new();
-    lex(sql, &mut out);
+    lex(sql, dialect, &mut out);
     out
 }
 
-fn lex<'a>(sql: &'a str, out: &mut Vec<(Token, &'a str)>) {
+fn lex<'a>(sql: &'a str, dialect: Dialect, out: &mut Vec<(Token, &'a str)>) {
     let b = sql.as_bytes();
     let mut i = 0;
     let mut plain = 0;
@@ -221,8 +240,9 @@ fn lex<'a>(sql: &'a str, out: &mut Vec<(Token, &'a str)>) {
         } else if c == b'/' && next == Some(b'*') {
             (Token::Comment, sql[i + 2..].find("*/").map_or(b.len(), |n| i + 2 + n + 2))
         } else if c == b'\'' {
-            // A backslash escapes only in Postgres's E'…' strings: a schema's other strings double a quote.
-            let escaped = i > 0 && matches!(b[i - 1], b'E' | b'e') && (i < 2 || !is_word(b[i - 2]));
+            // A backslash escapes in MySQL's strings and in Postgres's E'…' strings; the others
+            // double a quote to escape it.
+            let escaped = dialect == Dialect::Mysql || i > 0 && matches!(b[i - 1], b'E' | b'e') && (i < 2 || !is_word(b[i - 2]));
             (Token::Literal, quoted(b, i, b'\'', escaped))
         } else if c == b'"' || c == b'`' {
             (Token::Plain, quoted(b, i, c, false))
@@ -233,7 +253,7 @@ fn lex<'a>(sql: &'a str, out: &mut Vec<(Token, &'a str)>) {
                     let body = i + tag.len();
                     let close = sql[body..].find(tag).map(|n| body + n);
                     out.push((Token::Literal, tag));
-                    lex(&sql[body..close.unwrap_or(b.len())], out);
+                    lex(&sql[body..close.unwrap_or(b.len())], dialect, out);
                     if let Some(close) = close {
                         out.push((Token::Literal, tag));
                         i = close + tag.len();
@@ -366,7 +386,11 @@ mod tests {
     }
 
     fn kinds(sql: &str) -> Vec<(Token, String)> {
-        tokens(sql).into_iter().filter(|(k, _)| *k != Token::Plain).map(|(k, t)| (k, t.to_string())).collect()
+        kinds_on(sql, Dialect::Postgres)
+    }
+
+    fn kinds_on(sql: &str, dialect: Dialect) -> Vec<(Token, String)> {
+        tokens(sql, dialect).into_iter().filter(|(k, _)| *k != Token::Plain).map(|(k, t)| (k, t.to_string())).collect()
     }
 
     const SCHEMA: &str = "-- the users\ncreate table users (\n  id integer not null,\n  email varchar(255) not null default 'a''b',\n  \"Select\" text,\n  score numeric(10, 2) default 1.5,\n  constraint users_pkey primary key (id)\n);\n/* a block\n   comment */\ncreate function f() returns trigger\n  language plpgsql\nas $body$\nbegin\n  return new; -- done\nend\n$body$;\ncreate index users_email on public.users (email);\n";
@@ -374,8 +398,10 @@ mod tests {
     #[test]
     fn the_colours_come_off_to_leave_the_sql() {
         for sql in [SCHEMA, "", "x", "'unclosed", "/* unclosed", "$$ unclosed", "a$1 $2 é 'ü' \"q\"\"q\" `b``c`", "create table t (id int) engine=InnoDB;\n"] {
-            assert_eq!(strip(&colored(sql)), sql);
-            assert_eq!(tokens(sql).iter().map(|(_, t)| *t).collect::<String>(), sql);
+            for d in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite] {
+                assert_eq!(strip(&colored(sql, d)), sql);
+                assert_eq!(tokens(sql, d).iter().map(|(_, t)| *t).collect::<String>(), sql);
+            }
         }
     }
 
@@ -405,7 +431,7 @@ mod tests {
     #[test]
     fn a_column_named_as_a_keyword_or_a_type_is_a_name() {
         assert_eq!(kinds("(date date,\n  type text)"), vec![(Token::Type, "date".into()), (Token::Type, "text".into())]);
-        assert_eq!(tokens("(date date")[1], (Token::Type, "date"));
+        assert_eq!(tokens("(date date", Dialect::Postgres)[1], (Token::Type, "date"));
         assert_eq!(kinds("unique (date)"), vec![(Token::Keyword, "unique".into()), (Token::Type, "date".into())]);
     }
 
@@ -413,6 +439,7 @@ mod tests {
     fn a_backslash_escapes_only_where_the_string_says() {
         assert_eq!(kinds("'C:\\' x"), vec![(Token::Literal, "'C:\\'".into())]);
         assert_eq!(kinds("E'it\\'s' x"), vec![(Token::Literal, "'it\\'s'".into())]);
+        assert_eq!(kinds_on("default 'it\\'s fine', n int", Dialect::Mysql), vec![(Token::Keyword, "default".into()), (Token::Literal, "'it\\'s fine'".into()), (Token::Type, "int".into())]);
     }
 
     #[test]
@@ -423,7 +450,7 @@ mod tests {
 
     #[test]
     fn no_colour_runs_past_a_line() {
-        let out = colored("/* one\ntwo */");
+        let out = colored("/* one\ntwo */", Dialect::Postgres);
         assert_eq!(out, "\x1b[2m/* one\x1b[0m\n\x1b[2mtwo */\x1b[0m");
     }
 
@@ -431,12 +458,17 @@ mod tests {
     fn a_long_spinner_line_is_cut_to_the_terminal() {
         assert_eq!(fitted("Introspecting postgres://localhost:5432/app", 80), "Introspecting postgres://localhost:5432/app");
         assert_eq!(fitted("abcdef", 4), "abc…");
+        // A wide character takes two cells.
+        let cut = fitted("Introspecting sqlite:./数据库数据库数据库.db", 37);
+        assert!(cut.chars().map(cells).sum::<usize>() <= 37, "{cut}");
+        assert_eq!(cut, "Introspecting sqlite:./数据库数据库…");
+        assert_eq!(fitted("数据库", 6), "数据库");
     }
 
     #[test]
     fn no_colour_unless_lines_carry_it() {
         crate::commands::set_color(false);
-        assert_eq!(highlight(SCHEMA), SCHEMA);
+        assert_eq!(highlight(SCHEMA, Dialect::Postgres), SCHEMA);
     }
 
     #[test]
