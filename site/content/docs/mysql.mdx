@@ -525,7 +525,7 @@ where role = coalesce(:role::nullable(text), role)
 
 **Written to a nullable column**
 
-Written directly into a column that accepts `NULL`, with no cast, in an `insert`, `update`, `replace` or `on duplicate key update`. A column accepts it unless it's `NOT NULL` or a `check (… is not null)` covers it.
+Written directly into a column that accepts `NULL`, with no cast, in an `insert`, `update`, `replace` or `on duplicate key update`. A column accepts it unless it's `NOT NULL`, a `check (… is not null)` covers it, or a `NOT NULL` generated column computes `NULL` from its `NULL`, as `nu + 1` does and `coalesce(nu, 0)` doesn't.
 
 <InferenceCard>
 

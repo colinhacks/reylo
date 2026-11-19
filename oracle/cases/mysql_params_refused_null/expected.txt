@@ -1,4 +1,7 @@
 coalesced.sql: none (nickname: varchar?, email: varchar?, id: int32) -> {  }
+generated_insert.sql: none (id: int, a: int, b: int, c: int?, s: varchar(≤10)) -> {  }
+generated_nullable_cast.sql: none (id: int, s: varchar(≤10)?) -> {  } !! reylo20: The parameter :s is cast to nullable(…), but it is written to measures.ns, which refuses null: cast it to its type alone.
+generated_update.sql: none (b: int, c: int?, id: int32) -> {  }
 insert_select.sql: none (id: int, email: varchar(≤40), nickname: varchar(≤20), note: varchar(≤40)?) -> {  }
 insert_values.sql: none (id: int, email: varchar(≤40), nickname: varchar(≤20)) -> {  }
 nullable_cast_select.sql: none (id: int, email: varchar(≤40)?) -> {  } !! reylo20: The parameter :email is cast to nullable(…), but it is written to accounts.email, which refuses null: cast it to its type alone.

@@ -2499,12 +2499,13 @@ fn traced_tables(q: &Query) -> Option<Vec<String>> {
     Some(tables)
 }
 
-/// `CHECK_CLAUSE` as the CHECK was written. `information_schema` hands its text back double
+/// `CHECK_CLAUSE` as the CHECK was written, or `GENERATION_EXPRESSION` as the generated column's
+/// expression was, which `information_schema` prints alike. It hands their text back double
 /// encoded, each byte of its UTF-8 as the character of that number, and with one more level of
 /// backslash escapes than the server's own reprint. `None` where that does not read back, or
 /// where a string holds `\a` or `\f`, which `sqlparser` reads as control characters and MySQL as
 /// the letters.
-fn check_clause(text: &str) -> Option<String> {
+pub(crate) fn check_clause(text: &str) -> Option<String> {
     let text = if text.chars().all(|c| (c as u32) <= 0xFF) { String::from_utf8(text.chars().map(|c| c as u8).collect()).ok()? } else { text.to_string() };
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();

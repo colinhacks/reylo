@@ -16,11 +16,12 @@ use crate::mysql_keys::Cte;
 use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, Query, Select, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins};
 use std::collections::{HashMap, HashSet};
 
-/// Each column of the named tables of the current schema, whether it may hold NULL, and its
-/// `extra`, in the order an INSERT without a column list fills them, which passes over an
-/// INVISIBLE column. A view's column is taken to refuse NULL: what a write through it takes is its
-/// table's to say. `?` is the comma-joined table names, because MySQL binds no arrays.
-const COLUMNS_QUERY: &str = "select c.table_name, c.column_name, if(t.table_type = 'VIEW', 'NO', c.is_nullable), c.extra from information_schema.columns c \
+/// Each column of the named tables of the current schema, whether it may hold NULL, its `extra`,
+/// and a generated column's expression, as `information_schema` prints it ([`refused_by`]), in the
+/// order an INSERT without a column list fills them, which passes over an INVISIBLE column. A
+/// view's column is taken to refuse NULL: what a write through it takes is its table's to say. `?`
+/// is the comma-joined table names, because MySQL binds no arrays.
+const COLUMNS_QUERY: &str = "select c.table_name, c.column_name, if(t.table_type = 'VIEW', 'NO', c.is_nullable), c.extra, c.generation_expression from information_schema.columns c \
     join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name \
     where c.table_schema = database() and find_in_set(c.table_name, ?) order by c.table_name, c.ordinal_position";
 
@@ -462,14 +463,16 @@ pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host, marked
             checked.entry(table.to_string()).or_default().push(clause.to_string());
         }
     }
+    let rows = rows.unwrap_or_default();
+    let generated = refused_by(&rows);
     // Per table as the server names it: each column in lower case, whether it may hold NULL, and
     // whether it is INVISIBLE.
     let mut columns: HashMap<String, Vec<(String, bool, bool)>> = HashMap::new();
-    for row in rows.unwrap_or_default() {
+    for row in rows {
         let (Some(table), Some(column), Some(nullable)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str)) else { continue };
         let invisible = row.get(3).and_then(as_str).is_some_and(|extra| extra.to_ascii_uppercase().contains("INVISIBLE"));
         let column = column.to_ascii_lowercase();
-        let refused = checked.get(table).is_some_and(|clauses| clauses.iter().any(|clause| refuses_null(clause, &column)));
+        let refused = checked.get(table).is_some_and(|clauses| clauses.iter().any(|clause| refuses_null(clause, &column))) || generated.get(table).is_some_and(|refused| refused.contains(&column));
         columns.entry(table.to_string()).or_default().push((column, nullable.eq_ignore_ascii_case("YES") && !refused, invisible));
     }
     // The column a target names, and whether it may hold NULL.
@@ -505,6 +508,47 @@ pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host, marked
         }
     }
     Some(out)
+}
+
+/// Per table, the columns (in lower case) a NULL in which a NOT NULL generated column refuses
+/// (error 1048, naming the generated column), from [`COLUMNS_QUERY`]'s rows: those its expression
+/// is NULL for wherever they are NULL ([`crate::mysql_nulls::nulls_with`]), through the generated
+/// columns it reads in turn. A column an expression reads otherwise, as through `coalesce`, may be
+/// NULL, and so may any column of an expression the parser does not read.
+fn refused_by(rows: &[Vec<serde_json::Value>]) -> HashMap<String, HashSet<String>> {
+    use sqlparser::dialect::MySqlDialect;
+    use sqlparser::parser::Parser;
+    // Per table, each generated column's strict columns, and the NOT NULL generated columns.
+    let mut strict: HashMap<&str, HashMap<String, Vec<String>>> = HashMap::new();
+    let mut not_null: HashMap<&str, Vec<String>> = HashMap::new();
+    for row in rows {
+        let (Some(table), Some(column), Some(nullable), Some(extra), Some(expression)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str), row.get(3).and_then(as_str), row.get(4).and_then(as_str)) else { continue };
+        let extra = extra.to_ascii_uppercase();
+        if !extra.contains("GENERATED") || extra.contains("DEFAULT_GENERATED") {
+            continue;
+        }
+        let dialect = MySqlDialect {};
+        let read = crate::mysql::check_clause(expression).and_then(|text| Parser::new(&dialect).try_with_sql(&text).and_then(|mut p| p.parse_expr()).ok());
+        let reads = read.map(|e| crate::mysql_nulls::nulls_with(&e).into_iter().filter_map(|parts| parts.last().cloned()).collect()).unwrap_or_default();
+        let column = column.to_ascii_lowercase();
+        if nullable.eq_ignore_ascii_case("NO") {
+            not_null.entry(table).or_default().push(column.clone());
+        }
+        strict.entry(table).or_default().insert(column, reads);
+    }
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for (table, generated) in not_null {
+        let reads = &strict[table];
+        let mut refused: HashSet<String> = HashSet::new();
+        let mut next: Vec<String> = generated.iter().flat_map(|g| reads[g].iter().cloned()).collect();
+        while let Some(column) = next.pop() {
+            if refused.insert(column.clone()) {
+                next.extend(reads.get(&column).into_iter().flatten().cloned());
+            }
+        }
+        out.insert(table.to_string(), refused);
+    }
+    out
 }
 
 /// Whether a CHECK, as the server prints it (`(`email` is not null)`), refuses null in `column`
@@ -1023,7 +1067,9 @@ mod tests {
     /// The analysis of `sql` over a schema: `users (id NOT NULL, name NOT NULL, secret NOT NULL
     /// INVISIBLE, email, bio)`, `posts (id NOT NULL, user_id NOT NULL, title NOT NULL, tag)` and
     /// `accounts (id NOT NULL, email, nick, note)` with `check (email <> '' and email is not null)`,
-    /// `check (nick is not null)` and `check (note <> '')`; each parameter with whether it may be
+    /// `check (nick is not null)` and `check (note <> '')`, and `measures (id NOT NULL, nu, nv, ns,
+    /// nw)` with the NOT NULL generated columns `nu + 1`, `coalesce(nv, 0)`, `concat('x', ns)` and
+    /// `g2 * 2` over a nullable generated `g2 = nw - 1`; each parameter with whether it may be
     /// null, and whether the columns were asked for.
     fn nullable(sql: &str) -> (Vec<(String, bool)>, bool) {
         let (analysis, asked) = analyzed(sql);
@@ -1037,6 +1083,12 @@ mod tests {
             ["accounts", "id", "NO", ""], ["accounts", "email", "YES", ""], ["accounts", "nick", "YES", ""], ["accounts", "note", "YES", ""],
             ["posts", "id", "NO", "auto_increment"], ["posts", "user_id", "NO", ""], ["posts", "title", "NO", ""], ["posts", "tag", "YES", ""],
             ["users", "id", "NO", "auto_increment"], ["users", "name", "NO", ""], ["users", "secret", "NO", "INVISIBLE"], ["users", "email", "YES", ""], ["users", "bio", "YES", ""],
+            // As 8.4.11 prints them, a string's quotes behind one more backslash.
+            ["measures", "id", "NO", "", ""], ["measures", "nu", "YES", "", ""], ["measures", "g", "NO", "STORED GENERATED", "(`nu` + 1)"],
+            ["measures", "nv", "YES", "", ""], ["measures", "h", "NO", "VIRTUAL GENERATED", "coalesce(`nv`,0)"],
+            ["measures", "ns", "YES", "", ""], ["measures", "j", "NO", "VIRTUAL GENERATED", "concat(_utf8mb4\\'x\\',`ns`)"],
+            ["measures", "nw", "YES", "", ""], ["measures", "g2", "YES", "VIRTUAL GENERATED", "(`nw` - 1)"], ["measures", "k", "NO", "STORED GENERATED", "(`g2` * 2)"],
+            ["measures", "at", "NO", "DEFAULT_GENERATED", "now()"],
         ] });
         let checks = json!({ "rows": [
             ["accounts", "((`email` <> _utf8mb4'') and (`email` is not null))"], ["accounts", "(`nick` is not null)"], ["accounts", "(`note` <> _utf8mb4'')"],
@@ -1177,6 +1229,13 @@ mod tests {
         ] {
             assert!(may_be_null(sql).is_empty(), "{sql}: {:?}", may_be_null(sql));
         }
+    }
+
+    #[test]
+    fn a_column_a_not_null_generated_column_is_null_for_takes_no_null() {
+        // `g`, `j` and `k` (through `g2`) are NULL wherever `nu`, `ns` and `nw` are; `h` never is.
+        assert_eq!(may_be_null("insert into measures (id, nu, nv, ns, nw) values (:id, :u, :v, :s, :w)"), ["v"]);
+        assert_eq!(may_be_null("update measures set nu = :u, nv = :v, nw = :w where id = :id"), ["v"]);
     }
 
     #[test]

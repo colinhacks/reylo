@@ -276,7 +276,7 @@ fn strip(e: &Expr) -> &Expr {
 
 /// The columns an expression answers NULL for: the column itself, and through arithmetic, a sign,
 /// a cast, a COLLATE or a function of [`STRICT_FUNCTIONS`], every column an operand answers NULL for.
-fn nulls_with(e: &Expr) -> Vec<Vec<String>> {
+pub(crate) fn nulls_with(e: &Expr) -> Vec<Vec<String>> {
     match e {
         Expr::Nested(inner) => nulls_with(inner),
         Expr::Identifier(_) | Expr::CompoundIdentifier(_) => column(e).into_iter().collect(),
