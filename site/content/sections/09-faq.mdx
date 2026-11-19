@@ -15,7 +15,7 @@ No. Reylo has your database prepare each query, which checks it and describes it
 </Accordion>
 <Accordion title="Does Reylo run migrations?" id="faq-migrations">
 
-Yes: [`reylo migrate`](/migrations) writes each migration from your `schema.sql`, and checks and runs it. Your own tool works just as well, such as Prisma Migrate, Drizzle Kit, Atlas, dbmate or plain SQL files, since Reylo types your queries against whatever schema your dev database has. After a migration, the next type check sees the new schema: a dropped column is an error in the `.sql` file that names it, and in the code that reads it.
+Yes: [`reylo migrate`](/migrate/docs) writes each migration from your `schema.sql`, and checks and runs it. Your own tool works just as well, such as Prisma Migrate, Drizzle Kit, Atlas, dbmate or plain SQL files, since Reylo types your queries against whatever schema your dev database has. After a migration, the next type check sees the new schema: a dropped column is an error in the `.sql` file that names it, and in the code that reads it.
 
 </Accordion>
 <Accordion title="How do I type-check in CI?" id="in-ci">
@@ -28,14 +28,9 @@ Start the database, apply the migrations, and run `tsc --noEmit --runExternalCod
 Keep Prisma Migrate for your schema, and turn each Prisma Client call into a `.sql` file. [Migrating from Prisma](/prisma) covers the schema changes to make first, the build, each call as SQL, and what to check before you finish.
 
 </Accordion>
-<Accordion title="Can another tool read the types Reylo infers?" id="faq-rtd">
-
-Yes: [`analyze()`](/cli#from-javascript) returns each statement's parameters, columns, types and cardinality as JSON, in Reylo Type Defs, and `reylo analyze` prints the same from a shell. The format is in preview, and may change in any release until 1.0.0.
-
-</Accordion>
 <Accordion title="What is the reylo directory, and should I commit it?" id="faq-reylo-directory">
 
-It holds your [migrations](/migrations), which you commit, and Reylo's cache of each query's analysis in `reylo/.cache/`. The cache has its own `.gitignore`, so git skips it: don't commit it.
+It holds your [migrations](/migrate/docs), which you commit, and Reylo's cache of each query's analysis in `reylo/.cache/`. The cache has its own `.gitignore`, so git skips it: don't commit it.
 
 </Accordion>
 <Accordion title="Can I build without a database?" id="faq-no-database">

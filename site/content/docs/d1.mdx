@@ -5,14 +5,14 @@ description: How to use Reylo with Cloudflare D1 in a Worker. The Vite plugin, t
 
 <p className="dk-subheader">Reylo on Cloudflare D1</p>
 
-Reylo runs on D1 in a Cloudflare Worker. D1 is SQLite, so everything on the [SQLite](/sqlite) page holds for it. This page covers what's specific to D1. A Durable Object's own database is on [Durable Objects](/durable-objects).
+D1 is SQLite, so everything on the [SQLite](/sqlite) page holds for it. A Durable Object's own database is on [Durable Objects](/durable-objects).
 
 | | |
 | --- | --- |
 | Database | D1, through its binding |
 | Bundler | Vite, with Cloudflare's Vite plugin |
 | Tests | Vitest inside workerd, with Cloudflare's Vitest plugin |
-| Postgres and MySQL in a Worker | Neon's serverless driver and PlanetScale's need nothing more. postgres.js, `pg`, `mysql2` and `mariadb` need Node's APIs: a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag. Through Hyperdrive, which refuses prepared statements, Reylo runs [`mysql2`](/mysql#mysql2) through `query()` |
+| Postgres and MySQL in a Worker | Neon's serverless driver and PlanetScale's need nothing more. postgres.js, `pg`, `mysql2` and `mariadb` need Node's APIs: a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag. Through Hyperdrive, which refuses prepared statements, Reylo runs [`mysql2`](/mysql#mysql2) through `query()` ([Cloudflare Hyperdrive](/hyperdrive)) |
 | Example | [cloudflare-workers](https://github.com/reylosql/reylo/tree/main/examples/cloudflare-workers), a Worker with D1 and a Durable Object that runs locally with no Cloudflare account |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -90,7 +90,7 @@ select id, name, email from users where id = :id
 
 ## Migrations
 
-Write your migrations with [`reylo migrate`](/migrations), and let Wrangler run them on D1:
+Write your migrations with [`reylo migrate`](/migrate/docs), and let Wrangler run them on D1:
 
 ```jsonc title="wrangler.jsonc"
 {
@@ -102,6 +102,22 @@ Write your migrations with [`reylo migrate`](/migrations), and let Wrangler run 
 ```
 
 ```sh
+wrangler d1 migrations apply DB --remote
+```
+
+On a D1 database that already has tables, the `init.sql` that `reylo migrate init` writes describes what D1 has. Record it as applied, so that Wrangler doesn't run it:
+
+```sh
+wrangler d1 execute DB --remote --command "insert into d1_migrations (name) values ('init.sql')"
+```
+
+On a new D1 database for that project, Wrangler would run `init.sql` last, since it applies files in name order. Run it first and record it, then apply the rest:
+
+```sh
+# makes Wrangler's d1_migrations table
+wrangler d1 migrations list DB --remote
+wrangler d1 execute DB --remote --file reylo/migrations/init.sql
+wrangler d1 execute DB --remote --command "insert into d1_migrations (name) values ('init.sql')"
 wrangler d1 migrations apply DB --remote
 ```
 

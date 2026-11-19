@@ -317,12 +317,21 @@ html .prose {
   line-height: 1.25rem;
 }
 
-/* The list scrolls under "On this page": an entry fades out fully before it reaches the title,
-   instead of passing under it half faded, and the first entry starts clear of the fade.
-   (`#nd-toc > .overflow-auto` outranks Fumadocs' `mask-[…]` class.) */
+/* The whole column scrolls as one, the logo, "On this page" and the GitHub link with the list,
+   rather than the list alone between them: Fumadocs' list keeps its own scroll and fade, which
+   these turn off. (`#nd-toc > .overflow-auto` outranks Fumadocs' `overflow-auto` and `mask-[…]`.) */
+#nd-toc {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
 #nd-toc > .overflow-auto {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
   padding-block: 1.25rem;
-  mask-image: linear-gradient(to bottom, transparent, #000 1.25rem, #000 calc(100% - 1.25rem), transparent);
+  mask-image: none;
 }
 
 /* A code token in the table of contents (and in its popover below xl) is a chip, like inline code
@@ -332,8 +341,9 @@ html .prose {
 #nd-toc code,
 [data-toc-popover] code {
   border: none;
-  border-radius: 0.3125rem;
-  padding: 0.0625rem 0.3125rem;
+  border-radius: 0.375rem;
+  /* Inline, its padding grows no line box, so the chip can breathe without moving the entries. */
+  padding: 0.1875rem 0.375rem;
   font-size: 0.9em;
   /* Its own line box is no taller than its text, so a chip never makes its entry taller than the
      others: in the 20px line of 14.5px text, the mono's line at the inherited height grew each code
@@ -352,6 +362,22 @@ html .prose {
 #nd-toc a[data-active='true'] code,
 [data-toc-popover] a[data-active='true'] code {
   background-color: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc-active), transparent);
+}
+
+/* A heading that names its file or command, `## Schema <code className="dk-aside">schema.sql</code>`,
+   keeps the name on the left of its entry and the code at the right edge, in the chip, a small gap
+   between them should the entry run long. */
+#nd-toc a:has(> code.dk-aside),
+[data-toc-popover] a:has(> code.dk-aside) {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+#nd-toc a > code.dk-aside,
+[data-toc-popover] a > code.dk-aside {
+  flex: none;
+  margin-left: auto;
 }
 
 /* The note under the opening paragraph (`<p className="dk-lede">`): italic and muted, with its
@@ -542,40 +568,47 @@ figure.shiki code > :is(.twoslash-query-line, .dk-error-line) + .line:last-child
 
 /* Fumadocs colours every span in a code block from Shiki's variables, which the list's spans
    inherited from the token the caret is in; set here, the list's own colours win in both themes. */
+/* Twoslash's own completion list (@shikijs/twoslash, style-rich.css): a plain box 240px wide, its
+   entries at 0.8rem, 1em apart and 4px between, the icon and the untyped part of a name gray and the
+   typed part in the text's colour, no entry highlighted. */
 .twoslash-completion-list {
   --shiki-light: var(--color-fd-popover-foreground);
   --shiki-dark: var(--color-fd-popover-foreground);
-  width: max-content;
-  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 240px;
   /* Out of the line's width, so the text after the caret stays where it is. */
   margin-right: -100vw;
   margin-block: 4px;
-  padding: 3px;
-  border-radius: 6px;
-  box-shadow: var(--dk-popover-shadow);
-  font-size: inherit;
-  line-height: 1.6;
+  padding: 4px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 4px;
+  box-shadow: rgba(0, 0, 0, 0.08) 0px 1px 4px;
+  font-size: 0.8rem;
+  line-height: 1em;
 }
 
 .twoslash-completion-list li {
-  padding: 1px 10px 1px 6px;
-  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  overflow: hidden;
+  padding: 0;
+  line-height: 1em;
   font-size: inherit;
 }
 
-.twoslash-completion-list li:first-child {
-  background: color-mix(in oklab, var(--dk-accent) var(--dk-wash-code, 14%), transparent);
-}
-
-.twoslash-completion-list .twoslash-completions-matched {
-  --shiki-light: var(--color-fd-primary);
-  --shiki-dark: var(--color-fd-primary);
-  font-weight: 600;
+.twoslash-completion-list .twoslash-completions-unmatched {
+  --shiki-light: var(--color-fd-muted-foreground);
+  --shiki-dark: var(--color-fd-muted-foreground);
 }
 
 .twoslash-completion-list .twoslash-completions-icon {
-  --shiki-light: var(--dk-accent);
-  --shiki-dark: var(--dk-accent);
+  --shiki-light: var(--color-fd-muted-foreground);
+  --shiki-dark: var(--color-fd-muted-foreground);
+  width: 1em;
+  flex: none;
 }
 
 /* The caret: the accent, as the editor draws its own. */
@@ -856,12 +889,28 @@ code {
   }
 }
 
-/* A table of two columns (Reylo's Data types tables, "SQL type | TypeScript") splits the width in
-   halves; its columns once came out 197px beside 603px and then, sized by
-   their content, the other way round. A wider table shares its width by its content. */
-#nd-page .prose table:has(tr > :nth-child(2):last-child):has(th:not(:empty)) {
-  table-layout: fixed;
+/* A table spans the text column, and the browser sizes its columns by their content: a column of
+   short names (a field, a flag) stays as narrow as its longest name, and a column of prose takes
+   the rest. Equal halves left "Field" as wide as "What it holds". */
+#nd-page .prose table:has(th:not(:empty)) {
+  table-layout: auto;
   width: 100%;
+}
+
+/* A long value in a cell, `2026-10-20T10:00:00.123456`, breaks where it must rather than run past
+   the table's edge, now that columns size by their content; each piece is still a chip. (A rule
+   that kept code in a cell on one line from 640px on made a long value push the table past the
+   text column, where it scrolled sideways.) */
+#nd-page .prose td code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The first column names things (a field, a SQL type): a name stays whole, and its column is as wide
+   as the longest. */
+#nd-page .prose td:first-child code {
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 /* A table whose header cells are all empty is a list of labels and their values (Reylo's dialect
@@ -902,13 +951,7 @@ code {
 
 }
 
-@media (min-width: 640px) {
-  /* A short type in a cell (`Row | null`) stays on one line where the column has the room; on a
-     phone the table would scroll sideways instead. */
-  #nd-page .prose td code {
-    white-space: nowrap;
-  }
-}
+
 
 /* ── <Callout> (components/callout.tsx) ──────────────────────────────────────
    A flat card like a code block's frame, with no shadow: a header bar, ruled off like a titled
@@ -1664,6 +1707,11 @@ html #nd-page .prose table {
   opacity: 0.7;
 }
 
+/* A page that leaves the docs, in a group of pages: its ↗ a little apart from its name. */
+.dk-pages-item .dk-pages-out {
+  margin-inline-start: 0.375rem;
+}
+
 /* The foot, after the last group and scrolling with it: a hairline, the links away from the docs,
    then the repository and the theme switch, with `TocFooter`'s room under them for the note, clear
    of the address bubble Chrome shows. */
@@ -1747,4 +1795,74 @@ html #nd-page .prose table {
 
 .dk-pages-sheet .dk-pages-foot {
   padding-bottom: 0.75rem;
+}
+
+/* ── The pager ──────────────────────────────────────────────────────────────
+   The previous and next pages at the foot of a page (`Pager` in shell.tsx): two large cards side
+   by side, the previous on the left and the next on the right, each its direction over the page's
+   name; the border takes the accent on hover. A page with only one keeps it on its own side. */
+#nd-page .dk-pager {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 4rem;
+}
+
+#nd-page .dk-pager a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 1.125rem 1.25rem 1.25rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.875rem;
+  background: var(--color-fd-card);
+  text-decoration: none;
+  transition: border-color 120ms, background-color 120ms;
+}
+
+#nd-page .dk-pager a:hover {
+  border-color: color-mix(in oklab, var(--color-fd-primary) 70%, transparent);
+}
+
+#nd-page .dk-pager .dk-pager-next {
+  grid-column: 2;
+  align-items: flex-end;
+  text-align: right;
+}
+
+#nd-page .dk-pager-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .dk-pager-label svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  /* The arrows sat 0.63px low beside their labels (optical-spacing's ink-align.mjs, 2026-11-19). */
+  translate: 0 -0.625px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#nd-page .dk-pager-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-fd-headings);
+}
+
+@media (max-width: 639px) {
+  #nd-page .dk-pager {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #nd-page .dk-pager .dk-pager-next {
+    grid-column: 1;
+  }
 }

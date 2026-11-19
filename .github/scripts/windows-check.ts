@@ -29,12 +29,12 @@ writeFileSync(join(project, "package.json"), JSON.stringify({
   dependencies: { reylo: `link:${posixRelative(project, join(repo, "dist", "reylo"))}` },
   devDependencies: {
     "@types/node": "^26.6.1",
-    typescript: "7.1.0-beta",
+    typescript: "7.1.0-dev.20261118.1",
   },
 }, null, 2));
 writeFileSync(join(project, "tsconfig.json"), JSON.stringify({
   compilerOptions: { target: "esnext", module: "nodenext", lib: ["esnext"], types: ["node"], strict: true, noEmit: true, skipLibCheck: true },
-  contentMappers: [{ package: "reylo", extensions: [".sql", ".reylo.yaml", ".reylo.yml"] }],
+  contentMappers: [{ package: "reylo" }],
   include: ["src"],
 }, null, 2));
 writeFileSync(join(project, "queries", "get_user.sql"), "select id, name from users where id = :id");
@@ -158,7 +158,7 @@ if (pg && certs) {
   check("Postgres, NODE_EXTRA_CA_CERTS", `${pg}?sslrootcert=system${client(join(project, "certs"))}`, { tsc: false, env: { NODE_EXTRA_CA_CERTS: join(elsewhere, "root.crt") } });
   // MySQL over TCP and over a named pipe, as mysql2's socketPath names one on Windows; Postgres's
   // socket directory, which Node cannot open on Windows, is refused with what to write instead.
-  check("MySQL over TCP", "mysql://root@127.0.0.1:53306/reylo_windows", { tsc: false });
+  check("MySQL over TCP", "mysql://root@127.0.0.1:23306/reylo_windows", { tsc: false });
   // The engine connects over TCP alone, and the loader bridges a named pipe to it (src/host-url.ts).
   check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`)}`, { tsc: false, analyze: false });
   check("Postgres, a socket directory", "postgres://postgres@/reylo_windows?host=/tmp", { tsc: false, refused: /names the Unix socket \/tmp\/\.s\.PGSQL\.5432, which Node cannot open on Windows/ });

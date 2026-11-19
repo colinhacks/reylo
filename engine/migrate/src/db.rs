@@ -1054,6 +1054,15 @@ impl Server {
         }
     }
 
+    /// The schemas the project's own files create: an extension the target keeps in one of them (one
+    /// the project once created there, and no longer does) is left out of a shadow too, whose
+    /// `create schema` it would otherwise stop.
+    pub fn leave_schemas(&mut self, schemas: Vec<String>) {
+        if let Server::Postgres { leave, extensions, .. } = self {
+            leave.extend(extensions.iter().filter(|(_, s)| schemas.iter().any(|x| x.eq_ignore_ascii_case(s))).map(|(e, _)| e.to_lowercase()));
+        }
+    }
+
     /// Whether shadows take the target's default privileges: not where the project's own SQL sets
     /// default privileges, which would then grant on what its earlier migrations made.
     pub fn copy_default_privileges(&mut self, on: bool) {

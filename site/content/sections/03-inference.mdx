@@ -2,32 +2,46 @@
 title: "Inference"
 ---
 
+## How it works [#how-it-works]
 
-Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
+Your database does the typing.
 
-To type a query, Reylo has your live database prepare it, without running it, and reads the catalog. From the answer, it learns:
+Reylo has it prepare each statement without running it, and reads its catalog. Run `reylo analyze` on a file to see what it learns:
 
-- **Parameter types** — from where each parameter is used, or its cast
-- **Column types** — from the table, or the expression that computes the column
-- **Nullability** — from `NOT NULL` and outer joins
-- **Cardinality** — from keys, aggregates, `limit 1` and `returning`
-- **Column comments** — on Postgres and MySQL, shown when you hover a field that reads the column
+<Analyzed file="queries/is_verified.sql">
 
-For example, `id` is the primary key, so this query returns at most one row:
-
-<InferenceCard>
-
-```sql file="get_user.sql" dialect="all"
-select id, name, email from users where id = :id::int
+```sql schema
+create table users (
+  id int8 primary key,
+  verified boolean not null
+);
 ```
 
-</InferenceCard>
+```sql
+-- Whether a user has verified their email.
+select verified from users where id = :id
+```
+
+</Analyzed>
+
+| Field | What it holds |
+| --- | --- |
+| `file` | The file `reylo analyze` read the statement from. Only the CLI adds it: the format has no such field, and a statement given with `--sql` has none |
+| `$schema` | The format's version, as the URL of its JSON Schema |
+| `dialect` | The database, and its server's version |
+| `sql` | The statement as the database runs it, with the database's own placeholders |
+| `kind` | What the statement does: `select`, `insert`, `update`, `delete`, `merge` or `other` |
+| `comment` | The comment before the statement |
+| `params` | Each parameter's name and [type](/typedefs) |
+| `result` | Each column's name and type, and the cardinality: how many rows the statement returns |
+| `capabilities` | The tables the statement reads or writes |
+| `diagnostics` | What the database reports where it refuses the statement |
+
+Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so the next check after a migration sees the new schema.
 
 <Rust>
-Each card shows the types in TypeScript, in Rust, or as the [type descriptor](/typedefs) the [CLI](/cli) prints: pick one at the top of any card.
+Each card shows the types in TypeScript or in Rust: pick one at the top of any card.
 </Rust>
-
-Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next check sees the new schema: a dropped column fails in the statement that names it, and in the code that reads it.
 
 ## Primitives [#primitives]
 
@@ -194,9 +208,7 @@ For every rule and edge case of each database, from 64-bit integers to time zone
 
 ## Named parameters [#naming]
 
-For convenience, there is some Reylo-specific syntax that can be used inside your `.sql` files. This syntax is transpiled into the idiomatic form for your database's dialect.
-
-Name a parameter with a colon, and Reylo infers its type from where it's used:
+Name a parameter with a colon, and Reylo infers its type from where it's used, and compiles it to your database's own placeholder:
 
 <InferenceCard>
 
@@ -253,8 +265,6 @@ A call to a function your application registers fails the type check, cast or no
 </Details>
 
 ## Column types
-
-Each column comes back with its type:
 
 <InferenceCard>
 
@@ -347,7 +357,7 @@ order by
 
 ## Dynamic filtering
 
-To filter a list by a form's values, pass them as one [JSON parameter](#typed-json). Its schema says what each filter takes and what it defaults to, and Reylo checks it before the query runs:
+To filter a list by a form's values, pass them as one [JSON parameter](#typed-json), which Reylo checks against its schema before the query runs:
 
 <InferenceCard>
 
@@ -625,7 +635,7 @@ An expression with no `as` has no name of its own, only what your database makes
 
 ## Window functions
 
-Reylo types each window function: a row number is never null, while `lag()` is null on the first row:
+Reylo types each window function:
 
 <InferenceCard>
 
@@ -694,7 +704,7 @@ select
 
 </InferenceCard>
 
-A lateral join runs its subquery once per row, here each user's latest post, or null for a user with none:
+A lateral join runs its subquery once per row:
 
 <InferenceCard>
 
@@ -1213,12 +1223,12 @@ returning id
 
 ## Nested inserts
 
-Users with their posts, in one parameter. The posts find their user by `email`, a unique key.
+Users with their posts, in one parameter.
 
 <DialectTabs>
 <Dialect value="Postgres">
 
-Postgres writes both tables in one statement: a `with` inserts the users, and the statement inserts the posts:
+Postgres writes both tables in one statement:
 
 <InferenceCard>
 

@@ -1,0 +1,1 @@
+Postgres can neither drop an enum's label nor change the type of a column a table is partitioned by: going back means rebuilding the table, a migration to write by hand.

@@ -5,7 +5,7 @@ description: How Reylo types SQL queries on MySQL. Each column's type in TypeScr
 
 <p className="dk-subheader">How Reylo types queries on MySQL</p>
 
-[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>. This page covers how it types and runs queries on MySQL: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>.
 
 | | |
 | --- | --- |
@@ -254,8 +254,6 @@ A `JSON` column is typed `Json`, any JSON value, unless a `JSON_SCHEMA_VALID` `C
 type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 ```
 
-Here `payload` is typed by its schema:
-
 ```ts twoslash tab="main.ts"
 import events from "./my_events.sql";
 
@@ -371,34 +369,6 @@ A `VECTOR`, new in MySQL 9, comes back as a `number[]` of 32-bit floats. A vecto
 - `STRING_TO_VECTOR('[1, 2.5, 0.1]')` → `[1, 2.5, 0.10000000149011612]`
 
 </Pairs>
-
-### Type descriptors
-
-How the engine writes each type.
-
-The engine gives every column its type in [Reylo Type Defs](/typedefs), as [`reylo analyze`](/cli#reylo-analyze) prints it. A column of each MySQL type:
-
-<Analyzed file="types.sql" dialect="mysql" format="types">
-
-```sql schema
-create table types (
-  `tinyint` tinyint, `boolean` boolean, `smallint` smallint, `mediumint` mediumint, `int` int,
-  `int unsigned` int unsigned, `bigint` bigint, `bigint unsigned` bigint unsigned, `year` year,
-  `float` float, `double` double, `decimal(10,2)` decimal(10,2),
-  `char(8)` char(8), `varchar(255)` varchar(255), `varchar(255) latin1` varchar(255) character set latin1,
-  `varchar(255) utf8mb3` varchar(255) character set utf8mb3, `text` text, `longtext` longtext,
-  `enum('a','b')` enum('a','b'), `set('a','b')` set('a','b'),
-  `binary(16)` binary(16), `blob` blob, `bit(7)` bit(7),
-  `date` date, `time(3)` time(3), `datetime(6)` datetime(6), `timestamp(3)` timestamp(3) null,
-  `json` json, `point` point
-)
-```
-
-```sql
-select * from types
-```
-
-</Analyzed>
 
 ## Nullability
 

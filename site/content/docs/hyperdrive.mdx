@@ -1,0 +1,40 @@
+---
+title: Cloudflare Hyperdrive
+description: How to use Reylo with Postgres or MySQL in a Cloudflare Worker through Hyperdrive. The drivers that work, the database the type check reads, and how soon a schema change shows.
+---
+
+<p className="dk-subheader">Reylo on Postgres and MySQL through Hyperdrive</p>
+
+Reylo runs in a Worker on Postgres and MySQL through Hyperdrive, Cloudflare's connection pool. Everything on the [Postgres](/postgres) and [MySQL](/mysql) pages holds through it. Set up the Vite plugin as on [Cloudflare D1](/d1#setup).
+
+| | |
+| --- | --- |
+| Postgres | `pg` or postgres.js, with the binding's connection string, and Drizzle over `pg` |
+| MySQL | `mysql2` or `mariadb`, with the binding's `host`, `port`, `user`, `password` and `database` |
+| The type check reads | Your development database, through [`direct_url`](/configuration#direct_url), never Hyperdrive |
+| Node's APIs | `pg`, postgres.js, `mysql2` and `mariadb` need a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag |
+
+## Postgres
+
+```ts title="worker.ts"
+import { Client } from "pg";
+import getUser from "./get_user.sql";
+
+export default {
+  async fetch(request: Request, env: { HYPERDRIVE: Hyperdrive }, ctx: ExecutionContext) {
+    const client = new Client({ connectionString: env.HYPERDRIVE.connectionString });
+    await client.connect();
+    const user = await getUser.run(client, { id: 1 });
+    ctx.waitUntil(client.end());
+    return Response.json(user);
+  },
+};
+```
+
+## MySQL
+
+Hyperdrive refuses prepared statements, so Reylo runs `mysql2` there through `query()`, with each value written into the statement ([`mysql2`](/mysql#mysql2)). Reylo runs `mariadb` without prepared statements wherever it runs ([`mariadb`](/mysql#mariadb)).
+
+## Schema changes
+
+Hyperdrive caches reads for 60 seconds by default, so the [check against schema changes](/typescript#when-the-schema-changes) sees a change about a minute after it lands.

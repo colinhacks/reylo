@@ -1,0 +1,1 @@
+A column named in another case is the same column to MySQL: the two schemas read alike, and the plan must be empty.

@@ -207,6 +207,11 @@ pub fn set_color(on: bool) {
     COLOR.store(on, Ordering::Relaxed);
 }
 
+/// Whether lines carry ANSI colors.
+pub fn color() -> bool {
+    COLOR.load(Ordering::Relaxed)
+}
+
 pub fn paint(style: &str, text: &str) -> String {
     if !COLOR.load(Ordering::Relaxed) {
         return text.to_string();
@@ -1617,6 +1622,20 @@ fn created_extensions(opts: &Options) -> Vec<String> {
     texts.iter().flat_map(|t| extensions_in(t)).collect()
 }
 
+/// The schemas the project's own files create.
+fn created_schemas(opts: &Options) -> Vec<String> {
+    static SCHEMA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_$-]+)"?"#).expect("a valid pattern"));
+    let mut texts = vec![opts.schema_text().unwrap_or_default()];
+    texts.extend(opts.migrations().map(|(files, _)| files.into_iter().map(|f| f.sql).collect::<Vec<_>>()).unwrap_or_default());
+    texts
+        .iter()
+        .flat_map(|t| {
+            let uncommented = crate::sql::tokenize(t, Dialect::Postgres).iter().map(|token| token.text.clone()).collect::<Vec<_>>().join(" ");
+            SCHEMA.captures_iter(&uncommented).map(|c| c[1].to_string()).filter(|s| !s.eq_ignore_ascii_case("authorization")).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The extensions a text creates.
 fn extensions_in(text: &str) -> Vec<String> {
     static EXTENSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+extension\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_-]+)"?"#).expect("a valid pattern"));
@@ -1703,6 +1722,7 @@ async fn shadow_server(db: &mut Db, opts: &Options) -> Result<Server, Error> {
     let mut server = Server::open(db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    server.leave_schemas(created_schemas(opts));
     Ok(server)
 }
 
@@ -3050,7 +3070,10 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
         written.push(shown(&file));
     }
     match written.as_slice() {
-        [one] if drafted.empty => log(&format!("{} Wrote {one}, empty: {} has nothing new, so it's for a change to data", paint("green", "✓"), drafted.target)),
+        // With schema.sql, any schema change goes there, so an empty migration is for data; with
+        // none, it is as much for a schema change written by hand.
+        [one] if drafted.empty && drafted.target.ends_with(".sql") => log(&format!("{} Wrote {one}, empty: {} has nothing new, so it's for a change to data", paint("green", "✓"), drafted.target)),
+        [one] if drafted.empty => log(&format!("{} Wrote {one}, empty, to write by hand: {} has nothing new", paint("green", "✓"), drafted.target)),
         [one] => log(&format!("{} Wrote {one}", paint("green", "✓"))),
         many => {
             if drafted.lock_safe {
@@ -3158,8 +3181,9 @@ fn described(loss: &str) -> String {
 /// one per statement, each with the comments written above it.
 #[cfg(feature = "cli")]
 fn plan_files(plan: &crate::diff::Plan, d: Dialect) -> Vec<String> {
+    // A file per transaction: one, or more where the plan commits partway.
     if d != Dialect::Mysql {
-        return vec![plan.sql()];
+        return plan.transactions().iter().map(|t| t.sql()).collect();
     }
     let mut files: Vec<String> = Vec::new();
     let mut pending = String::new();
@@ -3742,6 +3766,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    server.leave_schemas(created_schemas(opts));
     left_out_note(&server, log);
     db.close().await;
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
@@ -4309,6 +4334,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     // An empty database has no history to start: the first migration is `new`'s. The lock starts
     // empty, holding the checksum of the empty schema.sql the no migrations reach, so the project
     // keeps linear history from its first migration.
+    let spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     // Relations of the project's a superuser out of the role's reach owns are its to give first: no
     // file the role runs makes them as they are here.
@@ -4320,6 +4346,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         return Ok(refuse(&problems, log));
     }
     if !holds_a_schema(&lines?) {
+        drop(spinning);
         std::fs::create_dir_all(&opts.dir)?;
         std::fs::write(&opts.schema, "")?;
         lock::write(&opts.lock, &lock::Lock { schema: Some(lock::schema_sum("", "")), entries: vec![] })?;
@@ -4332,6 +4359,8 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         return Ok(0);
     }
     let sql = schema_as_sql(opts, schemas).await?;
+    // Recording init.sql replays it on a shadow database, which says so itself.
+    drop(spinning);
     let made_dir = !opts.dir.exists();
     std::fs::create_dir_all(&opts.dir)?;
     std::fs::write(&opts.schema, &sql)?;
@@ -4385,6 +4414,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 #[cfg(feature = "cli")]
 pub async fn db_introspect(opts: &Options, schemas: &[String]) -> Result<String, Error> {
     there(opts)?;
+    let _spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = match catalog(&mut db).await {
         Ok(lines) if holds_a_schema(&lines) => schema_as_sql_on(&mut db, opts, schemas).await,
@@ -4442,6 +4472,10 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
     result
 }
 
+/// What a push that failed after committing part of its plan says: an enum's labels, which what
+/// follows them uses, are committed first.
+const COMMITTED: &str = "The plan commits partway (an enum's new labels, before what uses them), so its first part is in place.";
+
 /// Why `take_to` left the database as it was.
 enum Unreached {
     /// The plan ran, but the database didn't then read as the target: how it differs.
@@ -4473,8 +4507,12 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
             Ok(Settled { renames, plan, .. }) => (renames, plan),
             Err(problems) => return Ok(Err(Unreached::Refused(problems))),
         };
+        let mut committed = false;
         for s in plan.runnable().chain(then) {
-            db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await?;
+            if let Err(e) = db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await {
+                return Err(if committed { Error(format!("{}\n{COMMITTED}", e.0)) } else { e });
+            }
+            committed |= s == crate::diff::COMMIT;
         }
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
@@ -5383,7 +5421,12 @@ async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Optio
 async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, applied: &[Migration], schema_sql: &str, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
     let d = db.dialect();
     let fail = |m: &str, error: String, log: Log<'_>| {
-        let problem = Problem::new("db-push-failed", m.to_string()).note(error);
+        let partway = error.contains(COMMITTED);
+        let problem = Problem::new("db-push-failed", m.to_string()).note(error.replace(&format!("\n{COMMITTED}"), ""));
+        if partway {
+            print_problems(&[problem.note(COMMITTED)], log);
+            return Ok(1);
+        }
         if d == Dialect::Mysql {
             print_problems(&[problem.note("MySQL commits each statement, so part of the push may be in place.")], log);
             return Ok(1);
@@ -5445,7 +5488,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
         log(&format!("{} This database matches {schema} and its migrations", paint("green", "✓")));
     } else {
         log(&format!("{} This database matches {schema}", paint("green", "✓")));
-        log(&format!("{} Not in a migration yet: reylo migrate new <name> writes it", paint("yellow", "!")));
+        log(&paint("dim", "· Not in a migration yet: reylo migrate new <name> writes it"));
     }
     if wrote {
         log(&format!("{} Wrote {}", paint("green", "✓"), shown(&opts.lock)));

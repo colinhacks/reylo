@@ -57,7 +57,7 @@ test("the migration commands and reylo run are the binary's, with their output a
   assert.equal(reylo(root, ["db", "--help"]).out, migrate.out);
   // The docs show the help as it is.
   // A checkout on Windows may write the page with CRLF line endings.
-  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrations.mdx"), "utf8").replaceAll("\r\n", "\n").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
+  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrate.mdx"), "utf8").replaceAll("\r\n", "\n").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
   const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
   assert.equal(run.status, 0, run.err);
   const db = new DatabaseSync(join(root, "app.db"));
@@ -120,8 +120,12 @@ test("reylo migrate init starts a project, and needs nothing in the project file
     const r = reylo(root, args);
     assert.equal(r.status, 0, `${args.join(" ")}: ${r.err}${r.out}`);
   }
-  // What db introspect prints is the schema init wrote, and it writes nothing.
-  assert.equal(reylo(root, ["db", "introspect"]).out, readFileSync(join(root, "reylo", "schema.sql"), "utf8"));
+  // What db introspect prints is the schema init wrote, and it writes nothing. Into a pipe it is the
+  // plain SQL alone: no colour, and no spinner on stderr.
+  const introspected = reylo(root, ["db", "introspect"]);
+  assert.equal(introspected.out, readFileSync(join(root, "reylo", "schema.sql"), "utf8"));
+  assert.doesNotMatch(introspected.out, /\x1b/);
+  assert.equal(introspected.err, "");
   // A key that has gone is refused, as any key the file can't have.
   writeFileSync(join(root, ".reylo.yaml"), "migrate:\n  lock: true\n");
   assert.notEqual(reylo(root, ["migrate", "status"]).status, 0);

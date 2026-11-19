@@ -4,11 +4,11 @@ import type { ReactNode } from 'react';
 import { CompareTable } from './compare-table';
 import { Completion } from './completion';
 import { Dialect, DialectSwitch, DialectTabs } from './dialect-tabs';
-import { Choice, Feature, Features, Way } from './feature-cards';
 import { Step, Steps } from './steps';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
 import { MigrationsDiagram } from './migrations-diagram';
+import { SchemaQuery } from './schema-query';
 import { InferenceCard, InferenceCardPlay, InferenceCardRow, InferenceCardTypes, InferenceLanguage, InferenceLanguages, LanguagePanel, LanguagePanels, LanguageSwitch } from './inference-card';
 import { Pairs, Rules } from './value-pairs';
 
@@ -22,8 +22,10 @@ export function getMDXComponents(components?: MDXComponents) {
     AgentPrompt: ({ children }: { children: ReactNode }) => <AgentPrompt title="Set up Reylo with an agent">{children}</AgentPrompt>,
     // The figure under How it works (components/how-it-works-diagram.tsx).
     HowItWorksDiagram,
-    // The records and commands of Reylo Migrate, at the top of the Migrations page (components/migrations-diagram.tsx).
+    // The records and commands of Reylo Migrate, at the top of the Reylo Migrate page (components/migrations-diagram.tsx).
     MigrationsDiagram,
+    // A query's code block with its schema folded inside it (components/schema-query.tsx).
+    SchemaQuery,
     // The badges and "Copy agent prompt" under the main page's subheader (components/hero.tsx).
     HeroActions,
     // The looping editor recording under them (components/hero.tsx).
@@ -47,12 +49,7 @@ export function getMDXComponents(components?: MDXComponents) {
     LanguageSwitch,
     LanguagePanels,
     LanguagePanel,
-    // The cards under /migrations' title (components/feature-cards.tsx).
-    Features,
-    Feature,
-    Choice,
-    Way,
-    // The vertical stepper on /migrations (components/steps.tsx).
+    // The vertical stepper on /migrate (components/steps.tsx).
     Steps,
     Step,
     // An editor's completion list over a Rust block (components/completion.tsx).

@@ -122,7 +122,7 @@ export interface TextType extends Base {
   pattern?: string;
   /** What the text is, as a media type (`text/html`): JSON Schema's `contentMediaType`. */
   media_type?: string;
-  /** What the text is, by JSON Schema's format name (`email`, `uri`, `hostname`, `ipv4`) or a source's own. It narrows the values, and a consumer that does not know a format ignores it. A format the format has a kind for is written as that kind: `date-time` is an `instant`, `uuid` a `uuid` and `binary` `bytes`. */
+  /** What the text is meant to be, by JSON Schema's format name (`email`, `uri`, `hostname`, `ipv4`) or a source's own. It is a name alone, which says nothing of the values: a rule every value keeps is written as a `pattern`. A consumer that does not know a format ignores it. A format the format has a kind for is written as that kind: `date-time` is an `instant`, `uuid` a `uuid` and `binary` `bytes`. */
   format?: string;
 }
 

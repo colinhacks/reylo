@@ -315,7 +315,7 @@ function tscProject(setup: string, files: Record<string, string>) {
   mkdirSync(join(root, "node_modules"));
   symlinkSync(ROOT, join(root, "node_modules", "reylo"));
   const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true };
-  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo", extensions: [".sql"] }], include: Object.keys(files).filter((name) => name.endsWith(".ts")) }));
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo" }], include: Object.keys(files).filter((name) => name.endsWith(".ts")) }));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(root, name), text);
   const db = (sql: string) => {
     const handle = new DatabaseSync(join(root, "app.db"));
