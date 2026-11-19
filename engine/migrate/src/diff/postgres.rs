@@ -1409,9 +1409,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     } else {
         ("''", "null::json", "'[]'::json")
     };
+    // Postgres 18 publishes a table's stored generated columns where a publication says so.
+    let generated = if version >= 180000 { "p.pubgencols = 's'" } else { "false" };
     for r in db
         .rows(&format!(
-            "select p.oid, format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root,
+            "select p.oid, format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root, {generated} as generated,
               concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end) as publish,
               format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}, {listed}) order by 1) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
               format('%s', {schemas}) as schemas
@@ -1439,6 +1441,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
         if r.flag("via_root") {
             with.push("publish_via_partition_root = true".into());
+        }
+        if r.flag("generated") {
+            with.push("publish_generated_columns = stored".into());
         }
         let def = format!(
             "{}{}",
@@ -2738,8 +2743,16 @@ impl Alterer for PostgresAlterer {
                     (_, b) => out.push(format!("alter publication {name} set {b}")),
                 }
                 if part(from, "with ") != part(to, "with ") {
-                    let root = to.extra.iter().any(|l| l.starts_with("with ") && l.contains("publish_via_partition_root = true"));
-                    out.push(format!("alter publication {name} set (publish = {}, publish_via_partition_root = {root})", literal(&part(to, "publish "))));
+                    let set = |o: &Object, option: &str| o.extra.iter().any(|l| l.starts_with("with ") && l.contains(option));
+                    let root = set(to, "publish_via_partition_root = true");
+                    // Named only where either side publishes generated columns, which a server older
+                    // than Postgres 18 has no option for.
+                    let generated = match (set(from, "publish_generated_columns = stored"), set(to, "publish_generated_columns = stored")) {
+                        (_, true) => ", publish_generated_columns = stored",
+                        (true, false) => ", publish_generated_columns = none",
+                        (false, false) => "",
+                    };
+                    out.push(format!("alter publication {name} set (publish = {}, publish_via_partition_root = {root}{generated})", literal(&part(to, "publish "))));
                 }
                 Some(out)
             }

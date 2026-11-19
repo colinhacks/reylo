@@ -3943,28 +3943,48 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             }
             // Foreign data wrappers and servers, which are in no schema, so pg_dump writes them only for a
             // whole database: what the dumped schemas' foreign tables are made on, an extension's and the
-            // platform's own aside. User mappings stay out, since their options hold passwords.
+            // platform's own aside, each with its grants, an owner that isn't the runner, and its comment.
+            // User mappings stay out, since their options hold passwords. They are made after the
+            // functions a wrapper names as its handler or validator, and before the foreign tables made
+            // on a server, both of which pg_dump writes: where its first foreign table is.
+            let me = "(select oid from pg_roles where rolname = current_user)";
             let options = |column: &str| format!("coalesce(' OPTIONS (' || (select string_agg(format('%I %L', split_part(x, '=', 1), substr(x, strpos(x, '=') + 1)), ', ') from unnest({column}) x) || ')', '')");
+            // Granted before the owner is set, which then grants them as the owner.
+            let grants = |acl: &str, owner: &str, on: &str, name: &str| {
+                format!(
+                    "coalesce((select array_agg(format('GRANT %s ON {on} %I TO %s%s', x.privilege_type, {name}, case when x.grantee = 0 then 'PUBLIC' else quote_ident(pg_get_userbyid(x.grantee)) end,
+                        case when x.is_grantable then ' WITH GRANT OPTION' else '' end) order by x.grantee, x.privilege_type) from aclexplode({acl}) x where x.grantee <> {owner}), '{{}}')"
+                )
+            };
+            let mut foreign: Vec<String> = Vec::new();
             for r in db
                 .rows(&format!(
-                    "select 0 as k, w.oid as id, format('CREATE FOREIGN DATA WRAPPER %I', w.fdwname) || coalesce(' HANDLER ' || nullif(w.fdwhandler::oid, 0)::regproc::text, '')
-                        || coalesce(' VALIDATOR ' || nullif(w.fdwvalidator::oid, 0)::regproc::text, '') || {} as s
+                    "select o.k, o.id, u.s from (
+                      select 0 as k, w.oid as id, array[format('CREATE FOREIGN DATA WRAPPER %I', w.fdwname) || coalesce(' HANDLER ' || nullif(w.fdwhandler::oid, 0)::regproc::text, '')
+                        || coalesce(' VALIDATOR ' || nullif(w.fdwvalidator::oid, 0)::regproc::text, '') || {}] || {}
+                        || array[case when w.fdwowner <> {me} then format('ALTER FOREIGN DATA WRAPPER %I OWNER TO %I', w.fdwname, pg_get_userbyid(w.fdwowner)) end,
+                          case when obj_description(w.oid, 'pg_foreign_data_wrapper') is not null then format('COMMENT ON FOREIGN DATA WRAPPER %I IS %L', w.fdwname, obj_description(w.oid, 'pg_foreign_data_wrapper')) end] as ss
                       from pg_foreign_data_wrapper w where {} and {}
                     union all
-                    select 1, s.oid, format('CREATE SERVER %I', s.srvname) || coalesce(' TYPE ' || quote_literal(s.srvtype), '') || coalesce(' VERSION ' || quote_literal(s.srvversion), '')
-                        || format(' FOREIGN DATA WRAPPER %I', w.fdwname) || {}
-                      from pg_foreign_server s join pg_foreign_data_wrapper w on w.oid = s.srvfdw where {} and {}
-                    order by k, id",
+                      select 1, sv.oid, array[format('CREATE SERVER %I', sv.srvname) || coalesce(' TYPE ' || quote_literal(sv.srvtype), '') || coalesce(' VERSION ' || quote_literal(sv.srvversion), '')
+                        || format(' FOREIGN DATA WRAPPER %I', w.fdwname) || {}] || {}
+                        || array[case when sv.srvowner <> {me} then format('ALTER SERVER %I OWNER TO %I', sv.srvname, pg_get_userbyid(sv.srvowner)) end,
+                          case when obj_description(sv.oid, 'pg_foreign_server') is not null then format('COMMENT ON SERVER %I IS %L', sv.srvname, obj_description(sv.oid, 'pg_foreign_server')) end]
+                      from pg_foreign_server sv join pg_foreign_data_wrapper w on w.oid = sv.srvfdw where {} and {}
+                    ) o, unnest(o.ss) with ordinality u(s, n) where u.s is not null
+                    order by o.k, o.id, u.n",
                     options("w.fdwoptions"),
+                    grants("w.fdwacl", "w.fdwowner", "FOREIGN DATA WRAPPER", "w.fdwname"),
                     crate::catalog::not_extension("pg_foreign_data_wrapper", "w"),
                     crate::catalog::not_platform("w.fdwowner"),
-                    options("s.srvoptions"),
-                    crate::catalog::not_extension("pg_foreign_server", "s"),
-                    crate::catalog::not_platform("s.srvowner")
+                    options("sv.srvoptions"),
+                    grants("sv.srvacl", "sv.srvowner", "FOREIGN SERVER", "sv.srvname"),
+                    crate::catalog::not_extension("pg_foreign_server", "sv"),
+                    crate::catalog::not_platform("sv.srvowner")
                 ))
                 .await?
             {
-                kept.push(r.text("s").to_string());
+                foreign.push(r.text("s").to_string());
             }
             // What every new database has already: its public schema, as initdb makes it.
             const AS_MADE: [&str; 4] = ["CREATE SCHEMA public", "CREATE SCHEMA IF NOT EXISTS public", "ALTER SCHEMA public OWNER TO pg_database_owner", "COMMENT ON SCHEMA public IS 'standard public schema'"];
@@ -3974,15 +3994,18 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 if s.starts_with("SET ") || s.starts_with("SELECT pg_catalog.set_config") || (s.starts_with("ALTER ") && s.ends_with(&own)) || platform_default(s) || s.starts_with("CREATE EXTENSION ") || AS_MADE.contains(&s) {
                     continue;
                 }
+                if s.starts_with("CREATE FOREIGN TABLE ") {
+                    kept.append(&mut foreign);
+                }
                 kept.push(match s.strip_prefix("CREATE SCHEMA ") {
                     Some(rest) if !rest.starts_with("IF NOT EXISTS ") => format!("CREATE SCHEMA IF NOT EXISTS {rest}"),
                     _ => s.to_string(),
                 });
             }
+            kept.append(&mut foreign);
             // Event triggers and publications, which are in no schema, so pg_dump writes neither for a
             // schema (and publications not at all here): the project's, which are compared, after the
             // functions and tables they name, an extension's and the platform's own aside.
-            let me = "(select oid from pg_roles where rolname = current_user)";
             let (columns, schemas) = if version >= 150000 {
                 (
                     "coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = c.oid and a.attnum = any(pr.prattrs::int2[])) || ')', '') || coalesce(' WHERE (' || pg_get_expr(pr.prqual, c.oid) || ')', '')",
@@ -3991,6 +4014,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             } else {
                 ("''", "null")
             };
+            // Whether a publication publishes its tables' stored generated columns is Postgres 18's.
+            let generated = if version >= 180000 { "case when p.pubgencols = 's' then ', publish_generated_columns = stored' else '' end" } else { "''" };
             for r in db
                 .rows(&format!(
                     "select 0 as k, et.evtname::text as name, format('CREATE EVENT TRIGGER %I ON %s', et.evtname, et.evtevent)
@@ -4007,8 +4032,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                           (select string_agg(format('TABLE %I.%I', n.nspname, c.relname) || {columns}, ', ' order by n.nspname, c.relname)
                             from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid),
                           {schemas}), '') end, '')
-                        || format(' WITH (publish = %L%s)', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end,
-                          case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end), case when p.pubviaroot then ', publish_via_partition_root = true' else '' end),
+                        || format(' WITH (publish = %L%s%s)', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end,
+                          case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end), case when p.pubviaroot then ', publish_via_partition_root = true' else '' end, {generated}),
                       null,
                       case when p.pubowner <> {me} then format('ALTER PUBLICATION %I OWNER TO %I', p.pubname, pg_get_userbyid(p.pubowner)) end,
                       case when obj_description(p.oid, 'pg_publication') is not null then format('COMMENT ON PUBLICATION %I IS %L', p.pubname, obj_description(p.oid, 'pg_publication')) end
