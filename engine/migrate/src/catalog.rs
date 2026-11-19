@@ -268,11 +268,24 @@ pub(crate) fn not_platform(owner: &str) -> String {
     format!("{} and not {}", not_named(owner), beyond_reach(owner))
 }
 
-/// A schema `alias` (a `pg_namespace` row) that is no platform's: none of [`PLATFORM_SCHEMAS`], and
-/// owned by no platform's owner.
+/// A schema `alias` (a `pg_namespace` row) that is no platform's: none of [`PLATFORM_SCHEMAS`] on a
+/// platform's database ([`platform_names`]), and owned by no platform's owner.
 pub(crate) fn not_platform_schema(alias: &str) -> String {
     let names = PLATFORM_SCHEMAS.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ");
-    format!("{alias}.nspname <> all (array[{names}]) and {}", not_platform_owned_schema(alias))
+    format!("({alias}.nspname <> all (array[{names}]) or not {}) and {}", platform_names(), not_platform_owned_schema(alias))
+}
+
+/// The setting that says whether the connected database is a platform's, `on` or `off`, which a
+/// shadow is given from its target: its server may be another (`shadow_url`), which has none of the
+/// platform's roles, and both sides of a comparison must read [`PLATFORM_SCHEMAS`] alike.
+pub const PLATFORM_SCHEMAS_SETTING: &str = "reylo.platform_schemas";
+
+/// Whether the connected database is a platform's, where [`PLATFORM_SCHEMAS`] are the platform's by
+/// name: as [`PLATFORM_SCHEMAS_SETTING`] says where it is set, else where the server has Supabase's
+/// administrator. On a server of no platform the names mean nothing: a project may make its own
+/// `auth` or `storage`.
+pub(crate) fn platform_names() -> String {
+    format!("(coalesce(nullif(current_setting('{PLATFORM_SCHEMAS_SETTING}', true), ''), case when exists (select 1 from pg_roles where rolname = 'supabase_admin') then 'on' else 'off' end) = 'on')")
 }
 
 /// A schema `alias` that no platform's owner owns: `public` never is, which Postgres 14 and older made

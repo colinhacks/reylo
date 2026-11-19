@@ -2806,6 +2806,7 @@ on!(
     an_extension_a_platform_role_owns_in_a_projects_schema_is_the_projects,
     init_writes_the_privileges_on_an_extensions_schema,
     a_platforms_schemas_by_name_are_left_out_whoever_owns_them,
+    a_projects_auth_and_storage_are_its_own_on_a_server_of_no_platform,
     a_change_by_hand_is_shown_alone_beside_a_function_of_many_lines,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
@@ -3451,6 +3452,9 @@ mod adversarial {
     /// project's: they are no change since its migrations, and a change made by hand is shown without
     /// them.
     pub async fn a_platforms_schemas_by_name_are_left_out_whoever_owns_them(mut p: P) {
+        // The database says it is a platform's, as a Supabase server's roles do: a role is the whole
+        // server's, and would make every scenario beside this one a platform's.
+        p.exec(&format!("alter database {} set reylo.platform_schemas = 'on'", p.name)).await;
         p.exec("create table users (id int primary key)").await;
         assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
         p.exec("create schema _realtime; create schema storage; alter default privileges in schema storage grant select on tables to public").await;
@@ -3463,6 +3467,26 @@ mod adversarial {
         let out = p.output();
         assert_has!(&out, r"create table hand");
         assert!(!out.contains("_realtime") && !out.contains("storage"), "{out}");
+    }
+
+    /// On a server of no platform, the names of a platform's schemas mean nothing: a project's own
+    /// `auth` and `storage`, each with a table, are pushed, written as a migration, run and checked
+    /// like any schema of its own.
+    pub async fn a_projects_auth_and_storage_are_its_own_on_a_server_of_no_platform(mut p: P) {
+        let sql = "create schema auth;\ncreate table auth.users (id int primary key);\ncreate schema storage;\ncreate table storage.objects (id int primary key, owner int references auth.users (id));\n";
+        p.schema(sql);
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from pg_class c join pg_namespace n on n.oid = c.relnamespace where (n.nspname, c.relname) in (('auth', 'users'), ('storage', 'objects'))").await[0].text("n"), "2");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "auth_and_storage", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let written = std::fs::read_to_string(p.dir.join("migrations").join(&p.files()[0])).unwrap();
+        assert!(written.contains("create schema auth") && written.contains("create schema storage") && written.contains("auth.users") && written.contains("storage.objects"), "{written}");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(q.rows("select count(*) as n from pg_namespace where nspname in ('auth', 'storage')").await[0].text("n"), "2");
     }
 
     /// A TimescaleDB hypertable, which `migrate new` writes as a plain table, is listed as unread by
