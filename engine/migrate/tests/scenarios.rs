@@ -3522,12 +3522,12 @@ mod adversarial {
     }
 
     pub async fn partitions_made_at_run_time_are_data(mut p: P) {
-        let schema = "create table events (id int, at date) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01'); create table metrics (id int, v int);";
+        let schema = "create table events (id int, at date) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01'); create table metrics (id int, v int); create table tagged (tag text);";
         p.schema(schema);
         p.file("20261027100000_events.sql", schema);
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         // pg_partman makes next year's partition, and TimescaleDB-like children inherit a table.
-        p.exec("create table events_2025 partition of events for values from ('2025-01-01') to ('2026-01-01'); insert into events values (1, '2025-03-01'); create table metrics_c1 () inherits (metrics); insert into metrics_c1 values (1, 2)").await;
+        p.exec("create table events_2025 partition of events for values from ('2025-01-01') to ('2026-01-01'); insert into events values (1, '2025-03-01'); create table metrics_c1 () inherits (metrics); insert into metrics_c1 values (1, 2); create table metrics_c2 () inherits (metrics, tagged); insert into metrics_c2 values (1, 2, 'x')").await;
         p.output();
         // The fingerprint leaves children out, so nothing has changed for deploy, or for check.
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
@@ -3537,9 +3537,10 @@ mod adversarial {
         // Development keeps them too, with their rows.
         assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
         let out = p.output();
-        assert!(!out.contains("events_2025") && !out.contains("metrics_c1"), "{out}");
+        assert!(!out.contains("events_2025") && !out.contains("metrics_c1") && !out.contains("metrics_c2"), "{out}");
         assert_eq!(p.rows("select * from events_2025").await.len(), 1);
         assert_eq!(p.rows("select * from metrics_c1").await.len(), 1);
+        assert_eq!(p.rows("select * from metrics_c2").await.len(), 1);
         // A partition a migration made, dropped at run time (a retention job's), is data too.
         p.exec("drop table events_2024").await;
         p.output();

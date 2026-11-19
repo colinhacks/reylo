@@ -190,6 +190,13 @@ pub trait Alterer: Send {
         let _ = (from, to, gone);
         None
     }
+    /// Where an object (`from`, as the target has it `to`) holds a column whose change it blocks,
+    /// but takes no rows of its own (a publication's column list or row filter), the statements that
+    /// take it off the column before the change and put it back after, as the target has it.
+    fn around(&self, from: &Object, to: &Object, under: &Object) -> Option<(Vec<String>, Vec<String>)> {
+        let _ = (from, to, under);
+        None
+    }
     /// Whether a change of `from` to `to` lets go of the objects of it that something else holds (a
     /// partition detached from its table, whose indexes are then its own to drop), so that their
     /// drops wait for the change rather than go before it.
@@ -424,7 +431,19 @@ pub fn is_child(o: &Object) -> bool {
 }
 
 fn parent_of(o: &Object) -> Option<String> {
-    o.extra.iter().find_map(|l| l.strip_prefix("partition of ").or_else(|| l.strip_prefix("inherits ")).map(|p| format!("table {}", p.split(' ').next().unwrap_or_default())))
+    // The first name the line writes, which a space or a comma ends outside quotes: a partition's
+    // table, or the first of the tables a child inherits from.
+    let first = |text: &str| -> String {
+        let mut quoted = false;
+        let end = text.char_indices().find(|(_, c)| {
+            if *c == '"' {
+                quoted = !quoted;
+            }
+            !quoted && (*c == ' ' || *c == ',')
+        });
+        end.map_or(text, |(k, _)| &text[..k]).to_string()
+    };
+    o.extra.iter().find_map(|l| l.strip_prefix("partition of ").or_else(|| l.strip_prefix("inherits ")).map(|p| format!("table {}", first(p))))
 }
 
 /// `schema` without its partitions (and inheriting children) of a table `reference` has that
@@ -931,6 +950,13 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             // new type those whose bodies read it: each is made again around the change, as what
             // is on a column is.
             let made_again = remade.contains(&id) && d.kind == Some(Kind::Function);
+            // What takes its column off and puts it back around the change keeps itself.
+            if !replaced && !owned && !drops.contains(*dependent) {
+                if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.around(d, t, &from.objects[&id])) {
+                    hooks.insert(dependent.to_string(), hook);
+                    continue;
+                }
+            }
             if !replaced && !owned && !made_again && !matches!(d.kind, Some(Kind::View | Kind::Rule | Kind::Policy | Kind::Trigger)) {
                 continue;
             }
@@ -1071,10 +1097,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     }
                 }
                 // A column a table is to take from another (a parent's), on a table the plan
-                // changes, is added before the change, which may need it there (a parent taken).
-                let taken_from_another = matches!(op, Op::Create(_))
-                    && o.kind == Some(Kind::Column)
-                    && o.deps.iter().any(|d| to.objects.get(d).is_some_and(|c| c.kind == Some(Kind::Column) && c.owner != o.owner));
+                // changes, is added (or changed, where it was the table's alone) before the change,
+                // which may need it there as the other has it (a parent taken).
+                let crosses = |o: &Object, s: &Schema| o.deps.iter().any(|d| s.objects.get(d).is_some_and(|c| c.kind == Some(Kind::Column) && c.owner != o.owner));
+                let taken_from_another = o.kind == Some(Kind::Column) && crosses(o, to) && (matches!(op, Op::Create(_)) || from.objects.get(id).is_some_and(|f| !crosses(f, from)));
                 match o.owner.as_ref().and_then(|w| find(Op::Alter(w.clone()))).filter(|_| taken_from_another) {
                     Some(j) => {
                         after[j].insert(k);
@@ -1096,6 +1122,20 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     if let Some(x) = taken_by.get(d.as_str()).filter(|x| *x != id) {
                         if let Some(j) = find(Op::Alter(x.clone())) {
                             after[k].insert(j);
+                        }
+                    }
+                }
+                // A change that makes objects itself needs what they need, but for what is its own
+                // or what it makes too.
+                if matches!(op, Op::Alter(_)) {
+                    for (along, taker) in &taken_by {
+                        if taker != id {
+                            continue;
+                        }
+                        for d in to.objects.get(along).into_iter().flat_map(|a| a.deps.iter()) {
+                            if d != id && taken_by.get(d) != Some(id) && to.objects.get(d).is_some_and(|x| x.owner.as_deref() != Some(id.as_str())) {
+                                needs.insert(d);
+                            }
                         }
                     }
                 }
@@ -1224,6 +1264,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                             if let Some(j) = drop_of(d) {
                                 after[k].insert(j);
                             }
+                            // And after what takes itself off it.
+                            if let Some(j) = find(Op::Unhook(d.to_string())) {
+                                after[k].insert(j);
+                            }
                         }
                     }
                 }
@@ -1262,6 +1306,20 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // After the drops (and the changes) of what depends on it, or on anything it owns:
                 // another table's foreign key depends on this table's column.
                 let reach: Vec<&str> = with_owned(from, id).into_iter().flat_map(|o| dependents.get(o).into_iter().flatten().copied()).collect();
+                // What the drop takes with it down a table's children (a child's inherited column, and
+                // its children's) is kept before it, where the target keeps it.
+                let (mut down, mut seen): (Vec<&str>, BTreeSet<&str>) = (reach.clone(), BTreeSet::new());
+                while let Some(d) = down.pop() {
+                    if !seen.insert(d) {
+                        continue;
+                    }
+                    if let Some(j) = find(Op::Unhook(d.to_string())) {
+                        after[k].insert(j);
+                    }
+                    if from.objects.get(d).is_some_and(|c| c.kind == Some(Kind::Column)) && held_by_another(d) {
+                        down.extend(dependents.get(d).into_iter().flatten().copied());
+                    }
+                }
                 // A column another table takes from this one (a child's), on a table that keeps it,
                 // goes with this one: its own drop is after, for what is left.
                 let goes_along = |d: &str| from.objects.get(d).is_some_and(|c| c.kind == Some(Kind::Column)) && held_by_another(d) && !from.objects[d].owner.as_deref().is_some_and(|w| releases(w));

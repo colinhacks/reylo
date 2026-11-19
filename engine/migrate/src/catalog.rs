@@ -43,13 +43,14 @@ fn children(lines: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The qualified name `text` opens with, as `format('%I.%I')` writes it: quoted parts keep their spaces.
+/// The qualified name `text` opens with, as `format('%I.%I')` writes it: quoted parts keep their
+/// spaces, and a comma outside quotes ends it, as in a list of the tables a child inherits from.
 fn name_at(text: &str) -> &str {
     let mut quoted = false;
     for (k, c) in text.char_indices() {
         match c {
             '"' => quoted = !quoted,
-            ' ' if !quoted => return &text[..k],
+            ' ' | ',' if !quoted => return &text[..k],
             _ => {}
         }
     }
@@ -1391,6 +1392,10 @@ mod tests {
         let live = vec![reference[0].clone(), "table public.p partition of public.t FOR VALUES FROM (0) TO (10)".into(), "owner public.p lacks SELECT".into()];
         assert_eq!(without_extra_children(&live, &reference), reference);
         assert_eq!(without_children(&live), reference);
+        // A child of several tables is one of its first's.
+        let reference = vec!["table public.a".to_string(), "table public.b".into()];
+        let live = [reference.clone(), vec!["table public.c inherits public.a, public.b".into(), "column public.c.x integer".into()]].concat();
+        assert_eq!(without_extra_children(&live, &reference), reference);
     }
 
     #[test]
