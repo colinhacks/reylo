@@ -134,7 +134,7 @@ fn with_names(q: &Query) -> Vec<Cte> {
 /// its column list, or else each item of its (first) select list that is a column or has an
 /// alias. An item named by its expression's text, and a wildcard, are left out, which only
 /// leaves a read of them unproven.
-fn output_columns(q: &Query, list: &[ast::TableAliasColumnDef]) -> HashSet<String> {
+pub(crate) fn output_columns(q: &Query, list: &[ast::TableAliasColumnDef]) -> HashSet<String> {
     if !list.is_empty() {
         return list.iter().map(|c| c.name.value.to_ascii_lowercase()).collect();
     }
@@ -758,14 +758,16 @@ impl Builder<'_> {
 
     /// Whether a query may aggregate with no GROUP BY, and so return one row over no rows: its
     /// select list or HAVING calls an aggregate ([`crate::mysql::lone_aggregate`]), or an item of
-    /// its select list names one that is no scalar subquery's own ([`Builder::own_aggregates`]),
-    /// as an aggregate of the query's own inside a subquery is.
+    /// its select list or its HAVING names one that is no scalar subquery's own
+    /// ([`Builder::own_aggregates`]), as an aggregate of the query's own inside a subquery is.
     fn may_be_rowless(&mut self, select: &ast::Select) -> bool {
         let ast::GroupByExpr::Expressions(keys, modifiers) = &select.group_by else { return false };
         if !keys.is_empty() || !modifiers.is_empty() {
             return false;
         }
-        crate::mysql::lone_aggregate(select) || select.projection.iter().any(|i| matches!(i, SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } if self.own_aggregates(e) > 0))
+        crate::mysql::lone_aggregate(select)
+            || select.projection.iter().any(|i| matches!(i, SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } if self.own_aggregates(e) > 0))
+            || select.having.as_ref().is_some_and(|having| self.own_aggregates(having) > 0)
     }
 
     /// Whether the walk stands in the select list of a query that groups or aggregates, outside the

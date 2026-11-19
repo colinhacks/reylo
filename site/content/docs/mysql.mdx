@@ -409,6 +409,7 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 - **Tests through `coalesce`, `ifnull` and `<=>`** don't make their column non-null, and neither does a test under an `or` that tests another column.
 - **`bit_and`, `bit_or` and `bit_xor`** are never null, even over no rows, and `json_arrayagg` and `json_objectagg` never are in a group or over a window.
 - **`WITH ROLLUP`** adds summary rows whose grouped columns are `NULL`, so their types include `null`.
+- **An aggregate in a subquery that reads only the outer query's columns**, as `count(u.name)` in `(select count(u.name) from posts)`, aggregates the outer query, which then returns one row even where it reads none, its other columns `NULL`.
 
 To say a value is never null, write `coalesce(x, …)`, `ifnull(x, …)` or `where x is not null`.
 

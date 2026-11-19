@@ -801,6 +801,7 @@ impl Proven {
 /// subqueries (`mysql_shape`), and its derived tables' and WITH queries' own columns
 /// ([`through_derived`]). `depth` is how many derived tables the query is inside.
 fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Proven> {
+    let written = q;
     let mut pending = false;
     let mut materialized = crate::mysql_derived::materialized(q, views);
     let mut outcome = materialized.as_ref().map(|m| host.describe(&m.to_string()));
@@ -911,8 +912,15 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
         None => pending = true,
     }
     // The columns of the tables the subquery items of an aggregate with no GROUP BY read, which
-    // say whether such a subquery reads the row it stands in ([`rowless`]).
-    let read = match rowless_tables(q) {
+    // say whether such a subquery reads the row it stands in ([`rowless`]), and of those the
+    // queries nested in the select list and the HAVING read, which say whose aggregate a call
+    // there is ([`hides_aggregate`]), read as written: the copy reads each view through a derived
+    // table, whose columns a wildcard hides.
+    let mut tables = rowless_tables(q);
+    hides_aggregate(written, &Default::default(), &mut tables);
+    tables.sort_unstable();
+    tables.dedup();
+    let read = match tables {
         tables if tables.is_empty() => Some(Default::default()),
         tables => table_columns(host, &tables),
     };
@@ -933,7 +941,9 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
             (name.clone(), ty, non_null)
         })
         .collect();
-    let (rowless, rowless_flagged) = rowless(q, described.columns.len(), &read.unwrap_or_default());
+    let read = read.unwrap_or_default();
+    let hidden = hides_aggregate(written, &read, &mut Vec::new());
+    let (rowless, rowless_flagged) = rowless(q, described.columns.len(), &read, hidden);
     Some(Proven { flags: described.columns.iter().map(|c| c.flags & 1 != 0).collect(), columns: described.columns, not_null, shaped, rowless, rowless_flagged })
 }
 
@@ -949,10 +959,11 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
 /// Beside the positions, whether the server's own flags hold for them: it flags such a column
 /// nullable where the select list or the HAVING calls the aggregate itself, which it knows before
 /// it reads any column. An outer query's aggregate in a subquery's WHERE it finds only on reading
-/// that subquery, and the columns before it keep the flags of a query that is no aggregate.
-fn rowless(q: &Query, width: usize, columns: &crate::mysql_shape::Columns) -> (Vec<usize>, bool) {
+/// that subquery, and the columns before it keep the flags of a query that is no aggregate; so
+/// does one in a subquery's select list (`hidden`, [`hides_aggregate`]).
+fn rowless(q: &Query, width: usize, columns: &crate::mysql_shape::Columns, hidden: bool) -> (Vec<usize>, bool) {
     let SetExpr::Select(s) = q.body.as_ref() else { return (Vec::new(), false) };
-    if !lone_aggregate(s) {
+    if !lone_aggregate(s) && !hidden {
         return (Vec::new(), false);
     }
     let flagged = s.having.as_ref().is_some_and(has_aggregate) || s.projection.iter().filter_map(item_expr).any(has_aggregate);
@@ -1071,6 +1082,317 @@ pub(crate) fn calls_aggregate(e: &Expr) -> bool {
         Expr::Subquery(q) | Expr::Exists { subquery: q, .. } => hidden(q),
         Expr::InSubquery { expr, subquery, .. } => calls_aggregate(expr) || hidden(subquery),
         _ => crate::mysql_shape::aggregates_in(&e.to_string()).0 > 0,
+    }
+}
+
+/// Whether a SELECT with no GROUP BY is an aggregate by a call written in a query nested in its
+/// select list or its HAVING: MySQL aggregates a call in the query block it is written in unless
+/// every column its arguments read (inside a subquery among them, every one that subquery's own
+/// FROM does not bind) is bound outside that block, and one is; it then belongs to the innermost
+/// block that binds one. A derived table's own block takes the FROM it stands in as its own, as a
+/// LATERAL reference to a table beside it is aggregated in it (measured on 8.4.11). A column binds
+/// where the engine knows it does: a name qualified with a FROM item's own name as written, or a
+/// bare name a table has by the catalog (`columns`) or a derived table's select list names; else
+/// it is taken to bind further out, which only makes the call more likely the outer query's, and
+/// a column bound nowhere the walk sees, or a part it does not read, binds at this query. The
+/// tables whose columns the walk needed and `columns` did not hold go into `wanted`.
+pub(crate) fn hides_aggregate(q: &Query, columns: &crate::mysql_shape::Columns, wanted: &mut Vec<String>) -> bool {
+    let SetExpr::Select(s) = q.body.as_ref() else { return false };
+    if !matches!(&s.group_by, GroupByExpr::Expressions(keys, modifiers) if keys.is_empty() && modifiers.is_empty()) {
+        return false;
+    }
+    // A list and a HAVING whose text names no aggregate hide none.
+    if !s.projection.iter().filter_map(item_expr).chain(s.having.iter()).any(|e| crate::mysql_shape::aggregates_in(&e.to_string()).0 > 0) {
+        return false;
+    }
+    let ctes = q.with.iter().flat_map(|w| w.cte_tables.iter().map(cte_columns)).collect();
+    let mut owners = Owners { columns, levels: vec![Vec::new()], ctes, wanted: Vec::new(), reading: None, found: false };
+    for e in s.projection.iter().filter_map(item_expr).chain(s.having.iter()) {
+        owners.expr(e);
+    }
+    wanted.extend(owners.wanted);
+    owners.found
+}
+
+/// A FROM item as a column reference resolves against it: the name its columns are qualified
+/// with, and the names (in lower case) of the columns it certainly has, where those are known.
+type FromItem = (String, Option<HashSet<String>>);
+
+/// The walk of [`hides_aggregate`].
+struct Owners<'c> {
+    columns: &'c crate::mysql_shape::Columns,
+    /// The FROM items of each query block the walk stands in, the statement's own (index 0,
+    /// left empty: a column bound there or nowhere is the statement's alike) first.
+    levels: Vec<Vec<FromItem>>,
+    /// The WITH queries in scope, outermost first, each by its name as written and its columns
+    /// ([`cte_columns`]): a table of such a name is no catalog table.
+    ctes: Vec<(String, HashSet<String>)>,
+    wanted: Vec<String>,
+    /// While reading an aggregate's arguments: the level it is written at, and the level each
+    /// column they read binds at, those its own subqueries bind left out.
+    reading: Option<(usize, Vec<usize>)>,
+    /// Whether an aggregate nested in the statement's select list or HAVING is, or may be, the
+    /// statement's.
+    found: bool,
+}
+
+impl Owners<'_> {
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Identifier(i) => self.reference(std::slice::from_ref(&i.value)),
+            Expr::CompoundIdentifier(parts) => self.reference(&parts.iter().map(|p| p.value.clone()).collect::<Vec<_>>()),
+            Expr::Value(_) | Expr::TypedString { .. } => {}
+            Expr::Function(f) => self.function(f),
+            Expr::Nested(inner)
+            | Expr::UnaryOp { expr: inner, .. }
+            | Expr::Cast { expr: inner, .. }
+            | Expr::Collate { expr: inner, .. }
+            | Expr::IsNull(inner)
+            | Expr::IsNotNull(inner)
+            | Expr::IsTrue(inner)
+            | Expr::IsNotTrue(inner)
+            | Expr::IsFalse(inner)
+            | Expr::IsNotFalse(inner)
+            | Expr::IsUnknown(inner)
+            | Expr::IsNotUnknown(inner) => self.expr(inner),
+            Expr::BinaryOp { left, right, .. } | Expr::IsDistinctFrom(left, right) | Expr::IsNotDistinctFrom(left, right) => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Like { expr, pattern, .. } | Expr::ILike { expr, pattern, .. } | Expr::RLike { expr, pattern, .. } | Expr::SimilarTo { expr, pattern, .. } => {
+                self.expr(expr);
+                self.expr(pattern);
+            }
+            Expr::Between { expr, low, high, .. } => {
+                self.expr(expr);
+                self.expr(low);
+                self.expr(high);
+            }
+            Expr::InList { expr, list, .. } => {
+                self.expr(expr);
+                list.iter().for_each(|x| self.expr(x));
+            }
+            Expr::Case { operand, conditions, else_result, .. } => {
+                for part in operand.as_deref().into_iter().chain(conditions.iter().flat_map(|c| [&c.condition, &c.result])).chain(else_result.as_deref()) {
+                    self.expr(part);
+                }
+            }
+            Expr::Tuple(items) => items.iter().for_each(|x| self.expr(x)),
+            Expr::Subquery(q) | Expr::Exists { subquery: q, .. } => self.query(q, None),
+            Expr::InSubquery { expr, subquery, .. } => {
+                self.expr(expr);
+                self.query(subquery, None);
+            }
+            // A part the walk does not read: a column it reads may bind anywhere, and an aggregate
+            // it names may be the statement's.
+            _ => match &mut self.reading {
+                Some((_, levels)) => levels.push(0),
+                None => self.found |= crate::mysql_shape::aggregates_in(&e.to_string()).0 > 0,
+            },
+        }
+    }
+
+    /// A column an aggregate's arguments read, at the level it binds at.
+    fn reference(&mut self, parts: &[String]) {
+        let Some((top, _)) = self.reading else { return };
+        let at = (0..self.levels.len())
+            .rev()
+            .find(|&i| {
+                let items = &self.levels[i];
+                match parts {
+                    [qualifier, _] => items.iter().any(|(name, _)| name == qualifier),
+                    [column] => {
+                        let column = column.to_ascii_lowercase();
+                        items.iter().any(|(_, columns)| columns.as_ref().is_some_and(|c| c.contains(&column)))
+                    }
+                    _ => false,
+                }
+            })
+            .unwrap_or(0);
+        if at <= top {
+            if let Some((_, levels)) = &mut self.reading {
+                levels.push(at);
+            }
+        }
+    }
+
+    fn function(&mut self, f: &ast::Function) {
+        let top = self.levels.len() - 1;
+        if f.over.is_none() && AGGREGATES.contains(&builtin(f).as_str()) && self.reading.is_none() && top > 0 {
+            self.reading = Some((top, Vec::new()));
+            self.arguments(f);
+            let (_, levels) = self.reading.take().expect("reading an aggregate's arguments");
+            // The innermost block a column binds at, where none binds at the call's own.
+            self.found |= levels.iter().max() == Some(&0);
+        }
+        self.arguments(f);
+        if let Some(ast::WindowType::WindowSpec(spec)) = &f.over {
+            for e in spec.partition_by.iter().chain(spec.order_by.iter().map(|o| &o.expr)) {
+                self.expr(e);
+            }
+        }
+    }
+
+    fn arguments(&mut self, f: &ast::Function) {
+        match &f.args {
+            ast::FunctionArguments::None => {}
+            ast::FunctionArguments::Subquery(q) => self.query(q, None),
+            ast::FunctionArguments::List(list) => {
+                for arg in &list.args {
+                    match arg {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) | FunctionArg::Named { arg: FunctionArgExpr::Expr(x), .. } | FunctionArg::ExprNamed { arg: FunctionArgExpr::Expr(x), .. } => self.expr(x),
+                        // `count(*)` reads no column.
+                        FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => {}
+                        other => self.unread(&other.to_string()),
+                    }
+                }
+                for clause in &list.clauses {
+                    match clause {
+                        ast::FunctionArgumentClause::OrderBy(order) => order.iter().for_each(|o| self.expr(&o.expr)),
+                        ast::FunctionArgumentClause::Limit(x) | ast::FunctionArgumentClause::Where(x) => self.expr(x),
+                        ast::FunctionArgumentClause::Separator(_) => {}
+                        other => self.unread(&other.to_string()),
+                    }
+                }
+            }
+        }
+        if let Some(filter) = &f.filter {
+            self.expr(filter);
+        }
+        for o in &f.within_group {
+            self.expr(&o.expr);
+        }
+    }
+
+    /// A part of a call the walk does not read ([`Owners::expr`]).
+    fn unread(&mut self, text: &str) {
+        match &mut self.reading {
+            Some((_, levels)) => levels.push(0),
+            None => self.found |= crate::mysql_shape::aggregates_in(text).0 > 0,
+        }
+    }
+
+    /// A query nested where the walk stands; `lateral`, for a derived table, the FROM it stands
+    /// in, whose items it reads as its own.
+    fn query(&mut self, q: &Query, lateral: Option<Vec<FromItem>>) {
+        let depth = self.ctes.len();
+        if let Some(with) = &q.with {
+            self.ctes.extend(with.cte_tables.iter().map(cte_columns));
+            for cte in &with.cte_tables {
+                self.query(&cte.query, None);
+            }
+        }
+        let order: Vec<&Expr> = match q.order_by.as_ref().map(|o| &o.kind) {
+            Some(ast::OrderByKind::Expressions(exprs)) => exprs.iter().map(|o| &o.expr).collect(),
+            _ => Vec::new(),
+        };
+        self.body(&q.body, &order, lateral);
+        self.ctes.truncate(depth);
+    }
+
+    fn body(&mut self, body: &SetExpr, order: &[&Expr], lateral: Option<Vec<FromItem>>) {
+        match body {
+            SetExpr::Select(s) => self.select(s, order, lateral),
+            SetExpr::Query(q) => self.query(q, lateral),
+            SetExpr::SetOperation { left, right, .. } => {
+                self.body(left, &[], lateral.clone());
+                self.body(right, &[], lateral.clone());
+                // A set operation's ORDER BY names its output columns.
+                self.levels.push(lateral.unwrap_or_default());
+                order.iter().for_each(|e| self.expr(e));
+                self.levels.pop();
+            }
+            SetExpr::Values(values) => values.rows.iter().flat_map(|row| &row.content).for_each(|e| self.expr(e)),
+            other => self.unread(&other.to_string()),
+        }
+    }
+
+    fn select(&mut self, s: &Select, order: &[&Expr], lateral: Option<Vec<FromItem>>) {
+        let mut items = lateral.unwrap_or_default();
+        let mut factors: Vec<&TableFactor> = Vec::new();
+        let mut ons: Vec<&Expr> = Vec::new();
+        for t in &s.from {
+            factors.push(&t.relation);
+            for j in &t.joins {
+                factors.push(&j.relation);
+                ons.extend(join_on(&j.join_operator));
+            }
+        }
+        let mut derived: Vec<&Query> = Vec::new();
+        while let Some(factor) = factors.pop() {
+            match factor {
+                TableFactor::Table { name, alias, args: None, .. } => {
+                    let table = name.0.last().and_then(|p| p.as_ident()).map(|i| i.value.clone());
+                    // A WITH query hides a table of its name; only one named exactly as the
+                    // reference names it is surely the one read.
+                    let known = match name.0.as_slice() {
+                        [ast::ObjectNamePart::Identifier(t)] if alias.as_ref().is_none_or(|a| a.columns.is_empty()) => match self.ctes.iter().rev().find(|(cte, _)| cte.eq_ignore_ascii_case(&t.value)) {
+                            Some((cte, columns)) if *cte == t.value => Some(columns.clone()),
+                            Some(_) => None,
+                            None => match self.columns.get(&t.value) {
+                                Some(columns) => Some(columns.clone()),
+                                None => {
+                                    self.wanted.push(t.value.clone());
+                                    None
+                                }
+                            },
+                        },
+                        _ => None,
+                    };
+                    if let Some(qualifier) = alias.as_ref().map(|a| a.name.value.clone()).or(table) {
+                        items.push((qualifier, known));
+                    }
+                }
+                TableFactor::Derived { subquery, alias, .. } => {
+                    if let Some(alias) = alias {
+                        items.push((alias.name.value.clone(), Some(crate::mysql_shape::output_columns(subquery, &alias.columns))));
+                    }
+                    derived.push(subquery);
+                }
+                TableFactor::NestedJoin { table_with_joins, alias } => {
+                    if let Some(alias) = alias {
+                        items.push((alias.name.value.clone(), None));
+                    }
+                    factors.push(&table_with_joins.relation);
+                    for j in &table_with_joins.joins {
+                        factors.push(&j.relation);
+                        ons.extend(join_on(&j.join_operator));
+                    }
+                }
+                TableFactor::Table { alias: Some(alias), .. } | TableFactor::JsonTable { alias: Some(alias), .. } | TableFactor::Function { alias: Some(alias), .. } | TableFactor::UNNEST { alias: Some(alias), .. } => items.push((alias.name.value.clone(), None)),
+                _ => {}
+            }
+        }
+        self.levels.push(items);
+        let group_by: Vec<&Expr> = match &s.group_by {
+            GroupByExpr::Expressions(keys, _) => keys.iter().collect(),
+            GroupByExpr::All(_) => Vec::new(),
+        };
+        let exprs = s.projection.iter().filter_map(item_expr).chain(s.selection.iter()).chain(s.having.iter()).chain(s.qualify.iter()).chain(group_by).chain(ons).chain(order.iter().copied());
+        for e in exprs {
+            self.expr(e);
+        }
+        let here = self.levels.pop().unwrap_or_default();
+        // A derived table reads this query's FROM as its own block, and the blocks around it as
+        // outer ones.
+        for q in derived {
+            self.query(q, Some(here.clone()));
+        }
+    }
+}
+
+/// A WITH query's name as written, and the names of its columns that are certain
+/// ([`crate::mysql_shape::output_columns`]).
+fn cte_columns(cte: &ast::Cte) -> (String, HashSet<String>) {
+    (cte.alias.name.value.clone(), crate::mysql_shape::output_columns(&cte.query, &cte.alias.columns))
+}
+
+/// The ON condition of a join, where it has one.
+fn join_on(op: &ast::JoinOperator) -> Option<&Expr> {
+    use ast::JoinOperator::*;
+    match op {
+        Join(ast::JoinConstraint::On(e)) | Inner(ast::JoinConstraint::On(e)) | Left(ast::JoinConstraint::On(e)) | LeftOuter(ast::JoinConstraint::On(e)) | Right(ast::JoinConstraint::On(e)) | RightOuter(ast::JoinConstraint::On(e)) | FullOuter(ast::JoinConstraint::On(e)) | CrossJoin(ast::JoinConstraint::On(e)) | StraightJoin(ast::JoinConstraint::On(e)) => Some(e),
+        _ => None,
     }
 }
 
@@ -3399,6 +3721,55 @@ mod tests {
         // The server runs what a version comment holds.
         let (analysis, _) = analyzed("select id from users /*!80000 where id = 1 */", one.clone(), default);
         assert_eq!(analysis.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), vec![(10, 21, 24)]);
+    }
+
+    #[test]
+    fn an_aggregate_in_a_subquery_over_columns_of_the_query_around_alone_is_that_querys() {
+        let columns: crate::mysql_shape::Columns = [("users", &["id", "name"][..]), ("posts", &["id", "user_id", "title"][..]), ("comments", &["id", "post_id", "body", "created_at"][..])]
+            .into_iter()
+            .map(|(table, names)| (table.to_string(), names.iter().map(|n| n.to_string()).collect()))
+            .collect();
+        let hides = |sql: &str| {
+            let mut v = Parser::parse_sql(&MySqlDialect {}, sql).unwrap();
+            let Statement::Query(q) = v.pop().unwrap() else { panic!("not a query") };
+            let mut wanted = Vec::new();
+            (hides_aggregate(&q, &columns, &mut wanted), wanted)
+        };
+        for sql in [
+            "select u.id, (select count(u.name) from posts p limit 1) as n from users u",
+            "select u.id, (select json_object('n', count(*), 'a', json_arrayagg((select json_object('c', count(*), 'k', u.name) from posts p))) from users x where false) as o from users u",
+            "select u.id from users u having (select count(u.id) from posts limit 1) >= 0",
+            "select u.id, exists (select max(u.id) from posts limit 1) as e from users u",
+            "select u.id, (select count(u.id) + count(p.id) from posts p limit 1) as n from users u",
+            // A derived table nested in a subquery reads the statement's columns as outer ones.
+            "select u.id, (select d.c from (select count(u.id) as c from posts p) d limit 1) as x from users u",
+            // `name` is no column of `posts`, and the columns of `d` are not known.
+            "select u.id, (select count(name) from posts limit 1) as n from users u",
+            "select p.id, (select count(body) from (select * from comments) d) as n from posts p",
+        ] {
+            assert!(hides(sql).0, "{sql}");
+        }
+        for sql in [
+            "select p.id, (select count(*) from comments c where c.post_id = p.id) as n from posts p",
+            "select p.id, (select max(created_at) from comments where post_id = p.id) as last from posts p",
+            "select p.id, (select count(c.id) from comments c where c.post_id = p.id) as n from posts p",
+            "select u.id, (select count(x.id) from (select id from posts) x) as n from users u",
+            // The middle query's, which binds `p`.
+            "select u.id, (select (select count(p.title) from comments c limit 1) from posts p where p.user_id = u.id limit 1) as n from users u",
+            "select u.id, count(*) as n from users u group by u.id",
+            "select id, (select title from posts limit 1) as t from users",
+            // A WITH query's columns are its select list's or its column list's.
+            "with p as (select id, title from posts) select u.id, (select count(title) from p where false) as n from users u",
+            "select u.id, (with r (k) as (select id from posts) select count(k) from r) as n from users u",
+        ] {
+            assert!(!hides(sql).0, "{sql}");
+        }
+        // The tables whose columns say where a bare name binds.
+        let mut v = Parser::parse_sql(&MySqlDialect {}, "select p.id, (select max(created_at) from comments where post_id = p.id) as last from posts p").unwrap();
+        let Statement::Query(q) = v.pop().unwrap() else { panic!("not a query") };
+        let mut wanted = Vec::new();
+        assert!(hides_aggregate(&q, &Default::default(), &mut wanted));
+        assert_eq!(wanted, ["comments"]);
     }
 
     #[test]
