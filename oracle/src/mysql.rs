@@ -55,8 +55,9 @@
 //! within the proof, a JSON document's nulls), a MySQL run checks the type itself. The result set
 //! of an execution carries its own column definitions, which are what a driver decodes by, and
 //! they may differ from the prepare's: the engine's type of each column must be the type of what
-//! came back. And every value inside a JSON document must be of its field's type: a number, a
-//! string, a boolean, an object or a list. Where the engine types a column or a field as either
+//! came back. And every value inside a JSON document must be of its field's type: a number (an
+//! integer's a JSON integer), a string (a date's or a time's in the form MySQL writes it), a
+//! boolean, an object or a list. Where the engine types a column or a field as either
 //! of two types (`int8|float8`), the value must be of one of them. Each value, in a column or a
 //! document, must also be as long as its type's size allows, of no more digits than its precision
 //! and scale, and no finer than its tick.
@@ -1408,8 +1409,29 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
             if !wanted.contains(&kind) {
                 return Some(format!("holds {kind} at {at}, typed {}", ty.short()));
             }
+            if !ty.members().iter().any(|m| written_form(m, json)) {
+                return Some(format!("holds {json} at {at}, typed {}", ty.short()));
+            }
             scalar_contradiction(ty, json).map(|why| format!("{why} at {at}"))
         }
+    }
+}
+
+/// Whether a scalar inside a document is of the form MySQL writes a value of the type in there: an
+/// integer as a JSON integer, a DATE as `2026-01-01`, a DATETIME and a TIMESTAMP as `2026-01-01
+/// 12:00:00.000000`, a TIME as `-06:59:59.000000`, and any other type as the JSON type it is
+/// written as.
+fn written_form(ty: &Type, json: &Value) -> bool {
+    static FORMS: std::sync::OnceLock<[regex::Regex; 3]> = std::sync::OnceLock::new();
+    let [date, datetime, time] = FORMS.get_or_init(|| [r"^\d{4}-\d{2}-\d{2}$", r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$", r"^-?\d{2,}:\d{2}:\d{2}(\.\d+)?$"].map(|form| regex::Regex::new(form).expect("a form is a valid expression")));
+    match &ty.kind {
+        Kind::Boolean(_) => json.is_boolean(),
+        Kind::Integer(_) => json.is_i64() || json.is_u64(),
+        Kind::Float(_) | Kind::Decimal(_) => json.is_number(),
+        Kind::Date(_) => json.as_str().is_some_and(|text| date.is_match(text)),
+        Kind::DateTime(_) | Kind::Instant(_) => json.as_str().is_some_and(|text| datetime.is_match(text)),
+        Kind::Duration(_) => json.as_str().is_some_and(|text| time.is_match(text)),
+        _ => json.is_string(),
     }
 }
 
@@ -1588,5 +1610,22 @@ mod tests {
         assert_eq!(check(json!([1])).as_deref(), Some("holds a list at the top, typed an object"));
         assert_eq!(check(Value::Null).as_deref(), Some("has a null at the top, typed non-null"));
         assert_eq!(json_contradiction(&shape, &Value::Null, true, ""), None);
+        // An integer is a JSON integer, and a date and a time the text MySQL writes for one.
+        let int = json!({ "kind": "integer", "bits": 32, "label": "int" });
+        assert_eq!(json_contradiction(&int, &json!(1.5), false, ".n").as_deref(), Some("holds 1.5 at .n, typed int"));
+        assert_eq!(json_contradiction(&int, &json!(18446744073709551615u64), false, ".n"), None);
+        let date = json!({ "kind": "date", "label": "date" });
+        for text in ["2026-01-01", "0000-00-00", "2026-00-00"] {
+            assert_eq!(json_contradiction(&date, &json!(text), false, ".d"), None, "{text}");
+        }
+        assert!(json_contradiction(&date, &json!("2026-01-01 00:00:00.000000"), false, ".d").is_some_and(|why| why.starts_with(r#"holds "2026-01-01 00:00:00.000000" at .d, typed"#)));
+        let datetime = json!({ "kind": "datetime", "tick": "1/1000000", "label": "datetime" });
+        assert_eq!(json_contradiction(&datetime, &json!("2026-01-01 12:00:00.500000"), false, ".t"), None);
+        assert!(json_contradiction(&datetime, &json!("2026-01-01"), false, ".t").is_some());
+        let time = json!({ "kind": "duration", "max": "PT838H59M59S", "tick": "1", "label": "time" });
+        for text in ["-06:59:59.000000", "838:59:59.000000", "12:00:00"] {
+            assert_eq!(json_contradiction(&time, &json!(text), false, ".t"), None, "{text}");
+        }
+        assert!(json_contradiction(&time, &json!("12:00"), false, ".t").is_some());
     }
 }

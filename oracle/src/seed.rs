@@ -33,6 +33,7 @@
 //!   holds no NULL element, and a JSON field it typed non-null is never null;
 //! - a statement proven `one` returns exactly one row, one proven `at_most_one` at most one, and
 //!   one proven `none` no row;
+//! - a Postgres statement returns as many columns as the analysis types;
 //! - no two rows agree on every column of the result key, a NULL counting as equal to another;
 //! - where the order is total, no two rows in a row tie on every sort key: a sort key that is no
 //!   output column is read from a copy of the statement that also selects it.
@@ -726,6 +727,21 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                         problems.push(format!("{file}: proven {cardinality}, returned {} rows with ({})", rows.len(), values.join(", ")));
                     }
                     let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
+                    // As many columns as the server's row description gives, which a driver reads
+                    // them by: none where it sent none. A statement the analysis refused types
+                    // none, and is held to nothing here.
+                    let described = if reaches_a_driver(bound.described) {
+                        messages.iter().find_map(|m| match m {
+                            tokio_postgres::SimpleQueryMessage::RowDescription(described) => Some(described.len()),
+                            _ => None,
+                        })
+                    } else {
+                        None
+                    };
+                    let refused = columns.is_empty() && analysis["diagnostics"].as_array().is_some_and(|d| !d.is_empty());
+                    if !refused && described.unwrap_or(0) != columns.len() {
+                        problems.push(format!("{file}: typed with {} column(s), returned {} with ({})", columns.len(), described.unwrap_or(0), values.join(", ")));
+                    }
                     if let Some(why) = key_repeats(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
                         problems.push(format!("{file}: {why} with ({})", values.join(", ")));
                     }
@@ -1337,10 +1353,11 @@ fn written_as_text(ty: &Type) -> bool {
 }
 
 /// Whether a JSON value inside a document is of the form Postgres writes a value of the type in
-/// there (the spec's facts): a boolean, a number for the integers but `oid` and for the floats and
-/// `numeric` (or the text of a non-finite one the type holds), an object for a row whose columns were not read,
-/// for an hstore and as GeoJSON for a geometry, and text for every other type the format names
-/// (a structured one written as its text among them). JSON, and a type the engine does not know,
+/// there (the spec's facts): a boolean, an integer for the integers but `oid`, a number for the
+/// floats and `numeric` (or the text of a non-finite one the type holds), an object for a row whose
+/// columns were not read, for an hstore and as GeoJSON for a geometry, a date, a time, a timestamp
+/// and a UUID as their text ([`written_form`]), and text for every other type the format names (a
+/// structured one written as its text among them). JSON, and a type the engine does not know,
 /// admit any value.
 fn json_admits(ty: &Type, json: &Value) -> bool {
     let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
@@ -1348,16 +1365,40 @@ fn json_admits(ty: &Type, json: &Value) -> bool {
         _ if written_as_text(ty) => json.is_string(),
         Kind::Boolean(_) => json.is_boolean(),
         Kind::Integer(_) if name == "oid" => json.is_string(),
-        Kind::Integer(_) => json.is_number(),
+        // A number written with a fraction or an exponent is no integer's.
+        Kind::Integer(_) => json.is_i64() || json.is_u64(),
         Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => {
             json.is_number() || (*nan && json.as_str() == Some("NaN")) || (*infinity && matches!(json.as_str(), Some("Infinity" | "-Infinity")))
         }
-        Kind::Text(_) | Kind::Uuid(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
+        Kind::Uuid(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) => json.as_str().is_some_and(|text| written_form(&ty.kind, text)),
+        Kind::Text(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
         Kind::Map(_) if name == "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
         Kind::Geometry(_) if name == "geometry" => json.get("type").is_some_and(Value::is_string),
         Kind::Geometry(_) => json.is_string(),
         Kind::Opaque if name == "record" => json.is_object(),
         Kind::Union(u) => u.members.iter().any(|m| json_admits(m, json)),
+        _ => true,
+    }
+}
+
+/// Whether a text is a value of a date, time, timestamp or UUID kind as Postgres writes one inside
+/// a document (`JsonEncodeDateTime`, in XSD's style): a year of four digits or more, ` BC` after one
+/// before the year 1, the fraction of a second where it is not zero, a UTC offset in hours and
+/// minutes and its seconds where they are not zero, an infinity where the type holds one, and a
+/// UUID in lowercase.
+fn written_form(kind: &Kind, text: &str) -> bool {
+    static FORMS: std::sync::OnceLock<[regex::Regex; 6]> = std::sync::OnceLock::new();
+    let [date, time, time_offset, timestamp, timestamp_offset, uuid] = FORMS.get_or_init(|| {
+        let (date, time, offset) = (r"\d{4,}-\d{2}-\d{2}", r"\d{2}:\d{2}:\d{2}(\.\d+)?", r"[+-]\d{2}:\d{2}(:\d{2})?");
+        [format!("^{date}( BC)?$"), format!("^{time}$"), format!("^{time}{offset}$"), format!("^{date}T{time}( BC)?$"), format!("^{date}T{time}{offset}( BC)?$"), "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$".to_string()].map(|form| regex::Regex::new(&form).expect("a form is a valid expression"))
+    });
+    let infinite = matches!(text, "infinity" | "-infinity");
+    match kind {
+        Kind::Date(d) => if infinite { d.infinity } else { date.is_match(text) },
+        Kind::Time(t) => (if t.offset { time_offset } else { time }).is_match(text),
+        Kind::DateTime(d) => if infinite { d.infinity } else { timestamp.is_match(text) },
+        Kind::Instant(i) => if infinite { i.infinity } else { timestamp_offset.is_match(text) },
+        Kind::Uuid(_) => uuid.is_match(text),
         _ => true,
     }
 }
@@ -2029,6 +2070,36 @@ mod tests {
         let bits: Type = serde_json::from_value(json!({"kind": "array", "label": "bit", "element": {"type": {"kind": "boolean"}}})).unwrap();
         assert_eq!(json_contradiction(&bits, &json!("101"), ".b"), None);
         assert!(json_contradiction(&bits, &json!([true]), ".b").is_some());
+    }
+
+    #[test]
+    fn a_leaf_inside_a_document_is_of_the_form_postgres_writes_its_type_in() {
+        let ty = |v: Value| serde_json::from_value::<Type>(v).unwrap();
+        let int4 = ty(json!({"kind": "integer", "bits": 32, "label": "int4"}));
+        assert!(json_admits(&int4, &json!(1)) && json_admits(&int4, &json!(-2147483648)));
+        for bad in [json!(1.5), json!(1.0), json!("1")] {
+            assert!(!json_admits(&int4, &bad), "{bad}");
+        }
+        assert!(json_admits(&ty(json!({"kind": "integer", "bits": 32, "label": "oid"})), &json!("1")));
+        let cases: [(Value, &[&str], &[&str]); 7] = [
+            (json!({"kind": "date", "infinity": true, "label": "date"}), &["2026-01-01", "0044-03-15 BC", "294276-12-31", "infinity", "-infinity"], &["2026-01-01T00:00:00", "2020-01-01T00:00:00-08:00", "26-01-01", "1/1/2026"]),
+            (json!({"kind": "date", "label": "date"}), &["2026-01-01"], &["infinity"]),
+            (json!({"kind": "datetime", "tick": "1/1000000", "infinity": true, "label": "timestamp"}), &["2026-01-01T12:00:00", "2026-01-01T12:00:00.5", "4714-11-24T00:00:00 BC", "-infinity"], &["2026-01-01 12:00:00", "2026-01-01T12:00:00+00:00", "2026-01-01"]),
+            (json!({"kind": "instant", "tick": "1/1000000", "infinity": true, "label": "timestamptz"}), &["2025-12-31T22:30:00-08:00", "2026-01-01T12:00:00.123456+05:30", "1799-12-31T19:03:58-04:56:02", "0044-03-15T12:00:00-07:52:58 BC", "infinity"], &["2026-01-01T12:00:00", "2026-01-01T12:00:00Z", "2026-01-01"]),
+            (json!({"kind": "time", "tick": "1/1000000", "label": "time"}), &["12:00:00", "24:00:00", "12:00:00.25"], &["12:00:00+05:30", "12:00", "1 day"]),
+            (json!({"kind": "time", "tick": "1/1000000", "offset": true, "label": "timetz"}), &["12:00:00.25+05:30", "12:00:00-08:00"], &["12:00:00"]),
+            (json!({"kind": "uuid", "label": "uuid"}), &["3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d"], &["3F2B5C1E-8D4A-4B6F-9C2D-1E0F5A6B7C8D", "{3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d}", "a"]),
+        ];
+        for (t, good, bad) in cases {
+            let t = ty(t);
+            for text in good {
+                assert!(json_admits(&t, &json!(text)), "{} admits {text}", t.short());
+            }
+            for text in bad {
+                assert!(!json_admits(&t, &json!(text)), "{} refuses {text}", t.short());
+            }
+            assert!(!json_admits(&t, &json!(1)), "{} refuses a number", t.short());
+        }
     }
 
     #[test]
