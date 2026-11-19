@@ -1151,9 +1151,11 @@ pub(crate) async fn default_privileges(target: &mut Db) -> Result<Vec<String>, E
               format('%s', (select json_agg(json_build_object('grantee', case when x.grantee = 0 then 'public' else quote_ident(pg_get_userbyid(x.grantee)) end, 'privilege', x.privilege_type, 'grantable', x.is_grantable))
                  from aclexplode(d.defaclacl) x where x.grantee <> d.defaclrole)) as acl
             from pg_default_acl d left join pg_namespace n on n.oid = d.defaclnamespace
-            where {}",
+            where {} and (d.defaclnamespace = 0 or {})",
             crate::catalog::runner(),
-            crate::catalog::not_platform("d.defaclrole")
+            crate::catalog::not_platform("d.defaclrole"),
+            // In a platform's schema, they are the platform's (Supabase's own in `storage`).
+            crate::catalog::not_platform_schema("n")
         ))
         .await?;
     let mut out = Vec::new();
