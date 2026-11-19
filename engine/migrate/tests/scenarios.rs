@@ -3196,8 +3196,8 @@ mod adversarial {
         assert!(fix.starts_with("reylo run --url ") && words.len() == 3, "{fix}");
         assert_eq!(&words[1..], ["alter table customers owner to madv_app", "alter table orders owner to madv_app"], "{fix}");
         let items: Vec<(String, String)> = words[1..].iter().map(|w| (w.clone(), w.clone())).collect();
-        let (url, dir) = (words[0].clone(), p.dir.clone());
-        assert_eq!(p.run(async |_, log| reylo_migrate::run_sql(&url, &dir, &items, log).await).await, 0, "{}", p.peek());
+        let url = words[0].clone();
+        assert_eq!(p.run(async |o, log| reylo_migrate::run_sql(&reylo_migrate::Options { url: url.clone(), ..o.clone() }, &items, log).await).await, 0, "{}", p.peek());
         p.output();
         let mut out = Vec::new();
         let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
