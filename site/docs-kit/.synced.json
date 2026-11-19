@@ -1,6 +1,6 @@
 {
   "from": "/Users/colin/Documents/docs-kit",
-  "commit": "8eddba4",
+  "commit": "4e01f29",
   "files": {
     "package.json": "e906ab744cb9136ad818ce4000c6e883721b888a494da990b7125ecdbe8fbc56",
     "README.md": "8e36d02324ce7c1d574dfb856e3163cf81dbfe262fe9e7007ba1adaab5b4c038",
@@ -18,7 +18,7 @@
     "src/components/heading.tsx": "ccd541b32182163df78c482565ac91cb57d9baedbe4e1a8f78db1bc7f5065340",
     "src/components/index.ts": "18ee4ab4742a1e5dd10f0e5f13eacbc0aa0e293aca710abcf313eac87f0a092c",
     "src/components/mdx.tsx": "b81a8a128bc3f4ece8a65f376998ca745617c906b99e43a082e55649790baffa",
-    "src/components/page-list.tsx": "c4f0a21d4214ab2a66b44a368b6556e2128f2587101d9946355eabd8d35bc652",
+    "src/components/page-list.tsx": "fe23cb9bbe59b5ade6fe2ac393490a6a4e56b1fbd658be19f9389fabfa77abd2",
     "src/components/prepaint.tsx": "0fbcf25ed06d8dbca719872a1cb88827679d7cb4d4b7f7e934622948043c7855",
     "src/components/shell.tsx": "028cf5d37caf31a6e4e728eba60d69b96207e8493e60ffc73d97a70fe3cd65c2",
     "src/components/variant-tabs.tsx": "ddc05f5cb9b57c64e24ae195d203a3348091fd591cc86af465f6fbff6f29a074",
@@ -29,7 +29,7 @@
     "src/mdx/recma-shared-popups.ts": "b12d67312b9875a469adba9ed4ca77b788f8f7958c0119451a9b4e16638ae427",
     "src/mdx/remark-sections.ts": "a81d91c95da4212fd24b15acc245206dcebf7fc0a2dfa04852d14eb4bddec0e1",
     "src/mdx/twoslash.ts": "845c73de8f06b79245ca7558b704f756919b19376bb4faaf63b1a78bbde21faa",
-    "src/style.css": "ee5a6f6b2c35754b905e94995b8e1adcefb786a69205c41338542c5479515916",
+    "src/style.css": "c15541a79cceeec0e54d661f2f9782a8106b67638dee19139e0624686b26be11",
     "src/sync.mjs": "2a1cf5fe7ac181004dcb2859b46003dc55808054cc2711567ee3928304812626",
     "src/vite.ts": "e8f8a6a49951ec991b24872d664efdd46cbb2121802d14279e0ea917f3f6763e"
   }

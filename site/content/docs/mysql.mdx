@@ -375,34 +375,6 @@ A `VECTOR`, new in MySQL 9, comes back as a `number[]` of 32-bit floats. A vecto
 
 </Pairs>
 
-### Type descriptors
-
-How the engine writes each type.
-
-The engine gives every column its type in [Reylo Type Defs](/typedefs), as [`reylo analyze`](/cli#reylo-analyze) prints it. A column of each MySQL type:
-
-<Analyzed file="types.sql" dialect="mysql" format="types">
-
-```sql schema
-create table types (
-  `tinyint` tinyint, `boolean` boolean, `smallint` smallint, `mediumint` mediumint, `int` int,
-  `int unsigned` int unsigned, `bigint` bigint, `bigint unsigned` bigint unsigned, `year` year,
-  `float` float, `double` double, `decimal(10,2)` decimal(10,2),
-  `char(8)` char(8), `varchar(255)` varchar(255), `varchar(255) latin1` varchar(255) character set latin1,
-  `varchar(255) utf8mb3` varchar(255) character set utf8mb3, `text` text, `longtext` longtext,
-  `enum('a','b')` enum('a','b'), `set('a','b')` set('a','b'),
-  `binary(16)` binary(16), `blob` blob, `bit(7)` bit(7),
-  `date` date, `time(3)` time(3), `datetime(6)` datetime(6), `timestamp(3)` timestamp(3) null,
-  `json` json, `point` point
-)
-```
-
-```sql
-select * from types
-```
-
-</Analyzed>
-
 ## Nullability
 
 Each column can be null unless Reylo can tell it never is, from `NOT NULL`, joins, `where` tests and expressions ([Inference](/inference#left-joins)). On MySQL:
