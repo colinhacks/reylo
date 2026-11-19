@@ -376,7 +376,8 @@ async fn store_catalog(db: &mut Db, name: &str, lines: &[String]) -> Result<(), 
     if !has_column(db, "catalog").await? {
         return Ok(());
     }
-    let text = fingerprinted(lines).join("\n");
+    // As a JSON array: a line may hold newlines of its own (a function's definition).
+    let text = serde_json::to_string(&fingerprinted(lines)).unwrap_or_default();
     db.exec_with(&format!("update {HISTORY_TABLE} set catalog = null where name <> {} and catalog is not null", db.param(1)), &[&name]).await?;
     db.exec_with(&format!("update {HISTORY_TABLE} set catalog = {} where name = {}", db.param(1), db.param(2)), &[&text, &name]).await
 }
@@ -387,7 +388,12 @@ async fn stored_catalog(db: &mut Db, name: &str) -> Result<Option<Vec<String>>, 
         return Ok(None);
     }
     let rows = db.rows(&format!("select catalog from {HISTORY_TABLE} where name = {}", crate::db::literal(name))).await?;
-    Ok(rows.first().and_then(|r| r.get("catalog")).map(|text| if text.is_empty() { vec![] } else { text.split('\n').map(str::to_string).collect() }))
+    // A JSON array, or from a run before that, the lines joined by newlines.
+    Ok(rows.first().and_then(|r| r.get("catalog")).map(|text| match serde_json::from_str::<Vec<String>>(text) {
+        Ok(lines) => lines,
+        Err(_) if text.is_empty() => vec![],
+        Err(_) => text.split('\n').map(str::to_string).collect(),
+    }))
 }
 
 /// The live schema's fingerprint, stored on `name`'s row with the lines it is of.

@@ -2801,6 +2801,7 @@ on!(
     an_extension_in_a_projects_schema_is_the_projects_whoever_owns_it,
     an_extension_a_platform_role_owns_in_a_projects_schema_is_the_projects,
     init_writes_the_privileges_on_an_extensions_schema,
+    a_change_by_hand_is_shown_alone_beside_a_function_of_many_lines,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
@@ -3313,6 +3314,24 @@ mod adversarial {
         assert_eq!(p.dev().await, 0, "{}", p.peek());
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
         assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// A function whose definition spans lines (Supabase's `rls_auto_enable`) is one line of the
+    /// catalog stored with a fingerprint: a change made by hand is shown alone, by status and by the
+    /// deploy it refuses, with no function beside it.
+    pub async fn a_change_by_hand_is_shown_alone_beside_a_function_of_many_lines(mut p: P) {
+        let sql = "create table users (id int primary key);\ncreate function two() returns int language plpgsql as $$\nbegin\n  return 2;\nend\n$$;\n";
+        p.schema(sql);
+        p.file("20261027100000_users.sql", sql);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.exec("alter table users add column hand text").await;
+        p.output();
+        assert_eq!(p.status().await, 1);
+        assert_eq!(p.migrate().await, 1);
+        let out = p.output();
+        assert_has!(&out, r"\+ column users\.hand text");
+        assert!(!out.contains("function"), "{out}");
     }
 
     /// The schema of a project's extension that no dumped schema holds (Supabase's `extensions`, with
