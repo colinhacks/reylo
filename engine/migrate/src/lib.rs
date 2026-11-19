@@ -28,6 +28,8 @@ pub mod diff;
 pub mod libsql;
 pub mod lock;
 #[cfg(feature = "cli")]
+pub mod locks;
+#[cfg(feature = "cli")]
 mod replay;
 pub mod sql;
 mod time;
