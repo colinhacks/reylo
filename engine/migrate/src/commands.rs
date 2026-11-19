@@ -3046,7 +3046,10 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
         written.push(shown(&file));
     }
     match written.as_slice() {
-        [one] if drafted.empty => log(&format!("{} Wrote {one}, empty: {} has nothing new, so it's for a change to data", paint("green", "✓"), drafted.target)),
+        // With schema.sql, any schema change goes there, so an empty migration is for data; with
+        // none, it is as much for a schema change written by hand.
+        [one] if drafted.empty && drafted.target.ends_with(".sql") => log(&format!("{} Wrote {one}, empty: {} has nothing new, so it's for a change to data", paint("green", "✓"), drafted.target)),
+        [one] if drafted.empty => log(&format!("{} Wrote {one}, empty, to write by hand: {} has nothing new", paint("green", "✓"), drafted.target)),
         [one] => log(&format!("{} Wrote {one}", paint("green", "✓"))),
         many => {
             if drafted.lock_safe {
@@ -5272,7 +5275,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
         log(&format!("{} This database matches {schema} and its migrations", paint("green", "✓")));
     } else {
         log(&format!("{} This database matches {schema}", paint("green", "✓")));
-        log(&format!("{} Not in a migration yet: reylo migrate new <name> writes it", paint("yellow", "!")));
+        log(&paint("dim", "· Not in a migration yet: reylo migrate new <name> writes it"));
     }
     if wrote {
         log(&format!("{} Wrote {}", paint("green", "✓"), shown(&opts.lock)));
