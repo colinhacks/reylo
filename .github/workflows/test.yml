@@ -161,14 +161,14 @@ jobs:
     needs: binary
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Throwaway servers for the tests that run statements, on ports clear of the defaults: the loader's tests skip each database whose URL is unset, and this job fails on any skip. Postgres 18 is pgvector's image of it, Postgres 18 with the extension installed, which a spec example's statement reads (spec/examples.ts).
+    # Throwaway servers for the tests that run statements, on ports clear of the defaults and below Linux's ephemeral range (32768 to 60999), where a connection made before a server starts can take its port: the loader's tests skip each database whose URL is unset, and this job fails on any skip. Postgres 18 is pgvector's image of it, Postgres 18 with the extension installed, which a spec example's statement reads (spec/examples.ts).
     services:
       postgres:
         image: pgvector/pgvector:pg18
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 55432:5432
+          - 25432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 2s
@@ -179,7 +179,7 @@ jobs:
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
         ports:
-          - 53306:3306
+          - 23306:3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 2s
@@ -199,20 +199,28 @@ jobs:
           --health-timeout 10s
           --health-retries 60
     env:
-      REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
-      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
+      REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
+      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
       REYLO_TEST_SQLSERVER: sqlserver://sa:Rx-${{ github.run_id }}-pw@127.0.0.1:14333/master?encrypt=true&trustServerCertificate=true
-      REYLO_TEST_PG_TLS: postgres://postgres:reylo@127.0.0.1:55434/postgres
+      REYLO_TEST_PG_TLS: postgres://postgres:reylo@127.0.0.1:25434/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The servers' ports stay out of the runner's ephemeral range, or a connection the runner makes can hold one when its server binds it.
+      - name: Check the servers' ports are below the ephemeral range
+        run: |
+          read -r low high < /proc/sys/net/ipv4/ip_local_port_range
+          echo "ephemeral range: $low to $high"
+          for port in 25432 23306 25434 14333; do
+            [ "$port" -lt "$low" ] || { echo "::error::port $port is inside the ephemeral range $low to $high"; exit 1; }
+          done
       # A Postgres that takes TLS and asks for a password, as a hosted one does, for the test of channel
       # binding, which needs both. A service cannot take the server's flags, so it is started here; the
       # image's own snake-oil certificate serves, since the test checks no certificate.
       - name: Start a Postgres over TLS
         run: |
-          docker run -d --name reylo-pg-tls -p 55434:5432 -e POSTGRES_PASSWORD=reylo postgres:18 \
+          docker run -d --name reylo-pg-tls -p 25434:5432 -e POSTGRES_PASSWORD=reylo postgres:18 \
             -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
           for _ in $(seq 60); do docker exec reylo-pg-tls pg_isready -h 127.0.0.1 -U postgres > /dev/null && exit 0; sleep 1; done
           docker logs reylo-pg-tls
@@ -277,7 +285,7 @@ jobs:
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 55432:5432
+          - 25432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 2s
@@ -288,7 +296,7 @@ jobs:
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
         ports:
-          - 53306:3306
+          - 23306:3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 2s
@@ -311,8 +319,8 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
-      REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
-      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
+      REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
+      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
       REYLO_TEST_SQLSERVER: sqlserver://sa:Rx-${{ github.run_id }}-pw@127.0.0.1:14333/master?encrypt=true&trustServerCertificate=true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -370,7 +378,7 @@ jobs:
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 55432:5432
+          - 25432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 2s
@@ -381,7 +389,7 @@ jobs:
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
         ports:
-          - 53306:3306
+          - 23306:3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 2s
@@ -391,8 +399,8 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
-      REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
-      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
+      REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
+      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -452,7 +460,7 @@ jobs:
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
         ports:
-          - 53306:3306
+          - 23306:3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 2s
@@ -544,7 +552,7 @@ jobs:
         run: |
           sudo cp -R ~/json-schema-validators/. /
           "$PG_BIN/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=trust --no-sync -E UTF8 --locale=C
-          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 55432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
+          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 25432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
       - run: engine/build.sh --prepare
       - name: Run the oracle's cases of the shard
         env:
@@ -569,10 +577,10 @@ jobs:
             esac
           done
           case "$SHARD" in
-            postgres) servers="--url postgres://postgres@localhost:55432/postgres" ;;
+            postgres) servers="--url postgres://postgres@localhost:25432/postgres" ;;
             sqlite) servers='' ;;
             sqlserver) servers="--sqlserver-url sqlserver://sa:$SQLSERVER_PASSWORD@127.0.0.1:14333/master?encrypt=true&trustServerCertificate=true" ;;
-            *) servers="--mysql-url mysql://root@127.0.0.1:53306" ;;
+            *) servers="--mysql-url mysql://root@127.0.0.1:23306" ;;
           esac
           # shellcheck disable=SC2086
           cargo run -q -p reylo-oracle -- $servers --strict-coverage $cases

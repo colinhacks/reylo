@@ -16,7 +16,7 @@
 //! refuses on port 1433, and its `min_version` is the server's major version (16 for 2022); how its
 //! runs bind and are isolated is in `sqlserver.rs`.
 //!
-//!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres oracle/cases
+//!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:25432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
 //!   cargo run -p reylo-oracle -- --sqlserver-url 'sqlserver://sa:…@127.0.0.1:14333/master?trustServerCertificate=true' oracle/cases/sqlserver_types
 //!   cargo run -p reylo-oracle -- --url … --bless oracle/cases/not_null   # rewrite expected.txt
