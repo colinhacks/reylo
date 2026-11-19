@@ -2745,6 +2745,31 @@ async fn a_database_whose_default_collation_differs() {
     }
 }
 
+/// mysqldump writes a view as one statement over several executable comments, which MySQL runs:
+/// each migration runs it, and a database that loses it is told apart. A comment gated above the
+/// server's version runs nothing, and is no error.
+#[tokio::test(flavor = "current_thread")]
+async fn a_view_mysqldump_wrote_in_executable_comments_runs() {
+    let Some(mut p) = P::new(Dialect::Mysql).await else { return };
+    let view = "/*!50001 CREATE ALGORITHM=UNDEFINED */\n/*!50013 SQL SECURITY INVOKER */\n/*!50001 VIEW `v` AS select `t`.`id` AS `id` from `t` */;\n";
+    p.linear();
+    p.schema(&format!("create table t (id bigint primary key);\n{view}"));
+    p.file("20261027100000_t.sql", "create table t (id bigint primary key);");
+    p.file("20261027110000_v.sql", view);
+    p.file("20261027120000_later.sql", "/*!99999 create table later (id bigint) */;");
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    let tables = |rows: Vec<Row>| rows.iter().map(|r| format!("{} {}", r.text("name"), r.text("kind"))).collect::<Vec<_>>();
+    let listed = "select table_name as name, table_type as kind from information_schema.tables where table_schema = database() and table_name <> '__reylo_migrations' order by table_name";
+    assert_eq!(tables(p.rows(listed).await), ["t BASE TABLE", "v VIEW"]);
+    p.exec("/*!99999 select 1 */").await;
+    p.output();
+    assert_eq!(p.status().await, 0, "{}", p.peek());
+    p.output();
+    p.exec("drop view v").await;
+    assert_eq!(p.status().await, 1);
+    assert_has!(p.output(), r"✗ This database was changed outside its migrations\n\n[\s\S]*\n  - view v as select `t`\.`id` AS `id` from `t`");
+}
+
 mod adversarial {
     use super::*;
 

@@ -60,16 +60,33 @@ fn is_word_part(b: u8) -> bool {
 
 /// The tokens of `sql`: words (keywords and bare names), quoted names, string literals, numbers and
 /// symbols, with comments and whitespace dropped. A `;` is a symbol. The lexing follows each
-/// dialect's default reading: MySQL's backslash escapes and `#` comments, Postgres's nested block
-/// comments, dollar quotes and E'' strings, SQLite's `[name]` and backtick names. Every delimiter is
-/// ASCII, so the text is scanned byte by byte, and a byte of a character outside ASCII is part of
-/// a word.
+/// dialect's default reading: MySQL's backslash escapes, `#` comments and executable comments,
+/// Postgres's nested block comments, dollar quotes and E'' strings, SQLite's `[name]` and backtick
+/// names. Every delimiter is ASCII, so the text is scanned byte by byte, and a byte of a character
+/// outside ASCII is part of a word.
 pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
+    lex(sql, dialect).0
+}
+
+/// The opening of each of MySQL's executable comments in `sql`, `/*!` with its version as written
+/// (`/*!50001`), in order: the server runs a comment's text only from that version on, so a change
+/// to one changes what runs.
+pub fn gates(sql: &str, dialect: Dialect) -> Vec<String> {
+    lex(sql, dialect).1.into_iter().map(|(start, end)| sql[start..end].to_string()).collect()
+}
+
+/// The tokens of `sql`, and the byte range of each executable comment's opening. MySQL runs the
+/// text of `/*! … */`, and of `/*!50001 … */` on a server of that version or later (mysqldump writes
+/// views, triggers and routines that way, one statement often over several such comments), so its
+/// text is read as code: what a server of an older version skips is harmless where it is sent whole.
+fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
     let b = sql.as_bytes();
     let n = b.len();
     let mysql = dialect == Dialect::Mysql;
     let postgres = dialect == Dialect::Postgres;
     let mut out = Vec::new();
+    let mut openings = Vec::new();
+    let mut executable = false;
     let mut i = 0;
     let push = |kind: TokenKind, start: usize, end: usize, out: &mut Vec<Token>| out.push(Token { kind, text: sql[start..end].to_string(), start, end });
     while i < n {
@@ -77,6 +94,21 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
         let next = b.get(i + 1).copied();
         if ch.is_ascii_whitespace() {
             i += 1;
+            continue;
+        }
+        if executable && ch == b'*' && next == Some(b'/') {
+            executable = false;
+            i += 2;
+            continue;
+        }
+        if mysql && !executable && ch == b'/' && next == Some(b'*') && b.get(i + 2) == Some(&b'!') {
+            let mut j = i + 3;
+            while j < n && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            openings.push((i, j));
+            executable = true;
+            i = j;
             continue;
         }
         // Comments. MySQL reads `--` as a comment only before whitespace or a control character.
@@ -195,7 +227,7 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
         i += width;
         push(TokenKind::Symbol, start, i, &mut out);
     }
-    out
+    (out, openings)
 }
 
 fn upper(t: Option<&Token>) -> String {
@@ -216,9 +248,10 @@ fn opens_body(tokens: &[Token], dialect: Dialect, next: Option<&Token>) -> bool 
     ["TRIGGER", "PROCEDURE", "FUNCTION", "EVENT"].iter().any(|w| has(w))
 }
 
-/// The statements of `sql`, in order; blank statements (`;;`) are dropped.
+/// The statements of `sql`, in order; blank statements (`;;`) are dropped. A statement's text starts
+/// at the executable comment its first token is written in, so that it is sent as written.
 pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<Statement> {
-    let tokens = tokenize(sql, dialect);
+    let (tokens, openings) = lex(sql, dialect);
     let mut statements = Vec::new();
     let mut from = 0;
     let mut depth = 0usize;
@@ -231,7 +264,8 @@ pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<Statement> {
     for k in 0..tokens.len() {
         let t = &tokens[k];
         if current.is_empty() {
-            from = t.start;
+            let after = if k == 0 { 0 } else { tokens[k - 1].end };
+            from = openings.iter().map(|&(start, _)| start).find(|&start| start >= after && start < t.start).unwrap_or(t.start);
             depth = 0;
         }
         if t.kind == TokenKind::Symbol && t.text == ";" && depth == 0 {
@@ -488,6 +522,23 @@ mod tests {
         assert_eq!(texts("/* a /* nested */ ; */ select 1", Dialect::Postgres), ["select 1"]);
         assert_eq!(texts("select 'it''s'; # comment ;\nselect \"a;b\"", Dialect::Mysql), ["select 'it''s'", "select \"a;b\""]);
         assert!(is_blank("-- nothing\n/* at all */", Dialect::Sqlite));
+    }
+
+    #[test]
+    fn reads_mysqls_executable_comments_as_code() {
+        // mysqldump's view: one statement over three comments, sent whole as written.
+        let view = "/*!50001 CREATE ALGORITHM=UNDEFINED */\n/*!50013 SQL SECURITY INVOKER */\n/*!50001 VIEW `v` AS select `t`.`id` AS `id` from `t` */";
+        let statements = split_statements(&format!("{view};\n/*!40101 SET NAMES utf8mb4 */;"), Dialect::Mysql);
+        assert_eq!(statements.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), [view, "/*!40101 SET NAMES utf8mb4 */"]);
+        assert_eq!(head(&statements[0], 4), "CREATE ALGORITHM = UNDEFINED");
+        assert_eq!(kind_of(&statements[0], Dialect::Mysql), Kind::Commits);
+        assert!(!is_blank("/*!99999 select 1 */", Dialect::Mysql));
+        assert_eq!(texts("select 1 /*!50100 , 2 */ ; select 3", Dialect::Mysql), ["select 1 /*!50100 , 2 */", "select 3"]);
+        assert_eq!(texts("select '*/' /*! , '*/' */", Dialect::Mysql), ["select '*/' /*! , '*/' */"]);
+        assert_eq!(gates("/*!50001 a */ /*! b */ /* c */", Dialect::Mysql), ["/*!50001", "/*!"]);
+        // Elsewhere it is a comment.
+        assert!(is_blank("/*!50001 select 1 */", Dialect::Postgres));
+        assert!(is_blank("/*!50001 select 1 */", Dialect::Sqlite));
     }
 
     #[test]

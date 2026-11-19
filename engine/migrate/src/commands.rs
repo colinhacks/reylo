@@ -852,10 +852,11 @@ impl Plan {
     }
 }
 
-/// Whether two texts are the same statements, comments and whitespace aside.
+/// Whether two texts are the same statements, comments and whitespace aside; on MySQL, an executable
+/// comment's version too, which says whether its text runs.
 fn same_statements(a: &str, b: &str, d: Dialect) -> bool {
     let tokens = |sql: &str| split_statements(sql, d).into_iter().map(|s| s.tokens.into_iter().map(|t| t.text).collect::<Vec<_>>()).collect::<Vec<_>>();
-    tokens(a) == tokens(b)
+    tokens(a) == tokens(b) && crate::sql::gates(a, d) == crate::sql::gates(b, d)
 }
 
 /// The statements of a migration that change data, as their first words: such a migration always
