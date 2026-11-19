@@ -217,8 +217,9 @@ fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime")
 }
 
+/// A command's line on stdout, clear of the spinner's.
 fn print(line: &str) {
-    println!("{line}");
+    reylo_migrate::terminal::println(line);
 }
 
 /// A command that isn't one, said on stderr with exit 2; with `--json`, as the one JSON object every
@@ -315,15 +316,17 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     if !json {
         let mut sql = None;
         let code = run_group(command, &parsed, &mut print, &mut sql);
-        // The schema alone on stdout, so that it can be saved with a redirect.
+        // The schema alone on stdout, so that it can be saved with a redirect; coloured only where
+        // stdout is a terminal.
         if let Some(sql) = sql {
-            print!("{sql}");
+            print!("{}", reylo_migrate::terminal::highlight(&sql));
         }
         return code;
     }
     // With --json, one JSON object on stdout: whether it succeeded, each refusal with its code, what
     // the command found (status's rows), and every line it would have printed, plain.
     reylo_migrate::commands::set_color(false);
+    reylo_migrate::terminal::set_spinner(false);
     reylo_migrate::commands::set_json(true);
     let mut lines: Vec<String> = Vec::new();
     let mut sql = None;
@@ -509,6 +512,9 @@ pub fn main() {
         std::process::exit(code);
     }
     reylo_migrate::commands::set_color(std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none());
+    // A spinner repaints its line on stderr, so it needs a terminal there that can, and none at all
+    // where stdout goes elsewhere: a redirect or a pipe takes the output alone, as it always was.
+    reylo_migrate::terminal::set_spinner(std::io::stdout().is_terminal() && std::io::stderr().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb"));
     let code = match args.first().map(String::as_str) {
         None | Some("--help" | "-h" | "help") => {
             println!("{USAGE}");

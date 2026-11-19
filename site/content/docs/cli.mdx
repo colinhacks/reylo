@@ -670,6 +670,8 @@ create table users (
 
 Where your database has what Reylo Migrate reads by name only, such as a text search configuration, or no shadow database can be made, it prints the database's own dump instead.
 
+In a terminal, a spinner shows while it reads your database, and the SQL is coloured. A pipe or a redirect gets the plain SQL alone.
+
 To save it over `schema.sql`, write it to another file first. A redirect empties its file before the command runs, so a failed run would leave `schema.sql` empty:
 
 ```terminal
