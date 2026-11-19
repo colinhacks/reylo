@@ -142,7 +142,7 @@ tokio::task_local! {
 async fn unlock(db: &mut Db) -> Result<(), Error> {
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_unlock(hashtextextended('reylo_migrate', 0))").await,
-        Dialect::Mysql => db.exec("do release_lock(concat('reylo_migrate_', left(sha1(coalesce(database(), '')), 32)))").await,
+        Dialect::Mysql => db.exec("do release_lock(concat('reylo_migrate_', left(sha2(coalesce(database(), ''), 256), 32)))").await,
         // The file's lock is released with the file, which the run dropped.
         Dialect::Sqlite => Ok(()),
     }
@@ -437,9 +437,9 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_lock(hashtextextended('reylo_migrate', 0))").await.map(|_| None),
         // A lock of this database's alone (its name is at most 64 characters), which answers 0
-        // once the wait runs out.
+        // once the wait runs out. Named through sha2: MySQL 9.7 has md5 and sha1 only as a component.
         Dialect::Mysql => {
-            let rows = db.rows("select get_lock(concat('reylo_migrate_', left(sha1(coalesce(database(), '')), 32)), 600) as ok").await?;
+            let rows = db.rows("select get_lock(concat('reylo_migrate_', left(sha2(coalesce(database(), ''), 256), 32)), 600) as ok").await?;
             if !rows.first().is_some_and(|r| r.flag("ok")) {
                 return Err(Error("another run of reylo migrate held this database for ten minutes; try again once it finishes".into()));
             }

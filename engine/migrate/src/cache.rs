@@ -538,8 +538,9 @@ pub(crate) async fn snapshot(db: &mut Db) -> Result<String, Error> {
         }
         Dialect::Mysql => {
             // What changes with every statement or row is left out; a text that reads it is never
-            // replayed from a copy.
-            const MOVING: &[&str] = &["timestamp", "statement_id", "identity", "last_insert_id", "insert_id", "rand_seed1", "rand_seed2"];
+            // replayed from a copy. So is the server's `gtid_executed`, which every write moves
+            // where GTIDs are on (MySQL 9.7's default) and which no session keeps.
+            const MOVING: &[&str] = &["timestamp", "statement_id", "identity", "last_insert_id", "insert_id", "rand_seed1", "rand_seed2", "gtid_executed"];
             let vars = db.rows("select variable_name as k, variable_value as v from performance_schema.session_variables").await?;
             let mut out: Vec<String> = vars.iter().filter(|r| !MOVING.contains(&r.text("k"))).map(|r| format!("{}={}", r.text("k"), r.text("v"))).collect();
             out.sort();
