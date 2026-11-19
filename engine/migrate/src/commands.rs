@@ -399,7 +399,7 @@ async fn store_fingerprint(db: &mut Db, name: &str) -> Result<(), Error> {
 }
 
 /// The live schema's fingerprint, from catalog lines already read from `db`: a digest of the catalog
-/// as the comparator reads it, with the server's version and this build's catalog code, which both
+/// as the comparator reads it, with the server's version and the catalog reader's, which both
 /// change what the catalog reads as. A database whose fingerprint equals the one its last run stored
 /// has not been changed since, its comments aside.
 async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> {
@@ -416,7 +416,7 @@ async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> 
     for line in fingerprinted(lines) {
         digest.part(line.as_bytes());
     }
-    Ok(format!("{}:{version}:{}", crate::cache::code_id(), crate::cache::hex(&digest.finish())))
+    Ok(format!("{}:{version}:{}", crate::cache::reader_id(), crate::cache::hex(&digest.finish())))
 }
 
 async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Error> {

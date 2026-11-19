@@ -2213,7 +2213,8 @@ async fn deploy_goes_on_where_it_has_no_fingerprint_to_compare(mut p: P) {
     p.file("20261027100000_users.sql", &format!("create table users (id {int});"));
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     p.output();
-    // A new version of Reylo or the server: read another way, a fingerprint says nothing.
+    // A catalog reader of another version, or a new major version of the server: read another way, a
+    // fingerprint says nothing.
     p.exec("update __reylo_migrations set fingerprint = 'old:1:abc'").await;
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"can't be compared with what its last migration left[\s\S]*Up to date");

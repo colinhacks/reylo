@@ -466,7 +466,7 @@ To roll back across a migration, redeploy the older commit, so that it builds ag
 Two things the fingerprint leaves out:
 
 - **Comments.** Your database's `COMMENT ON` comments aren't compared. A migration writes them, but one added in a dashboard stops no deploy.
-- **An upgrade.** After a new version of Reylo, or a new major version of your database, the fingerprint it stored can't be compared. A deploy runs, stores a new one and says so, and a dry run checks the database then too.
+- **An upgrade.** After a version of Reylo that reads your schema differently, or a new major version of your database, the fingerprint it stored can't be compared. A deploy runs, stores a new one and says so, and a dry run checks the database then too.
 
 ### `status`
 

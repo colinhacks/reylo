@@ -137,16 +137,23 @@ pub(crate) fn hex(h: &[u8]) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// This build's catalog reader, which decides what a schema's fingerprint is a digest of: a build
-/// whose reader differs reads another fingerprint for the same schema, which is then not drift.
-pub(crate) fn code_id() -> String {
-    static ID: LazyLock<String> = LazyLock::new(|| code_digest(include_str!("catalog.rs")));
-    ID.clone()
+/// The version of the catalog reader (`catalog.rs`), which decides what a schema's fingerprint is a
+/// digest of: a fingerprint stored by a reader of another version can't be compared, so a deploy
+/// stores a new one, and a change by hand made before it goes unseen. It moves only when what the
+/// reader reads, or how it writes a line, changes, so that a release that leaves the reading alone
+/// leaves every stored fingerprint comparable. A test holds each edit to the reader's code to that
+/// choice.
+const READER: u32 = 1;
+
+/// The catalog reader's part of a fingerprint.
+pub(crate) fn reader_id() -> String {
+    format!("reader{READER}")
 }
 
 /// A digest of a source's code up to its tests, leaving out what reads no schema differently: a
 /// line's indentation, a blank line and a line that is all comment. Spacing inside a line stays in,
 /// since a string the catalog writes may hold it.
+#[cfg(test)]
 fn code_digest(source: &str) -> String {
     let lines: Vec<&str> = source.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")).collect();
     let end = match lines.iter().position(|l| *l == "mod tests {") {
@@ -804,8 +811,20 @@ mod tests {
         assert_eq!(hex(&Sha256::new().update(&million).finish()), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
     }
 
+    /// The digest of the catalog reader's code when `READER` was last set.
+    const READER_CODE: &str = "e00d34849a9c";
+
     #[test]
-    fn the_code_id_reads_code_alone() {
+    fn the_catalog_reader_keeps_its_version() {
+        assert_eq!(
+            code_digest(include_str!("catalog.rs")),
+            READER_CODE,
+            "catalog.rs's code changed. Where what it reads or how it writes a line changed, raise READER too, so that no fingerprint the old code stored is compared with one the new code reads; where it didn't, set READER_CODE alone, and stored fingerprints stay comparable"
+        );
+    }
+
+    #[test]
+    fn the_code_digest_reads_code_alone() {
         let code = "fn read() -> &'static str {\n    // what the catalog holds\n    \"a b\"\n}\n";
         let reworded = "/// Reads it.\nfn read() -> &'static str {\n\n  \"a b\"\n}\n#[cfg(test)]\nmod tests {\n    fn more() {}\n}\n";
         assert_eq!(code_digest(code), code_digest(reworded));
