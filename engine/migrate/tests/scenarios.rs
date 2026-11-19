@@ -3699,18 +3699,22 @@ async fn reylo_run_refuses_a_file_that_is_not_there() {
     assert!(!p.dir.join("prod.sqlitee").exists(), "a file was made");
 }
 
-/// A libSQL server ends a stream left idle: one outside a transaction is opened again, as a new
-/// connection, and one inside a transaction is an error, since the server rolled it back.
+/// A libSQL server ends a stream left idle: one outside a transaction is opened again, with the
+/// pragmas the connection set (a migration turns foreign keys off before its transaction, so that a
+/// table it rebuilds cascades nothing), and one inside a transaction is an error, since the server
+/// rolled it back.
 #[tokio::test(flavor = "current_thread")]
 async fn a_turso_connection_left_idle_opens_again_outside_a_transaction() {
     let Some(p) = P::turso().await else { return };
     let mut idle = Db::connect(&p.url, &p.dir).await.unwrap();
     let mut open = Db::connect(&p.url, &p.dir).await.unwrap();
     idle.exec("create table t (a integer)").await.unwrap();
+    idle.exec("pragma foreign_keys = off").await.unwrap();
     open.exec("begin").await.unwrap();
     open.exec("insert into t values (1)").await.unwrap();
     // sqld ends a stream idle for ten seconds.
     tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    assert_eq!(idle.rows("pragma foreign_keys").await.unwrap()[0].text("foreign_keys"), "0", "the new stream keeps the connection's pragmas");
     assert_eq!(idle.rows("select count(*) as n from t").await.unwrap()[0].text("n"), "0");
     let e = open.exec("commit").await.unwrap_err();
     assert!(e.0.contains("idle too long"), "{e}");

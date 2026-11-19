@@ -4,7 +4,8 @@
 //! with the auth token in `?authToken=`. The connection is one stream on the server, held from
 //! request to request by the baton each response hands back, so a transaction and a pragma last as
 //! they do on a connection to a file. A server ends a stream left idle for a few seconds: one that
-//! ended outside a transaction is opened again, as a new connection; one inside a transaction ended
+//! ended outside a transaction is opened again, with every pragma the connection set run on it again,
+//! so that a migration that turned foreign keys off finds them off; one inside a transaction ended
 //! it, which the server rolled back, and is an error.
 
 use crate::db::Row;
@@ -76,6 +77,9 @@ pub struct Remote {
     baton: Option<String>,
     /// Whether the stream was outside a transaction after the last request, as the server said.
     autocommit: bool,
+    /// The pragmas the connection set (`pragma foreign_keys = off`), the last of each name, in the
+    /// order they were set: a stream opened again sets them again before anything else.
+    pragmas: Vec<(String, String)>,
 }
 
 #[cfg(feature = "cli")]
@@ -85,7 +89,7 @@ impl Remote {
     pub fn open(url: &str) -> Result<Remote, Error> {
         let target = target(url)?;
         let agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_connect(Some(std::time::Duration::from_secs(30))).build().new_agent();
-        let mut remote = Remote { agent, target, base_url: None, baton: None, autocommit: true };
+        let mut remote = Remote { agent, target, base_url: None, baton: None, autocommit: true, pragmas: vec![] };
         remote.one(json!({ "type": "execute", "stmt": { "sql": "select 1", "want_rows": true } }))?;
         Ok(remote)
     }
@@ -101,7 +105,21 @@ impl Remote {
 
     /// Runs `sql`, one statement or several, in order, stopping at the first that fails.
     pub fn exec(&mut self, sql: &str) -> Result<(), Error> {
-        self.one(json!({ "type": "sequence", "sql": sql })).map(|_| ())
+        self.one(json!({ "type": "sequence", "sql": sql }))?;
+        self.remember_pragmas(sql);
+        Ok(())
+    }
+
+    /// Keeps each pragma `sql` set, for a stream opened again.
+    fn remember_pragmas(&mut self, sql: &str) {
+        static PRAGMA: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^\s*pragma\s+([\w.]+)\s*=").expect("a valid pattern"));
+        for statement in sql.split(';') {
+            if let Some(c) = PRAGMA.captures(statement) {
+                let name = c[1].to_ascii_lowercase();
+                self.pragmas.retain(|(n, _)| *n != name);
+                self.pragmas.push((name, statement.trim().to_string()));
+            }
+        }
     }
 
     /// Runs one statement with text parameters, `?` each.
@@ -128,11 +146,14 @@ impl Remote {
 
     /// The requests' results, in order, sent as one pipeline on the stream. A stream the server
     /// ended outside a transaction is opened again, and the requests sent on it, since none of them
-    /// ran.
+    /// ran, after the pragmas the connection set: one of those that fails fails the requests, which
+    /// would otherwise run on a connection set otherwise.
     fn pipeline(&mut self, requests: Vec<Value>) -> Result<Vec<Result<Value, Error>>, Error> {
         let mut retried = false;
         loop {
-            let body = json!({ "baton": self.baton, "requests": requests }).to_string();
+            let restore: Vec<Value> = if retried { self.pragmas.iter().map(|(_, sql)| json!({ "type": "sequence", "sql": sql })).collect() } else { vec![] };
+            let sent: Vec<&Value> = restore.iter().chain(requests.iter()).collect();
+            let body = json!({ "baton": self.baton, "requests": sent }).to_string();
             let url = format!("{}/v3/pipeline", self.base_url.as_deref().unwrap_or(&self.target.base));
             let mut request = self.agent.post(&url).content_type("application/json");
             if let Some(token) = &self.target.token {
@@ -164,7 +185,12 @@ impl Remote {
             if let Some(base) = answer["base_url"].as_str() {
                 self.base_url = Some(base.trim_end_matches('/').to_string());
             }
-            let results = answer["results"].as_array().cloned().unwrap_or_default();
+            let mut results = answer["results"].as_array().cloned().unwrap_or_default();
+            for (r, (_, sql)) in results.drain(..restore.len().min(results.len())).zip(&self.pragmas) {
+                if r["type"] != "ok" {
+                    return Err(Error(format!("the libSQL server ended this connection, and the new one refused `{sql}`: {}", sqlite_message(r["error"]["message"].as_str().unwrap_or_default()))));
+                }
+            }
             return Ok(results
                 .into_iter()
                 .map(|r| match r["type"].as_str() {
