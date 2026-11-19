@@ -2160,6 +2160,13 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
 /// (a hotfix, then written as a migration), and one whose history was lost or kept by another tool.
 #[cfg(feature = "cli")]
 pub async fn history_push(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    history_push_as(opts, false, log).await
+}
+
+/// `history push`, or `init`'s recording of init.sql (`init`), whose refusal leaves no files to
+/// edit, so it suggests none.
+#[cfg(feature = "cli")]
+async fn history_push_as(opts: &Options, init: bool, log: Log<'_>) -> Result<i32, Error> {
     if let Some(code) = refuse_old_lock(opts, log) {
         return Ok(code);
     }
@@ -2168,14 +2175,14 @@ pub async fn history_push(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     }
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
-    let result = history_push_on(&mut db, &mut server, opts, log).await;
+    let result = history_push_on(&mut db, &mut server, opts, init, log).await;
     db.close().await;
     server.close().await;
     result
 }
 
 #[cfg(feature = "cli")]
-async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init: bool, log: Log<'_>) -> Result<i32, Error> {
     let _held = lock(db, opts).await?;
     let d = db.dialect();
     let (files, strays) = opts.migrations()?;
@@ -2276,6 +2283,9 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
             Some(sql) => problem.sql(&sql),
             None => problem.lines(std::iter::once(String::new()).chain(changed_lines(&lines, &live)).chain([String::new()])),
         };
+        if init {
+            return Ok(refuse(&[problem], log));
+        }
         let mut problem = match schema_sql {
             Some(_) => problem.fix(format!("To keep it, write it into {}, then its migration", shown(&opts.schema)), &["reylo migrate new <name>"]),
             None => problem.fix("To keep it, write it as a migration", &["reylo migrate new <name>"]),
@@ -4082,33 +4092,35 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     let entries = lock::chain([(INIT, sql.as_str())]);
     let schema = Some(lock::schema_sum(&entries[0].sum, &sql));
     lock::write(&opts.lock, &lock::Lock { schema, entries })?;
-    // init.sql is recorded as run, which the tree says; what recording it prints is said only where
-    // it didn't. One that can't start (no shadow database can be made) leaves no project behind, so
-    // that init runs again once it can.
+    // init.sql is recorded as run, which the tree says. One that can't start (no shadow database can
+    // be made) or is refused (init.sql doesn't replay, or doesn't make this schema) leaves no project
+    // behind, so that init runs again once it can, and the refusal's "Nothing was changed" holds.
     let mut said: Vec<String> = Vec::new();
-    let code = match history_push(opts, &mut |l: &str| said.push(l.to_string())).await {
-        Ok(code) => code,
-        Err(e) => {
-            for file in [&opts.schema, &init, &opts.lock] {
-                let _ = std::fs::remove_file(file);
-            }
-            if made_dir {
-                let _ = std::fs::remove_dir(&opts.dir);
-            }
-            return Err(e);
+    let recorded = history_push_as(opts, true, &mut |l: &str| said.push(l.to_string())).await;
+    if !matches!(recorded, Ok(0)) {
+        for file in [&opts.schema, &init, &opts.lock] {
+            let _ = std::fs::remove_file(file);
         }
+        if made_dir {
+            let _ = std::fs::remove_dir(&opts.dir);
+        }
+    }
+    let code = match recorded {
+        Ok(0) => 0,
+        Ok(code) => {
+            for line in &said {
+                log(line);
+            }
+            return Ok(code);
+        }
+        Err(e) => return Err(e),
     };
     log(&format!("{} Started {home} from {}", paint("green", "✓"), shown_url(&opts.url)));
     log(&format!("  {home}"));
     log(&entry(branch(false), &file_name(&opts.schema), "this database's schema"));
     log(&entry(branch(false), &dir_name, ""));
-    log(&entry(&format!("│   {}", branch(true)), INIT, if code == 0 { "the same, recorded as run here" } else { "the same" }));
+    log(&entry(&format!("│   {}", branch(true)), INIT, "the same, recorded as run here"));
     log(&entry(branch(true), &file_name(&opts.lock), "the order the migrations run in"));
-    if code != 0 {
-        for line in &said {
-            log(line);
-        }
-    }
     Ok(code)
 }
 

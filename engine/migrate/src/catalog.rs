@@ -911,6 +911,13 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
         let sql = format!("select o.type || ' ' || o.identity as what from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o order by 1", queries.join(" union all "));
         out.extend(db.rows(&sql).await?.iter().map(|r| format!("{}: {why}", r.text("what"))));
     }
+    // TimescaleDB's hypertables: the table is read, but not what makes it one (`create_hypertable`, its
+    // dimensions and chunk interval), so a migration written from schema.sql makes a plain table.
+    let timescale = db.rows("select to_regclass('timescaledb_information.hypertables')::text as v").await?;
+    if timescale.first().and_then(|r| r.get("v")).is_some() {
+        let hypertables = r"select format('hypertable %I.%I', hypertable_schema, hypertable_name) as what from timescaledb_information.hypertables where hypertable_schema not like '\_timescaledb%' order by 1";
+        out.extend(db.rows(hypertables).await?.iter().map(|r| format!("{}: not read, so a migration written from schema.sql makes a plain table: call create_hypertable in it", r.text("what"))));
+    }
     // Security labels.
     let labels = format!(
         "select format('security label on %s %s', l.objtype, l.objname) as what from pg_seclabels l join pg_namespace n on n.oid = l.objnamespace where {ns} and {} order by 1",

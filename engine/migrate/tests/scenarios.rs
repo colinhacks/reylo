@@ -2788,6 +2788,9 @@ on!(
     a_role_that_is_no_superuser_runs_every_command,
     a_role_that_cannot_create_databases_is_told_of_shadow_url,
     a_public_schema_its_role_owns_is_a_new_databases,
+    a_servers_hint_is_in_its_error,
+    init_refused_leaves_no_project_behind,
+    a_hypertable_is_said_to_be_unread,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
@@ -2964,6 +2967,56 @@ mod adversarial {
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// The server's hint, which often says what to do (a cast here, the setting a platform limits
+    /// elsewhere), is part of the error a command prints.
+    pub async fn a_servers_hint_is_in_its_error(p: P) {
+        p.file("20261027100000_cast.sql", "select lower(1);");
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let result = reylo_migrate::deploy(&opts, &mut |l: &str| out.push(l.to_string())).await;
+        let said = format!("{}\n{}", out.join("\n"), result.as_ref().err().map(|e| e.0.clone()).unwrap_or_default());
+        assert!(!matches!(result, Ok(0)), "{said}");
+        assert_has!(said, r"function lower\(integer\) does not exist\. No function matches the given name and argument types");
+    }
+
+    /// An init whose init.sql doesn't replay (here a function another role owns, which the shadow's
+    /// role may not give it) is refused, and leaves no project behind: "Nothing was changed" holds,
+    /// and init runs again once the shadow can replay it.
+    pub async fn init_refused_leaves_no_project_behind(mut p: P) {
+        p.exec("do $$ begin create role madv_app login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_app", p.name)).await;
+        p.exec("create function public.theirs() returns int language sql as 'select 1'").await;
+        p.url = as_role(&p.url, "madv_app");
+        p.exec("create table users (id int primary key)").await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        let said = out.join("\n");
+        assert_eq!(code, 1, "{said}");
+        assert_has!(said.clone(), r"init\.sql fails when replayed in a shadow database");
+        assert_has!(said.clone(), r"Nothing was changed\.$");
+        assert!(!said.contains("Started"), "{said}");
+        assert!(!p.dir.join("schema.sql").exists(), "init left schema.sql:\n{said}");
+        assert!(!p.dir.join(reylo_migrate::lock::LOCK).exists(), "init left the lock");
+        assert!(p.files().is_empty(), "init left {:?}", p.files());
+        assert!(p.history().await.is_empty(), "init recorded {:?}", p.history().await);
+    }
+
+    /// A TimescaleDB hypertable, which `migrate new` writes as a plain table, is listed as unread by
+    /// `migrate new` and `deploy --dry-run`, rather than passing as a match. A stand-in for
+    /// TimescaleDB's `timescaledb_information.hypertables` view, which the test server lacks, names it.
+    pub async fn a_hypertable_is_said_to_be_unread(mut p: P) {
+        let stand_in = "create schema timescaledb_information; create table timescaledb_information.hypertables (hypertable_schema name, hypertable_name name);";
+        p.schema(&format!("create table metrics (time timestamptz not null, value float8);\n{stand_in}\ninsert into timescaledb_information.hypertables values ('public', 'metrics');\n"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "metrics", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"(?m)^    hypertable public\.metrics: not read, so a migration written from schema\.sql makes a plain table");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        p.exec("insert into timescaledb_information.hypertables values ('public', 'metrics')").await;
+        p.dry_run().await;
+        assert_has!(p.output(), r"(?m)^    hypertable public\.metrics: not read");
     }
 
     pub async fn a_database_search_path_resolves_names_as_the_target_does(mut p: P) {

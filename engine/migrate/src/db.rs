@@ -94,6 +94,10 @@ pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
             if let Some(detail) = d.detail() {
                 message = format!("{message} ({detail})");
             }
+            // The server's hint is often the way out, which a platform's own refusals give too.
+            if let Some(hint) = d.hint() {
+                message = format!("{message}. {hint}");
+            }
             Error(message)
         }
         None => Error(e.to_string()),
@@ -108,10 +112,30 @@ pub(crate) fn mysql_error(e: mysql_async::Error) -> Error {
     }
 }
 
+/// `name`, a libc locale, as `known` (a server's locale names) spells it: itself, else one that differs
+/// only in case and in the encoding's punctuation (`en_US.utf8` and `en_US.UTF-8`), else none.
+pub(crate) fn locale_spelled(name: &str, known: &[String]) -> Option<String> {
+    let plain = |n: &str| match n.to_lowercase().split_once('.') {
+        Some((language, rest)) => {
+            let (encoding, modifier) = rest.split_once('@').map(|(e, m)| (e.to_string(), format!("@{m}"))).unwrap_or((rest.to_string(), String::new()));
+            format!("{language}.{}{modifier}", encoding.replace(['-', '_'], ""))
+        }
+        None => n.to_lowercase(),
+    };
+    if known.iter().any(|k| k == name) {
+        return Some(name.to_string());
+    }
+    known.iter().find(|k| plain(k) == plain(name)).cloned()
+}
+
 /// A server's refusal to create a shadow database, with what to do about it: each shadow is a new
 /// database, so a role that may not create one needs a server where it may (PlanetScale, Vitess,
-/// and some managed roles).
-pub(crate) fn cannot_create(e: Error) -> Error {
+/// and some managed roles). A role that may (`may_create`) was refused by the server itself, which
+/// can limit the databases made on it by name, as Tiger Cloud's does: only another server helps.
+pub(crate) fn cannot_create(e: Error, may_create: bool) -> Error {
+    if may_create {
+        return Error(format!("{e}. The role may create databases, but this server refuses the shadow database each check makes beside yours: set shadow_url in .reylo.yaml to a server that takes it"));
+    }
     Error(format!("{e}. Each shadow database is a new database on this server: give the role the right to create databases, or set shadow_url in .reylo.yaml to a server where it has it"))
 }
 
@@ -534,6 +558,9 @@ pub enum Server {
         url: String,
         /// What follows `create database "<name>"`: the target's encoding and locale, where they are not template1's.
         create: String,
+        /// Why a shadow's `create database` may refuse the target's locale: a name the shadow server
+        /// knows by no spelling, as the refusal says.
+        locale: Option<String>,
         /// The target database's own settings (`alter database … set`), such as a search_path, which
         /// decide where an unqualified name goes.
         settings: Vec<String>,
@@ -606,6 +633,19 @@ impl Server {
                 let mine = target.rows(&props("datname = current_database()")).await?.into_iter().next();
                 let template = pg_rows(&admin, &props("datname = 'template1'")).await?.into_iter().next();
                 let key = |r: &Row| ["enc", "collate", "ctype", "provider", "locale"].map(|k| r.get(k).map(String::from));
+                // A libc locale is named as the shadow server's system names it, which another
+                // system may spell otherwise (Linux's `en_US.utf8` is macOS's `en_US.UTF-8`).
+                let known: Vec<String> = pg_rows(
+                    &admin,
+                    "select collcollate as n from pg_collation where collprovider = 'c' and collcollate is not null
+                      union select collctype from pg_collation where collprovider = 'c' and collctype is not null
+                      union select datcollate from pg_database union select datctype from pg_database",
+                )
+                .await?
+                .iter()
+                .filter_map(|r| r.get("n").map(String::from))
+                .collect();
+                let mut unknown_locale = None;
                 let create = match (&mine, &template) {
                     (Some(m), Some(t)) if key(m) != key(t) => {
                         let provider = match m.text("provider") {
@@ -621,12 +661,18 @@ impl Server {
                         // statement runs on the shadows' server, which `shadow_url` may make another.
                         let shadow_version: i64 = pg_rows(&admin, "select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
                         let provider = if shadow_version >= 150000 { format!(" locale_provider {provider}{locale}") } else { String::new() };
-                        format!(
-                            " template template0 encoding {} lc_collate {} lc_ctype {}{provider}",
-                            literal(m.text("enc")),
-                            literal(m.text("collate")),
-                            literal(m.text("ctype"))
-                        )
+                        let mut spelled = |name: &str| match locale_spelled(name, &known) {
+                            Some(on_shadow) => on_shadow,
+                            None => {
+                                unknown_locale = Some(format!(
+                                    "This database's locale, {name}, is one the shadow server has under no spelling (its own is {}): set shadow_url in .reylo.yaml to a server that has it",
+                                    t.text("collate")
+                                ));
+                                name.to_string()
+                            }
+                        };
+                        let (collate, ctype) = (spelled(m.text("collate")), spelled(m.text("ctype")));
+                        format!(" template template0 encoding {} lc_collate {} lc_ctype {}{provider}", literal(m.text("enc")), literal(&collate), literal(&ctype))
                     }
                     _ => String::new(),
                 };
@@ -662,7 +708,7 @@ impl Server {
                 let environment = if environment_role.is_some() { platform_ddl(url, version / 10000, &platform).unwrap_or_default() } else { vec![] };
                 let schemas: Vec<String> = std::iter::once("public".to_string()).chain(extensions.iter().map(|(_, s)| s.clone())).filter(|s| !platform.contains(s)).collect();
                 let schema_grants = schema_grants(target, &schemas).await?;
-                Ok(Server::Postgres { admin, url: server_url.to_string(), create, settings, privileges, copy_privileges: true, extensions, leave: vec![], environment, environment_role, schema_grants })
+                Ok(Server::Postgres { admin, url: server_url.to_string(), create, locale: unknown_locale, settings, privileges, copy_privileges: true, extensions, leave: vec![], environment, environment_role, schema_grants })
             }
             Dialect::Mysql => {
                 let admin = crate::db::open_mysql(&with_database(server_url, "")).await?;
@@ -699,7 +745,7 @@ impl Server {
                 };
                 admin.query_drop(format!("create database `{name}`{charset}")).await.map_err(|e| match &e {
                     // ER_DBACCESS_DENIED_ERROR and ER_SPECIFIC_ACCESS_DENIED_ERROR: no CREATE on the database.
-                    mysql_async::Error::Server(s) if s.code == 1044 || s.code == 1227 => cannot_create(mysql_error(e)),
+                    mysql_async::Error::Server(s) if s.code == 1044 || s.code == 1227 => cannot_create(mysql_error(e), false),
                     _ => mysql_error(e),
                 })?;
                 let db = Db::Mysql(crate::db::open_mysql(&with_database(url, &name)).await?);
@@ -714,7 +760,7 @@ impl Server {
     /// privileges) but not its database settings, which a copy does not take. The lock named after
     /// it is held until it is dropped; a copy that fails releases it.
     pub(crate) async fn pg_shadow(&mut self, template: Option<&str>) -> Result<Shadow, Error> {
-        let Server::Postgres { admin, url, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, schema_grants } = self else { return Err(Error("not a Postgres server".into())) };
+        let Server::Postgres { admin, url, create, locale, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, schema_grants } = self else { return Err(Error("not a Postgres server".into())) };
         let name = random_name();
         admin.batch_execute(&format!("select pg_advisory_lock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
         let made = async {
@@ -722,7 +768,17 @@ impl Server {
                 Some(t) => admin.batch_execute(&format!("create database \"{name}\" template \"{t}\"")).await,
                 None => admin.batch_execute(&format!("create database \"{name}\"{create}")).await,
             };
-            made.map_err(|e| if e.code() == Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE) { cannot_create(pg_error(e)) } else { pg_error(e) })?;
+            if let Err(e) = made {
+                let refused = e.as_db_error().map(|d| d.message().to_string()).unwrap_or_default();
+                if let (Some(why), true) = (locale.as_ref(), refused.contains("locale")) {
+                    return Err(Error(format!("{refused}. {why}")));
+                }
+                if e.code() != Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE) {
+                    return Err(pg_error(e));
+                }
+                let may = pg_rows(admin, "select (rolcreatedb or rolsuper)::text as may from pg_roles where rolname = current_user").await?;
+                return Err(cannot_create(pg_error(e), may.first().is_some_and(|r| r.text("may") == "true")));
+            }
             for s in settings.iter() {
                 let Some((key, value)) = s.split_once('=') else { continue };
                 let value = if PG_LISTS.contains(&key) {
@@ -948,6 +1004,32 @@ pub(crate) async fn default_privileges(target: &mut Db) -> Result<Vec<String>, E
 #[cfg(test)]
 mod url_tests {
     use super::*;
+
+    #[test]
+    fn a_locale_is_spelled_as_the_shadow_server_spells_it() {
+        let mac: Vec<String> = ["C", "POSIX", "en_US.UTF-8", "de_DE.ISO8859-1", "sr_YU.UTF-8@latin"].map(String::from).to_vec();
+        let linux: Vec<String> = ["C", "POSIX", "C.utf8", "en_US.utf8", "de_DE.iso88591"].map(String::from).to_vec();
+        assert_eq!(locale_spelled("en_US.utf8", &mac).as_deref(), Some("en_US.UTF-8"));
+        assert_eq!(locale_spelled("en_US.UTF-8", &linux).as_deref(), Some("en_US.utf8"));
+        assert_eq!(locale_spelled("de_DE.iso88591", &mac).as_deref(), Some("de_DE.ISO8859-1"));
+        assert_eq!(locale_spelled("sr_YU.utf8@latin", &mac).as_deref(), Some("sr_YU.UTF-8@latin"));
+        assert_eq!(locale_spelled("C.UTF-8", &linux).as_deref(), Some("C.utf8"));
+        assert_eq!(locale_spelled("C", &linux).as_deref(), Some("C"));
+        // Another language, or another encoding, is no spelling of it.
+        assert_eq!(locale_spelled("en_GB.utf8", &mac), None);
+        assert_eq!(locale_spelled("en_US.iso88591", &mac), None);
+        assert_eq!(locale_spelled("en_US", &mac), None);
+    }
+
+    #[test]
+    fn a_refused_shadow_is_told_what_helps() {
+        // A role that may create databases, refused by the server by name, keeps the server's words and is sent to shadow_url alone.
+        let e = cannot_create(Error("tsdb_admin: database reylo_shadow_1 is not an allowed database name. Contact your administrator".into()), true);
+        assert!(e.0.starts_with("tsdb_admin: database reylo_shadow_1 is not an allowed database name. Contact your administrator. "), "{}", e.0);
+        assert!(e.0.contains("shadow_url") && !e.0.contains("give the role the right"), "{}", e.0);
+        let e = cannot_create(Error("permission denied to create database".into()), false);
+        assert!(e.0.contains("give the role the right to create databases") && e.0.contains("shadow_url"), "{}", e.0);
+    }
 
     #[test]
     fn a_password_holding_a_hash_stays_a_password() {
