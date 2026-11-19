@@ -117,6 +117,8 @@ LIMIT 1
 
 Reylo reads every result in ClickHouse's `RowBinaryWithNamesAndTypes` format, so each value is exact whatever JSON settings your client has: a `UInt64` past 2^53 keeps every digit, and a `Float64` can be `NaN` or `Infinity`.
 
+A `Float32` is the number it stores, as a `Float32Array` gives one: `0.1` kept in a `Float32` column reads `0.10000000149011612`, where ClickHouse prints `0.1`.
+
 ### Decimals
 
 A `Decimal` comes back as its exact text, without trailing zeros:
@@ -315,20 +317,26 @@ WHERE id IN {ids:Array(UInt64)}
   AND role IN {roles:Array(Enum8('admin' = 1, 'member' = 2))}
 ```
 
-Reylo checks each value against its type before the query runs, since ClickHouse doesn't always: it reads `300` for a `UInt8` as `44`. An integer outside its type's range, a decimal with more digits than its type holds and a date outside its type's range each throw, naming the parameter.
+Reylo checks each value against its type before the query runs, since ClickHouse doesn't always: it reads `300` for a `UInt8` as `44`. Each of these throws, naming the parameter:
+
+- a number outside its type's range, or a `number` past 2^53 - 1 where the type is wider: pass a `bigint`
+- a decimal with more digits than its type holds
+- a date or a time outside its type's range, which for a `DateTime64` is 1900 through 2299, or one that isn't on the calendar, such as 30 February
+- a string that holds half of a surrogate pair
+- a named tuple with a member missing, or one the type doesn't have
 
 ### Where a parameter can't go [#constant-positions]
 
 A parameter can't stand where its value would change the query's types.
 
-ClickHouse writes a parameter's value into the query before it reads it, so some functions read one as part of the query: the scale of `toDateTime64`, the type a `CAST` names, a time zone, a tuple's element. Such a query has no one type, so the type check refuses the parameter where it stands:
+ClickHouse writes a parameter's value into the query before it reads it, so some functions read one as part of the query: the scale of `toDateTime64`, the type a `CAST` names, the zone of `toTimeZone`, a tuple's element. Such a query has no one type, so the type check refuses the parameter where it stands:
 
 ```sql tab="ch_rounded.sql" dialect="clickhouse" errors
 SELECT toDateTime64(placed_at, {scale:UInt8}) AS placed
 FROM orders
 ```
 
-A parameter works where ClickHouse needs a constant whose value changes no type: a `LIMIT`, the right side of an `IN`, the format of `formatDateTime`, an aggregate's own parameter. Reylo checks that by describing the query with several values of it:
+A parameter works where ClickHouse needs a constant whose value changes no type: a `LIMIT`, the right side of an `IN`, the format of `formatDateTime`, the unit of `dateDiff`, an aggregate's own parameter. Reylo checks that by describing the query with several values of it:
 
 ```ts twoslash tab="main.ts"
 import spentBy from "./ch_spent_by.sql";
@@ -342,6 +350,14 @@ SELECT formatDateTime(placed_at, {format:String}) AS period,
   quantile({level:Float64})(toFloat64(total)) AS typical
 FROM orders
 GROUP BY period
+```
+
+ClickHouse also computes with a constant as it reads the query, so the type check describes each query with values it can compute with. For a `String`, those are the texts a query commonly reads: a number, a date, a time, a time zone, a unit. Where the query takes none of them, declare the parameter as the type the query converts it to:
+
+```sql tab="ch_since.sql" dialect="clickhouse"
+SELECT id, total
+FROM orders
+WHERE placed_at >= {since:DateTime64(3, 'UTC')}
 ```
 
 A parameter of the type `Identifier`, which stands for a table or a column, is always refused: write the name in the query.
@@ -361,7 +377,16 @@ INSERT INTO orders (id, user_id, total, placed_at)
 VALUES ({id:UInt64}, {user:UInt64}, {total:Decimal(12, 2)}, now64(3))
 ```
 
-The type check has ClickHouse build an `INSERT` without running it, so a table or a column that doesn't exist is an error there. A `DELETE`'s `WHERE` is checked the same way. An `UPDATE` and an `ALTER TABLE … UPDATE` are checked for syntax alone.
+The type check has ClickHouse build an `INSERT` without running it, so a table or a column that doesn't exist is an error there. A `DELETE` and an `UPDATE` are checked as the `SELECT` of the rows they change and the values they write, and so are `ALTER TABLE … UPDATE` and `ALTER TABLE … DELETE`.
+
+ClickHouse fits whatever a query inserts into its column, and says nothing where that changes the value: a `UInt64` of 300 goes into a `UInt8` column as 44. So a parameter written straight to a column declares a type the column holds every value of, and the type check refuses one that doesn't:
+
+```sql tab="ch_add_wide.sql" dialect="clickhouse" errors
+INSERT INTO orders (id, user_id, total, placed_at)
+VALUES ({id:UInt64}, {user:UInt64}, {total:Decimal(18, 4)}, now64(3))
+```
+
+A value the query computes first, as `{n:UInt64} + 1` or the rows of an `INSERT … SELECT`, is converted as ClickHouse converts it.
 
 To insert many rows in one query, pass them as one array of tuples:
 
@@ -425,11 +450,14 @@ What Reylo can't type on ClickHouse, and what to do instead:
 | --- | --- |
 | A `JSON`, `Dynamic`, `AggregateFunction`, interval, `Time` or `Time64` column | Select it as a type Reylo reads ([above](#unread-types)) |
 | A parameter whose value changes the result's types, or of the type `Identifier` or `Variant` | Write the value in the query, or declare the parameter with one type |
+| A `DateTime64` parameter given an instant within the second before 1970, which ClickHouse reads as one after it unless the type names UTC | Declare the parameter with the zone, as `DateTime64(3, 'UTC')` |
+| A parameter whose text is over 128 KiB, such as an array of several thousand ids | Send fewer values at a time, or raise the server's `http_max_field_value_size` |
 | A bare `:name`, which declares no type | `{name:Type}`, or `:name::Type` |
 | A column with no name of its own, such as `count()` beside another column | Give it an alias: `count() AS orders` |
 | An `INSERT … FORMAT`, whose rows are the request's body | `VALUES` with parameters, or your client's `insert()` |
-| `WITH TOTALS` and `extremes`: their extra rows aren't part of the result Reylo reads | Compute the total in a second query |
-| A statement other than a `SELECT`, an `INSERT`, a `DELETE` or an `UPDATE`, such as `CREATE TABLE` or `SHOW TABLES` | Run it on your client |
+| `WITH TOTALS` and the `extremes` setting, whose extra rows a typed result has no place for | `WITH ROLLUP`, whose totals are rows, or a second query |
+| A `SETTINGS` clause that names the result's format, `default_format` | Leave it out: Reylo asks for the format it reads |
+| A statement other than a `SELECT`, an `INSERT`, a `DELETE` or an `UPDATE`, such as `CREATE TABLE`, `SHOW TABLES` or an `ALTER` that changes the table | Run it on your client |
 | A `clickhouse+https://` server whose certificate no public authority signed, such as a self-signed one | None: the type check verifies the certificate against Mozilla's roots |
 | A server before 25.11, which doesn't mark an error that ends a result | None: the type check says so and stops |
 | The Rust crate | None: sqlx has no ClickHouse driver |
