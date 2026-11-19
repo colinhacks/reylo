@@ -2833,7 +2833,9 @@ impl<'a> Engine<'a> {
         }
         drop(registry);
         // `ARRAY(SELECT …)`'s elements are its subquery's one column, which the subquery's own FROM
-        // and WHERE settle, over the items of this statement it may read.
+        // and WHERE settle, over the items of this statement it may read. A column of arrays is the
+        // rows of an array of more dimensions, whose elements are the arrays' own: non-null where
+        // the subquery's own analysis says so of them.
         if plan.set_op.is_none() {
             let subqueries = infer::array_subqueries(sql).filter(|s| s.len() == described.columns.len()).unwrap_or_default();
             let mut pending = false;
@@ -2841,7 +2843,9 @@ impl<'a> Engine<'a> {
                 let Some(subquery) = subquery else { continue };
                 match self.probe(subquery, trust) {
                     Some(Some(settled)) => {
-                        if matches!(settled.columns.as_slice(), [only] if !only.nullable) {
+                        let registry = self.registry.borrow();
+                        let no_array = |o: u32| registry.get(registry.resolve_domain(o)).is_some_and(|t| t.kind != crate::pgtypes::TypeKind::Array);
+                        if matches!(settled.columns.as_slice(), [only] if !only.nullable && (no_array(only.type_oid) || only.nullable_items == Some(false))) {
                             col.nullable_items = Some(false);
                         }
                     }

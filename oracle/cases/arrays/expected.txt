@@ -4,10 +4,14 @@ any_param.sql: many (emails: text(¬NUL)?[]) -> { id: int4 } key (id)
 appended.sql: many () -> { tagged: text(¬NUL)?[]?, appended: int4?[]?, prepended: int4?[]?, doc: json { a: text(¬NUL)?[]? }, literal: text(¬NUL)[] }
 columns.sql: at_most_one (id: int4) -> { tags: text(¬NUL)?[], scores: int4?[]? }
 constructors.sql: at_most_one (id: int4) -> { nicks: text(¬NUL)?[], emails: text(¬NUL)[], nums: int4[] }
-deeper.sql: many () -> { cube: int4?[][][], rows_agg: int4[][], rows_built: int4[][], wrapped: int4?[][], scalars: int4[] }
+deeper.sql: many () -> { cube: int4?[][][], rows_agg: int4[][], rows_built: int4?[][], wrapped: int4?[][], scalars: int4[] }
 domain_aggregate.sql: one () -> { stacked: int4?[][]? }
+domain_cast.sql: many () -> { cast_one: int4?[][], appended: int4?[][], sliced: int4?[][], doc: jsonb { a: int4?[][] } }
+domain_cast_aggregate.sql: one () -> { stacked: int4?[][]? }
+domain_cast_subquery.sql: one () -> { rows_of: int4?[][] }
 domain_elements.sql: many () -> { one: public.int_list(int4?[])?[], held: public.int_list(int4?[])?[], either: public.int_list(int4?[])?[], rows_of: public.int_list(int4?[])?[], doc: json { a: public.int_list(int4?[])?[] } }
 json_nested.sql: many () -> { doc: json { stacked: int4?[][], pair: int4?[][] } }
 nested.sql: at_most_one (id: int4) -> { stacked: int4?[][], pair: int4?[][], literal: int4?[][], rows_of: int4?[][] }
 slices.sql: at_most_one (i: int4, id: int4) -> { head: text(¬NUL)?[]?, head2: text(¬NUL)?[]?, one: text(¬NUL)? }
 subqueries.sql: one () -> { emails: text(¬NUL)[], nicks: text(¬NUL)?[] }
+subquery_rows.sql: one () -> { nicks: text(¬NUL)?[][] }

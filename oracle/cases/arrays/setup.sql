@@ -7,3 +7,6 @@ insert into grids values (1, '{1,2}'), (2, '{3,4}');
 -- aggregate of it builds one more dimension of the base type.
 create domain int_list as int[];
 create table lists (id int primary key, x int_list, y int_list not null default '{1}');
+-- Cast or computed to its base type, the domain's array is an array again, which an array of it
+-- nests a level deeper.
+insert into lists values (1, '{1,NULL}', '{2}');

@@ -244,6 +244,12 @@ pub const RELATION_TYPES_QUERY: &str = concat!(
     " FROM pg_catalog.pg_type t WHERE t.oid OPERATOR(pg_catalog.=) ANY (SELECT w.oid FROM wanted w)"
 );
 
+/// The `pg_catalog` array type of a `pg_catalog` element type the registry starts with
+/// (`_int4` of `int4`).
+pub fn builtin_array_of(element: u32) -> Option<u32> {
+    BUILTINS.iter().find(|(_, name, _, elem, _, _)| *elem == element && name.starts_with('_')).map(|(oid, ..)| *oid)
+}
+
 /// The `pg_catalog` types with fixed oids the registry starts with, as `pg_type` reports them on
 /// 14 (`oid, typname, typtype, typelem, typbasetype, format_type`), so a statement over plain
 /// columns and built-in expressions needs no type query at all. An oid below 10000 is assigned

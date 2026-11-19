@@ -1148,6 +1148,8 @@ fn items_nesting(items: &[Expr], leaves: Option<&[DescribedColumn]>, is_array: &
             _ => {
                 let type_oid = match item {
                     Expr::Unread(type_oid) => *type_oid,
+                    // `||`, `array_append` and `array_prepend` of an array are of its type.
+                    Expr::Every(operands, Ty::Concat | Ty::Appends) => operands.iter().find_map(|o| resolve(o, leaves).type_oid.filter(|t| is_array(*t) == Some(true))),
                     _ => resolve(item, leaves).type_oid,
                 };
                 match type_oid.map(|t| (t, is_array(t))) {
@@ -1790,7 +1792,9 @@ impl Reader<'_> {
                             // where a JSON null cast to a number or a boolean is NULL
                             // (`ARRAY['null'::jsonb]::int[]` is `{NULL}`).
                             let operand = if POSTGRES_JSONB_NULL_CASTS.contains(&name.as_str()) && !self.trust.jsonb_casts_raise { elements_not_jsonb(operand) } else { operand };
-                            Expr::Every(vec![operand], Ty::Unknown)
+                            // Of the built-in array type, which an array of it nests in turn.
+                            let ty = POSTGRES_CASTS.iter().find(|(n, _)| *n == name).and_then(|(_, o)| crate::pgtypes::builtin_array_of(*o)).map_or(Ty::Unknown, Ty::Is);
+                            Expr::Every(vec![operand], ty)
                         }
                         _ => Expr::Unknown,
                     };
@@ -1971,6 +1975,19 @@ impl Reader<'_> {
                     Expr::Nullable(Box::new(read))
                 } else {
                     read
+                }
+            }
+            // A slice of an array (`tags[1:2]`) is of the array's type, NULL for a NULL array or
+            // bound: one subscript a slice makes them all slices.
+            Some(NodeEnum::AIndirection(i))
+                if self.dialect == Dialect::Postgres
+                    && !i.indirection.is_empty()
+                    && i.indirection.iter().all(|n| matches!(n.node, Some(NodeEnum::AIndices(_))))
+                    && i.indirection.iter().any(|n| matches!(&n.node, Some(NodeEnum::AIndices(x)) if x.is_slice)) =>
+            {
+                match i.arg.as_deref() {
+                    Some(arg) => Expr::Nullable(Box::new(Expr::Every(vec![self.read(arg)], Ty::Shared))),
+                    None => Expr::Unknown,
                 }
             }
             Some(NodeEnum::SubLink(s)) => self.sublink(s),
