@@ -1350,6 +1350,49 @@ fn ask_level(names: &[String], levels: usize, seen: &mut HashSet<String>, host: 
     }
 }
 
+/// Adds to `catalog.volatile` each name of `catalog.labelled` whose `language sql` overload labelled
+/// `stable` or `immutable` may answer anew for each call all the same: its body calls something
+/// volatile, or is no one SELECT the engine reads. A label is its author's word, and Postgres runs
+/// the body as it is written: a sequential scan that compares a key with a call of one calls it for
+/// each row. A function in another language is taken at its label.
+pub(crate) fn belied_labels(catalog: &mut cardinality::Catalog, host: &Host) -> Lazy<()> {
+    let mut names: Vec<String> = catalog.labelled.iter().filter(|n| !catalog.volatile.contains(*n)).cloned().collect();
+    if names.is_empty() {
+        return Some(());
+    }
+    names.sort_unstable();
+    let functions = functions_named(&names, host)?;
+    let mut pending = false;
+    let mut belied = Vec::new();
+    for name in names {
+        // The catalog's rows for the name, of which one is a `language sql` function not labelled
+        // volatile: one the engine cannot read is taken as volatile.
+        let labelled: Vec<&Function> = functions.iter().filter(|f| f.name == name && f.sql && !f.volatile).collect();
+        let mut quiet = Some(!labelled.is_empty());
+        for f in labelled {
+            let read = match body_statement(f) {
+                Some(body) => crate::errors::calls_nothing_volatile(&body, host),
+                None => Some(false),
+            };
+            quiet = match (quiet, read) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            };
+        }
+        match quiet {
+            Some(true) => {}
+            Some(false) => belied.push(name),
+            None => pending = true,
+        }
+    }
+    if pending {
+        return None;
+    }
+    catalog.volatile.extend(belied);
+    Some(())
+}
+
 /// A note where a call in FROM runs apart from its query for want of a word: Postgres flattens a
 /// function that returns a set only where it says `stable` or `immutable`, and this one's label is the
 /// default's, or was written, over a body that calls nothing volatile. Nothing else on the function

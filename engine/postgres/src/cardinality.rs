@@ -124,6 +124,10 @@ pub struct Catalog {
     /// Whether the statement compares a value with a bare NULL by `=`, which `transform_null_equals`
     /// reads as `IS NULL`: `id = NULL` then pins no key ([`crate::infer::compares_with_null`]).
     pub null_equals: bool,
+    /// Function names with a user's or an extension's `language sql` overload labelled `stable` or
+    /// `immutable`, whose body may call something volatile all the same; [`crate::bodies::belied_labels`]
+    /// reads which, and those join `volatile`.
+    pub labelled: HashSet<String>,
     /// Operator names a user or an extension defined, as the trust check reports them: such an
     /// operator may be the one a comparison or an arithmetic resolves to, and may be volatile.
     pub user_operators: HashSet<String>,
@@ -499,12 +503,16 @@ pub const COLUMNS_QUERY: &str = concat!(
 );
 
 /// `$1` is `text[]` of function names: `(proname, has a set-returning overload, has a volatile
-/// overload)`, an aggregate volatile where a function it runs is, whatever its own label, which
-/// Postgres writes as immutable for every aggregate.
+/// overload, has a user's or an extension's `language sql` overload not labelled volatile)`, an
+/// aggregate volatile where a function it runs is, whatever its own label, which Postgres writes as
+/// immutable for every aggregate. The label of a `language sql` function is only its author's word,
+/// which its body may belie ([`crate::bodies::belied_labels`]).
 pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog.bool_or(p.proretset), pg_catalog.bool_or(p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" \
       OR EXISTS (SELECT 1 FROM pg_catalog.pg_aggregate a JOIN pg_catalog.pg_proc f \
         ON f.oid OPERATOR(pg_catalog.=) ANY (ARRAY[a.aggtransfn::pg_catalog.oid, a.aggfinalfn::pg_catalog.oid, a.aggcombinefn::pg_catalog.oid, a.aggmtransfn::pg_catalog.oid, a.aggminvtransfn::pg_catalog.oid, a.aggmfinalfn::pg_catalog.oid]) \
-        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")) \
+        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")), \
+    pg_catalog.bool_or(p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.provolatile OPERATOR(pg_catalog.<>) 'v'::pg_catalog.\"char\" \
+      AND EXISTS (SELECT 1 FROM pg_catalog.pg_language l WHERE l.oid OPERATOR(pg_catalog.=) p.prolang AND l.lanname OPERATOR(pg_catalog.=) 'sql'::pg_catalog.name)) \
     FROM pg_catalog.pg_proc p WHERE p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) GROUP BY p.proname";
 
 /// Every operator some set-returning function implements.

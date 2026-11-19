@@ -682,6 +682,7 @@ pub fn catalog(host: &Host, functions: &[String], relations: &[String]) -> Lazy<
     if let Some(rows) = view_rows {
         merge_keys(&mut catalog, build_catalog(&operators, rows));
     }
+    crate::bodies::belied_labels(&mut catalog, host)?;
     catalog.views = views;
     trusted(&mut catalog, &trust);
     Some(catalog)
@@ -956,6 +957,7 @@ impl<'a> Engine<'a> {
         if let Some(rows) = view_rows {
             merge_keys(&mut catalog, build_catalog(&operators, rows));
         }
+        crate::bodies::belied_labels(&mut catalog, self.host)?;
         catalog.views = view_definitions;
         catalog.not_null = self.not_null_columns();
         catalog.param_types = raw.params.clone();
@@ -4436,6 +4438,7 @@ fn merge_keys(into: &mut Catalog, from: Catalog) {
     into.functions.extend(from.functions);
     into.set_returning.extend(from.set_returning);
     into.volatile.extend(from.volatile);
+    into.labelled.extend(from.labelled);
 }
 
 fn build_catalog(set_returning: &(HashSet<String>, HashSet<String>), rows: CatalogRows) -> Catalog {
@@ -4528,6 +4531,11 @@ fn build_catalog(set_returning: &(HashSet<String>, HashSet<String>), rows: Catal
             // then taken as volatile, which refuses a key pinned to any call.
             if row.get(2).and_then(as_bool).unwrap_or(true) {
                 catalog.volatile.insert(name.to_string());
+            }
+            // A host that answers without the fourth column reports no `language sql` function:
+            // every function is then taken at its label.
+            if row.get(3).and_then(as_bool).unwrap_or(false) {
+                catalog.labelled.insert(name.to_string());
             }
             catalog.functions.insert(name.to_string());
         }

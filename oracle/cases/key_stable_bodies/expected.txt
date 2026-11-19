@@ -1,0 +1,3 @@
+coin.sql: many () -> { id: int4 } key (id)
+honest.sql: at_most_one () -> { id: int4 }
+turn.sql: many () -> { id: int4 } key (id)
