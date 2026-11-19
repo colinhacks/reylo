@@ -162,6 +162,12 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
     // file after a lone index build repeats: a deploy cut off between the files starts the next run
     // there, in a new session.
     let mut settings: Vec<String> = Vec::new();
+    // A column given an identity must be not null first, in the same file: its `set not null` stays.
+    static IDENTITY: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^\s*alter\s+table\s+(\S+)\s+alter\s+column\s+(\S+)\s+add\s+generated\b").expect("a valid pattern"));
+    static NOT_NULL: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^\s*alter\s+table\s+(\S+)\s+alter\s+column\s+(\S+)\s+set\s+not\s+null\s*;?\s*$").expect("a valid pattern"));
+    let identities: BTreeSet<(String, String)> = plan.statements.iter().filter_map(|s| IDENTITY.captures(s)).map(|c| (c[1].to_string(), c[2].to_string())).collect();
     for statement in &plan.statements {
         if statement.starts_with("--") {
             comments.push(statement.clone());
@@ -185,7 +191,8 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
         } else if let Some(name) = lower.strip_prefix("reset ") {
             settings.retain(|s| !s.to_ascii_lowercase().strip_prefix("set ").is_some_and(|r| r.starts_with(name.trim())));
         }
-        match shape(statement, existing) {
+        let needed = NOT_NULL.captures(statement).is_some_and(|c| identities.contains(&(c[1].to_string(), c[2].to_string())));
+        match if needed { Shape::Kept(statement.clone()) } else { shape(statement, existing) } {
             Shape::Kept(s) => {
                 current.append(&mut comments);
                 current.push(s);
