@@ -1,7 +1,7 @@
 // One statement as the playground shows it, in `reylo play` and on the docs site's /play: the
 // diagnostics the content mapper would place in its file, by line and column, and its Params and
 // Returns as the docs print them. Free of Node, since the docs run it in the reader's tab.
-import type { Analysis, Dialect, Lexed } from "./engine-core.ts";
+import { DIAGNOSTIC, type Analysis, type Dialect, type Lexed } from "./engine-core.ts";
 import { moduleTypes } from "./module-types.ts";
 import { formatType, resultType } from "./type-format.ts";
 
@@ -49,7 +49,7 @@ export function playResult(
       ms,
     };
   } catch (e) {
-    return { sql, params: "unknown", returns: "unknown", diagnostics: [placed({ message: (e as Error).message, start: 0, length: 1, code: 5 })], ms };
+    return { sql, params: "unknown", returns: "unknown", diagnostics: [placed({ message: (e as Error).message, start: 0, length: 1, code: DIAGNOSTIC.unreachable })], ms };
   }
 }
 

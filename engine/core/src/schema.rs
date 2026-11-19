@@ -9,7 +9,7 @@
 //! field of an `Object` or item of a `List`) takes the database's: `int8` and `numeric` as JSON
 //! numbers, `bytea` as its own `\x…` hex.
 
-use crate::types::{Field, JsonType, Kind, Slot, StructType, Type, UuidType};
+use crate::types::{Field, JsonType, Kind, Slot, StructType, Type, UuidType, ZonedDateTimeType};
 use serde_json::{json, Map, Value};
 
 /// Where a value stands and how the caller encodes what it decodes itself.
@@ -186,9 +186,16 @@ impl Type {
                 let digit = if digits.len() == 1 { digits } else { format!("[{digits}]") };
                 json!({"type": "string", "format": "uuid", "pattern": format!("^[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-{digit}[0-9a-fA-F]{{3}}-[89abAB][0-9a-fA-F]{{3}}-[0-9a-fA-F]{{12}}$")})
             }
-            Kind::DateTime(_) | Kind::Instant(_) | Kind::ZonedDateTime(_) => json!({"type": "string", "format": "date-time"}),
+            // JSON Schema's `date-time` and `time` are RFC 3339's, which need a UTC offset: a value
+            // that keeps one takes the format, and a wall-clock value, which is no instant, does not.
+            // A time that reaches 24:00:00, as Postgres's do, is past RFC 3339's too.
+            Kind::Instant(_) | Kind::ZonedDateTime(ZonedDateTimeType { offset_only: true, .. }) => json!({"type": "string", "format": "date-time"}),
+            Kind::ZonedDateTime(_) => json!({"type": "string", "description": "a date and time with its time zone, a region or an offset"}),
+            Kind::DateTime(_) => json!({"type": "string", "description": "a date and time without a time zone, as the database wrote it (2026-10-20T10:00:00.123456)"}),
             Kind::Date(_) => json!({"type": "string", "format": "date"}),
-            Kind::Time(_) => json!({"type": "string", "format": "time"}),
+            Kind::Time(t) if t.offset && t.bounds.max.as_deref() != Some("24:00:00") => json!({"type": "string", "format": "time"}),
+            Kind::Time(t) if t.offset => text_of(self),
+            Kind::Time(_) => json!({"type": "string", "description": "a time of day without a time zone (10:00:00.5)"}),
             Kind::Bytes(_) if matches!(bare_name(self), "macaddr" | "macaddr8") => text_of(self),
             // Postgres writes its own hex inside a document.
             Kind::Bytes(_) if opts.in_json => json!({"type": "string", "format": "hex"}),
@@ -356,6 +363,27 @@ mod tests {
         }
         let either = Type::union(vec![Type::integer(32), Type::double()]);
         assert_eq!(either.json_schema(WIRE), json!({"anyOf": [{"type": "integer", "format": "int32"}, {"type": "number", "format": "double"}]}));
+    }
+
+    /// RFC 3339's `date-time` and `time`, which JSON Schema's formats name, need an offset, so
+    /// only a value that keeps one takes them.
+    #[test]
+    fn only_a_time_with_an_offset_takes_rfc_3339s_formats() {
+        use crate::types::{Bounds, DateTimeType, InstantType, TimeType, ZonedDateTimeType, MICROSECOND};
+        let tick = || MICROSECOND.to_string();
+        let time = |offset: bool, max: Option<&str>| Type::new(Kind::Time(TimeType { tick: tick(), offset, bounds: Bounds { max: max.map(Into::into), ..Bounds::default() } }));
+        let wall = json!({"type": "string", "description": "a date and time without a time zone, as the database wrote it (2026-10-20T10:00:00.123456)"});
+        for opts in [WIRE, IN_JSON, WIRE.as_input()] {
+            assert_eq!(Type::new(Kind::DateTime(DateTimeType { tick: tick(), ..DateTimeType::default() })).named("timestamp").json_schema(opts), wall);
+            assert_eq!(Type::new(Kind::Instant(InstantType { tick: tick(), ..InstantType::default() })).named("timestamptz").json_schema(opts), json!({"type": "string", "format": "date-time"}));
+            assert_eq!(Type::new(Kind::ZonedDateTime(ZonedDateTimeType { tick: tick(), offset_only: true, ..ZonedDateTimeType::default() })).json_schema(opts), json!({"type": "string", "format": "date-time"}));
+            assert_eq!(Type::new(Kind::ZonedDateTime(ZonedDateTimeType { tick: tick(), ..ZonedDateTimeType::default() })).json_schema(opts), json!({"type": "string", "description": "a date and time with its time zone, a region or an offset"}));
+            assert_eq!(time(false, Some("24:00:00")).named("time").json_schema(opts), json!({"type": "string", "description": "a time of day without a time zone (10:00:00.5)"}));
+            assert_eq!(time(false, None).json_schema(opts), json!({"type": "string", "description": "a time of day without a time zone (10:00:00.5)"}));
+            // Postgres's timetz reaches 24:00:00.
+            assert_eq!(time(true, Some("24:00:00")).named("timetz").json_schema(opts), json!({"type": "string", "description": "pg type timetz"}));
+            assert_eq!(time(true, None).json_schema(opts), json!({"type": "string", "format": "time"}));
+        }
     }
 
     #[test]

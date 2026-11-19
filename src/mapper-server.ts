@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { dirname, relative, sep } from "node:path";
 import { serve } from "./rpc.ts";
-import { anyEngine, type Lexed } from "./engine.ts";
+import { anyEngine, DIAGNOSTIC, type Lexed } from "./engine.ts";
 import { moduleTypes, queryErrorType, reyloImport, withinFile } from "./module-types.ts";
 import { decimalLibraryProblem, geojsonTypesProblem, libraryProblem, PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
 import type { Codecs } from "./codecs.ts";
@@ -25,7 +25,7 @@ type Project = {
 const projects = new Map<string, Project>();
 
 /** A diagnostic of the file, its range kept inside the file's `size` bytes (`withinFile`). */
-function diag(size: number, messageText: string, start: number, length: number, code = 1): MapperDiagnostic {
+function diag(size: number, messageText: string, start: number, length: number, code: number): MapperDiagnostic {
   return { messageText, ...withinFile(start, length, size), code };
 }
 
@@ -71,7 +71,7 @@ export function mapperHandlers(): MapperHandlers {
       // Every setting lives in the project file, which other hosts read too.
       const resolved = resolveProject(await anyEngine(), projectDir);
       const projectFile = resolved.file ? relative(projectDir, resolved.file).split(sep).join("/") || resolved.file : PROJECT_FILE;
-      const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
+      const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: DIAGNOSTIC.mapperOption }));
       const session = Session.open(projectDir);
       projects.set(p.projectHandle, { strictParams: resolved.strictParams, allowNestedArrays: resolved.allowNestedArrays, codecs: resolved.codecs, projectFile, session });
       // What every file's module is a function of besides its own text: the settings, and what
@@ -95,7 +95,7 @@ export function mapperHandlers(): MapperHandlers {
       if (!project) {
         // A transform for a project this process never opened: answer, never throw, so the file
         // keeps its default export instead of becoming an empty module.
-        diagnostics.push(diag(size, `The content mapper has no project for this file; restart the TypeScript server.`, 0, 1, 9));
+        diagnostics.push(diag(size, `The content mapper has no project for this file; restart the TypeScript server.`, 0, 1, DIAGNOSTIC.noProject));
         const leading = leadingComment(sql);
         const doc = docComment(leading.prose, statementAfter(sql, leading));
         const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\nexport type QueryError = import("reylo").QueryError;\n${doc}declare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
@@ -166,17 +166,17 @@ export function mapperHandlers(): MapperHandlers {
       const library = project.codecs.decimal;
       if (library !== undefined && library !== "string" && library !== "number" && [types.params, types.row, types.columns ?? ""].some((t) => t.includes(`import("${library}")`))) {
         const missing = decimalLibraryProblem(project.codecs, dirname(p.fileName));
-        if (missing) diagnostics.push(diag(size, missing, 0, 1, 11));
+        if (missing) diagnostics.push(diag(size, missing, 0, 1, DIAGNOSTIC.project));
       }
       // So is ip-address, a network address's.
       if (project.codecs.inet === "ip-address" && [types.params, types.row, types.columns ?? ""].some((t) => t.includes(`import("ip-address")`))) {
         const missing = libraryProblem("ip-address", dirname(p.fileName));
-        if (missing) diagnostics.push(diag(size, missing, 0, 1, 11));
+        if (missing) diagnostics.push(diag(size, missing, 0, 1, DIAGNOSTIC.project));
       }
       // So is the GeoJSON a geometry's type names, which @types/geojson holds.
       if (project.codecs.geometry !== undefined && [types.params, types.row, types.columns ?? ""].some((t) => t.includes(`import("geojson")`))) {
         const missing = geojsonTypesProblem(dirname(p.fileName));
-        if (missing) diagnostics.push(diag(size, missing, 0, 1, 11));
+        if (missing) diagnostics.push(diag(size, missing, 0, 1, DIAGNOSTIC.project));
       }
       // The compiled statement, without the comment naming its file, which the run time adds where
       // it sends the statement (src/sqlcommenter.ts).

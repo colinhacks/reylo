@@ -1,7 +1,7 @@
 all_columns.sql: many () -> { id: int, tiny: tinyint?, small: smallint?, medium: mediumint?, whole: int?, big: bigint?, utiny: tinyint?, usmall: smallint?, umedium: mediumint?, uwhole: int?, ubig: bigint?, flag: tinyint(1), price: decimal(10,2)?, exact: decimal(40,20)?, f: float?, d: double?, c: char(≤5)?, v: varchar(≤20)?, tt: text(≤255 bytes, UTF-8)?, tx: text(≤65535 bytes, UTF-8)?, mt: text(≤16777215 bytes, UTF-8)?, lt: text(≤4294967295 bytes, UTF-8)?, b: binary(=3)?, vb: varbinary(≤8)?, tb: blob(≤255)?, bl: blob(≤65535)?, mb: blob(≤16777215)?, lb: blob(≤4294967295)?, kind: enum('a' | 'b' | 'c')?, flags: set{text('x' | 'y' | 'z')}?, day: date?, at: datetime?, at6: datetime?, ts: timestamp?, t: time?, y: year(0..2155)?, doc: json?, bits: bit(boolean[8])?, one_bit: bit(boolean[1])?, pt: geometry? }
 arithmetic.sql: many () -> { plus: bigint?, times: bigint?, divided: decimal?, quotient: bigint?, remainder: bigint?, negated: bigint?, doubled: decimal?, f1: double?, n15: decimal?, d1: double?, narrow: bigint | int?, below: bigint | int? }
 binary_columns.sql: many () -> { b: binary(=3)?, vb: varbinary(≤8)?, tb: blob(≤255)?, bl: blob(≤65535)?, mb: blob(≤16777215)?, lb: blob(≤4294967295)?, bits: bit(boolean[8])?, one_bit: bit(boolean[1])?, pt: geometry? }
-casts.sql: many () -> { c: varchar?, s: bigint?, u: bigint?, n: decimal?, d: double?, f: float?, day: date?, at: datetime?, t: time?, y: year(0..2155)?, j: json?, b: varbinary?, wj: json? }
+casts.sql: many () -> { c: varchar?, s: bigint?, u: bigint?, n: decimal?, d: double?, f: float?, day: date?, at: datetime?, t: time?, y: year?, j: json?, b: varbinary?, wj: json? }
 conditional.sql: many () -> { i: decimal?, c: varchar?, co: decimal?, ifn: varchar?, nf: int | bigint?, g: decimal?, l: bigint?, dt: datetime?, dtt: datetime?, dv: varchar?, wj: text?, gd: datetime?, fw: double?, tb2: bigint?, ub2: bigint? }
 decimal_columns.sql: many () -> { price: decimal(10,2)?, exact: decimal(40,20)?, f: float?, d: double? }
 delete_by_key.sql: none (id: int32) -> {  }
@@ -27,18 +27,18 @@ param_binary.sql: many (vb: varbinary, b: varbinary, bl: blob) -> { id: int }
 param_bit.sql: many (bits: bit(boolean[8])) -> { id: int }
 param_case.sql: many (a: int32) -> { picked: bigint | double | decimal? }
 param_case_operand.sql: one (n: int32) -> { word: varchar('one' | 'other') }
-param_cast.sql: one (a: int32, b: varchar, c: decimal, d: date, e: json, f: double, g: int32, h: datetime, i: datetime, j: varbinary, k: int32, l: double) -> { a: bigint?, b: varchar?, c: decimal?, d: date?, e: json?, f: double?, g: bigint?, h: datetime?, i: time?, j: varbinary?, k: year(0..2155)?, l: float? }
+param_cast.sql: one (a: int32, b: varchar, c: decimal, d: date, e: json, f: double, g: int32, h: datetime, i: datetime, j: varbinary, k: int32, l: double) -> { a: bigint?, b: varchar?, c: decimal?, d: date?, e: json?, f: double?, g: bigint?, h: datetime?, i: time?, j: varbinary?, k: year?, l: float? }
 param_coalesce.sql: many (v: varchar) -> { id: int }
 param_coalesce_column.sql: many (n: int32, m: int32) -> { n: bigint | double | decimal?, m: bigint | double | decimal? }
 param_comparison.sql: many (n: int32, m: int32, o: int32, p: varchar, q: int32) -> { bigger: boolean?, same: boolean?, listed: boolean?, missing: boolean, inside: boolean? }
-param_date_arithmetic.sql: one (at: date, start: datetime, a: datetime, b: datetime, c: datetime) -> { next: text | date | datetime | time?, later: text | date | datetime | time?, days: bigint | int?, y: year(0..2155)? }
+param_date_arithmetic.sql: one (at: date, start: datetime, a: datetime, b: datetime, c: datetime) -> { next: text | date | datetime | time?, later: text | date | datetime | time?, days: bigint | int?, y: year? }
 param_decimal.sql: many (price: decimal, exact: decimal) -> { id: int }
 param_derived.sql: at_most_one (n: int32, m: int32) -> { x: bigint | double | decimal?, y: bigint | double | decimal }
 param_div.sql: one (n: int32) -> { half: bigint | double | decimal? }
 param_divided.sql: one (n: int32) -> { half: bigint | double | decimal? }
 param_float.sql: many (f: double, d: double) -> { id: int }
 param_functions_of_numbers.sql: one (q: decimal, r: double, s: int32, t: int32, u: int32, v: double, w: double, x: double, y: double, z: int32, aa: int32, ab: varbinary, ac: int32, ad: varbinary, ae: varbinary) -> { p: bigint | double | decimal?, q: bigint | double | decimal?, r: bigint | double | decimal?, s: bigint | double | decimal?, t: bigint | double | decimal?, u: bigint | double | decimal?, v: bigint | double | decimal?, w: bigint | double | decimal?, x: bigint | double | decimal?, y: bigint | double | decimal?, z: unknown?, za: unknown?, zb: unknown?, zc: unknown? }
-param_functions_of_strings.sql: one (a: varchar, b: datetime, c: datetime, d: datetime, e: varchar, f: varchar, g: datetime, h: datetime, i: datetime, j: varchar, k: varchar, l: int32, m: date, n: datetime, o: datetime, p: time) -> { a: bigint?, b: year(0..2155)?, c: bigint | int?, d: bigint?, e: bigint | int?, f: bigint | double | decimal?, g: bigint | int?, h: bigint | int?, i: bigint?, j: bigint?, k: bigint?, l: text | date | datetime | time?, m: text | date | datetime | time?, n: text | date | datetime | time?, o: bigint | double | decimal? }
+param_functions_of_strings.sql: one (a: varchar, b: datetime, c: datetime, d: datetime, e: varchar, f: varchar, g: datetime, h: datetime, i: datetime, j: varchar, k: varchar, l: int32, m: date, n: datetime, o: datetime, p: time) -> { a: bigint?, b: year?, c: bigint | int?, d: bigint?, e: bigint | int?, f: bigint | double | decimal?, g: bigint | int?, h: bigint | int?, i: bigint?, j: bigint?, k: bigint?, l: text | date | datetime | time?, m: text | date | datetime | time?, n: text | date | datetime | time?, o: bigint | double | decimal? }
 param_greatest.sql: many (n: int32, m: int32) -> { g: bigint | double | decimal?, l: bigint | double | decimal? }
 param_group_by.sql: many (n: int32) -> { bucket: bigint?, c: bigint }
 param_group_by_alias.sql: many (n: int32) -> { bucket: bigint | double | decimal?, c: bigint }
@@ -86,7 +86,7 @@ string_functions.sql: many () -> { u: varchar?, c: varchar?, l: bigint?, cl: big
 sums.sql: one () -> { s: decimal?, a: decimal?, sp: decimal?, sf: double?, sd: double?, mx: int | bigint?, mn: varchar?, c: bigint, st: decimal?, ad: double?, sb: decimal? }
 text_columns.sql: many () -> { c: char(≤5)?, v: varchar(≤20)?, tt: text(≤255 bytes, UTF-8)?, tx: text(≤65535 bytes, UTF-8)?, mt: text(≤16777215 bytes, UTF-8)?, lt: text(≤4294967295 bytes, UTF-8)?, kind: enum('a' | 'b' | 'c')?, flags: set{text('x' | 'y' | 'z')}? }
 time_columns.sql: many () -> { day: date?, at: datetime?, at6: datetime?, ts: timestamp?, t: time?, y: year(0..2155)? }
-time_functions.sql: many () -> { n: datetime, cd: date, ct: time, y: year(0..2155)?, m: bigint | int?, d: date?, t: time?, u: bigint?, tomorrow: date?, later: datetime?, dd: bigint | int?, td: time?, fmt: varchar?, parsed: date?, fu: datetime?, tsd: bigint?, ex: bigint | int?, ld: date?, md: date?, stt: time?, ut: datetime }
+time_functions.sql: many () -> { n: datetime, cd: date, ct: time, y: year?, m: bigint | int?, d: date?, t: time?, u: bigint?, tomorrow: date?, later: datetime?, dd: bigint | int?, td: time?, fmt: varchar?, parsed: date?, fu: datetime?, tsd: bigint?, ex: bigint | int?, ld: date?, md: date?, stt: time?, ut: datetime }
 union_int_string.sql: many () -> { a: varchar? }
 union_types.sql: many () -> { a: decimal?, b: varchar?, c: datetime? }
 unsigned_overflow.sql: many () -> { past: bigint?, under: bigint | int? }
