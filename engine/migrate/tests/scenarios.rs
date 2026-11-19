@@ -2793,6 +2793,7 @@ on!(
     init_refused_leaves_no_project_behind,
     what_a_superuser_out_of_reach_owns_is_the_platforms,
     the_platforms_objects_are_in_every_shadow_as_a_role_of_its_own,
+    a_projects_extension_in_pg_catalog_is_written,
     a_hypertable_is_said_to_be_unread,
     a_dump_makes_a_schema_its_extensions_share_once,
 );
@@ -3127,6 +3128,40 @@ mod adversarial {
         let said = p.output();
         assert!(!said.contains("leave out"), "{said}");
         assert_eq!(p.rows("select h, p from v").await[0].text("p"), "2");
+    }
+
+    /// A trusted extension a role that is no superuser put in `pg_catalog` itself is the project's:
+    /// init writes it, made there, and a deploy to an empty database makes it before what calls it.
+    pub async fn a_projects_extension_in_pg_catalog_is_written(mut p: P) {
+        p.exec("do $$ begin create role madv_ext login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_ext", p.name)).await;
+        let admin = p.url.clone();
+        p.url = as_role(&admin, "madv_ext");
+        p.exec("create extension fuzzystrmatch with schema pg_catalog; create table t (distance int default levenshtein('a', 'b'))").await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert_has!(&schema, r"(?i)create extension if not exists fuzzystrmatch with schema pg_catalog");
+        assert!(!has(&schema, r"(?i)create schema[^;]*pg_catalog"), "{schema}");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        // A deploy to an empty database.
+        let empty = format!("{}_empty", p.name);
+        let mut db = Db::connect(&admin, &p.dir).await.unwrap();
+        db.exec(&format!("drop database if exists {empty} with (force)")).await.unwrap();
+        db.exec(&format!("create database {empty} owner madv_ext")).await.unwrap();
+        db.close().await;
+        p.url = as_role(&with_database(&admin, &empty), "madv_ext");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into t default values").await;
+        assert_eq!(p.rows("select distance from t").await[0].text("distance"), "1");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        forget(&p.url).await;
+        let mut db = Db::connect(&admin, &p.dir).await.unwrap();
+        let _ = db.exec(&format!("drop database if exists {empty} with (force)")).await;
+        db.close().await;
     }
 
     /// A TimescaleDB hypertable, which `migrate new` writes as a plain table, is listed as unread by

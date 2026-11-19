@@ -3957,11 +3957,12 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             let mut kept: Vec<String> = Vec::new();
             // The extensions the dumped schemas use, which pg_dump writes only for the schema it
             // dumps them in: the platform's own aside, made where they are, if they aren't already.
-            // One in `pg_catalog` is the server's (`plpgsql`, Azure's `pgaadauth`): only a superuser
-            // may put one there, and no `create schema` may name it.
+            // `plpgsql` is every database's, and one in `pg_catalog` the platform's superuser made is
+            // the platform's (Azure's `pgaadauth`); one the project put there is its own, made there,
+            // and no `create schema` names `pg_catalog`.
             for r in db
                 .rows(&format!(
-                    "select quote_ident(x.extname) as name, quote_ident(n.nspname) as schema, n.nspname as raw from pg_extension x join pg_namespace n on n.oid = x.extnamespace where n.nspname <> 'pg_catalog' and {}",
+                    "select quote_ident(x.extname) as name, quote_ident(n.nspname) as schema, n.nspname as raw from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
                     crate::catalog::not_platform("x.extowner")
                 ))
                 .await?
@@ -3969,7 +3970,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 // Its schema first, dumped or not, once for the extensions that share it: pg_dump's own
                 // `create schema`, later, then finds it there.
                 let schema = format!("CREATE SCHEMA IF NOT EXISTS {}", r.text("schema"));
-                if r.text("raw") != "public" && !kept.contains(&schema) {
+                if !matches!(r.text("raw"), "public" | "pg_catalog") && !kept.contains(&schema) {
                     kept.push(schema);
                 }
                 kept.push(format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {}", r.text("name"), r.text("schema")));

@@ -335,10 +335,12 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     }
     // An extension's version is the server's: an unversioned `create extension` replays at today's
     // default, so a database that installed an older one would drift after every server upgrade.
-    // One in `pg_catalog` is the server's too: `plpgsql`, and what a platform puts there.
+    // `plpgsql` is every database's, and one the platform's superuser made (Azure's `pgaadauth`, in
+    // `pg_catalog`) the platform's; one the project made is compared wherever it is, `pg_catalog`
+    // included, where a trusted extension may be put by a role that is no superuser.
     for r in db
         .rows(&format!(
-            "select x.extname as name, n.nspname as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where n.nspname <> 'pg_catalog' and {}",
+            "select x.extname as name, n.nspname as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
             not_platform("x.extowner")
         ))
         .await?
