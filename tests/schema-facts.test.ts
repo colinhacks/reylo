@@ -23,6 +23,9 @@ test("a text's size in code points and its pattern are written, and nothing else
   assert.deepEqual(output(varchar({ encoding: "UTF-8", size: { unit: "byte", max: 63 } })), { type: "string" });
   assert.deepEqual(output(varchar({ code_points: [[1, 1114111]], encoding: "UTF-8", ill_formed: true })), { type: "string" });
   assert.deepEqual(output(varchar({ pattern: "[^@]+@[^@]+" })), { type: "string", pattern: "^(?:[^@]+@[^@]+)$" });
+  // A format is a name alone, and JSON Schema's `format` is one a validator may assert.
+  assert.deepEqual(output(varchar({ format: "email" })), { type: "string" });
+  assert.deepEqual(typeSchema(varchar({ format: "email", size: { max: 254 } }), "postgres", true), { type: "string", maxLength: 254 });
 });
 
 test("a UUID's version fixes its version digit and its variant, and one with none is any UUID", () => {
