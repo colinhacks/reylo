@@ -3199,6 +3199,10 @@ mod adversarial {
     /// platform's objects out and say how a role made by hand lets them in.
     pub async fn a_run_never_makes_a_role(mut p: P) {
         p.exec("do $$ begin create role madv_rolemaker login createdb createrole; exception when duplicate_object or unique_violation then null; end $$").await;
+        // The role the shadows are made as below, made here by the server's superuser: one made by
+        // madv_rolemaker, which may create roles, would make it that role's member, a change of this
+        // role's memberships the run never made.
+        p.exec("do $$ begin create role madv_hosted login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
         p.exec(&format!("alter database {} owner to madv_rolemaker", p.name)).await;
         p.exec("create schema timescale_functions; create function timescale_functions.helper() returns int language sql security definer as 'select 1'; create function public.create_playground() returns int language sql as 'select 1';").await;
         p.url = as_role(&p.url, "madv_rolemaker");
@@ -3224,7 +3228,6 @@ mod adversarial {
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
         assert_has!(p.output(), r"Shadow databases leave out what \S+ owns here, the platform's, so a migration that uses it fails in them: a role reylo_platform on their server that madv_rolemaker, the role they are made as, may SET ROLE to lets them make it");
         // Shadows made on shadow_url's server, as its role: that role is the one named.
-        p.exec("do $$ begin create role madv_hosted login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
         let shadowed = Options { shadow_url: Some(as_role(&p.url, "madv_hosted")), ..p.opts() };
         let mut out = Vec::new();
         let _ = reylo_migrate::dry_run(&shadowed, &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("dry run: {e}"));
