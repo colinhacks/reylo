@@ -1849,9 +1849,20 @@ fn unmodeled_note(heading: &str, objects: &[String], log: Log<'_>) {
     }
 }
 
-fn swept_note(swept: usize, log: Log<'_>) {
+/// What opening the shadows' server found: the shadows a run left behind, and what every shadow
+/// leaves out of the target.
+#[cfg(feature = "cli")]
+fn swept_note(server: &Server, swept: usize, log: Log<'_>) {
     if swept > 0 {
         log(&paint("dim", &format!("· Dropped {swept} shadow database{} a run left behind", if swept == 1 { "" } else { "s" })));
+    }
+    left_out_note(server, log);
+}
+
+#[cfg(feature = "cli")]
+fn left_out_note(server: &Server, log: Log<'_>) {
+    if let Some(note) = server.note() {
+        log(&paint("dim", note));
     }
 }
 
@@ -1958,7 +1969,7 @@ pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 #[cfg(feature = "cli")]
 async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let unmodeled = crate::catalog::unmodeled(&mut db).await;
     let result = check(&mut db, Some(&mut server), opts).await;
     let result = match result {
@@ -2185,7 +2196,7 @@ async fn history_push_as(opts: &Options, init: bool, log: Log<'_>) -> Result<i32
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let result = history_push_on(&mut db, &mut server, opts, init, log).await;
     db.close().await;
     server.close().await;
@@ -2392,7 +2403,7 @@ pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let result = history_as_it_stands(&mut db, &mut server, opts).await;
     db.close().await;
     server.close().await;
@@ -2689,7 +2700,7 @@ pub async fn lock_from_history(opts: &Options, log: Log<'_>) -> Result<i32, Erro
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let result = lock_from_history_on(&mut db, &mut server, opts, log).await;
     db.close().await;
     server.close().await;
@@ -2747,7 +2758,7 @@ pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, 
         return Ok(refused_in_ci("reylo db reset", log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let result = reset_on(&mut db, &mut server, opts, log).await;
     db.close().await;
     server.close().await;
@@ -3652,6 +3663,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    left_out_note(&server, log);
     db.close().await;
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
     let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
@@ -3897,6 +3909,23 @@ fn without_platform_column_options(statement: &str) -> Option<String> {
     }
 }
 
+/// pg_dump's text without the entries `owners` own: each entry is what follows the comment pg_dump
+/// heads it with, `-- Name: …; Type: …; Schema: …; Owner: <role>`, up to the next one, so an object
+/// goes with its owner, privileges and comment, and a default privilege with the role it is for.
+fn without_entries_of(text: &str, owners: &[String]) -> String {
+    static HEADER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^--\n-- (?:Data for )?Name: [^\n]*; Type: [^\n]*; Schema: [^\n]*; Owner: ([^;\n]*)(?:; Tablespace: [^\n]*)?\n--\n").expect("a valid pattern"));
+    let heads: Vec<(usize, bool)> = HEADER.captures_iter(text).map(|c| (c.get(0).map_or(0, |m| m.start()), owners.iter().any(|o| o == &c[1]))).collect();
+    let Some(&(first, _)) = heads.first() else { return text.to_string() };
+    let mut out = text[..first].to_string();
+    for (k, &(start, theirs)) in heads.iter().enumerate() {
+        let end = heads.get(k + 1).map_or(text.len(), |h| h.0);
+        if !theirs {
+            out.push_str(&text[start..end]);
+        }
+    }
+    out
+}
+
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
     match db.dialect() {
         Dialect::Postgres => {
@@ -3910,7 +3939,11 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 args.push("--schema".into());
                 args.push(s.clone());
             }
-            let text = crate::db::pg_dump(&opts.url, version / 10000, &args)?;
+            // What the platform's roles own in a dumped schema is the platform's, which every
+            // comparison leaves out (Tiger Cloud's functions in `public`, its superuser's default
+            // privileges), so no file makes it.
+            let owners = crate::catalog::platform_owners(db).await?;
+            let text = without_entries_of(&crate::db::pg_dump(&opts.url, version / 10000, &args)?, &owners);
             // psql's meta-commands, which pg_dump writes on lines of their own around the file.
             static META: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\\(un)?restrict\b.*$").expect("a valid pattern"));
             let text = META.replace_all(&text, "");
@@ -3920,7 +3953,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             let own = format!(" OWNER TO {runner}");
             // A platform's default privileges are its own, which only its roles may set, and which
             // every shadow is given as they are.
-            let platform_default = |s: &str| crate::catalog::PLATFORM_ROLES.iter().any(|r| s.starts_with(&format!("ALTER DEFAULT PRIVILEGES FOR ROLE {r} ")));
+            let platform_default = |s: &str| owners.iter().any(|r| s.starts_with(&format!("ALTER DEFAULT PRIVILEGES FOR ROLE {r} ")) || s.starts_with(&format!("ALTER DEFAULT PRIVILEGES FOR ROLE {} ", crate::db::ident(r))));
             let mut kept: Vec<String> = Vec::new();
             // The extensions the dumped schemas use, which pg_dump writes only for the schema it
             // dumps them in: the platform's own aside, made where they are, if they aren't already.
@@ -4177,7 +4210,13 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         }
     }
     let code = match recorded {
-        Ok(0) => 0,
+        Ok(0) => {
+            // What the shadows leave out of this database holds for every command after.
+            for line in said.iter().filter(|l| l.contains(crate::db::LEFT_OUT)) {
+                log(line);
+            }
+            0
+        }
         Ok(code) => {
             for line in &said {
                 log(line);
@@ -4403,7 +4442,7 @@ fn file_problems(opts: &Options, files: &[Migration], strays: &[String], schema_
 
 #[cfg(feature = "cli")]
 async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, heading: &str, log: Log<'_>) -> Result<i32, Error> {
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let _held = lock(db, opts).await?;
     let d = db.dialect();
     let (files, strays) = opts.migrations()?;
@@ -5125,7 +5164,7 @@ pub async fn db_push_watch(opts: &Options, in_ci: bool, push: &Push, runs: Optio
 
 #[cfg(feature = "cli")]
 async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let _held = lock(db, opts).await?;
     let d = db.dialect();
     let (files, strays) = opts.migrations()?;
@@ -5399,6 +5438,17 @@ mod tests {
         assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1, pg_attver=42164944)").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)"));
         assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)"));
         assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN email SET STATISTICS 500").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN email SET STATISTICS 500"));
+    }
+
+    #[test]
+    fn a_dump_leaves_out_what_the_platform_owns() {
+        // As pg_dump writes a Tiger Cloud database's public schema: a function of the platform's
+        // superuser, with its privileges, and its default privileges, among the project's.
+        let dump = "SET check_function_bodies = false;\n\n--\n-- Name: create_playground(regclass, boolean); Type: FUNCTION; Schema: public; Owner: postgres\n--\n\nCREATE FUNCTION public.create_playground(src regclass, b boolean) RETURNS integer\n    LANGUAGE sql\n    AS $$select 1$$;\n\n\nALTER FUNCTION public.create_playground(src regclass, b boolean) OWNER TO postgres;\n\n--\n-- Name: users; Type: TABLE; Schema: public; Owner: tsdbadmin\n--\n\nCREATE TABLE public.users (\n    id integer NOT NULL\n);\n\n\nALTER TABLE public.users OWNER TO tsdbadmin;\n\n--\n-- Name: FUNCTION create_playground(src regclass, b boolean); Type: ACL; Schema: public; Owner: postgres\n--\n\nGRANT ALL ON FUNCTION public.create_playground(src regclass, b boolean) TO tsdbadmin;\n\n--\n-- Name: DEFAULT PRIVILEGES FOR SCHEMAS; Type: DEFAULT ACL; Schema: -; Owner: postgres\n--\n\nALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT USAGE ON SCHEMAS TO tsdbadmin;\n\n\n--\n-- PostgreSQL database dump complete\n--\n";
+        let kept = without_entries_of(dump, &["postgres".to_string()]);
+        assert_eq!(kept, "SET check_function_bodies = false;\n\n--\n-- Name: users; Type: TABLE; Schema: public; Owner: tsdbadmin\n--\n\nCREATE TABLE public.users (\n    id integer NOT NULL\n);\n\n\nALTER TABLE public.users OWNER TO tsdbadmin;\n\n");
+        // With no platform's role among the owners, the dump is as written.
+        assert_eq!(without_entries_of(dump, &["supabase_admin".to_string()]), dump);
     }
 
     #[test]
