@@ -13,7 +13,7 @@ export const MAPPER = join(ROOT, "src", "mapper.ts");
 export const INDEX = pathToFileURL(join(ROOT, "src", "index.ts")).href;
 export const PG = process.env.REYLO_TEST_PG;
 export const MYSQL = process.env.REYLO_TEST_MYSQL;
-/** The HTTP interface of a throwaway ClickHouse, as `http://127.0.0.1:58123`, whose user may create databases. */
+/** The HTTP interface of a throwaway ClickHouse, as `http://127.0.0.1:28123`, whose user may create databases. */
 export const CLICKHOUSE = process.env.REYLO_TEST_CLICKHOUSE;
 /** A Postgres that takes TLS and asks for a password (SCRAM), with the password in its URL, for the test of channel binding. */
 export const PG_TLS = process.env.REYLO_TEST_PG_TLS;

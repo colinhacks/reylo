@@ -16,9 +16,9 @@
 //! throwaway one too, which it refuses on ports 8123 and 8443, and its `min_version` is the
 //! server's version as one number (260900 for 26.9); what its runs check is in `clickhouse.rs`.
 //!
-//!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres oracle/cases
+//!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:25432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
-//!   cargo run -p reylo-oracle -- --clickhouse-url http://127.0.0.1:58123 oracle/cases/clickhouse_types
+//!   cargo run -p reylo-oracle -- --clickhouse-url http://127.0.0.1:28123 oracle/cases/clickhouse_types
 //!   cargo run -p reylo-oracle -- --url … --bless oracle/cases/not_null   # rewrite expected.txt
 //!   cargo run -p reylo-oracle -- --url … --analyses old.json oracle/cases  # check other answers
 //!   cargo run -p reylo-oracle -- --url … --dump new.json oracle/cases      # write the answers
