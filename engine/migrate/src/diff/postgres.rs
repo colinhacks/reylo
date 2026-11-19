@@ -8,7 +8,7 @@
 //! the two, since the server's rendering of an expression is not always one it reads back to itself.
 
 use super::{Alterer, Change, Kind, Object, Schema, TypeClass};
-use crate::catalog::{not_extension, not_platform, HISTORY_TABLE, PG_USER_NS};
+use crate::catalog::{not_extension, not_platform, not_platform_schema, HISTORY_TABLE, PG_USER_NS};
 use crate::db::{Db, Row};
 use crate::{Dialect, Error};
 use regex::Regex;
@@ -240,7 +240,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select n.oid, format('%I', n.nspname) as name, {} as acl from pg_namespace n where {ns} and {} and {}",
             acl("n.nspacl", 'n', "n.nspowner"),
             not_extension("pg_namespace", "n"),
-            not_platform("n.nspowner")
+            not_platform_schema("n")
         ))
         .await?
     {
@@ -253,7 +253,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
 
     for r in db
         .rows(&format!(
-            "select x.oid, format('%I', x.extname) as name, format('%I', n.nspname) as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where n.nspname <> 'pg_catalog' and {}",
+            "select x.oid, format('%I', x.extname) as name, format('%I', n.nspname) as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
             not_platform("x.extowner")
         ))
         .await?

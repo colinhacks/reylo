@@ -2791,6 +2791,10 @@ on!(
     a_public_schema_its_role_owns_is_a_new_databases,
     a_servers_hint_is_in_its_error,
     init_refused_leaves_no_project_behind,
+    what_a_superuser_out_of_reach_owns_is_the_platforms,
+    the_platforms_objects_are_in_every_shadow_as_a_role_of_its_own,
+    a_run_never_makes_a_role,
+    a_projects_extension_in_pg_catalog_is_written,
     a_hypertable_is_said_to_be_unread,
     a_dump_makes_a_schema_its_extensions_share_once,
 );
@@ -3031,8 +3035,10 @@ mod adversarial {
     /// and init runs again once the shadow can replay it.
     pub async fn init_refused_leaves_no_project_behind(mut p: P) {
         p.exec("do $$ begin create role madv_app login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec("do $$ begin create role madv_other; exception when duplicate_object or unique_violation then null; end $$").await;
         p.exec(&format!("alter database {} owner to madv_app", p.name)).await;
-        p.exec("create function public.theirs() returns int language sql as 'select 1'").await;
+        // Another role's that is no superuser: the project's, which the dump makes and gives it.
+        p.exec("create function public.theirs() returns int language sql as 'select 1'; alter function public.theirs() owner to madv_other").await;
         p.url = as_role(&p.url, "madv_app");
         p.exec("create table users (id int primary key)").await;
         let opts = p.opts();
@@ -3047,6 +3053,149 @@ mod adversarial {
         assert!(!p.dir.join(reylo_migrate::lock::LOCK).exists(), "init left the lock");
         assert!(p.files().is_empty(), "init left {:?}", p.files());
         assert!(p.history().await.is_empty(), "init recorded {:?}", p.history().await);
+    }
+
+    /// As Tiger Cloud makes a service: its superuser owns a schema of security definer functions, a
+    /// function in `public` and default privileges, and the role it hands out can't become it. That is
+    /// the platform's: init writes the project's table alone, the shadows leave it out, saying so once,
+    /// and every command runs, on this database and on a second one made the same way.
+    pub async fn what_a_superuser_out_of_reach_owns_is_the_platforms(mut p: P) {
+        let platform = "create schema timescale_functions;
+            create function timescale_functions.helper() returns int language sql security definer as 'select 1';
+            comment on function timescale_functions.helper() is 'the platform''s';
+            grant usage on schema timescale_functions to madv_tiger;
+            create function public.create_playground(regclass, boolean) returns int language sql as 'select 1';
+            alter default privileges grant usage on schemas to madv_tiger;";
+        p.exec("do $$ begin create role madv_tiger login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_tiger", p.name)).await;
+        p.exec(platform).await;
+        let admin = p.url.clone();
+        p.url = as_role(&admin, "madv_tiger");
+        p.exec("create table users (id int primary key)").await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert!(schema.trim_start().starts_with("create table users (") && schema.matches(';').count() == 1, "the project's table alone:\n{schema}");
+        assert_eq!(reylo_migrate::db_introspect(&opts, &[]).await.unwrap(), schema);
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        // A second database, made as the platform makes one, taken to the migrations.
+        let second = format!("{}_second", p.name);
+        let mut db = Db::connect(&admin, &p.dir).await.unwrap();
+        db.exec(&format!("drop database if exists {second} with (force)")).await.unwrap();
+        db.exec(&format!("create database {second} owner madv_tiger")).await.unwrap();
+        db.close().await;
+        let mut db = Db::connect(&with_database(&admin, &second), &p.dir).await.unwrap();
+        db.script(platform).await.unwrap();
+        db.close().await;
+        p.url = as_role(&with_database(&admin, &second), "madv_tiger");
+        p.output();
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        let said = p.output();
+        assert_eq!(regex::Regex::new(r"Shadow databases leave out what \S+ owns here, the platform's").unwrap().find_iter(&said).count(), 1, "{said}");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from pg_proc where proname in ('helper', 'create_playground')").await[0].text("n"), "2", "the platform's own stay");
+        forget(&p.url).await;
+        let mut db = Db::connect(&admin, &p.dir).await.unwrap();
+        let _ = db.exec(&format!("drop database if exists {second} with (force)")).await;
+        db.close().await;
+    }
+
+    /// A run on a database with the platform's objects, by a role that may create roles, makes no role
+    /// and grants none: a role is the whole server's and outlives the run. The shadows leave the
+    /// platform's objects out and say how a role made by hand lets them in.
+    pub async fn a_run_never_makes_a_role(mut p: P) {
+        p.exec("do $$ begin create role madv_rolemaker login createdb createrole; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_rolemaker", p.name)).await;
+        p.exec("create schema timescale_functions; create function timescale_functions.helper() returns int language sql security definer as 'select 1'; create function public.create_playground() returns int language sql as 'select 1';").await;
+        p.url = as_role(&p.url, "madv_rolemaker");
+        p.exec("create table users (id int primary key)").await;
+        // The roles and memberships no other scenario makes beside this one, and every membership of this role.
+        let roles = async |p: &P| {
+            let rows = p
+                .rows(
+                    r"select coalesce(string_agg(rolname, ',' order by rolname), '') as r from pg_roles where rolname not like 'madv\_%' and rolname not in ('cloud_admin', 'supabase_auth_admin', 'reylo_platform')
+                    union all select coalesce(string_agg(format('%s>%s:%s', roleid::regrole, member::regrole, admin_option), ',' order by roleid::regrole::text, member::regrole::text), '') from pg_auth_members where member = 'madv_rolemaker'::regrole or roleid = 'madv_rolemaker'::regrole",
+                )
+                .await;
+            rows.iter().map(|r| r.text("r").to_string()).collect::<Vec<_>>()
+        };
+        let before = roles(&p).await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        p.strict = true;
+        p.output();
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"Shadow databases leave out what \S+ owns here, the platform's, so a migration that uses it fails in them: a role reylo_platform on their server that madv_rolemaker may SET ROLE to lets them make it");
+        assert_eq!(roles(&p).await, before, "a run made or granted a role");
+    }
+
+    /// The platform's objects a migration uses (a view over its functions) are made in each shadow as
+    /// `reylo_platform`, a role the server's administrator made and the role connected may become:
+    /// the migration replays, and no command reports them.
+    pub async fn the_platforms_objects_are_in_every_shadow_as_a_role_of_its_own(mut p: P) {
+        p.exec("do $$ begin create role madv_tigeradmin login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec("do $$ begin create role reylo_platform nologin; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec("grant reylo_platform to madv_tigeradmin").await;
+        p.exec(&format!("alter database {} owner to madv_tigeradmin", p.name)).await;
+        p.exec(
+            "create schema timescale_functions; create function timescale_functions.helper() returns int language sql security definer as 'select 1';
+            grant usage on schema timescale_functions to madv_tigeradmin; create function public.create_playground() returns int language sql as 'select 2';",
+        )
+        .await;
+        p.url = as_role(&p.url, "madv_tigeradmin");
+        p.schema("create view v as select timescale_functions.helper() as h, public.create_playground() as p;");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "v", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let written = std::fs::read_to_string(p.dir.join("migrations").join(&p.files()[0])).unwrap();
+        assert!(written.contains("create view v") && !written.contains("create schema") && !written.contains("create function"), "{written}");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        let said = p.output();
+        assert!(!said.contains("leave out"), "{said}");
+        assert_eq!(p.rows("select h, p from v").await[0].text("p"), "2");
+    }
+
+    /// A trusted extension a role that is no superuser put in `pg_catalog` itself is the project's:
+    /// init writes it, made there, and a deploy to an empty database makes it before what calls it.
+    pub async fn a_projects_extension_in_pg_catalog_is_written(mut p: P) {
+        p.exec("do $$ begin create role madv_ext login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_ext", p.name)).await;
+        let admin = p.url.clone();
+        p.url = as_role(&admin, "madv_ext");
+        p.exec("create extension fuzzystrmatch with schema pg_catalog; create table t (distance int default levenshtein('a', 'b'))").await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert_has!(&schema, r"(?i)create extension if not exists fuzzystrmatch with schema pg_catalog");
+        assert!(!has(&schema, r"(?i)create schema[^;]*pg_catalog"), "{schema}");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        // A deploy to an empty database.
+        let empty = format!("{}_empty", p.name);
+        let mut db = Db::connect(&admin, &p.dir).await.unwrap();
+        db.exec(&format!("drop database if exists {empty} with (force)")).await.unwrap();
+        db.exec(&format!("create database {empty} owner madv_ext")).await.unwrap();
+        db.close().await;
+        p.url = as_role(&with_database(&admin, &empty), "madv_ext");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into t default values").await;
+        assert_eq!(p.rows("select distance from t").await[0].text("distance"), "1");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        forget(&p.url).await;
+        let mut db = Db::connect(&admin, &p.dir).await.unwrap();
+        let _ = db.exec(&format!("drop database if exists {empty} with (force)")).await;
+        db.close().await;
     }
 
     /// A TimescaleDB hypertable, which `migrate new` writes as a plain table, is listed as unread by

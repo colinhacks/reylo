@@ -180,7 +180,7 @@ fn json(text: &str) -> String {
 /// The schemas of a Postgres database that no platform owns, by name.
 pub async fn user_schemas(db: &mut Db) -> Result<Vec<String>, Error> {
     let ns = PG_USER_NS;
-    let rows = db.rows(&format!("select n.nspname as name from pg_namespace n where {ns} and {} order by 1", not_platform("n.nspowner"))).await?;
+    let rows = db.rows(&format!("select n.nspname as name from pg_namespace n where {ns} and {} order by 1", not_platform_schema("n"))).await?;
     Ok(rows.iter().map(|r| r.text("name").to_string()).collect())
 }
 
@@ -216,9 +216,44 @@ pub const PLATFORM_ROLES: &[&str] = &[
     "cloud_admin",
 ];
 
+/// The role a shadow database makes the platform's own objects as, where a superuser the connection
+/// may not act as owns them on the target: one the shadows' server has, which the connection may
+/// become, and which every comparison leaves out as it leaves out a platform's role. Reylo never
+/// makes it; it owns nothing outside a shadow.
+pub const SHADOW_PLATFORM_ROLE: &str = "reylo_platform";
+
+/// Whether the role `owner` is no platform's: none of [`PLATFORM_ROLES`], not
+/// [`SHADOW_PLATFORM_ROLE`], and no superuser the connected role may not act as. A hosting platform
+/// keeps its superuser to itself and hands out a role that can't become it (Tiger Cloud's and Cloud
+/// SQL's `postgres` and `cloudsqladmin`, RDS's `rdsadmin`, Neon's `cloud_admin`, Azure's
+/// `azure_superuser`), so what that superuser owns is the platform's, with no list to keep; a
+/// superuser connected may act as every role, so on a local server nothing is.
 pub(crate) fn not_platform(owner: &str) -> String {
-    let roles = PLATFORM_ROLES.iter().map(|r| format!("'{r}'")).collect::<Vec<_>>().join(", ");
+    format!("{} and not {}", not_named(owner), beyond_reach(owner))
+}
+
+/// A schema `alias` (a `pg_namespace` row) that is no platform's: `public` never is, which Postgres
+/// 14 and older made the bootstrap superuser's in every database.
+pub(crate) fn not_platform_schema(alias: &str) -> String {
+    format!("{} and ({alias}.nspname = 'public' or not {})", not_named(&format!("{alias}.nspowner")), beyond_reach(&format!("{alias}.nspowner")))
+}
+
+fn not_named(owner: &str) -> String {
+    let roles = PLATFORM_ROLES.iter().chain([&SHADOW_PLATFORM_ROLE]).map(|r| format!("'{r}'")).collect::<Vec<_>>().join(", ");
     format!("pg_get_userbyid({owner}) <> all (array[{roles}])")
+}
+
+/// Whether `owner` is a superuser the connected role may not act as: may not `set role` to, which
+/// Postgres 16 grants apart from membership, and before it, is no member of.
+pub(crate) fn beyond_reach(owner: &str) -> String {
+    format!("exists (select 1 from pg_roles su where su.oid = {owner} and su.rolsuper and not pg_has_role(current_user, su.oid, case when current_setting('server_version_num')::int >= 160000 then 'SET' else 'MEMBER' end))")
+}
+
+/// The roles whose objects are the platform's on the connected database, by name: [`PLATFORM_ROLES`]
+/// and [`SHADOW_PLATFORM_ROLE`] that exist, and the superusers it may not act as.
+pub(crate) async fn platform_owners(db: &mut Db) -> Result<Vec<String>, Error> {
+    let rows = db.rows(&format!("select p.rolname as r from pg_roles p where not ({}) order by 1", not_platform("p.oid"))).await?;
+    Ok(rows.iter().map(|r| r.text("r").to_string()).collect())
 }
 
 pub(crate) fn not_extension(catalog: &str, alias: &str) -> String {
@@ -283,7 +318,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             acl("n.nspacl", "n.nspowner", 'n'),
             owner_lacks("n.nspacl", "n.nspowner", 'n'),
             not_extension("pg_namespace", "n"),
-            not_platform("n.nspowner")
+            not_platform_schema("n")
         ))
         .await?
     {
@@ -301,10 +336,12 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     }
     // An extension's version is the server's: an unversioned `create extension` replays at today's
     // default, so a database that installed an older one would drift after every server upgrade.
-    // One in `pg_catalog` is the server's too: `plpgsql`, and what a platform puts there.
+    // `plpgsql` is every database's, and one the platform's superuser made (Azure's `pgaadauth`, in
+    // `pg_catalog`) the platform's; one the project made is compared wherever it is, `pg_catalog`
+    // included, where a trusted extension may be put by a role that is no superuser.
     for r in db
         .rows(&format!(
-            "select x.extname as name, n.nspname as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where n.nspname <> 'pg_catalog' and {}",
+            "select x.extname as name, n.nspname as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
             not_platform("x.extowner")
         ))
         .await?
@@ -935,7 +972,7 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
     // Security labels.
     let labels = format!(
         "select format('security label on %s %s', l.objtype, l.objname) as what from pg_seclabels l join pg_namespace n on n.oid = l.objnamespace where {ns} and {} order by 1",
-        not_platform("n.nspowner")
+        not_platform_schema("n")
     );
     out.extend(db.rows(&labels).await?.iter().map(|r| format!("{}: not read", r.text("what"))));
     Ok(out)
@@ -960,7 +997,7 @@ pub(crate) fn owned_objects(history: &str) -> String {
         format!("select 'pg_class'::regclass as classid, c.oid as objid, c.relowner as owner from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'c') and c.relname <> '{history}' and {ns} and {} and {} and not (c.relkind = 'S' and exists (select 1 from pg_depend dep where dep.classid = 'pg_class'::regclass and dep.objid = c.oid and dep.refclassid = 'pg_class'::regclass and dep.deptype in ('a', 'i')))", not_extension("pg_class", "c"), not_platform("c.relowner")),
         format!("select 'pg_proc'::regclass, p.oid, p.proowner from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_proc'::regclass and dep.objid = p.oid and dep.deptype = 'i')", not_extension("pg_proc", "p"), not_platform("p.proowner")),
         format!("select 'pg_type'::regclass, t.oid, t.typowner from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype in ('b', 'd', 'e', 'r') and t.typcategory <> 'A' and {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_type'::regclass and dep.objid = t.oid and dep.deptype = 'i')", not_extension("pg_type", "t"), not_platform("t.typowner")),
-        format!("select 'pg_namespace'::regclass, n.oid, n.nspowner from pg_namespace n where {ns} and {} and {}", not_extension("pg_namespace", "n"), not_platform("n.nspowner")),
+        format!("select 'pg_namespace'::regclass, n.oid, n.nspowner from pg_namespace n where {ns} and {} and {}", not_extension("pg_namespace", "n"), not_platform_schema("n")),
         format!("select 'pg_collation'::regclass, c.oid, c.collowner from pg_collation c join pg_namespace n on n.oid = c.collnamespace where {ns} and {} and {}", not_extension("pg_collation", "c"), not_platform("c.collowner")),
         format!("select 'pg_publication'::regclass, p.oid, p.pubowner from pg_publication p where {}", not_platform("p.pubowner")),
         format!("select 'pg_foreign_server'::regclass, s.oid, s.srvowner from pg_foreign_server s where {}", not_platform("s.srvowner")),
