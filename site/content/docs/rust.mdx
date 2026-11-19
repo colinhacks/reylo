@@ -434,6 +434,18 @@ So after `reylo db push` or `reylo migrate dev`, the next build types each state
 touch src/main.rs && cargo build
 ```
 
+### Without a database
+
+A build needs the database, or a cache of what it said.
+
+Each statement the attribute types is kept in `reylo/.cache/`, which git ignores. A build that can't reach the database, or has no `DATABASE_URL`, types the statement from there instead, and says so once:
+
+```text
+reylo: cannot connect to the database at localhost:5432/app (DATABASE_URL in .env): error connecting to server: Connection refused (os error 61); building from reylo/.cache/, analyzed 2026-11-18
+```
+
+That analysis is as old as its date, whatever the schema is now. A fresh checkout, as in CI, has no cache, so its build needs a database made by your migrations, or modules written by [codegen](#codegen), which build with none.
+
 ## Codegen
 
 Reylo can write each query's module to a file instead.
