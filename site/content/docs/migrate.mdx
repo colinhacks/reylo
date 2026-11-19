@@ -877,7 +877,7 @@ That's why hand-written SQL counts, and why there's no snapshot file to keep in 
 
 Each database makes them its own way:
 
-- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
+- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new. On Azure Database for PostgreSQL, list each extension your migrations create in the server's `azure.extensions` parameter first, or no shadow can create it.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
 - **SQLite:** in memory, Turso Cloud's included. There's nothing to grant.
 
