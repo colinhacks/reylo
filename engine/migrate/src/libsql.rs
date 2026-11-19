@@ -82,10 +82,15 @@ pub fn uses_own_sql(sql: &str) -> bool {
     let word = |i: usize| tokens.get(i).filter(|t| t.kind == Word).map(|t| t.text.to_ascii_lowercase());
     let open = |i: usize| tokens.get(i).is_some_and(|t| t.kind == Symbol && t.text == "(");
     // The words after which a name followed by `(` is a table's or a query's, not a call's.
-    const NAMES: [&str; 12] = ["table", "into", "references", "on", "exists", "view", "trigger", "index", "from", "join", "update", "with"];
+    const NAMES: [&str; 11] = ["table", "into", "references", "exists", "view", "trigger", "index", "from", "join", "update", "with"];
+    // `on` names a table in `create index … on` and `create trigger … on`, and starts a condition
+    // in a join: the nearest of these words before it says which.
+    let on_names = |i: usize| {
+        (0..i).rev().filter_map(word).find(|w| matches!(w.as_str(), "index" | "trigger" | "join" | "select" | "where" | "from")).is_some_and(|w| w == "index" || w == "trigger")
+    };
     (0..tokens.len()).any(|i| {
         let Some(w) = word(i) else { return false };
-        let named = i > 0 && word(i - 1).is_some_and(|p| NAMES.contains(&p.as_str()));
+        let named = i > 0 && word(i - 1).is_some_and(|p| NAMES.contains(&p.as_str()) || (p == "on" && on_names(i - 1)));
         if open(i + 1) && !named && (CALLS.contains(&w.as_str()) || TYPES.contains(&w.as_str())) {
             return true;
         }
@@ -432,6 +437,8 @@ mod tests {
         assert!(!uses_own_sql("create table vector (x real check (floor(x) = x)); insert into vector (x) values (1); create index i on vector (x);"));
         assert!(!uses_own_sql("create table t (v integer references vector (id)); create table if not exists vector (id integer); with vector (n) as (select 1) select n from vector;"));
         assert!(uses_own_sql("create table vector (emb F32_BLOB(3)); insert into vector values (vector('[1]'));"));
+        assert!(uses_own_sql("insert into near select a.id from a join b on vector_distance_cos(a.x, b.x) < 0.5;"));
+        assert!(!uses_own_sql("create trigger t after insert on vector (x) begin select 1; end; create unique index if not exists i on vector (x);"));
     }
 
     #[test]

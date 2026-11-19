@@ -60,6 +60,10 @@ fn main() {
     // optimizer, holding to strict aliasing, reorders: `sha256('a')` came out wrong at -O2.
     if !msvc {
         sqlean.flag("-fno-strict-aliasing");
+    } else {
+        // MSVC names no byte order, which the same SHA-2 refuses to build without; every Windows
+        // target is little-endian.
+        sqlean.define("LITTLE_ENDIAN", "1234").define("BIG_ENDIAN", "4321").define("BYTE_ORDER", "1234");
     }
     // PCRE2, which the regexp extension carries, takes its settings from a header included first.
     let constants = libsql.join("sqlean/regexp/constants.h");
