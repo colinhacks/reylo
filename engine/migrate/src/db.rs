@@ -162,6 +162,22 @@ fn mysql_text(value: &mysql_async::Value) -> Option<String> {
     }
 }
 
+/// Whether the SQLite file at `path` is libSQL's already, whatever the project's files say now (a
+/// branch without the migration that made it): it holds a vector index's table, or its history
+/// holds a migration of libSQL's own SQL, which only libSQL's engine replays.
+#[cfg(feature = "cli")]
+fn libsql_file(path: &str) -> bool {
+    if path == ":memory:" || !Path::new(path).exists() {
+        return false;
+    }
+    let Ok(db) = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI) else { return false };
+    let vector = db.query_row("select count(*) from sqlite_schema where name = 'libsql_vector_meta_shadow'", [], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
+    vector || {
+        let history = format!("select sql from {}", crate::catalog::HISTORY_TABLE);
+        db.prepare(&history).and_then(|mut s| s.query_map([], |r| r.get::<_, Option<String>>(0)).map(|rows| rows.flatten().flatten().any(|sql| crate::libsql::uses_own_sql(&sql)))).unwrap_or(false)
+    }
+}
+
 /// The path a SQLite URL names: `sqlite:` or `file:` before it, `:memory:` alone; a relative path
 /// is the project's.
 pub fn sqlite_path(url: &str, base: &Path) -> String {
@@ -231,8 +247,11 @@ impl Db {
     /// ([`crate::Options::libsql_engine`]).
     #[cfg(feature = "cli")]
     pub async fn open(opts: &crate::Options) -> Result<Db, Error> {
-        if Dialect::of_url(&opts.url)? == Dialect::Sqlite && !crate::libsql::is_url(&opts.url) && opts.libsql_engine() {
-            return Ok(Db::LibsqlLocal(crate::libsql_local::Local::open(&sqlite_path(&opts.url, &opts.root))?));
+        if Dialect::of_url(&opts.url)? == Dialect::Sqlite && !crate::libsql::is_url(&opts.url) {
+            let path = sqlite_path(&opts.url, &opts.root);
+            if opts.libsql_engine() || libsql_file(&path) {
+                return Ok(Db::LibsqlLocal(crate::libsql_local::Local::open(&path)?));
+            }
         }
         Db::connect(&opts.url, &opts.root).await
     }

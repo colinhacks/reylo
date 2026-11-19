@@ -2825,10 +2825,10 @@ mod on_mysql {
     use super::*;
     on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url);
 }
-on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, libsqls_own_sql_migrates);
+on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it);
 mod on_turso {
     use super::*;
-    on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, a_vector_indexs_own_tables_are_libsqls, libsqls_own_sql_migrates);
+    on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, a_vector_indexs_own_tables_are_libsqls, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it);
 }
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_deploy);
 on!(Mysql, a_table_comment_is_no_clause_of_its_table);
@@ -4386,6 +4386,26 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert!(p.try_rows("insert into docs (id, emb) values (2, null) returning id").await.is_err(), "the column is not null");
         let sql = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
         assert!(sql.contains("libsql_vector_idx") && !sql.contains("_shadow"), "{sql}");
+    }
+
+    /// A database that ran a migration of libSQL's own SQL stays libSQL's on a branch whose files
+    /// have none: its history replays on libSQL's engine, so it is pulled back and rewound.
+    pub async fn a_libsql_history_replays_on_a_branch_without_it(mut p: P) {
+        p.schema("create table docs (id integer primary key, emb F32_BLOB(3));\ncreate index docs_emb on docs (libsql_vector_idx(emb));");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "docs", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        let files = p.files();
+        // Another branch: no migration of it, and a schema.sql of SQLite's alone.
+        for f in &files {
+            std::fs::remove_file(p.dir.join("migrations").join(f)).unwrap();
+        }
+        p.schema("");
+        assert_eq!(p.run(async |o, log| reylo_migrate::history_pull(o, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.files(), files, "the migration is written back");
+        for f in &files {
+            std::fs::remove_file(p.dir.join("migrations").join(f)).unwrap();
+        }
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
     }
 }
 

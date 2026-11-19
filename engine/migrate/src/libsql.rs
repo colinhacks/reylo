@@ -72,7 +72,8 @@ pub fn identity(url: &str) -> String {
 /// vector functions (`libsql_vector_idx`, `vector`, `vector_distance_cos`, …), a vector type
 /// (`F32_BLOB(3)`), or `alter table … alter column`. A project whose migrations or schema.sql do
 /// runs its development file and shadows on libSQL's engine ([`crate::libsql_local`]). A word
-/// alone is no call: a column named `vector` stays SQLite's.
+/// alone is no call, and nor is a name a statement gives a table (`create table vector (…)`,
+/// `insert into vector (…)`, `references vector (id)`): only those stay SQLite's.
 pub fn uses_own_sql(sql: &str) -> bool {
     use crate::sql::TokenKind::{Symbol, Word};
     const CALLS: [&str; 14] = ["libsql_vector_idx", "vector", "vector32", "vector64", "vector16", "vectorb16", "vector8", "vector1bit", "vector_extract", "vector_distance_cos", "vector_distance_l2", "vector_top_k", "vector_concat", "vector_slice"];
@@ -80,9 +81,12 @@ pub fn uses_own_sql(sql: &str) -> bool {
     let tokens = crate::sql::tokenize(sql, crate::Dialect::Sqlite);
     let word = |i: usize| tokens.get(i).filter(|t| t.kind == Word).map(|t| t.text.to_ascii_lowercase());
     let open = |i: usize| tokens.get(i).is_some_and(|t| t.kind == Symbol && t.text == "(");
+    // The words after which a name followed by `(` is a table's or a query's, not a call's.
+    const NAMES: [&str; 12] = ["table", "into", "references", "on", "exists", "view", "trigger", "index", "from", "join", "update", "with"];
     (0..tokens.len()).any(|i| {
         let Some(w) = word(i) else { return false };
-        if open(i + 1) && (CALLS.contains(&w.as_str()) || TYPES.contains(&w.as_str())) {
+        let named = i > 0 && word(i - 1).is_some_and(|p| NAMES.contains(&p.as_str()));
+        if open(i + 1) && !named && (CALLS.contains(&w.as_str()) || TYPES.contains(&w.as_str())) {
             return true;
         }
         // `alter table <name> alter column`, the name qualified or not.
@@ -425,6 +429,9 @@ mod tests {
         assert!(uses_own_sql("select id from vector_top_k('docs_emb', vector('[1,2,3]'), 5);"));
         assert!(!uses_own_sql("create table t (vector text, f32_blob blob); alter table t add column note text;"));
         assert!(!uses_own_sql("insert into t values ('libsql_vector_idx(x)'); -- vector(1)"));
+        assert!(!uses_own_sql("create table vector (x real check (floor(x) = x)); insert into vector (x) values (1); create index i on vector (x);"));
+        assert!(!uses_own_sql("create table t (v integer references vector (id)); create table if not exists vector (id integer); with vector (n) as (select 1) select n from vector;"));
+        assert!(uses_own_sql("create table vector (emb F32_BLOB(3)); insert into vector values (vector('[1]'));"));
     }
 
     #[test]
