@@ -222,9 +222,10 @@ export function ecmaPattern(source: string): string {
 /**
  * `schema` with the facts of `t` JSON Schema says the same way, each only where the value's form here
  * makes it true: a text's size in code points and its pattern on a string, a number's bounds and
- * divisor on a JSON number, within what a JSON number writes exactly, and an array's size on an
- * array. A decimal given as its text takes no bounds. A parameter's exact size is a maximum, since
- * `char(n)` pads a shorter value. A size in code units or bytes has no equivalent.
+ * divisor on a JSON number, within what a JSON number writes exactly, an array's size on an
+ * array, and a map's size, which counts its keys, on an object. A decimal given as its text takes
+ * no bounds. A text parameter's exact size is a maximum, since `char(n)` pads a shorter value. A
+ * size in code units or bytes has no equivalent.
  */
 function withFacts(schema: Schema | JsonSchema, t: EngineType, input: boolean): Schema | JsonSchema {
   if (typeof schema !== "object" || schema === null) return schema;
@@ -254,6 +255,7 @@ function withFacts(schema: Schema | JsonSchema, t: EngineType, input: boolean): 
     if (t.kind !== "float") bound(t.multiple_of, "multipleOf");
   }
   if (t.kind === "array" && schema.type === "array" && t.size !== undefined) sized(t.size, "minItems", "maxItems", false);
+  if (t.kind === "map" && schema.type === "object" && t.size !== undefined) sized(t.size, "minProperties", "maxProperties", false);
   return Object.keys(facts).length ? { ...schema, ...facts } : schema;
 }
 
