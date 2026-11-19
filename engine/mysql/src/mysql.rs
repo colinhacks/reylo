@@ -121,7 +121,7 @@ fn analyze_text_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysi
     if !repeated.is_empty() {
         return Some(crate::analysis::bare(sql, &lexed, Dialect::Mysql, repeated));
     }
-    analyze(sql, &lexed, text, host, marked)
+    analyze(sql, &lexed, text, host, marked).map(|analysis| Analysis { sql_mode: text.filter(|_| !alike), ..analysis })
 }
 
 /// `sqlparser`'s MySQL dialect, reading strings and double quotes as a session of this reading
@@ -362,6 +362,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             ordered: false,
             value: false,
             rewritten: vectors_as_text(rewritten, &raw),
+            sql_mode: None,
             style: lexed.style,
             diagnostics: Vec::new(),
             unresolved: Vec::new(),
@@ -597,6 +598,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         ordered: false,
         value: false,
         rewritten,
+        sql_mode: None,
         style: lexed.style,
         diagnostics,
         unresolved: Vec::new(),

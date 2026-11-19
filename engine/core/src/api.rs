@@ -238,6 +238,12 @@ pub struct Analysis {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub value: bool,
     pub rewritten: lex::Rewritten,
+    /// How the session the statement was read on reads MySQL's strings and double quotes, by its
+    /// `sql_mode`, where another mode would read the statement otherwise: its placeholders hold
+    /// only for a session that reads it so. Absent where every mode reads it alike, and on every
+    /// other database.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sql_mode: Option<lex::MysqlText>,
     pub style: lex::Style,
     pub diagnostics: Vec<Diagnostic>,
     /// Paths inside JSON columns the engine could not type, for a message.

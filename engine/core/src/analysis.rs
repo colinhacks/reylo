@@ -436,6 +436,7 @@ pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnos
         ordered: false,
         value: false,
         rewritten,
+        sql_mode: None,
         style: lexed.style,
         diagnostics,
         unresolved: Vec::new(),

@@ -124,6 +124,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         ordered: remote.ordered,
         value: remote.value,
         rewritten: lex::rewrite(sql, &lexed, Target::Dollar),
+        sql_mode: None,
         style: lexed.style,
         diagnostics: remote.diagnostics,
         unresolved: remote.unresolved,
