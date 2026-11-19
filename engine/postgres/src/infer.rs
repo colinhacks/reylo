@@ -216,7 +216,7 @@ const POSTGRES_ROW_TAKERS: &[&str] = &[
 /// `percentile_disc` and `mode` of an `anyelement`. What they return proves nothing of its type.
 const POSTGRES_ROW_RESULTS: &[&str] = &["min", "max", "lag", "lead", "first_value", "last_value", "any_value", "percentile_disc", "mode"];
 /// The never-null functions the rules read that take no argument but two (`random(min, max)`):
-/// a call of one is no call of theirs.
+/// a call of one is no call of theirs, and only a call of none is never NULL.
 const POSTGRES_NO_ARGUMENT: &[&str] = &["now", "clock_timestamp", "statement_timestamp", "transaction_timestamp", "gen_random_uuid", "uuidv4", "random"];
 /// The window functions a rule reads (see `Reader::call`).
 pub const POSTGRES_WINDOW: &[&str] = &["row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead"];
@@ -2023,7 +2023,9 @@ impl Reader<'_> {
             // Anywhere else `array_agg` may see no rows and be NULL, but its elements are still the
             // values of its argument.
             (Dialect::Postgres, "array_agg", 1) if self.trust.builtin("array_agg") => Expr::Array { non_null: false, items: f.args.iter().map(|a| self.read(a)).collect() },
-            (Dialect::Postgres, n, _) if POSTGRES_NEVER_NULL.contains(&n) && self.trust.builtin(n) => Expr::NonNull(None),
+            // `random(min, max)` is strict, and raises rather than answering NULL where `min > max`.
+            (Dialect::Postgres, "random", 2) if self.trust.builtin("random") => Expr::Every(self.args(f, projection), Ty::Unknown),
+            (Dialect::Postgres, n, args) if POSTGRES_NEVER_NULL.contains(&n) && (args == 0 || !POSTGRES_NO_ARGUMENT.contains(&n)) && self.trust.builtin(n) => Expr::NonNull(None),
             // `unnest(ARRAY[…])` gives the elements written, a nested array's flattened: none NULL
             // where none of them is and each is a value of a scalar type. An element that is an
             // array itself (`array[tags]`, `array['{NULL}'::int[]]`) makes the array one of more
@@ -2154,7 +2156,8 @@ impl Reader<'_> {
             }
             ("array_agg", 1) => (Claim::Array(false), None),
             ("array_remove", 2) => (Claim::Removed(is_null_literal(&f.args[1])), None),
-            (n, _) if POSTGRES_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
+            ("random", 2) => (Claim::Every(None, Ty::Unknown), None),
+            (n, args) if POSTGRES_NEVER_NULL.contains(&n) && (args == 0 || !POSTGRES_NO_ARGUMENT.contains(&n)) => (Claim::NonNull(None), None),
             ("uuidv7", 0) => (Claim::NonNull(Some(oid::UUID)), None),
             (n, 0) if POSTGRES_NO_ARGUMENT_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
             (n, 1) if POSTGRES_TOTAL_ONE_ARGUMENT.contains(&n) => (Claim::Every(None, Ty::Is(oid::TEXT)), None),
