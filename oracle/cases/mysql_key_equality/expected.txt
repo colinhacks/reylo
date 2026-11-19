@@ -59,7 +59,7 @@ datetime_number.sql: at_most_one () -> { at: datetime }
 datetime_number_scan.sql: at_most_one () -> { at: datetime }
 datetime_param.sql: at_most_one (at: datetime) -> { at: datetime }
 datetime_param_scan.sql: at_most_one (at: datetime) -> { at: datetime }
-datetime_pipes.sql: many (at: datetime) -> { at: datetime? }
+datetime_pipes.sql: many (at: datetime) -> { at: datetime }
 datetime_string.sql: at_most_one () -> { at: datetime }
 datetime_sysdate.sql: many () -> { at: datetime }
 datetime_text_function.sql: at_most_one (s: varchar) -> { at: datetime }
@@ -119,7 +119,7 @@ int_or.sql: many (id: int32, name: varchar) -> { id: int }
 int_param.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20) }
 int_param_reversed.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20) }
 int_param_scan.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20) }
-int_pipes.sql: many (id: int32) -> { id: int? }
+int_pipes.sql: many (id: int32) -> { id: int }
 int_product.sql: at_most_one (id: decimal) -> { id: int }
 int_rand.sql: many () -> { id: int }
 int_round.sql: at_most_one (x: decimal) -> { id: int }

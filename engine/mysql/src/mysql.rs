@@ -8,8 +8,8 @@
 //! Two things stand between that tree and the statement the server runs. MySQL reads some text by
 //! the session's `sql_mode` (`||`, a double-quoted word, a backslash in a string, a space before a
 //! call's parenthesis), so where the statement has such text the engine asks for the mode. The
-//! placeholders and the tree are read as the session reads its strings and double quotes
-//! ([`analyze_text`], [`SessionDialect`]), and where the rest reads otherwise than the parser, the
+//! placeholders and the tree are read as the session reads its strings, its double quotes and
+//! `||` ([`analyze_text`], [`SessionDialect`]), and where the rest reads otherwise than the parser, the
 //! engine reads nothing off its own tree ([`misread`]). And an execution
 //! answers with column types of its own, which are the prepare's except where a bound value or
 //! the plan decides them: such a column is typed as either ([`settle`]).
@@ -126,10 +126,11 @@ fn analyze_text_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysi
 
 /// `sqlparser`'s MySQL dialect, reading strings and double quotes as a session of this reading
 /// does: a backslash escapes only where it does there, and `"` quotes a name under ANSI_QUOTES.
-/// Everything else is `MySqlDialect`'s, which it also says it is, so the parser's own checks for
-/// MySQL hold for it.
+/// Beside the reading, whether `||` is OR, as it is unless the session's `sql_mode` has
+/// PIPES_AS_CONCAT, where it joins strings ([`pipes_are_or`]). Everything else is
+/// `MySqlDialect`'s, which it also says it is, so the parser's own checks for MySQL hold for it.
 #[derive(Debug)]
-struct SessionDialect(MysqlText);
+struct SessionDialect(MysqlText, bool);
 
 impl sqlparser::dialect::Dialect for SessionDialect {
     fn dialect(&self) -> std::any::TypeId {
@@ -140,6 +141,9 @@ impl sqlparser::dialect::Dialect for SessionDialect {
     }
     fn supports_string_literal_backslash_escape(&self) -> bool {
         self.0.backslash_escapes
+    }
+    fn supports_double_pipe_or_operator(&self) -> bool {
+        self.1
     }
     // The rest is `MySqlDialect`'s (sqlparser 0.63): every method it overrides, delegated.
     fn is_identifier_start(&self, ch: char) -> bool {
@@ -246,7 +250,7 @@ impl sqlparser::dialect::Dialect for SessionDialect {
 /// `text` is how the session reads its strings, `None` where it would not say and the statement
 /// turns on it; `marked` names the parameters cast to `nullable(…)`.
 pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, marked: &[String]) -> Lazy<Analysis> {
-    let dialect = SessionDialect(text.unwrap_or_default());
+    let dialect = SessionDialect(text.unwrap_or_default(), true);
     // What the engine prints of the statement, for the probes it describes, writes its strings
     // as the session reads them back.
     sqlparser::ast::set_backslash_escapes(dialect.0.backslash_escapes);
@@ -290,14 +294,30 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         Some(_) => misread(sql, lexed, host),
         None => Some(Some("the server did not say its sql_mode, which decides how it reads this statement's strings and double quotes, so nothing bounds its rows".into())),
     };
-    // A tree the server would read otherwise still says what kind of statement it is, and nothing more.
-    let read = parse(&dialect, &rewritten.sql).ok().and_then(|mut v| if v.len() == 1 { v.pop() } else { None });
+    let pipes = match text {
+        Some(_) => pipes_are_or(sql, lexed, host),
+        None => Some(Ok(true)),
+    };
+    // The tree as the session reads `||`, as MySQL's default mode reads it (OR) until the session
+    // says, which what the statement reads and writes does not turn on. A tree the server would
+    // read otherwise still says what kind of statement it is, and nothing more.
+    let read_as = |dialect: &SessionDialect| parse(dialect, &rewritten.sql).ok().and_then(|mut v| if v.len() == 1 { v.pop() } else { None });
+    let read = read_as(&dialect);
     let names = crate::mysql_params::names(&rewritten);
     if let Some(statement) = &read {
         crate::mysql_params::prefetch(statement, &names, host);
         crate::errors::prefetch(kind(Some(statement)), &crate::mysql_params::tables(statement), &rewritten.sql, host);
     }
-    let (raw, misread) = (raw?, misread?);
+    let (raw, misread, pipes) = (raw?, misread?, pipes?);
+    let misread = misread.or_else(|| pipes.clone().err());
+    let (dialect, read) = match pipes {
+        Ok(false) => {
+            let concatenates = SessionDialect(dialect.0, false);
+            let read = read_as(&concatenates);
+            (concatenates, read)
+        }
+        _ => (dialect, read),
+    };
     let raw = match raw {
         Ok(r) => r,
         Err(e) => {
@@ -616,7 +636,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         read_only: false,
         notes: Vec::new(),
         // From the tree as the session reads the statement, also where it reads some part of it
-        // otherwise than the parser (`||`, a spaced `count (`): which tables a FROM names does not
+        // otherwise than the parser (a spaced `count (`): which tables a FROM names does not
         // turn on that.
         tables: read.as_ref().map(crate::mysql_params::tables),
         domains: Default::default(),
@@ -1742,13 +1762,12 @@ const SPACE_SENSITIVE: &[&str] = &[
 ];
 
 /// Why the engine's parser does not read the statement as this server does, if it does not.
-/// `sqlparser` reads `||` as a concatenation that binds tighter than `=`, `count (x)` as the
-/// aggregate and NOT as MySQL ranks it by default; the server reads each by the session's
-/// `sql_mode`, where `a = b || c` is `(a = b) OR c` unless PIPES_AS_CONCAT is set, `count (x)`
-/// calls a stored function `count` unless IGNORE_SPACE is set, and HIGH_NOT_PRECEDENCE moves NOT.
-/// (Strings and double quotes the parser reads by the mode itself: [`SessionDialect`].) The mode
-/// is asked for only when the text has one of these; an optimizer hint that sets a variable for
-/// the statement leaves no mode to ask for.
+/// `sqlparser` reads `count (x)` as the aggregate and NOT as MySQL ranks it by default; the server
+/// reads each by the session's `sql_mode`, where `count (x)` calls a stored function `count` unless
+/// IGNORE_SPACE is set, and HIGH_NOT_PRECEDENCE moves NOT. (Strings, double quotes and `||` the
+/// parser reads by the mode itself: [`SessionDialect`], [`pipes_are_or`].) The mode is asked for
+/// only when the text has one of these; an optimizer hint that sets a variable for the statement
+/// leaves no mode to ask for.
 fn misread(sql: &str, lexed: &Lexed, host: &Host) -> Lazy<Option<String>> {
     let text = |&(start, end): &(usize, usize)| &sql[start..end];
     let is_comment = |span: &str| span.starts_with("--") || span.starts_with("/*") || span.starts_with('#');
@@ -1780,9 +1799,6 @@ fn misread(sql: &str, lexed: &Lexed, host: &Host) -> Lazy<Option<String>> {
         i = end;
     }
     let mut readings: Vec<(&str, bool, &str)> = Vec::new();
-    if code.contains("||") {
-        readings.push(("PIPES_AS_CONCAT", false, "`||` is OR, and binds looser than a comparison"));
-    }
     // A built-in's name, then a space or a comment, then its parenthesis.
     let parted = |commented: bool| {
         words.iter().any(|(name, before, after)| {
@@ -1817,6 +1833,29 @@ fn misread(sql: &str, lexed: &Lexed, host: &Host) -> Lazy<Option<String>> {
     Some(readings.iter().find(|(name, when_set, _)| set(name) == *when_set).map(|(name, when_set, what)| {
         format!("under this server's sql_mode ({} {name}) {what}, which is not how the engine's parser reads the statement, so nothing bounds its rows", if *when_set { "with" } else { "without" })
     }))
+}
+
+/// Whether the session reads `||` as OR, which it does unless its `sql_mode` has PIPES_AS_CONCAT,
+/// where it joins strings; asked only where the statement's code, outside its strings, names and
+/// comments, has one. `Err` with why where the server would not say its mode.
+fn pipes_are_or(sql: &str, lexed: &Lexed, host: &Host) -> Lazy<Result<bool, String>> {
+    let mut code = String::with_capacity(sql.len());
+    let mut at = 0;
+    for &(start, end) in &lexed.opaque {
+        code.push_str(&sql[at..start]);
+        code.push(' ');
+        at = end;
+    }
+    code.push_str(&sql[at..]);
+    if !code.contains("||") {
+        return Some(Ok(true));
+    }
+    let rows = host.query(SQL_MODE_QUERY, Vec::new(), Scope::Session)?;
+    let mode = rows.ok().and_then(|rows| rows.first().and_then(|row| row.first()).and_then(as_str).map(str::to_ascii_uppercase));
+    Some(match mode {
+        Some(mode) => Ok(!mode.split(',').any(|m| m.trim() == "PIPES_AS_CONCAT")),
+        None => Err("the server did not say its sql_mode, which decides whether `||` is OR or joins strings, so nothing bounds its rows".into()),
+    })
 }
 
 // ---- the types an execution may answer with ---------------------------------------------------
@@ -3272,7 +3311,7 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
         // DIV answers a BIGINT whatever its operands.
         Expr::BinaryOp { op: Plus | Minus | Multiply | Divide | Modulo, .. } if bound_number(e) => Class::Computed,
         Expr::BinaryOp { op: Plus | Minus | Multiply | Divide | Modulo | MyIntegerDivide, .. } => Class::Number,
-        // `a || b` where it joins strings (PIPES_AS_CONCAT; elsewhere the tree is not read).
+        // `a || b` where it joins strings (PIPES_AS_CONCAT; elsewhere it is OR).
         Expr::BinaryOp { op: StringConcat, .. } => Class::Text,
         Expr::Function(f) => {
             let name = builtin(f);
@@ -3778,15 +3817,17 @@ mod tests {
         let one = json!({ "columns": [{ "name": "id", "type": 3, "flags": 1 }], "params": [] });
         let nullable = |sql: &str| analyzed(sql, one.clone(), default).0.columns[0].nullable;
         assert!(!nullable("select id from users where id = 1"));
+        // `||` is read as the session reads it.
+        assert!(!nullable("select id from users where id = 1 || 1"));
         // Set aside, by the mode or by a hint that sets a variable, or not parsed at all.
-        assert!(nullable("select id from users where id = 1 || 1"));
+        assert!(nullable("select count (id) as id from users"));
         assert!(nullable("select /*+ SET_VAR(sort_buffer_size = 1048576) */ id from users"));
         assert!(nullable("select id from users where name sounds like 'a'"));
         // A computed number or BIT beside an IF or a CASE may be one over a BIT; a table's own column is its own.
         let computed = json!({ "columns": [{ "name": "v", "type": 246, "flags": 1 }, { "name": "b", "type": 16, "flags": 1, "length": 8, "schema": "app", "org_table": "users", "org_name": "b" }], "params": [] });
         let types = |sql: &str| analyzed(sql, computed.clone(), default).0.columns.iter().map(|c| c.ty.short()).collect::<Vec<_>>();
-        assert_eq!(types("select if(id > 1 || id < 0, b, 0) as v, b from users"), ["unknown", "bit(boolean[8])"]);
-        assert_eq!(types("select id || 0 as v, b from users"), ["decimal", "bit(boolean[8])"]);
+        assert_eq!(types("select /*+ SET_VAR(sort_buffer_size = 1048576) */ if(id > 1, b, 0) as v, b from users"), ["unknown", "bit(boolean[8])"]);
+        assert_eq!(types("select /*+ SET_VAR(sort_buffer_size = 1048576) */ id + 0 as v, b from users"), ["decimal", "bit(boolean[8])"]);
     }
 
     #[test]
@@ -3929,17 +3970,30 @@ mod tests {
             "select json_object('k', json_arrayagg(id)) from t # c",
         ] {
             let mysql = Parser::parse_sql(&MySqlDialect {}, sql).map(|v| format!("{v:?}"));
-            assert_eq!(Parser::parse_sql(&SessionDialect(MysqlText::default()), sql).map(|v| format!("{v:?}")), mysql, "{sql}");
+            assert_eq!(Parser::parse_sql(&SessionDialect(MysqlText::default(), true), sql).map(|v| format!("{v:?}")), mysql, "{sql}");
         }
         let one = |sql: &str, text: MysqlText| {
             sqlparser::ast::set_backslash_escapes(text.backslash_escapes);
-            Parser::parse_sql(&SessionDialect(text), sql).unwrap().pop().unwrap().to_string()
+            Parser::parse_sql(&SessionDialect(text, true), sql).unwrap().pop().unwrap().to_string()
         };
         let plain = MysqlText { backslash_escapes: false, ansi_quotes: false };
         let ansi = MysqlText { backslash_escapes: true, ansi_quotes: true };
         assert_eq!(one(r"select 'C:\' as p, id from t where id = ?", plain), r"SELECT 'C:\' AS p, id FROM t WHERE id = ?");
-        assert!(Parser::parse_sql(&SessionDialect(MysqlText::default()), r"select 'C:\' as p, id from t where id = ?").is_err());
+        assert!(Parser::parse_sql(&SessionDialect(MysqlText::default(), true), r"select 'C:\' as p, id from t where id = ?").is_err());
         assert_eq!(one(r#"select "id" from "t" where "id" = 1"#, ansi), r#"SELECT "id" FROM "t" WHERE "id" = 1"#);
+        // `||` is OR, bound as OR binds, unless the session joins strings with it.
+        let pipes = |sql: &str, or: bool| Parser::parse_sql(&SessionDialect(MysqlText::default(), or), sql).unwrap().pop().unwrap().to_string();
+        assert_eq!(pipes("select id from t where id = 1 || name = 'a' && n = 2", true), "SELECT id FROM t WHERE id = 1 OR name = 'a' AND n = 2");
+        assert_eq!(pipes("select a = b || c as x from t", true), "SELECT a = b OR c AS x FROM t");
+        assert_eq!(pipes("select a = b || c as x from t", false), "SELECT a = b || c AS x FROM t");
+        let top = |or: bool| {
+            let Some(Statement::Query(q)) = Parser::parse_sql(&SessionDialect(MysqlText::default(), or), "select a = b || c as x from t").unwrap().pop() else { panic!("not a query") };
+            let SetExpr::Select(s) = *q.body else { panic!("not a select") };
+            let Some(SelectItem::ExprWithAlias { expr: Expr::BinaryOp { left, op, .. }, .. }) = s.projection.into_iter().next() else { panic!("no operator") };
+            (op, matches!(*left, Expr::BinaryOp { .. }))
+        };
+        assert_eq!(top(true), (ast::BinaryOperator::Or, true));
+        assert_eq!(top(false), (ast::BinaryOperator::Eq, false));
     }
 
     #[test]

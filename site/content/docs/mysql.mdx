@@ -222,7 +222,7 @@ select id, active, role = 'admin' as is_admin from users
 
 **What counts**
 
-These are typed `boolean`: comparisons, `IS`, `IN`, `BETWEEN`, `LIKE`, `REGEXP`, `EXISTS`, `NOT`, `AND`, `OR`, `XOR`, `TRUE` and `FALSE`, and a `CASE`, `IF`, `COALESCE`, `IFNULL`, `NULLIF` or subquery whose every value is one of them.
+These are typed `boolean`: comparisons, `IS`, `IN`, `BETWEEN`, `LIKE`, `REGEXP`, `EXISTS`, `NOT`, `AND`, `OR` and `||` (which joins strings instead where your `sql_mode` has `PIPES_AS_CONCAT`), `XOR`, `TRUE` and `FALSE`, and a `CASE`, `IF`, `COALESCE`, `IFNULL`, `NULLIF` or subquery whose every value is one of them.
 
 <Pairs>
 
@@ -744,7 +744,7 @@ What Reylo can't type on MySQL, and what to do instead:
 | An `if` or a `case` that returns a `BIT` column, which MySQL sends as the column's bytes under a `DECIMAL` type, or as a number under a `BIT` one: it is typed `unknown` | Make the column a number first: `if(n > 0, enabled + 0, 0)` |
 | A loadable function (`create function … soname`), which `information_schema` doesn't list, so `.readOnly` can't see one | Don't retry a query that calls one |
 | A query Reylo's parser can't read | None: it keeps MySQL's types, every column can be null, it returns `Row[]`, and its JSON is `Json` |
-| A query MySQL reads otherwise than Reylo's parser, by its `sql_mode` (`a \|\| b` without `PIPES_AS_CONCAT`, `count (x)` without `IGNORE_SPACE`, `not` under `HIGH_NOT_PRECEDENCE`) or by a `SET_VAR` hint | None: Reylo keeps MySQL's types, every column can be null, and it has no row counts or JSON shapes |
+| A query MySQL reads otherwise than Reylo's parser, by its `sql_mode` (`count (x)` without `IGNORE_SPACE`, `not` under `HIGH_NOT_PRECEDENCE`) or by a `SET_VAR` hint | None: Reylo keeps MySQL's types, every column can be null, and it has no row counts or JSON shapes |
 | A `/*! … */` comment, which MySQL runs as SQL, so it's an error | Write it as plain SQL |
 | `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [Bulk inserts](/inference#bulk-inserts) |
 | A query past 500 operators or 200 levels of nesting | None: Reylo falls back to MySQL's own types, every column can be null, and any number of rows |

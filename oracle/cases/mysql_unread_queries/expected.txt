@@ -1,4 +1,4 @@
 derived_left_join.sql: many () -> { n: bigint? }
 derived_left_join_hint.sql: many () -> { n: bigint? }
-derived_left_join_pipes.sql: many () -> { n: bigint?, odd: bigint | int? }
+derived_left_join_pipes.sql: many () -> { n: bigint?, odd: boolean }
 derived_left_join_sounds_like.sql: many () -> { n: bigint? }
