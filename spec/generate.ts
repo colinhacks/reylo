@@ -1,8 +1,9 @@
 // `nub run typedefs` at the root: the TypeScript of the type descriptor format, spec/index.ts,
 // generated from its JSON Schema, spec/typedefs.schema.json, which is the source of truth; the
-// schema as reylo.dev publishes it, site/public/typedefs/<version>.json, the version its `$id` names;
+// schema as reylo.dev publishes it, site/public/typedefs/<name>.json, the name its `$id` gives it;
 // and spec/examples.json, the examples of spec/examples.ts as JSON, which the engine's own tests read
-// (engine/core/src/types.rs). Each version's published file is kept once written, so a descriptor of
+// (engine/core/src/types.rs). Until 1.0.0 the format is a preview, published as preview.json and
+// rewritten in place; from 1.0.0 each version's published file is kept once written, so a descriptor of
 // an older version still validates against its own. With `--check`, nothing is written, and a file
 // that differs from what its source gives fails.
 //
@@ -20,8 +21,8 @@ const source = path.join(root, "spec", "typedefs.schema.json");
 const check = process.argv.includes("--check");
 const schema = JSON.parse(readFileSync(source, "utf8")) as Schema;
 const defs = schema.$defs as Record<string, Schema>;
-const version = /^https:\/\/reylo\.dev\/typedefs\/(\d+\.\d+\.\d+)\.json$/.exec(String(schema.$id))?.[1];
-if (!version) throw new Error(`${source}: its $id is no https://reylo.dev/typedefs/<version>.json`);
+const published = /^https:\/\/reylo\.dev\/typedefs\/(preview|\d+\.\d+\.\d+)\.json$/.exec(String(schema.$id))?.[1];
+if (!published) throw new Error(`${source}: its $id is no https://reylo.dev/typedefs/preview.json, nor a <version>.json`);
 
 function comment(text: string | undefined, indent: string): string {
   if (!text) return "";
@@ -96,7 +97,7 @@ const examples = `${JSON.stringify({ ...(await import("./examples.ts")) }, null,
 // Each file written, its text, and the file it is written from.
 const outputs: [string, string, string][] = [
   [path.join(root, "spec", "index.ts"), ts, "spec/typedefs.schema.json"],
-  [path.join(root, "site", "public", "typedefs", `${version}.json`), readFileSync(source, "utf8").replaceAll("\r\n", "\n"), "spec/typedefs.schema.json"],
+  [path.join(root, "site", "public", "typedefs", `${published}.json`), readFileSync(source, "utf8").replaceAll("\r\n", "\n"), "spec/typedefs.schema.json"],
   [path.join(root, "spec", "examples.json"), examples, "spec/examples.ts"],
 ];
 // A checkout on Windows may hold any of these with CRLF line endings, which change nothing they say.

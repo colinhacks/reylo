@@ -32,11 +32,11 @@ test("a CRLF checkout of the generated files is still current, as a Windows chec
   assert.equal(run.status, 0, run.stderr);
 });
 
-test("the format's JSON Schema is a valid 2020-12 schema, whose $id names its version's published file", () => {
+test("the format's JSON Schema is a valid 2020-12 schema, whose $id names its published file", () => {
   // Strict mode refuses an unknown keyword and a schema that contradicts itself.
   const ajv = new Ajv2020({ strict: true, allErrors: true });
   ajv.compile(schema);
-  assert.match(schema.$id, /^https:\/\/reylo\.dev\/typedefs\/\d+\.\d+\.\d+\.json$/);
+  assert.match(schema.$id, /^https:\/\/reylo\.dev\/typedefs\/(preview|\d+\.\d+\.\d+)\.json$/);
   assert.equal(schema.$defs.StatementDescriptor.properties.$schema.const, schema.$id);
 });
 
