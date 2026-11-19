@@ -54,9 +54,7 @@ Add Reylo to `tsconfig.json` as a content mapper, as in [Setup](/typescript#type
 ```jsonc title="tsconfig.json"
 {
   "compilerOptions": { /* ... */ },
-  "contentMappers": [ // [!code ++]
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] } // [!code ++]
-  ] // [!code ++]
+  "contentMappers": [{ "package": "reylo" }] // [!code ++]
 }
 ```
 
