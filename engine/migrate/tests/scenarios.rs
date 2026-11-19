@@ -2336,7 +2336,8 @@ async fn deploy_goes_on_where_it_has_no_fingerprint_to_compare(mut p: P) {
     p.file("20261027100000_users.sql", &format!("create table users (id {int});"));
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     p.output();
-    // A new version of Reylo or the server: read another way, a fingerprint says nothing.
+    // A catalog reader of another version, or a new major version of the server: read another way, a
+    // fingerprint says nothing.
     p.exec("update __reylo_migrations set fingerprint = 'old:1:abc'").await;
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"can't be compared with what its last migration left[\s\S]*Up to date");
@@ -2886,6 +2887,85 @@ async fn a_database_whose_default_collation_differs() {
         assert_eq!(p.migrate().await, 0, "the shadows must take the target's default collation:\n{}", p.peek());
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
     }
+}
+
+/// A lock that is there and can't be read is refused by every command, never read as no lock, which
+/// would deploy a draft with no checksum to hold it to.
+#[tokio::test(flavor = "current_thread")]
+async fn a_lock_that_cant_be_read_is_refused() {
+    let mut p = P::new(Dialect::Sqlite).await.unwrap();
+    p.linear();
+    p.schema("create table a (id integer);");
+    p.file("20261027100000_a.sql", "create table a (id integer);");
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.file("20261027110000_draft.sql", "create table b (id integer);");
+    let lock = p.dir.join(reylo_migrate::lock::LOCK);
+    std::fs::write(&lock, b"migrations:\n  - 20261027100000_a.sql \xff\n").unwrap();
+    p.output();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"✗ \S*reylo\.lock can't be read: [^\n]*UTF-8");
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    assert_eq!(p.migrate().await, 1);
+    assert_eq!(p.status().await, 1);
+    assert_eq!(p.dev().await, 1);
+    assert_eq!(p.output().matches("reylo.lock can't be read").count(), 3);
+    assert_eq!(p.history().await, ["20261027100000_a.sql"]);
+}
+
+/// mysqldump writes a view as one statement over several executable comments, which MySQL runs:
+/// each migration runs it, and a database that loses it is told apart. A comment gated above the
+/// server's version runs nothing, and is no error.
+#[tokio::test(flavor = "current_thread")]
+async fn a_view_mysqldump_wrote_in_executable_comments_runs() {
+    let Some(mut p) = P::new(Dialect::Mysql).await else { return };
+    let view = "/*!50001 CREATE ALGORITHM=UNDEFINED */\n/*!50013 SQL SECURITY INVOKER */\n/*!50001 VIEW `v` AS select `t`.`id` AS `id` from `t` */;\n";
+    p.linear();
+    p.schema(&format!("create table t (id bigint primary key);\n{view}"));
+    p.file("20261027100000_t.sql", "create table t (id bigint primary key);");
+    p.file("20261027110000_v.sql", view);
+    p.file("20261027120000_later.sql", "/*!99999 create table later (id bigint) */;");
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    let tables = |rows: Vec<Row>| rows.iter().map(|r| format!("{} {}", r.text("name"), r.text("kind"))).collect::<Vec<_>>();
+    let listed = "select table_name as name, table_type as kind from information_schema.tables where table_schema = database() and table_name <> '__reylo_migrations' order by table_name";
+    assert_eq!(tables(p.rows(listed).await), ["t BASE TABLE", "v VIEW"]);
+    p.exec("/*!99999 select 1 */").await;
+    p.output();
+    assert_eq!(p.status().await, 0, "{}", p.peek());
+    p.output();
+    p.exec("drop view v").await;
+    assert_eq!(p.status().await, 1);
+    assert_has!(p.output(), r"✗ This database was changed outside its migrations\n\n[\s\S]*\n  - view v as select `t`\.`id` AS `id` from `t`");
+}
+
+/// A COMMIT behind a comment gated above the server's version runs on that server, which skips the
+/// comment: the migration is refused as that server reads it, before any of it runs.
+#[tokio::test(flavor = "current_thread")]
+async fn a_commit_a_server_reads_past_a_version_comment_is_refused() {
+    let Some(mut p) = P::new(Dialect::Mysql).await else { return };
+    p.file("20261027100000_t.sql", "create table t (id bigint primary key);");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.file("20261027110000_rows.sql", "insert into t values (1);\n/*!99999 SELECT */ COMMIT;\ninsert into t values (1);");
+    p.output();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"✗ 20261027110000_rows\.sql can't run atomically\n  It has its own commit");
+    assert!(p.rows("select id from t").await.is_empty(), "none of it ran");
+    assert_eq!(p.history().await, ["20261027100000_t.sql"]);
+}
+
+/// A server that skips a version comment ends it at its `*/` without reading a `#` in it, and runs
+/// the COMMIT after it: the migration is refused as that server reads it, before any of it runs.
+#[tokio::test(flavor = "current_thread")]
+async fn a_commit_after_a_skipped_comment_that_holds_a_line_comment_is_refused() {
+    let Some(mut p) = P::new(Dialect::Mysql).await else { return };
+    p.file("20261027100000_t.sql", "create table t (id bigint primary key);");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.file("20261027110000_rows.sql", "insert into t values (1);\nSELECT 1 /*!99999 # */; COMMIT;\ninsert into t values (1);");
+    p.output();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"✗ 20261027110000_rows\.sql can't run atomically\n  It has its own commit");
+    assert!(p.rows("select id from t").await.is_empty(), "none of it ran");
+    assert_eq!(p.history().await, ["20261027100000_t.sql"]);
 }
 
 mod adversarial {
@@ -3785,6 +3865,13 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.dry_run().await, 1);
         assert_has!(p.output(), "names the database");
         assert!(p.rows(&format!("select 1 from information_schema.tables where table_schema = '{}' and table_name = 't'", p.name)).await.is_empty());
+        // Where no keyword before the name says it is a table's: an insert with no `into`.
+        p.file("20261027100000_t.sql", "create table t (id int);");
+        p.exec("create table t (id int)").await;
+        p.file("20261027110000_row.sql", &format!("insert {}.t values (1);", p.name));
+        assert_eq!(p.dry_run().await, 1);
+        assert_has!(p.output(), r"20261027110000_row\.sql can't be replayed in a shadow database\n  [^\n]*names the database");
+        assert!(p.rows("select id from t").await.is_empty(), "no shadow wrote into the database it named");
     }
 
     pub async fn a_partition_of_a_run_time_partition_is_data(mut p: P) {

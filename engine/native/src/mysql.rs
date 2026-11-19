@@ -284,6 +284,12 @@ fn parse(url: &str) -> Result<Opts, String> {
     if let Some(path) = &socket {
         return Err(format!("socketPath={path} is a Unix socket, which this engine cannot open: connect over TCP"));
     }
+    // A socket's connection never leaves the machine, and mysql_async loses the handshake when it
+    // starts TLS on one ("Packets out of sync"): a socket connects without TLS, whatever the URL
+    // asks, as libpq does over a Postgres socket.
+    if socket.is_some() {
+        tls = None;
+    }
     let opts = Opts::from_url(base).map_err(|e| format!("cannot read the URL: {e}"))?;
     // The two settings mysql_async otherwise asks the server for on every connection, as the server's
     // defaults: a connection then sends nothing before the engine's own statements.
@@ -352,5 +358,19 @@ mod tests {
         assert_eq!(ssl.root_certs().len(), 1);
         assert!(ssl.client_identity().is_some());
         assert!(parse(r#"mysql://root@h/app?ssl={"cert":"c"}"#).is_err());
+    }
+
+    #[test]
+    fn a_socket_connects_without_tls_whatever_the_url_asks() {
+        for url in [
+            "mysql://root@localhost/app?socket=/tmp/mysql.sock&ssl=true",
+            "mysql://root@localhost/app?socketPath=%2Ftmp%2Fmysql.sock&ssl-mode=REQUIRED",
+            r#"mysql://root@localhost/app?ssl={"rejectUnauthorized":true}&socketPath=/tmp/mysql.sock"#,
+        ] {
+            let opts = parse(url).unwrap();
+            assert_eq!(opts.socket(), Some("/tmp/mysql.sock"), "{url}");
+            assert!(opts.ssl_opts().is_none(), "{url}");
+        }
+        assert!(parse("mysql://root@localhost/app?ssl=true").unwrap().ssl_opts().is_some());
     }
 }

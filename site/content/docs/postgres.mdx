@@ -312,6 +312,8 @@ join users u on u.id = o.user_id
 
 A key given twice holds its last value, as `jsonb` keeps it and as a parser reads the two a `json` value holds.
 
+A `json` or `jsonb` value inside the JSON you build may be `null`, even from a `not null` column, since it can hold JSON's `null`, unless a JSON Schema `CHECK` refuses null. That holds at any depth: a column you put in, a field of a row, and an element of an array alike.
+
 A schema's type carries through an aggregate, and `to_jsonb` of a row is typed column by column, enums included:
 
 ```ts twoslash tab="main.ts"
@@ -502,7 +504,7 @@ group by u.id
 
 **`NULL` elements**
 
-Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`. A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
+Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`. A value that `||` or `array_append` adds to an array is one element of it, so `tags || nickname` holds a `null` wherever `nickname` may be one. A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
 
 <Pairs>
 
@@ -512,7 +514,7 @@ Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[
 
 **Several dimensions**
 
-An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) to type every array column at any depth. Inside JSON your query builds, as with `jsonb_build_object('cells', cells)`, `.run()` returns such a value as it is, and without that setting its type has one dimension. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds.
+An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) to type every array column at any depth. Inside JSON your query builds, as with `jsonb_build_object('cells', cells)`, `.run()` returns such a value as it is, and without that setting its type has one dimension. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds. An array of a domain over an array type, as `array[x]` builds of such a column, is an array of the domain's values instead, each of which may be `null`.
 
 <Pairs>
 
@@ -536,7 +538,7 @@ A `vector` or `halfvec` comes back as a `number[]`, and a parameter of either ta
 
 ### Enums and domains
 
-An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A `text[]` column whose `CHECK` holds it within a list (`tags <@ array['a', 'b']`) is an array of that union, with no `null` element, since `<@` finds `NULL` in no list. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
+An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A `text[]` column whose `CHECK` holds it within a list (`tags <@ array['a', 'b']`) is an array of that union, with no `null` element, since `<@` finds `NULL` in no list. A `CHECK` that compares the column through a cast with a length, as `code::varchar(2) in ('ab', 'cd')`, limits nothing, since the cast cuts the value it compares. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
 
 <Pairs>
 
@@ -659,10 +661,13 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 Reylo infers how many rows a query returns from its keys, aggregates, `limit 1` and `returning` ([Inference](/inference#unique-keys)). On Postgres:
 
 - **Unique indexes on an expression** count when the query compares the same expression, written as Postgres stores it in the index, cast included.
-- **Partial unique indexes** count only when the `where` includes the index's condition.
+- **Partial unique indexes** count only when the `where` includes the index's condition, each literal as the index writes it: a cast that changes one, as `'a  '::bpchar` does beside a `text` column, compares another value.
 - **Writes that join**, with `from`, `using` or a `with` query of one row, still return a row or `null` when their key is matched.
 - **`BEFORE` row triggers** can skip a row by returning `NULL`, so a write they fire on returns a row or `null`. A PL/pgSQL trigger whose every `return` returns `new`, or `old` on an update or a delete, skips nothing.
 - **Nondeterministic collations** bound nothing: compared under one, where `'a'` can equal `'A'`, a unique key matches more than one row.
+- **A `varchar` key** compared with a value Reylo can't type, as `coalesce(:code::char(3), 'x')`, bounds nothing: beside a `char` value Postgres compares the column as `char`, where trailing blanks don't count.
+- **SQL functions** bound a key only where their body calls nothing volatile, whatever their label: a `stable` function that calls `random()` runs again for each row a scan reads. So does one whose body reaches something volatile through another SQL function, a view (or a function a view calls, through views inside views), an operator or an argument's default, or samples a table without `repeatable`. A materialized view holds its rows, so what its definition calls doesn't count. A function in another language, such as PL/pgSQL, is taken at its label.
+- **A comparison with a bare `null`** by `=` bounds no key and keeps no column from being null: with `transform_null_equals` on, Postgres reads `x = null` as `x is null`.
 
 ## Parameters
 

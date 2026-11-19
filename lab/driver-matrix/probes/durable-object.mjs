@@ -10,8 +10,8 @@
 //   text "true", undefined as NULL, a Uint8Array or an ArrayBuffer as a BLOB.
 // - An INTEGER past 2^53 comes back as a rounded number, with no error. A BLOB is an ArrayBuffer.
 // - toArray() keeps the last of two columns of one name; raw() keeps both. A row is a plain object.
-// - The wrong number of bindings, BEGIN and SAVEPOINT are errors; the freshness check's
-//   pragma_table_xinfo query and sqlite_master read as on any SQLite.
+// - The wrong number of bindings, BEGIN and SAVEPOINT are errors; pragma_table_xinfo and
+//   sqlite_master read as on any SQLite.
 import { createRequire } from "node:module";
 
 const require = createRequire(new URL("../package.json", import.meta.url));

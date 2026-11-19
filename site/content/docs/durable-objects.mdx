@@ -96,7 +96,7 @@ select id, name, email from users where id = :id
 insert into users (name) values (:name)
 ```
 
-- The [check against schema changes](/typescript#when-the-schema-changes) runs in each object on its own, since each object is a database of its own. Before an object's tables exist, a query fails with the database's own error.
+- Each object is a database of its own: before its tables exist, a query fails with the database's own error.
 - The storage rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
 
 ## Migrations
@@ -120,8 +120,10 @@ export class Board extends DurableObject {
 ```
 
 - Reylo's Vite or esbuild plugin puts your locked migrations in the bundle, in the lock's order, and a bundle that never calls `migrate` leaves them out.
+- Where `reylo migrate deploy` would refuse your files, as for a migration the lock doesn't list yet, a file in `reylo/migrations` that isn't a migration, or a `schema.sql` changed since the lock, `migrate` throws that refusal and runs nothing.
 - Each object runs the ones it hasn't run when it starts, each in a transaction, and records them in `__reylo_migrations`, so a deploy reaches every object the next time it runs.
 - An object that ran a migration the bundle lacks, or one edited since, throws and runs nothing.
+- A Durable Object always enforces foreign keys, where `reylo migrate` turns them off around a migration and checks them before it commits. So a migration that rebuilds a table other tables reference fails and rolls back, or, where they reference it with `on delete cascade` or `on delete set null`, changes their rows. Read each migration that drops a table before you deploy it.
 
 ## Blocked functions
 

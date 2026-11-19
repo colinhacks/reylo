@@ -1,2 +1,1 @@
 spaced_count_star.sql: the engine refused it: reylo6: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '*) as n from users' at line 1 (ER_PARSE_ERROR)
-spaced_count_subquery.sql: Subquery returns more than 1 row (1242)

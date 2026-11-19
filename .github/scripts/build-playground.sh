@@ -16,6 +16,8 @@ WASI_SDK=wasi-sdk-34.0-x86_64-linux
 WASI_SDK_SHA256=b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
 tmp=${RUNNER_TEMP:-$(mktemp -d)}
 
+# The toolchain rust-toolchain.toml pins, which engine/build.sh builds with, and the target in it.
+rustup toolchain install
 rustup target add wasm32-wasip2
 curl -fsSL -o "$tmp/$WASI_SDK.tar.gz" "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/$WASI_SDK.tar.gz"
 echo "$WASI_SDK_SHA256  $tmp/$WASI_SDK.tar.gz" | sha256sum -c -

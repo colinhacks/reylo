@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sqlModule } from "../src/loader.ts";
 import { defineQuery } from "../src/index.ts";
-import { closeSessions, driver, DRIVERS, INDEX, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, sqliteWasm } from "./helpers.ts";
+import { closeSessions, driver, DRIVERS, handWritten, INDEX, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, sqliteWasm } from "./helpers.ts";
 
 // A row's keys are the columns its type declares, whatever a driver or the database makes of a column with no alias. Such a column takes its name from the text it runs as on SQLite and MySQL, so the name depends on what Reylo sends and on who writes it.
 
@@ -207,10 +207,10 @@ test("PlanetScale: rows are read by position under the names declared, and a que
       return { rows: options.as === "array" ? [[6n]] : [{ "CAST(5 AS SIGNED) + 1": 6n }], fields: [{ name: "CAST(5 AS SIGNED) + 1", type: "INT64" }], statement: "" };
     },
   };
-  const declared = defineQuery({ dialect: "mysql", sql: "select CAST(:x AS SIGNED) + 1", params: ["x"], cardinality: "many", columns: [["CAST(? AS SIGNED) + 1", "int8"]] } as never) as any;
+  const declared = defineQuery({ dialect: "mysql", ...handWritten("select CAST(:x AS SIGNED) + 1", "mysql"), cardinality: "many", columns: [["CAST(? AS SIGNED) + 1", "int8"]] } as never) as any;
   assert.deepEqual(await declared.run(conn, { x: 5 }), [{ "CAST(? AS SIGNED) + 1": 6n }]);
   assert.equal(as, "array");
-  const byHand = defineQuery({ dialect: "mysql", sql: "select CAST(:x AS SIGNED) + 1", params: ["x"], cardinality: "many" } as never) as any;
+  const byHand = defineQuery({ dialect: "mysql", ...handWritten("select CAST(:x AS SIGNED) + 1", "mysql"), cardinality: "many" } as never) as any;
   assert.deepEqual(await byHand.run(conn, { x: 5 }), [{ "CAST(5 AS SIGNED) + 1": 6n }]);
   assert.equal(as, "object");
   // A row wider than the module knows, as after a migration that adds a column under `select *`: objects under the driver's names.

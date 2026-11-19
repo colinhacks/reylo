@@ -12,4 +12,5 @@ narrowed.sql: one (n: text(UTF-8, ill-formed)) -> { m: int64?, name: TEXT(text(U
 not_in_list.sql: many () -> { x: INTEGER }
 not_in_subquery.sql: many () -> { x: INTEGER? }
 rowid.sql: many () -> { s: int64?, id: INTEGER? }
+whole_table.sql: one () -> { c: int64, m: int64? }
 window.sql: one () -> { c: int64, m: int64? }

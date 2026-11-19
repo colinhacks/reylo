@@ -9,7 +9,7 @@ agg_outer_row_grouped.sql: one () -> { n: bigint, o: json? }
 agg_outer_row_having.sql: many () -> { id: int?, o: json? }
 agg_outer_row_in_object.sql: one () -> { o: json? }
 arrayagg_arg_sub_rowless.sql: one () -> { o: json { n: bigint, a: ({ c: bigint, k: varchar(≤20)? })[]? } }
-arrayagg_arg_sub_rowless_outer.sql: many () -> { id: int, o: json { n: bigint, a: ({ c: bigint, k: varchar(≤20)? })[]? } }
+arrayagg_arg_sub_rowless_outer.sql: many () -> { id: int?, o: json? }
 arrayagg_only_sub_corr.sql: many () -> { id: int, o: json { name: varchar(≤20)?, x: varchar?, a: int[]? } }
 arrayagg_only_top.sql: one () -> { o: json { name: varchar(≤20)?, x: varchar?, a: int[]? } }
 backtick_alias_agg.sql: many () -> { o: json { k: varchar(≤20), n: bigint } }
@@ -18,8 +18,8 @@ bare_beside_agg_sub_where_false.sql: one () -> { o: json { name: varchar(≤20)?
 bare_beside_agg_top.sql: one () -> { o: json { name: varchar(≤20)?, f: tinyint(1)?, x: varchar?, t: boolean | bigint?, n: bigint } }
 bare_beside_agg_where_false.sql: one () -> { o: json { name: varchar(≤20)?, x: varchar?, t: boolean | bigint?, m: int?, n: bigint } }
 beside_other_item_top.sql: one () -> { o: json?, n: bigint }
-e_having_outer_agg.sql: many () -> { o: json { k: varchar(≤20)? }? }
-e_having_outer_agg_grouped.sql: many () -> { o: json { k: varchar(≤20), t: varchar(≤20) }? }
+e_having_outer_agg.sql: many () -> { o: json? }
+e_having_outer_agg_grouped.sql: many () -> { o: json? }
 gc_order_corr_mid.sql: one () -> { o: json { n: bigint, s: { g: text? }? } }
 gc_order_corr_top.sql: one () -> { o: json? }
 gc_order_corr_top_item.sql: one () -> { n: bigint, o: json? }
@@ -45,7 +45,7 @@ mid_having_agg.sql: one () -> { o: json { k: int, c: bigint }? }
 mid_having_agg_expr.sql: one () -> { o: json { k: varchar?, c: bigint }? }
 multi_rollup.sql: many () -> { id: int | bigint?, o: json { t: varchar(≤20)?, k: int?, a: ({ p: int?, u: int? })[]?, i: { q: int?, k2: int?, pt: varchar(≤20)? }? }? }
 nested_agg_mid_sub.sql: one () -> { o: json { m: unknown?, t: varchar(≤20)?, x: varchar? }? }
-nested_agg_top.sql: many () -> { o: json { m: unknown?, t: varchar(≤20)? } }
+nested_agg_top.sql: many () -> { o: json? }
 nested_two_rowless.sql: one () -> { o: json { n: bigint, s: { c: bigint, t: { k: varchar(≤20) }? }? } }
 over_corr_mid.sql: one () -> { o: json { n: bigint, s: { c: bigint, w: bigint }? } }
 over_corr_plain_col_mid.sql: one () -> { o: json { n: bigint, w: unknown? } }

@@ -68,7 +68,7 @@ To install Reylo, you'll need:
 
 - **TypeScript 7.1 (currently in nightly builds).** The first release with content mappers. The `tsconfig.json` entry below needs a nightly from 2026-11-12 or later.
 - **Node 24 or later.**
-- **A running dev database.** Postgres, MySQL 8.0.22 or later, or a SQLite file: Reylo reads your current schema from it.
+- **A running dev database.** Postgres, MySQL 8.0.38 or later, or a SQLite file: Reylo reads your current schema from it.
 
 Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
