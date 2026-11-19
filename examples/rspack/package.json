@@ -18,6 +18,6 @@
     "@rspack/core": "^2.2.9",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.23.1",
-    "typescript": "7.1.0-beta"
+    "typescript": "7.1.0-dev.20261118.1"
   }
 }

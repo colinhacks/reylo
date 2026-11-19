@@ -29,12 +29,12 @@ writeFileSync(join(project, "package.json"), JSON.stringify({
   dependencies: { reylo: `link:${posixRelative(project, join(repo, "dist", "reylo"))}` },
   devDependencies: {
     "@types/node": "^26.6.1",
-    typescript: "7.1.0-beta",
+    typescript: "7.1.0-dev.20261118.1",
   },
 }, null, 2));
 writeFileSync(join(project, "tsconfig.json"), JSON.stringify({
   compilerOptions: { target: "esnext", module: "nodenext", lib: ["esnext"], types: ["node"], strict: true, noEmit: true, skipLibCheck: true },
-  contentMappers: [{ package: "reylo", extensions: [".sql", ".reylo.yaml", ".reylo.yml"] }],
+  contentMappers: [{ package: "reylo" }],
   include: ["src"],
 }, null, 2));
 writeFileSync(join(project, "queries", "get_user.sql"), "select id, name from users where id = :id");
