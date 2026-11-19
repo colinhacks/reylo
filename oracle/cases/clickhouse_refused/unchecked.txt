@@ -13,6 +13,7 @@ format_csv.sql: the engine refuses it
 format_table.sql: the engine refuses it
 identifier_column.sql: the engine refuses it
 identifier_table.sql: the engine refuses it
+insert_commented.sql: the engine refuses it
 insert_format.sql: the engine refuses it
 insert_unknown_column.sql: the engine refuses it
 insert_unknown_table.sql: the engine refuses it

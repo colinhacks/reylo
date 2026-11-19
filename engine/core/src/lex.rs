@@ -149,6 +149,57 @@ fn is_name_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
 }
 
+/// Whether a ClickHouse statement's code from `from`, where a conditional's `?` ends, up to `to`,
+/// where a `:` stands, is a whole operand: each parenthesis and bracket it opens is closed, and
+/// what it ends with ends an expression, as a name, a number, a string, a placeholder and a
+/// closing bracket do, and an operator, a comma, an opening bracket and a word that an operand
+/// follows do not. `None` where it closes a bracket it did not open: the `?` stands in brackets
+/// that end before the `:`.
+fn whole_operand(sql: &str, opaque: &[(usize, usize)], from: usize, to: usize) -> Option<bool> {
+    // The words an operand follows.
+    const BEFORE_AN_OPERAND: [&str; 21] = ["and", "or", "not", "in", "like", "ilike", "between", "is", "then", "else", "when", "case", "div", "mod", "select", "where", "having", "by", "on", "interval", "distinct"];
+    let b = sql.as_bytes();
+    let (mut at, mut depth, mut ended) = (from, 0usize, false);
+    while at < to {
+        // A comment is no part of the operand; a string, a quoted name and a heredoc end one.
+        if let Some(&(_, end)) = opaque.iter().find(|&&(start, _)| start == at) {
+            ended = ended || !(sql[at..].starts_with("--") || sql[at..].starts_with("/*") || sql[at..].starts_with('#'));
+            at = end;
+            continue;
+        }
+        let c = b[at];
+        match c {
+            _ if c.is_ascii_whitespace() => {}
+            _ if is_name_char(c) => {
+                let end = name_end(b, at);
+                ended = !BEFORE_AN_OPERAND.iter().any(|word| sql[at..end].eq_ignore_ascii_case(word));
+                at = end;
+                continue;
+            }
+            // A placeholder in braces, whole.
+            b'{' => match braces_end(b, at + 1) {
+                Some(close) if close < to => {
+                    ended = true;
+                    at = close + 1;
+                    continue;
+                }
+                _ => ended = false,
+            },
+            b'(' | b'[' => {
+                depth += 1;
+                ended = false;
+            }
+            b')' | b']' => {
+                depth = depth.checked_sub(1)?;
+                ended = true;
+            }
+            _ => ended = false,
+        }
+        at += 1;
+    }
+    Some(depth == 0 && ended)
+}
+
 fn prev_is_name_char(b: &[u8], i: usize) -> bool {
     i > 0 && is_name_char(b[i - 1])
 }
@@ -403,18 +454,28 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     last = Last::Operand;
                     continue;
                 }
-                // The `:` of a ClickHouse conditional, `c ? a : b`: the first after its `?` with
-                // an operand between them, which a parameter that is the operand has not
-                // (`c ? :a::UInt8 : 0`). A name and a cast may follow it, and are no parameter
-                // (`c ? a :b::String`).
-                if let Some(&after) = conditionals.last() {
-                    let comment = |at: usize| opaque.iter().any(|&(start, end)| start <= at && at < end && (sql[start..].starts_with("--") || sql[start..].starts_with("/*") || sql[start..].starts_with('#')));
-                    if (after..i).any(|at| !b[at].is_ascii_whitespace() && !comment(at)) {
-                        conditionals.pop();
-                        i += 1;
-                        last = Last::Other;
-                        continue;
+                // The `:` of a ClickHouse conditional, `c ? a : b`: the first after its `?` that
+                // a whole operand stands before. A name and a cast may follow it, and are no
+                // parameter (`c ? a :b::String`); a `:` inside the operand opens one
+                // (`c ? abs(:n::Int32) : 0`, `c ? 1 + :n::Int32 : 0`, `c ? :n::Int32 : 0`).
+                let mut separates = false;
+                while let Some(&after) = conditionals.last() {
+                    match whole_operand(sql, &opaque, after, i) {
+                        // The parentheses the `?` stands in closed before any `:`: it awaits none.
+                        None => {
+                            conditionals.pop();
+                        }
+                        Some(whole) => {
+                            separates = whole;
+                            break;
+                        }
                     }
+                }
+                if separates {
+                    conditionals.pop();
+                    i += 1;
+                    last = Last::Other;
+                    continue;
                 }
                 match b.get(i + 1) {
                     // A colon that opens a Postgres subscript is a slice with no lower bound
@@ -934,8 +995,11 @@ mod tests {
         assert!(l("SELECT a ? 1 : 2, {x}, {1:UInt8}, {y:} FROM t").params.is_empty());
         // The operator's `:` may stand before a name and a cast, which is no parameter; a
         // parameter that is its operand has no operand before it.
-        assert!(l("SELECT c ? a :b::String, c ? 'x' /* or */ :d::String, c ? (d ? 1 :e::UInt8) :f::UInt8 FROM t").params.is_empty());
+        assert!(l("SELECT c ? a :b::String, c ? 'x' /* or */ :d::String, c ? (d ? 1 :e::UInt8) :f::UInt8, c ? f(a) :g::String, c ? m['k'] :h::String FROM t").params.is_empty());
         assert_eq!(l("SELECT c ? :a::UInt8 : 0, c ? 1 : :b::UInt8, :c::UInt8 FROM t").params, ["a", "b", "c"]);
+        // A parameter inside the operand is one: in a call, after an operator or a word that takes an operand, and in brackets.
+        assert_eq!(l("SELECT 1 ? abs(:n::Int32) : 0 AS v, c ? 1 + :m::Int32 : 0, c ? a AND :o::UInt8 : 0, c ? [:p::UInt8, 2] : [], (c ? 1 : 2) + :q::UInt8").params, ["n", "m", "o", "p", "q"]);
+        assert_eq!(l("SELECT c ? {r:UInt8} :s::UInt8, c ? {t:Decimal(9, 2)} + 1 : 0").params, ["r", "t"]);
         // A `$` is a character of a name, a parameter's too, and opens a heredoc only where none stands before it.
         assert_eq!(l("SELECT 1 AS a$b$, {p:UInt8} AS q, 2 AS c$b$, {x$y:UInt8}").params, ["p", "x$y"]);
         // Its text: a backslash escapes in a string and a quoted name, `#` comments before a space

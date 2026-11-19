@@ -13,6 +13,7 @@ format_csv.sql: many (data: unknown) -> {  } !! reylo10: ClickHouse reads {data:
 format_table.sql: many (data: unknown) -> {  } !! reylo10: ClickHouse reads {data:String} as a constant here, and the statement fails with each other value tried in its place, as with 'a', so nothing shows that the result's types hold for every value. Write the value in the statement.
 identifier_column.sql: many (column: unknown) -> {  } !! reylo10: {column:Identifier} stands for a name, so the statement's columns and their types would change with its value: write the name in the statement.
 identifier_table.sql: many (table: unknown) -> {  } !! reylo10: {table:Identifier} stands for a name, so the statement's columns and their types would change with its value: write the name in the statement.
+insert_commented.sql: many (id: unknown, user: unknown, total: unknown, note: unknown, placed: unknown) -> {  } !! reylo10: {total:Float64} is written to the column total, a Decimal(18, 2), and ClickHouse changes a value the column cannot hold into one it can, without an error. Declare the parameter as the column's type: {total:Decimal(18, 2)}.
 insert_format.sql: many () -> {  } !! reylo10: An INSERT … FORMAT takes its rows from the request's body, which a typed statement does not have: write the rows as VALUES, or as a SELECT, with parameters.
 insert_unknown_column.sql: many (id: unknown) -> {  } !! reylo6: (NO_SUCH_COLUMN_IN_TABLE)
 insert_unknown_table.sql: many (id: unknown) -> {  } !! reylo6: (UNKNOWN_TABLE)

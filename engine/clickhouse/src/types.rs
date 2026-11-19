@@ -316,9 +316,10 @@ impl Named {
 /// Whether ClickHouse, writing a value of the type `from` into a column of the type `to`, may
 /// change the value and raise no error: a number past the column's range wraps into it, as one
 /// read from a string does, a decimal's or an instant's digits past the column's are dropped, a
-/// float is rounded to a narrower one or cut to a whole number, a time is dropped from a date, and
-/// a NULL becomes the default of a column that takes none. A value the column cannot read at all
-/// is the server's error, and none of these.
+/// float is rounded to a narrower one or cut to a whole number, a whole number or a decimal is
+/// rounded to the nearest float where it has more digits than a float keeps, a time is dropped
+/// from a date, and a NULL becomes the default of a column that takes none. A value the column
+/// cannot read at all is the server's error, and none of these.
 pub fn narrows(from: &Named, to: &Named) -> bool {
     let nullable = |t: &Named| match (t.name.as_str(), t.args.as_slice()) {
         ("Nullable", _) => true,
@@ -351,9 +352,18 @@ pub fn narrows(from: &Named, to: &Named) -> bool {
     if let Some(into) = scale(to) {
         return float(from) || text(from) || scale(from).is_some_and(|digits| digits > into);
     }
+    let width = |t: &Named| ["BFloat16", "Float32", "Float64"].iter().position(|name| *name == t.name);
     if float(from) && float(to) {
-        let width = |t: &Named| ["BFloat16", "Float32", "Float64"].iter().position(|name| *name == t.name);
         return width(to) < width(from);
+    }
+    if float(to) {
+        // The bits of a whole number a float holds exactly: 8, 24 and 53 of them.
+        let exact = [8, 24, 53][width(to).unwrap_or(0)];
+        return match integer(&from.name) {
+            Some((bits, unsigned)) => bits - u32::from(!unsigned) > exact,
+            // A decimal fraction is no binary one.
+            None => scale(from).is_some(),
+        };
     }
     match (ticks(from), ticks(to)) {
         (Some(digits), Some(into)) => into < digits || (from.name == "DateTime64" && to.name == "DateTime"),
@@ -533,10 +543,14 @@ mod tests {
         for (from, to) in [("Decimal(18, 4)", "Decimal(9, 2)"), ("Float64", "Decimal(9, 2)"), ("String", "Decimal(9, 2)"), ("Float64", "Float32"), ("Float32", "BFloat16"), ("DateTime64(6, 'UTC')", "DateTime64(3, 'UTC')"), ("DateTime64(3)", "DateTime"), ("DateTime", "Date"), ("Date32", "Date")] {
             assert!(narrows(from, to), "{from} into {to}");
         }
+        // A whole number of more bits than a float keeps is rounded to the nearest one, and so is a decimal.
+        for (from, to) in [("UInt32", "Float32"), ("Int32", "Float32"), ("UInt64", "Float64"), ("Int64", "Float64"), ("UInt16", "BFloat16"), ("Decimal(9, 2)", "Float64"), ("Nullable(Int64)", "Nullable(Float64)")] {
+            assert!(narrows(from, to), "{from} into {to}");
+        }
         // A NULL becomes the default of a column that takes none.
         assert!(narrows("Nullable(UInt8)", "UInt8") && narrows("LowCardinality(Nullable(String))", "String"));
         // The same type, a wider one, and one the server reads or refuses aloud.
-        for (from, to) in [("UInt8", "UInt8"), ("UInt8", "UInt64"), ("UInt8", "Int16"), ("UInt8", "Nullable(UInt8)"), ("String", "LowCardinality(String)"), ("Decimal(9, 2)", "Decimal(18, 4)"), ("Float32", "Float64"), ("BFloat16", "Float32"), ("DateTime", "DateTime64(3)"), ("Date", "Date32"), ("String", "Date"), ("String", "FixedString(2)"), ("UInt64", "Decimal(9, 2)"), ("UInt8", "String"), ("Decimal(9, 0)", "Int64")] {
+        for (from, to) in [("UInt8", "UInt8"), ("UInt8", "UInt64"), ("UInt8", "Int16"), ("UInt8", "Nullable(UInt8)"), ("String", "LowCardinality(String)"), ("Decimal(9, 2)", "Decimal(18, 4)"), ("Float32", "Float64"), ("BFloat16", "Float32"), ("DateTime", "DateTime64(3)"), ("Date", "Date32"), ("String", "Date"), ("String", "FixedString(2)"), ("UInt64", "Decimal(9, 2)"), ("UInt8", "String"), ("Decimal(9, 0)", "Int64"), ("UInt8", "Float32"), ("UInt16", "Float32"), ("Int16", "Float32"), ("UInt32", "Float64"), ("Int32", "Float64"), ("UInt8", "BFloat16"), ("String", "Float64")] {
             assert!(!narrows(from, to), "{from} into {to}");
         }
     }

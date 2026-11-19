@@ -3,6 +3,7 @@ aliases_cast.sql: many (id: Int64, not: String(UTF-8, ill-formed)) -> { id: UInt
 arithmetic.sql: many (more: UInt8, times: Decimal(4,2), suffix: String(UTF-8, ill-formed), days: UInt16, digits: UInt8, from: UInt8, flag: Bool, at: UInt8) -> { older: UInt16, scaled: Decimal(19,6), named: String(UTF-8, ill-formed), later: DateTime64, rounded: Decimal(19,4), part: String(UTF-8, ill-formed), shown: String(UTF-8, ill-formed), tag: String(UTF-8, ill-formed) }
 cast_form.sql: many (id: UInt64, not: String(UTF-8, ill-formed), before: DateTime64) -> { id: UInt64, name: String(UTF-8, ill-formed) }
 composite.sql: many (ids: UInt64[], holes: String(UTF-8, ill-formed)?[], deep: UInt8[][], pair: (UInt64, String(UTF-8, ill-formed)), named: { n: UInt8, s: String(UTF-8, ill-formed)? }, counts: Map(({ key: String(UTF-8, ill-formed), value: UInt32 })[]), rows: (UInt64, Date)[]) -> { ids: UInt64[], holes: String(UTF-8, ill-formed)?[], deep: UInt8[][], pair: (UInt64, String(UTF-8, ill-formed)), named: { n: UInt8, s: String(UTF-8, ill-formed)? }, counts: Map(({ key: String(UTF-8, ill-formed), value: UInt32 })[]), rows: (UInt64, Date)[] }
+conditional_call.sql: many (n: Int32) -> { v: UInt32, w: String(UTF-8, ill-formed) }
 conditional_cast.sql: many () -> { v: String(UTF-8, ill-formed) }
 constant_format.sql: many (format: String(UTF-8, ill-formed), minutes: UInt8) -> { name: String(UTF-8, ill-formed), shown: String(UTF-8, ill-formed), slot: DateTime }
 day_text.sql: many (day: String(UTF-8, ill-formed)) -> { id: UInt64 }

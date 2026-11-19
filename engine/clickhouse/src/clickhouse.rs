@@ -1188,16 +1188,46 @@ fn inserted(body: &str, lexed: &Lexed) -> Option<(String, Option<Vec<String>>, V
         }
     }
     let table = body[start..end].to_string();
-    // The list of columns after it, where there is one: each a name.
+    // A stretch of the statement without its comments, which stand for nothing.
+    let plain = |from: usize, to: usize| {
+        let mut out = String::new();
+        let mut at = from;
+        while at < to {
+            let comment = lexed.opaque.iter().find(|&&(start, end)| start <= at && at < end && is_comment(body, start));
+            let next = comment.map_or(to, |&(_, end)| end.min(to));
+            let until = lexed.opaque.iter().filter(|&&(start, _)| start > at && start < to && is_comment(body, start)).map(|&(start, _)| start).min().unwrap_or(to);
+            match comment {
+                Some(_) => {
+                    out.push(' ');
+                    at = next;
+                }
+                None => {
+                    out.push_str(&body[at..until]);
+                    at = until;
+                }
+            }
+        }
+        out
+    };
+    // The list of columns after it, where there is one: each a name, between the commas of the list's own level.
     let after = code_after(body, lexed, end);
     let listed = match b.get(after) {
         Some(b'(') if after < top[values].0 => {
             let close = code.iter().find(|&&(at, byte, depth)| at > after && byte == b')' && depth == 0)?.0;
-            let names = body[after + 1..close].split(',').map(|name| {
+            let mut cuts: Vec<usize> = code.iter().filter(|&&(at, byte, depth)| at > after && at < close && byte == b',' && depth == 1).map(|&(at, _, _)| at).collect();
+            cuts.push(close);
+            let mut start = after + 1;
+            let mut names = Vec::with_capacity(cuts.len());
+            for cut in cuts {
+                let name = plain(start, cut);
                 let name = name.trim();
-                (name_length(name) == Some(name.len())).then(|| if name.starts_with(['`', '"']) { name[1..name.len() - 1].replace("\\", "") } else { name.to_string() })
-            });
-            Some(names.collect::<Option<Vec<String>>>()?)
+                if name_length(name) != Some(name.len()) {
+                    return None;
+                }
+                names.push(if name.starts_with(['`', '"']) { name[1..name.len() - 1].replace('\\', "") } else { name.to_string() });
+                start = cut + 1;
+            }
+            Some(names)
         }
         _ => None,
     };
@@ -1208,9 +1238,11 @@ fn inserted(body: &str, lexed: &Lexed) -> Option<(String, Option<Vec<String>>, V
     let mut alone = |place: usize, start: usize, end: usize| {
         let inside: Vec<usize> = (0..lexed.placeholders.len()).filter(|&k| start <= lexed.placeholders[k].start && lexed.placeholders[k].end <= end).collect();
         if let [k] = inside[..] {
+            // The parameter alone, with its cast where it is written with one: a comment beside it changes nothing.
             let p = &lexed.placeholders[k];
-            let cast = body[p.end..end].trim();
-            if body[start..p.start].trim().is_empty() && (cast.is_empty() || cast.strip_prefix("::").is_some_and(|ty| type_end(ty) == ty.len())) {
+            let (before, cast) = (plain(start, p.start), plain(p.end, end));
+            let cast = cast.trim();
+            if before.trim().is_empty() && (cast.is_empty() || cast.strip_prefix("::").is_some_and(|ty| type_end(ty) == ty.len())) {
                 written.push((place, k));
             }
         }
@@ -1854,6 +1886,10 @@ mod tests {
         let listed = run("INSERT INTO shop.`order lines` (note, id) VALUES (:note::String, :id::UInt16)", &table);
         assert_eq!(listed.diagnostics.len(), 1, "{:?}", listed.diagnostics);
         assert!(listed.diagnostics[0].message.starts_with(":id is written to the column id, a UInt8"), "{}", listed.diagnostics[0].message);
+        // A comment beside a parameter, or in the list of columns, is no part of what is written.
+        let sql = "INSERT INTO shop.`order lines` (note /* its text */, id -- the key\n) VALUES (/* the note */ {note:String}, {id:UInt16} /* too wide */)";
+        let commented = run(sql, &table);
+        assert_eq!(commented.diagnostics.iter().map(|d| &sql[d.start..d.start + d.length]).collect::<Vec<_>>(), ["{id:UInt16}"]);
         let fits = run("INSERT INTO shop.`order lines` (id, total, note) VALUES ({id:UInt8}, {total:Decimal(9, 2)}, {note:String}), ({id:UInt8}, toDecimal32({total:Decimal(9, 2)}, 2), concat({note:String}, 'x'))", &table);
         assert!(fits.diagnostics.is_empty(), "{:?}", fits.diagnostics);
         let format = run("INSERT INTO orders FORMAT JSONEachRow", &ok);

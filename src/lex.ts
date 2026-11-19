@@ -77,9 +77,12 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
       if (head && close !== -1 && sql.slice(i + head[0].length, close).trim() !== "") { push(head[1]!, i, close + 1); i = close + 1; last = "operand"; continue; }
       i += 1; last = "other"; continue;
     }
-    if (clickhouse && ch === ":" && next !== ":" && conditionals.length && !onlySpace(sql, conditionals[conditionals.length - 1]!, i)) {
-      // The `:` of a conditional, `c ? a : b`: the first after its `?` with an operand between them. A name and a cast may follow it.
-      conditionals.pop(); i += 1; last = "other"; continue;
+    if (clickhouse && ch === ":" && next !== ":") {
+      // The `:` of a conditional, `c ? a : b`: the first after its `?` that a whole operand stands before. A name and a cast may
+      // follow it, and are no parameter; a `:` inside the operand opens one (`c ? abs(:n::Int32) : 0`).
+      let whole: boolean | undefined;
+      while (conditionals.length && (whole = wholeOperand(sql, conditionals[conditionals.length - 1]!, i)) === undefined) conditionals.pop();
+      if (conditionals.length && whole) { conditionals.pop(); i += 1; last = "other"; continue; }
     }
     if (clickhouse && ch === ":" && next !== ":") {
       // A `:name` is a parameter only where a cast types it, and never after a `.`, as a typed JSON path writes one.
@@ -132,23 +135,58 @@ export function isPositional(name: string): boolean {
   return /^\d+$/.test(name);
 }
 
-/** Whether a ClickHouse statement holds nothing but whitespace and comments from `from` up to `to`. */
-function onlySpace(sql: string, from: number, to: number): boolean {
+/** The words an operand follows. */
+const BEFORE_AN_OPERAND = new Set(["and", "or", "not", "in", "like", "ilike", "between", "is", "then", "else", "when", "case", "div", "mod", "select", "where", "having", "by", "on", "interval", "distinct"]);
+
+/**
+ * Whether a ClickHouse statement's code from `from`, where a conditional's `?` ends, up to `to`,
+ * where a `:` stands, is a whole operand: each parenthesis and bracket it opens is closed, and what
+ * it ends with ends an expression, as a name, a number, a string, a placeholder and a closing
+ * bracket do, and an operator, a comma, an opening bracket and a word that an operand follows do
+ * not. Undefined where it closes a bracket it did not open: the `?` stands in brackets that end
+ * before the `:`.
+ */
+function wholeOperand(sql: string, from: number, to: number): boolean | undefined {
   let i = from;
+  let depth = 0;
+  let ended = false;
   while (i < to) {
     const ch = sql[i]!;
     const next = sql[i + 1];
-    if (/\s/.test(ch)) i += 1;
-    else if ((ch === "-" && next === "-") || (ch === "#" && (next === " " || next === "!"))) { const end = sql.indexOf("\n", i); i = end === -1 ? to : end; }
-    else if (ch === "/" && next === "*") {
-      let depth = 1;
+    if (/\s/.test(ch)) { i += 1; continue; }
+    // A comment is no part of the operand.
+    if ((ch === "-" && next === "-") || (ch === "#" && (next === " " || next === "!"))) { const end = sql.indexOf("\n", i); i = end === -1 ? to : end; continue; }
+    if (ch === "/" && next === "*") {
+      let nested = 1;
       i += 2;
-      while (i < to && depth > 0) {
-        if (sql.startsWith("/*", i)) { depth += 1; i += 2; } else if (sql.startsWith("*/", i)) { depth -= 1; i += 2; } else i += 1;
+      while (i < to && nested > 0) {
+        if (sql.startsWith("/*", i)) { nested += 1; i += 2; } else if (sql.startsWith("*/", i)) { nested -= 1; i += 2; } else i += 1;
       }
-    } else return false;
+      continue;
+    }
+    // A string, a quoted name and a heredoc end an operand.
+    if (ch === "'" || ch === '"' || ch === "`") { i = skipQuoted(sql, i, ch, true); ended = true; continue; }
+    if (ch === "$" && !(i > 0 && /[A-Za-z0-9_$]/.test(sql[i - 1]!))) {
+      const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+      if (tag) { const end = sql.indexOf(tag[0], i + tag[0].length); i = end === -1 ? to : end + tag[0].length; ended = true; continue; }
+    }
+    if (/[A-Za-z0-9_]/.test(ch)) {
+      const word = /^[A-Za-z0-9_]+/.exec(sql.slice(i))![0];
+      ended = !BEFORE_AN_OPERAND.has(word.toLowerCase());
+      i += word.length;
+      continue;
+    }
+    // A placeholder in braces, whole.
+    if (ch === "{") {
+      const close = bracesEnd(sql, i + 1);
+      if (close !== -1 && close < to) { ended = true; i = close + 1; continue; }
+      ended = false;
+    } else if (ch === "(" || ch === "[") { depth += 1; ended = false; }
+    else if (ch === ")" || ch === "]") { if (depth === 0) return undefined; depth -= 1; ended = true; }
+    else ended = false;
+    i += 1;
   }
-  return true;
+  return depth === 0 && ended;
 }
 
 /** The index of the `}` that closes a ClickHouse placeholder whose type starts at `from`, or -1. */

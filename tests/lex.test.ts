@@ -78,7 +78,9 @@ test("the runtime's lexer agrees with the engine's", async () => {
     ["SELECT {id:UInt64}, { since : DateTime64(3, 'UTC') }, {e:Enum8('}' = 1, 'it\\'s' = 2)}, c ? a :b, doc.a.:Int64, m[:k], {x}, {1:UInt8}, {id:UInt64} FROM t", "clickhouse"],
     ["SELECT :id::UInt64, x::String FROM t WHERE n IN :ns::Array(UInt8) AND s = :s::String AND :bare", "clickhouse"],
     ["SELECT c ? a :b::String, c ? 'x' /* or */ :d::String, c ? (d ? 1 :e::UInt8) :f::UInt8, c ? :g::UInt8 : 0, c ? 1 : :h::UInt8, :i::UInt8 FROM t", "clickhouse"],
+    ["SELECT 1 ? abs(:n::Int32) : 0 AS v, c ? 1 + :m::Int32 : 0, c ? a AND :o::UInt8 : 0, c ? [:p::UInt8, 2] : [], (c ? 1 : 2) + :q::UInt8, c ? f(a) :g::String, c ? m['k'] -- :x::UInt8\n :h::String, c ? $t$?$t$ :j::String FROM t", "clickhouse"],
     ["SELECT 1 AS a$b$, {p:UInt8} AS q, 2 AS c$b$, {x$y:UInt8}, $tag${no:UInt8}$tag$", "clickhouse"],
+    ["SELECT c ? {r:UInt8} :s::UInt8, c ? {t:Decimal(9, 2)} + 1 : 0", "clickhouse"],
     ["SELECT 'it\\'s {a:UInt8}', `{b:UInt8}\\``, \"{c:UInt8}\\\"\" # {d:UInt8}\n #! {e:UInt8}\n /* {f:UInt8} /* {g:UInt8} */ {h:UInt8} */, $q${i:UInt8}$q$, {k:UInt8} -- {j:UInt8}", "clickhouse"],
   ];
   for (const [sql, dialect] of statements) {
