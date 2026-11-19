@@ -24,6 +24,9 @@ pub struct Token {
     /// Its byte range in the text it was read from.
     pub start: usize,
     pub end: usize,
+    /// On MySQL, the version of the executable comment it is written in (`50001` in `/*!50001 … */`),
+    /// below which a server skips it.
+    pub gate: Option<u64>,
 }
 
 impl Token {
@@ -78,7 +81,8 @@ pub fn gates(sql: &str, dialect: Dialect) -> Vec<String> {
 /// The tokens of `sql`, and the byte range of each executable comment's opening. MySQL runs the
 /// text of `/*! … */`, and of `/*!50001 … */` on a server of that version or later (mysqldump writes
 /// views, triggers and routines that way, one statement often over several such comments), so its
-/// text is read as code: what a server of an older version skips is harmless where it is sent whole.
+/// text is read as code, each token with the version its comment asks for: what decides whether a
+/// statement is safe holds it to every way a server can read it ([`read_every_way`]).
 fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
     let b = sql.as_bytes();
     let n = b.len();
@@ -87,8 +91,9 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
     let mut out = Vec::new();
     let mut openings = Vec::new();
     let mut executable = false;
+    let mut gate: Option<u64> = None;
     let mut i = 0;
-    let push = |kind: TokenKind, start: usize, end: usize, out: &mut Vec<Token>| out.push(Token { kind, text: sql[start..end].to_string(), start, end });
+    let push = |kind: TokenKind, start: usize, end: usize, gate: Option<u64>, out: &mut Vec<Token>| out.push(Token { kind, text: sql[start..end].to_string(), start, end, gate });
     while i < n {
         let ch = b[i];
         let next = b.get(i + 1).copied();
@@ -98,6 +103,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
         }
         if executable && ch == b'*' && next == Some(b'/') {
             executable = false;
+            gate = None;
             i += 2;
             continue;
         }
@@ -108,6 +114,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
             }
             openings.push((i, j));
             executable = true;
+            gate = (j > i + 3).then(|| sql[i + 3..j].parse().unwrap_or(u64::MAX));
             i = j;
             continue;
         }
@@ -151,7 +158,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
             if j < n && b[j] == b'$' {
                 let tag = &sql[i..=j];
                 i = sql[j + 1..].find(tag).map_or(n, |at| j + 1 + at + tag.len());
-                push(TokenKind::Str, start, i, &mut out);
+                push(TokenKind::Str, start, i, gate, &mut out);
                 continue;
             }
         }
@@ -176,7 +183,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
                 j += 1;
             }
             i = j.min(n);
-            push(TokenKind::Str, start, i, &mut out);
+            push(TokenKind::Str, start, i, gate, &mut out);
             continue;
         }
         // Quoted names.
@@ -195,7 +202,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
                 j += 1;
             }
             i = j.min(n);
-            push(TokenKind::Quoted, start, i, &mut out);
+            push(TokenKind::Quoted, start, i, gate, &mut out);
             continue;
         }
         if ch.is_ascii_digit() || (ch == b'.' && next.is_some_and(|c| c.is_ascii_digit())) {
@@ -204,7 +211,7 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
                 j += 1;
             }
             i = j;
-            push(TokenKind::Number, start, i, &mut out);
+            push(TokenKind::Number, start, i, gate, &mut out);
             continue;
         }
         if is_word_start(ch) {
@@ -213,19 +220,19 @@ fn lex(sql: &str, dialect: Dialect) -> (Vec<Token>, Vec<(usize, usize)>) {
                 j += 1;
             }
             i = j;
-            push(TokenKind::Word, start, i, &mut out);
+            push(TokenKind::Word, start, i, gate, &mut out);
             continue;
         }
         // Two-character operators read as one symbol, so `::` and `||` stay whole.
         if i + 1 < n && matches!(&b[i..i + 2], b"::" | b"||" | b"<=" | b">=" | b"<>" | b"!=" | b"->" | b"=>") {
             i += 2;
-            push(TokenKind::Symbol, start, i, &mut out);
+            push(TokenKind::Symbol, start, i, gate, &mut out);
             continue;
         }
         // One character, whole even where it is not ASCII.
         let width = sql[i..].chars().next().map_or(1, char::len_utf8);
         i += width;
-        push(TokenKind::Symbol, start, i, &mut out);
+        push(TokenKind::Symbol, start, i, gate, &mut out);
     }
     (out, openings)
 }
@@ -252,6 +259,27 @@ fn opens_body(tokens: &[Token], dialect: Dialect, next: Option<&Token>) -> bool 
 /// at the executable comment its first token is written in, so that it is sent as written.
 pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<Statement> {
     let (tokens, openings) = lex(sql, dialect);
+    split(sql, dialect, &tokens, &openings)
+}
+
+/// Each way a MySQL server can read `tokens`, by its version: every executable comment's text in,
+/// then, from the highest version down, the text of each comment a server older than its version
+/// skips left out. A server's version picks exactly one; tokens with no version have one reading.
+fn readings(tokens: &[Token]) -> Vec<Vec<Token>> {
+    let mut gates: Vec<u64> = tokens.iter().filter_map(|t| t.gate).collect();
+    gates.sort_unstable_by(|a, b| b.cmp(a));
+    gates.dedup();
+    std::iter::once(None).chain(gates.into_iter().map(Some)).map(|below| tokens.iter().filter(|t| !matches!((t.gate, below), (Some(g), Some(b)) if g >= b)).cloned().collect()).collect()
+}
+
+/// The statements of `sql` as each server that reads it differently reads them ([`readings`]),
+/// which every check of what is safe holds it to: the text sent stays the text as written.
+fn read_every_way(sql: &str, dialect: Dialect) -> Vec<Vec<Statement>> {
+    let (tokens, openings) = lex(sql, dialect);
+    readings(&tokens).iter().map(|tokens| split(sql, dialect, tokens, &openings)).collect()
+}
+
+fn split(sql: &str, dialect: Dialect, tokens: &[Token], openings: &[(usize, usize)]) -> Vec<Statement> {
     let mut statements = Vec::new();
     let mut from = 0;
     let mut depth = 0usize;
@@ -291,7 +319,11 @@ pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<Statement> {
 
 /// The statement's first words, uppercased, for matching its kind.
 pub fn head(statement: &Statement, count: usize) -> String {
-    statement.tokens.iter().take(count).map(|t| if t.kind == TokenKind::Word { t.text.to_ascii_uppercase() } else { t.text.clone() }).collect::<Vec<_>>().join(" ")
+    head_of(&statement.tokens, count)
+}
+
+fn head_of(tokens: &[Token], count: usize) -> String {
+    tokens.iter().take(count).map(|t| if t.kind == TokenKind::Word { t.text.to_ascii_uppercase() } else { t.text.clone() }).collect::<Vec<_>>().join(" ")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,9 +389,20 @@ pub fn kind_of(statement: &Statement, dialect: Dialect) -> Kind {
 /// one transaction with its history row; so a statement that cannot run in a transaction must be
 /// its file's only statement, the file must not manage the transaction itself, and on MySQL, where
 /// every DDL statement commits the transaction around it, a file is one DDL statement or
-/// statements that change data only.
+/// statements that change data only. It must be so however the server reads it ([`read_every_way`]),
+/// and one that a server runs alone must be one statement however any server reads it.
 pub fn atomicity_problem(sql: &str, dialect: Dialect) -> Option<String> {
-    let statements = split_statements(sql, dialect);
+    let readings = read_every_way(sql, dialect);
+    if let Some(problem) = readings.iter().find_map(|statements| atomicity_of(statements, dialect)) {
+        return Some(problem);
+    }
+    if readings.iter().any(|statements| alone(statements, dialect)) && readings.iter().any(|statements| statements.len() > 1) {
+        return Some("Its executable comments leave a statement that runs alone on some versions of MySQL and several statements on others, so give each statement a file of its own.".into());
+    }
+    None
+}
+
+fn atomicity_of(statements: &[Statement], dialect: Dialect) -> Option<String> {
     if statements.is_empty() {
         return None;
     }
@@ -389,9 +432,13 @@ pub fn atomicity_problem(sql: &str, dialect: Dialect) -> Option<String> {
     None
 }
 
-/// Whether the file runs outside a transaction: one statement that cannot run in one, or MySQL's DDL.
+/// Whether the file runs outside a transaction: one statement that cannot run in one, or MySQL's
+/// DDL, however a server reads it.
 pub fn runs_alone(sql: &str, dialect: Dialect) -> bool {
-    let statements = split_statements(sql, dialect);
+    read_every_way(sql, dialect).iter().any(|statements| alone(statements, dialect))
+}
+
+fn alone(statements: &[Statement], dialect: Dialect) -> bool {
     statements.len() == 1 && matches!(kind_of(&statements[0], dialect), Kind::Alone | Kind::Commits)
 }
 
@@ -494,16 +541,17 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
     }
 }
 
-/// The first statement of `sql` that would reach past a shadow, with why.
+/// The first statement of `sql` that would reach past a shadow, however a server reads it, with why.
 pub fn shadow_problem(sql: &str, dialect: Dialect) -> Option<String> {
-    split_statements(sql, dialect).iter().find_map(|s| escapes_shadow(s, dialect).map(|why| format!("{}: {why}", head(s, 3).to_lowercase())))
+    read_every_way(sql, dialect).iter().flatten().find_map(|s| escapes_shadow(s, dialect).map(|why| format!("{}: {why}", head(s, 3).to_lowercase())))
 }
 
 re!(DATA, r"^(INSERT|UPDATE|DELETE|MERGE|COPY|CALL|DO|SELECT|WITH|TRUNCATE|REPLACE|LOAD)\b");
 
-/// Whether the statement changes data rather than schema: what no shadow can see happened.
+/// Whether the statement changes data rather than schema, however a server reads it: what no
+/// shadow can see happened.
 pub fn changes_data(statement: &Statement) -> bool {
-    DATA.is_match(&head(statement, 1))
+    readings(&statement.tokens).iter().any(|tokens| DATA.is_match(&head_of(tokens, 1)))
 }
 
 /// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`.
@@ -557,6 +605,37 @@ mod tests {
         // Elsewhere it is a comment.
         assert!(is_blank("/*!50001 select 1 */", Dialect::Postgres));
         assert!(is_blank("/*!50001 select 1 */", Dialect::Sqlite));
+    }
+
+    #[test]
+    fn holds_a_statement_to_every_way_a_server_reads_its_versions() {
+        let m = Dialect::Mysql;
+        // A server older than 99999 skips the comment and runs COMMIT; one that new, SELECT COMMIT.
+        assert!(atomicity_problem("insert into t values (1); /*!99999 SELECT */ COMMIT; insert into t values (2)", m).unwrap().contains("its own commit"));
+        assert!(atomicity_problem("/*!99999 SELECT */ COMMIT", m).unwrap().contains("its own commit"));
+        // Older servers run USE app, which leaves the shadow and commits nothing it ran after.
+        let used = "/*!99999 SELECT */ USE app; DELETE FROM t;";
+        assert!(shadow_problem(used, m).unwrap().contains("another database"));
+        assert!(atomicity_problem(used, m).is_some());
+        // A version every server reaches is still held to both readings, with it and without it.
+        assert!(atomicity_problem("/*!50001 COMMIT */", m).is_some());
+        assert!(atomicity_problem("/*!50001 CREATE TABLE t (id int) */; INSERT INTO t VALUES (1)", m).is_some());
+        assert!(shadow_problem("/*!50001 USE app */", m).is_some());
+        assert_eq!(atomicity_problem("/*!50001 CREATE ALGORITHM=UNDEFINED */ /*!50001 VIEW v AS select 1 */", m), None);
+        assert!(runs_alone("/*!50001 CREATE ALGORITHM=UNDEFINED */ /*!50001 VIEW v AS select 1 */", m));
+        // An empty reading runs nothing, and is no problem.
+        assert_eq!(atomicity_problem("/*!99999 select 1 */", m), None);
+        assert!(!runs_alone("/*!99999 select 1 */", m));
+        // Two versions: a server between them runs the middle reading, COMMIT alone.
+        assert!(atomicity_problem("/*!90000 SELECT 1, */ /*!50001 COMMIT */", m).unwrap().contains("its own commit"));
+        assert!(shadow_problem("/*!90000 SELECT */ /*!50001 USE app */", m).is_some());
+        // No server runs a newer comment's text without an older one's: USE app is never read alone.
+        assert_eq!(shadow_problem("/*!50001 SELECT */ /*!90000 USE app */", m), None);
+        // A procedure's body on new servers, two inserts on older ones: alone on one, several on the other.
+        let body = "/*!90000 CREATE PROCEDURE p() BEGIN */ INSERT INTO b VALUES (1); INSERT INTO b VALUES (2) /*!90000 ; END */";
+        assert!(atomicity_problem(body, m).unwrap().contains("several statements on others"));
+        // A statement that changes data on any server is data.
+        assert!(changes_data(&split_statements("/*!99999 CREATE TABLE x (id int) */ DELETE FROM t", m)[0]));
     }
 
     #[test]

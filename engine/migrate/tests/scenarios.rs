@@ -2936,6 +2936,21 @@ async fn a_view_mysqldump_wrote_in_executable_comments_runs() {
     assert_has!(p.output(), r"✗ This database was changed outside its migrations\n\n[\s\S]*\n  - view v as select `t`\.`id` AS `id` from `t`");
 }
 
+/// A COMMIT behind a comment gated above the server's version runs on that server, which skips the
+/// comment: the migration is refused as that server reads it, before any of it runs.
+#[tokio::test(flavor = "current_thread")]
+async fn a_commit_a_server_reads_past_a_version_comment_is_refused() {
+    let Some(mut p) = P::new(Dialect::Mysql).await else { return };
+    p.file("20261027100000_t.sql", "create table t (id bigint primary key);");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.file("20261027110000_rows.sql", "insert into t values (1);\n/*!99999 SELECT */ COMMIT;\ninsert into t values (1);");
+    p.output();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"✗ 20261027110000_rows\.sql can't run atomically\n  It has its own commit");
+    assert!(p.rows("select id from t").await.is_empty(), "none of it ran");
+    assert_eq!(p.history().await, ["20261027100000_t.sql"]);
+}
+
 mod adversarial {
     use super::*;
 
