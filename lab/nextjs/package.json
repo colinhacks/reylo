@@ -20,6 +20,6 @@
     "@types/node": "^26.6.1",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "typescript": "7.1.0-dev.20260918.1"
+    "typescript": "7.1.0-dev.20261118.1"
   }
 }

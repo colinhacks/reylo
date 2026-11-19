@@ -26,7 +26,7 @@ function project(): string {
   mkdirSync(join(root, "node_modules"), { recursive: true });
   symlinkSync(ROOT, join(root, "node_modules", "reylo"));
   const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true, paths: { "@/*": ["./*"] } };
-  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo", extensions: [".sql"] }], include: ["main.ts"] }));
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo" }], include: ["main.ts"] }));
   mkdirSync(join(root, "queries"));
   writeFileSync(join(root, "queries", "posts.sql"), "\n-- every post after one\nselect id, title, body\nfrom posts\nwhere id > :after\n");
   // SQLite's `@name` at the start of a line, which outside a code block TypeScript reads as a tag.
