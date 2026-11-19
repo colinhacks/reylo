@@ -212,6 +212,8 @@ You give up:
 - **The same data everywhere.** Columns are compared as a set, as everywhere in Reylo, and no check can show that data written in two orders matches.
 - **Checksums.** With none, a migration edited before any database ran it goes unseen, and only a dry run holds `schema.sql` against your migrations.
 
+Only a missing lock turns it on: a `reylo.lock` that is there and can't be read, such as one without read permission, is refused by every command.
+
 To turn the lock back on, `reylo migrate lock` writes it from a database's history.
 
 ## From code

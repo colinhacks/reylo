@@ -1033,7 +1033,14 @@ fn read_lock(opts: &Options) -> Result<lock::Lock, Problem> {
             .note("Keep main's lines and delete this branch's (git checkout --theirs while merging main in, --ours while rebasing).")
             .fix("Then run this branch's migrations after main's, which locks them again", &["reylo migrate dev"])),
         lock::State::Invalid(e) => Err(Problem::new("lock-unreadable", format!("{path} isn't a lock file")).note(unreadable_why(&e)).fix("Write it again from what a database applied", &["reylo migrate history pull"])),
+        lock::State::Unreadable(why) => Err(unreadable_lock_problem(opts, &why)),
     }
+}
+
+/// The refusal of a lock that is there and can't be read: read as none, it would turn its checksums
+/// off and deploy its drafts.
+fn unreadable_lock_problem(opts: &Options, why: &str) -> Problem {
+    Problem::new("lock-unreadable", format!("{} can't be read: {why}", shown(&opts.lock))).note("Read as no lock, it would run the migrations in name order, drafts and all, with no checksum to hold them to.")
 }
 
 /// Why a lock doesn't read, as a person can act on it: the line the YAML parser stopped at.
@@ -1107,9 +1114,14 @@ fn old_lock(opts: &Options) -> Option<Problem> {
     })
 }
 
-/// The refusal of a project that still holds the lock under its old name ([`old_lock`]).
-fn refuse_old_lock(opts: &Options, log: Log<'_>) -> Option<i32> {
-    old_lock(opts).map(|p| refuse(&[p], log))
+/// The refusal of a project that still holds the lock under its old name ([`old_lock`]), or whose
+/// lock is there and can't be read: every command that reads or writes the lock makes it first.
+fn refuse_lock_file(opts: &Options, log: Log<'_>) -> Option<i32> {
+    let unreadable = || match opts.lock_state() {
+        lock::State::Unreadable(why) => Some(unreadable_lock_problem(opts, &why)),
+        _ => None,
+    };
+    old_lock(opts).or_else(unreadable).map(|p| refuse(&[p], log))
 }
 
 /// Whether the project keeps no lock: its history isn't linear, and its migrations run in name order.
@@ -1679,7 +1691,7 @@ fn may_leave_part(sql: &str, d: Dialect) -> bool {
 /// refuses one that isn't, running nothing. It needs no shadow database: `--dry-run` is what replays.
 #[cfg(feature = "cli")]
 pub async fn deploy(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     let mut db = Db::connect(&opts.url, &opts.root).await?;
@@ -1852,7 +1864,7 @@ fn uncompared_line() -> String {
 /// and writes nothing to the database.
 #[cfg(feature = "cli")]
 pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     // A SQLite file that isn't there yet is a database a first deploy makes: checked as the
@@ -2036,7 +2048,7 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
 /// (a hotfix, then written as a migration), and one whose history was lost or kept by another tool.
 #[cfg(feature = "cli")]
 pub async fn history_push(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if let Some(m) = missing(opts)? {
@@ -2240,7 +2252,7 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
 /// refuses one whose tables aren't what its history makes, whose files would not make it either.
 #[cfg(feature = "cli")]
 pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if let Some(m) = missing(opts)? {
@@ -2334,7 +2346,7 @@ fn there(opts: &Options) -> Result<(), Error> {
 /// made by hand, or a check that fails.
 #[cfg(feature = "cli")]
 pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     there(opts)?;
@@ -2535,7 +2547,7 @@ fn lock_line(opts: &Options) -> String {
 /// lock takes linear history back.
 #[cfg(feature = "cli")]
 pub async fn lock_from_history(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if let Some(m) = missing(opts)? {
@@ -2600,7 +2612,7 @@ async fn lock_from_history_on(db: &mut Db, server: &mut Server, opts: &Options, 
 /// refuse of the files and the lock, it refuses first, with nothing dropped. Never in CI.
 #[cfg(feature = "cli")]
 pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if in_ci {
@@ -2760,7 +2772,7 @@ pub struct Choices {
 
 #[cfg(feature = "cli")]
 pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     static VALID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9_]+$").expect("a valid pattern"));
@@ -3774,7 +3786,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
 /// records init.sql without running it, once a shadow shows the database already has its schema.
 #[cfg(feature = "cli")]
 pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     let started = if opts.schema_exists() { Some(shown(&opts.schema)) } else if !opts.migrations()?.0.is_empty() { Some(shown(&opts.dir)) } else { None };
@@ -4001,7 +4013,7 @@ pub fn refused_in_ci(command: &str, log: Log<'_>) -> i32 {
 /// variable).
 #[cfg(feature = "cli")]
 pub async fn dev(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if in_ci {
@@ -4695,7 +4707,7 @@ pub async fn db_push(opts: &Options, in_ci: bool, push: &Push, log: Log<'_>) -> 
 
 #[cfg(feature = "cli")]
 async fn db_push_as(opts: &Options, in_ci: bool, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if in_ci {
@@ -4715,7 +4727,7 @@ async fn db_push_as(opts: &Options, in_ci: bool, push: &Push, asked: &Asked, log
 /// makes, for a test; None runs until stopped.
 #[cfg(feature = "cli")]
 pub async fn db_push_watch(opts: &Options, in_ci: bool, push: &Push, runs: Option<usize>, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if in_ci {

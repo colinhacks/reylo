@@ -2745,6 +2745,30 @@ async fn a_database_whose_default_collation_differs() {
     }
 }
 
+/// A lock that is there and can't be read is refused by every command, never read as no lock, which
+/// would deploy a draft with no checksum to hold it to.
+#[tokio::test(flavor = "current_thread")]
+async fn a_lock_that_cant_be_read_is_refused() {
+    let mut p = P::new(Dialect::Sqlite).await.unwrap();
+    p.linear();
+    p.schema("create table a (id integer);");
+    p.file("20261027100000_a.sql", "create table a (id integer);");
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.file("20261027110000_draft.sql", "create table b (id integer);");
+    let lock = p.dir.join(reylo_migrate::lock::LOCK);
+    std::fs::write(&lock, b"migrations:\n  - 20261027100000_a.sql \xff\n").unwrap();
+    p.output();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"✗ \S*reylo\.lock can't be read: [^\n]*UTF-8");
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    assert_eq!(p.migrate().await, 1);
+    assert_eq!(p.status().await, 1);
+    assert_eq!(p.dev().await, 1);
+    assert_eq!(p.output().matches("reylo.lock can't be read").count(), 3);
+    assert_eq!(p.history().await, ["20261027100000_a.sql"]);
+}
+
 /// mysqldump writes a view as one statement over several executable comments, which MySQL runs:
 /// each migration runs it, and a database that loses it is told apart. A comment gated above the
 /// server's version runs nothing, and is no error.
