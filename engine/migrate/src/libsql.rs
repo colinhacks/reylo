@@ -90,7 +90,8 @@ pub fn uses_own_sql(sql: &str) -> bool {
     };
     (0..tokens.len()).any(|i| {
         let Some(w) = word(i) else { return false };
-        let named = i > 0 && word(i - 1).is_some_and(|p| NAMES.contains(&p.as_str()) || (p == "on" && on_names(i - 1)));
+        // `vector_top_k` is a table-valued function, called where a table is named (`from`, `join`).
+        let named = w != "vector_top_k" && i > 0 && word(i - 1).is_some_and(|p| NAMES.contains(&p.as_str()) || (p == "on" && on_names(i - 1)));
         if open(i + 1) && !named && (CALLS.contains(&w.as_str()) || TYPES.contains(&w.as_str())) {
             return true;
         }
@@ -438,6 +439,8 @@ mod tests {
         assert!(!uses_own_sql("create table t (v integer references vector (id)); create table if not exists vector (id integer); with vector (n) as (select 1) select n from vector;"));
         assert!(uses_own_sql("create table vector (emb F32_BLOB(3)); insert into vector values (vector('[1]'));"));
         assert!(uses_own_sql("insert into near select a.id from a join b on vector_distance_cos(a.x, b.x) < 0.5;"));
+        assert!(uses_own_sql("create view near as select id from vector_top_k('docs_emb', :q, 5);"));
+        assert!(uses_own_sql("create view near as select d.id from docs d join vector_top_k('docs_emb', :q, 5) k on k.id = d.rowid;"));
         assert!(!uses_own_sql("create trigger t after insert on vector (x) begin select 1; end; create unique index if not exists i on vector (x);"));
     }
 
