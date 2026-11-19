@@ -2804,6 +2804,7 @@ on!(
     an_extension_in_a_projects_schema_is_the_projects_whoever_owns_it,
     an_extension_a_platform_role_owns_in_a_projects_schema_is_the_projects,
     init_writes_the_privileges_on_an_extensions_schema,
+    a_platforms_schemas_by_name_are_left_out_whoever_owns_them,
     a_change_by_hand_is_shown_alone_beside_a_function_of_many_lines,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
@@ -3418,20 +3419,39 @@ mod adversarial {
         assert!(!out.contains("function"), "{out}");
     }
 
-    /// The schema of a project's extension that no dumped schema holds (Supabase's `extensions`, with
-    /// its usage given to the API's roles): init writes the privileges on it and its owner, which are
-    /// compared, beside the `create schema`.
+    /// The schema of a project's extension that no dumped schema holds, with its usage given to other
+    /// roles: init writes the privileges on it and its owner, which are compared, beside the
+    /// `create schema`.
     pub async fn init_writes_the_privileges_on_an_extensions_schema(mut p: P) {
         p.exec("do $$ begin create role madv_ext login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
-        p.exec("create schema extensions authorization madv_ext; grant usage on schema extensions to public; create extension citext with schema extensions").await;
-        p.exec("create table users (id int primary key, email extensions.citext)").await;
+        p.exec("create schema ext authorization madv_ext; grant usage on schema ext to public; create extension citext with schema ext").await;
+        p.exec("create table users (id int primary key, email ext.citext)").await;
         assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
         let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
-        assert_has!(&schema, r"(?i)grant usage on schema extensions to public");
-        assert_has!(&schema, r"(?i)alter schema extensions owner to madv_ext");
+        assert_has!(&schema, r"(?i)grant usage on schema ext to public");
+        assert_has!(&schema, r"(?i)alter schema ext owner to madv_ext");
         p.strict = true;
         assert_eq!(p.status().await, 0, "{}", p.peek());
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// As Supabase's local stack makes its database: `_realtime`, a schema of the platform's by name
+    /// that the project's role owns, and default privileges in `storage`, another. Neither is the
+    /// project's: they are no change since its migrations, and a change made by hand is shown without
+    /// them.
+    pub async fn a_platforms_schemas_by_name_are_left_out_whoever_owns_them(mut p: P) {
+        p.exec("create table users (id int primary key)").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        p.exec("create schema _realtime; create schema storage; alter default privileges in schema storage grant select on tables to public").await;
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("create table hand (id int)").await;
+        p.output();
+        assert_eq!(p.dev().await, 1);
+        let out = p.output();
+        assert_has!(&out, r"create table hand");
+        assert!(!out.contains("_realtime") && !out.contains("storage"), "{out}");
     }
 
     /// A TimescaleDB hypertable, which `migrate new` writes as a plain table, is listed as unread by

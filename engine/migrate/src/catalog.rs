@@ -221,6 +221,36 @@ pub const PLATFORM_ROLES: &[&str] = &[
     "cloud_admin",
 ];
 
+/// The schemas a hosting platform makes for itself, left out by name whoever owns them: Supabase's
+/// are the 22 its own diff engine leaves out (pg-delta's `SUPABASE_SYSTEM_SCHEMAS`), some of which its
+/// local stack gives the project's role (`_realtime`), so no owner tells them apart. What a project
+/// makes in one is still judged by the rule for its kind: a policy or a trigger on `auth.users`, a
+/// table its role owns, and an extension in `extensions`, a schema its role owns ([`in_project_schema`]).
+pub const PLATFORM_SCHEMAS: &[&str] = &[
+    "_analytics",
+    "_realtime",
+    "_supavisor",
+    "auth",
+    "cron",
+    "etl",
+    "extensions",
+    "graphql",
+    "graphql_public",
+    "information_schema",
+    "net",
+    "pgbouncer",
+    "pgmq",
+    "pgmq_public",
+    "pgsodium",
+    "pgsodium_masks",
+    "pgtle",
+    "realtime",
+    "storage",
+    "supabase_functions",
+    "supabase_migrations",
+    "vault",
+];
+
 /// The role a shadow database makes the platform's own objects as, where a superuser the connection
 /// may not act as owns them on the target: one the shadows' server has, which the connection may
 /// become, and which every comparison leaves out as it leaves out a platform's role. Reylo never
@@ -238,9 +268,16 @@ pub(crate) fn not_platform(owner: &str) -> String {
     format!("{} and not {}", not_named(owner), beyond_reach(owner))
 }
 
-/// A schema `alias` (a `pg_namespace` row) that is no platform's: `public` never is, which Postgres
-/// 14 and older made the bootstrap superuser's in every database.
+/// A schema `alias` (a `pg_namespace` row) that is no platform's: none of [`PLATFORM_SCHEMAS`], and
+/// owned by no platform's owner.
 pub(crate) fn not_platform_schema(alias: &str) -> String {
+    let names = PLATFORM_SCHEMAS.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ");
+    format!("{alias}.nspname <> all (array[{names}]) and {}", not_platform_owned_schema(alias))
+}
+
+/// A schema `alias` that no platform's owner owns: `public` never is, which Postgres 14 and older made
+/// the bootstrap superuser's in every database.
+fn not_platform_owned_schema(alias: &str) -> String {
     format!("{} and ({alias}.nspname = 'public' or not {})", not_named(&format!("{alias}.nspowner")), beyond_reach(&format!("{alias}.nspowner")))
 }
 
@@ -311,9 +348,11 @@ pub(crate) fn project_extension(x: &str, n: &str) -> String {
     format!("({} or {})", not_platform(&format!("{x}.extowner")), in_project_schema(n))
 }
 
-/// Whether the schema `n` (a `pg_namespace` row) is one of the project's, which `pg_catalog` never is.
+/// Whether the schema `n` (a `pg_namespace` row) holds the project's extensions, by its owner alone:
+/// Supabase's `extensions`, a platform's schema by name, is its role's and holds the extensions the
+/// project enables. `pg_catalog` never is.
 pub(crate) fn in_project_schema(n: &str) -> String {
-    format!("({n}.nspname <> 'pg_catalog' and {})", not_platform_schema(n))
+    format!("({n}.nspname <> 'pg_catalog' and {})", not_platform_owned_schema(n))
 }
 
 pub(crate) fn not_extension(catalog: &str, alias: &str) -> String {

@@ -4120,8 +4120,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                                 select 1, format('GRANT %s ON SCHEMA %I TO %s%s', x.privilege_type, n.nspname, case when x.grantee = 0 then 'PUBLIC' else quote_ident(pg_get_userbyid(x.grantee)) end, case when x.is_grantable then ' WITH GRANT OPTION' else '' end)
                                   from pg_namespace n, aclexplode(n.nspacl) x where n.nspname = {name} and x.grantee <> n.nspowner and {}
                                 order by k, s",
-                                crate::catalog::in_project_schema("n"),
-                                crate::catalog::in_project_schema("n")
+                                crate::catalog::not_platform_schema("n"),
+                                crate::catalog::not_platform_schema("n")
                             ))
                             .await?
                         {
