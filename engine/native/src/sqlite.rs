@@ -288,6 +288,7 @@ mod tests {
 
     #[test]
     fn an_insert_into_a_table_declaring_on_conflict_replace_reaches_what_its_delete_cascades_to() {
+        let _turn = TURNS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("reylo-sqlite-replace-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let reached = |name: &str, clause: &str| {
