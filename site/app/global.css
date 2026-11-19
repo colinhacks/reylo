@@ -1831,3 +1831,21 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* A host the whole flow has been run on, marked in the tile's corner. */
+.ml-hosts span {
+  position: relative;
+}
+
+.ml-tested {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.0625rem 0.4375rem;
+  border: 1px solid color-mix(in oklab, var(--color-fd-primary) 45%, transparent);
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--color-fd-primary);
+}

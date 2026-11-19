@@ -456,6 +456,7 @@ function Hosts() {
             ))}
           </svg>
           {h.name}
+          {h.tested ? <em className="ml-tested">Tested</em> : null}
         </span>
       ))}
     </div>
