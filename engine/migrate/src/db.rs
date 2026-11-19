@@ -131,6 +131,19 @@ pub trait Session: Send {
     fn exec_with<'a>(&'a mut self, sql: &'a str, params: &'a [&'a str]) -> Answer<'a, ()>;
 }
 
+/// How a script failed: waiting for a lock past its limit, having changed nothing, or otherwise.
+#[derive(Debug)]
+pub(crate) enum Ran {
+    Waited(Error),
+    Failed(Error),
+}
+
+impl From<Error> for Ran {
+    fn from(e: Error) -> Ran {
+        Ran::Failed(e)
+    }
+}
+
 #[cfg(feature = "cli")]
 pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
     match e.as_db_error() {
@@ -340,6 +353,52 @@ impl Db {
             self.exec(&statement.text).await?;
         }
         Ok(())
+    }
+
+    /// Runs a script as [`Db::script`] does, telling a statement that gave up waiting for a lock
+    /// (Postgres's `lock_timeout`, MySQL's `lock_wait_timeout`, SQL Server's `lock_timeout`) from any other failure: it changed
+    /// nothing, so the file can run again. A host's session can't tell, and fails as `script` does.
+    pub(crate) async fn script_or_wait(&mut self, sql: &str) -> Result<(), Ran> {
+        match self {
+            #[cfg(feature = "cli")]
+            Db::Postgres(client) => client.batch_execute(sql).await.map_err(|e| {
+                let waited = e.code() == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE);
+                let e = pg_error(e);
+                if waited {
+                    Ran::Waited(e)
+                } else {
+                    Ran::Failed(e)
+                }
+            }),
+            #[cfg(feature = "cli")]
+            Db::Mysql(conn) => {
+                for statement in crate::sql::split_statements(sql, Dialect::Mysql) {
+                    if let Err(e) = conn.query_drop(&statement.text).await {
+                        // ER_LOCK_WAIT_TIMEOUT: a metadata lock, or a row's, waited past its limit.
+                        let waited = matches!(&e, mysql_async::Error::Server(s) if s.code == 1205);
+                        let e = mysql_error(e);
+                        return Err(if waited { Ran::Waited(e) } else { Ran::Failed(e) });
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(feature = "cli")]
+            Db::Sqlserver(client) => {
+                for (batch, count) in crate::sql::batch_runs(sql) {
+                    for _ in 0..count {
+                        let ran = async { client.simple_query(batch.as_str()).await?.into_results().await };
+                        if let Err(e) = ran.await {
+                            // 1222: a lock waited past `lock_timeout`.
+                            let waited = matches!(&e, tiberius::error::Error::Server(t) if t.code() == 1222);
+                            let e = sqlserver_error(e);
+                            return Err(if waited { Ran::Waited(e) } else { Ran::Failed(e) });
+                        }
+                    }
+                }
+                Ok(())
+            }
+            _ => self.script(sql).await.map_err(Ran::Failed),
+        }
     }
 
     /// Runs one statement with text parameters, `$1` on Postgres and `?` elsewhere.

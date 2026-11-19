@@ -198,6 +198,7 @@ Commands:
   migrate new <name>       Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
+    --blocking             Accept a statement that blocks writes while it reads every row
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here

@@ -46,6 +46,11 @@ Try a change before you write its migration: `reylo db push --watch` takes your 
 Every destructive change needs `--drop`, in a migration and in a push: a dropped table or column, or a type change that loses values, is refused until `--drop` names it. Where Reylo Migrate can't tell a rename from a drop, `--rename` settles it.
 
 </Feature>
+<Feature icon="lock" title="No long locks">
+
+On Postgres, a new constraint or index never blocks writes: it's added without reading the rows, then checked in a migration of its own. A table rewrite waits for `--blocking`, and a statement gives up a busy lock after half a second, then tries again.
+
+</Feature>
 <Feature icon="layers" title="Dry runs in shadow databases">
 
 Reylo Migrate replays your migrations on a throwaway database, so `--dry-run` shows what a deploy would do, running nothing on yours.
@@ -246,6 +251,7 @@ Commands:
   migrate new <name>       Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
+    --blocking             Accept a statement that blocks writes while it reads every row
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here

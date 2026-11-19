@@ -82,6 +82,7 @@ Commands:
   migrate new <name>       Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
+    --blocking             Accept a statement that blocks writes while it reads every row
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
@@ -283,6 +284,7 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     let takes: &[&str] = match command {
         "db push" => &["watch", "force"],
         "migrate deploy" => &["dry-run"],
+        "migrate new" => &["blocking"],
         _ => &[],
     };
     let short = args[..words].join(" ");
@@ -374,7 +376,7 @@ fn run_group(command: &str, parsed: &Args, log: reylo_migrate::commands::Log<'_>
         match command {
             "migrate init" => reylo_migrate::init(&opts, &parsed.schemas, &mut log).await,
             "migrate new" => {
-                let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };
+                let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone(), blocking: has("blocking") };
                 reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &choices, &mut log).await
             }
             "migrate history push" => reylo_migrate::history_push(&opts, &mut log).await,
@@ -385,7 +387,7 @@ fn run_group(command: &str, parsed: &Args, log: reylo_migrate::commands::Log<'_>
             "migrate deploy" if has("dry-run") => reylo_migrate::dry_run(&opts, &mut log).await,
             "migrate deploy" => reylo_migrate::deploy(&opts, &mut log).await,
             "db push" => {
-                let push = reylo_migrate::Push { choices: reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() }, force: has("force") };
+                let push = reylo_migrate::Push { choices: reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone(), ..Default::default() }, force: has("force") };
                 if has("watch") {
                     reylo_migrate::db_push_watch(&opts, in_ci, &push, None, &mut log).await
                 } else {
