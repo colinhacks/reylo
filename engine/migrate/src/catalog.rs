@@ -13,6 +13,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const HISTORY_TABLE: &str = "__reylo_migrations";
 
+/// A condition on a `sqlite_schema` or `pragma_table_list` row's `name` that holds for every object
+/// but those a libSQL vector index keeps for itself: `<index>_shadow`, the table the index is kept in,
+/// with its index `<index>_shadow_idx`, and `libsql_vector_meta_shadow`, every vector index's
+/// settings, which outlives the last of them. They are libSQL's, as a virtual table's own tables are
+/// SQLite's: a direct write breaks the index. Each is known by the index whose definition calls
+/// `libsql_vector_idx`, or by libSQL's own definition of the settings table, never by a name alone,
+/// so a table of the user's named `x_shadow` is read as any other.
+pub const NOT_LIBSQL_VECTOR_OWN: &str = "name not in (\
+select v.name || '_shadow' from sqlite_schema v where v.type = 'index' and v.sql like '%libsql_vector_idx%' \
+union all select v.name || '_shadow_idx' from sqlite_schema v where v.type = 'index' and v.sql like '%libsql_vector_idx%' \
+union all select m.name from sqlite_schema m where m.name = 'libsql_vector_meta_shadow' and m.sql = 'CREATE TABLE libsql_vector_meta_shadow ( name TEXT PRIMARY KEY, metadata BLOB ) WITHOUT ROWID')";
+
 /// The database's schema as sorted lines.
 pub async fn catalog(db: &mut Db) -> Result<Vec<String>, Error> {
     let lines = match db.dialect() {
@@ -1206,7 +1218,7 @@ const SQLITE_TABLE_CONSTRAINT: &[&str] = &["constraint", "primary", "unique", "c
 
 async fn sqlite(db: &mut Db) -> Result<Vec<String>, Error> {
     let mut lines = Vec::new();
-    let rows = db.rows(&format!("select type, name, tbl_name as tbl, sql from sqlite_schema where name not like 'sqlite_%' and tbl_name <> '{HISTORY_TABLE}'")).await?;
+    let rows = db.rows(&format!("select type, name, tbl_name as tbl, sql from sqlite_schema where name not like 'sqlite_%' and tbl_name <> '{HISTORY_TABLE}' and {NOT_LIBSQL_VECTOR_OWN}")).await?;
     let options: BTreeMap<String, Row> = db.rows("select name, strict, wr from pragma_table_list where schema = 'main'").await?.into_iter().map(|r| (r.text("name").to_string(), r)).collect();
     for r in rows {
         let Some(sql) = r.get("sql") else { continue };

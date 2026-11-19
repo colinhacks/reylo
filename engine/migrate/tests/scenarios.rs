@@ -2817,7 +2817,7 @@ mod on_mysql {
 on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
 mod on_turso {
     use super::*;
-    on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
+    on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, a_vector_indexs_own_tables_are_libsqls);
 }
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_deploy);
 on!(Mysql, a_table_comment_is_no_clause_of_its_table);
@@ -4032,6 +4032,32 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(q.history().await, ["init.sql"]);
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// A libSQL vector index keeps itself in tables of its own: `<index>_shadow`, with its index, and
+    /// `libsql_vector_meta_shadow`, which outlives the last index. They are libSQL's, as a virtual
+    /// table's own tables are SQLite's, so the catalog, the dump and `wipe` leave them alone, while a
+    /// table of the user's with a name like theirs is read as any other.
+    pub async fn a_vector_indexs_own_tables_are_libsqls(mut p: P) {
+        p.file("20261027100000_docs.sql", "create table docs (id integer primary key, emb F32_BLOB(3)); create table x_shadow (a integer);");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        // Reylo's SQLite can't make the index, so it is made by hand, as on a database Reylo adopts.
+        p.exec("create index docs_emb on docs (libsql_vector_idx(emb))").await;
+        p.exec("insert into docs (emb) values (vector32('[1,2,3]')), (vector32('[3,2,1]'))").await;
+        let own = ["docs_emb_shadow", "libsql_vector_meta_shadow"];
+        let sql = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
+        assert!(sql.contains("docs_emb on docs") && sql.contains("x_shadow") && !own.iter().any(|t| sql.contains(t)), "{sql}");
+        let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
+        let lines = catalog(&mut db).await.unwrap();
+        db.close().await;
+        assert!(lines.iter().any(|l| l.contains("x_shadow")) && !lines.iter().any(|l| own.iter().any(|t| l.contains(t))), "{lines:#?}");
+        // Emptied, the index still works: its own tables are libSQL's to empty.
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_wipe(o, false, log).await).await, 0, "{}", p.peek());
+        p.exec("insert into docs (emb) values (vector32('[1,2,3]'))").await;
+        assert_eq!(p.rows("select count(*) as n from vector_top_k('docs_emb', vector32('[1,2,3]'), 1)").await[0].text("n"), "1");
+        // Dropped, the index leaves its settings table behind, which is still libSQL's.
+        p.exec("drop index docs_emb").await;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
     }
 
     pub async fn a_virtual_tables_own_tables_are_not_in_the_dump(mut p: P) {

@@ -2084,10 +2084,13 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
             .iter()
             .map(|r| format!("`{}`", r.text("n").replace('`', "``")))
             .collect(),
-        // A virtual table's own tables (an FTS5 index's, an R*Tree's) are its to empty: deleting
-        // from them directly breaks it.
+        // A virtual table's own tables (an FTS5 index's, an R*Tree's) are its to empty, and a libSQL
+        // vector index's are libSQL's: deleting from them directly breaks it.
         Dialect::Sqlite => db
-            .rows(&format!("select name as n from pragma_table_list where schema = 'main' and type in ('table', 'virtual') and name not like 'sqlite_%' and name <> '{HISTORY_TABLE}'"))
+            .rows(&format!(
+                "select name as n from pragma_table_list where schema = 'main' and type in ('table', 'virtual') and name not like 'sqlite_%' and name <> '{HISTORY_TABLE}' and {}",
+                crate::catalog::NOT_LIBSQL_VECTOR_OWN
+            ))
             .await?
             .iter()
             .map(|r| format!("\"{}\"", r.text("n").replace('"', "\"\"")))
@@ -2121,13 +2124,21 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
                 .iter()
                 .map(|r| (format!("\"{}\"", r.text("name").replace('"', "\"\"")), r.text("sql").to_string()))
                 .collect();
+            // A table with a libSQL vector index is emptied row by row: emptied whole, as a delete with
+            // no condition does, it keeps the index's rows, and the next insert fails on them.
+            let vector_indexed: std::collections::BTreeSet<String> = db
+                .rows("select distinct tbl_name as t from sqlite_schema where type = 'index' and sql like '%libsql_vector_idx%'")
+                .await?
+                .iter()
+                .map(|r| format!("\"{}\"", r.text("t").replace('"', "\"\"")))
+                .collect();
             let module = regex::Regex::new(r"(?i)\busing\s+(\w+)").unwrap();
             let content = regex::Regex::new(r#"(?i)\bcontent\s*=\s*(?:'([^']*)'|"([^"]*)"|(\w+))"#).unwrap();
             let mut sql = String::new();
             let mut after = String::new();
             for n in &names {
                 let Some(text) = virtual_sql.get(n) else {
-                    sql.push_str(&format!("delete from {n};"));
+                    sql.push_str(&format!("delete from {n}{};", if vector_indexed.contains(n) { " where true" } else { "" }));
                     continue;
                 };
                 let fts = module.captures(text).map(|c| c[1].to_lowercase()).filter(|m| m.starts_with("fts"));
@@ -4033,8 +4044,9 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             let rows = db
                 .rows(&format!(
                     "select sql from sqlite_schema where sql is not null and name not like 'sqlite_%' and tbl_name <> '{HISTORY_TABLE}'
-                      and name not in (select name from pragma_table_list where type = 'shadow')
-                    order by case type when 'table' then 0 when 'index' then 1 when 'view' then 2 else 3 end, rowid"
+                      and name not in (select name from pragma_table_list where type = 'shadow') and {}
+                    order by case type when 'table' then 0 when 'index' then 1 when 'view' then 2 else 3 end, rowid",
+                    crate::catalog::NOT_LIBSQL_VECTOR_OWN
                 ))
                 .await?;
             Ok(format!("{}\n", rows.iter().map(|r| format!("{};", r.text("sql"))).collect::<Vec<_>>().join("\n\n")))
