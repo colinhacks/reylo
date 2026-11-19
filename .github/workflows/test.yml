@@ -541,3 +541,141 @@ jobs:
           cargo run -q -p reylo-oracle -- $servers --strict-coverage $cases
       - if: always()
         run: sccache --show-stats
+
+  # Postgres 19: the oracle's Postgres cases and the loader's tests, on a server the other jobs, on 18, leave
+  # untested. PGDG packages Postgres 19 and not yet its pgvector and PostGIS, so those and the five JSON Schema
+  # validators are built here (.github/scripts/postgres-19-extensions.sh) and cached, keyed on the exact release
+  # and runner image. It runs when the oracle's Postgres shard does, and on every push to main and release.
+  postgres-19:
+    needs: [scope, binary]
+    if: ${{ !github.event.repository.private && contains(needs.scope.outputs.shards, 'postgres') }}
+    name: Postgres 19, the oracle and the loader's tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 23306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 60
+    env:
+      PG_BIN: /usr/lib/postgresql/19/bin
+      # Postgres 19, and the libraries the cached PostGIS links at run time, GEOS, PROJ and json-c, which the
+      # runner image doesn't have.
+      PG19_DEBS: postgresql-19 libgeos-c1t64 libproj25 libjson-c5
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
+      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
+      REYLO_TEST_PG_TLS: postgres://postgres:reylo@127.0.0.1:25434/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: The key of the Postgres packages
+        id: debs
+        run: |
+          test -n "$ImageOS" && test -n "$ImageVersion"
+          echo "key=postgres-19-debs-$ImageOS-$ImageVersion-$(echo "$PG19_DEBS" | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: debs-cache
+        with:
+          path: ~/postgres-debs
+          key: ${{ steps.debs.outputs.key }}
+      - name: Download Postgres 19 and PostGIS's libraries
+        if: steps.debs-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          mkdir -p ~/postgres-debs/partial
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$HOME/postgres-debs" $PG19_DEBS
+          sudo rm -rf ~/postgres-debs/partial ~/postgres-debs/lock
+          sudo chown -R "$USER" ~/postgres-debs
+      - if: steps.debs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/postgres-debs
+          key: ${{ steps.debs.outputs.key }}
+      - name: Install Postgres 19 and PostGIS's libraries
+        id: pg
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive dpkg -i ~/postgres-debs/*.deb
+          version=$("$PG_BIN/postgres" --version | awk '{print $3}')
+          test -n "$version"
+          echo "key=$ImageOS-pg$version" >> "$GITHUB_OUTPUT"
+      # The extensions are compiled against the server's headers, and saved as soon as they are built rather than
+      # only when the job passes; the headers and the libraries PostGIS links are installed only to build them.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: extensions
+        with:
+          path: ~/postgres-19-extensions
+          key: postgres-19-extensions-${{ steps.pg.outputs.key }}-${{ hashFiles('.github/scripts/postgres-19-extensions.sh') }}
+      - name: Build pgvector, PostGIS and the JSON Schema validators
+        if: steps.extensions.outputs.cache-hit != 'true'
+        run: |
+          [ -f /etc/apt/sources.list.d/pgdg.sources ] || [ -f /etc/apt/sources.list.d/pgdg.list ] || sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends postgresql-server-dev-19 libgeos-dev libproj-dev libgmp-dev libjson-c-dev libxml2-dev libclang-dev pkg-config
+          sh .github/scripts/postgres-19-extensions.sh ~/postgres-19-extensions "$RUNNER_TEMP/extensions" "$PG_BIN/pg_config"
+      - if: steps.extensions.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/postgres-19-extensions
+          key: ${{ steps.extensions.outputs.cache-primary-key }}
+      # One server for the oracle and the loader's tests, and a second over TLS that asks for a password, as a
+      # hosted one does, for the test of channel binding, with a certificate made here, since it checks none.
+      - name: Install the extensions and start Postgres 19
+        run: |
+          sudo cp -R ~/postgres-19-extensions/. /
+          "$PG_BIN/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=trust --no-sync -E UTF8 --locale=C
+          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 25432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
+          openssl req -new -x509 -days 2 -nodes -subj /CN=localhost -keyout "$RUNNER_TEMP/tls.key" -out "$RUNNER_TEMP/tls.crt" 2> /dev/null
+          chmod 600 "$RUNNER_TEMP/tls.key"
+          echo reylo > "$RUNNER_TEMP/password"
+          "$PG_BIN/initdb" -D "$RUNNER_TEMP/pg-tls" -U postgres --auth-local=trust --auth-host=scram-sha-256 --pwfile="$RUNNER_TEMP/password" --no-sync -E UTF8 --locale=C
+          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg-tls" -o "-p 25434 -c listen_addresses=127.0.0.1 -c unix_socket_directories=$RUNNER_TEMP -c ssl=on -c ssl_cert_file=$RUNNER_TEMP/tls.crt -c ssl_key_file=$RUNNER_TEMP/tls.key" -l "$RUNNER_TEMP/postgres-tls.log" -w start
+      - run: engine/build.sh --prepare
+      - name: Run the oracle's Postgres cases
+        run: |
+          cases=''
+          for dir in oracle/cases/*/; do
+            case "${dir%/}" in */mysql_* | */sqlite_*) ;; *) cases="$cases ${dir%/}" ;; esac
+          done
+          # shellcheck disable=SC2086
+          cargo run -q -p reylo-oracle -- --url postgres://postgres@localhost:25432/postgres --strict-coverage $cases
+      - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
+        with:
+          nub-version: "0.9.6"
+          node-version: "24"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: reylo-test-linux-x64
+          path: ${{ runner.temp }}/engine
+      - name: Name the binary for the tests
+        run: |
+          chmod +x "$RUNNER_TEMP/engine/reylo"
+          echo "REYLO_ENGINE_PATH=$RUNNER_TEMP/engine/reylo" >> "$GITHUB_ENV"
+      - run: nub install --frozen-lockfile
+      - run: nub install --frozen-lockfile
+        working-directory: site
+      - run: nub install --frozen-lockfile
+        working-directory: lab/drivers
+      - run: nub install --frozen-lockfile
+        working-directory: lab/jest
+      - name: Link the lab the tests load
+        run: ln -sfn ../../.. lab/jest/node_modules/reylo
+      - name: Run the loader's tests on Postgres 19, none skipped
+        run: |
+          set -o pipefail
+          nub run test 2>&1 | tee "$RUNNER_TEMP/test.log"
+          grep -q '^ℹ skipped 0$' "$RUNNER_TEMP/test.log" || { echo "::error::a test was skipped"; exit 1; }
+      - if: always()
+        run: sccache --show-stats
