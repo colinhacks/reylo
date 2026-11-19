@@ -1,0 +1,10 @@
+# The Rust every build of this repository uses, a developer's, CI's and the release's alike: one
+# exact stable release, so a runner whose `stable` is older or newer builds the same. The published
+# crates declare an older floor, the workspace's `rust-version`, which the package check
+# (.github/scripts/rust-package-check.sh) builds on. Each job adds the targets it builds for itself
+# (`rustup target add`): the release's platforms (.github/scripts/build-binary.sh) and
+# `wasm32-wasip2` for the playground's component (engine/wasip2, which pins the same release).
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

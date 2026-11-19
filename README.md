@@ -50,7 +50,7 @@ const author = await getAuthor.run(db, { id: 1 });
 // { id: number; name: string; post_count: number } | null
 ```
 
-Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in TypeScript 7.1 (currently [in beta](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/)), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
+Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) (currently in nightly builds), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
 
 Reylo is the perfect option for the agent era:
 
@@ -66,15 +66,15 @@ Reylo is the perfect option for the agent era:
 
 To install Reylo, you'll need:
 
-- **TypeScript 7.1 (currently in beta).** The first release with content mappers.
+- **TypeScript 7.1 (currently in nightly builds).** The first release with content mappers. The `tsconfig.json` entry below needs a nightly from 2026-11-12 or later.
 - **Node 24 or later.**
-- **A running dev database.** Postgres, MySQL 8.0.22 or later, or a SQLite file: Reylo reads your current schema from it.
+- **A running dev database.** Postgres, MySQL 8.0.38 or later, or a SQLite file: Reylo reads your current schema from it.
 
 Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
 ```sh
 npm install reylo
-npm install -D typescript@beta
+npm install -D typescript@next
 ```
 
 Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo.yaml` or `.reylo.yml`:
@@ -83,9 +83,7 @@ Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo
 // tsconfig.json
 {
   "compilerOptions": { /* ... */ },
-  "contentMappers": [
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
-  ]
+  "contentMappers": [{ "package": "reylo" }]
 }
 ```
 

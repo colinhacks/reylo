@@ -1,0 +1,5 @@
+joined.sql: many () -> { id: int4, x: int4? }
+param.sql: at_most_one (x: int4) -> { id: int4, x: int4, next: int4 }
+pinned.sql: many () -> { id: int4, x: int4? } key (id)
+pinned_reversed.sql: many () -> { id: int4, x: int4? } key (id)
+update.sql: many () -> { id: int4, x: int4? }

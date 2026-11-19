@@ -24,14 +24,7 @@
     "allowJs": true,
     "esModuleInterop": true
   },
-  "contentMappers": [
-    {
-      "package": "reylo",
-      "extensions": [
-        ".sql"
-      ]
-    }
-  ],
+  "contentMappers": [{ "package": "reylo" }],
   "include": [
     "next-env.d.ts",
     "**/*.ts",

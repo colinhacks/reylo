@@ -19,3 +19,5 @@ create table events (
   mood mood not null,
   n int not null
 );
+-- `random(min, max)` over a bound that may be NULL.
+create table bounds (id int primary key, lo int not null, hi int);

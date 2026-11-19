@@ -699,35 +699,60 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
     let named: Vec<String> = old_columns.iter().chain(new_columns.iter()).map(|(c, _)| c.clone()).collect();
     // A table whose text names its columns by its own name (a check written `"users"."age" > 21`)
     // can be neither made under another name nor renamed: SQLite reads the name as the table's
-    // own. Where no table references it, its rows wait in a temporary table instead, while the
-    // table is made again under its name.
-    if children.is_empty() && names_itself(&target, &a.name) {
-        let aside = quote(&format!("reylo_aside_{}", a.name));
-        let mut copied = copied;
-        if a.bare_rowid && b.bare_rowid {
-            if let Some(rowid) = ["rowid", "_rowid_", "oid"].into_iter().find(|n| !named.iter().any(|c| c == n)) {
-                copied.insert(0, rowid.to_string());
+    // own. Where one of the tables rebuilt together is such, the rows of each wait in a temporary
+    // table instead, while the tables are made again under their names, each after what it
+    // references, and filled in the same order.
+    let mut texts: Vec<String> = vec![target.clone()];
+    for (child, _) in &children {
+        texts.push(child.create.first()?.clone());
+    }
+    if family.iter().zip(&texts).any(|((x, _), text)| names_itself(text, &x.name)) {
+        if cycle {
+            out.push("-- these tables reference each other, so no order fills them: their keys wait for the commit".to_string());
+            out.push("pragma defer_foreign_keys = on".to_string());
+        }
+        // Each member's columns to keep, the rowid where no column is it, and whether it counts.
+        let mut members: Vec<(String, String, String, bool)> = Vec::new();
+        for (k, ((x, y), text)) in family.iter().zip(&texts).enumerate() {
+            let mut kept: Vec<String> = if k == 0 {
+                copied.clone()
+            } else {
+                parts(text).iter().filter(|p| p.column.as_deref().is_some_and(|c| !x.flag(c, 'g'))).map(|p| p.tokens[0].text.clone()).collect()
+            };
+            let names: Vec<String> = if k == 0 { named.clone() } else { parts(text).iter().filter_map(|p| p.column.clone()).collect() };
+            if x.bare_rowid && y.bare_rowid {
+                if let Some(rowid) = ["rowid", "_rowid_", "oid"].into_iter().find(|n| !names.iter().any(|c| c == n)) {
+                    kept.insert(0, rowid.to_string());
+                }
+            }
+            members.push((x.name.clone(), kept.join(", "), text.clone(), x.autoincrement && y.autoincrement));
+        }
+        let aside = |name: &str| quote(&format!("reylo_aside_{name}"));
+        let seq_aside = |name: &str| quote(&format!("reylo_aside_{name}_sequence"));
+        for (name, list, _, sequence) in &members {
+            if !list.is_empty() {
+                out.push(format!("create temp table {} as select {list} from {}", aside(name), quote(name)));
+            }
+            if *sequence {
+                out.push(format!("create temp table {} as select seq from sqlite_sequence where name = {}", seq_aside(name), literal(name)));
             }
         }
-        let list = copied.join(", ");
-        let sequence = a.autoincrement && b.autoincrement;
-        let seq_aside = quote(&format!("reylo_aside_{}_sequence", a.name));
-        if !copied.is_empty() {
-            out.push(format!("create temp table {aside} as select {list} from {table}"));
+        for (name, ..) in members.iter().rev() {
+            out.push(format!("drop table {}", quote(name)));
         }
-        if sequence {
-            out.push(format!("create temp table {seq_aside} as select seq from sqlite_sequence where name = {}", literal(&a.name)));
+        for (_, _, text, _) in &members {
+            out.push(text.clone());
         }
-        out.push(format!("drop table {table}"));
-        out.push(target.clone());
-        if !copied.is_empty() {
-            out.push(format!("insert into {table} ({list}) select {list} from temp.{aside}"));
-            out.push(format!("drop table temp.{aside}"));
-        }
-        if sequence {
-            out.push(format!("delete from sqlite_sequence where name = {}", literal(&a.name)));
-            out.push(format!("insert into sqlite_sequence (name, seq) select {}, seq from temp.{seq_aside}", literal(&a.name)));
-            out.push(format!("drop table temp.{seq_aside}"));
+        for (name, list, _, sequence) in &members {
+            if !list.is_empty() {
+                out.push(format!("insert into {} ({list}) select {list} from temp.{}", quote(name), aside(name)));
+                out.push(format!("drop table temp.{}", aside(name)));
+            }
+            if *sequence {
+                out.push(format!("delete from sqlite_sequence where name = {}", literal(name)));
+                out.push(format!("insert into sqlite_sequence (name, seq) select {}, seq from temp.{}", literal(name), seq_aside(name)));
+                out.push(format!("drop table temp.{}", seq_aside(name)));
+            }
         }
         out.extend(by_rank(coming).into_iter().map(|(_, create)| create));
         return Some(out);

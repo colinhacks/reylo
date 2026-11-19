@@ -569,6 +569,13 @@ test("the kinds: a BIGINT is a BigInt, and an integer a temporary table may wide
   assert.deepEqual(typeSchema(pg("int8"), "postgres"), { type: "integer", format: "int64" });
   assert.deepEqual(typeSchema(pg("int8"), "postgres", true), { type: ["integer", "string"], format: "int64" }, "a parameter, as every driver binds it");
   assert.deepEqual(typeSchema(pg("timestamptz"), "postgres"), { type: "string", format: "date-time" });
+  // RFC 3339's date-time, which JSON Schema's format names, needs an offset, which a wall-clock value has none of, as a result or as the parameter's text.
+  const wallClock = { type: "string", description: "a date and time without a time zone, as the database wrote it (2026-10-20T10:00:00.123456)" };
+  for (const input of [false, true]) {
+    assert.deepEqual(typeSchema(pg("timestamp"), "postgres", input), wallClock);
+    assert.deepEqual(typeSchema(my("datetime"), "mysql", input), wallClock);
+    assert.deepEqual(typeSchema(my("timestamp"), "mysql", input), wallClock);
+  }
   assert.deepEqual(typeSchema({ kind: "boolean" }, "mysql"), { type: "boolean" });
   assert.deepEqual(typeSchema(lite("bool"), "sqlite"), { type: "boolean" });
   assert.deepEqual(typeSchema(lite("integer"), "sqlite"), { type: "integer", format: "int64" });

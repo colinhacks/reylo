@@ -22,7 +22,7 @@ row_parenthesized.sql: many () -> { id: int }
 row_qualified.sql: many () -> { id: int }
 row_qualified_star.sql: many () -> { x: int }
 row_star.sql: many () -> { x: int }
-row_table.sql: many () -> { x: int }
+row_table.sql: many () -> { x: int? }
 row_with_query.sql: at_most_one () -> { c: bigint }
 value_aggregate.sql: one () -> { count(*): bigint } value
 value_call.sql: many () -> { lower(name): varchar? } value

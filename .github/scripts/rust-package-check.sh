@@ -44,6 +44,13 @@ cargo package --locked --allow-dirty $flags
 echo '::endgroup::'
 
 projects=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/reylo-fresh.XXXXXX")
+# The new projects build on the oldest Rust the crates declare, the workspace's rust-version, so that
+# every run proves it, where this repository builds on the release rust-toolchain.toml pins. They sit
+# outside the repository, where that file does not reach anyway.
+floor=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+rustup toolchain install "$floor" --profile minimal
+export RUSTUP_TOOLCHAIN=$floor
+cargo --version
 trap 'rm -rf "$projects"' EXIT
 # One target directory for every project, so that what they share compiles once.
 export CARGO_TARGET_DIR="$projects/target"
