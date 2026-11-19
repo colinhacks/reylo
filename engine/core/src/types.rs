@@ -227,7 +227,8 @@ pub struct TextType {
     pub pattern: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
-    /// What the text is, by JSON Schema's format name (`email`, `uri`) or a source's own.
+    /// What the text is meant to be, by JSON Schema's format name (`email`, `uri`) or a source's
+    /// own: a name alone, which says nothing of the values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 }

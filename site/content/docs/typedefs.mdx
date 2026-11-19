@@ -152,7 +152,7 @@ Its `precision` counts its digits, and its scale the digits after the point. A d
 
 Text.
 
-With no `encoding`, it's any valid Unicode text. An `encoding` names the character set its values are held in, from a [fixed list](#specification), and `ill_formed` lets them be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise, and a `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole. A `format` names what the text is, by JSON Schema's format names or a source's own, and a program that doesn't know one ignores it.
+With no `encoding`, it's any valid Unicode text. An `encoding` names the character set its values are held in, from a [fixed list](#specification), and `ill_formed` lets them be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise, and a `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole. A `format` names what the text is meant to be, by JSON Schema's format names or a source's own. It says nothing of the values, so a rule every value keeps is a `pattern`.
 
 <TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext"], "sqlite": ["text"]}}>
 
@@ -166,7 +166,7 @@ With no `encoding`, it's any valid Unicode text. An `encoding` names the charact
 // Text with an @ in it
 { "kind": "text", "pattern": "[^@]+@[^@]+" }
 
-// An email address, by JSON Schema's format name
+// Text meant to be an email address, by JSON Schema's format name
 { "kind": "text", "format": "email" }
 
 // Text Latin-1 holds, as MySQL's latin1 stores it

@@ -217,8 +217,9 @@ fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime")
 }
 
+/// A command's line on stdout, clear of the spinner's.
 fn print(line: &str) {
-    println!("{line}");
+    reylo_migrate::terminal::println(line);
 }
 
 /// A command that isn't one, said on stderr with exit 2; with `--json`, as the one JSON object every
@@ -324,6 +325,7 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     // With --json, one JSON object on stdout: whether it succeeded, each refusal with its code, what
     // the command found (status's rows), and every line it would have printed, plain.
     reylo_migrate::commands::set_color(false);
+    reylo_migrate::terminal::set_spinner(false);
     reylo_migrate::commands::set_json(true);
     let mut lines: Vec<String> = Vec::new();
     let mut sql = None;
@@ -394,8 +396,9 @@ fn run_group(command: &str, parsed: &Args, log: reylo_migrate::commands::Log<'_>
                     reylo_migrate::db_push(&opts, in_ci, &push, &mut log).await
                 }
             }
+            // Coloured only where stdout is a terminal, so never with --json.
             "db introspect" => reylo_migrate::db_introspect(&opts, &parsed.schemas).await.map(|text| {
-                *sql = Some(text);
+                *sql = Some(reylo_migrate::terminal::highlight(&text, reylo_migrate::Dialect::of_url(&opts.url).unwrap_or(reylo_migrate::Dialect::Postgres)));
                 0
             }),
             "db reset" => reylo_migrate::db_reset(&opts, in_ci, &mut log).await,
@@ -509,6 +512,9 @@ pub fn main() {
         std::process::exit(code);
     }
     reylo_migrate::commands::set_color(std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none());
+    // A spinner repaints its line on stderr, so it needs a terminal there that can, and none at all
+    // where stdout goes elsewhere: a redirect or a pipe takes the output alone, as it always was.
+    reylo_migrate::terminal::set_spinner(std::io::stdout().is_terminal() && std::io::stderr().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb"));
     let code = match args.first().map(String::as_str) {
         None | Some("--help" | "-h" | "help") => {
             println!("{USAGE}");
