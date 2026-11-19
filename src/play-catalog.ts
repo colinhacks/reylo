@@ -48,6 +48,11 @@ export const CATALOG_QUERIES: Record<Dialect, Queries> = {
     tables: `select table_name, column_name, column_type, is_nullable = 'YES' from information_schema.columns
   where table_schema = database() order by table_name, ordinal_position`,
   },
+  clickhouse: {
+    // The tables and views of the session's database; a column may be NULL where its type is Nullable.
+    tables: `SELECT table, name, type, startsWith(type, 'Nullable(') OR startsWith(type, 'LowCardinality(Nullable(') FROM system.columns
+  WHERE database = currentDatabase() ORDER BY table, position`,
+  },
   sqlite: {
     // Each column named apart: a host may read a row by its columns' names.
     tables: `select m.name as table_name, p.name as column_name, p.type as column_type, not p."notnull" as nullable from sqlite_schema m join pragma_table_info(m.name) p
@@ -61,6 +66,7 @@ const SPELLED: Record<Dialect, string[]> = {
   postgres: ["bigint", "boolean", "char", "character", "character varying", "decimal", "double precision", "int", "integer", "real", "smallint", "timestamp with time zone"],
   mysql: ["binary", "char", "date", "datetime", "decimal", "double", "float", "json", "nchar", "real", "signed", "time", "unsigned", "year"],
   sqlite: ["blob", "integer", "numeric", "real", "text"],
+  clickhouse: ["Array", "Bool", "Date", "Date32", "DateTime", "DateTime64", "Decimal", "Enum8", "FixedString", "Float32", "Float64", "IPv4", "IPv6", "Int16", "Int32", "Int64", "Int8", "LowCardinality", "Map", "Nullable", "String", "Tuple", "UInt16", "UInt32", "UInt64", "UInt8", "UUID"],
 };
 
 /** A type as the list shows it: Postgres's short names for the long standard ones. */

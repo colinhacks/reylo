@@ -75,6 +75,9 @@ test("the runtime's lexer agrees with the engine's", async () => {
     ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite"],
     ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite"],
     ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite"],
+    ["SELECT {id:UInt64}, { since : DateTime64(3, 'UTC') }, {e:Enum8('}' = 1, 'it\\'s' = 2)}, c ? a :b, doc.a.:Int64, m[:k], {x}, {1:UInt8}, {id:UInt64} FROM t", "clickhouse"],
+    ["SELECT :id::UInt64, x::String FROM t WHERE n IN :ns::Array(UInt8) AND s = :s::String AND :bare", "clickhouse"],
+    ["SELECT 'it\\'s {a:UInt8}', `{b:UInt8}\\``, \"{c:UInt8}\\\"\" # {d:UInt8}\n #! {e:UInt8}\n /* {f:UInt8} /* {g:UInt8} */ {h:UInt8} */, $q${i:UInt8}$q$, {k:UInt8} -- {j:UInt8}", "clickhouse"],
   ];
   for (const [sql, dialect] of statements) {
     const ours = lexPlaceholders(sql, dialect);

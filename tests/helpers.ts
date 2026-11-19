@@ -1,4 +1,4 @@
-// What the loader's tests share: the test databases `REYLO_TEST_PG` and `REYLO_TEST_MYSQL` name and a database of a test's own on each, the drivers `lab/drivers` installs, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
+// What the loader's tests share: the test databases `REYLO_TEST_PG`, `REYLO_TEST_MYSQL` and `REYLO_TEST_CLICKHOUSE` name and a database of a test's own on each, the drivers `lab/drivers` installs, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -13,12 +13,17 @@ export const MAPPER = join(ROOT, "src", "mapper.ts");
 export const INDEX = pathToFileURL(join(ROOT, "src", "index.ts")).href;
 export const PG = process.env.REYLO_TEST_PG;
 export const MYSQL = process.env.REYLO_TEST_MYSQL;
+/** The HTTP interface of a throwaway ClickHouse, as `http://127.0.0.1:58123`, whose user may create databases. */
+export const CLICKHOUSE = process.env.REYLO_TEST_CLICKHOUSE;
 /** A Postgres that takes TLS and asks for a password (SCRAM), with the password in its URL, for the test of channel binding. */
 export const PG_TLS = process.env.REYLO_TEST_PG_TLS;
 /** Why a test of the live Postgres skips, or `false`. */
 export const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 /** Why a test of the live MySQL skips, or `false`. */
 export const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
+
+/** Why a test of the live ClickHouse skips, or `false`. */
+export const clickhouseLive = !CLICKHOUSE ? "REYLO_TEST_CLICKHOUSE names no server" : !existsSync(join(DRIVERS, "@clickhouse", "client")) ? "lab/drivers is not installed" : false;
 
 /** A driver as `lab/drivers` installs it: an ES module's default export, as postgres.js 4's. */
 export function driver(name: string): any {
@@ -113,6 +118,30 @@ export async function mysqlDatabase(prefix: string, setup?: string) {
       await db.end();
       await admin.query(`drop database if exists ${name}`);
       await admin.end();
+    },
+  };
+}
+
+/** A database of a test's own on the test ClickHouse, its URL, and a client of `@clickhouse/client` on it, with each statement of `setup` run first, a `;` at a line's end between two. */
+export async function clickhouseDatabase(prefix: string, setup?: string) {
+  const { createClient } = driver("@clickhouse/client");
+  const admin = createClient({ url: CLICKHOUSE! });
+  const name = `${prefix}_${process.pid}`;
+  await admin.command({ query: `DROP DATABASE IF EXISTS ${name}` });
+  await admin.command({ query: `CREATE DATABASE ${name}` });
+  const url = new URL(CLICKHOUSE!);
+  url.pathname = `/${name}`;
+  const client = createClient({ url: url.href });
+  for (const statement of (setup ?? "").split(/;[ \t]*$/m)) if (statement.trim()) await client.command({ query: statement });
+  return {
+    url: url.href,
+    client,
+    /** Another client of the database, with `options` beside its URL. */
+    connect: (options: Record<string, unknown>) => createClient({ url: url.href, ...options }),
+    async drop() {
+      await client.close();
+      await admin.command({ query: `DROP DATABASE IF EXISTS ${name}` });
+      await admin.close();
     },
   };
 }

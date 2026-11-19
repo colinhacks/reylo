@@ -13,6 +13,7 @@ import type { QueryError } from "./query-error.ts";
 import { columnKind, describe, given, hstoreText, isArrayValued, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers, type Kind } from "./values.ts";
 import { bareName, isMysqlSet, schemaOf, type EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
+import { castType } from "./clickhouse-types.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import type { JsonSchema } from "./engine-type.ts";
 import type { Checks } from "./checks.ts";
@@ -21,7 +22,7 @@ import type { RowBuilder } from "./row.ts";
 import { compared, due, passed, staleError, warnDrifted, type Fresh } from "./fresh.ts";
 import { decodeCodecs, encodePlan, type Libraries, type Plan } from "./codecs.ts";
 
-export type Dialect = "postgres" | "mysql" | "sqlite";
+export type Dialect = "postgres" | "mysql" | "sqlite" | "clickhouse";
 
 /**
  * pg's Pool, Client and PoolClient; PGlite and its transactions; Neon's Pool and Client;
@@ -161,12 +162,17 @@ export type KnexClient = {
 export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient | SlonikClient | DrizzleDatabase<PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient> | DrizzlePgTransaction | KnexClient;
 /** Every MySQL client `run` takes, or a transaction or connection taken from one. */
 export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction | KnexClient;
+/**
+ * `@clickhouse/client`'s and `@clickhouse/client-web`'s client: exec() runs a statement and hands
+ * back the response's bytes, which Reylo reads itself.
+ */
+export type ClickhouseClient = { exec(params: any): PromiseLike<unknown>; query(params: any): PromiseLike<unknown>; insert(params: any): PromiseLike<unknown>; command(params: any): PromiseLike<unknown> };
 /** Every SQLite client `run` takes, or a transaction taken from one. */
 export type SqliteClient = SyncSqliteClient | SqliteWasmDatabase | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction | KnexClient;
 
 // Each dialect's clients are one named union, so a hover over `run` reads
 // `run(client: PostgresClient, …)` rather than listing every client's shape.
-export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : SqliteClient;
+export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : D extends "clickhouse" ? ClickhouseClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
 export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | SqliteWasmDatabase | DurableObjectSql | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
@@ -552,7 +558,8 @@ function statement(query: QueryModule, params: ParamsInput) {
     // An array parameter takes no NULL element, as its type says (`:ids::int[]` is `number[]`):
     // a NULL in `= any(:ids)` matches nothing. An array inside a
     // structured parameter's member keeps its NULL elements (src/rows.ts).
-    if (type?.kind === "array" && Array.isArray(bound.values[i])) {
+    // A ClickHouse array's type says whether an element may be NULL, and its binder holds each to it.
+    if (type?.kind === "array" && Array.isArray(bound.values[i]) && query.dialect !== "clickhouse") {
       const at = nullElement(bound.values[i] as unknown[]);
       if (at !== undefined) throw new ParameterError(`Parameter "${name}" is an array whose elements may not be null, and the element at ${at} is. Leave it out of the array.`);
     }
@@ -735,6 +742,8 @@ function checkBinary(type: EngineType | undefined, name: string, v: unknown, dia
 // of those texts.
 function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name: string): unknown {
   if (type === undefined || v == null) return v;
+  // A ClickHouse value is written as its type's text where the statement runs (src/decode-clickhouse.ts).
+  if (dialect === "clickhouse") return v;
   if (dialect === "sqlite") return typeof v === "boolean" ? (v ? 1 : 0) : v;
   if (dialect === "mysql") {
     // A SET goes as its members joined by commas, in the order its column declares them: MySQL
@@ -829,6 +838,18 @@ function dateText(d: Date): string {
 export function compile(query: QueryModule): { text: string; order: readonly string[] } {
   if (query.text && query.order) return { text: query.text, order: query.order };
   const { placeholders } = lexPlaceholders(query.sql, query.dialect);
+  // ClickHouse's driver binds by name, and a placeholder there carries its type: its own form goes
+  // as it is written, and `:name::Type` as that form, with the cast's type.
+  if (query.dialect === "clickhouse") {
+    let sent = "";
+    let from = 0;
+    for (const p of placeholders) {
+      const written = query.sql.slice(p.start, p.end);
+      sent += query.sql.slice(from, p.start) + (written.startsWith("{") ? written : `{${p.name}:${castType(query.sql, p.end)}}`);
+      from = p.end;
+    }
+    return { text: sent + query.sql.slice(from), order: [...new Set(placeholders.map((p) => p.name))] };
+  }
   // Postgres numbers each distinct parameter once.
   const numbered = query.dialect === "postgres";
   let text = "";
@@ -852,6 +873,7 @@ function indexOf(query: QueryModule, p: { name: string; start: number; end: numb
 
 const accepted: Record<Dialect, string> = {
   postgres: "query(text, values) as on pg, PGlite, Neon, @vercel/postgres and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database or Knex instance over one of them",
+  clickhouse: "a client of @clickhouse/client or @clickhouse/client-web, whose exec() runs the statement",
   mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database or Knex instance over one of them",
   sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database, Cloudflare D1 and the oo1 Database of @sqlite.org/sqlite-wasm; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database or Knex instance over one of them",
 };

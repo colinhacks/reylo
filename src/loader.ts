@@ -90,7 +90,9 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // time gives each value (src/values.ts); and an array's delimiter where it is not a comma.
   const columns = analysis.columns.map((c) => {
     const kind = columnKind(c.type, session.project.dialect);
-    return c.delimiter === undefined ? [c.name, kind] : [c.name, kind, c.delimiter];
+    // A ClickHouse column's type as the server names it stands where a delimiter would, which it never has.
+    const beside = c.delimiter ?? c.described;
+    return beside === undefined ? [c.name, kind] : [c.name, kind, beside];
   });
   // Where each Postgres JSON column holds a float or a decimal that may be NaN or an infinity,
   // which the run time gives as that number, or a Postgres array it holds to one level (src/render.ts,
@@ -146,7 +148,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
 }
 
 /** The define function from "reylo" a module of each dialect calls (src/index.ts). */
-export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery" };
+export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery", clickhouse: "defineClickhouseQuery" };
 
 /** The line and column, from 1, of a UTF-8 byte offset into `text`. */
 function place(text: string, bytes: number): string {

@@ -662,9 +662,21 @@ const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_a
     union all select ${line("q", named("regnamespace", "q.opcnamespace"), txt("q.opcname"), txt("m.amname"), type("q.opcintype"))} from pg_catalog.pg_opclass q join pg_catalog.pg_am m on ${eq("m.oid", "q.opcmethod")} where q.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("d", relation("d.objoid"), out("int4", "d.objsubid"), md5("d.description"))} from pg_catalog.pg_description d ${rel("d", "objoid")} where ${eq("d.classoid", PG_CLASS)} and d.objsubid operator(pg_catalog.>) 0 and ${NS}
   ) t`;
+/**
+ * ClickHouse: every column, table (a view's query with it) and function the database's user made,
+ * each a line, hashed with the server's version and the settings the session changed, since one of
+ * those can change a statement's types (`join_use_nulls`).
+ */
+const CLICKHOUSE_FINGERPRINT = `SELECT concat(version(), ' ', toString(count()), ' ', toString(sum(cityHash64(x))), ' ', toString(groupBitXor(cityHash64(x)))) FROM (
+    SELECT concat('c ', table, ' ', name, ' ', toString(position), ' ', type, ' ', default_kind, ' ', toString(cityHash64(default_expression)), ' ', toString(cityHash64(comment))) AS x FROM system.columns WHERE database = currentDatabase()
+    UNION ALL SELECT concat('t ', name, ' ', engine, ' ', sorting_key, ' ', toString(cityHash64(as_select))) FROM system.tables WHERE database = currentDatabase()
+    UNION ALL SELECT concat('f ', name, ' ', toString(cityHash64(create_query))) FROM system.functions WHERE origin = 'SQLUserDefined'
+    UNION ALL SELECT concat('s ', name, ' ', value) FROM system.settings WHERE changed
+  )`;
 /** Each dialect's schema fingerprint query. The Rust crate keeps copies (rust/reylo-build/src/fingerprint-*.sql), which tests/rust-fingerprints.test.ts holds to these. */
 export const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   postgres: POSTGRES_FINGERPRINT,
+  clickhouse: CLICKHOUSE_FINGERPRINT,
   mysql: `select concat_ws(' ', @@version, @@sql_mode, count(*), sum(crc32(x)), bit_xor(crc32(x))) from (
     select concat_ws(' ', 'c', table_name, column_name, ordinal_position, column_type, coalesce(character_set_name, ''), is_nullable, column_key, extra, coalesce(generation_expression, ''), md5(column_comment)) as x from information_schema.columns where table_schema = database()
     union all select concat_ws(' ', 's', table_name, index_name, non_unique, seq_in_index, column_name) from information_schema.statistics where table_schema = database()

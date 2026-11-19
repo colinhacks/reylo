@@ -4,12 +4,13 @@ import * as run from "../src/execute.ts";
 import { postgres } from "../src/decode.ts";
 import { mysql } from "../src/decode-mysql.ts";
 import { sqlite } from "../src/decode-sqlite.ts";
+import { clickhouse } from "../src/decode-clickhouse.ts";
 import type { ClientFor, Dialect, ParamsInput, SyncClientFor } from "../src/execute.ts";
 
 /** A query module as a test writes it: its dialect, and no runtime. */
 export type QueryModule<D extends Dialect = Dialect> = Omit<run.QueryModule<D>, "runtime">;
 
-const RUNTIMES: { readonly [D in Dialect]: run.Runtime<D> } = { postgres, mysql, sqlite };
+const RUNTIMES: { readonly [D in Dialect]: run.Runtime<D> } = { postgres, mysql, sqlite, clickhouse };
 
 // One module with its runtime per module a test wrote, so that what the run time keeps by module
 // (src/fresh.ts) keeps it as it would for a defined query.

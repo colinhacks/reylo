@@ -11,7 +11,7 @@ import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type Jso
 import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
 import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
+type Dialect = "postgres" | "mysql" | "sqlite" | "clickhouse";
 type Schema = { [key: string]: unknown };
 type Analysis = {
   /** The prose written in comments before the statement, which describes both schemas. */
