@@ -115,8 +115,8 @@ steps:
 
 - Every `reylo migrate` and `reylo db` command runs on Turso Cloud, and on any libSQL server: a `libsql://`, `https://` or `http://` URL, as `@libsql/client` takes it. Add `?tls=0` to a `libsql://` URL for a server without TLS.
 - From code, pass the same URL: `migrate({ url })` ([API](/migrate/docs#api)).
-- Shadow databases are in memory on Reylo's SQLite 3.53. A migration that calls a function newer than your database server's SQLite (3.47.0 on Turso Cloud) passes `--dry-run`, then fails on the server and is rolled back.
-- A migration that uses libSQL's own SQL, such as a vector index (`libsql_vector_idx`) or `alter table … alter column`, can't run through Reylo Migrate yet: `reylo migrate dev` and the shadow databases run Reylo's SQLite, which has neither.
+- Shadow databases are in memory, on libSQL's own engine: SQLite 3.47.0, as Turso Cloud runs, with libSQL's SQL.
+- Migrations can use libSQL's own SQL, such as a vector index (`libsql_vector_idx`) or `alter table … alter column`. When your migrations or `schema.sql` do, `reylo migrate dev` and every other command open your local file on libSQL's engine too.
 - Each migration runs in one transaction with its history row. Two deploys on one machine take turns; two on different machines at once don't, and one of them fails, changing nothing.
 
 ## SQLite version
