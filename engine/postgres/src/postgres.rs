@@ -2800,15 +2800,25 @@ impl<'a> Engine<'a> {
         if facts.len() != described.columns.len() {
             return Some(());
         }
+        // An array of a domain over an array type (`ARRAY[x]` of such a column, which the describe
+        // reports by its base type) holds the domain's values, each one value however its base
+        // type nests: Postgres builds it as an array of the domain, as the describe says it is.
+        let registry = self.registry.borrow();
+        let of_array_domains = |type_oid: u32| {
+            registry.get(type_oid).filter(|t| t.kind == crate::pgtypes::TypeKind::Array).and_then(|t| registry.get(t.elem?)).is_some_and(|e| {
+                e.kind == crate::pgtypes::TypeKind::Domain && registry.get(registry.resolve_domain(e.oid)).is_none_or(|base| base.kind == crate::pgtypes::TypeKind::Array)
+            })
+        };
         for (col, fact) in described.columns.iter_mut().zip(facts) {
             if let Some((non_null, items, nested)) = fact {
                 if non_null {
                     col.nullable = false;
                 }
                 col.nullable_items = items;
-                col.nested = nested;
+                col.nested = nested.filter(|_| !of_array_domains(col.type_oid));
             }
         }
+        drop(registry);
         // `ARRAY(SELECT …)`'s elements are its subquery's one column, which the subquery's own FROM
         // and WHERE settle, over the items of this statement it may read.
         if plan.set_op.is_none() {
