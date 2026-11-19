@@ -622,7 +622,7 @@ impl Owned {
 /// server, often the target's own, is given one only by whoever runs it.
 #[cfg(feature = "cli")]
 async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url: &str, version: i64) -> Result<Owned, Error> {
-    use crate::catalog::{beyond_reach, not_extension, not_platform_schema, PG_USER_NS, PLATFORM_ROLES, SHADOW_PLATFORM_ROLE};
+    use crate::catalog::{beyond_reach, in_project_schema, not_extension, not_platform_schema, PG_USER_NS, PLATFORM_ROLES, SHADOW_PLATFORM_ROLE};
     let named = PLATFORM_ROLES.iter().map(|r| literal(r)).collect::<Vec<_>>().join(", ");
     let theirs = |owner: &str| format!("{} and pg_get_userbyid({owner}) <> all (array[{named}])", beyond_reach(owner));
     let rows = target
@@ -637,7 +637,8 @@ async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url:
             order by 1, 5, 2",
             theirs("n.nspowner"),
             not_extension("pg_namespace", "n"),
-            theirs("x.extowner"),
+            // One in a schema of the project's is the project's, whoever owns it.
+            format!("{} and not {}", theirs("x.extowner"), in_project_schema("n")),
             theirs("p.proowner"),
             not_platform_schema("n"),
             not_extension("pg_proc", "p")

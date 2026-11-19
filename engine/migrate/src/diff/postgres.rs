@@ -8,7 +8,7 @@
 //! the two, since the server's rendering of an expression is not always one it reads back to itself.
 
 use super::{Alterer, Change, Kind, Object, Schema, TypeClass};
-use crate::catalog::{not_extension, not_platform, not_platform_schema, HISTORY_TABLE, PG_USER_NS};
+use crate::catalog::{not_extension, not_platform, not_platform_schema, project_extension, HISTORY_TABLE, PG_USER_NS};
 use crate::db::{Db, Row};
 use crate::{Dialect, Error};
 use regex::Regex;
@@ -254,7 +254,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     for r in db
         .rows(&format!(
             "select x.oid, format('%I', x.extname) as name, format('%I', n.nspname) as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
-            not_platform("x.extowner")
+            project_extension("x", "n")
         ))
         .await?
     {

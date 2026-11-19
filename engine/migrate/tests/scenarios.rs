@@ -2797,6 +2797,8 @@ on!(
     a_projects_extension_in_pg_catalog_is_written,
     a_hypertable_is_said_to_be_unread,
     a_dump_makes_a_schema_its_extensions_share_once,
+    an_extension_in_a_projects_schema_is_the_projects_whoever_owns_it,
+    an_extension_a_platform_role_owns_in_a_projects_schema_is_the_projects,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
@@ -3196,6 +3198,51 @@ mod adversarial {
         let mut db = Db::connect(&admin, &p.dir).await.unwrap();
         let _ = db.exec(&format!("drop database if exists {empty} with (force)")).await;
         db.close().await;
+    }
+
+    /// As Supabase makes a project: its extensions in `extensions`, a schema of the project's role,
+    /// owned by a role the shadows don't give them (Supabase makes the one its role creates its
+    /// administrator's). An extension in a schema of the project's is the project's, whoever owns it:
+    /// init writes it, the shadows make it as the role connected, and nothing drifts.
+    pub async fn an_extension_in_a_projects_schema_is_the_projects_whoever_owns_it(mut p: P) {
+        p.exec("do $$ begin create role madv_ext login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_ext", p.name)).await;
+        // A superuser the role connected may not act as makes it, as the platform does.
+        p.exec("create schema extensions authorization madv_ext; create extension pgcrypto with schema extensions").await;
+        p.url = as_role(&p.url, "madv_ext");
+        p.exec("create table tokens (id int primary key, token text default encode(extensions.gen_random_bytes(8), 'hex'))").await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert_has!(&schema, r"(?i)create extension if not exists pgcrypto with schema extensions");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.schema(&format!("{schema}\ncreate table keys (id int primary key, key text default encode(extensions.gen_random_bytes(4), 'hex'));\n"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "keys", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// The reverse: an extension a platform's role owns in a schema of the project's. It is the
+    /// project's too: init writes it, so no shadow copies it as the role connected and reads that copy
+    /// as a change.
+    pub async fn an_extension_a_platform_role_owns_in_a_projects_schema_is_the_projects(mut p: P) {
+        p.exec("do $$ begin create role supabase_auth_admin; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec("create schema extensions; create extension citext with schema extensions; update pg_catalog.pg_extension set extowner = 'supabase_auth_admin'::regrole where extname = 'citext'").await;
+        p.exec("create table users (id int primary key, email extensions.citext)").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert_has!(&schema, r"(?i)create extension if not exists citext with schema extensions");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.schema(&format!("{schema}\ncreate table teams (id int primary key, name extensions.citext);\n"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "teams", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
     }
 
     /// A TimescaleDB hypertable, which `migrate new` writes as a plain table, is listed as unread by

@@ -256,6 +256,20 @@ pub(crate) async fn platform_owners(db: &mut Db) -> Result<Vec<String>, Error> {
     Ok(rows.iter().map(|r| r.text("r").to_string()).collect())
 }
 
+/// Whether the extension `x` (a `pg_extension` row) in the schema `n` (its `pg_namespace` row) is the
+/// project's: one in a schema of the project's is, whoever owns it (Supabase makes the one its role
+/// creates its administrator's, while those it made with the database are the role's), and one a
+/// platform's owner owns is the platform's only in a schema of the platform's or in `pg_catalog`
+/// (Azure's `pgaadauth`).
+pub(crate) fn project_extension(x: &str, n: &str) -> String {
+    format!("({} or {})", not_platform(&format!("{x}.extowner")), in_project_schema(n))
+}
+
+/// Whether the schema `n` (a `pg_namespace` row) is one of the project's, which `pg_catalog` never is.
+pub(crate) fn in_project_schema(n: &str) -> String {
+    format!("({n}.nspname <> 'pg_catalog' and {})", not_platform_schema(n))
+}
+
 pub(crate) fn not_extension(catalog: &str, alias: &str) -> String {
     format!("not exists (select 1 from pg_depend e where e.classid = '{catalog}'::regclass and e.objid = {alias}.oid and e.deptype = 'e')")
 }
@@ -336,13 +350,14 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     }
     // An extension's version is the server's: an unversioned `create extension` replays at today's
     // default, so a database that installed an older one would drift after every server upgrade.
-    // `plpgsql` is every database's, and one the platform's superuser made (Azure's `pgaadauth`, in
-    // `pg_catalog`) the platform's; one the project made is compared wherever it is, `pg_catalog`
-    // included, where a trusted extension may be put by a role that is no superuser.
+    // `plpgsql` is every database's, and one the platform's owner has in its own schema or in
+    // `pg_catalog` (Azure's `pgaadauth`) the platform's; one the project made is compared wherever it
+    // is, `pg_catalog` included, where a trusted extension may be put by a role that is no superuser,
+    // and one in a schema of the project's is compared whoever owns it.
     for r in db
         .rows(&format!(
             "select x.extname as name, n.nspname as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
-            not_platform("x.extowner")
+            project_extension("x", "n")
         ))
         .await?
     {
