@@ -139,6 +139,19 @@ pub(crate) fn cannot_create(e: Error, may_create: bool) -> Error {
     Error(format!("{e}. Each shadow database is a new database on this server: give the role the right to create databases, or set shadow_url in .reylo.yaml to a server where it has it"))
 }
 
+/// Whether a MySQL server's error for `create database` is a refusal to make one, and if so
+/// whether the role may create databases elsewhere on it: ER_DBACCESS_DENIED_ERROR and
+/// ER_SPECIFIC_ACCESS_DENIED_ERROR are the role's missing CREATE; Vitess refuses every
+/// `create database` itself, as VT12001 under the generic error code 1105.
+#[cfg(feature = "cli")]
+fn mysql_create_refused(code: u16, message: &str) -> Option<bool> {
+    match code {
+        1044 | 1227 => Some(false),
+        1105 if message.starts_with("VT12001") && message.contains("create database") => Some(true),
+        _ => None,
+    }
+}
+
 #[cfg(feature = "cli")]
 pub(crate) fn sqlite_error(e: rusqlite::Error) -> Error {
     Error(e.to_string())
@@ -902,8 +915,10 @@ impl Server {
                     None => String::new(),
                 };
                 admin.query_drop(format!("create database `{name}`{charset}")).await.map_err(|e| match &e {
-                    // ER_DBACCESS_DENIED_ERROR and ER_SPECIFIC_ACCESS_DENIED_ERROR: no CREATE on the database.
-                    mysql_async::Error::Server(s) if s.code == 1044 || s.code == 1227 => cannot_create(mysql_error(e), false),
+                    mysql_async::Error::Server(s) => match mysql_create_refused(s.code, &s.message) {
+                        Some(may_create) => cannot_create(mysql_error(e), may_create),
+                        None => mysql_error(e),
+                    },
                     _ => mysql_error(e),
                 })?;
                 let db = Db::Mysql(crate::db::open_mysql(&with_database(url, &name)).await?);
@@ -1214,6 +1229,16 @@ mod url_tests {
         assert!(e.0.contains("shadow_url") && !e.0.contains("give the role the right"), "{}", e.0);
         let e = cannot_create(Error("permission denied to create database".into()), false);
         assert!(e.0.contains("give the role the right to create databases") && e.0.contains("shadow_url"), "{}", e.0);
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn a_mysql_refusal_to_create_a_database_is_told_what_helps() {
+        assert_eq!(mysql_create_refused(1044, "Access denied for user 'app'@'%' to database 'reylo_shadow_1'"), Some(false));
+        assert_eq!(mysql_create_refused(1227, "Access denied; you need (at least one of) the CREATE privilege(s) for this operation"), Some(false));
+        assert_eq!(mysql_create_refused(1105, "VT12001: unsupported: create database by failDBDDL"), Some(true));
+        assert_eq!(mysql_create_refused(1105, "VT12001: unsupported: something else"), None);
+        assert_eq!(mysql_create_refused(1007, "Can't create database 'reylo_shadow_1'; database exists"), None);
     }
 
     #[test]
