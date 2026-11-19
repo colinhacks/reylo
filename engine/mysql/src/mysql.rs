@@ -2444,6 +2444,11 @@ fn documents(statement: Option<&Statement>, raw: &MysqlDescribe, host: &Host) ->
     for row in rows.unwrap_or_default() {
         let (Some(table), Some(clause)) = (row.first().and_then(as_str), row.get(1).and_then(as_str)) else { continue };
         for (column, schema) in check_documents(clause) {
+            // A schema that names a key twice in one object narrows nothing: MySQL's validator
+            // reads the first, and the engine's reading the last.
+            if repeats_key(&schema) {
+                continue;
+            }
             schemas.entry((table.to_ascii_lowercase(), column.to_ascii_lowercase())).or_default().push((schema, &[&crate::schema_type::MYSQL]));
         }
     }
@@ -2513,6 +2518,62 @@ fn check_clause(text: &str) -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// Whether JSON text names a key twice in one of its objects, or nests deeper than a plain read of
+/// it goes. MySQL's JSON Schema validator looks a keyword up by its first member of the name, where
+/// a `serde_json` value keeps the last.
+fn repeats_key(text: &str) -> bool {
+    use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+    /// Whether a value repeats a key, read as it is deserialized.
+    struct Repeats(bool);
+    struct Walk;
+    impl<'de> Deserialize<'de> for Repeats {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_any(Walk).map(Repeats)
+        }
+    }
+    impl<'de> Visitor<'de> for Walk {
+        type Value = bool;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_str<E>(self, _: &str) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_unit<E>(self) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<bool, A::Error> {
+            let mut repeats = false;
+            while let Some(Repeats(inner)) = seq.next_element()? {
+                repeats |= inner;
+            }
+            Ok(repeats)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+            let (mut seen, mut repeats) = (HashSet::new(), false);
+            while let Some(key) = map.next_key::<String>()? {
+                repeats |= !seen.insert(key);
+                let Repeats(inner) = map.next_value()?;
+                repeats |= inner;
+            }
+            Ok(repeats)
+        }
+    }
+    serde_json::from_str::<Repeats>(text).map_or(true, |Repeats(repeats)| repeats)
 }
 
 /// The JSON Schema text each `json_schema_valid('…', column)` of a CHECK holds its column to, as
@@ -3109,6 +3170,15 @@ mod tests {
         assert_eq!(schema, json!({"enum": ["it's", "a\\b", "\u{e9}", "\u{e9}", "\"q\"", "\u{1f600}", "\u{20ac}", "t\tx", "%_"]}));
         // A string `sqlparser` would read otherwise than MySQL is not read.
         assert_eq!(check_clause(r"json_schema_valid(_utf8mb4\'\\f\',`doc`)"), None);
+    }
+
+    #[test]
+    fn a_schema_that_names_a_key_twice_narrows_nothing() {
+        assert!(repeats_key(r#"{"type":"string","type":"integer"}"#));
+        assert!(repeats_key(r#"{"properties":{"a":{"type":"string","typ\u0065":"integer"}}}"#));
+        assert!(repeats_key(r#"[{"a":1,"a":2}]"#));
+        assert!(!repeats_key(r#"{"type":"object","properties":{"type":{"type":"string"}},"required":["type"]}"#));
+        assert!(!repeats_key(r#"{"enum":[{"a":1},{"a":2}],"x":null,"y":[true,1.5,-2]}"#));
     }
 
     use super::*;

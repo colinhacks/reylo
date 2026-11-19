@@ -19,3 +19,6 @@ insert into pairs values (1, '["a"]'), (2, '["a", 1]'), (3, '[]');
 create table words (id int primary key, w json, check (json_schema_valid('{"enum":["it\'s","a\\\\b","café","😀"]}', w)));
 insert into words values (1, '"it\'s"'), (2, '"café"'), (3, '"😀"'), (4, '"a\\\\b"');
 create view doc_view as select id, doc from docs;
+-- A schema that names a key twice in one object is read by its first: `dup` holds strings.
+create table repeated (id int primary key, dup json not null, check (json_schema_valid('{"type":"string","type":"integer"}', dup)));
+insert into repeated values (1, '"str"');

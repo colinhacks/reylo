@@ -6,6 +6,8 @@ expression.sql: at_most_one () -> { n: json?, doc: json }
 join.sql: many () -> { doc: json {"type":"object","properties":{"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"kind":{"enum":["a","b"]}},"required":["name","kind"],"additionalProperties":true}, plain: json? }
 pairs.sql: many () -> { p: json {"type":"array","prefixItems":[{"type":"string"},{"type":"integer"}],"items":false}? }
 refs.sql: many () -> { a: json?, b: json {"type":"string"}? }
+repeated_key.sql: many () -> { dup: json }
+repeated_key_constructor.sql: many () -> { o: json { d: json } }
 tagged.sql: at_most_one (id: int32) -> { payload: json {"anyOf":[{"type":"object","properties":{"type":{"enum":["click"]},"x":{"type":"number"}},"required":["type","x"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["key"]},"key":{"type":"string"}},"required":["type","key"],"additionalProperties":false}]}? }
 view.sql: many () -> { doc: json }
 with_query.sql: many () -> { doc: json? }

@@ -345,7 +345,7 @@ where user_id = :user_id
 
 </Rules>
 
-MySQL validates every schema as draft 4, whatever its `$schema` says, so `const`, `if`, `prefixItems` and `contains` don't narrow the type.
+MySQL validates every schema as draft 4, whatever its `$schema` says, so `const`, `if`, `prefixItems` and `contains` don't narrow the type. Neither does a schema that names a key twice in one object, which MySQL reads by the first.
 
 ### Enums and sets
 
