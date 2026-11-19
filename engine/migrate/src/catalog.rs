@@ -217,8 +217,9 @@ pub const PLATFORM_ROLES: &[&str] = &[
 ];
 
 /// The role a shadow database makes the platform's own objects as, where a superuser the connection
-/// may not act as owns them on the target: one of the shadow's own, which every comparison leaves out
-/// as it leaves out a platform's role. It owns nothing outside a shadow.
+/// may not act as owns them on the target: one the shadows' server has, which the connection may
+/// become, and which every comparison leaves out as it leaves out a platform's role. Reylo never
+/// makes it; it owns nothing outside a shadow.
 pub const SHADOW_PLATFORM_ROLE: &str = "reylo_platform";
 
 /// Whether the role `owner` is no platform's: none of [`PLATFORM_ROLES`], not

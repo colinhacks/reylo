@@ -616,9 +616,10 @@ impl Owned {
     }
 }
 
-/// What [`Owned`] the target has, with the role the shadows' server (`admin`'s) makes it as, made
-/// and taken on where it is missing and the connection may (a superuser, or a role that may create
-/// roles); else the note that says it is left out.
+/// What [`Owned`] the target has, with the role the shadows' server (`admin`'s) makes it as, where
+/// that server has it and the connection may become it; else the note that says it is left out.
+/// Reylo makes no role itself: a role is the whole server's, and outlives every run, so the shadows'
+/// server, often the target's own, is given one only by whoever runs it.
 #[cfg(feature = "cli")]
 async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url: &str, version: i64) -> Result<Owned, Error> {
     use crate::catalog::{beyond_reach, not_extension, not_platform_schema, PG_USER_NS, PLATFORM_ROLES, SHADOW_PLATFORM_ROLE};
@@ -656,16 +657,12 @@ async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url:
     let extensions = of("x").map(|r| (r.text("a").to_string(), r.text("b").to_string())).collect();
     let role = SHADOW_PLATFORM_ROLE;
     let may = format!("select pg_has_role(current_user, oid, case when current_setting('server_version_num')::int >= 160000 then 'SET' else 'MEMBER' end)::text as may from pg_roles where rolname = {}", literal(role));
-    if !pg_rows(admin, &may).await?.first().is_some_and(|r| r.text("may") == "true") {
-        let _ = admin.batch_execute(&format!("create role {role} nologin")).await;
-        let _ = admin.batch_execute(&format!("grant {role} to current_user")).await;
-    }
     if pg_rows(admin, &may).await?.first().is_some_and(|r| r.text("may") == "true") {
         return Ok(Owned { statements, extensions, role: Some(role.to_string()), note: None });
     }
     let user = pg_rows(admin, "select current_user as u").await?.first().map(|r| r.text("u").to_string()).unwrap_or_default();
     let note = format!(
-        "· {LEFT_OUT} what {} {} here, the platform's: {user} can't become a role {role} on their server to make it as, so a migration that uses it fails in them",
+        "· {LEFT_OUT} what {} {} here, the platform's, so a migration that uses it fails in them: a role {role} on their server that {user} may SET ROLE to lets them make it",
         owners.join(", "),
         if owners.len() == 1 { "owns" } else { "own" }
     );

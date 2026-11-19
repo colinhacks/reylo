@@ -2793,6 +2793,7 @@ on!(
     init_refused_leaves_no_project_behind,
     what_a_superuser_out_of_reach_owns_is_the_platforms,
     the_platforms_objects_are_in_every_shadow_as_a_role_of_its_own,
+    a_run_never_makes_a_role,
     a_projects_extension_in_pg_catalog_is_written,
     a_hypertable_is_said_to_be_unread,
     a_dump_makes_a_schema_its_extensions_share_once,
@@ -3103,9 +3104,41 @@ mod adversarial {
         db.close().await;
     }
 
+    /// A run on a database with the platform's objects, by a role that may create roles, makes no role
+    /// and grants none: a role is the whole server's and outlives the run. The shadows leave the
+    /// platform's objects out and say how a role made by hand lets them in.
+    pub async fn a_run_never_makes_a_role(mut p: P) {
+        p.exec("do $$ begin create role madv_rolemaker login createdb createrole; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_rolemaker", p.name)).await;
+        p.exec("create schema timescale_functions; create function timescale_functions.helper() returns int language sql security definer as 'select 1'; create function public.create_playground() returns int language sql as 'select 1';").await;
+        p.url = as_role(&p.url, "madv_rolemaker");
+        p.exec("create table users (id int primary key)").await;
+        // The roles and memberships no other scenario makes beside this one, and every membership of this role.
+        let roles = async |p: &P| {
+            let rows = p
+                .rows(
+                    r"select coalesce(string_agg(rolname, ',' order by rolname), '') as r from pg_roles where rolname not like 'madv\_%' and rolname not in ('cloud_admin', 'supabase_auth_admin', 'reylo_platform')
+                    union all select coalesce(string_agg(format('%s>%s:%s', roleid::regrole, member::regrole, admin_option), ',' order by roleid::regrole::text, member::regrole::text), '') from pg_auth_members where member = 'madv_rolemaker'::regrole or roleid = 'madv_rolemaker'::regrole",
+                )
+                .await;
+            rows.iter().map(|r| r.text("r").to_string()).collect::<Vec<_>>()
+        };
+        let before = roles(&p).await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        p.strict = true;
+        p.output();
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"Shadow databases leave out what \S+ owns here, the platform's, so a migration that uses it fails in them: a role reylo_platform on their server that madv_rolemaker may SET ROLE to lets them make it");
+        assert_eq!(roles(&p).await, before, "a run made or granted a role");
+    }
+
     /// The platform's objects a migration uses (a view over its functions) are made in each shadow as
-    /// a role of the shadows' own, which the role connected may become: the migration replays, and no
-    /// command reports them.
+    /// `reylo_platform`, a role the server's administrator made and the role connected may become:
+    /// the migration replays, and no command reports them.
     pub async fn the_platforms_objects_are_in_every_shadow_as_a_role_of_its_own(mut p: P) {
         p.exec("do $$ begin create role madv_tigeradmin login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
         p.exec("do $$ begin create role reylo_platform nologin; exception when duplicate_object or unique_violation then null; end $$").await;
