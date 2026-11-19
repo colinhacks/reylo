@@ -2285,7 +2285,6 @@ name = "reylo-sqlparser"
 version = "0.63.0"
 dependencies = [
  "log",
- "reylo-engine-build",
 ]
 
 [[package]]

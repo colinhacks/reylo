@@ -6,7 +6,7 @@ The manifest leaves out the crate's development dependencies, its optional depen
 
 ## What this copy changes
 
-It publishes to crates.io as `reylo-sqlparser`, whose library is still `sqlparser`, so that the MySQL engine builds from crates.io, its `build.rs` hands the hash of its sources to the engine's fingerprint as `SOURCE_HASH`, and its manifest names the oldest Rust it builds with, written in it rather than taken from the workspace, so that it changes only with the copy.
+It publishes to crates.io as `reylo-sqlparser`, whose library is still `sqlparser`, so that the MySQL engine builds from crates.io, its `build.rs` hands the hash of its sources to the engine's fingerprint as `SOURCE_HASH`, and its manifest names the oldest Rust it builds with and no crate of the workspace, each written in it rather than taken from the workspace, so that it changes only with the copy: a published version of it is then the same crate from one release of Reylo to the next.
 
 The engine reads a query, INSERT (or REPLACE), UPDATE or DELETE, and parses nothing else, and its only dialect is MySQL's. The copy is cut to that, which takes the MySQL engine's artifact from 2.67 to 1.69 MB with every analysis unchanged. Each file it changes says so under its license header.
 
