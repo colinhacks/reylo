@@ -155,7 +155,7 @@ group by u.id
 
 </SchemaQuery>
 
-You can import it like this:
+You can import it like this. Hover over `author` to see the inferred type!
 
 ```ts twoslash title="main.ts" dialect="postgres"
 // @noErrors
@@ -171,7 +171,7 @@ author?.
 
 Reylo relies on the Content Mapper API (introduced in TypeScript 7.1) to let you directly import `.sql` files into TypeScript.
 
-For a query, Reylo infers what goes in and what comes out:
+Reylo infers type information about both the parameters and the return types. Throughout the docs, you will see "inference cards" like this where you can quickly see both a query and its inferred type information.
 
 <InferenceCard>
 

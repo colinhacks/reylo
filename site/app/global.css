@@ -1995,7 +1995,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   text-decoration: underline dotted;
   text-decoration-color: color-mix(in oklab, currentColor 60%, transparent);
   text-underline-offset: 0.25rem;
-  cursor: default;
+  cursor: help;
   outline: none;
 }
 
@@ -2010,7 +2010,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   right: 0;
   z-index: 40;
   display: none;
-  width: min(44rem, calc(100vw - 2.5rem));
+  width: min(36rem, calc(100vw - 2.5rem));
   padding-top: 0.5rem;
 }
 
@@ -2030,4 +2030,9 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .schema-query-card > * {
   margin: 0 !important;
+}
+
+/* A size down, so the schema's longest lines fit the popover, narrower than the column, unwrapped. */
+.schema-query-card {
+  --dk-code-size: 12px;
 }
