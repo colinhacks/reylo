@@ -3973,6 +3973,26 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 let schema = format!("CREATE SCHEMA IF NOT EXISTS {}", r.text("schema"));
                 if !matches!(r.text("raw"), "public" | "pg_catalog") && !kept.contains(&schema) {
                     kept.push(schema);
+                    // With its owner, where it isn't the runner, and the privileges on it, which are
+                    // compared: pg_dump writes them only for a schema it dumps.
+                    if !named_schemas.iter().any(|s| s == r.text("raw")) {
+                        let name = crate::db::literal(r.text("raw"));
+                        for g in db
+                            .rows(&format!(
+                                "select 0 as k, format('ALTER SCHEMA %I OWNER TO %I', n.nspname, pg_get_userbyid(n.nspowner)) as s from pg_namespace n
+                                  where n.nspname = {name} and n.nspowner <> (select oid from pg_roles where rolname = current_user) and {}
+                                union all
+                                select 1, format('GRANT %s ON SCHEMA %I TO %s%s', x.privilege_type, n.nspname, case when x.grantee = 0 then 'PUBLIC' else quote_ident(pg_get_userbyid(x.grantee)) end, case when x.is_grantable then ' WITH GRANT OPTION' else '' end)
+                                  from pg_namespace n, aclexplode(n.nspacl) x where n.nspname = {name} and x.grantee <> n.nspowner and {}
+                                order by k, s",
+                                crate::catalog::in_project_schema("n"),
+                                crate::catalog::in_project_schema("n")
+                            ))
+                            .await?
+                        {
+                            kept.push(g.text("s").to_string());
+                        }
+                    }
                 }
                 kept.push(format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {}", r.text("name"), r.text("schema")));
             }
