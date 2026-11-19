@@ -313,15 +313,68 @@ impl Named {
 }
 
 /// An integer type's width and whether it is unsigned, by its name.
+/// What a scalar type holds, as far as writing one type's value into a column of another goes.
+enum Held {
+    /// Whole numbers, from the least to the most: an integer's.
+    Whole(f64, f64),
+    /// A decimal, by its digits and those of them after the point.
+    Decimal(u32, u32),
+    /// A float, by the bits of a whole number it holds exactly: 8, 24 or 53.
+    Float(i32),
+    Bool,
+    /// A `String` or a `FixedString`.
+    Text,
+    /// A count of days in 16 bits, of days in 32, and of seconds in 32.
+    Date,
+    Date32,
+    DateTime,
+    /// An instant, by its digits after the second.
+    DateTime64(u32),
+    /// Anything else, of which nothing is said.
+    Other,
+}
+
+fn held(t: &Named) -> Held {
+    if let Some((bits, unsigned)) = integer(&t.name) {
+        let top = 2f64.powi(bits as i32 - i32::from(!unsigned));
+        return Held::Whole(if unsigned { 0.0 } else { -top }, top - 1.0);
+    }
+    match t.name.as_str() {
+        "Decimal" => Held::Decimal(t.number(0).unwrap_or(10), t.number(1).unwrap_or(0)),
+        "Decimal32" => Held::Decimal(9, t.number(0).unwrap_or(0)),
+        "Decimal64" => Held::Decimal(18, t.number(0).unwrap_or(0)),
+        "Decimal128" => Held::Decimal(38, t.number(0).unwrap_or(0)),
+        "Decimal256" => Held::Decimal(76, t.number(0).unwrap_or(0)),
+        "BFloat16" => Held::Float(8),
+        "Float32" => Held::Float(24),
+        "Float64" => Held::Float(53),
+        "Bool" => Held::Bool,
+        "String" | "FixedString" => Held::Text,
+        "Date" => Held::Date,
+        "Date32" => Held::Date32,
+        "DateTime" => Held::DateTime,
+        "DateTime64" => Held::DateTime64(t.number(0).unwrap_or(3)),
+        _ => Held::Other,
+    }
+}
+
 /// Whether ClickHouse, writing a value of the type `from` into a column of the type `to`, may
-/// change the value and raise no error. A whole number outside the column's range wraps into it,
-/// as one read from a string does, or is cut to the column's nearest: a `UInt64` into a `UInt8`,
-/// a number into a `Bool`, a count of days or seconds into a `Date` or a `DateTime` and back. A
-/// decimal's or an instant's digits past the column's are dropped, a fraction is cut from a whole
-/// number, a number of more digits than a float keeps is rounded to the nearest float, a time is
-/// dropped from a date, and a NULL becomes the default of a column that takes none. An array's
-/// elements, a tuple's and a map's keys and values are each written the same way. A value the
-/// column cannot read at all is the server's error, and none of these.
+/// change the value and raise no error. Each answer is what a server does with the ends of the
+/// one type's values written to the other by `INSERT … VALUES`, measured pair by pair on
+/// ClickHouse 26.9:
+///
+/// - A whole number outside the column's range wraps into it, and one outside a date's or a
+///   time's count is cut to it; a number into a `Bool` is true or false.
+/// - A fraction is cut from a whole number, a decimal's or an instant's digits past the column's
+///   are dropped, and a number of more digits than a float keeps is rounded to the nearest float.
+/// - A string is read as whatever the column can make of it: `300` wraps into a `UInt8`, `1.5` is
+///   cut to a whole decimal, and a text that is no date is read as one.
+/// - A time is dropped from a date, a date past a `DateTime`'s years wraps, and a NULL becomes
+///   the default of a column that takes none.
+///
+/// What ClickHouse refuses aloud is none of these: a number too big for a decimal, a decimal
+/// into a whole number it does not fit or into a date. An array's elements, a tuple's and a
+/// map's keys and values are each written the same way.
 pub fn narrows(from: &Named, to: &Named) -> bool {
     let nullable = |t: &Named| match (t.name.as_str(), t.args.as_slice()) {
         ("Nullable", _) => true,
@@ -339,78 +392,65 @@ pub fn narrows(from: &Named, to: &Named) -> bool {
     if let (Some(held), Some(into)) = (parts(from), parts(to)) {
         return from.name == to.name && held.len() == into.len() && held.iter().zip(&into).any(|(held, into)| narrows(held, into));
     }
-    // A decimal's digits, all of them and those after the point, and an instant's after the second.
-    let decimal = |t: &Named| match t.name.as_str() {
-        "Decimal" => Some((t.number(0).unwrap_or(10), t.number(1).unwrap_or(0))),
-        "Decimal32" => Some((9, t.number(0).unwrap_or(0))),
-        "Decimal64" => Some((18, t.number(0).unwrap_or(0))),
-        "Decimal128" => Some((38, t.number(0).unwrap_or(0))),
-        "Decimal256" => Some((76, t.number(0).unwrap_or(0))),
-        _ => None,
-    };
-    let scale = |t: &Named| decimal(t).map(|(_, scale)| scale);
-    let ticks = |t: &Named| match t.name.as_str() {
-        "DateTime64" => Some(t.number(0).unwrap_or(3)),
-        "DateTime" => Some(0),
-        _ => None,
-    };
-    let float = |t: &Named| matches!(t.name.as_str(), "Float32" | "Float64" | "BFloat16");
-    let text = |t: &Named| matches!(t.name.as_str(), "String" | "FixedString");
-    let dated = |t: &Named| matches!(t.name.as_str(), "Date" | "Date32" | "DateTime" | "DateTime64");
-    // A date into a date, and a time into a time or a date.
-    if dated(from) && dated(to) {
-        return match (ticks(from), ticks(to)) {
-            (Some(digits), Some(into)) => into < digits || (from.name == "DateTime64" && to.name == "DateTime"),
-            (Some(_), None) => true,
-            _ => from.name == "Date32" && to.name == "Date",
-        };
-    }
-    // The whole numbers a type holds, its least and its most: an integer's, a Bool's 0 and 1, a
-    // date's count of days, a time's of seconds, and a decimal's with no digit after the point.
-    let whole = |t: &Named| -> Option<(f64, f64)> {
-        if let Some((bits, unsigned)) = integer(&t.name) {
-            let top = 2f64.powi(bits as i32 - i32::from(!unsigned));
-            return Some((if unsigned { 0.0 } else { -top }, top - 1.0));
-        }
-        match (t.name.as_str(), decimal(t)) {
-            ("Bool", _) => Some((0.0, 1.0)),
-            ("Date", _) => Some((0.0, 65535.0)),
-            ("Date32", _) => Some((-25567.0, 120529.0)),
-            ("DateTime", _) => Some((0.0, 4294967295.0)),
-            (_, Some((digits, 0))) => {
-                let top = 10f64.powi(digits as i32) - 1.0;
-                Some((-top, top))
+    // Whether whole numbers from `least` to `most` all lie within a range.
+    let outside = |(least, most): (f64, f64), (into_least, into_most): (f64, f64)| least < into_least || most > into_most;
+    match (held(from), held(to)) {
+        // A string holds any value's text, and a Bool is 0 or 1, which every type but a date keeps.
+        (Held::Other, _) | (_, Held::Other | Held::Text) | (Held::Bool, _) => false,
+        // A Bool's own text is read, and any other refused; any number is true or false.
+        (source, Held::Bool) => !matches!(source, Held::Text),
+        (source, Held::Whole(least, most)) => match source {
+            Held::Whole(a, b) => outside((a, b), (least, most)),
+            // A decimal with no digit after the point is refused where it does not fit.
+            Held::Decimal(_, scale) => scale > 0,
+            Held::Date => outside((0.0, 65535.0), (least, most)),
+            Held::Date32 => outside((-25567.0, 120529.0), (least, most)),
+            Held::DateTime => outside((0.0, 4294967295.0), (least, most)),
+            _ => true,
+        },
+        (source, Held::Float(bits)) => {
+            let exact = 2f64.powi(bits);
+            match source {
+                Held::Float(own) => bits < own,
+                Held::Whole(a, b) => b > exact || -a > exact,
+                // A decimal fraction is no binary one.
+                Held::Decimal(digits, scale) => scale > 0 || 10f64.powi(digits as i32) - 1.0 > exact,
+                Held::DateTime => 4294967295.0 > exact,
+                Held::DateTime64(scale) => bits < 53 || scale > 6,
+                Held::Text => true,
+                _ => false,
             }
-            _ => None,
         }
-    };
-    let fraction = scale(from).is_some_and(|digits| digits > 0);
-    match (whole(from), whole(to)) {
-        // Every number of the one is a number of the other.
-        (Some((least, most)), Some((into_least, into_most))) => return least < into_least || most > into_most,
-        // A fraction is cut off.
-        (None, Some(_)) if float(from) || fraction => return true,
-        // A number read from a string wraps as any other; a Bool's and a date's text is read as it is, or refused.
-        (None, Some(_)) => return text(from) && integer(&to.name).is_some(),
-        _ => {}
+        // A number too big for a decimal is refused, and so is a date.
+        (source, Held::Decimal(_, into)) => match source {
+            Held::Decimal(_, scale) | Held::DateTime64(scale) => scale > into,
+            Held::Float(_) | Held::Text => true,
+            _ => false,
+        },
+        (source, Held::Date) => match source {
+            Held::Whole(a, b) => outside((a, b), (0.0, 65535.0)),
+            Held::Date | Held::Decimal(..) => false,
+            _ => true,
+        },
+        // A Date32 keeps every count of days 16 bits hold, of either sign.
+        (source, Held::Date32) => match source {
+            Held::Whole(a, b) => outside((a, b), (-32768.0, 65535.0)),
+            Held::Date | Held::Date32 | Held::Decimal(..) => false,
+            _ => true,
+        },
+        (source, Held::DateTime) => match source {
+            Held::Whole(a, b) => outside((a, b), (0.0, 4294967295.0)),
+            Held::DateTime | Held::Decimal(..) => false,
+            _ => true,
+        },
+        // A DateTime64 keeps every count of seconds 32 bits hold, of either sign.
+        (source, Held::DateTime64(into)) => match source {
+            Held::Whole(a, b) => outside((a, b), (-2147483648.0, 4294967295.0)),
+            Held::Decimal(_, scale) | Held::DateTime64(scale) => scale > into,
+            Held::Float(_) | Held::Text => true,
+            _ => false,
+        },
     }
-    if let Some(into) = scale(to) {
-        return float(from) || text(from) || scale(from).is_some_and(|digits| digits > into);
-    }
-    if float(to) {
-        let width = |t: &Named| ["BFloat16", "Float32", "Float64"].iter().position(|name| *name == t.name);
-        if float(from) {
-            return width(to) < width(from);
-        }
-        // The whole numbers a float holds exactly: to 2^8, 2^24 and 2^53.
-        let exact = 2f64.powi([8, 24, 53][width(to).unwrap_or(0)]);
-        return match whole(from) {
-            Some((least, most)) => most > exact || -least > exact,
-            // A decimal fraction is no binary one.
-            None => fraction,
-        };
-    }
-    false
 }
 
 fn integer(name: &str) -> Option<(u32, bool)> {
@@ -576,34 +616,83 @@ mod tests {
     #[test]
     fn a_type_narrows_into_a_column_that_changes_its_values_in_silence() {
         let narrows = |from: &str, to: &str| super::narrows(&parse(from).unwrap(), &parse(to).unwrap());
-        // A number past the column's range wraps into it, whichever sign it has, and one read from a string too.
-        for (from, to) in [("UInt64", "UInt8"), ("Int8", "UInt8"), ("UInt8", "Int8"), ("Int64", "Int32"), ("String", "UInt8"), ("Float64", "Int32"), ("Decimal(9, 2)", "Int64")] {
-            assert!(narrows(from, to), "{from} into {to}");
+        let changed: &[(&str, &[&str])] = &[
+            // A whole number outside the column's range, of either sign, and into a float past the bits it keeps.
+            ("UInt64", &["UInt8", "Int64", "Float64", "Bool", "Date", "Date32", "DateTime", "DateTime64(3)"]),
+            ("Int8", &["UInt8", "UInt64", "Bool", "Date", "DateTime"]),
+            ("UInt8", &["Int8", "Bool"]),
+            ("Int32", &["Int16", "UInt32", "Float32", "Date", "Date32", "DateTime"]),
+            ("UInt32", &["Float32", "Date32"]),
+            ("Int64", &["Float64", "DateTime64(6)"]),
+            // A fraction cut off, digits past the column's dropped, and a number rounded to the nearest float.
+            ("Float64", &["Int32", "Float32", "Decimal(9, 2)", "Decimal(9, 0)", "Bool", "Date", "DateTime", "DateTime64(3)"]),
+            ("Float32", &["BFloat16", "UInt8", "Decimal(18, 4)"]),
+            ("Decimal(9, 2)", &["Int64", "Float64", "Decimal(9, 0)", "Decimal(18, 1)", "Bool"]),
+            ("Decimal(18, 4)", &["Decimal(9, 2)", "DateTime64(3)"]),
+            ("Decimal(9, 0)", &["Float32", "Bool"]),
+            ("Decimal(18, 0)", &["Float64"]),
+            // A string is read as whatever the column makes of it.
+            ("String", &["UInt8", "Int64", "Float32", "Float64", "Decimal(9, 0)", "Decimal(9, 2)", "Date", "Date32", "DateTime", "DateTime64(3)"]),
+            ("FixedString(3)", &["Decimal(9, 0)", "UInt8"]),
+            // A time dropped from a date, digits from an instant, a date past a DateTime's years, and a date into a number too narrow for its count.
+            ("DateTime64(6, 'UTC')", &["DateTime64(3, 'UTC')", "DateTime", "Date", "Date32", "UInt8", "Int64", "Float32", "Decimal(9, 0)", "Decimal(18, 4)", "Bool"]),
+            ("DateTime64(3)", &["DateTime", "Decimal(9, 2)", "UInt32"]),
+            ("DateTime", &["Date", "Date32", "UInt16", "Int32", "Float32", "Bool"]),
+            ("Date32", &["Date", "DateTime", "UInt32", "Int16"]),
+            ("Date", &["DateTime", "UInt8", "Int16", "Bool"]),
+            // A NULL becomes the default of a column that takes none.
+            ("Nullable(UInt8)", &["UInt8"]),
+            ("LowCardinality(Nullable(String))", &["String"]),
+            ("Nullable(Int64)", &["Nullable(Float64)"]),
+            // What an array, a tuple and a map hold is written the same way, each in its place.
+            ("Array(UInt64)", &["Array(UInt8)"]),
+            ("Tuple(UInt64, String)", &["Tuple(UInt8, String)"]),
+            ("Tuple(n UInt8, at DateTime64(6))", &["Tuple(n UInt8, at DateTime64(3))"]),
+            ("Map(String, UInt64)", &["Map(String, UInt8)"]),
+            ("Array(Nullable(UInt8))", &["Array(UInt8)"]),
+            ("Array(Array(Float64))", &["Array(Array(Float32))"]),
+            ("Array(String)", &["Array(Decimal(9, 0))"]),
+        ];
+        for (from, columns) in changed {
+            for to in *columns {
+                assert!(narrows(from, to), "{from} into {to}");
+            }
         }
-        // Digits past the column's are dropped, a float is rounded to a narrower one, and a time dropped from a date.
-        for (from, to) in [("Decimal(18, 4)", "Decimal(9, 2)"), ("Float64", "Decimal(9, 2)"), ("String", "Decimal(9, 2)"), ("Float64", "Float32"), ("Float32", "BFloat16"), ("DateTime64(6, 'UTC')", "DateTime64(3, 'UTC')"), ("DateTime64(3)", "DateTime"), ("DateTime", "Date"), ("Date32", "Date")] {
-            assert!(narrows(from, to), "{from} into {to}");
-        }
-        // A whole number of more bits than a float keeps is rounded to the nearest one, and so is a decimal.
-        for (from, to) in [("UInt32", "Float32"), ("Int32", "Float32"), ("UInt64", "Float64"), ("Int64", "Float64"), ("UInt16", "BFloat16"), ("Decimal(9, 2)", "Float64"), ("Nullable(Int64)", "Nullable(Float64)"), ("Decimal(9, 0)", "Float32"), ("Decimal(18, 0)", "Float64"), ("DateTime", "Float32")] {
-            assert!(narrows(from, to), "{from} into {to}");
-        }
-        // A number into a Bool is true or false, and a count of days or seconds outside a date's or a time's is cut to it, as a date is into a narrower number.
-        for (from, to) in [("UInt8", "Bool"), ("Float64", "Bool"), ("Int32", "Date"), ("Int16", "Date32"), ("UInt64", "DateTime"), ("Int64", "DateTime"), ("Date", "UInt8"), ("DateTime", "UInt16"), ("Date32", "UInt32"), ("Decimal(18, 0)", "UInt8")] {
-            assert!(narrows(from, to), "{from} into {to}");
-        }
-        // A NULL becomes the default of a column that takes none.
-        assert!(narrows("Nullable(UInt8)", "UInt8") && narrows("LowCardinality(Nullable(String))", "String"));
-        // What an array, a tuple and a map hold is written the same way, each in its place.
-        for (from, to) in [("Array(UInt64)", "Array(UInt8)"), ("Tuple(UInt64, String)", "Tuple(UInt8, String)"), ("Tuple(n UInt8, at DateTime64(6))", "Tuple(n UInt8, at DateTime64(3))"), ("Map(String, UInt64)", "Map(String, UInt8)"), ("Array(Nullable(UInt8))", "Array(UInt8)"), ("Array(Array(Float64))", "Array(Array(Float32))")] {
-            assert!(narrows(from, to), "{from} into {to}");
-        }
-        for (from, to) in [("Array(UInt8)", "Array(UInt64)"), ("Tuple(a UInt8, b String)", "Tuple(a UInt16, b String)"), ("Map(String, UInt8)", "Map(LowCardinality(String), Nullable(UInt8))"), ("Array(String)", "Array(String)")] {
-            assert!(!narrows(from, to), "{from} into {to}");
-        }
-        // The same type, a wider one, and one the server reads or refuses aloud.
-        for (from, to) in [("UInt8", "UInt8"), ("UInt8", "UInt64"), ("UInt8", "Int16"), ("UInt8", "Nullable(UInt8)"), ("String", "LowCardinality(String)"), ("Decimal(9, 2)", "Decimal(18, 4)"), ("Float32", "Float64"), ("BFloat16", "Float32"), ("DateTime", "DateTime64(3)"), ("Date", "Date32"), ("String", "Date"), ("String", "FixedString(2)"), ("UInt64", "Decimal(9, 2)"), ("UInt8", "String"), ("Decimal(9, 0)", "Int64"), ("UInt8", "Float32"), ("UInt16", "Float32"), ("Int16", "Float32"), ("UInt32", "Float64"), ("Int32", "Float64"), ("UInt8", "BFloat16"), ("String", "Float64"), ("Decimal(9, 0)", "Float64"), ("Decimal32(0)", "Float64"), ("Decimal(15, 0)", "Float64"), ("Decimal(9, 0)", "Int32"), ("Date", "Float32"), ("Bool", "UInt8"), ("String", "Bool"), ("UInt16", "Date"), ("UInt32", "DateTime"), ("Date", "UInt16"), ("DateTime", "Int64"), ("UInt16", "Date32"), ("Date", "DateTime")] {
-            assert!(!narrows(from, to), "{from} into {to}");
+        let kept: &[(&str, &[&str])] = &[
+            // The same type, a wider one, and a float that holds every one of the numbers.
+            ("UInt8", &["UInt8", "UInt64", "Int16", "Nullable(UInt8)", "Float32", "BFloat16", "String", "Date", "Date32", "DateTime", "DateTime64(3)"]),
+            ("Int16", &["Float32", "Date32", "DateTime64(0)", "Int64"]),
+            ("UInt16", &["Date", "Date32", "Float32"]),
+            ("UInt32", &["Float64", "DateTime", "DateTime64(3)", "Int64"]),
+            ("Int32", &["Float64", "DateTime64(3)"]),
+            // A number too big for a decimal is refused, and one it holds is kept, whatever digits the column declares.
+            ("Int32", &["Decimal(9, 0)", "Decimal(1, 0)", "Decimal(9, 2)"]),
+            ("Int8", &["Decimal(1, 0)"]),
+            ("UInt64", &["Decimal(9, 2)", "Decimal(18, 0)"]),
+            // A decimal with no digit after the point is a whole number: a float that holds its digits keeps it, and a whole number or a date it does not fit refuses it.
+            ("Decimal(9, 0)", &["Float64", "Int32", "UInt8", "Decimal(1, 0)", "Decimal(18, 4)", "Date", "DateTime64(3)"]),
+            ("Decimal32(0)", &["Float64"]),
+            ("Decimal(15, 0)", &["Float64"]),
+            ("Decimal(18, 0)", &["UInt8", "Decimal(9, 0)"]),
+            ("Decimal(9, 2)", &["Decimal(18, 4)", "DateTime64(3)", "Date", "String"]),
+            ("Float32", &["Float64", "String"]),
+            ("BFloat16", &["Float32"]),
+            // A Bool is 0 or 1, and its own text is the only one a Bool reads.
+            ("Bool", &["UInt8", "Float32", "Decimal(9, 0)", "String", "Bool"]),
+            ("String", &["Bool", "LowCardinality(String)", "FixedString(2)", "UUID", "IPv4"]),
+            // A date into a wider one, and into a number that holds its count.
+            ("Date", &["Date32", "DateTime64(3)", "UInt16", "Int32", "Float32", "String"]),
+            ("Date32", &["DateTime64(3)", "Int32", "Float32"]),
+            ("DateTime", &["DateTime64(3)", "UInt32", "Int64", "Float64"]),
+            ("DateTime64(3)", &["DateTime64(6)", "Decimal(18, 4)", "Float64", "String"]),
+            ("Array(UInt8)", &["Array(UInt64)"]),
+            ("Tuple(a UInt8, b String)", &["Tuple(a UInt16, b String)"]),
+            ("Map(String, UInt8)", &["Map(LowCardinality(String), Nullable(UInt8))"]),
+        ];
+        for (from, columns) in kept {
+            for to in *columns {
+                assert!(!narrows(from, to), "{from} into {to}");
+            }
         }
     }
 
