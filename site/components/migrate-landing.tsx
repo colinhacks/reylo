@@ -56,35 +56,39 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </Row>
 
       <Row n={4} title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
-        <p>Push <code>schema.sql</code> to your development database on every save. Then <code>reylo migrate new</code> turns what you pushed into a migration.</p>
+        <p>Push <code>schema.sql</code> to your development database on every save. Then generate a migration once you're done iterating on schema.</p>
       </Row>
 
-      <Row n={5} title="Schemaless mode" visual={<Term lines={SCHEMALESS} />}>
-        <p>Delete <code>schema.sql</code>, and your migrations are your schema. Write them by hand, or from changes to your development database.</p>
+      <Row n={5} title="Schemaless mode" visual={<Schemaless />}>
+        <p>For a DDL-first experience, just delete <code>schema.sql</code>. You (or your agents) can write raw DDL migrations.</p>
       </Row>
 
-      <Row n={6} title={<>Linear history via <code>reylo.lock</code></>} visual={<LockFile />} flip>
-        <p>The lock keeps one order, each line chained to the last. Two branches that each add a migration conflict in git, before anything deploys.</p>
+      <Row n={6} title="Introspect anytime" visual={<Term lines={INTROSPECT} />} flip>
+        <p>Introspect the current database schema anytime in readable SQL.</p>
       </Row>
 
-      <Row n={7} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />}>
-        <p>Delete the lock, and migrations run in name order. A migration that lands before one a database already ran is replayed in both orders on a shadow database, and stopped where the two end differently.</p>
+      <Row n={7} title={<>Linear history via <code>reylo.lock</code></>} visual={<LockFile />}>
+        <p>Enforce linear migration history in Git with the <code>reylo.lock</code> lockfile.</p>
       </Row>
 
       <Row n={8} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />} flip>
-        <p>Every migration in the lock carries a checksum chained to the last, so an edited or reordered file is caught before it runs. Each database stores a fingerprint of its schema, so a change made by hand stops the deploy, with the ways to keep it.</p>
+        <p>Checksums in the lockfile prevent edited or reordered migrations. Untracked schema changes are detected and flagged.</p>
       </Row>
 
-      <Row n={9} title="Runs on your host" visual={<Hosts />}>
-        <p>Postgres, MySQL and SQLite, on your own server or a hosted one.</p>
+      <Row n={9} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />}>
+        <p>For faster iteration, delete the lockfile. Unapplied migrations are run in lexicographic order. Reylo automatically prevents any ordering-dependent schema drift.</p>
       </Row>
 
-      <Row n={10} title="Hit the ground running" visual={<Term lines={INIT} />} flip>
-        <p>One command reads your database and writes its <code>schema.sql</code>, a first migration and the lock.</p>
+      <Row n={10} title="Works with your database" visual={<Hosts />} flip>
+        <p>Works with Postgres, MySQL, SQLite—and all major database hosts and backends.</p>
+      </Row>
+
+      <Row n={11} title="Switch easily" visual={<Term lines={INIT} />}>
+        <p>One command introspects your current schema, generates <code>schema.sql</code>, and creates your initial <code>migrations/init.sql</code>.</p>
       </Row>
 
       <section className="ml-end">
-        <h2>Get started</h2>
+        <h2>Ship faster with Reylo</h2>
         <Install centered />
       </section>
 
@@ -350,26 +354,54 @@ const RENAMES: Script = [
   '    reylo migrate new tidy --drop posts.title,users.bio',
 ];
 
+/** With no schema.sql: an empty migration, the DDL written into it (`#edit`, in the editor above), and the migration run. */
 const SCHEMALESS: Script = [
-  "$ reylo run 'alter table users add column bio text'",
-  '✓ alter table users add column bio text',
   '$ reylo migrate new add_bio',
-  '✓ Wrote reylo/migrations/20261104140347_add_bio.sql',
+  "✓ Wrote reylo/migrations/20261104140347_add_bio.sql, empty: this database has nothing new, so it's for a change to data",
+  '#edit',
   '$ reylo migrate dev',
   'Applying to postgres://localhost:5432/app',
-  '  + 20261104140347_add_bio.sql  recorded: already in place',
+  '  ✓ 20261104140347_add_bio.sql  applied · 3 ms',
   '✓ Wrote reylo/reylo.lock',
 ];
 
+/** What reylo 0.8.0 printed for a Postgres database with two tables, a foreign key and an index. */
+const INTROSPECT: Script = [
+  '$ reylo db introspect',
+  'create table posts (',
+  '  id bigint generated always as identity not null,',
+  '  author_id bigint not null,',
+  '  title text not null,',
+  '  published_at timestamp with time zone,',
+  '  constraint posts_pkey primary key (id)',
+  ');',
+  '',
+  'create table users (',
+  '  id bigint generated always as identity not null,',
+  '  email text not null,',
+  '  bio text,',
+  '  constraint users_pkey primary key (id),',
+  '  constraint users_email_key unique (email)',
+  ');',
+  '',
+  'alter table posts add constraint posts_author_id_fkey foreign key (author_id) references users(id) on delete cascade;',
+  '',
+  'create index posts_author_id_idx on posts using btree (author_id);',
+];
+
+/** Lock-free: a migration that sorts before one the database ran is refused, then runs once it's given a later name. */
 const LOCK_FREE: Script = [
-  '$ reylo migrate status',
-  '· No lock: migrations run in name order (reylo migrate lock writes one)',
   '$ reylo migrate deploy',
   '✗ 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran, and the two orders end differently',
   '  + a fresh database: column users.nick text',
   '  Give 20261105080000_no_nick.sql a later name, so that every database runs it after 20261105090000_nick.sql',
   '',
   'Nothing was changed.',
+  '$ mv reylo/migrations/20261105080000_no_nick.sql reylo/migrations/20261105100000_no_nick.sql',
+  '$ reylo migrate deploy',
+  'Applying to postgres://db.example.com/app',
+  '  ✓ 20261105100000_no_nick.sql  applied · 9 ms',
+  '✓ Applied 1 migration',
 ];
 
 const PUSH: Script = [
@@ -575,6 +607,35 @@ function DialectMigrations() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Schemaless: the migration file, empty until the DDL is written into it, over the terminal that makes it and runs it. */
+function Schemaless() {
+  const [edited, setEdited] = useState(true);
+  const lines = usePlayer(SCHEMALESS, setEdited);
+  return (
+    <div className="ml-pair">
+      <div className="ml-win ml-editor" aria-hidden="true">
+        <div className="ml-bar">
+          <FileIcon />
+          reylo/migrations/20261104140347_add_bio.sql
+        </div>
+        <pre className="ml-code">
+          <span className={edited ? 'ml-l ml-add' : 'ml-l ml-pending'} data-g="+">
+            {kw('alter table')} users {kw('add column')} bio {ty('text')};
+          </span>
+          {/* Room under the line, so the terminal's corner doesn't cover it. */}
+          <span className="ml-l" data-g=" ">
+            {' '}
+          </span>
+          <span className="ml-l" data-g=" ">
+            {' '}
+          </span>
+        </pre>
+      </div>
+      <TermWindow lines={lines} script={SCHEMALESS} className="ml-under" />
     </div>
   );
 }
