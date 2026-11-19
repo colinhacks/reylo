@@ -78,10 +78,10 @@ jobs:
           # A renamed file counts at both paths, so a file moved out of a path that runs everything still does.
           files=$(git diff --name-only --no-renames "$base" HEAD)
           echo "$files"
-          # Core, the crate the oracle answers through, the oracle's own code, the build, the code lists the
+          # Core, the crate the oracle answers through, the oracle's own code and its mutations, the build, the code lists the
           # oracle reads, the format's schema and examples the engine's tests and the oracle read, the validators'
           # measurements the engine's tests read, and CI itself reach every database.
-          if grep -qE '^(\.cargo/|engine/(core|build-support|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+          if grep -qE '^(\.cargo/|engine/(core|build-support|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|oracle/mutations\.json$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -495,7 +495,8 @@ jobs:
           "$PG_BIN/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=trust --no-sync -E UTF8 --locale=C
           "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 55432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
       - run: engine/build.sh --prepare
-      - name: Run the oracle's cases of the shard
+      - name: The shard's cases
+        id: shard
         env:
           SHARD: ${{ matrix.shard }}
         run: |
@@ -521,7 +522,25 @@ jobs:
             sqlite) servers='' ;;
             *) servers="--mysql-url mysql://root@127.0.0.1:53306" ;;
           esac
+          echo "cases=$cases" >> "$GITHUB_OUTPUT"
+          echo "servers=$servers" >> "$GITHUB_OUTPUT"
+      - name: Run the oracle's cases of the shard
+        env:
+          CASES: ${{ steps.shard.outputs.cases }}
+          SERVERS: ${{ steps.shard.outputs.servers }}
+        run: |
           # shellcheck disable=SC2086
-          cargo run -q -p reylo-oracle -- $servers --strict-coverage $cases
+          cargo run -q -p reylo-oracle -- $SERVERS --strict-coverage $CASES
+      # Each kind of check the oracle makes, shown to fail: oracle/mutations.json changes the engine's
+      # analysis of a statement so that it claims what its runs contradict, and the run fails unless
+      # the oracle reports it. Each shard runs the entries of its own cases.
+      - name: Show that each check of the shard can fail
+        if: ${{ !cancelled() && steps.shard.outcome == 'success' }}
+        env:
+          CASES: ${{ steps.shard.outputs.cases }}
+          SERVERS: ${{ steps.shard.outputs.servers }}
+        run: |
+          # shellcheck disable=SC2086
+          cargo run -q -p reylo-oracle -- $SERVERS --mutate oracle/mutations.json $CASES
       - if: always()
         run: sccache --show-stats

@@ -172,6 +172,29 @@ pub async fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, 
     Ok((lines, unchecked))
 }
 
+/// A case's mutations, checked over its seeded states as the case's statements are: each statement
+/// an entry names analyzed, the entry's value put in its analysis, and the result run under the
+/// entry's own name ([`crate::Mutation::label`]).
+pub async fn mutate(case: &Path, server: &mut Server, timeout_ms: u64, mutations: &[(usize, &crate::Mutation)]) -> Result<Report, String> {
+    let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let db = format!("reylo_oracle_{}", name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect::<String>());
+    let setup = fs::read_to_string(case.join("setup.sql")).map_err(|e| e.to_string())?;
+    let mode = fs::read_to_string(case.join("sql_mode")).ok().map(|m| m.trim().to_string());
+    build(server, &db, &setup).await?;
+    let mut conn = session(&server.opts, Some(&db), mode.as_deref()).await?;
+    let mut analyzed = Vec::new();
+    for (n, m) in mutations {
+        let sql = fs::read_to_string(case.join(&m.file)).map_err(|e| format!("{}: {e}", m.file))?;
+        let analysis = analyze(&mut conn, &sql).await.map_err(|e| format!("{}: {e}", m.file))?;
+        analyzed.push((m.label(*n), sql, m.apply(analysis)?));
+    }
+    let mut state = State { db: &db, setup: &setup, mode: mode.as_deref(), conn, tables: Vec::new(), counters: HashMap::new() };
+    let report = check(server, &mut state, &analyzed, timeout_ms).await;
+    let _ = state.conn.disconnect().await;
+    let _ = server.admin.query_drop(format!("DROP DATABASE IF EXISTS `{db}`")).await;
+    report
+}
+
 /// What another MySQL session sets that no statement's types turn on: the time zone and the names
 /// of months a value is printed in, and a `sql_mode` flag that only changes how a write rounds.
 const OTHER_SETTINGS: &str = "SET SESSION time_zone = '+05:30', lc_time_names = 'de_DE', sql_mode = concat_ws(',', nullif(@@session.sql_mode, ''), 'TIME_TRUNCATE_FRACTIONAL')";

@@ -8,6 +8,7 @@ pinned_identity.sql: at_most_one () -> { email: text(¬NUL)? }
 pinned_numeric.sql: many () -> { email: text(¬NUL)? } key (email)
 timestamp_key.sql: many () -> { id: int8 } key (id)
 timestamptz_key.sql: at_most_one () -> { id: int8 }
+two_ids.sql: many (a: int4, b: int4) -> { id: int4 } key (id)
 using_merged.sql: many () -> { id: int8, bid: int8 } key (id, bid)
 varchar_bpchar_coalesce.sql: many (e: bpchar(¬NUL)) -> { id: int4 } key (id)
 varchar_bpchar_nullif.sql: many (e: bpchar(¬NUL)) -> { id: int4 } key (id)
