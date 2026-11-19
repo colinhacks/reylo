@@ -135,12 +135,14 @@ fn fitted(text: &str, columns: usize) -> String {
     cut
 }
 
-/// The cells a terminal gives `c`: two for an East Asian wide character or an emoji, none for a
-/// combining mark, else one.
+/// The cells a terminal gives `c`: none for a combining mark or a variation selector, two for an
+/// East Asian wide character, an emoji or a symbol that may be drawn as one, else one. Where a
+/// terminal may draw it narrow, it counts two: too many cells only cuts the line a little early,
+/// where too few would wrap it.
 fn cells(c: char) -> usize {
     match c as u32 {
         0x0300..=0x036F | 0x200B..=0x200F | 0xFE00..=0xFE0F => 0,
-        0x1100..=0x115F | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xA000..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F300..=0x1F64F | 0x1F900..=0x1F9FF | 0x20000..=0x3FFFD => 2,
+        0x1100..=0x115F | 0x231A..=0x231B | 0x2329..=0x232A | 0x23E9..=0x23FA | 0x25FD..=0x25FE | 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xA000..=0xA4CF | 0xA960..=0xA97F | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE10..=0xFE19 | 0xFE30..=0xFE6F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F000..=0x1FFFF | 0x20000..=0x3FFFD => 2,
         _ => 1,
     }
 }
@@ -463,6 +465,12 @@ mod tests {
         assert!(cut.chars().map(cells).sum::<usize>() <= 37, "{cut}");
         assert_eq!(cut, "Introspecting sqlite:./数据库数据库…");
         assert_eq!(fitted("数据库", 6), "数据库");
+        // So does an emoji, from any of its blocks.
+        for text in ["Introspecting sqlite:./🚀🚀🚀🚀🚀🚀🚀🚀🚀.db", "Introspecting sqlite:./🦀🧪🫠☕❤️.db"] {
+            let cut = fitted(text, 37);
+            assert!(cut.chars().map(cells).sum::<usize>() <= 37, "{cut}");
+        }
+        assert_eq!(cells('🚀'), 2);
     }
 
     #[test]
