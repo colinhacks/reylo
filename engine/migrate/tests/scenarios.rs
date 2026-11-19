@@ -858,9 +858,11 @@ async fn new_without_schema_sql_writes_what_the_database_has(mut p: P) {
     p.output();
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"✓ Up to date");
-    // With nothing changed, the migration is empty, for a change of data.
+    // With nothing changed, the migration is empty, to write by hand: a change of data or of schema.
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "backfill", &Default::default(), log).await).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"empty: this database has nothing new");
+    let out = p.output();
+    assert_has!(&out, r"✓ Wrote \S*_backfill\.sql, empty, to write by hand: this database has nothing new\n");
+    assert!(!out.contains("change to data"), "{out}");
 }
 
 async fn new_refuses_a_migration_the_database_ran_differently(mut p: P) {
