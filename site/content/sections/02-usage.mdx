@@ -7,7 +7,7 @@ title: "Usage"
 ## Usage
 
 
-Write a query in a `.sql` file, import it, and run it with your database driver. The query is your database's own SQL: any function, operator or syntax it supports works. Reylo uses your live dev database to compile the query and retrieve its types.
+Write a query in a `.sql` file, import it, and run it with your database driver. The query is your database's own SQL: any function, operator or syntax it supports works.
 
 ```ts twoslash tab="main.ts" dialect="postgres"
 import postgres from "postgres";
@@ -37,8 +37,6 @@ To get the file's contents as written, before Reylo compiles its [parameters](/i
 
 ### `.run()`
 
-To run an imported Reylo query, pass a database connection/pool into the `.run()` method along with any parameters:
-
 ```ts twoslash dialect="postgres"
 import postgres from "postgres";
 import getUser from "./get_user.sql";
@@ -49,7 +47,7 @@ const user = await getUser.run(db, { id: 1 });
 //    ^?
 ```
 
-Reylo has no driver of its own: it runs each query on your app's database client, from any of these drivers. Each example also runs two queries in a transaction, a client of its own that you pass to `.run()` the same way. Await each query in turn, since a connection runs one statement at a time; on Postgres an error aborts the transaction, so every later statement in it fails until it rolls back ([Database errors](/postgres#database-errors)).
+Await each query in turn, since a connection runs one statement at a time; on Postgres an error aborts the transaction, so every later statement in it fails until it rolls back ([Database errors](/postgres#database-errors)).
 
 #### Postgres [#postgres-drivers]
 
@@ -695,7 +693,7 @@ A write is `false`, and so is a query that locks rows or may call a volatile fun
 
 ### `.with()`
 
-To bind the query to a client, call `.with()`. It returns a function that takes the parameters:
+To bind the query to a client, call `.with()`:
 
 ```ts twoslash
 import getUser from "./get_user.sql";

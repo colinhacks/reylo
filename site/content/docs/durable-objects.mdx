@@ -5,7 +5,7 @@ description: How to use Reylo with a Cloudflare Durable Object's SQLite database
 
 <p className="dk-subheader">Reylo on a Durable Object's database</p>
 
-Reylo runs on a Cloudflare Durable Object's own SQLite database. A Durable Object's database is SQLite, so everything on the [SQLite](/sqlite) page holds for it. This page covers what's specific to Durable Objects. D1 is on [Cloudflare D1](/d1).
+A Durable Object's database is SQLite, so everything on the [SQLite](/sqlite) page holds for it. D1 is on [Cloudflare D1](/d1).
 
 | | |
 | --- | --- |
@@ -63,7 +63,7 @@ reylo migrate dev
 
 ## Queries
 
-Pass the object's `ctx.storage.sql`. It's synchronous, so `.runSync()` works on it, inside `ctx.storage.transactionSync(fn)` too:
+Pass the object's `ctx.storage.sql`. It's synchronous, so `.runSync()` works on it:
 
 ```ts twoslash tab="worker.ts"
 /// <reference types="@cloudflare/workers-types" />

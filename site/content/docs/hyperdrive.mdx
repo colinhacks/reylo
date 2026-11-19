@@ -5,7 +5,7 @@ description: How to use Reylo with Postgres or MySQL in a Cloudflare Worker thro
 
 <p className="dk-subheader">Reylo on Postgres and MySQL through Hyperdrive</p>
 
-Reylo runs in a Worker on Postgres and MySQL through Hyperdrive, Cloudflare's connection pool. Everything on the [Postgres](/postgres) and [MySQL](/mysql) pages holds through it, and this page covers what's specific to Hyperdrive. Set up the Vite plugin as on [Cloudflare D1](/d1#setup).
+Reylo runs in a Worker on Postgres and MySQL through Hyperdrive, Cloudflare's connection pool. Everything on the [Postgres](/postgres) and [MySQL](/mysql) pages holds through it. Set up the Vite plugin as on [Cloudflare D1](/d1#setup).
 
 | | |
 | --- | --- |
@@ -15,8 +15,6 @@ Reylo runs in a Worker on Postgres and MySQL through Hyperdrive, Cloudflare's co
 | Node's APIs | `pg`, postgres.js, `mysql2` and `mariadb` need a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag |
 
 ## Postgres
-
-Connect `pg` or postgres.js with the binding's connection string, and pass the client to `.run()`:
 
 ```ts title="worker.ts"
 import { Client } from "pg";
@@ -34,7 +32,5 @@ export default {
 ```
 
 ## MySQL
-
-Connect `mysql2` or `mariadb` from the binding's `host`, `port`, `user`, `password` and `database`.
 
 Hyperdrive refuses prepared statements, so Reylo runs `mysql2` there through `query()`, with each value written into the statement ([`mysql2`](/mysql#mysql2)). Reylo runs `mariadb` without prepared statements wherever it runs ([`mariadb`](/mysql#mariadb)).

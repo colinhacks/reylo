@@ -5,7 +5,7 @@ description: How Reylo types SQL queries on Postgres. Each column's type in Type
 
 <p className="dk-subheader">How Reylo types queries on Postgres</p>
 
-[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>. This page covers how it types and runs queries on Postgres: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>.
 
 | | |
 | --- | --- |
@@ -67,7 +67,7 @@ create table events (
 
 Reylo types each query from Postgres's own analysis of it.
 
-Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type. This information is cross-referenced against the schema catalog, enabling high-fidelity type inference for any query.
+Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type, then reads the rest from the catalog.
 
 ## Data types
 
@@ -277,7 +277,7 @@ A `json` or `jsonb` column is typed `Json`, any JSON value, unless a `CHECK` con
 type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 ```
 
-A `CHECK` of the value's kind is all it takes for an object or an array: `jsonb_typeof(doc) = 'object'` types `doc` as `{ [key: string]: Json }`, and `= 'array'` as `Json[]`. A JSON Schema `CHECK` says more. Here `payload` is typed by its schema, and `kind` by its `CHECK`:
+A `CHECK` of the value's kind is all it takes for an object or an array: `jsonb_typeof(doc) = 'object'` types `doc` as `{ [key: string]: Json }`, and `= 'array'` as `Json[]`. A JSON Schema `CHECK` says more:
 
 ```ts twoslash tab="main.ts"
 import events from "./pg_events.sql";
@@ -1011,8 +1011,6 @@ await db.transaction(async (trx) => {
 ```
 
 ### Standard Query
-
-What a driver that reads a result value by value can use, from the query's Standard Query object.
 
 <Rules>
 

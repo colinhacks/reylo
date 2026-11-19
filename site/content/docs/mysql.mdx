@@ -5,7 +5,7 @@ description: How Reylo types SQL queries on MySQL. Each column's type in TypeScr
 
 <p className="dk-subheader">How Reylo types queries on MySQL</p>
 
-[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>. This page covers how it types and runs queries on MySQL: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>.
 
 | | |
 | --- | --- |
@@ -254,8 +254,6 @@ A `JSON` column is typed `Json`, any JSON value, unless a `JSON_SCHEMA_VALID` `C
 ```ts
 type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 ```
-
-Here `payload` is typed by its schema:
 
 ```ts twoslash tab="main.ts"
 import events from "./my_events.sql";
