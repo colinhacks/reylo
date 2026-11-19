@@ -2885,11 +2885,6 @@ mod adversarial {
         assert_eq!(p.dry_run().await, 1);
         assert_has!(p.output(), r"can't be replayed in a shadow database\n  [^\n]*create role");
         assert!(p.rows(&format!("select 1 from pg_roles where rolname = '{role}'")).await.is_empty(), "no shadow created the role on the server");
-        // Nor in a do block, whose body no shadow can read before it runs.
-        p.file("20261027110000_role.sql", &format!("do $$ begin create role {role}; end $$;"));
-        assert_eq!(p.dry_run().await, 1);
-        assert_has!(p.output(), r"20261027110000_role\.sql can't be replayed in a shadow database\n  [^\n]*do block");
-        assert!(p.rows(&format!("select 1 from pg_roles where rolname = '{role}'")).await.is_empty(), "no shadow created the role on the server");
     }
 
     pub async fn an_object_the_comparison_does_not_read_is_not_a_match(mut p: P) {
@@ -3272,7 +3267,7 @@ mod adversarial {
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.exec("insert into t values (1)").await;
         // DDL that depends on the rows: an index here, none in the empty replay.
-        p.file("20261027110000_idx.sql", "create function t_index() returns void language plpgsql as $$ begin if exists (select 1 from t) then create index t_id on t (id); end if; end $$; select t_index(); drop function t_index();");
+        p.file("20261027110000_idx.sql", "do $$ begin if exists (select 1 from t) then create index t_id on t (id); end if; end $$;");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.output();
         // Its result is what deploy compares with next; check holds it against the replay.
@@ -3622,7 +3617,7 @@ create trigger kids_note after insert on kids begin update parents set name = na
 
     pub async fn a_history_that_does_not_replay_is_refused_before_anything_changes(mut p: P) {
         p.file("20261027100000_one.sql", "create table t (id int primary key);");
-        p.file("20261027110000_two.sql", "create function only_here() returns void language plpgsql as $$ begin if current_database() not like 'mtest%' then raise exception 'only on the app database'; end if; end $$; select only_here(); drop function only_here(); create table b (id int);");
+        p.file("20261027110000_two.sql", "do $$ begin if current_database() not like 'mtest%' then raise exception 'only on the app database'; end if; end $$; create table b (id int);");
         assert_eq!(p.dev().await, 0, "{}", p.peek());
         p.exec("create table hack (x int); insert into hack values (42);").await;
         std::fs::remove_file(p.dir.join("migrations/20261027110000_two.sql")).unwrap();

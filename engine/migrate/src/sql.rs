@@ -420,8 +420,8 @@ re!(MYSQL_ELSEWHERE, r"^(USE|INSTALL|UNINSTALL|FLUSH|KILL|PURGE|SHUTDOWN|RESTART
 /// is a scratch database on the target's own server, so a statement that changes the server itself
 /// (a role, a database, a tablespace, a server setting) or, on MySQL, names a database runs against
 /// the real one: `create role` in a shadow makes the role the target's migration then fails to
-/// create, and `create table app.users` writes into `app`. What the statements say is read from
-/// their words, so a Postgres `do` block, whose body is code read only as it runs, is refused.
+/// create, and `create table app.users` writes into `app`. Each statement is read by its own words,
+/// so code that runs inside a `do` block or a function is not checked.
 pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String> {
     let h = head(statement, 8);
     let words: Vec<String> = statement.tokens.iter().map(|t| if t.kind == TokenKind::Word { t.text.to_ascii_uppercase() } else { t.text.clone() }).collect();
@@ -444,9 +444,6 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
             }
             if GRANT.is_match(&h) && PG_GRANT_SERVER.is_match(&words.join(" ")) {
                 return Some("it grants or revokes a privilege on a database, a tablespace or a setting, which belong to the server".into());
-            }
-            if h == "DO" || h.starts_with("DO ") {
-                return Some("its do block runs code that is read only as it runs, so whether it reaches past the shadow can't be seen: write its statements as plain SQL".into());
             }
             None
         }
@@ -613,7 +610,5 @@ mod tests {
         assert!(shadow_problem("revoke create on tablespace fast from app", Dialect::Postgres).is_some());
         assert!(shadow_problem("grant set on parameter work_mem to app", Dialect::Postgres).is_some());
         assert_eq!(shadow_problem("grant select on all tables in schema public to app", Dialect::Postgres), None);
-        // A do block's body is read only as it runs.
-        assert!(shadow_problem("do $$ begin create role app; end $$", Dialect::Postgres).unwrap().contains("do block"));
     }
 }

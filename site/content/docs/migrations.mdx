@@ -329,7 +329,7 @@ Each database makes them its own way:
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
 - **SQLite:** in memory. There's nothing to grant.
 
-Since a shadow is on your database's server, a migration that would reach past it is refused: one that changes a role, a database, a tablespace or a server setting; on MySQL, one that names a database, as in `app.users`; and on Postgres, a `do` block, whose body is code that's only read as it runs. Write a `do` block's statements as plain SQL instead.
+Since a shadow is on your database's server, a migration that would reach past it is refused: one that changes a role, a database, a tablespace or a server setting, and on MySQL, one that names a database, as in `app.users`. Reylo Migrate reads each statement's own words, so code that runs inside a `do` block or a function isn't checked: keep such code from changing a role, a database, a tablespace or a server setting.
 
 On Supabase, each shadow also gets what Supabase made in your database: its extensions, and its own schemas such as `auth` and `storage`. A migration that references `auth.users`, or adds a policy on `storage.objects`, replays as it runs.
 
