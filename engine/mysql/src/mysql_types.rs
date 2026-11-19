@@ -107,8 +107,9 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
         9 => integer(24, flags, "mediumint"),
         3 => integer(32, flags, "int"),
         8 => integer(64, flags, "bigint"),
-        // 0 and 1901 to 2155.
-        13 => Type::new(Kind::Integer(IntegerType { bits: 16, bounds: Bounds::between("0", "2155"), ..IntegerType::default() })).named("year"),
+        // A YEAR column holds 0 and 1901 to 2155 ([`declared`]), but the protocol's YEAR is any
+        // value of its type: `year(d)` is up to 9999.
+        13 => Type::new(Kind::Integer(IntegerType { bits: 16, ..IntegerType::default() })).named("year"),
         4 => Type::single().named("float"),
         5 => double(),
         0 | 246 => decimal(),
@@ -156,6 +157,8 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
 ///     is above 0, and the sign unless UNSIGNED.
 ///   - A time of p fractional digits ticks by 10^-p, and a `TIMESTAMP`'s latest value is cut to
 ///     them (`2038-01-19T03:14:07.999Z` at 3).
+///   - A `YEAR` holds 0 and 1901 to 2155, which an expression of its protocol type need not
+///     (`year(d)`).
 pub(crate) fn declared(ty: Type, c: &MysqlColumn, charset: Option<&str>) -> Type {
     let (length, decimals) = (c.length, c.decimals.filter(|&d| d <= 30));
     let fraction = decimals.filter(|&d| d <= 6);
@@ -183,6 +186,7 @@ pub(crate) fn declared(ty: Type, c: &MysqlColumn, charset: Option<&str>) -> Type
             None => Kind::Instant(instant),
         },
         (Kind::Duration(duration), _) => Kind::Duration(DurationType { tick: fraction.map(tick).or(duration.tick), ..duration }),
+        (Kind::Integer(integer), Some("year")) => Kind::Integer(IntegerType { bounds: Bounds::between("0", "2155"), ..integer }),
         (kind, _) => kind,
     };
     Type { kind, ..ty }
@@ -371,7 +375,7 @@ mod tests {
         assert_eq!(serde_json::to_value(of(8, UNSIGNED, 0, Some(20))).unwrap(), serde_json::json!({"kind": "integer", "bits": 64, "unsigned": true, "label": "bigint"}));
         assert_eq!(of(1, 0, 0, Some(1)).short(), "tinyint(1)");
         assert_eq!(of(1, 0, 0, Some(4)).short(), "tinyint");
-        assert_eq!(of(13, 0, 0, None).short(), "year(0..2155)");
+        assert_eq!(of(13, 0, 0, None).short(), "year");
         assert_eq!(of(254, ENUM, 255, None).short(), "enum");
         assert_eq!(of(254, SET, 255, None).short(), "set{text}");
         assert_eq!(serde_json::to_value(enumeration(labels("enum('x','y')"))).unwrap(), serde_json::json!({"kind": "enum", "type": {"kind": "text"}, "values": ["x", "y"], "label": "enum"}));
@@ -444,6 +448,8 @@ mod tests {
         assert_eq!(typed(column(7, 128, BINARY, 23, 3), None), serde_json::json!({"kind": "instant", "tick": "1/1000", "min": "1970-01-01T00:00:01Z", "max": "2038-01-19T03:14:07.999Z", "label": "timestamp"}));
         assert_eq!(typed(column(7, 128, BINARY, 19, 0), None)["max"], "2038-01-19T03:14:07Z");
         assert_eq!(typed(column(11, 128, BINARY, 15, 4), None), serde_json::json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/10000", "label": "time"}));
+        // A YEAR column holds 0 and 1901 to 2155.
+        assert_eq!(typed(column(13, 96, BINARY, 4, 0), None), serde_json::json!({"kind": "integer", "bits": 16, "min": "0", "max": "2155", "label": "year"}));
         // A type that takes no modifier, an ENUM, a SET and a FLOAT(7,2) among them, keeps its type.
         for c in [column(3, 0, BINARY, 11, 0), column(254, 256, 255, 8, 0), column(254, 2048, 255, 16, 0), column(4, 0, BINARY, 7, 2), column(10, 128, BINARY, 10, 0)] {
             assert_eq!(declared(of(c.r#type, c.flags, c.charset, c.length), &c, None), of(c.r#type, c.flags, c.charset, c.length));

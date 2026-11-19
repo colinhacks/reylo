@@ -69,7 +69,7 @@
 //! changes nothing else; a problem found there says so.
 
 use reylo_engine_core::types::{BytesType, DateTimeType, DecimalType, DurationType, InstantType, JsonType, Kind, Size, SizeUnit, TextType, Type};
-use crate::seed::{decimal_contradiction, length_contradiction, literal_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
+use crate::seed::{decimal_contradiction, fact_contradiction, length_contradiction, literal_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Statement, Value as My};
 use reylo_engine::clients::mysql_async::{message, quote};
@@ -1215,9 +1215,10 @@ fn type_contradiction(ty: &Value, code: u8, charset: u16) -> Option<String> {
 }
 
 /// Why a value a run returned contradicts the engine's type for its column, if it does: a value
-/// none of the labels or the literals its type lists, text or bytes of another length than the
-/// size says (text counted in the unit the size names, in the session's UTF-8), a DECIMAL of more
-/// digits than its precision or scale, or a time finer than its tick. The text protocol sends each
+/// none of the labels or the literals its type lists, a number outside its type's bounds, text or
+/// bytes of another length than the size says (text counted in the unit the size names, in the
+/// session's UTF-8), a DECIMAL of more digits than its precision or scale, or a time finer than its
+/// tick. The text protocol sends each
 /// value as its text, and the binary one a number as itself, a DATETIME, a TIMESTAMP or a TIME as
 /// its parts and anything else as bytes.
 fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
@@ -1234,7 +1235,7 @@ fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
         _ => None,
     };
     if let Some(shown) = &number {
-        let why = literal_contradiction(ty, shown);
+        let why = literal_contradiction(ty, shown).or_else(|| fact_contradiction(ty, shown));
         if why.is_some() {
             return why;
         }
@@ -1489,6 +1490,11 @@ mod tests {
         let decimal = ty(json!({ "kind": "decimal", "precision": 4, "min_scale": 2, "max_scale": 2, "label": "decimal" }));
         assert_eq!(value_contradiction(&decimal, &bytes("-99.99")), None);
         assert!(value_contradiction(&decimal, &bytes("100.00")).is_some());
+        // A YEAR's bounds, in either protocol.
+        let year = ty(json!({ "kind": "integer", "bits": 16, "min": "0", "max": "2155", "label": "year" }));
+        assert_eq!(value_contradiction(&year, &My::Int(2155)), None);
+        assert!(value_contradiction(&year, &My::Int(9999)).is_some());
+        assert!(value_contradiction(&year, &bytes("9999")).is_some());
         // A DATETIME(3) in either protocol, and a TIME(0).
         let datetime = ty(json!({ "kind": "datetime", "tick": "1/1000", "label": "datetime" }));
         assert_eq!(value_contradiction(&datetime, &My::Date(2026, 1, 1, 12, 0, 0, 123_000)), None);

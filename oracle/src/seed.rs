@@ -925,8 +925,9 @@ pub(crate) fn literal_contradiction(ty: &Type, text: &str) -> Option<String> {
 
 /// Why a value breaks what a CHECK holds it to, if it does: a number's bounds and divisor, a UUID's
 /// version, and a `like` or `ilike` pattern. A regular expression's dialect is the server's own, so it is left to
-/// the CHECK itself, which refused any row it does not match.
-fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
+/// the CHECK itself, which refused any row it does not match. A bound the type holds of itself, as
+/// MySQL's `YEAR`, is read the same way.
+pub(crate) fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
     let breaks = |bounds: &reylo_engine_core::types::Bounds| -> Option<String> {
         use std::cmp::Ordering::{Equal, Greater, Less};
         let cmp = |v: &str| decimal_cmp(text, v);
