@@ -144,6 +144,9 @@ pub struct From {
     pub tab_func: bool,
     /// A table-valued function's arguments (`json_each(:ids)`).
     pub args: Vec<Node>,
+    /// For libSQL's `vector_top_k('docs_emb', …)`, the table whose rows the index it names holds,
+    /// which `tables` describes; `None` where the index is not written as a string or names no index.
+    pub vector_table: Option<String>,
     pub cte: bool,
     /// A recursive WITH query's read of itself, inside the query, which has no subquery of its own.
     pub recursive: bool,
