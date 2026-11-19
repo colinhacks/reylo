@@ -8,7 +8,7 @@
 //! the two, since the server's rendering of an expression is not always one it reads back to itself.
 
 use super::{Alterer, Change, Kind, Object, Schema, TypeClass};
-use crate::catalog::{not_extension, not_platform, not_platform_schema, project_extension, HISTORY_TABLE, PG_USER_NS};
+use crate::catalog::{not_extension, not_platform, not_platform_schema, project_extension, project_relation, HISTORY_TABLE, PG_USER_NS};
 use crate::db::{Db, Row};
 use crate::{Dialect, Error};
 use regex::Regex;
@@ -425,7 +425,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'i')",
             acl_in("c.relacl", 's', "c.relowner", Some("c.relnamespace")),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -493,7 +493,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               and not exists (select 1 from pg_depend e where e.classid = 'pg_type'::regclass and e.objid = c.reltype and e.deptype = 'e')",
             acl_in("c.relacl", 'r', "c.relowner", Some("c.relnamespace")),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?;
     // A foreign table's server and options.
@@ -534,7 +534,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             from pg_constraint co join pg_class c on c.oid = co.conrelid join pg_namespace n on n.oid = c.relnamespace
             where co.contype not in ('n', 't') and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}
             order by co.contype, co.conname",
-            not_platform("c.relowner"),
+            project_relation("c", "n"),
             not_extension("pg_constraint", "co")
         ))
         .await?
@@ -608,7 +608,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             },
             acl("a.attacl", 'c', "c.relowner"),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -850,7 +850,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid
             where {ns} and {} and {} and t.relname <> '{history}'",
             not_extension("pg_class", "c"),
-            not_platform("t.relowner")
+            project_relation("t", "n")
         ))
         .await?;
     // A partitioned table's index that every partition's index is attached to is made on the table
@@ -1107,7 +1107,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select r.oid, r.ev_class, format('%I', r.rulename) as name, format('%I.%I', n.nspname, c.relname) as rel, pg_get_ruledef(r.oid, false) as def, r.rulename = '_RETURN' as view, r.ev_enabled as enabled
             from pg_rewrite r join pg_class c on c.oid = r.ev_class join pg_namespace n on n.oid = c.relnamespace where {ns} and {}",
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -1141,7 +1141,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select s.oid, format('%I.%I', n.nspname, s.stxname) as name, pg_get_statisticsobjdef(s.oid) as def, s.stxrelid as rel
             from pg_statistic_ext s join pg_namespace n on n.oid = s.stxnamespace where {ns} and {}",
-            not_platform("s.stxowner")
+            format!("({} or {})", not_platform("s.stxowner"), not_platform_schema("n"))
         ))
         .await?
     {

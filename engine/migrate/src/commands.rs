@@ -1641,10 +1641,69 @@ fn extensions_in(text: &str) -> Vec<String> {
     EXTENSION.captures_iter(&uncommented).map(|c| c[1].to_lowercase()).collect()
 }
 
+/// The target and its shadows' server, or the refusal of a target whose relations of the project's
+/// are out of the role's reach ([`out_of_reach`]), as the code to exit with.
 #[cfg(feature = "cli")]
-async fn open(opts: &Options) -> Result<(Db, Server, usize), Error> {
-    let db = Db::open(opts).await?;
-    with_shadows(db, opts).await
+async fn open(opts: &Options, log: Log<'_>) -> Result<Result<(Db, Server, usize), i32>, Error> {
+    let mut db = Db::open(opts).await?;
+    match out_of_reach(&mut db, &opts.url).await {
+        Ok(problems) if problems.is_empty() => Ok(Ok(with_shadows(db, opts).await?)),
+        Ok(problems) => {
+            db.close().await;
+            Ok(Err(refuse(&problems, log)))
+        }
+        Err(e) => {
+            db.close().await;
+            Err(e)
+        }
+    }
+}
+
+/// The refusal of the relations in a schema of the project's that a superuser the connected role may
+/// not act as owns, one per owner ([`crate::catalog::out_of_reach_relations`]): they are the project's,
+/// which every comparison reads, but no migration the role runs may change them and no shadow it makes
+/// owns them as they are owned here, so a command that replays or plans refuses them rather than
+/// leaving them out. The fix gives them to the role, run as their owner.
+#[cfg(feature = "cli")]
+async fn out_of_reach(db: &mut Db, url: &str) -> Result<Vec<Problem>, Error> {
+    let relations = crate::catalog::out_of_reach_relations(db).await?;
+    if relations.is_empty() {
+        return Ok(vec![]);
+    }
+    let me = db.rows("select current_user::text as u, quote_ident(current_user) as q").await?;
+    let (role, quoted) = me.first().map(|r| (r.text("u").to_string(), r.text("q").to_string())).unwrap_or_default();
+    let mut owners: Vec<&str> = relations.iter().map(|(o, _, _)| o.as_str()).collect();
+    owners.dedup();
+    Ok(owners
+        .into_iter()
+        .map(|owner| {
+            let theirs: Vec<&(String, String, String)> = relations.iter().filter(|(o, _, _)| o == owner).collect();
+            let one = theirs.len() == 1;
+            let kinds: Vec<String> = ["table", "view", "materialized view", "sequence", "foreign table"]
+                .into_iter()
+                .filter(|k| theirs.iter().any(|(_, kind, _)| kind == k))
+                .map(|k| if one { format!("a {k}") } else { format!("{k}s") })
+                .collect();
+            let names: Vec<&str> = theirs.iter().map(|(_, _, name)| name.as_str()).collect();
+            let statements: Vec<String> = theirs.iter().map(|(_, kind, name)| shell_word(&format!("alter {kind} {name} owner to {quoted}"))).collect();
+            let command = format!("reylo run --url {} {}", shell_word(&as_user(url, owner)), statements.join(" "));
+            Problem::new("owner-out-of-reach", format!("{owner} owns {} here that {role} can't act as: {}", and_list(&kinds), names.join(", ")))
+                .fix(format!("Make {role} {} owner, connected as {owner}, then start again", if one { "its" } else { "their" }), &[&command])
+        })
+        .collect())
+}
+
+/// `url` with `user` in place of its user, and no password: the one to connect as `user`.
+#[cfg(feature = "cli")]
+fn as_user(url: &str, user: &str) -> String {
+    let (base, query) = url.split_once('?').map_or((url, None), |(b, q)| (b, Some(q)));
+    let kept: Vec<&str> = query.into_iter().flat_map(|q| q.split('&')).filter(|kv| !matches!(kv.split('=').next(), Some("user" | "password"))).collect();
+    let Some((scheme, rest)) = base.split_once("://") else { return format!("<{user}'s URL>") };
+    let end = rest.find('/').unwrap_or(rest.len());
+    let host = rest[..end].rsplit_once('@').map_or(&rest[..end], |(_, host)| host);
+    let user: String = user.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    let base = format!("{scheme}://{user}@{host}{}", &rest[end..]);
+    if kept.is_empty() { base } else { format!("{base}?{}", kept.join("&")) }
 }
 
 #[cfg(feature = "cli")]
@@ -1984,9 +2043,12 @@ pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 
 #[cfg(feature = "cli")]
 async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    let (mut db, mut server, swept) = open(opts).await?;
+    let (mut db, mut server, swept) = match open(opts, log).await? {
+        Ok(opened) => opened,
+        Err(code) => return Ok(code),
+    };
     swept_note(&server, swept, log);
-    let unmodeled = crate::catalog::unmodeled(&mut db).await;
+    let unmodeled = crate::catalog::unmodeled(&mut db, false).await;
     let result = check(&mut db, Some(&mut server), opts).await;
     let result = match result {
         Ok(mut plan) if plan.ok() && lock_free(opts) => {
@@ -2211,7 +2273,10 @@ async fn history_push_as(opts: &Options, init: bool, log: Log<'_>) -> Result<i32
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
-    let (mut db, mut server, swept) = open(opts).await?;
+    let (mut db, mut server, swept) = match open(opts, log).await? {
+        Ok(opened) => opened,
+        Err(code) => return Ok(code),
+    };
     swept_note(&server, swept, log);
     let result = history_push_on(&mut db, &mut server, opts, init, log).await;
     db.close().await;
@@ -2418,7 +2483,10 @@ pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
-    let (mut db, mut server, swept) = open(opts).await?;
+    let (mut db, mut server, swept) = match open(opts, log).await? {
+        Ok(opened) => opened,
+        Err(code) => return Ok(code),
+    };
     swept_note(&server, swept, log);
     let result = history_as_it_stands(&mut db, &mut server, opts).await;
     db.close().await;
@@ -2715,7 +2783,10 @@ pub async fn lock_from_history(opts: &Options, log: Log<'_>) -> Result<i32, Erro
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
-    let (mut db, mut server, swept) = open(opts).await?;
+    let (mut db, mut server, swept) = match open(opts, log).await? {
+        Ok(opened) => opened,
+        Err(code) => return Ok(code),
+    };
     swept_note(&server, swept, log);
     let result = lock_from_history_on(&mut db, &mut server, opts, log).await;
     db.close().await;
@@ -2773,7 +2844,10 @@ pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, 
     if in_ci {
         return Ok(refused_in_ci("reylo db reset", log));
     }
-    let (mut db, mut server, swept) = open(opts).await?;
+    let (mut db, mut server, swept) = match open(opts, log).await? {
+        Ok(opened) => opened,
+        Err(code) => return Ok(code),
+    };
     swept_note(&server, swept, log);
     let result = reset_on(&mut db, &mut server, opts, log).await;
     db.close().await;
@@ -3679,6 +3753,11 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
 async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_name: &str, migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<Drafted, Vec<Problem>>, Error> {
     let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false };
     let mut db = Db::open(opts).await?;
+    let problems = out_of_reach(&mut db, &opts.url).await?;
+    if !problems.is_empty() {
+        db.close().await;
+        return Ok(Err(problems));
+    }
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
@@ -3701,7 +3780,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             return Ok(Err(vec![Problem::new("replay-fails", format!("{m} fails when replayed in a shadow database")).note(e)]));
         }
         shadows.taint(c);
-        let unread = crate::catalog::unmodeled(shadows.db(a)).await?;
+        let unread = crate::catalog::unmodeled(shadows.db(a), true).await?;
         unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a migration can leave a change to it out: check those by hand", &unread, log);
         let mut target = match crate::diff::read(shadows.db(a)).await {
             Ok(schema) => schema,
@@ -3930,10 +4009,20 @@ fn without_platform_column_options(statement: &str) -> Option<String> {
 
 /// pg_dump's text without the entries `owners` own: each entry is what follows the comment pg_dump
 /// heads it with, `-- Name: …; Type: …; Schema: …; Owner: <role>`, up to the next one, so an object
-/// goes with its owner, privileges and comment, and a default privilege with the role it is for.
-fn without_entries_of(text: &str, owners: &[String]) -> String {
-    static HEADER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^--\n-- (?:Data for )?Name: [^\n]*; Type: [^\n]*; Schema: [^\n]*; Owner: ([^;\n]*)(?:; Tablespace: [^\n]*)?\n--\n").expect("a valid pattern"));
-    let heads: Vec<(usize, bool)> = HEADER.captures_iter(text).map(|c| (c.get(0).map_or(0, |m| m.start()), owners.iter().any(|o| o == &c[1]))).collect();
+/// goes with its owner, privileges and comment, and a default privilege with the role it is for. A
+/// relation's entries in one of the `project` schemas stay, whoever owns it: the relation is the
+/// project's ([`crate::catalog::project_relation`]).
+fn without_entries_of(text: &str, owners: &[String], project: &[String]) -> String {
+    static HEADER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^--\n-- (?:Data for )?Name: ([^\n]*); Type: ([^\n]*); Schema: ([^\n]*); Owner: ([^;\n]*)(?:; Tablespace: [^\n]*)?\n--\n").expect("a valid pattern"));
+    // pg_dump's types for a relation and for what it holds, and the names it gives the privileges,
+    // comments and labels on them.
+    const RELATION: [&str; 18] = ["TABLE", "VIEW", "MATERIALIZED VIEW", "SEQUENCE", "SEQUENCE OWNED BY", "FOREIGN TABLE", "INDEX", "INDEX ATTACH", "TABLE ATTACH", "CONSTRAINT", "FK CONSTRAINT", "CHECK CONSTRAINT", "DEFAULT", "TRIGGER", "POLICY", "ROW SECURITY", "RULE", "STATISTICS"];
+    const ON_RELATION: [&str; 12] = ["TABLE ", "VIEW ", "MATERIALIZED VIEW ", "SEQUENCE ", "FOREIGN TABLE ", "COLUMN ", "INDEX ", "CONSTRAINT ", "TRIGGER ", "POLICY ", "RULE ", "STATISTICS "];
+    let relation = |name: &str, kind: &str| RELATION.contains(&kind) || (matches!(kind, "ACL" | "COMMENT" | "SECURITY LABEL") && ON_RELATION.iter().any(|p| name.starts_with(p)));
+    let heads: Vec<(usize, bool)> = HEADER
+        .captures_iter(text)
+        .map(|c| (c.get(0).map_or(0, |m| m.start()), owners.iter().any(|o| o == &c[4]) && !(project.iter().any(|s| s == &c[3]) && relation(&c[1], &c[2]))))
+        .collect();
     let Some(&(first, _)) = heads.first() else { return text.to_string() };
     let mut out = text[..first].to_string();
     for (k, &(start, theirs)) in heads.iter().enumerate() {
@@ -3960,9 +4049,11 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             }
             // What the platform's roles own in a dumped schema is the platform's, which every
             // comparison leaves out (Tiger Cloud's functions in `public`, its superuser's default
-            // privileges), so no file makes it.
+            // privileges), so no file makes it; but for a relation in a schema of the project's,
+            // which is the project's whoever owns it.
             let owners = crate::catalog::platform_owners(db).await?;
-            let text = without_entries_of(&crate::db::pg_dump(&opts.url, version / 10000, &args)?, &owners);
+            let project = crate::catalog::user_schemas(db).await?;
+            let text = without_entries_of(&crate::db::pg_dump(&opts.url, version / 10000, &args)?, &owners, &project);
             // psql's meta-commands, which pg_dump writes on lines of their own around the file.
             static META: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\\(un)?restrict\b.*$").expect("a valid pattern"));
             let text = META.replace_all(&text, "");
@@ -4137,9 +4228,9 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                       coalesce(' USING (' || pg_get_expr(p.polqual, p.polrelid) || ')', ''), coalesce(' WITH CHECK (' || pg_get_expr(p.polwithcheck, p.polrelid) || ')', ''))
                     from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace
                     where n.nspname not in ({list}) and not {}",
-                    crate::catalog::not_platform("c.relowner"),
+                    crate::catalog::project_relation("c", "n"),
                     crate::catalog::not_platform("f.proowner"),
-                    crate::catalog::not_platform("c.relowner")
+                    crate::catalog::project_relation("c", "n")
                 ))
                 .await?;
             if !extra.is_empty() {
@@ -4239,8 +4330,15 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     // keeps linear history from its first migration.
     let spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
     let mut db = Db::open(opts).await?;
+    // Relations of the project's a superuser out of the role's reach owns are its to give first: no
+    // file the role runs makes them as they are here.
+    let problems = out_of_reach(&mut db, &opts.url).await;
     let lines = catalog(&mut db).await;
     db.close().await;
+    let problems = problems?;
+    if !problems.is_empty() {
+        return Ok(refuse(&problems, log));
+    }
     if !holds_a_schema(&lines?) {
         drop(spinning);
         std::fs::create_dir_all(&opts.dir)?;
@@ -4462,7 +4560,10 @@ pub async fn dev(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error
     if in_ci {
         return Ok(refused_in_ci("reylo migrate dev", log));
     }
-    let (mut db, mut server, swept) = open(opts).await?;
+    let (mut db, mut server, swept) = match open(opts, log).await? {
+        Ok(opened) => opened,
+        Err(code) => return Ok(code),
+    };
     let result = dev_on(&mut db, &mut server, swept, opts, &format!("Applying to {}", shown_url(&opts.url)), log).await;
     db.close().await;
     server.close().await;
@@ -5156,7 +5257,10 @@ async fn db_push_as(opts: &Options, in_ci: bool, push: &Push, asked: &Asked, log
     if in_ci {
         return Ok(refused_in_ci("reylo db push", log));
     }
-    let (mut db, mut server, swept) = open(opts).await?;
+    let (mut db, mut server, swept) = match open(opts, log).await? {
+        Ok(opened) => opened,
+        Err(code) => return Ok(code),
+    };
     let result = db_push_on(&mut db, &mut server, swept, opts, push, asked, log).await;
     db.close().await;
     server.close().await;
@@ -5318,7 +5422,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
     }
     let wanted = catalog(shadows.db(s_lane)).await?;
     let now = crate::catalog::without_extra_children(&catalog(db).await?, &wanted);
-    unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a push can leave a change to it out: check those by hand", &crate::catalog::unmodeled(shadows.db(s_lane)).await?, log);
+    unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a push can leave a change to it out: check those by hand", &crate::catalog::unmodeled(shadows.db(s_lane), true).await?, log);
     if now != wanted {
         let target = read_target(shadows.db(s_lane), Some(schema_sql)).await?;
         let counts = table_rows(db).await?;
@@ -5517,10 +5621,32 @@ mod tests {
         // As pg_dump writes a Tiger Cloud database's public schema: a function of the platform's
         // superuser, with its privileges, and its default privileges, among the project's.
         let dump = "SET check_function_bodies = false;\n\n--\n-- Name: create_playground(regclass, boolean); Type: FUNCTION; Schema: public; Owner: postgres\n--\n\nCREATE FUNCTION public.create_playground(src regclass, b boolean) RETURNS integer\n    LANGUAGE sql\n    AS $$select 1$$;\n\n\nALTER FUNCTION public.create_playground(src regclass, b boolean) OWNER TO postgres;\n\n--\n-- Name: users; Type: TABLE; Schema: public; Owner: tsdbadmin\n--\n\nCREATE TABLE public.users (\n    id integer NOT NULL\n);\n\n\nALTER TABLE public.users OWNER TO tsdbadmin;\n\n--\n-- Name: FUNCTION create_playground(src regclass, b boolean); Type: ACL; Schema: public; Owner: postgres\n--\n\nGRANT ALL ON FUNCTION public.create_playground(src regclass, b boolean) TO tsdbadmin;\n\n--\n-- Name: DEFAULT PRIVILEGES FOR SCHEMAS; Type: DEFAULT ACL; Schema: -; Owner: postgres\n--\n\nALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT USAGE ON SCHEMAS TO tsdbadmin;\n\n\n--\n-- PostgreSQL database dump complete\n--\n";
-        let kept = without_entries_of(dump, &["postgres".to_string()]);
+        let public = ["public".to_string()];
+        let kept = without_entries_of(dump, &["postgres".to_string()], &public);
         assert_eq!(kept, "SET check_function_bodies = false;\n\n--\n-- Name: users; Type: TABLE; Schema: public; Owner: tsdbadmin\n--\n\nCREATE TABLE public.users (\n    id integer NOT NULL\n);\n\n\nALTER TABLE public.users OWNER TO tsdbadmin;\n\n");
         // With no platform's role among the owners, the dump is as written.
-        assert_eq!(without_entries_of(dump, &["supabase_admin".to_string()]), dump);
+        assert_eq!(without_entries_of(dump, &["supabase_admin".to_string()], &public), dump);
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn a_url_as_another_user_keeps_its_server_and_drops_the_password() {
+        assert_eq!(as_user("postgres://app:secret@db.example.com:5432/application?sslmode=require&password=x", "postgres"), "postgres://postgres@db.example.com:5432/application?sslmode=require");
+        assert_eq!(as_user("postgresql://localhost/application", "postgres"), "postgresql://postgres@localhost/application");
+        assert_eq!(as_user("postgres://app@localhost", "the owner"), "postgres://the%20owner@localhost");
+    }
+
+    #[test]
+    fn a_dump_keeps_a_projects_relations_whoever_owns_them() {
+        // A table a superuser made in `public`, with its key, its privileges and a column's comment,
+        // beside the superuser's function: the table's entries stay, and the function's go.
+        let table = "--\n-- Name: customers; Type: TABLE; Schema: public; Owner: postgres\n--\n\nCREATE TABLE public.customers (\n    id integer NOT NULL\n);\n\n\nALTER TABLE public.customers OWNER TO postgres;\n\n--\n-- Name: COLUMN customers.id; Type: COMMENT; Schema: public; Owner: postgres\n--\n\nCOMMENT ON COLUMN public.customers.id IS 'the key';\n\n--\n-- Name: customers customers_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres\n--\n\nALTER TABLE ONLY public.customers\n    ADD CONSTRAINT customers_pkey PRIMARY KEY (id);\n\n--\n-- Name: TABLE customers; Type: ACL; Schema: public; Owner: postgres\n--\n\nGRANT SELECT ON TABLE public.customers TO app;\n\n";
+        let function = "--\n-- Name: helper(); Type: FUNCTION; Schema: public; Owner: postgres\n--\n\nCREATE FUNCTION public.helper() RETURNS integer\n    LANGUAGE sql\n    AS $$select 1$$;\n\n--\n-- Name: FUNCTION helper(); Type: ACL; Schema: public; Owner: postgres\n--\n\nGRANT ALL ON FUNCTION public.helper() TO app;\n\n";
+        let dump = format!("SET check_function_bodies = false;\n\n{function}{table}");
+        let owners = ["postgres".to_string()];
+        assert_eq!(without_entries_of(&dump, &owners, &["public".to_string()]), format!("SET check_function_bodies = false;\n\n{table}"));
+        // In a schema of the platform's, the table is the platform's too.
+        assert_eq!(without_entries_of(&dump, &owners, &[]), "SET check_function_bodies = false;\n\n");
     }
 
     #[test]

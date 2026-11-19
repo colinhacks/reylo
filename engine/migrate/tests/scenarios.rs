@@ -2794,6 +2794,7 @@ on!(
     a_servers_hint_is_in_its_error,
     init_refused_leaves_no_project_behind,
     what_a_superuser_out_of_reach_owns_is_the_platforms,
+    tables_a_superuser_out_of_reach_made_are_the_projects,
     the_platforms_objects_are_in_every_shadow_as_a_role_of_its_own,
     a_run_never_makes_a_role,
     a_projects_extension_in_pg_catalog_is_written,
@@ -3138,8 +3139,76 @@ mod adversarial {
         p.output();
         assert_eq!(p.dev().await, 0, "{}", p.peek());
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
-        assert_has!(p.output(), r"Shadow databases leave out what \S+ owns here, the platform's, so a migration that uses it fails in them: a role reylo_platform on their server that madv_rolemaker may SET ROLE to lets them make it");
+        assert_has!(p.output(), r"Shadow databases leave out what \S+ owns here, the platform's, so a migration that uses it fails in them: a role reylo_platform on their server that madv_rolemaker, the role they are made as, may SET ROLE to lets them make it");
+        // Shadows made on shadow_url's server, as its role: that role is the one named.
+        p.exec("do $$ begin create role madv_hosted login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        let shadowed = Options { shadow_url: Some(as_role(&p.url, "madv_hosted")), ..p.opts() };
+        let mut out = Vec::new();
+        let _ = reylo_migrate::dry_run(&shadowed, &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("dry run: {e}"));
+        assert_has!(out.join("\n"), r"a role reylo_platform on their server that madv_hosted, the role they are made as, may SET ROLE to lets them make it");
         assert_eq!(roles(&p).await, before, "a run made or granted a role");
+    }
+
+    /// The application's tables, made by a superuser on a database that a role that is no superuser
+    /// owns and connects as (a local server's `postgres` making them before handing the database
+    /// over): they are the project's, not a platform's, though that role can't act as their owner.
+    /// `db introspect` prints them, and init, and every command that replays or plans, refuses them,
+    /// naming the owner and giving the command that makes the role their owner; once that has run,
+    /// init starts from them.
+    pub async fn tables_a_superuser_out_of_reach_made_are_the_projects(mut p: P) {
+        p.exec("do $$ begin create role madv_app login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_app", p.name)).await;
+        p.exec(
+            "create table customers (id int primary key, name text); insert into customers values (1, 'one'); grant select on customers to madv_app;
+            create table orders (id int primary key, customer int references customers); grant select on orders to madv_app;",
+        )
+        .await;
+        let superuser = p.rows("select current_user::text as u").await[0].text("u").to_string();
+        let admin = p.url.clone();
+        p.url = as_role(&admin, "madv_app");
+        let opts = p.opts();
+        let text = reylo_migrate::db_introspect(&opts, &[]).await.unwrap_or_else(|e| panic!("introspect: {e}"));
+        assert_has!(&text, r"(?i)create table (public\.)?customers \(");
+        assert_has!(&text, r"(?i)create table (public\.)?orders \(");
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        let said = out.join("\n");
+        assert_eq!(code, 1, "{said}");
+        let title = format!(r"(?m)^✗ {} owns tables here that madv_app can't act as: customers, orders$", regex::escape(&superuser));
+        assert_has!(said.clone(), &title);
+        assert_has!(said.clone(), &format!(r"(?m)^  Make madv_app their owner, connected as {}, then start again:$", regex::escape(&superuser)));
+        assert_has!(said.clone(), r"Nothing was changed\.$");
+        assert!(!p.dir.join("schema.sql").exists(), "init left schema.sql:\n{said}");
+        assert!(!p.dir.join(reylo_migrate::lock::LOCK).exists(), "init left the lock");
+        assert!(p.files().is_empty(), "init left {:?}", p.files());
+        // Every command that replays or plans refuses the same.
+        p.schema("create table customers (id int primary key, name text);\n\ncreate table orders (id int primary key, customer int references customers);\n");
+        assert_eq!(p.dev().await, 1, "{}", p.peek());
+        assert_has!(p.output(), &title);
+        assert_eq!(p.dry_run().await, 1, "{}", p.peek());
+        assert_has!(p.output(), &title);
+        assert_eq!(p.db_push().await, 1, "{}", p.peek());
+        assert_has!(p.output(), &title);
+        std::fs::remove_file(p.dir.join("schema.sql")).unwrap();
+        // The fix, as given: one `reylo run` as the owner.
+        let fix = said.lines().find(|l| l.contains("reylo run")).unwrap_or_else(|| panic!("no fix in:\n{said}")).trim().to_string();
+        let words: Vec<String> = regex::Regex::new(r"'((?:[^']|'\\'')*)'").unwrap().captures_iter(&fix).map(|c| c[1].replace("'\\''", "'")).collect();
+        assert!(fix.starts_with("reylo run --url ") && words.len() == 3, "{fix}");
+        assert_eq!(&words[1..], ["alter table customers owner to madv_app", "alter table orders owner to madv_app"], "{fix}");
+        let items: Vec<(String, String)> = words[1..].iter().map(|w| (w.clone(), w.clone())).collect();
+        let (url, dir) = (words[0].clone(), p.dir.clone());
+        assert_eq!(p.run(async |_, log| reylo_migrate::run_sql(&url, &dir, &items, log).await).await, 0, "{}", p.peek());
+        p.output();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert!(schema.contains("create table customers (") && schema.contains("create table orders ("), "{schema}");
+        assert_eq!(reylo_migrate::db_introspect(&opts, &[]).await.unwrap(), schema);
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from customers").await[0].text("n"), "1", "the rows stay");
     }
 
     /// The platform's objects a migration uses (a view over its functions) are made in each shadow as
@@ -3276,7 +3345,8 @@ mod adversarial {
         p.output();
         p.exec("insert into timescaledb_information.hypertables values ('public', 'metrics')").await;
         p.dry_run().await;
-        assert_has!(p.output(), r"(?m)^    hypertable public\.metrics: not read");
+        // A check of the migrations already written gives no advice for writing one.
+        assert_has!(p.output(), r"(?m)^    hypertable public\.metrics: not read$");
     }
 
     pub async fn a_database_search_path_resolves_names_as_the_target_does(mut p: P) {

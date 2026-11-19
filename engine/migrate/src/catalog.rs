@@ -227,7 +227,8 @@ pub const SHADOW_PLATFORM_ROLE: &str = "reylo_platform";
 /// keeps its superuser to itself and hands out a role that can't become it (Tiger Cloud's and Cloud
 /// SQL's `postgres` and `cloudsqladmin`, RDS's `rdsadmin`, Neon's `cloud_admin`, Azure's
 /// `azure_superuser`), so what that superuser owns is the platform's, with no list to keep; a
-/// superuser connected may act as every role, so on a local server nothing is.
+/// superuser connected may act as every role, so on a local server nothing is. A relation in a
+/// schema of the project's is the project's whoever owns it ([`project_relation`]).
 pub(crate) fn not_platform(owner: &str) -> String {
     format!("{} and not {}", not_named(owner), beyond_reach(owner))
 }
@@ -241,6 +242,46 @@ pub(crate) fn not_platform_schema(alias: &str) -> String {
 fn not_named(owner: &str) -> String {
     let roles = PLATFORM_ROLES.iter().chain([&SHADOW_PLATFORM_ROLE]).map(|r| format!("'{r}'")).collect::<Vec<_>>().join(", ");
     format!("pg_get_userbyid({owner}) <> all (array[{roles}])")
+}
+
+/// The kinds of `pg_class` row that are relations: tables, partitioned tables, views, materialized
+/// views, sequences, foreign tables, and their indexes.
+const RELATION_KINDS: &str = "('r', 'p', 'v', 'm', 'S', 'f', 'i', 'I')";
+
+/// Whether the `pg_class` row `c`, in the schema `n` (its `pg_namespace` row), is no platform's: a
+/// relation in a schema of the project's is the project's, whoever owns it, since a superuser out of
+/// reach that made an application's tables makes them no platform's (the commands that replay or
+/// plan refuse them instead, [`out_of_reach_relations`]); anything else is its owner's, as
+/// [`not_platform`] says.
+pub(crate) fn project_relation(c: &str, n: &str) -> String {
+    format!("({} or ({c}.relkind in {RELATION_KINDS} and {}))", not_platform(&format!("{c}.relowner")), not_platform_schema(n))
+}
+
+/// The relations in a schema of the project's that a superuser the connected role may not act as
+/// owns, each `(owner, kind, name)`: the kind as `alter` names it, and the name schema-qualified
+/// outside `public`. No migration the role runs may change them, and no shadow it makes owns them as
+/// they are owned here. A sequence a column owns, and an index, go with their table, whose new owner
+/// takes them.
+#[cfg(feature = "cli")]
+pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, String, String)>, Error> {
+    if db.dialect() != Dialect::Postgres {
+        return Ok(vec![]);
+    }
+    let rows = db
+        .rows(&format!(
+            "select pg_get_userbyid(c.relowner)::text as owner,
+              case c.relkind when 'v' then 'view' when 'm' then 'materialized view' when 'S' then 'sequence' when 'f' then 'foreign table' else 'table' end as kind,
+              case when n.nspname = 'public' then quote_ident(c.relname) else format('%I.%I', n.nspname, c.relname) end as name
+            from pg_class c join pg_namespace n on n.oid = c.relnamespace
+            where c.relkind in ('r', 'p', 'v', 'm', 'S', 'f') and {PG_USER_NS} and c.relname <> '{HISTORY_TABLE}' and {} and {} and {}
+              and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.refclassid = 'pg_class'::regclass and d.deptype in ('a', 'i'))
+            order by 1, n.nspname <> 'public', 3",
+            beyond_reach("c.relowner"),
+            not_platform_schema("n"),
+            not_extension("pg_class", "c")
+        ))
+        .await?;
+    Ok(rows.iter().map(|r| (r.text("owner").to_string(), r.text("kind").to_string(), r.text("name").to_string())).collect())
 }
 
 /// Whether `owner` is a superuser the connected role may not act as: may not `set role` to, which
@@ -387,7 +428,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
               and not exists (select 1 from pg_depend e where e.classid = 'pg_type'::regclass and e.objid = c.reltype and e.deptype = 'e')",
             owner_lacks("c.relacl", "c.relowner", 'r'),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -455,7 +496,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             where c.relkind = 'c' and a.attnum > 0 and not a.attisdropped and {ns} and {} and {}
             group by 1",
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -480,7 +521,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
               and not exists (select 1 from pg_depend e where e.classid = 'pg_type'::regclass and e.objid = c.reltype and e.deptype = 'e')",
             identity_options("a"),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -532,7 +573,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             where co.contype <> 'n' and coalesce(n.nspname, tn.nspname) not in ('pg_catalog', 'information_schema') and coalesce(c.relname, '') <> '{history}'
               and not exists (select 1 from pg_depend e where e.classid = 'pg_class'::regclass and e.objid = co.conrelid and e.deptype = 'e')
               and {} and {}",
-            not_platform("coalesce(c.relowner, t.typowner)"),
+            format!("(case when c.oid is not null then {} else {} end)", project_relation("c", "n"), not_platform("t.typowner")),
             not_extension("pg_constraint", "co")
         ))
         .await?
@@ -553,7 +594,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             where {ns} and {} and {} and t.relname <> '{history}'
               and not exists (select 1 from pg_depend e where e.classid = 'pg_class'::regclass and e.objid = t.oid and e.deptype = 'e')",
             not_extension("pg_class", "c"),
-            not_platform("t.relowner")
+            project_relation("t", "n")
         ))
         .await?
     {
@@ -567,7 +608,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             "select format('%I.%I', n.nspname, c.relname) as name, pg_get_viewdef(c.oid, false) as def
             from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('v', 'm') and {ns} and {} and {}",
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -584,7 +625,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             where {ns} and {} and {}
               and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'i')",
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -692,8 +733,8 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             aggregate_options("p"),
             not_extension("pg_proc", "p"),
             not_platform("p.proowner"),
-            not_platform("c.relowner"),
-            not_platform("s.stxowner")
+            project_relation("c", "n"),
+            format!("({} or {})", not_platform("s.stxowner"), not_platform_schema("n"))
         ))
         .await?
     {
@@ -730,7 +771,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             acl("c.relacl", "c.relowner", 's'),
             owner_lacks("c.relacl", "c.relowner", 's'),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner"),
+            project_relation("c", "n"),
             acl("p.proacl", "p.proowner", 'f'),
             owner_lacks("p.proacl", "p.proowner", 'f'),
             not_extension("pg_proc", "p"),
@@ -740,7 +781,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             not_extension("pg_type", "t"),
             not_platform("t.typowner"),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner"),
+            project_relation("c", "n"),
             not_extension("pg_collation", "co"),
             not_extension("pg_event_trigger", "et"),
             acl("w.fdwacl", "w.fdwowner", 'F'),
@@ -946,8 +987,10 @@ pub(crate) fn aggregate_options(proc: &str) -> String {
 
 /// What a Postgres schema holds that Reylo reads by name alone, so that a change to its definition is
 /// never seen, or doesn't read at all, so that nothing of it is: each a line a person reads, the
-/// object and which of the two. None on the other databases, whose every kind is read.
-pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
+/// object and which of the two. `writes` is whether the command writes a change from `schema.sql`
+/// (`migrate new`, `db push`), whose lines also say what that change leaves out. None on the other
+/// databases, whose every kind is read.
+pub async fn unmodeled(db: &mut Db, writes: bool) -> Result<Vec<String>, Error> {
     if db.dialect() != Dialect::Postgres {
         return Ok(vec![]);
     }
@@ -982,7 +1025,10 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
     let timescale = db.rows("select to_regclass('timescaledb_information.hypertables')::text as v").await?;
     if timescale.first().and_then(|r| r.get("v")).is_some() {
         let hypertables = r"select format('hypertable %I.%I', hypertable_schema, hypertable_name) as what from timescaledb_information.hypertables where hypertable_schema not like '\_timescaledb%' order by 1";
-        out.extend(db.rows(hypertables).await?.iter().map(|r| format!("{}: not read, so a migration written from schema.sql makes a plain table: call create_hypertable in it", r.text("what"))));
+        // What makes one is a migration's call, which a check of the migrations already written runs
+        // as they wrote it: only a change written from schema.sql would leave it out.
+        let why = if writes { ": not read, so a migration written from schema.sql makes a plain table: call create_hypertable in it" } else { ": not read" };
+        out.extend(db.rows(hypertables).await?.iter().map(|r| format!("{}{why}", r.text("what"))));
     }
     // Security labels.
     let labels = format!(
@@ -1009,7 +1055,7 @@ pub(crate) fn owned_objects(history: &str) -> String {
     [
         // A sequence a column owns (`serial`) has its table's owner, and moves with it; a partition
         // has an owner of its own.
-        format!("select 'pg_class'::regclass as classid, c.oid as objid, c.relowner as owner from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'c') and c.relname <> '{history}' and {ns} and {} and {} and not (c.relkind = 'S' and exists (select 1 from pg_depend dep where dep.classid = 'pg_class'::regclass and dep.objid = c.oid and dep.refclassid = 'pg_class'::regclass and dep.deptype in ('a', 'i')))", not_extension("pg_class", "c"), not_platform("c.relowner")),
+        format!("select 'pg_class'::regclass as classid, c.oid as objid, c.relowner as owner from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'c') and c.relname <> '{history}' and {ns} and {} and {} and not (c.relkind = 'S' and exists (select 1 from pg_depend dep where dep.classid = 'pg_class'::regclass and dep.objid = c.oid and dep.refclassid = 'pg_class'::regclass and dep.deptype in ('a', 'i')))", not_extension("pg_class", "c"), project_relation("c", "n")),
         format!("select 'pg_proc'::regclass, p.oid, p.proowner from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_proc'::regclass and dep.objid = p.oid and dep.deptype = 'i')", not_extension("pg_proc", "p"), not_platform("p.proowner")),
         format!("select 'pg_type'::regclass, t.oid, t.typowner from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype in ('b', 'd', 'e', 'r') and t.typcategory <> 'A' and {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_type'::regclass and dep.objid = t.oid and dep.deptype = 'i')", not_extension("pg_type", "t"), not_platform("t.typowner")),
         format!("select 'pg_namespace'::regclass, n.oid, n.nspowner from pg_namespace n where {ns} and {} and {}", not_extension("pg_namespace", "n"), not_platform_schema("n")),
