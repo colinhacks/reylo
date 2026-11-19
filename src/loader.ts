@@ -15,7 +15,7 @@ import { jsonNumbers } from "./render.ts";
 import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
 import { planLibraries, planOf, type Codecs, type Library, type Plan } from "./codecs.ts";
 import type { Dialect } from "./execute.ts";
-import type { Analysis, Lexed } from "./engine-core.ts";
+import { DIAGNOSTIC, type Analysis, type Lexed } from "./engine-core.ts";
 
 export type SqlModule = {
   code: string;
@@ -42,15 +42,15 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // A statement the database refuses may have been analyzed against a schema read a few seconds
   // before a migration (a session reads it again at most every 5 seconds, and SQLite's analysis
   // replays it): it is analyzed again when the schema has changed since.
-  if (outcome.ok && outcome.analysis.diagnostics.some((d) => d.code === 6) && (await session.recheck())) outcome = await session.analyze(sql);
+  if (outcome.ok && outcome.analysis.diagnostics.some((d) => d.code === DIAGNOSTIC.refused) && (await session.recheck())) outcome = await session.analyze(sql);
   if (!outcome.ok) throw new Error(`${path}: ${outcome.message}`);
   if (outcome.unverified) warnUnverified(outcome.unverified);
   // Each domain written as its base type, which the run time decodes its values by.
   const analysis = analysisWithBases(outcome.analysis);
-  // A statement whose placeholders break a rule fails the build: one the engine could not read
-  // (1), named and positional mixed (2), or a parameter written more than once (3), since each
-  // parameter appears once so that one place types it.
-  const unread = analysis.diagnostics.find((d) => d.code === 1 || d.code === 2 || d.code === 3);
+  // A statement whose placeholders break a rule fails the build: one the engine could not read,
+  // named and positional mixed, or a parameter written more than once, since each parameter appears
+  // once so that one place types it.
+  const unread = analysis.diagnostics.find((d) => d.code === DIAGNOSTIC.unreadPlaceholders || d.code === DIAGNOSTIC.mixedPlaceholders || d.code === DIAGNOSTIC.repeatedParameter);
   if (unread) throw new Error(`${path}: ${unread.message}`);
   let params: string[];
   if (session.project.dialect === "mysql") {
@@ -66,12 +66,12 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   }
   // A column list that does not read, or that disagrees with the table its insert writes, fails
   // the build too.
-  const descriptor = analysis.diagnostics.find((d) => d.code === 20 || d.code === 21);
+  const descriptor = analysis.diagnostics.find((d) => d.code === DIAGNOSTIC.columnList || d.code === DIAGNOSTIC.columnListTable);
   if (descriptor) throw new Error(`${path}: ${descriptor.message}`);
-  // So does a statement the database refuses (6: a misspelled column, a dropped table), at its line
+  // So does a statement the database refuses (a misspelled column, a dropped table), at its line
   // and column, as the type check reports it: its module would run a statement nothing typed, with
   // no columns and any number of rows.
-  const refused = analysis.diagnostics.find((d) => d.code === 6);
+  const refused = analysis.diagnostics.find((d) => d.code === DIAGNOSTIC.refused);
   if (refused) throw new Error(`${path}:${place(sql, refused.start)}: ${refused.message}`);
   const dialect = session.project.dialect;
   // Each placeholder's place in the compiled statement, where a driver takes the statement in

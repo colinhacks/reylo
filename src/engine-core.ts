@@ -13,6 +13,39 @@ export type Dialect = "postgres" | "sqlite" | "mysql";
 export type Diagnostic = { message: string; start: number; length: number; code: number; server_code?: string };
 
 /**
+ * Reylo's code of each diagnostic its tools read or report, by what it says: the engine's, written
+ * where it is produced, and the hosts'. The type check shows a code as `TS<code>`, so none changes.
+ */
+export const DIAGNOSTIC = {
+  /** The engine could not read the statement's placeholders: an unterminated string or comment, a placeholder the database would misread, or on MySQL a session that would not say the sql_mode its strings are read by (engine/core/src/analysis.rs, `lexed`; engine/mysql/src/mysql.rs). */
+  unreadPlaceholders: 1,
+  /** Named and positional placeholders mixed in one statement (engine/core/src/analysis.rs, `lexed`). */
+  mixedPlaceholders: 2,
+  /** A parameter written more than once, at each later use (engine/core/src/analysis.rs, `repeated`). */
+  repeatedParameter: 3,
+  /** No database is named, and `reylo/.cache/` holds no analysis of the statement (src/analyze.ts). */
+  noDatabase: 4,
+  /** The database cannot be reached, or its schema cannot be read (src/analyze.ts). */
+  unreachable: 5,
+  /** The database refused the statement, at the place its error names, or an app's own SQLite driver did (each database's engine; src/analyze.ts). */
+  refused: 6,
+  /** The content mapper has no project for the file (src/mapper-server.ts). */
+  noProject: 9,
+  /** The project cannot be used as it is set up: its file does not read, there is no engine to run, or a library `js.codecs` names is not installed (src/project.ts). */
+  project: 11,
+  /** A parameter nothing in the statement types, where the project file leaves `allow_untyped_params` off (src/module-types.ts). */
+  untypedParameter: 12,
+  /** A structured parameter's column list that does not read (engine/core/src/structured.rs, `CODE`). */
+  columnList: 20,
+  /** A structured parameter's column list that disagrees with the table its insert writes (engine/core/src/structured.rs, `TABLE_CODE`). */
+  columnListTable: 21,
+  /** A Postgres session whose DateStyle is not ISO, whose dates and times `.run()` cannot read (engine/native/src/postgres.rs, `DATE_STYLE`). */
+  dateStyle: 24,
+  /** An option given to the content mapper in tsconfig.json, where the project file holds every setting (src/mapper-server.ts). */
+  mapperOption: 104,
+} as const;
+
+/**
  * What the engine answers for a statement: the format's statement descriptor (spec/index.ts,
  * `StatementDescriptor`) less its dialect and with Reylo's diagnostics, and what Reylo's own tools
  * read beside it.

@@ -23,7 +23,7 @@ import { nativeBinary } from "./native.ts";
 export type { EngineType } from "./engine-type.ts";
 export { reason, Unreachable } from "./connection.ts";
 export type { Analysis, Answer, DbError, Described, Diagnostic, Dialect, EngineIo, Lexed, MysqlDescribed, Need, Response } from "./engine-core.ts";
-export { AnswerCache, EngineCore } from "./engine-core.ts";
+export { AnswerCache, DIAGNOSTIC, EngineCore } from "./engine-core.ts";
 
 /** The version of reylo, which the engine it runs must have: that of the package this module ships in. */
 export const REYLO_VERSION: string = (() => {
@@ -67,15 +67,15 @@ export function engine(dialect: Dialect): Promise<Engine> {
       // The child that answers this database's requests that need no database, the ping first.
       const core = new Channel(binary, dialect);
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const late = new Promise<Answer>((done) => (timer = setTimeout(() => done({ status: "error", message: `it did not answer a ping in ${PING_TIMEOUT / 1000} s` }), PING_TIMEOUT)));
+      const late = new Promise<Reply>((done) => (timer = setTimeout(() => done({ status: "error", message: `it did not answer a ping in ${PING_TIMEOUT / 1000} s` }), PING_TIMEOUT)));
       const answer = await Promise.race([core.ask({ op: "ping" }), late]);
       clearTimeout(timer);
-      const ping = answer as unknown as Response;
       const refuse = (message: string) => {
         core.kill();
         return new MissingEngine(message);
       };
-      if (ping.status !== "ok") throw refuse(`the engine ${binary} does not answer: ${answer.message ?? answer.status}`);
+      if (!complete("ping", answer)) throw refuse(`the engine ${binary} does not answer: ${"message" in answer ? answer.message : unexpected("ping", answer)}`);
+      const ping = answer;
       if (ping.version !== REYLO_VERSION) {
         throw refuse(`reylo ${REYLO_VERSION} runs with its engine at ${REYLO_VERSION}, and ${binary} is ${ping.version}: install reylo again, point REYLO_ENGINE_PATH at the engine of reylo ${REYLO_VERSION}, or in a checkout of reylo's repository build it with cargo build --release -p reylo-cli`);
       }
@@ -97,7 +97,91 @@ export async function anyEngine(): Promise<Engine | MissingEngine> {
   return engine("postgres").catch((e: unknown) => (e instanceof MissingEngine ? e : new MissingEngine((e as Error).message)));
 }
 
-type Answer = { status: string; id?: number; message?: string; code?: string; position?: number; conn?: number; version?: string; analysis?: Analysis; rows?: unknown[][]; server?: string; params?: number[]; columns?: Described["columns"] };
+/**
+ * What each request answers where it succeeds, by its `op`: the core's requests, which need no
+ * database (engine/core/src/api.rs, `Response`), and a connection's (engine/native/src/postgres.rs,
+ * mysql.rs and sqlite.rs; `describe` on Postgres alone).
+ */
+type Replies = {
+  ping: Extract<Response, { status: "ok" }>;
+  lex: Extract<Response, { status: "lexed" }>;
+  analyze: Extract<Response, { status: "need" | "analysis" }>;
+  config: Extract<Response, { status: "config" | "configError" }>;
+  open: { status: "opened"; conn: number; version: string };
+  run: { status: "analysis"; analysis: Analysis };
+  query: { status: "rows"; rows: unknown[][] };
+  describe: { status: "described"; params: number[]; columns: Described["columns"] };
+  forget: { status: "ok" };
+  close: { status: "ok" };
+};
+
+type Op = keyof Replies;
+
+/**
+ * What a request answers where it fails: a server that cannot be reached or went away, a refused
+ * login, a MySQL URL that reached a server that is no MySQL, and any other error, with the server's
+ * code and the character its message points at where it gives them. A child that stopped answers
+ * every request waiting on it as unreachable (`Channel`).
+ */
+type Failure =
+  | { status: "unreachable"; message: string; code?: string }
+  | { status: "refused"; message: string; code?: string }
+  | { status: "notMysql"; server: string }
+  | { status: "error"; message: string; code?: string; position?: number };
+
+/** One line from the engine, read as JSON: an answer as some request answers, or one of no request's shape, with the `id` of the request it answers where the engine read one. */
+type Reply = (Replies[Op] | Failure | { status: string }) & { id?: number };
+
+const isObject = (v: unknown): v is object => v !== null && typeof v === "object";
+
+/** Whether `reply` is a whole answer to `op`, with every field its caller reads, of its type. */
+const COMPLETE: { readonly [O in Op]: (reply: Record<string, unknown>) => boolean } = {
+  ping: (r) => r.status === "ok" && typeof r.version === "string" && typeof r.fingerprint === "string",
+  lex: (r) => r.status === "lexed" && isObject(r.lexed),
+  analyze: (r) => (r.status === "need" && Array.isArray(r.needs)) || (r.status === "analysis" && isObject(r.analysis)),
+  config: (r) => (r.status === "config" && isObject(r.config)) || (r.status === "configError" && isObject(r.error)),
+  open: (r) => r.status === "opened" && typeof r.conn === "number" && typeof r.version === "string",
+  run: (r) => r.status === "analysis" && isObject(r.analysis),
+  query: (r) => r.status === "rows" && Array.isArray(r.rows),
+  describe: (r) => r.status === "described" && Array.isArray(r.params) && Array.isArray(r.columns),
+  forget: (r) => r.status === "ok",
+  close: (r) => r.status === "ok",
+};
+
+function complete<O extends Op>(op: O, reply: Reply): reply is Replies[O] & { id?: number } {
+  return COMPLETE[op](reply as Record<string, unknown>);
+}
+
+/** The engine's answer quoted as far as a message needs it. */
+function quoted(text: string, length = 200): string {
+  return JSON.stringify(text.length > length ? `${text.slice(0, length)}…` : text);
+}
+
+/** Why a reply is no answer to `op`: what was asked, and what came back. */
+const unexpected = (op: Op, reply: Reply) => `the engine answered ${op} with ${quoted(JSON.stringify(reply))}`;
+
+/**
+ * The core's answer to a request that needs no database, as its caller reads it (EngineCore): a
+ * whole answer to the request, or an error, the core's own or one that names what was asked and
+ * what came back.
+ */
+function coreAnswer(op: unknown, reply: Reply): Response {
+  if (op !== "ping" && op !== "lex" && op !== "analyze" && op !== "config") return { status: "error", message: `reylo asked the engine's core for ${JSON.stringify(op)}, which it does not answer` };
+  if (complete(op, reply)) return reply;
+  if (reply.status === "error" && "message" in reply && typeof reply.message === "string") return { status: "error", message: reply.message };
+  return { status: "error", message: unexpected(op, reply) };
+}
+
+/**
+ * A connection's answer to `op` that `reply` is: a failure is thrown as the session reads it
+ * (`settled`), and anything but a whole answer to `op` is an error that names what was asked and
+ * what came back.
+ */
+function answerTo<O extends Op>(op: O, reply: Reply): Replies[O] {
+  settled(reply);
+  if (!complete(op, reply)) throw new Error(unexpected(op, reply));
+  return reply;
+}
 
 /** What a session asks of a connection the engine holds. */
 export interface Connection {
@@ -147,12 +231,12 @@ export class Engine extends EngineCore {
    */
   override call(request: object): Response {
     const key = keptKey(request);
-    return (key && this.#kept.get(key)) || this.#remember(key, super.call(request));
+    return (key && this.#kept.get(key)) || this.#remember(key, coreAnswer((request as { op?: unknown }).op, super.call(request)));
   }
 
   /** The lexer's reading of `sql`, through the long-lived child, for a caller that can wait: a round trip, where the one-shot form starts a process. */
   async lexAsync(sql: string, dialect: Dialect): Promise<Lexed> {
-    const request = { op: "lex", sql, dialect };
+    const request = { op: "lex" as const, sql, dialect };
     const key = keptKey(request);
     const r = (key && this.#kept.get(key)) || this.#remember(key, await this.ask(request));
     if (r.status !== "lexed") throw new Error(r.status === "error" ? r.message : `unexpected ${r.status}`);
@@ -167,11 +251,11 @@ export class Engine extends EngineCore {
   }
 
   /** A request that needs no database, through this database's long-lived child: the rounds of an analysis whose needs this process answers, and the lexer for a caller that can wait. */
-  protected override async ask(request: object): Promise<Response> {
+  protected override async ask(request: { op: "lex" | "analyze" }): Promise<Response> {
     if (this.#core.ended) this.#core = new Channel(this.binary, this.dialect);
-    const answer = await this.#core.ask(request);
-    if (answer.status === "unreachable") throw new Error(answer.message);
-    return answer as unknown as Response;
+    const reply = await this.#core.ask(request);
+    if (reply.status === "unreachable" && "message" in reply) throw new Error(String(reply.message));
+    return coreAnswer(request.op, reply);
   }
 
   /**
@@ -182,13 +266,11 @@ export class Engine extends EngineCore {
   async open(url: string): Promise<Connection> {
     const target: HostUrl = url.includes("://") ? await hostUrl(url) : { url, close: () => {} };
     const channel = new Channel(this.binary, this.dialect);
-    const ask = async (request: object) => settled(await channel.ask(request));
+    const ask = async <O extends Op>(request: { op: O } & Record<string, unknown>) => answerTo(request.op, await channel.ask(request));
     let conn: number;
     let version: string;
     try {
-      const opened = await ask({ op: "open", url: target.url, ...(target.bridge && { bridge: target.bridge }) });
-      conn = opened.conn!;
-      version = opened.version ?? "";
+      ({ conn, version } = await ask({ op: "open", url: target.url, ...(target.bridge && { bridge: target.bridge }) }));
     } catch (e) {
       channel.end();
       target.close();
@@ -198,11 +280,11 @@ export class Engine extends EngineCore {
     }
     return {
       version,
-      analyze: async (sql) => (await ask({ op: "run", conn, sql })).analysis!,
-      query: async (sql, params) => (await ask({ op: "query", conn, sql, params })).rows!,
+      analyze: async (sql) => (await ask({ op: "run", conn, sql })).analysis,
+      query: async (sql, params) => (await ask({ op: "query", conn, sql, params })).rows,
       describe: async (sql) => {
         const d = await ask({ op: "describe", conn, sql });
-        return { params: d.params!.map((oid) => ({ oid })), columns: d.columns! };
+        return { params: d.params.map((oid) => ({ oid })), columns: d.columns };
       },
       forget: async () => void (await ask({ op: "forget", conn })),
       close: async () => {
@@ -215,17 +297,19 @@ export class Engine extends EngineCore {
 }
 
 /**
- * An answer as the session reads it. A refused login and a database that cannot be reached are an
- * Unreachable, its cause carrying the server's code, so that `refusedLogin` reads it
+ * A failure as the session reads it, thrown. A refused login and a database that cannot be reached
+ * are an Unreachable, its cause carrying the server's code, so that `refusedLogin` reads it
  * (src/connection.ts); a MariaDB server, which the type check refuses, is a NotMysql; any other
  * failure is an Error, with the server's code and the character its message points at, where it
  * gives them.
  */
-function settled(answer: Answer): Answer {
-  if (answer.status === "notMysql") throw new NotMysql(answer.server!);
-  if (answer.status === "unreachable" || answer.status === "refused") throw new Unreachable(Object.assign(new Error(answer.message), answer.code && { code: answer.code }));
-  if (answer.status === "error") throw Object.assign(new Error(answer.message), answer.code && { code: answer.code }, answer.position !== undefined && { position: answer.position });
-  return answer;
+function settled(reply: Reply): void {
+  const failure = reply as Partial<{ status: string; message: unknown; server: unknown; code: unknown; position: unknown }>;
+  const message = String(failure.message ?? "");
+  const code = typeof failure.code === "string" ? { code: failure.code } : {};
+  if (failure.status === "notMysql") throw new NotMysql(String(failure.server ?? ""));
+  if (failure.status === "unreachable" || failure.status === "refused") throw new Unreachable(Object.assign(new Error(message), code));
+  if (failure.status === "error") throw Object.assign(new Error(message), code, typeof failure.position === "number" && { position: failure.position });
 }
 
 /** The variables that name a file the engine reads: Node's extra roots, and libpq's TLS files. */
@@ -270,7 +354,7 @@ const STDERR_KEPT = 4096;
  */
 class Channel {
   readonly #child: ChildProcessWithoutNullStreams;
-  readonly #pending = new Map<number, (answer: Answer) => void>();
+  readonly #pending = new Map<number, (reply: Reply) => void>();
   #next = 1;
   #buffered = "";
   #stderr = "";
@@ -308,10 +392,10 @@ class Channel {
     return this.#ended !== undefined;
   }
 
-  ask(request: object): Promise<Answer> {
+  ask(request: { op: Op }): Promise<Reply> {
     if (this.#ended) return Promise.resolve({ status: "unreachable", message: this.#ended });
     const id = this.#next++;
-    return new Promise<Answer>((resolve) => {
+    return new Promise<Reply>((resolve) => {
       this.#pending.set(id, resolve);
       this.#hold(true);
       this.#child.stdin.write(`${JSON.stringify({ ...request, id })}\n`);
@@ -332,19 +416,23 @@ class Channel {
   }
 
   #answer(line: string): void {
-    let answer: Answer;
+    let reply: Reply;
     try {
-      answer = JSON.parse(line);
+      const read: unknown = JSON.parse(line);
+      if (!isObject(read) || typeof (read as { status?: unknown }).status !== "string") throw new Error();
+      reply = read as Reply;
     } catch {
-      return;
+      // A line that is no answer fails the request it stands for, the oldest, since the child
+      // answers in turn, rather than leave it waiting for an answer that may never come.
+      reply = { status: "error", message: `the engine wrote a line that is no answer: ${quoted(line, 120)}` };
     }
     // A line the engine could not read as a request is answered without its `id`: the child answers
     // in turn, so the answer is the oldest request's.
-    const id = answer.id ?? this.#pending.keys().next().value;
+    const id = reply.id ?? this.#pending.keys().next().value;
     const resolve = id === undefined ? undefined : this.#pending.get(id);
     if (!resolve) return;
     this.#pending.delete(id!);
-    resolve(answer);
+    resolve(reply);
     if (this.#pending.size === 0) this.#hold(false);
   }
 

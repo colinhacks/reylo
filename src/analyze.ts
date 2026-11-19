@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
-import { anyEngine, engine, reason, MissingEngine, REYLO_VERSION, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
+import { anyEngine, DIAGNOSTIC, engine, reason, MissingEngine, REYLO_VERSION, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
 import { packageDir, resolveProject, sqlitePath, type ResolvedProject } from "./project.ts";
 import { NotMysql, refusedLogin } from "./connection.ts";
 import { openProjectDrivers, placeRefusal, projectDriverVersions, type SqliteDriver } from "./sqlite-drivers.ts";
@@ -268,25 +268,25 @@ export class Session {
       if (refusal === undefined) continue;
       const { start, length } = placeRefusal(sql, refusal);
       const message = driver.says(refusal);
-      return { ...outcome, analysis: { ...analysis, diagnostics: [{ message, start, length, code: 6 }] } };
+      return { ...outcome, analysis: { ...analysis, diagnostics: [{ message, start, length, code: DIAGNOSTIC.refused }] } };
     }
     return outcome;
   }
 
   async #analyze(sql: string, options: { force?: boolean; store?: boolean }): Promise<Outcome> {
-    if (this.project.error) return { ok: false, message: this.project.error, code: 11 };
+    if (this.project.error) return { ok: false, message: this.project.error, code: DIAGNOSTIC.project };
     // With no URL, `reylo/.cache/` answers as it does where the database cannot be reached (the dialect
     // is the one its entries record, src/project.ts), and a statement it lacks needs a URL.
     if (!this.project.url) {
       const hit = this.#engine instanceof MissingEngine || options.force ? undefined : this.#offlineEntry(sql);
-      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry) } : { ok: false, message: this.project.missingUrl, code: 4 };
+      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry) } : { ok: false, message: this.project.missingUrl, code: DIAGNOSTIC.noDatabase };
     }
     // The URL names the database, whose engine reylo has to be able to run.
     const engine = this.#engine;
-    if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: 11 };
+    if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: DIAGNOSTIC.project };
     const file = this.entryFile(sql);
     let schema = await this.schema();
-    if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
+    if (schema.fatal) return { ok: false, message: schema.error!, code: DIAGNOSTIC.unreachable };
     if (schema.value === null) {
       const hit = options.force ? undefined : this.#offlineEntry(sql);
       if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry, schema.error) };
@@ -294,7 +294,7 @@ export class Session {
       const elsewhere = !options.force && this.#offlineEntry(sql, true) !== undefined;
       const cache = this.#cacheName();
       const next = elsewhere ? `${cache} has this statement's analysis from another database only, which a build reads where no database URL is set: run the type check or a build where this database can be reached, or build with no URL` : `${cache} has no analysis of this statement, so run the type check or a build where the database can be reached first`;
-      return { ok: false, message: `${this.cannotConnect(schema.error)}; ${next}.`, code: 5 };
+      return { ok: false, message: `${this.cannotConnect(schema.error)}; ${next}.`, code: DIAGNOSTIC.unreachable };
     }
     const entry = options.force || options.store === false ? undefined : readEntry(file);
     // An entry for another fingerprint, written since this session read its own, is another
@@ -304,7 +304,7 @@ export class Session {
     if (entry && entry.schema !== schema.value && entry.at >= this.#schema!.at) {
       await this.recheck();
       schema = await this.schema();
-      if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
+      if (schema.fatal) return { ok: false, message: schema.error!, code: DIAGNOSTIC.unreachable };
       if (schema.value === null) return { ok: true, analysis: entry.analysis, source: "cache", entry: file, unverified: this.#unverified(entry, schema.error) };
     }
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
@@ -320,14 +320,14 @@ export class Session {
       if (e instanceof Unreachable) {
         this.#drop(io);
         this.#schema = { value: null, at: Date.now(), error: reason(e) };
-        return { ok: false, message: this.cannotConnect(reason(e)), code: 5 };
+        return { ok: false, message: this.cannotConnect(reason(e)), code: DIAGNOSTIC.unreachable };
       }
       if (e instanceof NotMysql) {
         this.#drop(io);
         this.#schema = { value: null, at: Date.now(), error: this.notMysql(e), fatal: true };
-        return { ok: false, message: this.#schema.error!, code: 5 };
+        return { ok: false, message: this.#schema.error!, code: DIAGNOSTIC.unreachable };
       }
-      return { ok: false, message: (e as Error).message, code: 5 };
+      return { ok: false, message: (e as Error).message, code: DIAGNOSTIC.unreachable };
     }
     if (options.store !== false) {
       writeEntry(this.project.cache, file, { version: ENTRY_VERSION, dialect: this.project.dialect, schema: schema.value, analysis, at: Date.now() });
