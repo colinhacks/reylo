@@ -15,7 +15,7 @@ export type QueryModule<D extends Dialect = Dialect> = Omit<run.QueryModule<D>, 
 const RUNTIMES: { readonly [D in Dialect]: run.Runtime<D> } = { postgres, mysql, sqlite };
 
 // One module with its runtime per module a test wrote, so that what the run time keeps by module
-// (src/fresh.ts) keeps it as it would for a defined query.
+// (src/execute.ts, `moneyParams`) keeps it as it would for a defined query.
 const withRuntime = new WeakMap<object, run.QueryModule>();
 function runnable<D extends Dialect>(q: QueryModule<D>): run.QueryModule<D> {
   let m = withRuntime.get(q);

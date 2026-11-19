@@ -196,7 +196,6 @@ export function moduleCode(m: ModuleInput): string {
     ["key", analysis.key && JSON.stringify(analysis.key)],
     ["ordered", analysis.ordered ? "true" : undefined],
     ["structured", structured.length ? JSON.stringify(structured) : undefined],
-    ["fresh", analysis.fresh && JSON.stringify(analysis.fresh)],
     ["source", JSON.stringify(m.source)],
     ["sqlcommenter", m.sqlcommenter ? "true" : undefined],
     ["nestedArrays", m.allowNestedArrays && dialect === "postgres" ? "true" : undefined],

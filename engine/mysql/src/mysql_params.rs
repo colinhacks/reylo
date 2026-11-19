@@ -502,10 +502,10 @@ fn refuses_null(clause: &str, column: &str) -> bool {
 }
 
 /// The tables of the current schema the statement reads and writes, as it names them, for the
-/// freshness facts ([`crate::fresh`]): every table a FROM item reads, in subqueries and WITH
+/// errors it may raise ([`crate::errors`]): every table a FROM item reads, in subqueries and WITH
 /// queries too, and the tables an INSERT, an UPDATE or a DELETE writes: a multi-table UPDATE's or
 /// DELETE's every table, any of which it may write. A WITH query is no table, and a table of another
-/// schema is left out, since the facts are read from the current one; a write that names one, or
+/// schema is left out, since the catalog is read from the current one; a write that names one, or
 /// that writes through something that is no table, lists nothing it writes.
 pub(crate) fn tables(statement: &Statement) -> Tables {
     let mut walk = Walk { tables: Vec::new(), by_schema: false };
@@ -1090,7 +1090,7 @@ mod tests {
         assert_eq!(param_types("select id from t where big + 1 = :b limit :n", 8), [p("b", "int32"), p("n", "int32")]);
     }
 
-    /// The tables `sql` reads and writes, as the freshness facts name them.
+    /// The tables `sql` reads and writes, as [`super::tables`] names them.
     fn tables(sql: &str) -> (Vec<String>, Vec<String>) {
         use sqlparser::dialect::MySqlDialect;
         use sqlparser::parser::Parser;

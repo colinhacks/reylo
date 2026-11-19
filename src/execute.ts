@@ -18,7 +18,6 @@ import type { SqlMode } from "./engine-core.ts";
 import type { Checks } from "./checks.ts";
 import type { Members, Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
-import { compared, due, passed, staleError, warnDrifted, type Fresh } from "./fresh.ts";
 import { decodeCodecs, encodePlan, type Libraries, type Plan } from "./codecs.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite";
@@ -205,8 +204,6 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly libraries?: Libraries | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
   readonly structured?: readonly Structured[] | undefined;
-  /** The catalog facts the statement relied on, checked before it runs (src/fresh.ts). */
-  readonly fresh?: Fresh | undefined;
   /** The `.sql` file the module was built from, relative to the project's root, for messages. */
   readonly source?: string | undefined;
   /** Whether a Postgres array column may hold nested arrays, as `allow_nested_arrays: true` says: none is refused. */
@@ -368,18 +365,6 @@ export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: 
 function executeSyncSqlite<D extends Dialect>(c: AnyClient, query: QueryModule<D>, params: ParamsInput, runSync: NonNullable<Runtime<D>["runSync"]>): unknown[] | Promise<unknown[]> {
   if (isSqlJs(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
-  // A Durable Object's storage is a database of its own, so its checks are its own.
-  const own = isDurableObjectSql(c) ? (c as object) : undefined;
-  if (query.fresh && due(query, undefined, own)) {
-    let rows: unknown[] | undefined;
-    try {
-      rows = own ? c.exec(query.fresh.query).toArray() : isSqliteWasm(c) ? c.selectObjects(query.fresh.query) : c.prepare(query.fresh.query).all();
-    } catch {}
-    const found = rows && compared(query.fresh, rows, query.dialect);
-    if (found?.stale.length) throw staleError(query.source, found.stale);
-    if (found) warnDrifted(query.source, found.drifted);
-    passed(query, undefined, own);
-  }
   return runSync(c, query, statement(query, params));
 }
 
@@ -430,19 +415,6 @@ export function isTurso(c: AnyClient): boolean {
 async function executeAsync(c: AnyClient | null | undefined, query: QueryModule, params: ParamsInput): Promise<unknown[]> {
   if (c == null || (typeof c !== "object" && typeof c !== "function")) throw unsupported(c, query.dialect);
   checkParams(query, params);
-  // The catalog facts the statement relied on, read again through the same client.
-  const own = isDurableObjectSql(c) ? (c as object) : undefined;
-  if (query.fresh && due(query, undefined, own)) {
-    const fresh = query.fresh;
-    let rows: unknown[] | undefined;
-    try {
-      rows = await executeAsync(c, { dialect: query.dialect, runtime: query.runtime, sql: fresh.query, params: [], text: fresh.query, order: [], marks: [] }, {});
-    } catch {}
-    const found = rows && compared(fresh, rows, query.dialect);
-    if (found?.stale.length) throw staleError(query.source, found.stale);
-    if (found) warnDrifted(query.source, found.drifted);
-    passed(query, undefined, own);
-  }
   if (query.dialect === "postgres") await checkMoneyLocale(c, query);
   const rows = await query.runtime.run(c, query, statement(query, params));
   if (rows === undefined) throw unsupported(c, query.dialect);

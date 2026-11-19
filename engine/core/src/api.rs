@@ -253,10 +253,6 @@ pub struct Analysis {
     /// those that have lists (MySQL's), since a Postgres or SQLite statement copies its defaults.
     #[serde(skip_serializing_if = "crate::structured::none_rewritten", serialize_with = "crate::structured::rewritten_only")]
     pub structured: Vec<crate::structured::Info>,
-    /// The facts the analysis relied on, which a deployed query checks against its database
-    /// ([`crate::fresh`]).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fresh: Option<crate::fresh::Fresh>,
     /// The names each error the statement may raise can carry, where it runs only its database's
     /// own code ([`crate::errors`]).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,10 +274,10 @@ pub struct Analysis {
     /// level below an error.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
-    /// The tables the statement reads and writes, as its database's own parse names them, which
-    /// the facts are read for ([`Database::tables`]). On the wire only where the analysis read a
-    /// function's body, whose facts a parse of the statement as written cannot give: so a server's
-    /// analysis carries them to the client that checks its freshness.
+    /// The tables the statement reads and writes, as its database's own parse names them
+    /// ([`crate::fresh::Tables`]). On the wire only where the analysis read a function's body,
+    /// whose tables a parse of the statement as written cannot give: so a server's analysis
+    /// carries them to its client.
     #[serde(skip_serializing_if = "reads_no_body")]
     pub tables: Option<crate::fresh::Tables>,
 }

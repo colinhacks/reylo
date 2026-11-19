@@ -1391,8 +1391,7 @@ test("an array of parameters is refused before anything runs, with a TypeError t
   const client = postgresJsSql((...args: unknown[]) => void calls.push(args));
   const named = /^TypeError: The parameters must be an object keyed by parameter name, or by number for positional placeholders \(\{ 1: \.\.\., 2: \.\.\. \}\); got an array\. This statement takes \{ id: \.\.\., name: \.\.\. \}\.$/;
   const refused = (re: RegExp) => (e: Error) => e instanceof TypeError && re.test(String(e));
-  // A freshness check would be a round trip: the array is refused before it too.
-  await assert.rejects(() => execute(client, { ...pg, fresh: { query: "select 1", rows: [], inserts: [] } }, [1, "ada"] as never) as Promise<unknown>, refused(named));
+  await assert.rejects(() => execute(client, pg, [1, "ada"] as never) as Promise<unknown>, refused(named));
   const positional: QueryModule<"postgres"> = { dialect: "postgres", sql: "select $1::int, $2::text", params: ["1", "2"] };
   await assert.rejects(() => execute(client, positional, [1, "ada"] as never) as Promise<unknown>, refused(/got an array\. This statement takes \{ 1: \.\.\., 2: \.\.\. \}\.$/));
   await assert.rejects(() => execute(client, pg, "ada" as never) as Promise<unknown>, refused(/positional placeholders \(\{ 1: \.\.\., 2: \.\.\. \}\); got ada\. This statement takes \{ id: \.\.\., name: \.\.\. \}\.$/));
@@ -1560,27 +1559,3 @@ test("a Durable Object's ctx.storage.sql: runSync and run take it, its values gi
   assert.equal((db.prepare("select sum(n) as s from items").get() as { s: number }).s, 13);
 });
 
-test("a Durable Object's ctx.storage.sql: the catalog facts are read again through exec()", async () => {
-  const db = new DatabaseSync(":memory:");
-  db.exec("create table users (id integer primary key, email text not null)");
-  const sql = durableObjectSql(db);
-  const query = "select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\"notnull\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2";
-  const built = (email: string[]) =>
-    defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select id, email from users", params: [], fresh: { query, rows: [email, ["users", "id", "INTEGER", "0", "1"]], inserts: [] }, source: "users.sql" });
-  assert.deepEqual(built(["users", "email", "TEXT", "1", "0"]).runSync(sql), []);
-  const said: string[] = [];
-  const warn = console.warn;
-  console.warn = (message: string) => void said.push(message);
-  try {
-    assert.deepEqual(built(["users", "email", "INTEGER", "1", "0"]).runSync(sql), []);
-  } finally {
-    console.warn = warn;
-  }
-  assert.deepEqual(said, ["reylo: users.email has changed since users.sql was built (it was INTEGER not null, and is now TEXT not null), so its types may be out of date until the next build."]);
-  // run takes the same synchronous path: the check and the statement run before it returns.
-  const ran: string[] = [];
-  const counted = { ...sql, exec: (text: string, ...bindings: unknown[]) => (ran.push(text), sql.exec(text, ...bindings)), databaseSize: 4096 };
-  const pending = built(["users", "email", "TEXT", "1", "0"]).run(counted);
-  assert.deepEqual(ran, [query, "select id, email from users"]);
-  assert.deepEqual(await pending, []);
-});

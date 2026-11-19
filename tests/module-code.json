@@ -80,26 +80,6 @@
     "style": "named",
     "diagnostics": [],
     "unresolved": [],
-    "fresh": {
-     "query": "SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default FROM (VALUES ('\"payments\"'::pg_catalog.text)) AS r(name) JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid ORDER BY 1, 2",
-     "rows": [
-      [
-       "\"payments\"",
-       "amount",
-       "numeric",
-       "true",
-       "false"
-      ],
-      [
-       "\"payments\"",
-       "id",
-       "integer",
-       "true",
-       "false"
-      ]
-     ],
-     "inserts": []
-    },
     "errors": {},
     "capabilities": {
      "tables": {
@@ -131,7 +111,7 @@
    "sqlcommenter": true,
    "allowNestedArrays": false
   },
-  "code": "import { definePostgresQuery } from \"reylo\";\nimport ReyloDecimal from \"decimal.js\";\nexport const sql = \"select amount, $1::numeric as fee from payments where id = $2\";\nexport const raw = \"select amount, :fee::numeric as fee from payments where id = :id\\n\";\nexport const params = [\"fee\",\"id\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"fee\",\"id\"], marks: [[15,17],[59,61]], inputs: {\"fee\":{\"type\":{\"kind\":\"decimal\",\"min_scale\":0,\"max_scale\":16383,\"exclusive_min\":\"-1e131072\",\"exclusive_max\":\"1e131072\",\"infinity\":true,\"nan\":true,\"label\":\"numeric\"},\"nullable\":false,\"codec\":\"decimal:decimal.js\"},\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":32,\"label\":\"int4\"},\"nullable\":false}}, columns: [[\"amount\",\"decimal\"],[\"fee\",\"decimal\"]], codecs: {\"amount\":\"decimal:decimal.js\",\"fee\":\"decimal:decimal.js\"}, libraries: { decimal: ReyloDecimal }, row: (v) => ({ \"amount\": v[0], \"fee\": v[1] }), fresh: {\"query\":\"SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\\\"char\\\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default FROM (VALUES ('\\\"payments\\\"'::pg_catalog.text)) AS r(name) JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid ORDER BY 1, 2\",\"rows\":[[\"\\\"payments\\\"\",\"amount\",\"numeric\",\"true\",\"false\"],[\"\\\"payments\\\"\",\"id\",\"integer\",\"true\",\"false\"]],\"inserts\":[]}, source: \"payment.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"fee\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"fee\",\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"amount\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"},\"fee\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"}},\"required\":[\"amount\",\"fee\"]},{\"type\":\"null\"}]}} });\n"
+  "code": "import { definePostgresQuery } from \"reylo\";\nimport ReyloDecimal from \"decimal.js\";\nexport const sql = \"select amount, $1::numeric as fee from payments where id = $2\";\nexport const raw = \"select amount, :fee::numeric as fee from payments where id = :id\\n\";\nexport const params = [\"fee\",\"id\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"fee\",\"id\"], marks: [[15,17],[59,61]], inputs: {\"fee\":{\"type\":{\"kind\":\"decimal\",\"min_scale\":0,\"max_scale\":16383,\"exclusive_min\":\"-1e131072\",\"exclusive_max\":\"1e131072\",\"infinity\":true,\"nan\":true,\"label\":\"numeric\"},\"nullable\":false,\"codec\":\"decimal:decimal.js\"},\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":32,\"label\":\"int4\"},\"nullable\":false}}, columns: [[\"amount\",\"decimal\"],[\"fee\",\"decimal\"]], codecs: {\"amount\":\"decimal:decimal.js\",\"fee\":\"decimal:decimal.js\"}, libraries: { decimal: ReyloDecimal }, row: (v) => ({ \"amount\": v[0], \"fee\": v[1] }), source: \"payment.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"fee\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"fee\",\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"amount\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"},\"fee\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"}},\"required\":[\"amount\",\"fee\"]},{\"type\":\"null\"}]}} });\n"
  },
  {
   "name": "postgres: non_finite",
@@ -231,19 +211,6 @@
     "style": "named",
     "diagnostics": [],
     "unresolved": [],
-    "fresh": {
-     "query": "SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default FROM (VALUES ('\"payments\"'::pg_catalog.text)) AS r(name) JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid ORDER BY 1, 2",
-     "rows": [
-      [
-       "\"payments\"",
-       "id",
-       "integer",
-       "true",
-       "false"
-      ]
-     ],
-     "inserts": []
-    },
     "errors": {},
     "capabilities": {
      "tables": {
@@ -273,7 +240,7 @@
    "sqlcommenter": true,
    "allowNestedArrays": false
   },
-  "code": "import { definePostgresQuery } from \"reylo\";\nexport const sql = \"select json_build_object('n', 'NaN'::float8, 'x', $1::float8) as doc, id from payments where id = $2\";\nexport const raw = \"select json_build_object('n', 'NaN'::float8, 'x', :x::float8) as doc, id from payments where id = :id\\n\";\nexport const params = [\"x\",\"id\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"x\",\"id\"], marks: [[50,52],[98,100]], inputs: {\"x\":{\"type\":{\"kind\":\"float\",\"exponent_bits\":11,\"mantissa_bits\":52,\"infinity\":true,\"nan\":true,\"label\":\"float8\"},\"nullable\":false},\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":32,\"label\":\"int4\"},\"nullable\":false}}, columns: [[\"doc\",\"json\"],[\"id\",\"int\"]], row: (v) => ({ \"doc\": v[0], \"id\": v[1] }), nonFinite: [{\"keys\":[[\"n\",true],[\"x\",true]]},null], fresh: {\"query\":\"SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\\\"char\\\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default FROM (VALUES ('\\\"payments\\\"'::pg_catalog.text)) AS r(name) JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid ORDER BY 1, 2\",\"rows\":[[\"\\\"payments\\\"\",\"id\",\"integer\",\"true\",\"false\"]],\"inserts\":[]}, source: \"non_finite.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"format\":\"double\"},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"x\",\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"doc\":{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"number\",\"format\":\"double\"},\"x\":{\"anyOf\":[{\"type\":\"number\",\"format\":\"double\"},{\"type\":\"null\"}]}},\"required\":[\"n\",\"x\"]},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"doc\",\"id\"]},{\"type\":\"null\"}]}} });\n"
+  "code": "import { definePostgresQuery } from \"reylo\";\nexport const sql = \"select json_build_object('n', 'NaN'::float8, 'x', $1::float8) as doc, id from payments where id = $2\";\nexport const raw = \"select json_build_object('n', 'NaN'::float8, 'x', :x::float8) as doc, id from payments where id = :id\\n\";\nexport const params = [\"x\",\"id\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"x\",\"id\"], marks: [[50,52],[98,100]], inputs: {\"x\":{\"type\":{\"kind\":\"float\",\"exponent_bits\":11,\"mantissa_bits\":52,\"infinity\":true,\"nan\":true,\"label\":\"float8\"},\"nullable\":false},\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":32,\"label\":\"int4\"},\"nullable\":false}}, columns: [[\"doc\",\"json\"],[\"id\",\"int\"]], row: (v) => ({ \"doc\": v[0], \"id\": v[1] }), nonFinite: [{\"keys\":[[\"n\",true],[\"x\",true]]},null], source: \"non_finite.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"format\":\"double\"},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"x\",\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"doc\":{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"number\",\"format\":\"double\"},\"x\":{\"anyOf\":[{\"type\":\"number\",\"format\":\"double\"},{\"type\":\"null\"}]}},\"required\":[\"n\",\"x\"]},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"doc\",\"id\"]},{\"type\":\"null\"}]}} });\n"
  },
  {
   "name": "postgres: count",
@@ -394,36 +361,6 @@
     "style": "named",
     "diagnostics": [],
     "unresolved": [],
-    "fresh": {
-     "query": "SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default, CASE WHEN a.attgenerated OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\" THEN NULL WHEN d.adbin IS NOT NULL THEN pg_catalog.pg_get_expr(d.adbin, d.adrelid) WHEN a.attidentity OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" THEN ('nextval('::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.quote_literal(pg_catalog.pg_get_serial_sequence( pg_catalog.textin(pg_catalog.regclassout(a.attrelid::pg_catalog.regclass)), a.attname::pg_catalog.text))) OPERATOR(pg_catalog.||) '::regclass)'::pg_catalog.text WHEN t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" THEN pg_catalog.pg_get_expr(t.typdefaultbin, '0'::pg_catalog.oid) END AS fresh_expr FROM (VALUES ('\"accounts\"'::pg_catalog.text)) AS r(name) JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid OPERATOR(pg_catalog.=) a.attrelid AND d.adnum OPERATOR(pg_catalog.=) a.attnum ORDER BY 1, 2",
-     "rows": [
-      [
-       "\"accounts\"",
-       "name",
-       "text",
-       "true",
-       "false",
-       ""
-      ],
-      [
-       "\"accounts\"",
-       "role",
-       "text",
-       "true",
-       "true",
-       "'user'::text"
-      ]
-     ],
-     "inserts": [
-      "\"accounts\""
-     ],
-     "defaults": [
-      [
-       "\"accounts\"",
-       "role"
-      ]
-     ]
-    },
     "errors": {
      "23502": {
       "column": [
@@ -472,7 +409,7 @@
    "sqlcommenter": true,
    "allowNestedArrays": false
   },
-  "code": "import { definePostgresQuery, checks } from \"reylo\";\nexport const sql = \"insert into accounts (\\\"name\\\", \\\"role\\\") SELECT \\\"a\\\".\\\"name\\\", CASE WHEN (\\\"reylo.e\\\".\\\"reylo.v\\\" -> 'role') IS NOT NULL THEN \\\"a\\\".\\\"role\\\" ELSE ('user'::text)::text END FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS \\\"reylo.e\\\"(\\\"reylo.v\\\", \\\"reylo.n\\\"), jsonb_to_record(\\\"reylo.e\\\".\\\"reylo.v\\\") AS \\\"a\\\"(\\\"name\\\" text, \\\"role\\\" text) ORDER BY \\\"reylo.e\\\".\\\"reylo.n\\\"\";\nexport const raw = \"insert into accounts :a::rows(name text not null, role? text not null)\\n\";\nexport const params = [\"a\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"none\", text: sql, order: [\"a\"], marks: [[183,185]], inputs: {\"a\":{\"type\":{\"kind\":\"array\",\"element\":{\"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"name\",\"type\":{\"kind\":\"text\",\"code_points\":[[1,1114111]],\"label\":\"text\"}},{\"name\":\"role\",\"type\":{\"kind\":\"text\",\"code_points\":[[1,1114111]],\"label\":\"text\"},\"optional\":true}]}}},\"members\":[{\"written\":\"text\"},{\"written\":\"text\"}],\"nullable\":false}}, columns: [], fresh: {\"query\":\"SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\\\"char\\\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default, CASE WHEN a.attgenerated OPERATOR(pg_catalog.<>) ''::pg_catalog.\\\"char\\\" THEN NULL WHEN d.adbin IS NOT NULL THEN pg_catalog.pg_get_expr(d.adbin, d.adrelid) WHEN a.attidentity OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" THEN ('nextval('::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.quote_literal(pg_catalog.pg_get_serial_sequence( pg_catalog.textin(pg_catalog.regclassout(a.attrelid::pg_catalog.regclass)), a.attname::pg_catalog.text))) OPERATOR(pg_catalog.||) '::regclass)'::pg_catalog.text WHEN t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" THEN pg_catalog.pg_get_expr(t.typdefaultbin, '0'::pg_catalog.oid) END AS fresh_expr FROM (VALUES ('\\\"accounts\\\"'::pg_catalog.text)) AS r(name) JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid OPERATOR(pg_catalog.=) a.attrelid AND d.adnum OPERATOR(pg_catalog.=) a.attnum ORDER BY 1, 2\",\"rows\":[[\"\\\"accounts\\\"\",\"name\",\"text\",\"true\",\"false\",\"\"],[\"\\\"accounts\\\"\",\"role\",\"text\",\"true\",\"true\",\"'user'::text\"]],\"inserts\":[\"\\\"accounts\\\"\"],\"defaults\":[[\"\\\"accounts\\\"\",\"role\"]]}, source: \"insert_accounts.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"role\":{\"type\":\"string\"}},\"required\":[\"name\"],\"additionalProperties\":false}}},\"required\":[\"a\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"null\"}}, checks });\n"
+  "code": "import { definePostgresQuery, checks } from \"reylo\";\nexport const sql = \"insert into accounts (\\\"name\\\", \\\"role\\\") SELECT \\\"a\\\".\\\"name\\\", CASE WHEN (\\\"reylo.e\\\".\\\"reylo.v\\\" -> 'role') IS NOT NULL THEN \\\"a\\\".\\\"role\\\" ELSE ('user'::text)::text END FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS \\\"reylo.e\\\"(\\\"reylo.v\\\", \\\"reylo.n\\\"), jsonb_to_record(\\\"reylo.e\\\".\\\"reylo.v\\\") AS \\\"a\\\"(\\\"name\\\" text, \\\"role\\\" text) ORDER BY \\\"reylo.e\\\".\\\"reylo.n\\\"\";\nexport const raw = \"insert into accounts :a::rows(name text not null, role? text not null)\\n\";\nexport const params = [\"a\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"none\", text: sql, order: [\"a\"], marks: [[183,185]], inputs: {\"a\":{\"type\":{\"kind\":\"array\",\"element\":{\"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"name\",\"type\":{\"kind\":\"text\",\"code_points\":[[1,1114111]],\"label\":\"text\"}},{\"name\":\"role\",\"type\":{\"kind\":\"text\",\"code_points\":[[1,1114111]],\"label\":\"text\"},\"optional\":true}]}}},\"members\":[{\"written\":\"text\"},{\"written\":\"text\"}],\"nullable\":false}}, columns: [], source: \"insert_accounts.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"role\":{\"type\":\"string\"}},\"required\":[\"name\"],\"additionalProperties\":false}}},\"required\":[\"a\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"null\"}}, checks });\n"
  },
  {
   "name": "postgres: tags",
@@ -536,26 +473,6 @@
     "style": "none",
     "diagnostics": [],
     "unresolved": [],
-    "fresh": {
-     "query": "SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default FROM (VALUES ('\"posts\"'::pg_catalog.text)) AS r(name) JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid ORDER BY 1, 2",
-     "rows": [
-      [
-       "\"posts\"",
-       "id",
-       "integer",
-       "true",
-       "false"
-      ],
-      [
-       "\"posts\"",
-       "tags",
-       "text[]",
-       "false",
-       "false"
-      ]
-     ],
-     "inserts": []
-    },
     "errors": {},
     "capabilities": {
      "tables": {
@@ -573,7 +490,7 @@
    "sqlcommenter": false,
    "allowNestedArrays": true
   },
-  "code": "import { definePostgresQuery } from \"reylo\";\nexport const sql = \"select id, tags from posts order by id\";\nexport const raw = \"select id, tags from posts order by id\\n\";\nexport const params = [];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"many\", readOnly: true, text: sql, order: [], marks: [], inputs: {}, columns: [[\"id\",\"int\"],[\"tags\",\"text[]\"]], row: (v) => ({ \"id\": v[0], \"tags\": v[1] }), key: [\"id\"], ordered: true, fresh: {\"query\":\"SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\\\"char\\\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\\\"char\\\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default FROM (VALUES ('\\\"posts\\\"'::pg_catalog.text)) AS r(name) JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid ORDER BY 1, 2\",\"rows\":[[\"\\\"posts\\\"\",\"id\",\"integer\",\"true\",\"false\"],[\"\\\"posts\\\"\",\"tags\",\"text[]\",\"false\",\"false\"]],\"inserts\":[]}, source: \"tags.sql\", nestedArrays: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int32\"},\"tags\":{\"anyOf\":[{\"type\":\"array\",\"items\":{\"anyOf\":[{\"type\":[\"string\",\"null\"]},{\"type\":\"array\"}]}},{\"type\":\"null\"}]}},\"required\":[\"id\",\"tags\"]}}} });\n"
+  "code": "import { definePostgresQuery } from \"reylo\";\nexport const sql = \"select id, tags from posts order by id\";\nexport const raw = \"select id, tags from posts order by id\\n\";\nexport const params = [];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"many\", readOnly: true, text: sql, order: [], marks: [], inputs: {}, columns: [[\"id\",\"int\"],[\"tags\",\"text[]\"]], row: (v) => ({ \"id\": v[0], \"tags\": v[1] }), key: [\"id\"], ordered: true, source: \"tags.sql\", nestedArrays: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int32\"},\"tags\":{\"anyOf\":[{\"type\":\"array\",\"items\":{\"anyOf\":[{\"type\":[\"string\",\"null\"]},{\"type\":\"array\"}]}},{\"type\":\"null\"}]}},\"required\":[\"id\",\"tags\"]}}} });\n"
  },
  {
   "name": "mysql: insert_accounts",
@@ -660,28 +577,6 @@
       ]
      }
     ],
-    "fresh": {
-     "query": "select c.table_name as fresh_table, c.column_name as fresh_column, c.column_type as fresh_type, cast(c.is_nullable = 'NO' as char) as fresh_not_null, cast(c.column_default is not null or c.extra like '%auto_increment%' as char) as fresh_default from information_schema.columns c where c.table_schema = database() and c.table_name in ('accounts') order by 1, 2",
-     "rows": [
-      [
-       "accounts",
-       "name",
-       "varchar(9)",
-       "1",
-       "0"
-      ],
-      [
-       "accounts",
-       "role",
-       "varchar(9)",
-       "1",
-       "1"
-      ]
-     ],
-     "inserts": [
-      "accounts"
-     ]
-    },
     "errors": {
      "ER_BAD_NULL_ERROR": {
       "column": [
@@ -765,7 +660,7 @@
    "sqlcommenter": true,
    "allowNestedArrays": false
   },
-  "code": "import { defineMysqlQuery, checks } from \"reylo\";\nexport const sql = \"insert into accounts (`name`, `role`) SELECT `a`.`name`, `a`.`role` FROM JSON_TABLE(?, '$[*]' COLUMNS (`reylo.n` FOR ORDINALITY, `name` varchar(9) PATH '$.\\\"name\\\"' ERROR ON ERROR, `role` varchar(9) PATH '$.\\\"role\\\"' ERROR ON ERROR)) AS `a` ORDER BY `a`.`reylo.n`\";\nexport const raw = \"insert into accounts :a::rows(name varchar(9) not null, role? varchar(9) not null)\\n\";\nexport const params = [\"a\"];\nexport default defineMysqlQuery({ sql: raw, params, cardinality: \"none\", text: sql, order: [\"a\"], marks: [[84,85]], inputs: {\"a\":{\"type\":{\"kind\":\"array\",\"element\":{\"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"name\",\"type\":{\"kind\":\"text\",\"label\":\"varchar\"}},{\"name\":\"role\",\"type\":{\"kind\":\"text\",\"label\":\"varchar\"},\"optional\":true}]}}},\"members\":[{\"written\":\"varchar(9)\"},{\"written\":\"varchar(9)\"}],\"nullable\":false}}, columns: [], structured: [{\"name\":\"a\",\"lists\":[{\"start\":22,\"end\":36,\"entries\":[\"`name`\",\"`role`\"]},{\"start\":45,\"end\":67,\"entries\":[\"`a`.`name`\",\"`a`.`role`\"]}]}], fresh: {\"query\":\"select c.table_name as fresh_table, c.column_name as fresh_column, c.column_type as fresh_type, cast(c.is_nullable = 'NO' as char) as fresh_not_null, cast(c.column_default is not null or c.extra like '%auto_increment%' as char) as fresh_default from information_schema.columns c where c.table_schema = database() and c.table_name in ('accounts') order by 1, 2\",\"rows\":[[\"accounts\",\"name\",\"varchar(9)\",\"1\",\"0\"],[\"accounts\",\"role\",\"varchar(9)\",\"1\",\"1\"]],\"inserts\":[\"accounts\"]}, source: \"insert_accounts.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"role\":{\"type\":\"string\"}},\"required\":[\"name\"],\"additionalProperties\":false}}},\"required\":[\"a\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"null\"}}, checks });\n"
+  "code": "import { defineMysqlQuery, checks } from \"reylo\";\nexport const sql = \"insert into accounts (`name`, `role`) SELECT `a`.`name`, `a`.`role` FROM JSON_TABLE(?, '$[*]' COLUMNS (`reylo.n` FOR ORDINALITY, `name` varchar(9) PATH '$.\\\"name\\\"' ERROR ON ERROR, `role` varchar(9) PATH '$.\\\"role\\\"' ERROR ON ERROR)) AS `a` ORDER BY `a`.`reylo.n`\";\nexport const raw = \"insert into accounts :a::rows(name varchar(9) not null, role? varchar(9) not null)\\n\";\nexport const params = [\"a\"];\nexport default defineMysqlQuery({ sql: raw, params, cardinality: \"none\", text: sql, order: [\"a\"], marks: [[84,85]], inputs: {\"a\":{\"type\":{\"kind\":\"array\",\"element\":{\"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"name\",\"type\":{\"kind\":\"text\",\"label\":\"varchar\"}},{\"name\":\"role\",\"type\":{\"kind\":\"text\",\"label\":\"varchar\"},\"optional\":true}]}}},\"members\":[{\"written\":\"varchar(9)\"},{\"written\":\"varchar(9)\"}],\"nullable\":false}}, columns: [], structured: [{\"name\":\"a\",\"lists\":[{\"start\":22,\"end\":36,\"entries\":[\"`name`\",\"`role`\"]},{\"start\":45,\"end\":67,\"entries\":[\"`a`.`name`\",\"`a`.`role`\"]}]}], source: \"insert_accounts.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"role\":{\"type\":\"string\"}},\"required\":[\"name\"],\"additionalProperties\":false}}},\"required\":[\"a\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"null\"}}, checks });\n"
  },
  {
   "name": "mysql: cast",
@@ -929,26 +824,6 @@
     "style": "named",
     "diagnostics": [],
     "unresolved": [],
-    "fresh": {
-     "query": "select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\"notnull\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2",
-     "rows": [
-      [
-       "users",
-       "id",
-       "INTEGER",
-       "0",
-       "1"
-      ],
-      [
-       "users",
-       "name",
-       "TEXT",
-       "1",
-       "0"
-      ]
-     ],
-     "inserts": []
-    },
     "errors": {},
     "capabilities": {
      "tables": {
@@ -967,6 +842,6 @@
    "sqlcommenter": true,
    "allowNestedArrays": false
   },
-  "code": "import { defineSqliteQuery } from \"reylo\";\nexport const sql = \"select id, name from users where id = ?\";\nexport const raw = \"select id, name from users where id = :id\\n\";\nexport const params = [\"id\"];\nexport default defineSqliteQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"id\"], inputs: {\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":64},\"nullable\":false}}, columns: [[\"id\",\"int\"],[\"name\",\"text\"]], row: (v) => ({ \"id\": v[0], \"name\": v[1] }), fresh: {\"query\":\"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\\"notnull\\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2\",\"rows\":[[\"users\",\"id\",\"INTEGER\",\"0\",\"1\"],[\"users\",\"name\",\"TEXT\",\"1\",\"0\"]],\"inserts\":[]}, source: \"user.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int64\"}},\"required\":[\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int64\"},\"name\":{\"type\":\"string\"}},\"required\":[\"id\",\"name\"]},{\"type\":\"null\"}]}} });\n"
+  "code": "import { defineSqliteQuery } from \"reylo\";\nexport const sql = \"select id, name from users where id = ?\";\nexport const raw = \"select id, name from users where id = :id\\n\";\nexport const params = [\"id\"];\nexport default defineSqliteQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"id\"], inputs: {\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":64},\"nullable\":false}}, columns: [[\"id\",\"int\"],[\"name\",\"text\"]], row: (v) => ({ \"id\": v[0], \"name\": v[1] }), source: \"user.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int64\"}},\"required\":[\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int64\"},\"name\":{\"type\":\"string\"}},\"required\":[\"id\",\"name\"]},{\"type\":\"null\"}]}} });\n"
  }
 ]

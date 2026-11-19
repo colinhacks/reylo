@@ -313,7 +313,6 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             diagnostics,
             unresolved: Vec::new(),
             structured: Vec::new(),
-            fresh: None,
             errors: None,
             capabilities: Some(capabilities),
             read_only: false,
@@ -374,7 +373,6 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         diagnostics,
         unresolved: Vec::new(),
         structured: Vec::new(),
-        fresh: None,
         errors: None,
         capabilities: Some(crate::capabilities::of_statement(&t)),
         read_only: false,
@@ -433,7 +431,7 @@ fn reads_itself(sel: &Sel) -> bool {
     false
 }
 
-/// The tables the statement names, as SQLite resolved them, for the freshness facts: each table
+/// The tables the statement names, as SQLite resolved them, for its errors pass: each table
 /// and view a FROM clause reads, in subqueries, WITH queries and expressions too, and the table it
 /// writes. A view is named, never what it reads; a WITH query, a subquery and a table-valued
 /// function are no table. SQLite expands a view into a subquery as it does a derived table, and

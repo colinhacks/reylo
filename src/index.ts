@@ -8,7 +8,6 @@ import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
 import type { Checks } from "./checks.ts";
-import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns, type JsonNumbers } from "./values.ts";
 import type { QueryError } from "./query-error.ts";
 import { postgres } from "./decode.ts";
@@ -196,8 +195,6 @@ export type QueryDefinition = {
   libraries?: Libraries;
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
   structured?: readonly Structured[];
-  /** The catalog facts the statement relied on, which the run time checks before it runs (src/fresh.ts). */
-  fresh?: Fresh;
   /** The `.sql` file, relative to the project's root and written with `/`: the query's `source`. Every build step puts it in the module. */
   source?: string;
   /** Whether a Postgres array column may hold nested arrays, as a build step writes where the project file says `allow_nested_arrays: true`: none is refused. */
@@ -276,7 +273,6 @@ function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: 
     codecs: def.codecs,
     libraries: def.libraries,
     structured: def.structured,
-    fresh: def.fresh,
     source: def.source,
     sqlcommenter: def.sqlcommenter,
     nestedArrays: def.nestedArrays,

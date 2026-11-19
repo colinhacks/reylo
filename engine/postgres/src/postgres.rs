@@ -499,8 +499,8 @@ fn analyze_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let (declared, found) = (engine.column_oids.borrow(), inner.column_oids.borrow());
     let (mut analysis, narrowed) = narrowed(analysis, &declared, read, &found);
     analysis.notes = expanded.notes;
-    // A type the body settled holds only while the body and what it reads do: the freshness check
-    // watches those too.
+    // The tables the body reads and the functions read through, which no parse of the statement
+    // as written gives.
     if narrowed {
         let (first, through) = (analyze::analyze(&analysis.rewritten.sql).ok(), analyze::analyze(&text).ok());
         let own: Vec<String> = first.iter().flat_map(|p| p.read_set.iter().chain(&p.write_set).cloned()).collect();
@@ -1104,7 +1104,6 @@ impl<'a> Engine<'a> {
             diagnostics,
             unresolved,
             structured: Vec::new(),
-            fresh: None,
             errors: None,
             capabilities: None,
             read_only: false,
@@ -1224,7 +1223,6 @@ impl<'a> Engine<'a> {
             diagnostics,
             unresolved: Vec::new(),
             structured: Vec::new(),
-            fresh: None,
             errors: None,
             capabilities: None,
             read_only: false,

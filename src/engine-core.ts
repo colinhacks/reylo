@@ -87,8 +87,6 @@ export type Analysis = {
   unresolved: string[];
   /** Each structured parameter in a MySQL insert, with the lists of `rewritten.sql` (UTF-8 byte offsets) the run time writes again for a call that leaves keys out; a Postgres or SQLite insert copies its defaults into the statement instead. */
   structured?: { name: string; lists: { start: number; end: number; entries: string[] }[] }[];
-  /** The catalog facts the analysis relied on, and the query that reads them (engine/core/src/fresh.rs). */
-  fresh?: { query: string; rows: string[][]; inserts: string[]; defaults?: string[][] };
   /**
    * By each error's code, the names each of its fields may hold, where the statement runs only its
    * database's own code (engine/core/src/errors.rs): `.try()`'s error, narrowed. Absent where

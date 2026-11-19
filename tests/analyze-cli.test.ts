@@ -135,12 +135,14 @@ test("analyze takes the project's direct_url and --url, and says what it cannot 
 });
 
 test("analyze prints a statement the engine cannot analyze as its line with one diagnostic, and goes on to the next file", () => {
-  const broken = "select value from tally\n";
+  const broken = "insert into tally (value) values (1)\n";
   const root = project({ "q/a.sql": "select id from users\n", "q/b.sql": broken, "q/c.sql": "select name from users\n" });
-  // A view over a table-valued function the database's own SQLite lacks: the engine reads the
-  // view, and the catalog query that reads its columns fails on the database.
+  // A view over a table-valued function the database's own SQLite lacks, written through a
+  // trigger: the engine reads the view, and the catalog query that reads the columns of what the
+  // statement writes fails on the database.
   const db = new DatabaseSync(join(root, "app.db"));
   db.exec("create view tally as select value from carray(1, 2, 'int32')");
+  db.exec("create trigger tally_insert instead of insert on tally begin select 1; end");
   db.close();
   const { status, lines, stderr } = analyzeIn(root, ["q"]);
   assert.equal(status, 1, stderr);

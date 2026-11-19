@@ -96,7 +96,7 @@ select id, name, email from users where id = :id
 insert into users (name) values (:name)
 ```
 
-- The [check against schema changes](/typescript#when-the-schema-changes) runs in each object on its own, since each object is a database of its own. Before an object's tables exist, a query fails with the database's own error.
+- Each object is a database of its own: before its tables exist, a query fails with the database's own error.
 - The storage rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
 
 ## Migrations
