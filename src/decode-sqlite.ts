@@ -377,6 +377,7 @@ function numberOrDigits(v: unknown, type: EngineType | undefined, driver: "sqlit
 
 /** A SQLite statement's rows on each SQLite driver's client that answers through a promise, each value given its kind, or undefined on any other client. */
 async function runSqlite(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
+  if (isTurso(c)) tursoValues(names, values);
   const type = (i: number) => query.inputs?.[names[i]!]?.type;
   const columns = query.columns;
   if (typeof c.unsafe === "function") return normalize(await c.unsafe(text, values), columns);
@@ -403,6 +404,15 @@ async function runSqlite(c: Client, query: QueryModule<"sqlite">, { text, values
   return undefined;
 }
 
+// Turso's engine binds the whole number 2^63 as 2^63 - 1, the largest 64-bit integer, where every
+// other driver binds it as the REAL it is (a BigInt outside 64 bits is refused for every driver, in
+// src/execute.ts).
+function tursoValues(names: readonly string[], values: unknown[]): void {
+  values.forEach((v, i) => {
+    if (v === 2 ** 63) throw new ParameterError(`Parameter "${names[i]}" is 2^63 (9223372036854775808), which Turso's engine binds as 2^63 - 1 (9223372036854775807), so it would store another number.`);
+  });
+}
+
 // SQLite Wasm binds a whole number as a 64-bit integer, which wraps around past 2^63: 1e20 would be
 // stored as 7766279631452241920.
 function sqliteWasmValues(names: readonly string[], values: unknown[]): unknown[] {
@@ -414,6 +424,10 @@ function sqliteWasmValues(names: readonly string[], values: unknown[]): unknown[
 
 /** The rows of a synchronous client: a Durable Object's SQL storage, whose exec() refuses a BigInt ("Cannot convert a BigInt value to a number"), SQLite Wasm's oo1 Database (`runSqliteWasm`), sql.js's Database (`runSqlJs`), or a database with prepare() (`runSyncSqlite`). */
 function runSqliteSync(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): unknown[] | Promise<unknown[]> {
+  // Every Database of Turso's has maxWriteReplicationIndex(), and its compat Database has no sync()
+  // (nor batch() before 0.7); the libsql package's Database has both of the first two, and binds
+  // 2^63 as a REAL.
+  if (typeof c.maxWriteReplicationIndex === "function" && typeof c.sync !== "function") tursoValues(names, values);
   if (isDurableObjectSql(c)) return runDurableObject(c, text, values.map((v, i) => numberOrDigits(v, query.inputs?.[names[i]!]?.type, "durable-object")), query.columns);
   if (isSqliteWasm(c)) return runSqliteWasm(c, text, sqliteWasmValues(names, values), query.columns);
   if (isSqlJs(c)) return runSqlJs(c, text, values, query.columns);

@@ -439,7 +439,7 @@ function daysFromCivil(y: number, m: number, d: number): number {
 }
 
 /** The date `days` after 1970-01-01, the inverse of `daysFromCivil`. */
-function civilFromDays(days: number): [number, number, number] {
+export function civilFromDays(days: number): [number, number, number] {
   const z = days + 719468;
   const era = Math.floor(z / 146097);
   const doe = z - era * 146097;
@@ -1248,12 +1248,14 @@ export function refuseTruth(column: string, shown: string): never {
 }
 
 /**
- * A Date a driver handed back must hold a time. Bun.sql 1.4 decodes a date, timestamp or timestamptz
- * before 1 AD as an Invalid Date (its infinities come as the numbers ±Infinity), so an Invalid Date
- * is a value the driver lost, and Reylo refuses it rather than return a wrong one.
+ * A Date a driver handed back must hold a time. Bun.sql decodes a date, timestamp or timestamptz it
+ * cannot read into a Date as an Invalid Date: a MySQL date with a zero month or day, one after the
+ * last day a Date holds (13 September 275760), and before 1.4.4 one before 1 AD (its infinities
+ * come as the numbers ±Infinity). So an Invalid Date is a value the driver lost, and Reylo refuses
+ * it rather than return a wrong one.
  */
 function validDate(d: Date, column: string): void {
-  if (Number.isNaN(d.getTime())) throw new DecodeError(`Column "${column}": the driver returned an Invalid Date, which is how Bun.sql decodes a date or timestamp before 1 AD. Reylo refuses it rather than return a wrong value.`);
+  if (Number.isNaN(d.getTime())) throw new DecodeError(`Column "${column}": the driver returned an Invalid Date, which is how Bun.sql decodes a date or timestamp it cannot read into a JavaScript Date (a MySQL date with a zero month or day, one after 13 September 275760, and before Bun 1.4.4 one before 1 AD). Reylo refuses it rather than return a wrong value.`);
 }
 
 /**
@@ -1269,6 +1271,16 @@ function utcText(d: Date, kind: "date" | "timestamp", column: string, postgres: 
   // A Postgres `timestamp`'s six digits, as `sixDigits` writes them; a MySQL DATETIME's as the driver kept them.
   const fraction = postgres ? `.${pad(ms, 3)}000` : ms ? `.${pad(ms, 3).replace(/0+$/, "")}` : "";
   return `${date}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${fraction}`;
+}
+
+/**
+ * A MySQL time's text with its column's `digits` of fraction, the zeros a driver dropped written
+ * back: `09:31:00` of a DATETIME(3) is `09:31:00.000`, and `09:31:00.5` `09:31:00.500`.
+ */
+export function withFraction(text: string, digits: number): string {
+  if (digits <= 0) return text;
+  const dot = text.indexOf(".");
+  return dot < 0 ? `${text}.${"0".repeat(digits)}` : text.padEnd(dot + 1 + digits, "0");
 }
 
 const isBytes = (v: unknown): v is Uint8Array => v instanceof Uint8Array;

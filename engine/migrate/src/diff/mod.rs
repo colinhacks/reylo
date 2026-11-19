@@ -47,6 +47,8 @@ pub enum Kind {
     Table,
     Column,
     SequenceOwner,
+    /// A column's storage, compression or statistics target, set once the column is there.
+    ColumnSetting,
     Constraint,
     Index,
     View,
@@ -90,6 +92,9 @@ pub struct Object {
     pub extra: Vec<String>,
     /// An object the server drops it with, which is not its owner: a serial column's sequence.
     pub goes_with: Option<String>,
+    /// Objects it is made after that it doesn't depend on: a partitioned table's index, made after
+    /// the partitions' indexes it attaches as it is made.
+    pub after: BTreeSet<String>,
 }
 
 /// How an object's definition changes when it differs.
@@ -123,7 +128,7 @@ impl Schema {
 
 /// Statements that change an object in place from one definition to another, or None where it
 /// cannot be and is replaced.
-pub trait Alterer {
+pub trait Alterer: Send {
     fn alter(&self, from: &Object, to: &Object) -> Option<Vec<String>>;
     /// Statements that rename a column in place, keeping its rows.
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
@@ -270,8 +275,8 @@ impl Plan {
 /// The objects `id` is dropped with: its owners, and what the server drops it with, nearest first.
 fn owners<'a>(schema: &'a Schema, id: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
-    let mut queue: Vec<&str> = schema.objects.get(id).into_iter().flat_map(|o| o.owner.as_deref().into_iter().chain(o.goes_with.as_deref())).collect();
-    while let Some(next) = queue.pop() {
+    let mut queue: std::collections::VecDeque<&str> = schema.objects.get(id).into_iter().flat_map(|o| o.owner.as_deref().into_iter().chain(o.goes_with.as_deref())).collect();
+    while let Some(next) = queue.pop_front() {
         if out.contains(&next) {
             continue;
         }
@@ -295,21 +300,7 @@ fn with_owned<'a>(schema: &'a Schema, id: &'a str) -> Vec<&'a str> {
     out
 }
 
-/// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`.
-pub fn last_written(name: &str) -> String {
-    let mut quote: Option<char> = None;
-    let mut at = 0;
-    for (k, ch) in name.char_indices() {
-        match quote {
-            Some(q) if ch == q => quote = None,
-            Some(_) => {}
-            None if ch == '"' || ch == '`' => quote = Some(ch),
-            None if ch == '.' => at = k + 1,
-            None => {}
-        }
-    }
-    name[at..].to_string()
-}
+pub use crate::sql::last_written;
 
 /// `text` with the name `old` (a table's) written `new` wherever it stands as a name or as the start
 /// of one (`users` in `users_pkey`, `nextval('users_id_seq')`), ignoring case.
@@ -503,6 +494,67 @@ pub fn column_changes(from: &Schema, to: &Schema, old: &str, new: &str) -> Optio
     (!words.is_empty()).then(|| words.join(", "))
 }
 
+/// The objects `drops` names that a drop of their owner would take with it, but that are dropped on
+/// their own, before it, to break a circle: two tables whose foreign keys reference each other, or a
+/// table whose check calls a function that takes the table's row, can't be dropped one after the
+/// other, but each drop can once one of those constraints has gone first.
+fn drops_apart(from: &Schema, drops: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut apart: BTreeSet<String> = BTreeSet::new();
+    loop {
+        // Each drop that is a statement of its own, and every object it takes with it: an object goes
+        // with its nearest owner that is one.
+        let units: BTreeSet<String> = drops.iter().filter(|id| apart.contains(*id) || !owners(from, id).iter().any(|o| drops.contains(*o))).cloned().collect();
+        let unit_of = |id: &str| -> Option<String> {
+            if units.contains(id) {
+                return Some(id.to_string());
+            }
+            owners(from, id).into_iter().find(|o| units.contains(*o)).map(String::from)
+        };
+        // A unit drops before each unit that what it takes depends on.
+        let mut before: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for o in from.objects.values() {
+            let Some(mine) = unit_of(&o.id) else { continue };
+            for d in &o.deps {
+                if let Some(theirs) = unit_of(d).filter(|t| *t != mine) {
+                    before.entry(theirs).or_default().insert(mine.clone());
+                }
+            }
+        }
+        // Kahn's order: what is left is a circle, or waits on one.
+        let mut left: BTreeSet<String> = units.clone();
+        loop {
+            let ready: Vec<String> = left.iter().filter(|u| before.get(*u).is_none_or(|b| b.iter().all(|x| !left.contains(x)))).cloned().collect();
+            if ready.is_empty() {
+                break;
+            }
+            for u in ready {
+                left.remove(&u);
+            }
+        }
+        if left.is_empty() {
+            return apart;
+        }
+        // An object one of them takes with it that can go on its own, and depends on another of them:
+        // a constraint, an index or the like first, else a column of a table that goes anyway.
+        let breaks = |o: &&Object| {
+            let Some(mine) = unit_of(&o.id).filter(|u| *u != o.id && left.contains(u)) else { return false };
+            !o.drop.is_empty() && o.deps.iter().any(|d| unit_of(d).is_some_and(|t| t != mine && left.contains(&t)))
+        };
+        let breaker = from
+            .objects
+            .values()
+            .filter(|o| matches!(o.kind, Some(Kind::Constraint | Kind::Index | Kind::Trigger | Kind::Policy | Kind::Rule | Kind::Statistics)))
+            .find(breaks)
+            .or_else(|| from.objects.values().filter(|o| o.kind == Some(Kind::Column)).find(breaks));
+        match breaker {
+            Some(o) => {
+                apart.insert(o.id.clone());
+            }
+            None => return apart,
+        }
+    }
+}
+
 /// The plan from `from` to `to`.
 pub fn plan(from: &Schema, to: &Schema, alterer: &dyn Alterer) -> Plan {
     plan_with(from, to, alterer, &[], &BTreeSet::new())
@@ -680,13 +732,52 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             dependents.entry(owner.as_str()).or_default().push(id.as_str());
         }
     }
-    let mut queue: Vec<String> = drops.iter().filter(|id| creates.contains(*id)).cloned().chain(blocking.iter().cloned()).collect();
+    // What goes with an object made again goes and comes back too: a partition's index with its
+    // table's.
+    let mut goers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (id, o) in &from.objects {
+        if let Some(with) = &o.goes_with {
+            goers.entry(with.as_str()).or_default().push(id.as_str());
+        }
+    }
+    let mut queue: Vec<String> = drops.iter().cloned().chain(blocking.iter().cloned()).collect();
     let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
     while let Some(id) = queue.pop() {
         let replaced = drops.contains(&id) && creates.contains(&id);
+        let gone = drops.contains(&id) && !creates.contains(&id);
+        if replaced {
+            for goer in goers.get(id.as_str()).into_iter().flatten() {
+                if to.objects.contains_key(*goer) && !(drops.contains(*goer) && creates.contains(*goer)) {
+                    alters.remove(*goer);
+                    drops.insert(goer.to_string());
+                    creates.insert(goer.to_string());
+                    if seen.insert(goer.to_string()) {
+                        queue.push(goer.to_string());
+                    }
+                }
+            }
+        }
         for dependent in dependents.get(id.as_str()).into_iter().flatten() {
             let d = &from.objects[*dependent];
             let owned = d.owner.as_deref() == Some(id.as_str());
+            // What the target keeps but depends on an object it drops (a foreign key on a unique
+            // constraint the target makes a primary key) goes and comes back, depending on what the
+            // target has instead. What holds rows (a table, a column, a type its columns have) is
+            // never made again for it: it changes in place, as its own definition says, or the
+            // drop fails on the database.
+            if gone {
+                let holds_nothing = matches!(d.kind, Some(Kind::Constraint | Kind::Index | Kind::View | Kind::Trigger | Kind::Policy | Kind::Rule | Kind::Statistics | Kind::Function | Kind::Operator | Kind::Cast));
+                if owned || !holds_nothing || drops.contains(*dependent) || alters.contains_key(*dependent) || !to.objects.contains_key(*dependent) {
+                    continue;
+                }
+                alters.remove(*dependent);
+                drops.insert(dependent.to_string());
+                creates.insert(dependent.to_string());
+                if seen.insert(dependent.to_string()) {
+                    queue.push(dependent.to_string());
+                }
+                continue;
+            }
             // A blocking change refuses only views, rules, policies and triggers on it; the server
             // rebuilds an index or a constraint itself. A column of a type changed so changes
             // type too, and so blocks what is on it.
@@ -718,9 +809,22 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     }
 
     // An object goes with its owner: a dropped table's columns need no statement of their own, and
-    // a created table's inline columns neither.
-    let dropped_with_owner = |id: &str| owners(from, id).iter().any(|o| drops.contains(*o));
-    let created_with_owner = |id: &str| to.objects[id].inline && to.objects[id].owner.as_deref().is_some_and(|o| creates.contains(o));
+    // a created table's inline columns neither, unless the drops depend on each other in a circle
+    // that dropping one of them first breaks.
+    let mut apart = drops_apart(from, &drops);
+    // An object the target keeps that would go with one it drops (a sequence a dropped table's
+    // column owns) is cut loose first: what ties it there goes on its own, before that drop.
+    for kept in from.objects.values().filter(|o| o.goes_with.is_some() && !drops.contains(&o.id) && owners(from, &o.id).iter().any(|w| drops.contains(*w))) {
+        apart.extend(from.objects.values().filter(|o| o.owner.as_deref() == Some(kept.id.as_str()) && drops.contains(&o.id)).map(|o| o.id.clone()));
+    }
+    let dropped_with_owner = |id: &str| !apart.contains(id) && owners(from, id).iter().any(|o| drops.contains(*o));
+    // What goes with another object is made with its owner only where that one is there already:
+    // a new partition takes its table's indexes then, while a partition's index under an index the
+    // plan makes too is made by name, before that one attaches it.
+    let created_with_owner = |id: &str| {
+        let o = &to.objects[id];
+        o.inline && o.owner.as_deref().is_some_and(|w| creates.contains(w)) && o.goes_with.as_deref().is_none_or(|g| !creates.contains(g))
+    };
 
     let mut ops: Vec<Op> = Vec::new();
     for id in &drops {
@@ -740,6 +844,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
         }
     }
 
+    let renamed_as: BTreeMap<&str, &str> = renames.iter().map(|(new, (old, _))| (old.as_str(), new.as_str())).collect();
     // The edges: an op runs after every op in `after[op]`.
     let index: BTreeMap<Op, usize> = ops.iter().cloned().enumerate().map(|(k, op)| (op, k)).collect();
     let mut after: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); ops.len()];
@@ -780,8 +885,11 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     }
                 }
                 needs.extend(o.owner.iter());
+                if matches!(op, Op::Create(_)) {
+                    needs.extend(o.after.iter());
+                }
                 for c in to.objects.values() {
-                    if c.inline && c.owner.as_deref() == Some(id.as_str()) && matches!(op, Op::Create(_)) {
+                    if c.inline && c.owner.as_deref() == Some(id.as_str()) && matches!(op, Op::Create(_)) && created_with_owner(&c.id) {
                         needs.extend(c.deps.iter().filter(|d| *d != id));
                     }
                 }
@@ -792,14 +900,32 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         }
                     }
                 }
-                // After its own drop, where it is replaced.
+                // After its own drop, where it is replaced, or the drop of what it goes with.
                 if let Some(j) = find(Op::Drop(id.clone())) {
                     after[k].insert(j);
+                } else if drops.contains(id) {
+                    for o in owners(from, id) {
+                        if let Some(j) = find(Op::Drop(o.to_string())) {
+                            after[k].insert(j);
+                        }
+                    }
+                }
+                // An alter after the changes of what stops depending on it (a column moved to
+                // another enum, before the one it leaves is made again).
+                if matches!(op, Op::Alter(_)) {
+                    for dependent in dependents.get(id.as_str()).into_iter().flatten() {
+                        let leaves = from.objects[*dependent].deps.contains(id) && to.objects.get(*dependent).is_some_and(|d| !d.deps.contains(id));
+                        if let Some(j) = find(Op::Alter(dependent.to_string())).filter(|_| leaves) {
+                            after[k].insert(j);
+                        }
+                    }
                 }
                 // An alter after the drops of what depends on it and is replaced (a view on a
                 // column whose type changes).
                 if matches!(op, Op::Alter(_)) {
-                    for dependent in dependents.get(id.as_str()).into_iter().flatten() {
+                    // A sequence owned by the column blocks no change of it, and goes after the
+                    // change takes the column's default off it.
+                    for dependent in dependents.get(id.as_str()).into_iter().flatten().filter(|d| from.objects[**d].kind != Some(Kind::SequenceOwner)) {
                         let mut reach = vec![*dependent];
                         if from.objects[*dependent].kind == Some(Kind::Column) {
                             reach.extend(dependents.get(dependent).into_iter().flatten());
@@ -813,6 +939,12 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 }
             }
             Op::Drop(id) => {
+                // After the drops of what it owns that go on their own, before it.
+                for owned in with_owned(from, id).into_iter().filter(|o| *o != id.as_str()) {
+                    if let Some(j) = find(Op::Drop(owned.to_string())) {
+                        after[k].insert(j);
+                    }
+                }
                 // After the drops (and the changes) of what depends on it, or on anything it owns:
                 // another table's foreign key depends on this table's column.
                 let reach: Vec<&str> = with_owned(from, id).into_iter().flat_map(|o| dependents.get(o).into_iter().flatten().copied()).collect();
@@ -822,9 +954,45 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                             after[k].insert(j);
                         }
                     }
-                    if let Some(j) = find(Op::Alter(dependent.to_string())) {
+                    // A dependent renamed changes under its new name.
+                    let now = renamed_as.get(*dependent).map(|n| n.to_string()).unwrap_or_else(|| dependent.to_string());
+                    if let Some(j) = find(Op::Alter(now)) {
                         after[k].insert(j);
                     }
+                }
+            }
+        }
+    }
+
+    // What runs a function as it is made (a default or a generated column filling the rows, an
+    // index, a check, a domain, a materialized view) waits for every function the plan makes: the
+    // one it calls may call others, which no record names (a body the server keeps as text). Where
+    // that function already waits on it, nothing is added.
+    let made_function = |k: usize| matches!(&ops[k], Op::Create(id) | Op::Alter(id) if to.objects[id].kind == Some(Kind::Function));
+    let functions: Vec<usize> = (0..ops.len()).filter(|k| made_function(*k)).collect();
+    if functions.len() > 1 {
+        let runs_one = |k: usize| -> bool {
+            let (Op::Create(id) | Op::Alter(id)) = &ops[k] else { return false };
+            let o = &to.objects[id];
+            matches!(o.kind, Some(Kind::Column | Kind::Index | Kind::Constraint | Kind::Type | Kind::View)) && o.deps.iter().any(|d| to.objects.get(d).is_some_and(|f| f.kind == Some(Kind::Function)))
+        };
+        // Whether `from` already runs after `k`, through the edges so far.
+        let waits_on = |after: &[BTreeSet<usize>], from: usize, k: usize| -> bool {
+            let (mut stack, mut seen) = (vec![from], BTreeSet::new());
+            while let Some(at) = stack.pop() {
+                if at == k {
+                    return true;
+                }
+                if seen.insert(at) {
+                    stack.extend(after[at].iter().copied());
+                }
+            }
+            false
+        };
+        for k in (0..ops.len()).filter(|k| runs_one(*k)) {
+            for &f in &functions {
+                if f != k && !waits_on(&after, f, k) {
+                    after[k].insert(f);
                 }
             }
         }

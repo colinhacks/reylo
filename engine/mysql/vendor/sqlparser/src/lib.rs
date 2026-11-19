@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Changed in the MySQL engine's copy: `SOURCE_HASH` added (README.md).
+
 //! # SQL Parser for Rust
 //!
 //! This crate provides an ANSI:SQL 2011 lexer and parser that can parse SQL
@@ -178,3 +180,8 @@ pub mod tokenizer;
 // unit-tests and by the integration tests <https://stackoverflow.com/a/44541071/1026>
 // External users are not supposed to rely on this module.
 pub mod test_utils;
+
+/// The hash of this copy's sources (`build.rs`), which the MySQL engine's fingerprint combines with
+/// its own.
+#[doc(hidden)]
+pub const SOURCE_HASH: &str = env!("REYLO_SQLPARSER_HASH");

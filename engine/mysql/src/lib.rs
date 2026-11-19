@@ -3,8 +3,8 @@
 //! statement for the row-count proof ([`mysql`]), the nested JSON shapes ([`mysql_shape`]) and the
 //! parameters the caller may pass null for ([`mysql_params`]).
 //!
-//! Its hosts are the facade, `reylo-engine`, which the oracle links, and the program built from it,
-//! `engine/native`, which the `reylo` binary serves.
+//! Its host is `reylo-engine` (`engine/native`), which the oracle links and whose program the
+//! `reylo` binary serves.
 
 pub mod api;
 pub mod capabilities;
@@ -24,6 +24,6 @@ use reylo_engine_core::{analysis, dialect, fresh, lex, schema_type, shape, stack
 
 pub use api::Mysql;
 
-/// A fingerprint of the sources this engine was built from: core's and this crate's
-/// ([`reylo_engine_core::fingerprint`]).
-pub const FINGERPRINT: &str = reylo_engine_core::fingerprint!("REYLO_ENGINE_MYSQL_HASH");
+/// A fingerprint of the sources this engine was built from: core's, this crate's and its copy of
+/// `sqlparser`'s ([`reylo_engine_core::fingerprint`]).
+pub const FINGERPRINT: &str = reylo_engine_core::fingerprint!("REYLO_ENGINE_MYSQL_HASH", reylo_engine_core::fingerprint::parse_hex(sqlparser::SOURCE_HASH));

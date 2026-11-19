@@ -5,6 +5,7 @@ import { expandCompare } from '@/lib/compare';
 import { siteUrl } from '@/lib/layout.shared';
 import { expandInferenceCards } from '@/lib/inference-card-markdown';
 import { PAGE_SECTIONS } from '@/lib/page-sections';
+import { rustContent } from '@/lib/rust-content';
 import { expandErrors } from '@/lib/sql-errors';
 
 /** Each `<Step>` as a numbered list item, its name in bold and where it acts after it. */
@@ -15,16 +16,8 @@ function expandSteps(text: string): string {
   });
 }
 
-/** Each `<Feature>` card as a list item, its name in bold, and each `<Choice>` card as one naming its two ways: what a card says, as an agent reads a list. */
-function expandFeatures(text: string): string {
-  const choice = (_: string, title: string, ways: string) => {
-    const each = [...ways.matchAll(/<Way title="([^"]+)"(?: or)?>\n+([\s\S]*?)\n+<\/Way>\n/g)].map(([, name, said], k) => `${k === 0 ? name[0]!.toUpperCase() + name.slice(1) : `Or ${name}`}: ${said}`);
-    return `- **${title}.** ${each.join(' ')}\n`;
-  };
-  return text.replace(/<Features>\n([\s\S]*?)<\/Features>\n/g, (_, cards: string) =>
-    cards.replace(/<Choice icon="\w+" title="([^"]+)">\n([\s\S]*?)<\/Choice>\n/g, choice).replace(/<Feature icon="\w+" title="([^"]+)"(?: wide)?>\n+([\s\S]*?)\n+<\/Feature>\n/g, '- **$1.** $2\n'),
-  );
-}
+/** A heading's right-aligned code (`<code className="dk-aside">`) as plain inline code. */
+const expandAsides = (text: string): string => text.replace(/<code className="dk-aside">([^<]+)<\/code>/g, '`$1`');
 
 /**
  * A page of content/docs as Markdown, by its slug ('' for the main page): its files in order (a
@@ -32,13 +25,14 @@ function expandFeatures(text: string): string {
  * its title and description, with each link made absolute (docs-kit's pageMarkdown). Each page's
  * is written to build/client/<slug>.md (index.md for the main page) by app/routes/markdown.ts, which
  * vercel.json serves at the page's own address to an agent that asks for Markdown, and
- * /llms.txt is all of them (app/routes/llms.ts).
+ * /llms.txt is all of them (app/routes/llms.ts). Each file is read as the site builds it, its Rust
+ * content left out while the docs leave Rust out (lib/rust-content.ts).
  */
 export async function markdownOf(slug: string): Promise<string> {
   const own = `${slug || 'index'}.mdx`;
   const files = [path.resolve('content/docs', own), ...(PAGE_SECTIONS[own] ?? []).map((name) => path.resolve('content/sections', name))];
   // Each inference card with the types the page shows for it (lib/inference-card-markdown.ts), and each
   // error example with its errors (lib/sql-errors.ts), and the comparison's marks as a table (lib/compare.ts).
-  const sources = (await Promise.all(files.map((file) => readFile(file, 'utf8')))).map((text) => expandSteps(expandFeatures(expandCompare(expandErrors(expandInferenceCards(text))))));
+  const sources = (await Promise.all(files.map((file) => readFile(file, 'utf8')))).map((text) => expandAsides(expandSteps(expandCompare(expandErrors(expandInferenceCards(rustContent(text)))))));
   return pageMarkdown(sources, { site: siteUrl, page: slug ? `/${slug}` : '/' });
 }

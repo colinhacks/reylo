@@ -1,4 +1,27 @@
-//! The engine as a native program. It reads one JSON request per line on standard input and writes
+//! Reylo's analysis engine for a Rust host, and the engine as a native program.
+//!
+//! The engine types a SQL statement from the database itself: its parameters, its columns and
+//! their nullability, the shapes of the JSON it builds, and how many rows it returns. Its core never
+//! opens a connection. It replays an analysis, naming the statements it needs described and the
+//! catalog queries it needs run, and a host answers them ([`replay`]).
+//!
+//! Each database is behind a feature (`postgres`, `sqlite`, `mysql`), which brings its engine, the
+//! answers to its needs over its client (tokio-postgres, rusqlite or mysql_async) with an `analyze`
+//! that runs a statement's whole replay on it ([`clients`]), and its program. A host that answers the
+//! engine its own way implements [`Answerer`] or [`AsyncAnswerer`] and calls [`replay::run`] or
+//! [`replay::run_async`] with its database's engine, from [`engines`]
+//! (`replay::run_async::<reylo_engine::engines::postgres::Postgres, _>`): the module of a database's
+//! name at the crate's root, `reylo_engine::postgres`, is its program.
+//!
+//! ```ignore
+//! let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls).await?;
+//! tokio::spawn(connection);
+//! let mut cache = reylo_engine::AnswerCache::default();
+//! let analysis = reylo_engine::clients::tokio_postgres::analyze(&client, "select id, name from users where id = :id", &mut cache).await?;
+//! assert_eq!(analysis.cardinality, "maybeOne");
+//! ```
+//!
+//! The program reads one JSON request per line on standard input and writes
 //! one JSON answer per line on standard output, carrying the request's `id` back. The core answers
 //! the requests that need no database (`ping`, `lex`, `config`, and `analyze` with the host's own
 //! answers). A database's program also opens connections of its own (`open`, answered with the
@@ -11,9 +34,49 @@
 //! `<program> call` answers the one request on standard input and exits, for a host that must have
 //! an answer before it can go on, as one reading the project file must.
 
+pub use reylo_engine_core::api::{Analysis, Column, DbError, Diagnostic, Param};
+pub use reylo_engine_core::database::Database;
+pub use reylo_engine_core::dialect::Dialect;
+pub use reylo_engine_core::replay::{self, AnswerCache, Answerer, AsyncAnswerer, ReplayError};
+pub use reylo_engine_core::types::{Field, Type};
+
+/// Each database's engine; its program is the module of its name at the crate's root.
+pub mod engines {
+    /// The Postgres engine: libpg_query's parse tree over the server's describe and catalog.
+    #[cfg(feature = "postgres")]
+    pub use reylo_engine_postgres as postgres;
+    /// The SQLite engine: SQLite's own resolved tree, from the copy of SQLite inside it.
+    #[cfg(feature = "sqlite")]
+    pub use reylo_engine_sqlite as sqlite;
+    /// The MySQL engine: the server's prepare metadata, read with a parse of the statement.
+    #[cfg(feature = "mysql")]
+    pub use reylo_engine_mysql as mysql;
+}
+
+#[cfg(any(feature = "postgres", feature = "sqlite", feature = "mysql"))]
+pub mod clients;
+
+/// Why a client could not answer the engine at all: a lost connection, a catalog query the
+/// database refused. A refused describe is not one: the engine reads it as an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostError(pub String);
+
+impl std::fmt::Display for HostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for HostError {}
+
 use serde_json::{json, Value};
 use std::future::Future;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+/// The hash of the sources that connect to Postgres and MySQL and read their answers (`build.rs`),
+/// which the migrations' cache keys its replays by.
+#[doc(hidden)]
+pub const SOURCE_HASH: &str = env!("REYLO_ENGINE_HASH");
 
 /// The project file, `.reylo.yaml`, and the database it names, as every frontend reads them.
 pub mod project;
@@ -42,7 +105,7 @@ pub enum Failure {
 
 impl Failure {
     /// The failure a program's answer reports.
-    #[cfg_attr(not(any(feature = "postgres", feature = "mysql", feature = "sqlite")), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "postgres", feature = "mysql")), allow(dead_code))]
     fn of(answer: &Value) -> Failure {
         let message = answer["message"].as_str().unwrap_or_default().to_string();
         match answer["status"].as_str() {

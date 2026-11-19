@@ -13,7 +13,7 @@ pg=${REYLO_TEST_PG:?REYLO_TEST_PG names the Postgres server}
 mysql=${REYLO_TEST_MYSQL:?REYLO_TEST_MYSQL names the MySQL server}
 server=${pg%/*}
 
-psql "$pg" -v ON_ERROR_STOP=1 -q -c 'drop database if exists rust_demo' -c 'create database rust_demo' -c 'drop database if exists rust_docs' -c 'create database rust_docs'
+psql "$pg" -v ON_ERROR_STOP=1 -q -c 'drop database if exists rust_demo' -c 'create database rust_demo' -c 'drop database if exists rust_docs' -c 'create database rust_docs' -c 'drop database if exists rust_docs_migrate' -c 'create database rust_docs_migrate'
 psql "$server/rust_demo" -v ON_ERROR_STOP=1 -q -f rust/demo-reylo/schema.sql
 psql "$server/rust_docs" -v ON_ERROR_STOP=1 -q -f rust/demo-docs/schema.sql
 mysql_client() {
@@ -33,7 +33,7 @@ echo '::group::demo-reylo, on Postgres'
 DATABASE_URL="$server/rust_demo" cargo run -q -p demo-reylo --features live
 echo '::endgroup::'
 echo '::group::demo-docs, the docs site'"'"'s snippets'
-DATABASE_URL="$server/rust_docs" cargo run -q -p demo-docs --features live
+DATABASE_URL="$server/rust_docs" MIGRATE_URL="$server/rust_docs_migrate" cargo run -q -p demo-docs --features live
 echo '::endgroup::'
 echo '::group::demo-mysql, on MySQL'
 DATABASE_URL="$mysql/rust_demo" cargo run -q -p demo-mysql --features live
@@ -66,6 +66,9 @@ queries=rust/demo-reylo/src/queries.rs
 cp "$queries" "${RUNNER_TEMP:-/tmp}/queries.rs"
 lines=$(wc -l < "$queries")
 printf '\n#[reylo::query("\n    select id,\n        nme from users\n")]\npub mod misspelt {}\n' >> "$queries"
+# A misspelt reflect names what the database said, and one in a form it does not take keeps its enum,
+# so that the enum's uses fail with nothing of their own.
+printf '\n#[reylo::reflect("posts.stauts")]\npub enum Misspelt {}\n\n#[reylo::reflect(column = "posts.status")]\npub enum OldForm {}\n\n#[allow(dead_code)]\nfn uses(_: OldForm) {}\n' >> "$queries"
 refused=0
 DATABASE_URL="$server/rust_demo" cargo build -q -p demo-reylo --features live 2> "${RUNNER_TEMP:-/tmp}/refused.log" || refused=$?
 mv "${RUNNER_TEMP:-/tmp}/queries.rs" "$queries"
@@ -73,6 +76,11 @@ cat "${RUNNER_TEMP:-/tmp}/refused.log"
 [ "$refused" -ne 0 ] || { echo '::error::demo-reylo compiled with a misspelt column'; exit 1; }
 grep -q "column \"nme\" does not exist (42703)" "${RUNNER_TEMP:-/tmp}/refused.log" || { echo "::error::the error is not the database's own"; exit 1; }
 grep -q "at $queries:$((lines + 4)):9\$" "${RUNNER_TEMP:-/tmp}/refused.log" || { echo "::error::the error does not name $queries:$((lines + 4)):9"; exit 1; }
+grep -q 'as a column: column "stauts" does not exist' "${RUNNER_TEMP:-/tmp}/refused.log" || { echo "::error::a misspelt reflect does not say what the database said"; exit 1; }
+if grep -q 'cannot find type `OldForm`' "${RUNNER_TEMP:-/tmp}/refused.log"; then
+  echo '::error::a reflect in a form it does not take left its enum out'
+  exit 1
+fi
 # A build script's statement fails with Cargo's own error at its file, line and column, not a panic.
 report=rust/demo-codegen/src/reports/post_counts.sql
 cp "$report" "${RUNNER_TEMP:-/tmp}/post_counts.sql"

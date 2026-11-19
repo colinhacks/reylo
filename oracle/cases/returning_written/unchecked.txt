@@ -1,0 +1,1 @@
+foreign_insert.sql: cannot insert into foreign table "ft" (0A000)

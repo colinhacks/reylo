@@ -30,6 +30,9 @@ pub struct Type {
     /// `COMMENT ON TYPE` or `COMMENT ON DOMAIN`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    /// A short name for the type, as JSON Schema's `title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// The kinds, in the order the spec's `Type` lists them, which is also the order a union lists
@@ -224,6 +227,9 @@ pub struct TextType {
     pub pattern: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
+    /// What the text is, by JSON Schema's format name (`email`, `uri`) or a source's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -294,6 +300,9 @@ pub struct StructType {
 pub struct MapType {
     pub key: Box<Slot>,
     pub value: Box<Slot>,
+    /// How many keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Size>,
 }
 
 /// Rows of `columns`, as many as `cardinality` says, unique on `unique` and sorted on `order`.
@@ -514,11 +523,14 @@ pub struct Field {
     /// What the field is, as its source documents it: `COMMENT ON COLUMN`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    /// A short name for the field, as JSON Schema's `title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 impl Field {
     pub fn new(name: impl Into<String>, ty: Type, nullable: bool) -> Field {
-        Field { name: name.into(), ty, nullable, optional: false, default: None, comment: None }
+        Field { name: name.into(), ty, nullable, optional: false, default: None, comment: None, title: None }
     }
 
     pub fn slot(&self) -> Slot {
@@ -550,7 +562,7 @@ pub struct Param {
 
 /// The URL of the JSON Schema of the format version this crate writes, which every
 /// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
-pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0.json";
+pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.1.json";
 
 /// A column a table's rows are sorted on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -898,7 +910,7 @@ impl Kind {
 
 impl From<Kind> for Type {
     fn from(kind: Kind) -> Type {
-        Type { kind, label: None, comment: None }
+        Type { kind, label: None, comment: None, title: None }
     }
 }
 
@@ -1129,7 +1141,7 @@ impl Type {
             Kind::Array(a) => Kind::Array(ArrayType { element: Box::new(slot(*a.element)), ..a }),
             Kind::Tuple(t) => Kind::Tuple(TupleType { elements: t.elements.into_iter().map(slot).collect(), optional_elements: t.optional_elements.into_iter().map(slot).collect(), rest: t.rest.map(|r| Box::new(slot(*r))) }),
             Kind::Struct(s) => Kind::Struct(StructType { fields: s.fields.into_iter().map(field).collect(), extra: s.extra.map(|e| Box::new(slot(*e))) }),
-            Kind::Map(m) => Kind::Map(MapType { key: Box::new(slot(*m.key)), value: Box::new(slot(*m.value)) }),
+            Kind::Map(m) => Kind::Map(MapType { key: Box::new(slot(*m.key)), value: Box::new(slot(*m.value)), size: m.size }),
             Kind::Table(t) => Kind::Table(TableType { columns: t.columns.into_iter().map(field).collect(), ..t }),
             Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(slot(*c))), schema }),
             Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect() }),
@@ -1160,7 +1172,8 @@ impl Type {
     /// its name (else its kind), then what narrows it in parentheses: an enum's values
     /// (`varchar('a' | 'b')`, `int4(1)`), a size (`varchar(≤255)`, `bytes(=6)`), a decimal's
     /// precision and scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`)
-    /// and divisor (`int4(×5)`), a uuid's versions (`uuid(v7)`), a text's encoding and code points.
+    /// and divisor (`int4(×5)`), a uuid's versions (`uuid(v7)`), a text's encoding, code points and
+    /// format (`text(email)`). A map is its key and value, then how many keys it holds (`map(text => int4, ≤64)`).
     /// An array is its element and `[]`, `?` after an element that may be null (`text?[]`), and a
     /// set its element in braces (`set{text}`, and `{int4}` for one a Postgres array type or no name names); a struct is its fields (`point{ x: float8, y: float8 }`,
     /// `?` after a field that may be null and before one that may be absent); a table its cardinality
@@ -1205,6 +1218,7 @@ impl Type {
                 }
                 facts.extend(t.pattern.as_ref().map(|p| format!("/{p}/")));
                 facts.extend(t.media_type.clone());
+                facts.extend(t.format.clone());
                 with(facts)
             }
             Kind::Bytes(b) => with(size(&b.size).into_iter().chain(b.media_type.clone()).collect()),
@@ -1274,7 +1288,10 @@ impl Type {
                 items.extend(t.rest.as_ref().map(|r| format!("...{}", slot_short(r))));
                 format!("({})", items.join(", "))
             }
-            Kind::Map(m) => format!("{}({} => {})", label(), slot_short(&m.key), slot_short(&m.value)),
+            Kind::Map(m) => {
+                let keys = m.size.as_ref().map(|s| format!(", {}", short_size(s))).unwrap_or_default();
+                format!("{}({} => {}{keys})", label(), slot_short(&m.key), slot_short(&m.value))
+            }
             Kind::Time(t) if t.offset => format!("{}(offset)", label()),
             Kind::ZonedDateTime(z) if z.offset_only => format!("{}(offset)", label()),
             Kind::Range(r) | Kind::Multirange(r) if self.label.is_none() => format!("{}({})", self.kind.name(), r.subtype.short()),
@@ -1589,6 +1606,7 @@ impl Type {
                 }
             }
             Kind::Map(m) => {
+                unsized_(&m.size)?;
                 slot(&m.key, "<key>")?;
                 slot(&m.value, "<value>")?;
             }
@@ -1801,6 +1819,11 @@ mod tests {
         assert_eq!(round_trip(json!({"kind": "array", "size": {"max": 2}, "label": "set", "distinct": true, "element": {"type": {"kind": "enum", "type": {"kind": "text"}, "values": ["a", "b"]}}})).short(), "set{text('a' | 'b')}");
         assert_eq!(round_trip(json!({"kind": "tuple", "elements": [{"type": {"kind": "integer", "bits": 32}}], "optional_elements": [{"nullable": true, "type": {"kind": "text"}}], "rest": {"type": {"kind": "boolean"}}})).short(), "(int32, text?=, ...boolean)");
         assert_eq!(round_trip(json!({"kind": "struct", "fields": [{"name": "id", "type": {"kind": "integer", "bits": 32}}, {"name": "tag", "optional": true, "default": "none", "comment": "What it is", "type": {"kind": "text"}}], "extra": {"type": {"kind": "text"}}})).short(), "{ id: int32, tag?: text, *: text }");
+        round_trip(json!({"kind": "struct", "title": "User", "fields": [{"name": "id", "title": "Id", "type": {"kind": "uuid"}}, {"name": "password", "type": {"kind": "text", "format": "password"}}]}));
+        assert_eq!(round_trip(json!({"kind": "text", "format": "email"})).short(), "text(email)");
+        assert_eq!(round_trip(json!({"kind": "text", "size": {"max": 255}, "media_type": "text/plain", "format": "email", "label": "varchar"})).short(), "varchar(≤255, text/plain, email)");
+        assert_eq!(round_trip(json!({"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "integer", "bits": 32}}, "size": {"max": 64}})).short(), "map(text => int32, ≤64)");
+        assert_eq!(round_trip(json!({"kind": "map", "label": "hstore", "key": {"type": {"kind": "text"}}, "value": {"nullable": true, "type": {"kind": "text"}}})).short(), "hstore(text => text?)");
         assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "boolean"}, "values": ["true"]})).short(), "boolean(true)");
         assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "integer", "bits": 32, "label": "int4"}, "values": ["1", "2"]})).short(), "int4(1 | 2)");
         assert_eq!(round_trip(json!({"kind": "enum", "type": {"kind": "text", "size": {"max": 20}, "label": "varchar"}, "values": ["a", "b"]})).short(), "varchar(≤20, 'a' | 'b')");
@@ -1849,6 +1872,8 @@ mod tests {
         let refused = |value: Value| serde_json::from_value::<Type>(value.clone()).unwrap().check().err().unwrap_or_else(|| panic!("{value} passed"));
         refused(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "min": "0", "exclusive_min": "0"}));
         refused(json!({"kind": "integer", "bits": 32, "exclusive_min": "0"}));
+        refused(json!({"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "text"}}, "size": {"min": 4, "max": 2}}));
+        refused(json!({"kind": "map", "key": {"type": {"kind": "text"}}, "value": {"type": {"kind": "text"}}, "size": {"unit": "byte", "max": 2}}));
         refused(json!({"kind": "integer", "bits": 32, "min": "5", "max": "1"}));
         refused(json!({"kind": "uuid", "versions": [9]}));
         refused(json!({"kind": "uuid", "versions": []}));

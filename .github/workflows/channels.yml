@@ -1,0 +1,126 @@
+# .github/workflows/channels.yml
+
+name: channels
+
+# The ways to install the reylo command without npm, each installed and run on every platform it
+# serves (.github/scripts/channels-check.sh): install.sh and install.ps1, which reylo.dev serves from
+# site/public/, the Homebrew formula and the Scoop manifest, which .github/scripts/channels.sh writes
+# from a release's SHA256SUMS, and the container image, .github/docker/Dockerfile. release.yml
+# publishes the formula, the manifest and the image once a release is out.
+on:
+  # binaries.yml, on a pull request that changes the binary and within each release, before anything
+  # is staged: the binaries that run built (its `engine-<platform>` artifacts), packed as the release
+  # will carry them and served on each runner's 127.0.0.1.
+  workflow_call:
+    inputs:
+      artifacts:
+        description: Install the binaries of the calling run, rather than a release's
+        type: boolean
+        default: true
+  # A release's own assets, from GitHub, as a user's install reads them: `gh workflow run channels.yml -R reylosql/reylo -f release=v0.8.0`.
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "A release's tag, as v0.8.0"
+        type: string
+        required: true
+  # A change to an installer, checked against the newest release, prereleases included.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - site/public/install.sh
+      - site/public/install.ps1
+      - .github/docker/**
+      - .github/scripts/channels*.sh
+      - .github/scripts/pack-binaries.sh
+      - .github/workflows/channels.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  # A run's own binaries and a release's assets are separate checks of the same pull request, so neither cancels the other.
+  group: channels-${{ inputs.artifacts && 'run' || 'release' }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    name: Gather the assets
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.assets.outputs.version }}
+      url: ${{ steps.assets.outputs.url }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: ${{ inputs.artifacts }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: engine-*
+          path: ${{ runner.temp }}/binaries
+      # The served directory's URL, where the assets are this run's: every runner serves it on the same port.
+      - id: assets
+        env:
+          ARTIFACTS: ${{ inputs.artifacts }}
+          RELEASE: ${{ inputs.release }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p assets
+          if [ "$ARTIFACTS" = true ]; then
+            .github/scripts/pack-binaries.sh "$RUNNER_TEMP/binaries" assets
+            version="$(jq -r .version package.json)"
+            url=http://127.0.0.1:28765
+          else
+            tag="${RELEASE:-$(gh release list -R "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')}"
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" -D assets -p 'reylo-*.tar.gz' -p SHA256SUMS
+            (cd assets && sha256sum -c SHA256SUMS)
+            version="${tag#v}"
+            url=
+          fi
+          .github/scripts/channels.sh "$version" assets/SHA256SUMS assets ${url:+"$url"}
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      - id: matrix
+        run: |
+          echo "matrix=$(jq -c '{include: .}' npm/platforms.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: channel-assets
+          path: assets
+          if-no-files-found: error
+          retention-days: 7
+
+  check:
+    needs: assets
+    name: Install and run (${{ matrix.platform }})
+    runs-on: ${{ matrix.check || matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.assets.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: channel-assets
+          path: assets
+      - name: Install and run
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.assets.outputs.version }}
+          IMAGES: ${{ toJSON(matrix.images) }}
+          REYLO_DOWNLOAD_URL: ${{ needs.assets.outputs.url }}
+          # mise reads the release from GitHub's API, which limits a runner's anonymous requests
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          [ -n "$REYLO_DOWNLOAD_URL" ] || unset REYLO_DOWNLOAD_URL
+          .github/scripts/channels-check.sh "$PLATFORM" assets "$VERSION" "$IMAGES"

@@ -28,11 +28,11 @@ Text with no `encoding` is any valid Unicode text. An `encoding` is one of a clo
 | `GB2312` | Unicode's `EASTASIA/GB/GB2312.TXT`, in EUC-CN |
 | `DEC-MCS`, `hp-roman8`, `SEN_850200_B` | RFC 1345's charts of those names |
 
-Where vendors' tables for a name differ, it stands for the widest of them, so a value any of them writes is one of its characters. `code_points` narrows the characters further, by Unicode code point, whatever the encoding: Postgres's text holds every character but NUL, `[[1, 1114111]]`, and MySQL's `utf8mb3` only the Basic Multilingual Plane. A pattern is an I-Regexp (RFC 9485), matched against the whole value.
+Where vendors' tables for a name differ, it stands for the widest of them, so a value any of them writes is one of its characters. `code_points` narrows the characters further, by Unicode code point, whatever the encoding: Postgres's text holds every character but NUL, `[[1, 1114111]]`, and MySQL's `utf8mb3` only the Basic Multilingual Plane. A pattern is an I-Regexp (RFC 9485), matched against the whole value. A `format` names what the text is, by JSON Schema's format names (`email`, `uri`, `hostname`) or a source's own, and a consumer that does not know one ignores it.
 
 ## Rules
 
-1. **A consumer reads `kind`, the fields its kind requires (an integer's `bits`, a float's widths, a time's `tick`, a duration's `max`, an enum's `type` and `values`, a table's `cardinality` and `columns`) and the widening fields, and may ignore the rest.** That is enough to pick a representation that holds every value it can receive. A field either widens the type or narrows it, on its own, so any combination is valid, and a text's `size` is read with its `unit`, which says what it counts. A flag is a boolean written only when true: its default is false. The widening fields are a closed list, and a new one means a new major version, while a narrowing one may come in a minor version, since a consumer that ignores it stays sound:
+1. **A consumer reads `kind`, the fields its kind requires (an integer's `bits`, a float's widths, a time's `tick`, a duration's `max`, an enum's `type` and `values`, a table's `cardinality` and `columns`) and the widening fields, and may ignore the rest.** That is enough to pick a representation that holds every value it can receive. A field widens the type, narrows it, or describes it, leaving which values it holds as they are, as a `title` and a `comment` do. Each does so on its own, so any combination is valid, and a text's `size` is read with its `unit`, which says what it counts. A flag is a boolean written only when true: its default is false. A field that narrows or describes may come in a minor version, since a consumer that ignores it stays sound, while a new widening field means a new major version. The widening fields are a closed list:
      - `nullable` on a slot, and `optional` on a field and a parameter;
      - a tuple's `optional_elements` and `rest`;
      - `unsigned` on an integer;
@@ -53,7 +53,7 @@ Where vendors' tables for a name differ, it stands for the widest of them, so a 
 
 5. **Values inside the format are strings** in the kind's canonical text, so a 64-bit bound or a date survives any serialization; counts (`bits`, a size, a precision or scale), versions and code points are numbers. A boolean's text is `true` or `false`, a number's is decimal with no exponent and no zero it needs not (`1.5`, `-0.25`), and bytes' is base64 (RFC 4648, padded). Dates and times are ISO 8601, with a sign and more than four digits where a year needs them (`-4713-11-24`, `+5874897-12-31`), which RFC 3339 cannot write. Durations are ISO 8601 durations, with a sign on each part where the parts' signs differ, as Postgres writes them (`P1M-1D`).
 
-6. **A consumer that meets an unknown kind** reads it as `opaque` at a SQL slot and as any JSON inside JSON content, and reads an unknown value of a known field the same way. It ignores a field it does not know, which can only narrow, since a widening field comes with a new major version.
+6. **A consumer that meets an unknown kind** reads it as `opaque` at a SQL slot and as any JSON inside JSON content, and reads an unknown value of a known field the same way, unless the field takes any name, as `label`, `media_type` and `format` do: there it ignores a name it does not know. It ignores a field it does not know, which narrows the type or describes it and never widens it, since a widening field comes with a new major version.
 
 7. **Validity rules**, for what no shape can rule out, each a check a validator runs:
      - a side of a range takes one of `min` and `exclusive_min` (or `max` and `exclusive_max`), and a minimum is at most its maximum (bounds, sizes, scales);
@@ -70,7 +70,7 @@ Where vendors' tables for a name differ, it stands for the widest of them, so a 
      - a field's `default` appears only beside `optional`;
      - a duration's `max` writes each part above zero, with no leading zero, and its minutes and seconds below 60, and the duration has a `tick` exactly when that `max` has a time part.
 
-8. **Versions are semantic**, and a descriptor names its own in `$schema`. A patch version changes no descriptor; a minor version may add a kind or a narrowing field, which a consumer of the version before stays sound ignoring (rules 1 and 6); a major version may change anything. Before 1.0.0 the minor number stands for the major one and the patch number for the minor one: 0.2.0 may change anything 0.1.0 says, and 0.1.1 only what a minor version may.
+8. **Versions are semantic**, and a descriptor names its own in `$schema`. A patch version changes no descriptor; a minor version may add a kind, or a field that narrows or describes, which a consumer of the version before stays sound ignoring (rules 1 and 6); a major version may change anything. Before 1.0.0 the minor number stands for the major one and the patch number for the minor one: 0.2.0 may change anything 0.1.0 says, and 0.1.1 only what a minor version may.
 
 ## Facts about each database
 

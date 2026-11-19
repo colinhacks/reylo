@@ -109,7 +109,7 @@ pub fn narrow(ty: &Type, literals: &[Literal]) -> Option<Type> {
         return None;
     }
     let label = if known.is_some() { ty.label.clone() } else { None };
-    Some(Type { kind: Kind::Enum(EnumType { ty: Box::new(base.clone()), values }), label, comment: ty.comment.clone().filter(|_| known.is_some()) })
+    Some(Type { kind: Kind::Enum(EnumType { ty: Box::new(base.clone()), values }), label, comment: ty.comment.clone().filter(|_| known.is_some()), title: ty.title.clone().filter(|_| known.is_some()) })
 }
 
 /// Whether a text type holds a string as written: every character one its code points and its

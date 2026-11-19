@@ -1,13 +1,16 @@
 //! The databases `reylo migrate` works on: the target, through the connection code the type check
-//! uses (`reylo-engine-native`), and the shadows it builds beside it. A shadow is a scratch database
+//! uses (`reylo-engine`), and the shadows it builds beside it. A shadow is a scratch database
 //! on the target's own server (`create database`), so it has the target's engine, version and
-//! extensions; SQLite's live in memory. The connection that creates a shadow holds a session lock
+//! extensions; SQLite's live in memory, a libSQL server's (Turso's) among them. The connection that creates a shadow holds a session lock
 //! named after it for the whole run, and the lock dies with the session, so a run that is killed
 //! leaves a shadow nobody holds, which the next run drops before it builds its own.
 
 use crate::{Dialect, Error};
+#[cfg(feature = "cli")]
 use mysql_async::prelude::Queryable;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 /// One row, every value as text (Postgres's booleans as `t` and `f`), as its columns name them.
 #[derive(Clone, Debug, Default)]
@@ -17,6 +20,11 @@ pub struct Row {
 }
 
 impl Row {
+    /// A row of `values`, in the order `columns` names them; a host's [`Session`] builds its rows so.
+    pub fn new(columns: Vec<String>, values: Vec<Option<String>>) -> Row {
+        Row { columns, values }
+    }
+
     pub fn get(&self, name: &str) -> Option<&str> {
         let at = self.columns.iter().position(|c| c == name)?;
         self.values[at].as_deref()
@@ -35,11 +43,50 @@ impl Row {
 }
 
 pub enum Db {
+    #[cfg(feature = "cli")]
     Postgres(tokio_postgres::Client),
+    #[cfg(feature = "cli")]
     Mysql(mysql_async::Conn),
+    #[cfg(feature = "cli")]
     Sqlite(rusqlite::Connection),
+    /// A libSQL server's database, Turso Cloud's among them, over HTTP.
+    #[cfg(feature = "cli")]
+    Libsql(crate::libsql::Remote),
+    /// A database the host holds the connection to, as a Rust app's own pool through
+    /// `reylo::migrate!()`.
+    Host(Box<dyn Session>),
 }
 
+/// A future a [`Session`] answers with.
+pub type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
+
+/// One connection a host holds to the database deploy and status run on: each statement run as
+/// written, every value of a row as text (a boolean as `t` or `true`), as [`Db::rows`] reads them.
+/// The connection is the same one for the whole run, since the run's lock is the session's.
+pub trait Session: Send {
+    fn dialect(&self) -> Dialect;
+    /// The rows of the statements in `sql`.
+    fn rows<'a>(&'a mut self, sql: &'a str) -> Answer<'a, Vec<Row>>;
+    /// Runs `sql`: one statement or several.
+    fn exec<'a>(&'a mut self, sql: &'a str) -> Answer<'a, ()>;
+    /// Runs one statement with text parameters, `$1` on Postgres and `?` elsewhere.
+    fn exec_with<'a>(&'a mut self, sql: &'a str, params: &'a [&'a str]) -> Answer<'a, ()>;
+}
+
+/// How a script failed: waiting for a lock past its limit, having changed nothing, or otherwise.
+#[derive(Debug)]
+pub(crate) enum Ran {
+    Waited(Error),
+    Failed(Error),
+}
+
+impl From<Error> for Ran {
+    fn from(e: Error) -> Ran {
+        Ran::Failed(e)
+    }
+}
+
+#[cfg(feature = "cli")]
 pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
     match e.as_db_error() {
         Some(d) => {
@@ -53,6 +100,7 @@ pub(crate) fn pg_error(e: tokio_postgres::Error) -> Error {
     }
 }
 
+#[cfg(feature = "cli")]
 pub(crate) fn mysql_error(e: mysql_async::Error) -> Error {
     match e {
         mysql_async::Error::Server(s) => Error(s.message),
@@ -60,10 +108,19 @@ pub(crate) fn mysql_error(e: mysql_async::Error) -> Error {
     }
 }
 
+/// A server's refusal to create a shadow database, with what to do about it: each shadow is a new
+/// database, so a role that may not create one needs a server where it may (PlanetScale, Vitess,
+/// and some managed roles).
+pub(crate) fn cannot_create(e: Error) -> Error {
+    Error(format!("{e}. Each shadow database is a new database on this server: give the role the right to create databases, or set shadow_url in .reylo.yaml to a server where it has it"))
+}
+
+#[cfg(feature = "cli")]
 pub(crate) fn sqlite_error(e: rusqlite::Error) -> Error {
     Error(e.to_string())
 }
 
+#[cfg(feature = "cli")]
 fn mysql_text(value: &mysql_async::Value) -> Option<String> {
     use mysql_async::Value::*;
     match value {
@@ -105,6 +162,7 @@ pub fn sqlite_path(url: &str, base: &Path) -> String {
 }
 
 /// The rows of `sql` over Postgres's simple protocol, every value as text.
+#[cfg(feature = "cli")]
 pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Result<Vec<Row>, Error> {
     let mut out = Vec::new();
     for message in client.simple_query(sql).await.map_err(pg_error)? {
@@ -119,29 +177,37 @@ pub(crate) async fn pg_rows(client: &tokio_postgres::Client, sql: &str) -> Resul
 
 /// A connection to the Postgres database a URL names, as the engine opens one (its TLS, timeout and
 /// failure messages), without the server version it reports.
+#[cfg(feature = "cli")]
 pub(crate) async fn open_postgres(url: &str) -> Result<tokio_postgres::Client, Error> {
-    reylo_engine_native::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
+    reylo_engine::postgres::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
 }
 
 /// A connection to the MySQL database a URL names, as the engine opens one.
+#[cfg(feature = "cli")]
 pub(crate) async fn open_mysql(url: &str) -> Result<mysql_async::Conn, Error> {
-    reylo_engine_native::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
+    reylo_engine::mysql::open(url).await.map(|(conn, _)| conn).map_err(|failure| Error(failure.to_string()))
 }
 
 impl Db {
+    #[cfg(feature = "cli")]
     pub async fn connect(url: &str, base: &Path) -> Result<Db, Error> {
         match Dialect::of_url(url)? {
             Dialect::Postgres => Ok(Db::Postgres(crate::db::open_postgres(url).await?)),
             Dialect::Mysql => Ok(Db::Mysql(crate::db::open_mysql(url).await?)),
+            Dialect::Sqlite if crate::libsql::is_url(url) => Ok(Db::Libsql(crate::libsql::Remote::open(url)?)),
             Dialect::Sqlite => Ok(Db::Sqlite(rusqlite::Connection::open(sqlite_path(url, base)).map_err(sqlite_error)?)),
         }
     }
 
     pub fn dialect(&self) -> Dialect {
         match self {
+            #[cfg(feature = "cli")]
             Db::Postgres(_) => Dialect::Postgres,
+            #[cfg(feature = "cli")]
             Db::Mysql(_) => Dialect::Mysql,
-            Db::Sqlite(_) => Dialect::Sqlite,
+            #[cfg(feature = "cli")]
+            Db::Sqlite(_) | Db::Libsql(_) => Dialect::Sqlite,
+            Db::Host(session) => session.dialect(),
         }
     }
 
@@ -149,7 +215,10 @@ impl Db {
     /// protocol), every value as text.
     pub async fn rows(&mut self, sql: &str) -> Result<Vec<Row>, Error> {
         match self {
+            Db::Host(session) => session.rows(sql).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => pg_rows(client, sql).await,
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => {
                 let rows: Vec<mysql_async::Row> = conn.query(sql).await.map_err(mysql_error)?;
                 Ok(rows
@@ -161,6 +230,7 @@ impl Db {
                     })
                     .collect())
             }
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => {
                 let mut statement = conn.prepare(sql).map_err(sqlite_error)?;
                 let columns: Vec<String> = statement.column_names().into_iter().map(String::from).collect();
@@ -184,15 +254,23 @@ impl Db {
                     .map_err(sqlite_error)?;
                 Ok(rows.into_iter().map(|values| Row { columns: columns.clone(), values }).collect())
             }
+            #[cfg(feature = "cli")]
+            Db::Libsql(remote) => remote.rows(sql),
         }
     }
 
     /// Runs `sql` as written: one statement or several.
     pub async fn exec(&mut self, sql: &str) -> Result<(), Error> {
         match self {
+            Db::Host(session) => session.exec(sql).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => client.batch_execute(sql).await.map_err(pg_error),
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => conn.query_drop(sql).await.map_err(mysql_error),
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute_batch(sql).map_err(sqlite_error),
+            #[cfg(feature = "cli")]
+            Db::Libsql(remote) => remote.exec(sql),
         }
     }
 
@@ -208,31 +286,73 @@ impl Db {
         Ok(())
     }
 
+    /// Runs a script as [`Db::script`] does, telling a statement that gave up waiting for a lock
+    /// (Postgres's `lock_timeout`, MySQL's `lock_wait_timeout`) from any other failure: it changed
+    /// nothing, so the file can run again. A host's session can't tell, and fails as `script` does.
+    pub(crate) async fn script_or_wait(&mut self, sql: &str) -> Result<(), Ran> {
+        match self {
+            #[cfg(feature = "cli")]
+            Db::Postgres(client) => client.batch_execute(sql).await.map_err(|e| {
+                let waited = e.code() == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE);
+                let e = pg_error(e);
+                if waited {
+                    Ran::Waited(e)
+                } else {
+                    Ran::Failed(e)
+                }
+            }),
+            #[cfg(feature = "cli")]
+            Db::Mysql(conn) => {
+                for statement in crate::sql::split_statements(sql, Dialect::Mysql) {
+                    if let Err(e) = conn.query_drop(&statement.text).await {
+                        // ER_LOCK_WAIT_TIMEOUT: a metadata lock, or a row's, waited past its limit.
+                        let waited = matches!(&e, mysql_async::Error::Server(s) if s.code == 1205);
+                        let e = mysql_error(e);
+                        return Err(if waited { Ran::Waited(e) } else { Ran::Failed(e) });
+                    }
+                }
+                Ok(())
+            }
+            _ => self.script(sql).await.map_err(Ran::Failed),
+        }
+    }
+
     /// Runs one statement with text parameters, `$1` on Postgres and `?` elsewhere.
     pub async fn exec_with(&mut self, sql: &str, params: &[&str]) -> Result<(), Error> {
         match self {
+            Db::Host(session) => session.exec_with(sql, params).await,
+            #[cfg(feature = "cli")]
             Db::Postgres(client) => {
                 let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params.iter().map(|p| p as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
                 client.execute(sql, &params).await.map(|_| ()).map_err(pg_error)
             }
+            #[cfg(feature = "cli")]
             Db::Mysql(conn) => {
                 let values: Vec<mysql_async::Value> = params.iter().map(|p| mysql_async::Value::from(*p)).collect();
                 conn.exec_drop(sql, mysql_async::Params::Positional(values)).await.map_err(mysql_error)
             }
+            #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute(sql, rusqlite::params_from_iter(params.iter())).map(|_| ()).map_err(sqlite_error),
+            #[cfg(feature = "cli")]
+            Db::Libsql(remote) => remote.exec_with(sql, params),
         }
     }
 
     pub async fn close(self) {
-        if let Db::Mysql(conn) = self {
-            let _ = conn.disconnect().await;
+        #[cfg(feature = "cli")]
+        match self {
+            Db::Mysql(conn) => {
+                let _ = conn.disconnect().await;
+            }
+            Db::Libsql(remote) => remote.close(),
+            _ => {}
         }
     }
 
     /// The parameter marker for the `n`th parameter.
     pub fn param(&self, n: usize) -> String {
-        match self {
-            Db::Postgres(_) => format!("${n}"),
+        match self.dialect() {
+            Dialect::Postgres => format!("${n}"),
             _ => "?".into(),
         }
     }
@@ -401,7 +521,13 @@ pub struct Shadow {
     pub name: String,
 }
 
+/// Where shadows are made: the target's server, or the one `shadow_url` names. Without the `cli`
+/// feature there is none: deploy and status make no shadow.
+#[cfg(not(feature = "cli"))]
+pub enum Server {}
+
 /// Where shadows are made: the target's server, or the one `shadow_url` names.
+#[cfg(feature = "cli")]
 pub enum Server {
     Postgres {
         admin: tokio_postgres::Client,
@@ -440,8 +566,10 @@ pub enum Server {
     Sqlite,
 }
 
+#[cfg(feature = "cli")]
 const PG_LISTS: &[&str] = &["search_path", "temp_tablespaces", "local_preload_libraries", "session_preload_libraries"];
 
+#[cfg(feature = "cli")]
 impl Server {
     /// The server shadows are made on: `shadow_url`'s, else the target's. A shadow is made like the
     /// target, which `target` is connected to.
@@ -569,7 +697,11 @@ impl Server {
                     Some((cs, co)) => format!(" character set {cs} collate {co}"),
                     None => String::new(),
                 };
-                admin.query_drop(format!("create database `{name}`{charset}")).await.map_err(mysql_error)?;
+                admin.query_drop(format!("create database `{name}`{charset}")).await.map_err(|e| match &e {
+                    // ER_DBACCESS_DENIED_ERROR and ER_SPECIFIC_ACCESS_DENIED_ERROR: no CREATE on the database.
+                    mysql_async::Error::Server(s) if s.code == 1044 || s.code == 1227 => cannot_create(mysql_error(e)),
+                    _ => mysql_error(e),
+                })?;
                 let db = Db::Mysql(crate::db::open_mysql(&with_database(url, &name)).await?);
                 Ok(Shadow { db, name })
             }
@@ -586,10 +718,11 @@ impl Server {
         let name = random_name();
         admin.batch_execute(&format!("select pg_advisory_lock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
         let made = async {
-            match template {
-                Some(t) => admin.batch_execute(&format!("create database \"{name}\" template \"{t}\"")).await.map_err(pg_error)?,
-                None => admin.batch_execute(&format!("create database \"{name}\"{create}")).await.map_err(pg_error)?,
-            }
+            let made = match template {
+                Some(t) => admin.batch_execute(&format!("create database \"{name}\" template \"{t}\"")).await,
+                None => admin.batch_execute(&format!("create database \"{name}\"{create}")).await,
+            };
+            made.map_err(|e| if e.code() == Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE) { cannot_create(pg_error(e)) } else { pg_error(e) })?;
             for s in settings.iter() {
                 let Some((key, value)) = s.split_once('=') else { continue };
                 let value = if PG_LISTS.contains(&key) {
@@ -717,9 +850,14 @@ impl Server {
                     if !free {
                         continue;
                     }
-                    admin.batch_execute(&format!("drop database if exists \"{name}\" with (force)")).await.map_err(pg_error)?;
+                    // Another role's (a teammate's, on a shared server) is that role's to drop.
+                    let drop = admin.batch_execute(&format!("drop database if exists \"{name}\" with (force)")).await;
                     admin.batch_execute(&format!("select pg_advisory_unlock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
-                    dropped += 1;
+                    match drop {
+                        Ok(()) => dropped += 1,
+                        Err(e) if e.code() == Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE) => {}
+                        Err(e) => return Err(pg_error(e)),
+                    }
                 }
             }
             Server::Mysql { admin, .. } => {
@@ -729,8 +867,11 @@ impl Server {
                     if free != Some(1) {
                         continue;
                     }
-                    admin.query_drop(format!("drop database if exists `{name}`")).await.map_err(mysql_error)?;
-                    dropped += 1;
+                    match admin.query_drop(format!("drop database if exists `{name}`")).await {
+                        Ok(()) => dropped += 1,
+                        Err(mysql_async::Error::Server(s)) if s.code == 1044 => {}
+                        Err(e) => return Err(mysql_error(e)),
+                    }
                 }
             }
             Server::Sqlite => {}
@@ -750,6 +891,7 @@ impl Server {
 /// Ends a Postgres shadow's session, and waits up to a second for its server process to go: a
 /// database with a session left cannot be dropped, renamed or copied without the server's own wait
 /// for it, a tenth of a second at a time.
+#[cfg(feature = "cli")]
 pub(crate) async fn pg_close(admin: &tokio_postgres::Client, db: Db, name: &str) {
     drop(db);
     for _ in 0..200 {
@@ -822,6 +964,7 @@ mod url_tests {
         assert_eq!(shown_url("postgres://u:pa/ss@host/app"), "postgres://host/app");
         assert_eq!(shown_url("postgres://host/app?password=secret"), "postgres://host/app");
         assert_eq!(shown_url("sqlite:./app.db?mode=rwc"), "sqlite:./app.db");
+        assert_eq!(shown_url("libsql://app-acme.turso.io?authToken=secret"), "libsql://app-acme.turso.io");
         // An @ past the host is no part of the credentials, where a connection is made.
         assert_eq!(with_database("postgres://u@host/d@b", "x"), "postgres://u@host/x");
         assert_eq!(with_database("postgres://host/app?application_name=a@b", "x"), "postgres://host/x?application_name=a@b");

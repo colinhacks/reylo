@@ -16,9 +16,9 @@ path = "src/main.rs"
 required-features = ["live"]
 
 [dependencies]
-reylo = { package = "reylo-sqlx", path = "../reylo", features = ["chrono"] }
+reylo = { workspace = true, features = ["sqlx_0_9", "postgres", "chrono"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [build-dependencies]
-reylo-build = { path = "../reylo-build" }
+reylo-build = { workspace = true, features = ["generate", "postgres"] }

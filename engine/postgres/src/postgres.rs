@@ -259,7 +259,13 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 ///   such a key. An enum's, or a domain's over one, is the built-in `=(anyenum, anyenum)` where no
 ///   `=` of a user's takes the enum, exactly, through a domain over it or by a polymorphic
 ///   argument, and no implicit cast converts it.
-/// - `implicit`: a built-in type a user's implicit cast function converts to a built-in type.
+/// - `implicit`: a type a user's implicit cast function converts to a built-in type: a built-in
+///   one, by its base type or its elements as the server reads them, or a type of a user's, a
+///   composite, an enum or an extension's, as the cast names it.
+/// - `through`: a function name (the second column) every built-in overload of which takes each
+///   argument as it is, of any type (`anyelement`, `anyarray`, `anynonarray`, `anyenum`,
+///   `anyrange`, `anymultirange`, `"any"`, `record`, `record[]`), so no implicit cast runs on one:
+///   the `anycompatible` family, which converts its arguments to a common type, is not one.
 /// - `rows`: every built-in type that is a row (the third column): a catalog's row type, `record`,
 ///   or a domain over a row type. `scalars`: every type of a user's that is no row and no array (the
 ///   third column): a base type, an enum, a range, a multirange, or a domain over one of them. A
@@ -394,6 +400,13 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     UNION ALL SELECT 'implicit', NULL, NULL, s.s::pg_catalog.int8, NULL FROM sources s \
     WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\" AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
     AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (c.castsource OPERATOR(pg_catalog.=) s.b OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT a.e FROM arrays a WHERE a.t OPERATOR(pg_catalog.=) s.b))) \
+    UNION ALL SELECT 'implicit', NULL, NULL, c.castsource::pg_catalog.int8, NULL FROM pg_catalog.pg_cast c \
+    WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\" AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
+    AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND c.castsource OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid \
+    UNION ALL SELECT 'through', p.proname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_proc p \
+    WHERE p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[]) GROUP BY p.proname \
+    HAVING NOT pg_catalog.bool_or(EXISTS (SELECT 1 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i \
+    WHERE NOT (p.proargtypes[i] OPERATOR(pg_catalog.=) ANY ('{2283,2277,2776,3500,3831,4537,2276,2249,2287}'::pg_catalog.oid[])))) \
     UNION ALL SELECT 'type', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
     WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND t.typname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[]) \
     UNION ALL SELECT 'cast', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
@@ -742,12 +755,11 @@ fn catalog_rows(host: &Host, functions: &[String], relations: &[String]) -> Lazy
     let functions = if functions.is_empty() { none() } else { host.query_each(cardinality::FUNCTIONS_QUERY, functions.iter().map(|f| vec![json!([f])]), Scope::Statement) };
     let triggers = by_relation(host, cardinality::TRIGGERS_QUERY, relations);
     let (Some(keys), Some(columns), Some(functions), Some(triggers)) = (keys, columns, functions, triggers) else { return None };
-    Some(CatalogRows {
-        keys: keys.unwrap_or_default(),
-        columns: columns.unwrap_or_default(),
-        functions: functions.unwrap_or_default(),
-        triggers: triggers.unwrap_or_default(),
-    })
+    // A catalog that does not say which triggers and rules act on the relations is read as one
+    // where every one of them acts on every event: a write may then skip its row, change it, or be
+    // rewritten.
+    let triggers = triggers.unwrap_or_else(|_| relations.iter().map(|r| vec![json!(r), json!(28), json!(28), json!([]), json!([]), json!(28)]).collect());
+    Some(CatalogRows { keys: keys.unwrap_or_default(), columns: columns.unwrap_or_default(), functions: functions.unwrap_or_default(), triggers })
 }
 
 /// The rows of the row-count proof's catalog queries, as the host answered them.
@@ -1859,9 +1871,91 @@ impl<'a> Engine<'a> {
         *self.written_facts.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.facts.get(key)?.clone()))).collect();
         self.refine(sql, &mut described, trust)?;
         with_check_items(sql, parsed, &raw, &checks, &mut described);
+        self.written_values(sql, parsed, &raw, &mut described, trust)?;
         self.without_missing_rows(sql, parsed, &raw, &mut described);
         self.written_through(parsed, &raw, &mut described)?;
         Some(Ok((raw, described)))
+    }
+
+    /// The columns of an INSERT's, an UPDATE's or a MERGE's RETURNING list that read the target's
+    /// column of the row the statement wrote, non-null where the statement writes a non-null value
+    /// to that column in every row it returns ([`infer::written_returning`]) and nothing changes
+    /// the value on its way to the row: no row trigger runs before the write or in its place on the
+    /// relation or any partition or child of it, for any event the write sets off (a row an UPDATE
+    /// moves to another partition is deleted and inserted); no rewrite rule acts on the write and no
+    /// view takes it; the relation and its partitions are no foreign tables, whose wrapper returns a
+    /// row of its own; and no cast a user or an extension defined turns a value into the column's
+    /// type, which a string literal and a bare parameter never need, as the server reads them as
+    /// that type. Each result column must read the column by its provenance too. The catalog
+    /// query that names the triggers and the rules must have answered. A probe is narrowed this
+    /// way too, as a data-modifying WITH query is.
+    fn written_values(&self, sql: &str, parsed: Option<&Parsed>, raw: &RawDescribe, described: &mut DescribedStatement, trust: &Trust) -> Lazy<()> {
+        if parsed.is_none_or(|p| !matches!(p.statement, "insert" | "update" | "merge") || !p.has_returning) {
+            return Some(());
+        }
+        let columns = columns_where(true, sql, self.host)?;
+        let Some(found) = infer::written_returning(sql, trust, &columns) else { return Some(()) };
+        if found.columns.len() != raw.columns.len() || found.columns.len() != described.columns.len() || found.columns.iter().chain(&found.leaf_columns).all(Option::is_none) {
+            return Some(());
+        }
+        let rules = by_relation(self.host, cardinality::TRIGGERS_QUERY, std::slice::from_ref(&found.target))?;
+        // Column `n` of the SELECT an INSERT reads its rows from: non-null as its own analysis says.
+        let selected = match &found.select {
+            Some(select) => self.probe(select, trust)?,
+            None => None,
+        };
+        let Ok(rules) = rules else { return Some(()) };
+        // A host that answers without the rules' column reports none: every write is then taken
+        // as one a rule may rewrite.
+        let acted_on = rules.iter().filter(|row| row.first().and_then(as_str) == Some(found.target.as_str())).any(|row| {
+            let triggered = row.get(3).and_then(Value::as_array).into_iter().flatten().filter_map(as_u32).fold(row.get(1).and_then(as_u32).unwrap_or(28), |events, fires| events | fires);
+            let rewritten = row.get(2).map_or(Some(28), as_u32).unwrap_or(28);
+            ((triggered | rewritten) as i32 & found.events) != 0
+        });
+        if acted_on {
+            return Some(());
+        }
+        let written = {
+            let oids = self.oids_by_name.borrow();
+            let by_name = self.columns_by_name.borrow();
+            let relations = self.relations.borrow();
+            let registry = self.registry.borrow();
+            let (Some(oid), Some(known)) = (oids.get(&found.target), by_name.get(&found.target)) else { return Some(()) };
+            let attnum = |column: &str| known.iter().find(|(_, (name, _))| name == column).map(|(attnum, _)| *attnum);
+            // A column every row a scan of the relation reads holds a value in ([`Catalog::not_null`]).
+            let reads = relations.get(oid).map(|(_, reads)| reads);
+            let not_null = |column: &str| attnum(column).is_some_and(|a| reads.is_some_and(|reads| reads.get(&a) == Some(&true)));
+            let selected = |i: usize| selected.as_ref().and_then(|s| s.columns.get(i)).is_some_and(|c| !c.nullable);
+            // A column whose type, a domain's base type, no user's or extension's cast targets.
+            let uncast = |column: &str| columns.type_of(&found.target, column).and_then(|t| registry.get(registry.resolve_domain(t))).is_some_and(|t| trust.cast_targets.as_ref().is_none_or(|targets| targets.contains(&t.name)));
+            let written = found.non_null(&not_null, &selected, &uncast);
+            for ((column, raw), col) in found.columns.iter().zip(&raw.columns).zip(described.columns.iter_mut()) {
+                if column.as_deref().is_some_and(|column| raw.table == *oid && attnum(column) == Some(raw.attnum) && written.contains(column)) {
+                    col.nullable = false;
+                }
+            }
+            // Each leaf of the list's expressions that reads a column of the new row written a value.
+            found.leaf_columns.iter().map(|c| c.as_ref().is_some_and(|c| written.contains(c))).collect::<Vec<bool>>()
+        };
+        // An expression of the list reads a column written a value as that value: its leaf is
+        // non-null, and the expression is read again over the leaves.
+        let Some(probe) = found.plan.leaves.as_ref().filter(|_| found.plan.reads_leaves() && written.contains(&true)) else { return Some(()) };
+        let Some(mut leaves) = self.probe(probe, trust)?.map(|d| d.columns) else { return Some(()) };
+        if leaves.len() != written.len() {
+            return Some(());
+        }
+        for (leaf, written) in leaves.iter_mut().zip(&written) {
+            if *written {
+                leaf.nullable = false;
+            }
+        }
+        let count = described.columns.len();
+        for (col, claim) in described.columns.iter_mut().zip(found.plan.claims(count)) {
+            if claim.is_some_and(|claim| infer::resolve(claim, Some(&leaves)).non_null) {
+                col.nullable = false;
+            }
+        }
+        Some(())
     }
 
     /// PostgreSQL 18's `RETURNING old.*` and `new.*`, and a MERGE's source where the MERGE acts
@@ -2816,6 +2910,7 @@ impl<'a> Engine<'a> {
         }
         self.refine(sql, &mut described, trust)?;
         with_check_items(sql, parsed.as_ref(), &raw, &checks, &mut described);
+        self.written_values(sql, parsed.as_ref(), &raw, &mut described, trust)?;
         self.without_missing_rows(sql, parsed.as_ref(), &raw, &mut described);
         self.written_through(parsed.as_ref(), &raw, &mut described)?;
         Some(Some(described))
@@ -4171,8 +4266,8 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
 /// since Postgres reports one only where every element has it.
 pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
     let level = |element: Type| crate::types::ArrayType::of(crate::types::Slot::non_null(element));
-    let Type { kind, label, comment } = registry.render_typmod(col.type_oid, col.typmod);
-    let named = |kind| Type { kind, label: label.clone(), comment: comment.clone() };
+    let Type { kind, label, comment, title } = registry.render_typmod(col.type_oid, col.typmod);
+    let named = |kind| Type { kind, label: label.clone(), comment: comment.clone(), title: title.clone() };
     match (col.nested, kind) {
         (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
             let mut inner = match element {

@@ -17,7 +17,8 @@
 //   `types` and value and column transforms, and Reylo builds the rows with the module's column
 //   names.
 // - Bun.sql decodes in native code and takes nothing per query: Reylo converts the values it got
-//   (src/values.ts, `coerce`), by each column's kind.
+//   (src/values.ts, `coerce`), by each column's kind, and by the result's own columns where Bun
+//   1.4.4 and later describe them.
 //
 // A built-in type (an oid below 10000, the same in every database and version) has its kind here.
 // A type the database created (an enum, a domain's array, an extension's type) has the kind the
@@ -25,10 +26,10 @@
 // those oids are arrays, cached in a WeakMap keyed by the app's object. A row value the module knows
 // the fields of has the kind of its column whatever its oid: `record` is one oid for every shape of
 // row, and a built-in catalog table's row type is below 10000 too.
-import { coerce, DecodeError, elementKind, isRowKind, numbersInJson, scalarKind, textDecoder, utf8, withinDimensions, type Columns, type Decoder, type JsonNumbers, type Kind } from "./values.ts";
+import { civilFromDays, coerce, DecodeError, elementKind, isRowKind, numbersInJson, scalarKind, textDecoder, utf8, withFraction, withinDimensions, type Columns, type Decoder, type JsonNumbers, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { lastOfEach, rowOf, type RowBuilder } from "./row.ts";
-import { arrayLiteral, asByteaHex, isJsonValue, isTime, jsonText, jsonValue, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { arrayLiteral, asByteaHex, isJsonValue, jsonText, jsonValue, postgresText, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
 import { readPostgresError } from "./query-error.ts";
 
 type AnyClient = Record<string, any>;
@@ -405,16 +406,28 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
   // postgres.js's own query has raw(). One without it comes from a wrapper, whose values the driver already converted.
   if (typeof pending?.raw !== "function") throw new TypeError("Reylo cannot read this client's results: its unsafe() returns no postgres.js query, whose raw() hands over the server's text.");
   const raw = await pending.raw();
-  const fields: Field[] = (raw.columns ?? []).map((f: { name: string; type: number }) => ({ name: f.name, oid: f.type }));
-  if (!raw.length) return [];
   // A row transform (`transform: { row }`) runs on `.raw()` rows too, and leaves them not an array of each value's bytes.
-  for (const row of raw) {
-    if (!Array.isArray(row) || row.length !== fields.length || !row.every((v) => v === null || v instanceof Uint8Array)) {
-      throw new TypeError(`Reylo cannot read this postgres.js client's rows: its transform.row rewrites every row, Reylo's too, so they would not have the types the query declares. Run Reylo's queries on a postgres() instance without transform.row.`);
-    }
-  }
+  const transformed = `Reylo cannot read this postgres.js client's rows: its transform.row rewrites every row, Reylo's too, so they would not have the types the query declares. Run Reylo's queries on a postgres() instance without transform.row.`;
   const load: Load = async (sql) => ((await c.unsafe(sql).raw()) as (BufferLike | null)[][]).map((r) => r.map((v) => (v === null ? null : textOf(v))));
-  const decoders = await fieldDecoders(fields, columns, c, load);
+  return await rawRows(raw, columns, c, load, row, transformed);
+}
+
+/**
+ * Rows from a `.raw()` result, an array of each value's bytes per row with the result's columns
+ * (postgres.js's, and Bun.sql's from 1.4.4): each value by its column's decoder, the text the server
+ * wrote, or for the columns `binary` names their binary form, which Reylo writes as that text first.
+ */
+async function rawRows(raw: unknown[] & { columns?: { name: string; type: number }[] | null }, columns: Columns | undefined, key: object, load: Load, row: RowBuilder | undefined, transformed: string, binary?: (oid: number) => boolean): Promise<unknown[]> {
+  const fields: Field[] = (raw.columns ?? []).map((f) => ({ name: f.name, oid: f.type }));
+  if (!raw.length) return [];
+  for (const r of raw) {
+    if (!Array.isArray(r) || r.length !== fields.length || !r.every((v) => v === null || v instanceof Uint8Array)) throw new TypeError(transformed);
+  }
+  const decoders = await fieldDecoders(fields, columns, key, load);
+  const fromBytes = fields.map((f, i): ((v: BufferLike) => unknown) => {
+    const decode = decoders[i]!;
+    return binary?.(f.oid) ? binaryDecoder(f.oid, decode, f.name) : (v) => decode(textOf(v));
+  });
   // The module's names, which a `transform.column` of the app's does not rename; a query defined by
   // hand has the server's.
   const byColumns = columns !== undefined && columns.length === fields.length;
@@ -427,11 +440,200 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
     const values = raw[r] as (BufferLike | null)[];
     for (let i = 0; i < n; i++) {
       const v = values[i];
-      decoded[i] = v === null || v === undefined ? null : decoders[i]!(textOf(v));
+      decoded[i] = v === null || v === undefined ? null : fromBytes[i]!(v);
     }
     out[r] = build(decoded);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Postgres's binary format, which Bun.sql's `.raw()` hands over for some types: each value as the
+// text Postgres writes for it, so that the column's decoder gives what every other driver's text
+// gives, or for a boolean, an int4, a float8 and a bytea the value itself.
+
+/**
+ * The types Bun.sql 1.4.4 and later read in binary in a `.raw()` query that has parameters, on a
+ * client that prepares its statements; a simple query's results, and every other type, are text
+ * (Bun's docs, "`.raw()` format", and its `Tag::is_binary_in`).
+ */
+const BUN_BINARY = new Set([16, 17, 23, 700, 701, 1083, 1114, 1184, 1007, 1021, 1700]);
+
+const notBinary = (name: string, oid: number, bytes: number) =>
+  new DecodeError(`Column "${name}" came from Bun.sql in ${bytes} bytes, which is not the binary form of its type (oid ${oid}) that Bun's .raw() hands over for it. Reylo refuses it rather than misread it: run the query on a client made with prepare: false, whose results are text.`);
+
+function binaryDecoder(oid: number, decode: Decoder, name: string): (v: BufferLike) => unknown {
+  const view = (v: BufferLike, length?: number) => {
+    if (length !== undefined && v.byteLength !== length) throw notBinary(name, oid, v.byteLength);
+    return new DataView(v.buffer, v.byteOffset, v.byteLength);
+  };
+  switch (oid) {
+    case 16:
+      return (v) => view(v, 1).getUint8(0) !== 0;
+    case 17:
+      return (v) => v;
+    case 23:
+      return (v) => view(v, 4).getInt32(0);
+    case 701:
+      return (v) => view(v, 8).getFloat64(0);
+    case 700:
+      return (v) => decode(float4Text(view(v, 4).getFloat32(0)));
+    case 1083:
+      return (v) => decode(timeText(view(v, 8)));
+    case 1114:
+    case 1184:
+      return (v) => decode(timestampText(view(v, 8), oid === 1184));
+    case 1700:
+      return (v) => decode(numericText(view(v), name));
+    case 1007:
+    case 1021:
+      return (v) => decode(arrayText(view(v), oid === 1007 ? (d, at) => String(d.getInt32(at)) : (d, at) => float4Text(d.getFloat32(at)), oid === 1007 ? 23 : 700, name));
+    default:
+      throw notBinary(name, oid, 0);
+  }
+}
+
+/** A float4 as Postgres writes it: the shortest text that reads back as the same 32-bit float. */
+function float4Text(f: number): string {
+  if (Number.isNaN(f)) return "NaN";
+  if (!Number.isFinite(f)) return f > 0 ? "Infinity" : "-Infinity";
+  if (Object.is(f, -0)) return "-0";
+  for (let p = 1; p <= 9; p++) {
+    const text = f.toPrecision(p);
+    if (Math.fround(+text) === f) return String(+text);
+  }
+  return String(f);
+}
+
+/** A signed 64-bit integer, exact: as a number where it fits, else through a BigInt. */
+function int64(d: DataView, at = 0): number | bigint {
+  const hi = d.getInt32(at);
+  return hi > -0x200000 && hi < 0x200000 ? hi * 4294967296 + d.getUint32(at + 4) : d.getBigInt64(at);
+}
+
+/** Whole units of `per` in `v` and what is left, floored, for a number or a BigInt. */
+function divide(v: number | bigint, per: number): [number, number] {
+  if (typeof v === "number") {
+    const q = Math.floor(v / per);
+    return [q, v - q * per];
+  }
+  const p = BigInt(per);
+  let q = v / p;
+  if (v % p < 0n) q -= 1n;
+  return [Number(q), Number(v - q * p)];
+}
+
+const two = (n: number) => (n < 10 ? `0${n}` : String(n));
+const fraction = (us: number) => (us === 0 ? "" : `.${String(us).padStart(6, "0")}`);
+const clock = (seconds: number, us: number) => `${two(Math.floor(seconds / 3600))}:${two(Math.floor(seconds / 60) % 60)}:${two(seconds % 60)}${fraction(us)}`;
+
+/** A time, microseconds since midnight, as Postgres writes it: `12:00:01.5`, up to `24:00:00`. */
+function timeText(d: DataView): string {
+  const [seconds, us] = divide(int64(d), 1e6);
+  return clock(seconds, us);
+}
+
+/** Days from 1970-01-01 to 2000-01-01, Postgres's epoch. */
+const POSTGRES_EPOCH_DAYS = 10957;
+
+/**
+ * A timestamp, microseconds since 2000-01-01, as Postgres writes it in DateStyle ISO, a year before 1
+ * with ` BC`; a timestamptz in UTC with `+00`; and each infinity as its word.
+ */
+function timestampText(d: DataView, zoned: boolean): string {
+  const hi = d.getInt32(0), lo = d.getUint32(4);
+  if (hi === 0x7fffffff && lo === 0xffffffff) return "infinity";
+  if (hi === -0x80000000 && lo === 0) return "-infinity";
+  const [seconds, us] = divide(int64(d), 1e6);
+  const [days, sod] = divide(seconds, 86400);
+  const [y, m, day] = civilFromDays(days + POSTGRES_EPOCH_DAYS);
+  const year = y > 0 ? String(y).padStart(4, "0") : String(1 - y).padStart(4, "0");
+  return `${year}-${two(m)}-${two(day)} ${clock(sod, us)}${zoned ? "+00" : ""}${y > 0 ? "" : " BC"}`;
+}
+
+/** A numeric as Postgres writes it: its base-10000 digits, its weight and its display scale. */
+function numericText(d: DataView, name: string): string {
+  if (d.byteLength < 8) throw notBinary(name, 1700, d.byteLength);
+  const ndigits = d.getUint16(0), weight = d.getInt16(2), sign = d.getUint16(4), dscale = d.getUint16(6);
+  if (d.byteLength !== 8 + 2 * ndigits) throw notBinary(name, 1700, d.byteLength);
+  if (sign === 0xc000) return "NaN";
+  if (sign === 0xd000) return "Infinity";
+  if (sign === 0xf000) return "-Infinity";
+  const digit = (k: number) => (k >= 0 && k < ndigits ? d.getUint16(8 + 2 * k) : 0);
+  let whole = "";
+  for (let k = 0; k <= weight; k++) whole += k === 0 ? String(digit(k)) : String(digit(k)).padStart(4, "0");
+  let frac = "";
+  for (let k = weight + 1; frac.length < dscale; k++) frac += String(digit(k)).padStart(4, "0");
+  return `${sign === 0x4000 ? "-" : ""}${whole || "0"}${dscale > 0 ? `.${frac.slice(0, dscale)}` : ""}`;
+}
+
+/** An array of int4 or float4 in Postgres's binary form as its text: `{1,NULL}`, nested by dimension, with its bounds where one is not 1. */
+function arrayText(d: DataView, element: (d: DataView, at: number) => string, elementOid: number, name: string): string {
+  const fail = () => notBinary(name, elementOid === 23 ? 1007 : 1021, d.byteLength);
+  if (d.byteLength < 12) throw fail();
+  const ndim = d.getInt32(0);
+  if (ndim === 0) return "{}";
+  if (d.getInt32(8) !== elementOid || d.byteLength < 12 + 8 * ndim) throw fail();
+  const dims: number[] = [], lower: number[] = [];
+  for (let k = 0; k < ndim; k++) {
+    dims.push(d.getInt32(12 + 8 * k));
+    lower.push(d.getInt32(16 + 8 * k));
+  }
+  let at = 12 + 8 * ndim;
+  const level = (k: number): string => {
+    const parts: string[] = [];
+    for (let i = 0; i < dims[k]!; i++) {
+      if (k + 1 < ndim) {
+        parts.push(level(k + 1));
+        continue;
+      }
+      if (at + 4 > d.byteLength) throw fail();
+      const length = d.getInt32(at);
+      at += 4;
+      if (length === -1) parts.push("NULL");
+      else {
+        if (length !== 4 || at + 4 > d.byteLength) throw fail();
+        parts.push(element(d, at));
+        at += 4;
+      }
+    }
+    return `{${parts.join(",")}}`;
+  };
+  const text = level(0);
+  if (at !== d.byteLength) throw fail();
+  return lower.every((l) => l === 1) ? text : `${lower.map((l, k) => `[${l}:${l + dims[k]! - 1}]`).join("")}=${text}`;
+}
+
+/** Bun 1.4.4 or later, whose `.raw()` results Reylo reads (its format rule and `result.columns`). */
+function bunReadsRaw(): boolean {
+  const version = (globalThis as { Bun?: { version?: string } }).Bun?.version;
+  const m = typeof version === "string" ? /^(\d+)\.(\d+)\.(\d+)/.exec(version) : null;
+  if (!m) return false;
+  const [major, minor, patch] = [+m[1]!, +m[2]!, +m[3]!];
+  return major > 1 || (major === 1 && (minor > 4 || (minor === 4 && patch >= 4)));
+}
+
+/**
+ * Bun.sql on Postgres from 1.4.4: `.raw()`, whose bytes are text, or binary for the types
+ * `BUN_BINARY` names in a query with parameters on a client that prepares its statements, which
+ * its `options` say (on the pool, a transaction, a savepoint and a reserved connection alike).
+ * Reylo decodes every value itself, so a timestamp keeps its microseconds and a year past 275760
+ * reads, which a Date cannot hold. Undefined where Bun is older, or its client does not say whether
+ * it prepares.
+ */
+async function bunRaw(c: AnyClient, text: string, params: unknown[], columns: Columns | undefined, row: RowBuilder | undefined): Promise<unknown[] | undefined> {
+  const prepare = (c.options as { prepare?: unknown } | undefined)?.prepare;
+  if (typeof prepare !== "boolean" || !bunReadsRaw()) return undefined;
+  const pending = c.unsafe(text, params);
+  if (typeof pending?.raw !== "function") return undefined;
+  // A query without parameters runs as a simple query, whose results are text on every run: a
+  // statement Bun prepared would come back in binary from its second run on its connection.
+  if (params.length === 0 && typeof pending.simple === "function") pending.simple();
+  const raw = await pending.raw();
+  if (!Array.isArray(raw.columns)) throw new TypeError("Reylo cannot read this Bun.sql client's rows: its .raw() result describes no columns, which Bun 1.4.4 and later do.");
+  const binary = prepare && params.length > 0 ? (oid: number) => BUN_BINARY.has(oid) : undefined;
+  const load: Load = async (sql) => ((await c.unsafe(sql).raw()) as (BufferLike | null)[][]).map((r) => r.map((v) => (v === null ? null : textOf(v))));
+  return await rawRows(raw, columns, c, load, row, "Reylo cannot read this Bun.sql client's rows: they are not an array of each value's bytes.", binary);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -448,29 +650,93 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  */
 const BUN_KINDS = /^(bool|int8|money|date|timestamp|timestamptz|interval|bytes|vector|hstore|point|line|lseg|box|path|polygon|circle|enum|set)$|^\(|^(multi)?range:|\[\]$|\|/;
 
+/**
+ * A column of a result as Bun.sql describes it from 1.4.4 on (`result.columns`): a Postgres oid, or
+ * a MySQL protocol type and display length. Older releases have no `columns`.
+ */
+type BunColumn = { name: string; type: number; length?: number };
+
+// MySQL's protocol types whose Bun.sql value needs the column's type to be read.
+const MYSQL_TIMESTAMP = 7, MYSQL_LONGLONG = 8, MYSQL_DATE = 10, MYSQL_DATETIME = 12, MYSQL_NEWDATE = 14;
+
+/** A column to convert: its kind, its array delimiter, and on MySQL its protocol type and a DATETIME's fraction digits. */
+type BunWork = readonly [name: string, kind: Kind, delim?: string | undefined, type?: number, digits?: number | undefined];
+
 export function bunRows(rows: unknown[], columns: Columns | undefined, postgres = false): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
-  const first = rows[0] as Record<string, unknown>;
-  // A query defined by hand carries no kinds: only what Bun's own types say is converted.
-  const work: (readonly [string, Kind, string?])[] = columns ? columns.filter(([, kind]) => BUN_KINDS.test(kind)) : Object.keys(first).map((name) => [name, "unknown"] as const);
+  const work = columns ? declaredWork(rows, columns, postgres) : describedWork(rows, postgres);
   if (!work.length) return rows;
   for (const row of rows as Record<string, unknown>[]) {
-    for (const [name, kind, delim] of work) {
+    for (const [name, kind, delim, type, digits] of work) {
       const v = row[name];
       if (v === null || v === undefined) continue;
-      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim, postgres);
+      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim, postgres, type, digits);
     }
   }
   return rows;
 }
 
-/** A value of `kind` as Bun.sql gave it: an either's digits are a MySQL BIGINT's, which Bun gives as a string. */
-function bunValue(kind: Kind, v: unknown, name: string, delim: string | undefined, postgres: boolean): unknown {
-  if (typeof v === "string" && kind.includes("|") && kind.split("|").includes("int8") && /^[+-]?\d+$/.test(v)) return BigInt(v);
-  return coerce(kind, v, name, delim, postgres);
+/** The columns Bun.sql describes, where it does and they are the module's (by count). */
+function described(rows: unknown[], count?: number): BunColumn[] | undefined {
+  const d = (rows as { columns?: unknown }).columns;
+  return Array.isArray(d) && (count === undefined || d.length === count) && d.every((c) => typeof c?.type === "number" && typeof c.name === "string") ? (d as BunColumn[]) : undefined;
 }
 
-/** A value whose kind is not known: a typed array an array, and a Date, which no kind is, the instant's text. */
+/**
+ * The module's columns whose kind Bun.sql gives in another form, the last of each name. On MySQL an
+ * either that may be a BIGINT, and a DATETIME or TIMESTAMP, also take the result's own column: its
+ * type says whether the digits are a BIGINT's or a DECIMAL's, and its length a DATETIME's fraction
+ * digits, which a Date drops when they are zeros.
+ */
+function declaredWork(rows: unknown[], columns: Columns, postgres: boolean): BunWork[] {
+  const kept = lastOfEach(columns.map(([name, kind, delim], i) => [name, kind, delim, i] as const)).filter(([, kind]) => BUN_KINDS.test(kind));
+  const needsType = (kind: Kind) => kind.split("|").some((k) => k === "int8" || k === "timestamp");
+  const meta = !postgres && kept.some(([, kind]) => needsType(kind)) ? described(rows, columns.length) : undefined;
+  return kept.map(([name, kind, delim, i]) => {
+    const c = meta && needsType(kind) ? meta[i] : undefined;
+    return c ? [name, kind, delim, c.type, fractionDigits(c)] : [name, kind, delim];
+  });
+}
+
+/**
+ * A query defined by hand: each column by the type Bun.sql 1.4.4 and later describe, as other
+ * drivers' results give them (a Postgres oid's kind, a MySQL BIGINT, DATE, DATETIME and TIMESTAMP);
+ * with no description, a Date and a typed array by what they are.
+ */
+function describedWork(rows: unknown[], postgres: boolean): BunWork[] {
+  const meta = described(rows);
+  if (!meta) return Object.keys(rows[0] as object).map((name) => [name, "unknown"]);
+  const work: BunWork[] = [];
+  for (const [name, i] of lastOfEach(meta.map((c, i) => [c.name, i] as const))) {
+    const c = meta[i]!;
+    if (postgres) {
+      const b = builtin(c.type);
+      if (!b) work.push([name, "unknown"]);
+      else if (BUN_KINDS.test(b.kind)) work.push([name, b.kind, b.delim]);
+    } else if (c.type === MYSQL_LONGLONG) work.push([name, "int8"]);
+    else if (c.type === MYSQL_DATE || c.type === MYSQL_NEWDATE) work.push([name, "date"]);
+    else if (c.type === MYSQL_DATETIME || c.type === MYSQL_TIMESTAMP) work.push([name, "timestamp", undefined, c.type, fractionDigits(c)]);
+  }
+  return work;
+}
+
+/** A MySQL DATETIME's or TIMESTAMP's fraction digits, from its display length: 19 characters, and a point and the digits. */
+function fractionDigits(c: BunColumn): number | undefined {
+  if ((c.type !== MYSQL_DATETIME && c.type !== MYSQL_TIMESTAMP) || typeof c.length !== "number") return undefined;
+  return c.length > 20 ? Math.min(c.length - 20, 6) : 0;
+}
+
+/**
+ * A value of `kind` as Bun.sql gave it. An either's digits are a MySQL BIGINT's, which Bun gives as
+ * text like a DECIMAL's: by the result's column type where Bun describes it, else when they have no
+ * point. A MySQL DATETIME's text has its column's fraction digits.
+ */
+function bunValue(kind: Kind, v: unknown, name: string, delim: string | undefined, postgres: boolean, type?: number, digits?: number): unknown {
+  if (typeof v === "string" && kind.includes("|") && kind.split("|").includes("int8") && (type === undefined ? /^[+-]?\d+$/.test(v) : type === MYSQL_LONGLONG)) return BigInt(v);
+  const out = coerce(kind, v, name, delim, postgres);
+  return digits !== undefined && v instanceof Date && typeof out === "string" ? withFraction(out, digits) : out;
+}
+
 function byType(v: unknown, name: string): unknown {
   if (v instanceof Date) return coerce("timestamptz", v, name);
   if (ArrayBuffer.isView(v) && !(v instanceof Uint8Array) && !(v instanceof DataView)) return coerce("float[]", v, name);
@@ -670,10 +936,17 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
     // serializer would write a value as JSON, but a client Drizzle wraps has that serializer
     // replaced by one that passes the value through (drizzle-orm/postgres-js), and a
     // transaction shows neither. Bun.sql serializes the value itself.
+    // postgres.js 4 serializes the values of a statement with an untyped parameter (a number,
+    // null) by the types the server described for it, a value declared `unknown` too: JSON text
+    // went through the jsonb serializer and was stored as a JSON string from the statement's second
+    // run, and an array literal for a `jsonb[]` went through its element's on the first. So where
+    // the statement has inputs, every parameter goes to postgres.js as the text Postgres reads,
+    // declared `unknown`, and postgres.js never learns its types. postgres.js 3 sends such a value
+    // as it is either way. A query without inputs gets its values as they are, as on every driver.
     const bun = typeof c.commitDistributed === "function";
-    const asText = typeof c.typed === "function" && !bun;
-    const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i), query.dialect) ? c.typed(v, 705) : v));
-    return bun ? bunRows(await c.unsafe(text, mapped), query.columns, true) : await postgresJs(c, text, mapped, query.columns, query.row);
+    const mapped = bun ? bound.map((v, i) => (isJsonParam(v, i) ? { toJSON: () => jsonValue(v) } : v)) : query.inputs ? bound.map((v, i) => c.typed(postgresText(query, names[i]!, v), 705)) : bound;
+    if (!bun) return await postgresJs(c, text, mapped, query.columns, query.row);
+    return (await bunRaw(c, text, mapped, query.columns, query.row)) ?? bunRows(await c.unsafe(text, mapped), query.columns, true);
   }
   if (isNeonFunction(c)) return await neonCallable(c, text, json().map(asByteaHex), query.columns);
   return undefined;

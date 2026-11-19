@@ -7,13 +7,13 @@ description: A format for types, which says what values a column, a parameter or
 
 A format for types.
 
-Reylo writes the type of every parameter and column it [analyzes](/cli#reylo-analyze) in it. A type says which values a slot can hold, precisely enough to pick a representation in any language that holds them all.
+Reylo writes the type of every parameter and column it [analyzes](/inference#how-it-works) in it. A type says which values a slot can hold, precisely enough to pick a representation in any language that holds them all.
 
 ## Types
 
 Each type is an object with a `kind`.
 
-The other fields narrow the kind: a size, bounds, a pattern, a character set. A program reads `kind` and the fields it needs, and ignores the rest, since a field it doesn't know can only narrow. A few fields widen a type instead, each named under its kind below.
+Most other fields narrow the kind: a size, bounds, a pattern, a character set. A program reads `kind` and the fields it needs, and ignores the rest, since a field it doesn't know can only narrow the type or describe it. A few fields widen a type instead, each named under its kind below.
 
 ```jsonc
 // A 32-bit integer from 0 to 150, which Postgres calls int4
@@ -23,7 +23,7 @@ The other fields narrow the kind: a size, bounds, a pattern, a character set. A 
 - **Values inside a type are strings**, in the kind's canonical text, so a 64-bit bound or a date survives any encoding. Counts, such as `bits`, and code points are numbers.
 - **A flag appears only when it's true.** Its absence means false.
 - **A label is the database's name** for the type, where it has one. It never changes what the type means.
-- **A comment** is the documentation the source keeps on a named type.
+- **A comment** is the documentation the source keeps on a named type, and **a title** is a short name written for a reader, as JSON Schema's `title`, while the label is the name the database knows the type by. Neither says anything of the values.
 
 ### Slots
 
@@ -152,7 +152,7 @@ Its `precision` counts its digits, and its scale the digits after the point. A d
 
 Text.
 
-With no `encoding`, it's any valid Unicode text. An `encoding` names the character set its values are held in, from a [fixed list](#specification), and `ill_formed` lets them be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise, and a `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole.
+With no `encoding`, it's any valid Unicode text. An `encoding` names the character set its values are held in, from a [fixed list](#specification), and `ill_formed` lets them be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise, and a `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole. A `format` names what the text is, by JSON Schema's format names or a source's own, and a program that doesn't know one ignores it.
 
 <TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext"], "sqlite": ["text"]}}>
 
@@ -165,6 +165,9 @@ With no `encoding`, it's any valid Unicode text. An `encoding` names the charact
 
 // Text with an @ in it
 { "kind": "text", "pattern": "[^@]+@[^@]+" }
+
+// An email address, by JSON Schema's format name
+{ "kind": "text", "format": "email" }
 
 // Text Latin-1 holds, as MySQL's latin1 stores it
 { "kind": "text", "encoding": "windows-1252" }
@@ -383,7 +386,7 @@ Its `elements` are always there. Its `optional_elements` may be missing from the
 
 Named fields, in order.
 
-Each field is a slot with a `name`. It may be `optional`, its key left out, with a `default` the key takes when it is. A struct holds exactly its fields, unless `extra` lets it hold other keys too, each a value in its slot.
+Each field is a slot with a `name`. It may be `optional`, its key left out, with a `default` the key takes when it is. A struct holds exactly its fields, unless `extra` lets it hold other keys too, each a value in its slot. A field may have a `title`.
 
 <TypeDef holds={["{ \"x\": 1, \"y\": 2 }"]} types={{"postgres": ["a composite type", "point", "line", "box", "path", "circle"]}}>
 
@@ -412,6 +415,14 @@ Each field is a slot with a `name`. It may be `optional`, its key left out, with
   "fields": [{ "name": "id", "type": { "kind": "integer", "bits": 64 } }],
   "extra": { "type": { "kind": "text" } }
 }
+
+// A title on the struct and on a field, beside the database's name for the type
+{
+  "kind": "struct",
+  "title": "Mailing address",
+  "label": "public.address",
+  "fields": [{ "name": "zip", "title": "ZIP code", "type": { "kind": "text" } }]
+}
 ```
 
 </TypeDef>
@@ -420,13 +431,16 @@ Each field is a slot with a `name`. It may be `optional`, its key left out, with
 
 Keys to values, each key once.
 
-The key is a slot, as the value is. A map whose keys may repeat is an array of `{ key, value }` structs.
+The key is a slot, as the value is, and the `size` counts the keys. A map whose keys may repeat is an array of `{ key, value }` structs.
 
 <TypeDef holds={["{ \"color\": \"red\", \"size\": null }"]} types={{"postgres": ["hstore"]}}>
 
 ```jsonc
 // Text keys to text that may be null
 { "kind": "map", "key": { "type": { "kind": "text" } }, "value": { "type": { "kind": "text" }, "nullable": true } }
+
+// At most 64 keys
+{ "kind": "map", "key": { "type": { "kind": "text" } }, "value": { "type": { "kind": "integer", "bits": 32 } }, "size": { "max": 64 } }
 ```
 
 </TypeDef>

@@ -11,8 +11,11 @@ import { DialectSwitch } from './dialect-tabs';
  * changes: the database on the Query row's, the language (TypeScript or Rust) on the
  * Params and Returns band's. The page writes `<InferenceCard>` around a schema
  * block and a statement; lib/remark-mapper.ts fills it with a panel per dialect, the rows read off
- * the statement's captured module, which follow the page's dialect and language choices.
+ * the statement's captured module, which follow the page's dialect and language choices. Where the
+ * docs show one language (lib/languages.ts), its panels show alone, with no language switch.
  */
+
+const ONE_LANGUAGE = LANGUAGES.length === 1;
 
 /** The card. `layout` is `side` (the parameters and the result beside the query) or `rows` (under it). */
 export function InferenceCard({ layout = 'side', children }: { layout?: 'side' | 'rows'; children: ReactNode }) {
@@ -61,6 +64,7 @@ export function InferenceCardTypes({ children }: { children: ReactNode }) {
 
 /** The Params and Returns rows in each language, following the page's language choice, with the language switch on the band's first line (lib/remark-mapper.ts writes them). */
 export function InferenceLanguages({ children }: { children: ReactNode }) {
+  if (ONE_LANGUAGE) return <div className="reylo-inference-languages">{children}</div>;
   return (
     <div className="reylo-inference-languages">
       <div className="reylo-inference-card-switch">
@@ -75,11 +79,13 @@ export function InferenceLanguages({ children }: { children: ReactNode }) {
 
 /** One language's rows inside `<InferenceLanguages>`. */
 export function InferenceLanguage({ value, children }: { value: LanguageName; children: ReactNode }) {
+  if (ONE_LANGUAGE) return value === LANGUAGES[0] ? children : null;
   return <Variant value={value}>{children}</Variant>;
 }
 
 /** A block outside a card in each language, following the page's language choice, under a `<LanguageSwitch />`: no switch or band of its own. */
 export function LanguagePanels({ children }: { children: ReactNode }) {
+  if (ONE_LANGUAGE) return children;
   return (
     <VariantTabs group="language" values={LANGUAGES} follow>
       {children}
@@ -89,11 +95,13 @@ export function LanguagePanels({ children }: { children: ReactNode }) {
 
 /** One language's panel inside `<LanguagePanels>`. */
 export function LanguagePanel({ value, children }: { value: LanguageName; children: ReactNode }) {
+  if (ONE_LANGUAGE) return value === LANGUAGES[0] ? children : null;
   return <Variant value={value}>{children}</Variant>;
 }
 
 /** TypeScript | Rust over a block whose panels follow the page's language choice, as Inference's Primitives. */
 export function LanguageSwitch() {
+  if (ONE_LANGUAGE) return null;
   return (
     <div className="reylo-language-switch">
       <VariantSwitch group="language" values={LANGUAGES} label="Language" />

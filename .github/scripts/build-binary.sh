@@ -74,7 +74,7 @@ esac
 
 rustup target add "$target"
 engine/build.sh --prepare
-cargo build --release --locked -p reylo --target "$target"
+cargo build --release --locked -p reylo-cli --target "$target"
 
 exe=reylo
 case "$target" in *-windows-*) exe=reylo.exe ;; esac

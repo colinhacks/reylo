@@ -1,15 +1,28 @@
 [package]
-name = "reylo-sqlx"
-version = "0.0.0"
+name = "reylo"
+version.workspace = true
 edition = "2021"
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "SQL typed by Reylo's engine at compile time, run on sqlx: #[reylo::query(\"…\")] mod name {} on Postgres, MySQL and SQLite."
 
 [dependencies]
-reylo-macros = { path = "../reylo-macros" }
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "json"] }
+reylo-macros.workspace = true
+# sqlx, 0.9 or 0.8 by the feature of its version: the expansion names the one enabled as `reylo::sqlx`.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "json"], optional = true }
+# On 0.8, reylo turns on no feature of sqlx's that names its SQLite driver (json, chrono, time, uuid):
+# Cargo resolves the driver for such a feature even where it is never built, and its libsqlite3-sys
+# is older than the one the macro's SQLite client and the rest of this workspace take. A project on
+# sqlx 0.8 turns those on in its own sqlx, the same crate, as it does for its own code; json is one
+# of sqlx's default features.
+sqlx08 = { package = "sqlx", version = "0.8", default-features = false, features = ["runtime-tokio"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The rows a statement returns, read one at a time: `.run()` stops at a second row its
+# cardinality allows none of, and `.stream()` hands them on as they arrive.
+futures-core = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 # The calendar arithmetic of `Exact`, at the versions sqlx's own support for them takes.
 chrono = { version = "0.4", optional = true, default-features = false, features = ["serde"] }
 time = { version = "0.3", optional = true, features = ["serde"] }
@@ -18,17 +31,32 @@ time = { version = "0.3", optional = true, features = ["serde"] }
 uuid = { version = "1.12", optional = true, features = ["serde"] }
 rust_decimal = { version = "1.36", optional = true, default-features = false, features = ["serde"] }
 bigdecimal = { version = "0.4", optional = true, default-features = false, features = ["serde"] }
+# `reylo::migrate!()`: `reylo migrate deploy` and `reylo migrate status` run from the app, on its
+# pool, as the command line's own code without the clients, shadows and diff engine it carries.
+reylo-migrate = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The command line's deploy and status, which tests/migrate.rs holds the app's against.
+reylo-migrate = { workspace = true, features = ["cli"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [features]
-default = ["postgres"]
-# The databases the queries run on: each turns on sqlx's driver for it.
-postgres = ["sqlx/postgres"]
-sqlite = ["sqlx/sqlite"]
-mysql = ["sqlx/mysql"]
+default = ["sqlx_0_9", "postgres", "migrate"]
+# The sqlx the queries run on, one of the two: its 0.9 releases, or its 0.8 releases.
+sqlx_0_9 = ["dep:sqlx"]
+sqlx_0_8 = ["dep:sqlx08"]
+# `reylo::migrate!()`, which runs the project's migrations from the app.
+migrate = ["dep:reylo-migrate"]
+# The databases the queries run on: each turns on sqlx's driver for it, and the macro's engine and
+# client for it. SQLite is on sqlx 0.9 alone, since sqlx 0.8's SQLite links an older libsqlite3-sys
+# than the one the macro's own SQLite client takes, and Cargo builds one per project.
+postgres = ["sqlx?/postgres", "sqlx08?/postgres", "reylo-macros/postgres"]
+sqlite = ["sqlx?/sqlite", "reylo-macros/sqlite"]
+mysql = ["sqlx?/mysql", "sqlx08?/mysql", "reylo-macros/mysql"]
 # Rust types for Postgres's dates and times (chrono or time), uuids, and decimals (rust_decimal
 # or bigdecimal): each turns on sqlx's support for the type and tells the macro to write it.
-chrono = ["dep:chrono", "sqlx/chrono", "reylo-macros/chrono"]
-time = ["dep:time", "sqlx/time", "reylo-macros/time"]
-uuid = ["dep:uuid", "sqlx/uuid", "reylo-macros/uuid"]
-rust_decimal = ["dep:rust_decimal", "sqlx/rust_decimal", "reylo-macros/rust_decimal"]
-bigdecimal = ["dep:bigdecimal", "sqlx/bigdecimal", "reylo-macros/bigdecimal"]
+chrono = ["dep:chrono", "sqlx?/chrono", "reylo-macros/chrono"]
+time = ["dep:time", "sqlx?/time", "reylo-macros/time"]
+uuid = ["dep:uuid", "sqlx?/uuid", "reylo-macros/uuid"]
+rust_decimal = ["dep:rust_decimal", "sqlx?/rust_decimal", "sqlx08?/rust_decimal", "reylo-macros/rust_decimal"]
+bigdecimal = ["dep:bigdecimal", "sqlx?/bigdecimal", "sqlx08?/bigdecimal", "reylo-macros/bigdecimal"]

@@ -22,7 +22,8 @@ const [packsArg, platform] = process.argv.slice(2);
 if (!packsArg || !platform) throw new Error("usage: node .github/scripts/install-check.ts <packs> <platform>");
 const packs = resolve(packsArg);
 const VERDACCIO = "6.11.1";
-const PORT = 48731;
+// Below every platform's ephemeral range, which an outgoing connection can take the port from.
+const PORT = 28731;
 const registry = `http://127.0.0.1:${PORT}/`;
 const windows = process.platform === "win32";
 

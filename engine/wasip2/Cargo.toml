@@ -21,21 +21,20 @@ description = "Reylo's engine as a WebAssembly component per database: the nativ
 crate-type = ["cdylib"]
 
 [features]
-postgres = ["reylo-engine-native/postgres"]
-mysql = ["reylo-engine-native/mysql"]
-sqlite = ["reylo-engine-native/sqlite"]
+postgres = ["reylo-engine/postgres"]
+mysql = ["reylo-engine/mysql"]
+sqlite = ["reylo-engine/sqlite"]
 
 [build-dependencies]
 reylo-engine-build = { path = "../build-support" }
 
 [dependencies]
-reylo-engine-native = { path = "../native", default-features = false }
+reylo-engine = { path = "../native", default-features = false }
 tokio = { version = "1.51", features = ["rt", "time", "net"] }
 serde_json = "1"
 wit-bindgen = "0.63"
 
 [patch.crates-io]
-pg_query = { path = "../postgres/.patched/pg_query" }
 tokio-postgres = { path = ".patched/tokio-postgres" }
 
 [profile.release]

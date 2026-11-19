@@ -589,7 +589,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                 // statement that selects it too.
                 let probe = if analysis["ordered"].as_bool() == Some(true) {
                     let names: Vec<String> = analysis["columns"].as_array().into_iter().flatten().map(|c| c["name"].as_str().unwrap_or("").to_string()).collect();
-                    let probe = reylo_engine::postgres::cardinality::sort_probe(&rewritten, &names);
+                    let probe = reylo_engine::engines::postgres::cardinality::sort_probe(&rewritten, &names);
                     if probe.is_none() {
                         problems.push(format!("{file}: ordered, and the oracle cannot read its ORDER BY's sort keys to check it"));
                     }

@@ -152,11 +152,13 @@ if (pg && certs) {
   const client = (dir: string) => `&sslcert=${encodeURIComponent(join(dir, "client.crt"))}&sslkey=${encodeURIComponent(join(dir, "client.key"))}`;
   check("Postgres, TLS files on another drive", `${pg}?sslmode=verify-full&sslrootcert=${encodeURIComponent(join(elsewhere, "root.crt"))}${client(elsewhere)}`, { tsc: false });
   check("Postgres, relative TLS files", `${pg}?sslmode=verify-ca&sslrootcert=certs/root.crt&sslcert=certs/client.crt&sslkey=certs/client.key`, { tsc: false });
+  // Direct TLS, which the server takes only with the ALPN protocol `postgresql` (Postgres 17 and later).
+  check("Postgres, direct TLS negotiation", `${pg}?sslmode=verify-full&sslnegotiation=direct&sslrootcert=${encodeURIComponent(join(elsewhere, "root.crt"))}${client(elsewhere)}`, { tsc: false });
   check("Postgres, PGSSL* in the environment", pg, { tsc: false, env: { PGSSLMODE: "verify-ca", PGSSLROOTCERT: join(elsewhere, "root.crt"), PGSSLCERT: "certs\\client.crt", PGSSLKEY: join(project, "certs", "client.key") } });
   check("Postgres, NODE_EXTRA_CA_CERTS", `${pg}?sslrootcert=system${client(join(project, "certs"))}`, { tsc: false, env: { NODE_EXTRA_CA_CERTS: join(elsewhere, "root.crt") } });
   // MySQL over TCP and over a named pipe, as mysql2's socketPath names one on Windows; Postgres's
   // socket directory, which Node cannot open on Windows, is refused with what to write instead.
-  check("MySQL over TCP", "mysql://root@127.0.0.1:53306/reylo_windows", { tsc: false });
+  check("MySQL over TCP", "mysql://root@127.0.0.1:23306/reylo_windows", { tsc: false });
   // The engine connects over TCP alone, and the loader bridges a named pipe to it (src/host-url.ts).
   check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`)}`, { tsc: false, analyze: false });
   check("Postgres, a socket directory", "postgres://postgres@/reylo_windows?host=/tmp", { tsc: false, refused: /names the Unix socket \/tmp\/\.s\.PGSQL\.5432, which Node cannot open on Windows/ });

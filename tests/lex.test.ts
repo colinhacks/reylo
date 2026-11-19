@@ -54,6 +54,16 @@ test("MySQL text is read as a session in the default sql_mode reads it", () => {
   assert.deepEqual(names("select `a\\`, `:b`, :x", "mysql"), ["x"]);
 });
 
+test("MySQL text is read as a session in another sql_mode reads it, given that mode", () => {
+  const params = (sql: string, backslashEscapes: boolean, ansiQuotes: boolean) => lexPlaceholders(sql, "mysql", { backslashEscapes, ansiQuotes }).params;
+  // Under NO_BACKSLASH_ESCAPES a backslash is a character, so the literal ends at its next quote.
+  assert.deepEqual(params("select 'C:\\', :x, \"a\\\", :y", false, false), ["x", "y"]);
+  assert.deepEqual(params("select 'it''s :not', :x", false, false), ["x"]);
+  // Under ANSI_QUOTES a double-quoted word is a name, which escapes nothing.
+  assert.deepEqual(params("select \"a\\\", :x", true, true), ["x"]);
+  assert.deepEqual(params("select 'it\\'s :not', \":no\", :x", true, true), ["x"]);
+});
+
 test("the runtime's lexer agrees with the engine's", async () => {
   // Every database's engine lexes every dialect: the lexer is the core's.
   const engine = await load("sqlite");

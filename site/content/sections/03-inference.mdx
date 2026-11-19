@@ -2,34 +2,52 @@
 title: "Inference"
 ---
 
+Reylo lets you use the full power of SQL, on Postgres, MySQL and SQLite.
 
-Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
+## How it works [#how-it-works]
 
-To type a query, Reylo has your live database prepare it, without running it, and reads the catalog. From the answer, it learns:
+Your database does the typing.
 
-- **Parameter types** — from where each parameter is used, or its cast
-- **Column types** — from the table, or the expression that computes the column
-- **Nullability** — from `NOT NULL` and outer joins
-- **Cardinality** — from keys, aggregates, `limit 1` and `returning`
-- **Column comments** — on Postgres and MySQL, shown when you hover a field that reads the column
+Reylo has it prepare each statement without running it, and reads its catalog. Run `reylo analyze` on a file to see what it learns:
 
-For example, `id` is the primary key, so this query returns at most one row:
+<Analyzed file="queries/is_verified.sql">
 
-<InferenceCard>
-
-```sql file="get_user.sql" dialect="all"
-select id, name, email from users where id = :id::int
+```sql schema
+create table users (
+  id int8 primary key,
+  verified boolean not null
+);
 ```
 
-</InferenceCard>
+```sql
+-- Whether a user has verified their email.
+select verified from users where id = :id
+```
 
-Each card shows the types in TypeScript, in Rust, or as the [type descriptor](/typedefs) the [CLI](/cli) prints: pick one at the top of any card.
+</Analyzed>
 
-Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next check sees the new schema: a dropped column fails in the statement that names it, and in the code that reads it.
+| Field | What it holds |
+| --- | --- |
+| `file` | The file `reylo analyze` read the statement from. Only the CLI adds it: the format has no such field, and a statement given with `--sql` has none |
+| `$schema` | The format's version, as the URL of its JSON Schema |
+| `dialect` | The database, and its server's version |
+| `sql` | The statement as the database runs it, with the database's own placeholders |
+| `kind` | What the statement does: `select`, `insert`, `update`, `delete`, `merge` or `other` |
+| `comment` | The comment before the statement |
+| `params` | Each parameter's name and [type](/typedefs) |
+| `result` | Each column's name and type, and the cardinality: how many rows the statement returns |
+| `capabilities` | The tables the statement reads or writes |
+| `diagnostics` | What the database reports where it refuses the statement |
+
+Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so the next check after a migration sees the new schema.
+
+<Rust>
+Each card shows the types in TypeScript or in Rust: pick one at the top of any card.
+</Rust>
 
 ## Primitives [#primitives]
 
-Each SQL type has one TypeScript type, the same on every driver, and one Rust type.
+Each SQL type has one TypeScript type, the same on every driver<Rust>, and one Rust type</Rust>.
 
 In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
 
@@ -760,6 +778,26 @@ values (:name, :email::text)
 on conflict (email) do update
   set name = excluded.name
 returning id, name
+```
+
+</InferenceCard>
+
+A column the write sets to a value that is never null returns that value, so it isn't null either:
+
+<InferenceCard>
+
+```sql file="returned_values.sql" dialect="postgres"
+update users
+set email = :email::text
+where id = :id
+returning email
+```
+
+```sql file="returned_values.sql" dialect="sqlite"
+update users
+set email = :email::text
+where id = :id
+returning email
 ```
 
 </InferenceCard>

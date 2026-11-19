@@ -1,17 +1,17 @@
 ---
 title: MySQL
-description: How Reylo types SQL queries on MySQL. Each column's type in TypeScript and Rust, null values, row counts, parameters, drivers and limits.
+description: How Reylo types SQL queries on MySQL. Each column's type in TypeScript<Rust> and Rust</Rust>, null values, row counts, parameters, drivers and limits.
 ---
 
 <p className="dk-subheader">How Reylo types queries on MySQL</p>
 
-[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript and Rust. This page covers how it types and runs queries on MySQL: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>. This page covers how it types and runs queries on MySQL: column types, null values, row counts, parameters and drivers.
 
 | | |
 | --- | --- |
 | MySQL versions | 8.0.22 or later; tested on 8.0, 8.4, 9.7 and 26.7 |
 | Connection | A `mysql://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url) |
-| Drivers | In TypeScript, `mysql2`, `mariadb`, PlanetScale and `Bun.sql`, Drizzle over `mysql2` or PlanetScale, and Knex over `mysql2` or `mariadb` ([Drivers](#drivers)); in Rust, sqlx |
+| Drivers | <Rust>In TypeScript, </Rust>`mysql2`, `mariadb`, PlanetScale and `Bun.sql`, Drizzle over `mysql2` or PlanetScale, and Knex over `mysql2` or `mariadb` ([Drivers](#drivers))<Rust>; in Rust, sqlx</Rust> |
 | Type checking | Reylo's engine connects to MySQL itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -64,7 +64,7 @@ Reylo sends the query to the live database [prepared](https://dev.mysql.com/doc/
 
 ## Data types
 
-Each MySQL type has one TypeScript type and one Rust type.
+Each MySQL type has one TypeScript type<Rust> and one Rust type</Rust>.
 
 <LanguageSwitch />
 
@@ -108,7 +108,7 @@ In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)):
 | `DECIMAL`, `SUM(…)`, `AVG(…)`, `/` | `rust_decimal::Decimal` or `bigdecimal::BigDecimal` |
 | `FLOAT`, `DOUBLE` | `f32`, `f64` |
 | `CHAR`, `VARCHAR`, `TEXT` | `String` |
-| `ENUM` | `String` |
+| `ENUM` | an enum the module holds |
 | `SET` | `String`, its labels joined by commas |
 | `DATE` | `chrono::NaiveDate`, or `time::Date` |
 | `DATETIME`, `TIMESTAMP` | `chrono::NaiveDateTime` or `time::PrimitiveDateTime`; `chrono::DateTime<Utc>` or `time::OffsetDateTime` |
@@ -372,34 +372,6 @@ A `VECTOR`, new in MySQL 9, comes back as a `number[]` of 32-bit floats. A vecto
 
 </Pairs>
 
-### Type descriptors
-
-How the engine writes each type.
-
-The engine gives every column its type in [Reylo Type Defs](/typedefs), as [`reylo analyze`](/cli#reylo-analyze) prints it. A column of each MySQL type:
-
-<Analyzed file="types.sql" dialect="mysql" format="types">
-
-```sql schema
-create table types (
-  `tinyint` tinyint, `boolean` boolean, `smallint` smallint, `mediumint` mediumint, `int` int,
-  `int unsigned` int unsigned, `bigint` bigint, `bigint unsigned` bigint unsigned, `year` year,
-  `float` float, `double` double, `decimal(10,2)` decimal(10,2),
-  `char(8)` char(8), `varchar(255)` varchar(255), `varchar(255) latin1` varchar(255) character set latin1,
-  `varchar(255) utf8mb3` varchar(255) character set utf8mb3, `text` text, `longtext` longtext,
-  `enum('a','b')` enum('a','b'), `set('a','b')` set('a','b'),
-  `binary(16)` binary(16), `blob` blob, `bit(7)` bit(7),
-  `date` date, `time(3)` time(3), `datetime(6)` datetime(6), `timestamp(3)` timestamp(3) null,
-  `json` json, `point` point
-)
-```
-
-```sql
-select * from types
-```
-
-</Analyzed>
-
 ## Nullability
 
 Each column can be null unless Reylo can tell it never is, from `NOT NULL`, joins, `where` tests and expressions ([Inference](/inference#left-joins)). On MySQL:
@@ -611,7 +583,10 @@ const callbackPool = mysqlCallbacks.createPool(process.env.DATABASE_URL);
 await getUser.run(callbackPool, { id: 1 });
 ```
 
-Reylo runs each query through the `execute()` method of `mysql2`, which prepares the statement first. Cloudflare Hyperdrive refuses prepared statements, so through Hyperdrive use [`mariadb`](#mariadb).
+Reylo runs each query through the `execute()` method of `mysql2`, which prepares the statement first. Where the server refuses prepared statements, as Cloudflare Hyperdrive does, Reylo writes the values into the statement itself and runs it through `query()`, which prepares nothing:
+
+- A `FLOAT` column comes back with the 6 significant digits MySQL sends as text, so `1.100000023841858` reads as `1.1`.
+- An app's `queryFormat` would rewrite each statement, so it is refused there, and so is a value holding a character outside ASCII on a connection whose charset is not UTF-8, since another charset can write one as a quote or a backslash.
 
 ### `mariadb`
 
@@ -692,7 +667,7 @@ await getUser.run(reserved, { id: 1 });
 reserved.release();
 ```
 
-Bun loses the microseconds of a `DATETIME`, a fraction that is all zeros, and a `TIME`'s fraction in a query with parameters, before Reylo sees them. An expression that could be a `BIGINT` or a `DECIMAL` (`round(:x)`) comes back as a `bigint` when it has no decimal point, since Bun returns both as text. Bun 1.4 can't read a `VECTOR` at all (`ERR_MYSQL_UNSUPPORTED_COLUMN_TYPE`), so select `vector_to_string(v)` instead.
+Bun loses the microseconds of a `DATETIME` before Reylo sees them. Before Bun 1.4.4 it also loses a fraction that is all zeros and a `TIME`'s fraction in a query with parameters, and an expression that could be a `BIGINT` or a `DECIMAL` (`round(:x)`) comes back as a `bigint` when it has no decimal point, since Bun returns both as text and doesn't say which column type it read. Bun 1.4 can't read a `VECTOR` at all (`ERR_MYSQL_UNSUPPORTED_COLUMN_TYPE`), so select `vector_to_string(v)` instead.
 
 ### Drizzle
 

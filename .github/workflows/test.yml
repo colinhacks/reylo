@@ -63,7 +63,7 @@ jobs:
           # Every database, or the ones the change reaches.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-engine-native -p reylo-migrate -p reylo -p reylo-oracle -p reylo-codegen -p reylo-sqlx'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-build -p reylo --features reylo/mysql,reylo/sqlite'
             echo 'shards=["postgres","sqlite","mysql-1","mysql-2","mysql-slow"]'
             echo playground=true
           }
@@ -81,7 +81,7 @@ jobs:
           # Core, the crate the oracle answers through, the oracle's own code, the build, the code lists the
           # oracle reads, the format's schema and examples the engine's tests and the oracle read, the validators'
           # measurements the engine's tests read, and CI itself reach every database.
-          if grep -qE '^(\.cargo/|engine/(core|build-support|facade|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+          if grep -qE '^(\.cargo/|engine/(core|build-support|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -91,7 +91,9 @@ jobs:
               engine/postgres/*) postgres=true ;;
               engine/mysql/* | oracle/cases/mysql_*) mysql=true ;;
               engine/sqlite/* | oracle/cases/sqlite_*) sqlite=true ;;
-              engine/cli/* | engine/migrate/*) binary=true ;;
+              engine/cli/*) binary=true ;;
+              # The migrations, which the Rust crate's reylo::migrate!() runs from an app too.
+              engine/migrate/*) binary=true rust=true ;;
               # The Rust crate, whose generator the binary's reylo generate runs.
               rust/*) rust=true binary=true ;;
               oracle/cases/*) postgres=true ;;
@@ -102,8 +104,9 @@ jobs:
           $sqlite && { tests="$tests -p reylo-engine-sqlite"; shards="$shards,\"sqlite\""; }
           $mysql && { tests="$tests -p reylo-engine-mysql"; shards="$shards,\"mysql-1\",\"mysql-2\",\"mysql-slow\""; }
           # The binary's own crates, the migrations and the command line, which link every database.
-          $binary && tests="$tests -p reylo-migrate -p reylo"
-          $rust && tests="$tests -p reylo-codegen -p reylo-sqlx"
+          $binary && tests="$tests -p reylo-migrate -p reylo-cli"
+          # The Rust crate on each of its databases, whose own tests (tests/migrate.rs) run on all three.
+          $rust && tests="$tests -p reylo-build -p reylo --features reylo/mysql,reylo/sqlite"
           if [ -z "$tests" ]; then
             { echo engine=false; echo tests=; echo 'shards=[]'; } >> "$GITHUB_OUTPUT"
           else
@@ -138,7 +141,7 @@ jobs:
         with:
           key: binary
       - run: engine/build.sh --prepare
-      - run: cargo build --release --locked -p reylo
+      - run: cargo build --release --locked -p reylo-cli
       - run: target/release/reylo --version
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -156,14 +159,14 @@ jobs:
     needs: binary
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Throwaway servers for the tests that run statements, on ports clear of the defaults: the loader's tests skip each database whose URL is unset, and this job fails on any skip. Postgres 18 is pgvector's image of it, Postgres 18 with the extension installed, which a spec example's statement reads (spec/examples.ts).
+    # Throwaway servers for the tests that run statements, on ports clear of the defaults and below Linux's ephemeral range (32768 to 60999), where a connection made before a server starts can take its port: the loader's tests skip each database whose URL is unset, and this job fails on any skip. Postgres 18 is pgvector's image of it, Postgres 18 with the extension installed, which a spec example's statement reads (spec/examples.ts).
     services:
       postgres:
         image: pgvector/pgvector:pg18
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 55432:5432
+          - 25432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 2s
@@ -174,19 +177,38 @@ jobs:
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
         ports:
-          - 53306:3306
+          - 23306:3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 2s
           --health-timeout 5s
           --health-retries 60
     env:
-      REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
-      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
+      REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
+      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
+      REYLO_TEST_PG_TLS: postgres://postgres:reylo@127.0.0.1:25434/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The servers' ports stay out of the runner's ephemeral range, or a connection the runner makes can hold one when its server binds it.
+      - name: Check the servers' ports are below the ephemeral range
+        run: |
+          read -r low high < /proc/sys/net/ipv4/ip_local_port_range
+          echo "ephemeral range: $low to $high"
+          for port in 25432 23306 25434; do
+            [ "$port" -lt "$low" ] || { echo "::error::port $port is inside the ephemeral range $low to $high"; exit 1; }
+          done
+      # A Postgres that takes TLS and asks for a password, as a hosted one does, for the test of channel
+      # binding, which needs both. A service cannot take the server's flags, so it is started here; the
+      # image's own snake-oil certificate serves, since the test checks no certificate.
+      - name: Start a Postgres over TLS
+        run: |
+          docker run -d --name reylo-pg-tls -p 25434:5432 -e POSTGRES_PASSWORD=reylo postgres:18 \
+            -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+          for _ in $(seq 60); do docker exec reylo-pg-tls pg_isready -h 127.0.0.1 -U postgres > /dev/null && exit 0; sleep 1; done
+          docker logs reylo-pg-tls
+          exit 1
       - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
         with:
           nub-version: "0.9.6"
@@ -240,14 +262,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # The migrations' tests (engine/migrate/tests) build schemas on these and skip each database whose URL is
-    # unset.
+    # unset; their Turso scenarios start a libSQL server each, the sqld that REYLO_TEST_SQLD names.
     services:
       postgres:
         image: postgres:18
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 55432:5432
+          - 25432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 2s
@@ -258,7 +280,7 @@ jobs:
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
         ports:
-          - 53306:3306
+          - 23306:3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 2s
@@ -268,20 +290,22 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
-      REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
-      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
+      REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
+      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # The patched pg_query copy the workspace's [patch] points at and the SQLite amalgamation: cargo resolves nothing without them.
+      # The patched parser crate (reylo-pg-query) and the SQLite amalgamation: cargo resolves nothing without them.
       - run: engine/build.sh --prepare
       - name: Build the workspace, with no warning
         run: |
           set -o pipefail
           cargo build --workspace --all-targets 2>&1 | tee "$RUNNER_TEMP/build.log"
+          # The migrations as an app's reylo::migrate!() builds them, without the command line's clients.
+          cargo check -p reylo-migrate --no-default-features 2>&1 | tee -a "$RUNNER_TEMP/build.log"
           ! grep -E '^warning' "$RUNNER_TEMP/build.log"
       # The migrations' init writes its baseline with pg_dump, which refuses a server newer than itself, and
       # the runner's own is older than the service's Postgres 18. Its directory goes first on the PATH, since
@@ -292,6 +316,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-client-18
           /usr/lib/postgresql/18/bin/pg_dump --version
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+      - name: Install sqld, libSQL's server
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/sqld.tar.xz" https://github.com/tursodatabase/libsql/releases/download/libsql-server-v0.24.32/libsql-server-x86_64-unknown-linux-gnu.tar.xz
+          echo "71720fc8648c19efef416efebd47145ef59b62e198770533530a858e1336879f  $RUNNER_TEMP/sqld.tar.xz" | sha256sum -c
+          tar -xJf "$RUNNER_TEMP/sqld.tar.xz" -C "$RUNNER_TEMP"
+          sqld=$(find "$RUNNER_TEMP" -name sqld -type f | head -1)
+          "$sqld" --version
+          echo "REYLO_TEST_SQLD=$sqld" >> "$GITHUB_ENV"
       - run: cargo test ${{ needs.scope.outputs.tests }}
       # Each demo's statements typed by the macro as it compiles, and the modules reylo generate and
       # reylo-build write, built and run, on these servers: the engine's every change reaches them.
@@ -299,6 +331,56 @@ jobs:
         env:
           MYSQL_CONTAINER: ${{ job.services.mysql.id }}
         run: .github/scripts/rust-demos.sh
+      - if: always()
+        run: sccache --show-stats
+
+  # Reylo's Rust crates as crates.io would serve them: each packed and built from its own tarball, then a
+  # new project outside the workspace that depends on them by version, built and run on Postgres.
+  package:
+    needs: scope
+    if: ${{ !github.event.repository.private && needs.scope.outputs.engine == 'true' }}
+    name: Build a project from the packed Rust crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 25432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 23306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 60
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
+      REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - run: engine/build.sh --prepare
+      - name: Build projects from the packed crates, on sqlx 0.9 and 0.8
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: .github/scripts/rust-package-check.sh
       - if: always()
         run: sccache --show-stats
 
@@ -348,7 +430,7 @@ jobs:
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
         ports:
-          - 53306:3306
+          - 23306:3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 2s
@@ -427,7 +509,7 @@ jobs:
         run: |
           sudo cp -R ~/json-schema-validators/. /
           "$PG_BIN/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=trust --no-sync -E UTF8 --locale=C
-          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 55432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
+          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 25432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
       - run: engine/build.sh --prepare
       - name: Run the oracle's cases of the shard
         env:
@@ -451,9 +533,9 @@ jobs:
             esac
           done
           case "$SHARD" in
-            postgres) servers="--url postgres://postgres@localhost:55432/postgres" ;;
+            postgres) servers="--url postgres://postgres@localhost:25432/postgres" ;;
             sqlite) servers='' ;;
-            *) servers="--mysql-url mysql://root@127.0.0.1:53306" ;;
+            *) servers="--mysql-url mysql://root@127.0.0.1:23306" ;;
           esac
           # shellcheck disable=SC2086
           cargo run -q -p reylo-oracle -- $servers --strict-coverage $cases

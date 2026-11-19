@@ -2,6 +2,8 @@
 //! writes it, with the type the page names for each value written out, run against the schema of
 //! the docs' examples.
 
+use futures_util::TryStreamExt;
+use reylo::Enum;
 use sqlx::PgPool;
 
 // The intro (index.mdx).
@@ -22,7 +24,8 @@ pub mod get_user {}
 #[reylo::query("select count(*) as n from users")]
 pub mod count_users {}
 
-#[reylo::query("select id, title from posts where user_id = :user_id::int")]
+// .stream().
+#[reylo::query("select id, title from posts where user_id = :user_id::int order by id")]
 pub mod posts_by_user {}
 
 #[reylo::query("update users set name = :name where id = :id::int")]
@@ -34,6 +37,34 @@ pub mod users_by_role {}
 
 #[reylo::query("select id, title from posts where user_id = coalesce(:user_id::nullable(int), user_id) order by id")]
 pub mod posts_of {}
+
+// Enums.
+#[reylo::query("select id, status from posts order by id")]
+pub mod post_statuses {}
+
+#[reylo::query("select id, role from users where id = :id::int")]
+pub mod get_role {}
+
+// Your own types.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Role { Admin, Member }
+
+#[reylo::query("select id, name, role from users where id = :id::int")]
+pub mod get_member {
+    pub struct Row {
+        pub role: crate::Role,
+    }
+}
+
+#[reylo::reflect("public.user_role")]
+pub enum UserRole {} // filled in: Admin, Member
+
+pub struct Member { pub id: i32, pub name: String, pub role: UserRole }
+
+#[reylo::query("select id, name, role from users where id = :id::int")]
+pub mod find_member {
+    pub use crate::Member as Row;
+}
 
 // Your own methods.
 #[reylo::query("select id, name, email from users where id = :id::int")]
@@ -88,6 +119,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ada_s = posts_of::Query { user_id: Some(1) }.run(&pool).await?;
     println!("params      {admins:?} {} {}", everyone.len(), ada_s.len());
 
+    let mut posts = posts_by_user::Query { user_id: 1 }.stream(&pool);
+    let mut titles = Vec::new();
+    while let Some(post) = posts.try_next().await? {
+        titles.push(post.title);
+    }
+    println!("stream      {titles:?}");
+
+    let label: &str = users_by_role::UserRole::Admin.label();
+    let rows = post_statuses::Query.run(&pool).await?;
+    let status: post_statuses::Status = rows[0].status;
+    let ada = get_role::Query { id: 1 }.run(&pool).await?.expect("ada");
+    let admins = users_by_role::Query { role: ada.role.cast() }.run(&pool).await?;
+    println!("enums       {label} {status:?} {admins:?}");
+
+    let member = get_member::Query { id: 2 }.run(&pool).await?.expect("bob");
+    let role: Role = member.role;
+    let found = find_member::Query { id: 1 }.run(&pool).await?.expect("ada");
+    let (_, _, whole): (i32, String, UserRole) = (found.id, found.name, found.role);
+    assert_eq!((role, whole.label()), (Role::Member, "admin"));
+    println!("own types   {role:?} {}", whole.label());
+
     let contact = get_contact::Query { id: 2 }.run(&pool).await?.expect("bob");
     println!("methods     {}", contact.label());
 
@@ -99,5 +151,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rows = published::Query.run(&pool).await?;
     let _: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> = rows[0].published_at;
     println!("dates       {rows:?}");
+
+    // Migrations (rust.mdx), on a database of their own, whose `reylo/migrations` are the demo's.
+    let pool = PgPool::connect(&std::env::var("MIGRATE_URL")?).await?;
+    // ran: Vec<String>, the names of the migrations it ran
+    let ran = reylo::migrate!().run(&pool).await?;
+    let _: &Vec<String> = &ran;
+    let status = reylo::migrate!().status(&pool).await?;
+    if !status.is_current() {
+        eprintln!("{status}");
+    }
+    assert!(status.is_current() && ran == ["20260101000000_notes.sql"]);
+    println!("migrations  {ran:?}");
     Ok(())
 }

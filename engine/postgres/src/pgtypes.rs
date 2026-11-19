@@ -33,6 +33,7 @@ pub mod oid {
     pub const NUMERIC: u32 = 1700;
     pub const UNKNOWN: u32 = 705;
     pub const JSONB: u32 = 3802;
+    pub const JSONB_ARRAY: u32 = 3807;
     pub const RECORD: u32 = 2249;
     pub const RECORD_ARRAY: u32 = 2287;
 }
@@ -892,7 +893,7 @@ fn base_type(t: &PgType) -> Type {
         (true, "polygon") => points(1),
         (true, "circle") => Type::structure(vec![Field::new("center", point(), false), Field::new("radius", float8(), false)]),
         // An extension's types, in whatever schema it was created in.
-        (_, "hstore") => Type::new(Kind::Map(MapType { key: Box::new(Slot::non_null(text())), value: Box::new(Slot::nullable(text())) })),
+        (_, "hstore") => Type::new(Kind::Map(MapType { key: Box::new(Slot::non_null(text())), value: Box::new(Slot::nullable(text())), size: None })),
         (_, "vector" | "sparsevec") => vector(8, 23),
         (_, "halfvec") => vector(5, 10),
         (_, "citext") => text(),

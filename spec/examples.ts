@@ -28,7 +28,7 @@ export const first_example: Example = {
   setup: "create table users (id int8 primary key, email varchar(255) not null, bio text); comment on column users.bio is 'Shown on the profile page'",
   statement: "-- One user, by id.\nselect id, email, bio from users where id = :id",
   descriptor: {
-    $schema: "https://reylo.dev/typedefs/0.1.0.json",
+    $schema: "https://reylo.dev/typedefs/0.1.1.json",
     dialect: { name: "postgres", version: "18.1" },
     sql: "-- One user, by id.\nselect id, email, bio from users where id = $1",
     kind: "select",

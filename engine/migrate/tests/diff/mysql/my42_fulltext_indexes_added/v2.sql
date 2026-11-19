@@ -1,0 +1,1 @@
+create table posts (id int primary key, title text not null, body text not null, note varchar(10), a text, b text, c text, fulltext key title_ft (title), fulltext key body_ft (body), key note_idx (note), fulltext key a_ft (a), fulltext key b_ft (b), key c_prefix (c(10)));

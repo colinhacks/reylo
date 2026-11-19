@@ -1,26 +1,29 @@
 # sqlparser 0.63.0 (apache/datafusion-sqlparser-rs) as crates.io published it, without its
-# development and optional dependencies: the MySQL engine's copy (README.md).
+# development and optional dependencies: the MySQL engine's copy (README.md), published under a name
+# of its own, `reylo-sqlparser`, so that the engine builds from crates.io. Its library is still
+# `sqlparser`.
 
 [package]
 edition = "2021"
-name = "sqlparser"
+name = "reylo-sqlparser"
 version = "0.63.0"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
-build = false
+# The hash of this copy's sources, which the MySQL engine's fingerprint combines with its own.
+build = "build.rs"
 include = [
     "src/**/*.rs",
+    "build.rs",
     "Cargo.toml",
     "LICENSE.TXT",
+    "README.md",
 ]
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Extensible SQL Lexer and Parser with support for ANSI SQL:2011"
+description = "The MySQL analysis engine's copy of sqlparser 0.63.0, cut to queries and DML and reading MySQL as MySQL does: a crate of Reylo's, not the Apache DataFusion project's."
 homepage = "https://github.com/apache/datafusion-sqlparser-rs"
-documentation = "https://docs.rs/sqlparser/"
-publish = false
 keywords = [
     "ansi",
     "sql",
@@ -28,7 +31,7 @@ keywords = [
     "parser",
 ]
 license = "Apache-2.0"
-repository = "https://github.com/apache/datafusion-sqlparser-rs"
+repository = "https://github.com/reylosql/reylo"
 
 [features]
 # Upstream's features, kept as names so the `cfg`s in the sources stay known. The engine builds
@@ -51,6 +54,9 @@ doctest = false
 
 [dependencies.log]
 version = "0.4"
+
+[build-dependencies]
+reylo-engine-build.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

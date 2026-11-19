@@ -26,11 +26,24 @@ mod get_profile {}
 #[reylo::query("select active, status, joined, born, span, balance, since, flags, avatar from users where id = 1")]
 mod user_details {}
 
+/// The crate's enum for an ENUM column: MySQL has no enum types, so the database says it is a column.
+#[reylo::reflect("users.status")]
+#[derive(Debug, PartialEq)]
+enum AccountStatus {}
+
+/// An ENUM parameter: the enum of its values.
+#[reylo::query("select name from users where status = :status order by id")]
+mod users_by_status {}
+
 #[reylo::query("insert into posts (author_id, title) values (:author, :title)")]
 mod add_post {}
 
 #[reylo::query("update users set nickname = :nickname where id = :id")]
 mod set_nickname {}
+
+/// A JSON column a CHECK holds to a JSON Schema: a struct of what the schema admits.
+#[reylo::query("select prefs from settings where user_id = :id")]
+mod get_prefs {}
 
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
@@ -60,17 +73,29 @@ async fn main() -> Result<(), sqlx::Error> {
     println!("6. json         {profile:?} ({id}, {name})");
 
     let ada = user_details::Query.run(&pool).await?.expect("ada");
-    let (active, status, born, since, flags): (bool, &String, Option<reylo::sqlx::types::chrono::NaiveDate>, Option<u16>, Option<u64>) = (ada.active, &ada.status, ada.born, ada.since, ada.flags);
+    let (active, status, born, since, flags): (bool, user_details::Status, Option<reylo::sqlx::types::chrono::NaiveDate>, Option<u16>, Option<u64>) = (ada.active, ada.status, ada.born, ada.since, ada.flags);
     let joined: reylo::sqlx::types::chrono::DateTime<reylo::sqlx::types::chrono::Utc> = ada.joined;
     let span: Option<reylo::sqlx::mysql::types::MySqlTime> = ada.span;
     let balance: reylo::sqlx::types::Decimal = ada.balance;
-    println!("7. types        {active} {status} {joined} {born:?} {span:?} {balance} {since:?} {flags:?} {:?}", ada.avatar);
+    println!("7. types        {active} {status:?} {joined} {born:?} {span:?} {balance} {since:?} {flags:?} {:?}", ada.avatar);
+
+    // One query's ENUM value as another's: the same values, so `cast` compiles.
+    let new = users_by_status::Query { status: reylo::Enum::cast(status) }.run(&pool).await?;
+    assert_eq!(status, user_details::Status::New);
+    let reflected: AccountStatus = reylo::Enum::cast(status);
+    assert_eq!(reflected, AccountStatus::New);
+    println!("8. :status      {new:?}");
 
     // Writes, in a transaction that is rolled back: each returns how many rows it wrote.
     let mut tx = pool.begin().await?;
     let added: u64 = add_post::Query { author: 2, title: "first" }.run(&mut *tx).await?;
     let renamed: u64 = set_nickname::Query { nickname: Some("b"), id: 2 }.run(&mut *tx).await?;
     tx.rollback().await?;
-    println!("8. writes       {added} added, {renamed} renamed");
+    println!("9. writes       {added} added, {renamed} renamed");
+
+    let prefs: reylo::sqlx::types::Json<get_prefs::Prefs> = get_prefs::Query { id: 2 }.run(&pool).await?.expect("bob").prefs;
+    let (theme, font_size, tabs): (&String, i64, &Option<Vec<String>>) = (&prefs.theme, prefs.font_size, &prefs.tabs);
+    assert_eq!((theme.as_str(), font_size, tabs), ("light", 12, &None));
+    println!("10. json schema {:?}", prefs.0);
     Ok(())
 }

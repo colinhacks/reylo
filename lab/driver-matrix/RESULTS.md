@@ -2,7 +2,7 @@
 
 Generated 2026-11-03T08:38:37.162Z by `./run.sh` against the working tree at 9e2abf7c (uncommitted changes in src/: yes; src/execute.ts f4f31dd6079b, src/index.ts a65a7f86ccb5). The report and the diagnoses are in [README.md](README.md).
 
-5297 rows: 5209 pass, 4 fail, 58 unsupported (reylo refuses them with its own TypeError, as its contract says), 23 skip, 3 not run. Failing controls: 37 of 120 control rows fail, as designed.
+5428 rows: 5347 pass, 4 fail, 58 unsupported (reylo refuses them with its own TypeError, as its contract says), 16 skip, 3 not run. Failing controls: 37 of 120 control rows fail, as designed.
 
 ## Per job
 
@@ -10,6 +10,7 @@ Generated 2026-11-03T08:38:37.162Z by `./run.sh` against the working tree at 9e2
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | pg@8.23.0 | node 26.11.1 | Postgres 14 (local) | 121 | 0 | 0 | 0 | 0 |
 | pg@7.18.2 | node 26.11.1 | Postgres 14 (local) | 0 | 0 | 0 | 0 | 1 |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | 131 | 0 | 0 | 0 | 0 |
 | postgres@3.4.9 | node 26.11.1 | Postgres 14 (local) | 131 | 0 | 0 | 0 | 0 |
 | @electric-sql/pglite@0.5.8 | node 26.11.1 | PGlite (in-process) | 63 | 0 | 0 | 0 | 0 |
 | @electric-sql/pglite@0.4.6 | node 26.11.1 | PGlite (in-process) | 63 | 0 | 0 | 0 | 0 |
@@ -20,7 +21,7 @@ Generated 2026-11-03T08:38:37.162Z by `./run.sh` against the working tree at 9e2
 | @neondatabase/serverless@0.9.5 | node 26.11.1 | Postgres 14 via local Neon proxy | 179 | 0 | 0 | 0 | 0 |
 | pg-promise@12.7.1 | node 26.11.1 | Postgres 14 (local) | 126 | 0 | 0 | 0 | 0 |
 | slonik@49.12.0 | node 26.11.1 | Postgres 14 (local) | 118 | 0 | 0 | 8 | 0 |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | 127 | 0 | 0 | 4 | 0 |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | 131 | 0 | 0 | 0 | 0 |
 | mysql2@3.24.5 | node 26.11.1 | MySQL 8.4 | 166 | 0 | 0 | 0 | 0 |
 | mysql2@3.24.5 | node 26.11.1 | MySQL 8.0 | 166 | 0 | 0 | 0 | 0 |
 | mysql2@3.15.3 | node 26.11.1 | MySQL 8.4 | 166 | 0 | 0 | 0 | 0 |
@@ -30,8 +31,8 @@ Generated 2026-11-03T08:38:37.162Z by `./run.sh` against the working tree at 9e2
 | mariadb@3.5.4 | node 26.11.1 | MySQL 8.4 | 171 | 0 | 0 | 0 | 0 |
 | mariadb@3.4.5 | node 26.11.1 | MySQL 8.4 | 171 | 0 | 0 | 0 | 0 |
 | mariadb@2.5.6 | node 26.11.1 | MySQL 8.4 | 171 | 0 | 0 | 0 | 0 |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | 107 | 0 | 0 | 0 | 0 |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | 107 | 0 | 0 | 0 | 0 |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | 107 | 0 | 0 | 0 | 0 |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | 107 | 0 | 0 | 0 | 0 |
 | @planetscale/database@2.0.0 | node 26.11.1 | MySQL 8.4 via ps-http-sim | 19 | 0 | 55 | 0 | 0 |
 | @planetscale/database@1.20.2 | node 26.11.1 | MySQL 8.4 via ps-http-sim | 72 | 2 | 0 | 0 | 0 |
 | drizzle-orm (node-postgres)@0.45.4 | node 26.11.1 | Postgres 14 (local) | 92 | 0 | 0 | 0 | 0 |
@@ -42,9 +43,9 @@ Generated 2026-11-03T08:38:37.162Z by `./run.sh` against the working tree at 9e2
 | drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | 92 | 0 | 0 | 0 | 0 |
 | drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | 29 | 0 | 0 | 0 | 0 |
 | drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | 92 | 0 | 0 | 0 | 0 |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | 89 | 0 | 0 | 3 | 0 |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | 92 | 0 | 0 | 0 | 0 |
 | drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | 72 | 2 | 0 | 0 | 0 |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | 23 | 0 | 0 | 0 | 0 |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | 23 | 0 | 0 | 0 | 0 |
 | drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | 23 | 0 | 0 | 0 | 0 |
 | better-sqlite3@13.0.3 | node 26.11.1 | SQLite file | 28 | 0 | 0 | 0 | 0 |
 | better-sqlite3@12.11.1 | node 26.11.1 | SQLite file | 28 | 0 | 0 | 0 | 0 |
@@ -53,8 +54,8 @@ Generated 2026-11-03T08:38:37.162Z by `./run.sh` against the working tree at 9e2
 | better-sqlite3@8.7.0 | node 24.19.0 | SQLite file | 0 | 0 | 0 | 0 | 1 |
 | node:sqlite@26.11.1 | node 26.11.1 | SQLite file | 74 | 0 | 1 | 0 | 0 |
 | node:sqlite@24.22.0 | node 24.22.0 | SQLite file | 74 | 0 | 1 | 0 | 0 |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | 28 | 0 | 0 | 0 | 0 |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | 79 | 0 | 0 | 0 | 0 |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | 28 | 0 | 0 | 0 | 0 |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | 79 | 0 | 0 | 0 | 0 |
 | @libsql/client@0.17.4 | node 26.11.1 | SQLite file (file: URL) | 51 | 0 | 0 | 0 | 0 |
 | @libsql/client@0.18.0 | node 26.11.1 | SQLite file (file: URL) | 51 | 0 | 0 | 0 | 0 |
 | @libsql/client@0.15.15 | node 26.11.1 | SQLite file (file: URL) | 51 | 0 | 0 | 0 | 0 |
@@ -359,6 +360,137 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 | pg@8.23.0 | node 26.11.1 | Postgres 14 (local) | PoolClient in BEGIN/COMMIT | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
 | pg@8.23.0 | node 26.11.1 | Postgres 14 (local) | PoolClient in BEGIN/COMMIT | S8 20 concurrent queries resolve with the right rows | pass |  |
 | pg@7.18.2 | node 26.11.1 | Postgres 14 (local) | (job) | preflight | NOT RUN | the driver cannot run a query without reylo: Error: Connection terminated due to connection timeout |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1a params: int, text, bool, null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1b omitted param (undefined) binds NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2a many: 3 rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2b one: the row | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2c maybeOne: zero rows gives null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S2e with(client)(params) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S3 write without RETURNING (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S3n write without parameters (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S4 INSERT ... RETURNING | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S5a repeated :id (runtime lexer) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S5b repeated :id (mapper text/order) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2a many: 3 rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2b one: the row | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S2e with(client)(params) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S4 INSERT ... RETURNING | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2b one: the row | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S4 INSERT ... RETURNING | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1a params: int, text, bool, null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1b omitted param (undefined) binds NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2a many: 3 rows | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2b one: the row | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2c maybeOne: zero rows gives null | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2d maybeOne: two rows throw reylo's error | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S2e with(client)(params) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S3 write without RETURNING (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S3n write without parameters (none), then a separate read | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S4 INSERT ... RETURNING | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S5a repeated :id (runtime lexer) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S5b repeated :id (mapper text/order) | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7a tx: write then commit is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7b tx: write then rollback is not visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| postgres@4.1.1 | node 26.11.1 | Postgres 14 (local) | sql.reserve() | S8 20 concurrent queries resolve with the right rows | pass |  |
 | postgres@3.4.9 | node 26.11.1 | Postgres 14 (local) | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
 | postgres@3.4.9 | node 26.11.1 | Postgres 14 (local) | sql | S1a params: int, text, bool, null | pass |  |
 | postgres@3.4.9 | node 26.11.1 | Postgres 14 (local) | sql | S1b omitted param (undefined) binds NULL | pass |  |
@@ -1531,137 +1663,137 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 | slonik@49.12.0 | node 26.11.1 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
 | slonik@49.12.0 | node 26.11.1 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
 | slonik@49.12.0 | node 26.11.1 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1d array params: = any(:ids) over an int and a text array | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S2a many: 3 rows | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S2b one: the row | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S2e with(client)(params) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S4 INSERT ... RETURNING | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S2a many: 3 rows | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S2b one: the row | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S2e with(client)(params) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S4 INSERT ... RETURNING | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1d array params: = any(:ids) over an int and a text array | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S2b one: the row | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S4 INSERT ... RETURNING | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1d array params: = any(:ids) over an int and a text array | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S2a many: 3 rows | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S2b one: the row | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S2e with(client)(params) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S4 INSERT ... RETURNING | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
-| Bun.sql (postgres)@1.4.3 | bun 1.4.3 | Postgres 14 (local) | sql.reserve() | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S2a many: 3 rows | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S2b one: the row | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S2e with(client)(params) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S4 INSERT ... RETURNING | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S2a many: 3 rows | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S2b one: the row | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S2e with(client)(params) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S4 INSERT ... RETURNING | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S2b one: the row | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S4 INSERT ... RETURNING | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S2a many: 3 rows | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S2b one: the row | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S2e with(client)(params) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S4 INSERT ... RETURNING | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| Bun.sql (postgres)@1.4.4 | bun 1.4.4 | Postgres 14 (local) | sql.reserve() | S8 20 concurrent queries resolve with the right rows | pass |  |
 | mysql2@3.24.5 | node 26.11.1 | MySQL 8.4 | promise Pool | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called execute(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
 | mysql2@3.24.5 | node 26.11.1 | MySQL 8.4 | promise Pool | S1a params: int, text, bool, null | pass |  |
 | mysql2@3.24.5 | node 26.11.1 | MySQL 8.4 | promise Pool | S1b omitted param (undefined) binds NULL | pass |  |
@@ -3171,220 +3303,220 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 | mariadb@2.5.6 | node 26.11.1 | MySQL 8.4 | callback PoolConnection in beginTransaction() (mariadb/callback) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
 | mariadb@2.5.6 | node 26.11.1 | MySQL 8.4 | callback PoolConnection in beginTransaction() (mariadb/callback) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
 | mariadb@2.5.6 | node 26.11.1 | MySQL 8.4 | callback PoolConnection in beginTransaction() (mariadb/callback) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S2a many: 3 rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S2b one: the row | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S2e with(client)(params) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S2a many: 3 rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S2b one: the row | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S2e with(client)(params) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S2b one: the row | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S2a many: 3 rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S2b one: the row | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S2e with(client)(params) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.4 | sql.reserve() | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S2a many: 3 rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S2b one: the row | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S2e with(client)(params) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S2a many: 3 rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S2b one: the row | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S2e with(client)(params) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S2b one: the row | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S2a many: 3 rows | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S2b one: the row | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S2e with(client)(params) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (mysql)@1.4.3 | bun 1.4.3 | MySQL 8.0 | sql.reserve() | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S2a many: 3 rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S2b one: the row | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S2e with(client)(params) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S2a many: 3 rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S2b one: the row | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S2e with(client)(params) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S2b one: the row | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S2a many: 3 rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S2b one: the row | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S2e with(client)(params) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.4 | sql.reserve() | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S2a many: 3 rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S2b one: the row | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S2e with(client)(params) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S2a many: 3 rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S2b one: the row | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S2e with(client)(params) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S2b one: the row | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S2a many: 3 rows | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S2b one: the row | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S2e with(client)(params) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S6a syntax error rejects with the driver's error | pass | MySQLError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 [code=ERR_MYSQL_SYNTAX_ERROR errno=1064 sqlState=42000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S6b unique violation rejects with the driver's error | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=ER_DUP_ENTRY errno=1062 sqlState=23000 key=uniq.PRIMARY: Duplicate entry 'taken' for key 'uniq.PRIMARY' |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=ER_PARSE_ERROR errno=1064 sqlState=42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right synta... |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S7d tx: a failing statement rolls the transaction back | pass | MySQLError: Duplicate entry 'taken' for key 'uniq.PRIMARY' [code=ERR_MYSQL_SERVER_ERROR errno=1062 sqlState=23000] |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (mysql)@1.4.4 | bun 1.4.4 | MySQL 8.0 | sql.reserve() | S8 20 concurrent queries resolve with the right rows | pass |  |
 | @planetscale/database@2.0.0 | node 26.11.1 | MySQL 8.4 via ps-http-sim | connect() Connection | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called execute(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
 | @planetscale/database@2.0.0 | node 26.11.1 | MySQL 8.4 via ps-http-sim | connect() Connection | S1a params: int, text, bool, null | UNSUPPORTED | reylo refused it: @planetscale/database 2.0 binds no parameters, so reylo cannot pass this statement's values to it; use its 1.x line, or mysql2 on PlanetScale's MySQL endpoint. (cause: Error: Query parameters are not supported: pass a complete SQL string and options to execute(query, options)) |
 | @planetscale/database@2.0.0 | node 26.11.1 | MySQL 8.4 via ps-http-sim | connect() Connection | S1b omitted param (undefined) binds NULL | UNSUPPORTED | reylo refused it: @planetscale/database 2.0 binds no parameters, so reylo cannot pass this statement's values to it; use its 1.x line, or mysql2 on PlanetScale's MySQL endpoint. (cause: Error: Query parameters are not supported: pass a complete SQL string and options to execute(query, options)) |
@@ -4101,98 +4233,98 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 | drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
 | drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
 | drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1a params: int, text, bool, null | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1b omitted param (undefined) binds NULL | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1d array params: = any(:ids) over an int and a text array | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2a many: 3 rows | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2b one: the row | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2c maybeOne: zero rows gives null | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2e with(client)(params) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S3 write without RETURNING (none), then a separate read | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S3n write without parameters (none), then a separate read | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S4 INSERT ... RETURNING | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S5a repeated :id (runtime lexer) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S5b repeated :id (mapper text/order) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1a params: int, text, bool, null | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1b omitted param (undefined) binds NULL | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2a many: 3 rows | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2b one: the row | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2c maybeOne: zero rows gives null | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2e with(client)(params) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S3n write without parameters (none), then a separate read | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S4 INSERT ... RETURNING | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S5a repeated :id (runtime lexer) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S5b repeated :id (mapper text/order) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7a tx: write then commit is visible | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7b tx: write then rollback is not visible | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1a params: int, text, bool, null | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1b omitted param (undefined) binds NULL | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1d array params: = any(:ids) over an int and a text array | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2a many: 3 rows | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2b one: the row | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2c maybeOne: zero rows gives null | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2e with(client)(params) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S3 write without RETURNING (none), then a separate read | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S3n write without parameters (none), then a separate read | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S4 INSERT ... RETURNING | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S5a repeated :id (runtime lexer) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S5b repeated :id (mapper text/order) | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
-| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S2a many: 3 rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S2b one: the row | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S2e with(client)(params) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey" |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec" |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | drizzle(sql) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S2a many: 3 rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S2b one: the row | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S2e with(client)(params) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S7a tx: write then commit is visible | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S7b tx: write then rollback is not visible | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | db.transaction(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2a many: 3 rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2b one: the row | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2e with(client)(params) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=23505 condition=unique_violation schema=driver_matrix table=uniq constraint=uniq_pkey detail=Key (k)=(taken) already exists.: duplicate key value violates unique constraint "uniq_pkey"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=42601 condition=syntax_error position=1: syntax error at or near "selec"; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.4 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | pass |  |
 | drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
 | drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S1a params: int, text, bool, null | pass |  |
 | drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S1b omitted param (undefined) binds NULL | pass |  |
@@ -4267,29 +4399,29 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 | drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
 | drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
 | drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | FAIL | UnknownError: Expected JSON response from database API, got HTTP 403 Forbidden [body.code=UNKNOWN] |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync returned the value and threw |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S1a params: int, text, bool, null | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S1b omitted param (undefined) binds NULL | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2a many: 3 rows | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2b one: the row | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2c maybeOne: zero rows gives null | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2e with(client)(params) | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S3 write without RETURNING (none), then a separate read | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S3n write without parameters (none), then a separate read | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S4 INSERT ... RETURNING | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S5a repeated :id (runtime lexer) | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S5b repeated :id (mapper text/order) | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S6a syntax error rejects with the driver's error | pass | Error: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S6b unique violation rejects with the driver's error | pass | Error: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync returned the value and threw |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S2a many: 3 rows | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S2b one: the row | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S2e with(client)(params) | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S6a syntax error rejects with the driver's error | pass | Error: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S6b unique violation rejects with the driver's error | pass | Error: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.4 | SQLite file | drizzle(database) | S8 20 concurrent queries resolve with the right rows | pass |  |
 | drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
 | drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S1a params: int, text, bool, null | pass |  |
 | drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S1b omitted param (undefined) binds NULL | pass |  |
@@ -4549,113 +4681,113 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 | node:sqlite@24.22.0 | node 24.22.0 | SQLite file | db.createTagStore().db | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
 | node:sqlite@24.22.0 | node 24.22.0 | SQLite file | db.createTagStore().db | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
 | node:sqlite@24.22.0 | node 24.22.0 | SQLite file | db.createTagStore().db | S8 20 concurrent queries resolve with the right rows | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called prepare(); run returned a promise and rejected on a failing statement; runSync returned the value and threw |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S1a params: int, text, bool, null | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S1b omitted param (undefined) binds NULL | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S2a many: 3 rows | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S2b one: the row | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S2c maybeOne: zero rows gives null | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S2d maybeOne: two rows throw reylo's error | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S2e with(client)(params) | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S3 write without RETURNING (none), then a separate read | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S3n write without parameters (none), then a separate read | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S4 INSERT ... RETURNING | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S5a repeated :id (runtime lexer) | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S5b repeated :id (mapper text/order) | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S6a syntax error rejects with the driver's error | pass | Error: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S6b unique violation rejects with the driver's error | pass | Error: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | Database | S8 20 concurrent queries resolve with the right rows | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | db.transaction(fn) | S7a tx: write then commit is visible | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | db.transaction(fn) | S7b tx: write then rollback is not visible | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | db.transaction(fn) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | db.transaction(fn) | S7d tx: a failing statement rolls the transaction back | pass | Error: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
-| bun:sqlite@1.4.3 | bun 1.4.3 | SQLite file | db.transaction(fn) | S7e tx: a read inside transaction(fn) is usable synchronously | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S2a many: 3 rows | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S2b one: the row | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S2e with(client)(params) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S4 INSERT ... RETURNING | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S6a syntax error rejects with the driver's error | pass | SQLiteError: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S6b unique violation rejects with the driver's error | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S2a many: 3 rows | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S2b one: the row | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S2e with(client)(params) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S4 INSERT ... RETURNING | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | SQLiteError: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S2b one: the row | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S4 INSERT ... RETURNING | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | SQLiteError: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
-| Bun.sql (sqlite)@1.4.3 | bun 1.4.3 | SQLite file | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called prepare(); run returned a promise and rejected on a failing statement; runSync returned the value and threw |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S1a params: int, text, bool, null | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S1b omitted param (undefined) binds NULL | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S2a many: 3 rows | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S2b one: the row | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S2c maybeOne: zero rows gives null | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S2d maybeOne: two rows throw reylo's error | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S2e with(client)(params) | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S3 write without RETURNING (none), then a separate read | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S3n write without parameters (none), then a separate read | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S4 INSERT ... RETURNING | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S5a repeated :id (runtime lexer) | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S5b repeated :id (mapper text/order) | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S6a syntax error rejects with the driver's error | pass | Error: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S6b unique violation rejects with the driver's error | pass | Error: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | Database | S8 20 concurrent queries resolve with the right rows | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | db.transaction(fn) | S7a tx: write then commit is visible | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | db.transaction(fn) | S7b tx: write then rollback is not visible | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | db.transaction(fn) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | db.transaction(fn) | S7d tx: a failing statement rolls the transaction back | pass | Error: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| bun:sqlite@1.4.4 | bun 1.4.4 | SQLite file | db.transaction(fn) | S7e tx: a read inside transaction(fn) is usable synchronously | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S2a many: 3 rows | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S2b one: the row | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S2e with(client)(params) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S4 INSERT ... RETURNING | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S6a syntax error rejects with the driver's error | pass | SQLiteError: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S6b unique violation rejects with the driver's error | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S2a many: 3 rows | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S2b one: the row | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S2e with(client)(params) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S4 INSERT ... RETURNING | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S6a syntax error rejects with the driver's error | pass | SQLiteError: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S6b unique violation rejects with the driver's error | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S7d tx: a failing statement rolls the transaction back | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | sql.begin(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called unsafe(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S1a params: int, text, bool, null | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S1b omitted param (undefined) binds NULL | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S2a many: 3 rows | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S2b one: the row | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S2c maybeOne: zero rows gives null | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S2e with(client)(params) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S3 write without RETURNING (none), then a separate read | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S3n write without parameters (none), then a separate read | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S4 INSERT ... RETURNING | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S5a repeated :id (runtime lexer) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S5b repeated :id (mapper text/order) | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S6a syntax error rejects with the driver's error | pass | SQLiteError: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S6b unique violation rejects with the driver's error | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S6c try: a unique violation resolves to the database's error, read the same on every driver | pass | QueryError code=SQLITE_CONSTRAINT_PRIMARYKEY errcode=1555 table=uniq columns=k: UNIQUE constraint failed: uniq.k |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error | pass | QueryError code=SQLITE_ERROR errcode=1: near "selec": syntax error |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S7a tx: write then commit is visible | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S7b tx: write then rollback is not visible | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S7d tx: a failing statement rolls the transaction back | pass | SQLiteError: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| Bun.sql (sqlite)@1.4.4 | bun 1.4.4 | SQLite file | tx.savepoint(sp) | S8 20 concurrent queries resolve with the right rows | pass |  |
 | @libsql/client@0.17.4 | node 26.11.1 | SQLite file (file: URL) | Client | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called execute(); run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
 | @libsql/client@0.17.4 | node 26.11.1 | SQLite file (file: URL) | Client | S1a params: int, text, bool, null | pass |  |
 | @libsql/client@0.17.4 | node 26.11.1 | SQLite file (file: URL) | Client | S1b omitted param (undefined) binds NULL | pass |  |

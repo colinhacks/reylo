@@ -2,13 +2,14 @@
 //! the database as it is, `v2.sql` the schema it should have. Each case builds both, plans from
 //! one to the other, runs the plan on the first, and requires its catalog to equal the second's
 //! and every table both have to keep its own rows, value for value (a partitioned table's are its partitions'); `server.sql`, where a case has one, makes what it
-//! needs of the server itself (a role). The plan is kept beside the case as `plan.sql`,
+//! needs of the server itself (a role), and `check.sql` runs after the plan, so a case can require
+//! what no catalog shows (an identity that gives an unused value next). The plan is kept beside the case as `plan.sql`,
 //! compared like the oracle's expected output: `REYLO_BLESS=1` writes it. Postgres's cases run
 //! against the server `REYLO_TEST_PG` names, and are skipped where it is not set.
 
 use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::{with_database, Db};
-use reylo_migrate::diff;
+use reylo_migrate::{diff, locks, sql::runs_alone, Dialect};
 use std::path::{Path, PathBuf};
 
 fn cases(dialect: &str) -> Vec<PathBuf> {
@@ -64,7 +65,14 @@ async fn values(db: &mut Db, before: Option<&[Rows]>, renamed: &std::collections
             continue;
         }
         let select = columns.iter().enumerate().map(|(k, ((_, ty), now))| format!("({now}::{ty})::text as v{k}")).collect::<Vec<_>>().join(", ");
-        let mut rows: Vec<Vec<String>> = match db.rows(&format!("select {select} from only {table}")).await {
+        // A column whose type has no cast back to the one it had (an enum made another) is read as text.
+        let as_text = columns.iter().enumerate().map(|(k, (_, now))| format!("{now}::text as v{k}")).collect::<Vec<_>>().join(", ");
+        let read = match db.rows(&format!("select {select} from only {table}")).await {
+            Ok(rows) => Ok(rows),
+            Err(_) if before.is_some() => db.rows(&format!("select {as_text} from only {table}")).await,
+            Err(e) => Err(e),
+        };
+        let mut rows: Vec<Vec<String>> = match read {
             Ok(rows) => rows.iter().map(|r| (0..columns.len()).map(|k| r.get(&format!("v{k}")).map(String::from).unwrap_or_else(|| "NULL".into())).collect()).collect(),
             Err(e) => vec![vec![format!("unreadable: {e}")]],
         };
@@ -164,16 +172,37 @@ async fn postgres() {
             }
         }
         let mut plan = diff::plan(&diff::postgres::read(&mut from).await.unwrap(), &target, &alterer);
-        // Written as `create` writes it, in schema.sql's style, and run as written.
+        // Written as `create` writes it, in schema.sql's style and in the lock-safe shape where a
+        // statement would block writes to a table with rows while it reads them all, and run as
+        // written: each file in a transaction of its own, but an index built concurrently.
         diff::postgres::style(&mut from, &mut plan, &target.verbatim).await.unwrap();
-        for s in plan.runnable().take(if failed.is_some() { 0 } else { usize::MAX }) {
-            if let Err(e) = from.exec(s).await {
-                failed = Some(format!("{s}: {e}"));
+        let existing = locks::existing_tables(&mut from).await.unwrap();
+        let files = match locks::lock_safe(&plan, &existing) {
+            Some(files) => locks::file_texts(&plan, &files),
+            None => vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")],
+        };
+        for file in files.iter().take(if failed.is_some() { 0 } else { usize::MAX }) {
+            let sql = if runs_alone(file, Dialect::Postgres) { file.clone() } else { format!("begin;\n{file}\ncommit;") };
+            if let Err(e) = from.exec(&sql).await {
+                let _ = from.exec("rollback").await;
+                failed = Some(format!("{file}: {e}"));
                 break;
             }
         }
-        plan.statements.splice(0..0, moves);
-        let text = plan.sql();
+        let split = locks::lock_safe(&plan, &existing).is_some();
+        plan.statements.splice(0..0, moves.clone());
+        // Several files show one after another, each under a line naming it.
+        let text = if split && files.len() > 1 {
+            let mut out = moves.iter().map(|m| format!("{m};\n")).collect::<String>();
+            for (k, file) in files.iter().enumerate() {
+                out.push_str(&format!("-- file {} of {}\n{file}", k + 1, files.len()));
+            }
+            out
+        } else if split {
+            moves.iter().map(|m| format!("{m};\n")).collect::<String>() + &files[0]
+        } else {
+            plan.sql()
+        };
         let (mut only_a, mut only_b) = difference(&catalog(&mut from).await.unwrap(), &catalog(&mut to).await.unwrap());
         let (pa, pb) = (unread(&mut from).await, unread(&mut to).await);
         only_a.extend(pa.iter().filter(|l| !pb.contains(l)).cloned());
@@ -198,6 +227,8 @@ async fn postgres() {
             }
         }
         let rows_after = values(&mut from, Some(&rows_before), &renamed, &skip).await;
+        let check = read(&case.join("check.sql"));
+        let checked = if failed.is_none() && !check.is_empty() { from.exec(&check).await.err() } else { None };
         let changed: Vec<String> = rows_before
             .iter()
             .filter_map(|b| {
@@ -223,6 +254,9 @@ async fn postgres() {
         }
         if !changed.is_empty() {
             problems.push(format!("values changed: {}", changed.join("; ")));
+        }
+        if let Some(e) = checked {
+            problems.push(format!("check.sql failed after the plan: {e}"));
         }
         if !bless && read(&expected) != text {
             problems.push(format!("the plan is not plan.sql's (REYLO_BLESS=1 writes it):\n{text}"));

@@ -91,7 +91,7 @@ In one production app's migration, of about 750 Prisma Client calls, a billing r
 - **Install Reylo's agent skill**, so every session that converts a query has Reylo's rules:
 
   ```sh
-  npx skills add colinhacks/reylo --skill using-reylo
+  npx skills add reylosql/reylo --skill reylo
   ```
 - **Set Reylo up** as [Setup](/typescript#setup) shows.
 - **Count what moves:** every Prisma Client call, `$queryRaw`, `$executeRaw` and `$transaction`, and every folder that holds them. A folder that `tsconfig.json` leaves out is never type-checked, so check its queries with a `tsconfig` of its own.
@@ -152,6 +152,12 @@ where n.nspname = 'public' and c.relkind = 'r'
   and a.atttypid = 'timestamp'::regtype and a.attnum > 0 and not a.attisdropped
 group by c.relname
 order by c.relname;
+```
+
+Prisma writes `timestamp(3)` again for every `DateTime` added later without `@db.Timestamptz`, so a check in CI keeps new ones out:
+
+```sh
+! grep -nE '^[[:space:]]+[[:alnum:]_]+[[:space:]]+DateTime\??([[:space:]]|$)' prisma/schema.prisma | grep -v '@db.Timestamptz'
 ```
 
 ### `@updatedAt`

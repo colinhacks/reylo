@@ -1,6 +1,6 @@
 ---
 title: Turso
-description: How to use Reylo with Turso. Queries on Turso Cloud through the libSQL client, the local file the type check reads, libSQL's older SQLite, and Turso's own engine.
+description: How to use Reylo with Turso. Queries on Turso Cloud through the libSQL client, migrations on Turso Cloud, the local file the type check reads, libSQL's older SQLite, and Turso's own engine.
 ---
 
 <p className="dk-subheader">Reylo on Turso Cloud and Turso's own engine</p>
@@ -13,8 +13,11 @@ Reylo runs queries on Turso. Turso Cloud runs libSQL, a fork of SQLite, so every
 | The type check reads | A local SQLite file with your schema, never a `libsql://` URL |
 | Turso Cloud | `@libsql/client`, with `.run()` |
 | Turso's own engine | `@tursodatabase/database`, with `.run()`, and `.runSync()` on its compat `Database` |
+| Migrations | [`reylo migrate`](/migrate/docs), on Turso Cloud through its `libsql://` URL |
 | SQLite versions | Reylo's 3.53, and the SQLite of each driver your `package.json` lists: 3.45.1 for `@libsql/client` |
+<Rust>
 | Rust | Types against the same local file; sqlx has no libSQL client, so its queries can't run on Turso Cloud |
+</Rust>
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -90,6 +93,30 @@ direct_url: file:./dev.db
 - In development, your app can open the same file: `createClient({ url: "file:dev.db" })` needs no auth token.
 - In CI, run your migrations into the file before the type check ([Deployment](/deployment#sqlite)). The job needs no Turso token.
 - Before a query runs, `.run()` reads the schema again through your client and warns if a column the query names has changed on Turso Cloud since the build ([When the schema changes](/typescript#when-the-schema-changes)).
+
+## Migrations
+
+Run [Reylo Migrate](/migrate/docs) on Turso Cloud with your database's URL, its auth token in `authToken`:
+
+```sh
+npx reylo migrate deploy --url "libsql://app-acme.turso.io?authToken=$TURSO_AUTH_TOKEN"
+```
+
+To make a token, run `turso db tokens create app`. Keep `direct_url` on your local file, so the type check and `reylo migrate dev` stay on it, and pass `--url` to reach Turso Cloud:
+
+```yaml title=".github/workflows/deploy.yml"
+steps:
+  # ...
+  - run: npx reylo migrate deploy --url "$TURSO_DATABASE_URL?authToken=$TURSO_AUTH_TOKEN"
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+```
+
+- Every `reylo migrate` and `reylo db` command runs on Turso Cloud, and on any libSQL server: a `libsql://`, `https://` or `http://` URL, as `@libsql/client` takes it. Add `?tls=0` to a `libsql://` URL for a server without TLS.
+- From code, pass the same URL: `migrate({ url })` ([API](/migrate/docs#api)).
+- Shadow databases are in memory on Reylo's SQLite 3.53. A migration that calls a function newer than your database server's SQLite (3.47.0 on Turso Cloud) passes `--dry-run`, then fails on the server and is rolled back.
+- Each migration runs in one transaction with its history row. Two deploys on one machine take turns; two on different machines at once don't, and one of them fails, changing nothing.
 
 ## SQLite version
 
