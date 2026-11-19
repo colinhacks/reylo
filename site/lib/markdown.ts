@@ -16,6 +16,9 @@ function expandSteps(text: string): string {
   });
 }
 
+/** A heading's right-aligned code (`<code className="dk-aside">`) as plain inline code. */
+const expandAsides = (text: string): string => text.replace(/<code className="dk-aside">([^<]+)<\/code>/g, '`$1`');
+
 /**
  * A page of content/docs as Markdown, by its slug ('' for the main page): its files in order (a
  * page's sections are lib/page-sections.ts'), read as each heading's copy button reads its section, under
@@ -30,6 +33,6 @@ export async function markdownOf(slug: string): Promise<string> {
   const files = [path.resolve('content/docs', own), ...(PAGE_SECTIONS[own] ?? []).map((name) => path.resolve('content/sections', name))];
   // Each inference card with the types the page shows for it (lib/inference-card-markdown.ts), and each
   // error example with its errors (lib/sql-errors.ts), and the comparison's marks as a table (lib/compare.ts).
-  const sources = (await Promise.all(files.map((file) => readFile(file, 'utf8')))).map((text) => expandSteps(expandCompare(expandErrors(expandInferenceCards(rustContent(text))))));
+  const sources = (await Promise.all(files.map((file) => readFile(file, 'utf8')))).map((text) => expandAsides(expandSteps(expandCompare(expandErrors(expandInferenceCards(rustContent(text)))))));
   return pageMarkdown(sources, { site: siteUrl, page: slug ? `/${slug}` : '/' });
 }

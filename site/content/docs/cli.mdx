@@ -35,24 +35,24 @@ Flags:
 
 Outside a JavaScript project, install the command on its own. It is one binary, with no Node and nothing else to install beside it:
 
-```bash Homebrew
+```bash tab="Homebrew"
 brew install reylosql/tap/reylo
 ```
 
-```bash curl
+```bash tab="curl"
 curl -fsSL https://reylo.dev/install.sh | sh
 ```
 
-```powershell PowerShell
+```powershell tab="PowerShell"
 irm https://reylo.dev/install.ps1 | iex
 ```
 
-```bash Scoop
+```bash tab="Scoop"
 scoop bucket add reylo https://github.com/reylosql/scoop-bucket
 scoop install reylo
 ```
 
-```bash Docker
+```bash tab="Docker"
 docker run --rm -v "$PWD:/work" ghcr.io/reylosql/reylo migrate status
 ```
 

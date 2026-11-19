@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { HOSTS } from './host-logos';
+import { DATABASES, HOSTS, type Logo } from './host-logos';
 import { VARIADIC_SQUARE, VARIADIC_SQUARES } from './variadic-mark';
 import { wordmark } from './wordmark';
 import { githubUrl, migrateDocsUrl } from '@/lib/layout.shared';
@@ -63,7 +63,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         <p>For a DDL-first experience, just delete <code>schema.sql</code>. You (or your agents) can write raw DDL migrations.</p>
       </Row>
 
-      <Row n={6} title="Introspect anytime" visual={<Term lines={INTROSPECT} />} flip>
+      <Row n={6} title="Introspect anytime" visual={<Term lines={INTROSPECT} sql />} flip>
         <p>Introspect the current database schema anytime in readable SQL.</p>
       </Row>
 
@@ -220,13 +220,18 @@ type Script = readonly string[];
 
 type Line = { prompt: boolean; text: string; cursor?: boolean };
 
+/** A script's directive: `#edit` changes the editor beside the terminal, `#spin <text>` shows a spinner over the output that follows it. */
+const directive = (l: string) => l === '#edit' || l.startsWith('#spin ');
+
 /** Every line of a session at once: what the page renders first, and what a reader who asked for less motion keeps. */
-const finished = (script: Script): Line[] => script.filter((l) => l !== '#edit').map((l) => (l.startsWith('$ ') ? { prompt: true, text: l.slice(2) } : { prompt: false, text: l }));
+const finished = (script: Script): Line[] => script.filter((l) => !directive(l)).map((l) => (l.startsWith('$ ') ? { prompt: true, text: l.slice(2) } : { prompt: false, text: l }));
+
+const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
 
 /**
  * Plays a script on timers, as a terminal shows it: the prompt and its cursor waiting, a command typed
- * at it, the output a line at a time, and the next prompt the moment the output ends; a pause, and
- * again.
+ * at it, a moment, the command's whole output at once (after a spinner where the script asks for one),
+ * and the next prompt with it; a pause, and again.
  */
 function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
   const [lines, setLines] = useState<Line[]>(() => finished(script));
@@ -235,14 +240,25 @@ function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
     let alive = true;
     const sleep = (ms: number) => new Promise<void>((resolve, reject) => setTimeout(() => (alive ? resolve() : reject(new Error('stopped'))), ms));
     const prompt: Line = { prompt: true, text: '', cursor: true };
-    // After line k, where only blank lines stand before the next command, an edit or the end, the
-    // output is over: those blank lines and the next prompt print at once. Returns the last line used.
-    const promptAfter = (k: number): number => {
+    // The output after command line k, up to the next command, edit or the end, printed in one go
+    // with the next prompt. Returns the last line used.
+    const output = async (k: number): Promise<number> => {
       let j = k + 1;
-      while (j < script.length && script[j] === '') j++;
-      if (j < script.length && !script[j].startsWith('$ ') && script[j] !== '#edit') return k;
-      const blanks = script.slice(k + 1, j).map((): Line => ({ prompt: false, text: '' }));
-      setLines((ls) => [...ls, ...blanks, prompt]);
+      const spin = script[j]?.startsWith('#spin ') ? script[j++].slice(6) : null;
+      const start = j;
+      while (j < script.length && !script[j].startsWith('$ ') && !directive(script[j])) j++;
+      if (spin) {
+        for (let f = 0; f < 18; f++) {
+          const frame = `${SPINNER[f % SPINNER.length]} ${spin}`;
+          setLines((ls) => [...(f === 0 ? ls : ls.slice(0, -1)), { prompt: false, text: frame }]);
+          await sleep(80);
+        }
+        setLines((ls) => ls.slice(0, -1));
+      } else {
+        await sleep(start < j ? 260 : 120);
+      }
+      const printed = script.slice(start, j).map((text): Line => ({ prompt: false, text }));
+      setLines((ls) => [...ls, ...printed, prompt]);
       return j - 1;
     };
     (async () => {
@@ -265,11 +281,7 @@ function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
             }
             await sleep(350);
             setLines((ls) => [...ls.slice(0, -1), { prompt: true, text }]);
-            k = promptAfter(k);
-          } else {
-            await sleep(l === '' ? 250 : 110);
-            setLines((ls) => [...ls, { prompt: false, text: l }]);
-            k = promptAfter(k);
+            k = await output(k);
           }
         }
         await sleep(5000);
@@ -304,12 +316,30 @@ function paint(line: string): ReactNode {
 }
 
 /** A terminal: the session so far, over the whole session drawn invisibly, which holds the window at its final height as it plays. */
-function TermWindow({ lines, script, className }: { lines: Line[]; script: Script; className?: string }) {
+/** The SQL words the terminals print, coloured as the editors colour them. */
+const SQL_KEYWORDS = new Set(['create', 'table', 'not', 'null', 'constraint', 'primary', 'key', 'alter', 'add', 'column', 'unique', 'references']);
+const SQL_TYPES = new Set(['integer', 'bigint', 'text', 'boolean']);
+
+/** A line of SQL a command printed, its keywords and types in the editors' colours. */
+function paintSql(line: string): ReactNode {
+  return line.split(/(\b[a-z_]+\b)/).map((t, i) => (SQL_KEYWORDS.has(t) ? <span key={i} className="ml-kw">{t}</span> : SQL_TYPES.has(t) ? <span key={i} className="ml-ty">{t}</span> : t));
+}
+
+/** A spinner's frame: the braille turning in the accent, before what it says. */
+const paintSpin = (line: string): ReactNode => (
+  <>
+    <span className="ml-wn">{line[0]}</span>
+    {line.slice(1)}
+  </>
+);
+
+function TermWindow({ lines, script, className, sql }: { lines: Line[]; script: Script; className?: string; sql?: boolean }) {
+  const out = (text: string) => (SPINNER.includes(text[0] ?? ' ') ? paintSpin(text) : sql ? paintSql(text) : paint(text));
   const draw = (ls: Line[]) =>
     ls.map((l, i) => (
       <div key={i} className="ml-ln">
         {l.prompt ? <span className="ml-ps">$ </span> : null}
-        {l.prompt ? <span className="ml-c">{l.text}</span> : paint(l.text)}
+        {l.prompt ? <span className="ml-c">{l.text}</span> : out(l.text)}
         {l.cursor ? <span className="ml-cur" /> : null}
       </div>
     ));
@@ -331,63 +361,54 @@ function TermWindow({ lines, script, className }: { lines: Line[]; script: Scrip
   );
 }
 
-function Term({ lines }: { lines: Script }) {
-  return <TermWindow lines={usePlayer(lines)} script={lines} />;
+/** A terminal playing a script; `sql` colours what it prints as SQL. */
+function Term({ lines, sql }: { lines: Script; sql?: boolean }) {
+  return <TermWindow lines={usePlayer(lines)} script={lines} sql={sql} />;
 }
 
+/** As reylo 0.8.0 printed it: the migration asked for with no flags, then again with the renames named. */
 const RENAMES: Script = [
-  '$ reylo migrate new about',
-  '✓ Wrote reylo/migrations/20261104150000_about.sql',
-  '  ! users.bio → about is written as a rename, keeping its rows',
-  "    If they're different columns, delete the file, then:",
-  '      reylo migrate new about --drop users.bio',
-  '$ reylo migrate new tidy',
+  '$ reylo migrate new tidy_columns',
   '✗ These 2 look like renames, but each changes more than its name',
   '',
   '    posts.title → heading  text → varchar(100)',
   '    users.bio   → about    text → varchar(200)',
   '',
   '  If they are renames, keeping their rows:',
-  '    reylo migrate new tidy \\',
+  '    reylo migrate new tidy_columns \\',
   '      --rename posts.title=heading \\',
   '      --rename users.bio=about',
   '  If they are new, dropping the old ones and their data:',
-  '    reylo migrate new tidy --drop posts.title,users.bio',
+  '    reylo migrate new tidy_columns --drop posts.title,users.bio',
+  '',
+  'Nothing was changed.',
+  '$ reylo migrate new tidy_columns --rename posts.title=heading --rename users.bio=about',
+  '✓ Wrote reylo/migrations/20261104150000_tidy_columns.sql',
 ];
 
-/** With no schema.sql: an empty migration, the DDL written into it (`#edit`, in the editor above), and the migration run. */
+/** With no schema.sql: DDL run on the database, the migration written from what it changed (`#edit` fills the editor above), and the migration recorded as run. */
 const SCHEMALESS: Script = [
+  "$ reylo run 'alter table users add column bio text'",
+  '✓ alter table users add column bio text',
   '$ reylo migrate new add_bio',
-  '✓ Wrote reylo/migrations/20261104140347_add_bio.sql, empty, to write by hand: this database has nothing new',
+  '✓ Wrote reylo/migrations/20261104140347_add_bio.sql',
   '#edit',
   '$ reylo migrate dev',
   'Applying to postgres://localhost:5432/app',
-  '  ✓ 20261104140347_add_bio.sql  applied · 3 ms',
+  '  + 20261104140347_add_bio.sql  recorded: already in place',
   '✓ Wrote reylo/reylo.lock',
 ];
 
-/** What reylo 0.8.0 printed for a Postgres database with two tables, a foreign key and an index. */
+/** What reylo 0.8.0 printed for one Postgres table, after the spinner an interactive terminal shows while it reads. */
 const INTROSPECT: Script = [
   '$ reylo db introspect',
-  'create table posts (',
-  '  id bigint generated always as identity not null,',
-  '  author_id bigint not null,',
-  '  title text not null,',
-  '  published_at timestamp with time zone,',
-  '  constraint posts_pkey primary key (id)',
-  ');',
-  '',
+  '#spin Introspecting postgres://localhost:5432/app',
   'create table users (',
-  '  id bigint generated always as identity not null,',
+  '  id integer not null,',
   '  email text not null,',
   '  bio text,',
-  '  constraint users_pkey primary key (id),',
-  '  constraint users_email_key unique (email)',
+  '  constraint users_pkey primary key (id)',
   ');',
-  '',
-  'alter table posts add constraint posts_author_id_fkey foreign key (author_id) references users(id) on delete cascade;',
-  '',
-  'create index posts_author_id_idx on posts using btree (author_id);',
 ];
 
 /** Lock-free: a migration that sorts before one the database ran is refused, then runs once it's given a later name. */
@@ -612,7 +633,7 @@ function DialectMigrations() {
   );
 }
 
-/** Schemaless: the migration file, empty until the DDL is written into it, over the terminal that makes it and runs it. */
+/** Schemaless: the migration file, empty until `reylo migrate new` writes it, over the terminal that changes the database and makes it. */
 function Schemaless() {
   const [edited, setEdited] = useState(true);
   const lines = usePlayer(SCHEMALESS, setEdited);
@@ -643,19 +664,23 @@ function Schemaless() {
 
 /** Where Reylo Migrate runs, as each host's logo over its name. */
 function Hosts() {
+  // A tile says "Tested" only once every tile can: a grid where some do reads as if the rest failed.
+  const chips = [...DATABASES, ...HOSTS].every((t) => t.tested);
+  const tile = (t: Logo) => (
+    <span key={t.name}>
+      <svg viewBox={t.viewBox} fill="currentColor" aria-hidden="true">
+        {t.paths.map((d) => (
+          <path key={d} d={d} />
+        ))}
+      </svg>
+      {t.name}
+      {chips ? <em className="ml-tested">Tested</em> : null}
+    </span>
+  );
   return (
     <div className="ml-hosts">
-      {HOSTS.map((h) => (
-        <span key={h.name}>
-          <svg viewBox={h.viewBox} fill="currentColor" aria-hidden="true">
-            {h.paths.map((d) => (
-              <path key={d} d={d} />
-            ))}
-          </svg>
-          {h.name}
-          {h.tested ? <em className="ml-tested">Tested</em> : null}
-        </span>
-      ))}
+      <div className="ml-dbs">{DATABASES.map(tile)}</div>
+      <div className="ml-hostgrid">{HOSTS.map(tile)}</div>
     </div>
   );
 }

@@ -317,12 +317,21 @@ html .prose {
   line-height: 1.25rem;
 }
 
-/* The list scrolls under "On this page": an entry fades out fully before it reaches the title,
-   instead of passing under it half faded, and the first entry starts clear of the fade.
-   (`#nd-toc > .overflow-auto` outranks Fumadocs' `mask-[…]` class.) */
+/* The whole column scrolls as one, the logo, "On this page" and the GitHub link with the list,
+   rather than the list alone between them: Fumadocs' list keeps its own scroll and fade, which
+   these turn off. (`#nd-toc > .overflow-auto` outranks Fumadocs' `overflow-auto` and `mask-[…]`.) */
+#nd-toc {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
 #nd-toc > .overflow-auto {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
   padding-block: 1.25rem;
-  mask-image: linear-gradient(to bottom, transparent, #000 1.25rem, #000 calc(100% - 1.25rem), transparent);
+  mask-image: none;
 }
 
 /* A code token in the table of contents (and in its popover below xl) is a chip, like inline code
@@ -332,8 +341,9 @@ html .prose {
 #nd-toc code,
 [data-toc-popover] code {
   border: none;
-  border-radius: 0.3125rem;
-  padding: 0.0625rem 0.3125rem;
+  border-radius: 0.375rem;
+  /* Inline, its padding grows no line box, so the chip can breathe without moving the entries. */
+  padding: 0.1875rem 0.375rem;
   font-size: 0.9em;
   /* Its own line box is no taller than its text, so a chip never makes its entry taller than the
      others: in the 20px line of 14.5px text, the mono's line at the inherited height grew each code
@@ -352,6 +362,22 @@ html .prose {
 #nd-toc a[data-active='true'] code,
 [data-toc-popover] a[data-active='true'] code {
   background-color: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc-active), transparent);
+}
+
+/* A heading that names its file or command, `## Schema <code className="dk-aside">schema.sql</code>`,
+   keeps the name on the left of its entry and the code at the right edge, in the chip, a small gap
+   between them should the entry run long. */
+#nd-toc a:has(> code.dk-aside),
+[data-toc-popover] a:has(> code.dk-aside) {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+#nd-toc a > code.dk-aside,
+[data-toc-popover] a > code.dk-aside {
+  flex: none;
+  margin-left: auto;
 }
 
 /* The note under the opening paragraph (`<p className="dk-lede">`): italic and muted, with its
