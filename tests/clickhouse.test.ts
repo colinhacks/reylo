@@ -154,10 +154,12 @@ const PARAMS: [type: string, name: string, value: unknown, back?: unknown][] = [
   ["DateTime64(3, 'UTC')", "half_before", "1969-12-31T23:59:59.500Z"],
   ["DateTime64(6, 'Etc/UTC')", "micro_before", "1969-12-31T23:59:59.999999Z"],
   ["Nullable(DateTime64(1, 'UTC'))", "tenth_before", "1969-12-31T23:59:59.9Z"],
-  ["DateTime64(3, 'UTC')", "far", "+099999-01-01T00:00:00.000Z"],
-  ["DateTime64(3, 'UTC')", "year_one", "0001-01-01T00:00:00.000Z"],
+  ["DateTime64(3, 'UTC')", "first", "1900-01-01T00:00:00.000Z"],
+  ["DateTime64(6, 'UTC')", "last", "2299-12-31T23:59:59.999999Z"],
+  // A 32-bit float goes as the shortest text that reads back as it, and comes back as the number it holds.
   ["Float32", "f32", 0.5],
-  ["Float32", "f32_most", 3.4028234663852886e38],
+  ["Float32", "f32_tenth", 0.1, Math.fround(0.1)],
+  ["Array(Float32)", "f32s", [1 / 3, -16777217], [Math.fround(1 / 3), -16777216]],
   ["Array(String)", "strings", ["it's", "b\tc\\", ""]],
   ["Array(Nullable(UInt8))", "holes", [1, null]],
   ["Array(Array(UInt64))", "nested_list", [[1n], []]],
@@ -252,7 +254,9 @@ test("ClickHouse: a value its parameter's type cannot hold is refused before the
     // An instant names its zone, and keeps the digits its type has.
     for (const [type, value] of [["DateTime", "2026-01-01 12:00:00"], ["DateTime", "2026-01-01T12:00:00.5Z"], ["DateTime", "2107-01-01T00:00:00Z"], ["DateTime64(3)", "2026-01-01T12:00:00.1234Z"], ["DateTime64(3)", "2026-01-01T12:00:00 America/New_York"]] as const) await refused(type, value);
     // A date that is none of the calendar's would roll over to another, and an instant past 64 bits of nanoseconds wrap.
-    for (const [type, value] of [["DateTime", "2026-02-30T00:00:00Z"], ["DateTime", "2026-13-01T00:00:00Z"], ["DateTime", "2026-01-01T24:00:00Z"], ["DateTime64(3)", "2026-01-01T23:59:60Z"], ["DateTime", "2026-01-01T00:00:00+99:99"], ["DateTime64(9)", "2300-01-01T00:00:00Z"]] as const) await refused(type, value);
+    for (const [type, value] of [["DateTime", "2026-02-30T00:00:00Z"], ["DateTime", "2026-13-01T00:00:00Z"], ["DateTime", "2026-01-01T24:00:00Z"], ["DateTime64(3)", "2026-01-01T23:59:60Z"], ["DateTime", "2026-01-01T00:00:00+99:99"], ["DateTime64(9)", "2262-04-12T00:00:00Z"]] as const) await refused(type, value);
+    // A DateTime64 holds 1900 through 2299: some releases read an instant past them as the end of 9999.
+    for (const [type, value] of [["DateTime64(3)", "2300-01-01T00:00:00Z"], ["DateTime64(3, 'UTC')", "+099999-01-01T00:00:00Z"], ["DateTime64(0)", "1899-12-31T23:59:59Z"], ["DateTime64(3)", "0001-01-01T00:00:00Z"]] as const) await refused(type, value);
     // ClickHouse reads -0.5 as half a second after 1970, and the second's date and time in the type's own zone.
     await assert.rejects(byHand("SELECT {p:DateTime64(3)} AS p", ["p"]).run(client, { p: "1969-12-31T23:59:59.500Z" }), /^TypeError: Parameter "p" has the ClickHouse type DateTime64\(3\), which ClickHouse reads an instant within the second before 1970 for only where the type names UTC, as DateTime64\(3, 'UTC'\) does; got "1969-12-31T23:59:59.500Z"\.$/);
     await refused("Array(DateTime64(6, 'Asia/Tokyo'))", ["1969-12-31T23:59:59.999999Z"]);
@@ -287,8 +291,8 @@ test("ClickHouse: an error is the server's, whether the statement fails at once 
     const long = await byHand("SELECT length({p:String}) AS n", ["p"]).try(client, { p: "x".repeat(140_000) });
     assert.deepEqual([long.error?.code, long.error?.number], ["POCO_EXCEPTION", 1000]);
     assert.match(long.error!.message, /Field value too long: the parameter "p" is 140000 bytes as ClickHouse's text, and the server takes 131072 of one unless its http_max_field_value_size is raised\./);
-    // A format the statement names itself outranks the one Reylo asks for.
-    await assert.rejects(byHand("SELECT 1 AS x SETTINGS default_format = 'JSONEachRow'").run(client, {}), /^TypeError: The statement returned its result in the format JSONEachRow, and Reylo reads RowBinaryWithNamesAndTypes: take the format out/);
+    // A format the statement names itself outranks the one Reylo asks for, on a server that takes one there: 26.8 and later.
+    await assert.rejects(byHand("SELECT 1 AS x SETTINGS default_format = 'JSONEachRow'").run(client, {}), /^TypeError: The statement returned its result in the format JSONEachRow, and Reylo reads RowBinaryWithNamesAndTypes: take the format out|^Error: Setting default_format is neither a builtin setting/);
     // A session that writes each type as bytes gives no name to read.
     const bytes = driver("@clickhouse/client").createClient({ url: CLICKHOUSE!, clickhouse_settings: { output_format_binary_encode_types_in_binary_format: 1 } });
     try {
@@ -324,6 +328,15 @@ test("ClickHouse: a select is typed from the server's own description, nullabili
       // A format and an aggregate's parameter are constants to ClickHouse, and neither decides a type.
       "shown.sql": "SELECT name, formatDateTime(created, {format:String}) AS shown FROM users WHERE id = {id:UInt64}",
       "middle.sql": "SELECT quantile({level:Float64})(age) AS middle, count() AS n FROM users",
+      // A function of a LowCardinality column and a constant is LowCardinality, and the statement is described with a text its toDateTime reads.
+      "labelled.sql": "SELECT concat(plan, {suffix:String}) AS label, plan = {plan:String} AS on_plan FROM users WHERE created >= toDateTime({since:String}) ORDER BY id",
+      // A string a statement reads as a time, a zone or a unit is a constant to ClickHouse, and decides no type.
+      "since.sql": "SELECT id FROM users WHERE created >= {since:String} ORDER BY id",
+      "by_day.sql": "SELECT toDate(created, {zone:String}) AS day, count() AS n FROM users GROUP BY day ORDER BY day",
+      // One column with no name is the statement's value, whatever ClickHouse calls it: its name holds the parameter's value.
+      "more.sql": "SELECT max(id) + {more:UInt32} FROM users",
+      // The `:` of a conditional may stand before a name and a cast, which is no parameter.
+      "either.sql": "SELECT id > 1 ? name :name::String AS v FROM users ORDER BY id",
     };
     const out = await declarations(root, files);
     assert.deepEqual(types(out["user.sql"]!), {
@@ -340,6 +353,11 @@ test("ClickHouse: a select is typed from the server's own description, nullabili
     assert.deepEqual(types(out["shown.sql"]!), { params: "{ format: string; id: number | bigint }", row: "{ name: string; shown: string }" });
     assert.equal(types(out["middle.sql"]!).row, "{ middle: number; n: bigint }");
     assert.equal(returns(out["middle.sql"]!), "one");
+    assert.deepEqual(types(out["labelled.sql"]!), { params: "{ suffix: string; plan: string; since: string }", row: "{ label: string; on_plan: number }" });
+    assert.deepEqual(types(out["since.sql"]!), { params: "{ since: string }", row: "{ id: bigint }" });
+    assert.deepEqual(types(out["by_day.sql"]!), { params: "{ zone: string }", row: "{ day: string; n: bigint }" });
+    assert.match(out["more.sql"]!, /^declare const query: Query<\{ more: number \}, bigint, "one", "clickhouse", QueryError>/m);
+    assert.deepEqual(types(out["either.sql"]!), { params: "Record<never, never>", row: "{ v: string }" });
     // One column with no name of its own is the statement's value.
     assert.match(out["total.sql"]!, /^declare const query: Query<Record<never, never>, string, "one", "clickhouse", QueryError>/m);
 
@@ -357,6 +375,12 @@ test("ClickHouse: a select is typed from the server's own description, nullabili
     const names = await built(root, "names", files["names.sql"]);
     assert.deepEqual(await names.run(db.client, { pattern: "%", since: "2026-01-02T03:04:05.678Z", ids: [1, 2n], count: 5 }), [{ name: "ada" }, { name: "bob" }]);
     assert.equal(await (await built(root, "total", files["total.sql"])).run(db.client, {}), "3.75");
+    // Each runs with the types read for it, which the result's own are held against.
+    assert.deepEqual(await (await built(root, "labelled", files["labelled.sql"])).run(db.client, { suffix: "!", plan: "pro", since: "2026-01-01 00:00:00" }), [{ label: "pro!", on_plan: 1 }, { label: "free!", on_plan: 0 }]);
+    assert.deepEqual(await (await built(root, "since", files["since.sql"])).run(db.client, { since: "2026-01-03 00:00:00" }), [{ id: 2n }]);
+    assert.deepEqual(await (await built(root, "by_day", files["by_day.sql"])).run(db.client, { zone: "Asia/Tokyo" }), [{ day: "2026-01-02", n: 1n }, { day: "2026-01-03", n: 1n }]);
+    assert.equal(await (await built(root, "more", files["more.sql"])).run(db.client, { more: 5 }), 7n);
+    assert.deepEqual(await (await built(root, "either", files["either.sql"])).run(db.client, {}), [{ v: "ada" }, { v: "bob" }]);
     const found = await built(root, "found", files["found.sql"]);
     assert.deepEqual(await found.run(db.client, { ids: [2n, 5n], other: 1 }), [{ id: 1n, found: 0, either: 1 }, { id: 2n, found: 1, either: 0 }]);
     const shown = await built(root, "shown", files["shown.sql"]);
@@ -435,6 +459,12 @@ test("ClickHouse: what cannot be typed is an error at its place", { skip: clickh
       "two.sql": "SELECT 1 AS a; SELECT 2 AS b",
       "ddl.sql": "CREATE TABLE t (id UInt64) ENGINE = MergeTree ORDER BY id",
       "variant.sql": "SELECT {v:Variant(String, UInt8)} AS v",
+      // A place in a tuple past the first few, where the type changes.
+      "place.sql": "SELECT tupleElement((1.5, 2.5, 3.5, 'x'), {at:UInt8}) AS e",
+      "star.sql": "SELECT * FROM (SELECT id, id + {x:UInt32} FROM users)",
+      "totals.sql": "SELECT plan, count() AS n FROM users GROUP BY plan WITH TOTALS",
+      "format.sql": "SELECT id FROM users SETTINGS default_format = 'JSONEachRow'",
+      "parsed.sql": "SELECT parseDateTime({at:String}, '%d/%m/%Y') AS t",
     };
     const found = await transform(root, files);
     const of = (name: keyof typeof files) => marked(files[name], found[name]!.diagnostics);
@@ -442,7 +472,7 @@ test("ClickHouse: what cannot be typed is an error at its place", { skip: clickh
     assert.equal(of("scale.sql")[0]![1], "{scale:UInt8}");
     assert.match(of("scale.sql")[0]![0]!, /^ClickHouse reads \{scale:UInt8\} as a constant here, and the result's types change with its value: column 1 \(t\) has the type DateTime64\(1.* with 1 and DateTime64\(2.* with 2\. Write the value in the statement\.$/);
     assert.equal(of("cast.sql")[0]![1], "{type:String}");
-    assert.match(of("cast.sql")[0]![0]!, /^ClickHouse reads \{type:String\} as a constant here, and the statement fails with 'a' in its place/);
+    assert.match(of("cast.sql")[0]![0]!, /^ClickHouse reads \{type:String\} as a constant here, and the statement fails with each value tried in its place, as with 'a', so its value is part of what the statement says\. Write the value in the statement\./);
     assert.match(of("name.sql")[0]![0]!, /^\{column:Identifier\} stands for a name/);
     assert.match(of("untyped.sql")[0]![0]!, /A ClickHouse parameter is written with its type: \{id:Type\}, or :id::Type\.$/);
     assert.equal(of("untyped.sql")[0]![1], ":");
@@ -453,6 +483,13 @@ test("ClickHouse: what cannot be typed is an error at its place", { skip: clickh
     assert.match(of("two.sql")[0]![0]!, /^A typed \.sql file holds one statement and this one holds several/);
     assert.match(of("ddl.sql")[0]![0]!, /^Reylo types a ClickHouse SELECT, INSERT, DELETE or UPDATE, and CREATE is none of them/);
     assert.match(of("variant.sql")[0]![0]!, /is a Variant, whose value's text does not say which of its types it is/);
+    assert.deepEqual([of("place.sql").length, of("place.sql")[0]![1]], [1, "{at:UInt8}"]);
+    assert.match(of("place.sql")[0]![0]!, /^ClickHouse reads \{at:UInt8\} as a constant here, and the result's types change with its value: column 1 \(e\) has the type Float64 with 1 and String with 4\. Write the value in the statement\.$/);
+    assert.match(of("star.sql")[0]![0]!, /^Column 2 is named "plus\(id, \{x:UInt32\}\)" by its expression, which holds a parameter's value, so its name changes from run to run\. Give it one with `as` where the statement makes it\.$/);
+    assert.match(of("totals.sql")[0]![0]!, /^WITH TOTALS returns its totals beside the rows, and a typed result is its rows alone/);
+    assert.deepEqual(of("format.sql"), [["The statement's SETTINGS names a format for its result, default_format, and Reylo reads the one it asks for: take the setting out.", "default_format"]]);
+    assert.equal(of("parsed.sql")[0]![1], "{at:String}");
+    assert.match(of("parsed.sql")[0]![0]!, /^ClickHouse computes with \{at:String\} as it reads the statement, and the statement fails with each value tried in its place, as with 'a'\. Declare the parameter as the type the statement converts it to, or write the value in the statement\. \(/);
   } finally {
     await db.drop();
   }
@@ -469,9 +506,20 @@ test("ClickHouse: a write returns no rows, and is checked against its table", { 
       "bad_column.sql": "INSERT INTO orders (id, nope) VALUES ({id:UInt64}, 1)",
       "bad_where.sql": "DELETE FROM orders WHERE nope = {id:UInt64}",
       "from_body.sql": "INSERT INTO orders FORMAT JSONEachRow",
+      // An UPDATE is checked as the SELECT of each column it writes and each value it computes.
+      "set.sql": "UPDATE orders SET note = {note:Nullable(String)}, total = total + {more:Decimal(18, 2)} WHERE id = {id:UInt64}",
+      "alter_set.sql": "ALTER TABLE orders UPDATE note = {note:Nullable(String)} WHERE id IN (SELECT id FROM orders WHERE total > {least:Decimal(18, 2)})",
+      "set_bad.sql": "UPDATE orders SET nope = {note:String} WHERE id = {id:UInt64}",
+      // An ALTER that changes no rows is a migration's.
+      "alter_add.sql": "ALTER TABLE orders ADD COLUMN z UInt8",
+      // ClickHouse fits what a statement inserts into the column, in silence: 1.2345 would go in as 1.23.
+      "wide.sql": "INSERT INTO orders (id, user_id, total, note) VALUES ({id:UInt64}, {user:UInt32}, {total:Decimal(18, 4)}, {note:Nullable(String)})",
     };
     const found = await transform(root, files);
-    for (const name of ["add.sql", "copy.sql", "remove.sql"] as const) assert.deepEqual(found[name]!.diagnostics, [], name);
+    for (const name of ["add.sql", "copy.sql", "remove.sql", "set.sql", "alter_set.sql"] as const) assert.deepEqual(found[name]!.diagnostics, [], name);
+    assert.match(found["set_bad.sql"]!.diagnostics[0]!.messageText, /`nope`/);
+    assert.match(found["alter_add.sql"]!.diagnostics[0]!.messageText, /^Reylo types an ALTER TABLE that changes rows, with UPDATE or DELETE, and ADD COLUMN is neither/);
+    assert.deepEqual(marked(files["wide.sql"], found["wide.sql"]!.diagnostics), [["{total:Decimal(18, 4)} is written to the column total, a Decimal(18, 2), and ClickHouse changes a value the column cannot hold into one it can, without an error. Declare the parameter as the column's type: {total:Decimal(18, 2)}.", "{total:Decimal(18, 4)}"]]);
     assert.equal(types(found["add.sql"]!.text).params, "{ id: number | bigint; user: number | bigint; total: string; note?: string | null }");
     assert.equal(returns(found["add.sql"]!.text), "none");
     assert.match(found["bad_column.sql"]!.diagnostics[0]!.messageText, /^No such column nope in table/);

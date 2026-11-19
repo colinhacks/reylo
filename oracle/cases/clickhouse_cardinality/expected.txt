@@ -20,8 +20,6 @@ count_ordered.sql: one () -> { n: UInt64, years: UInt64 }
 count_qualified.sql: at_most_one () -> { n: UInt64 }
 count_scalar.sql: many () -> { orders: UInt64?, name: String(UTF-8, ill-formed) }
 count_setting.sql: at_most_one (than: UInt8) -> { n: UInt64 }
-count_totals.sql: many () -> { plan: String(UTF-8, ill-formed), n: UInt64 }
-count_totals_alone.sql: many () -> { n: UInt64 }
 count_union.sql: many () -> { n: UInt64 }
 count_window.sql: at_most_one () -> { n: UInt64 }
 limit_by.sql: many () -> { id: UInt64, name: String(UTF-8, ill-formed) }

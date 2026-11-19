@@ -6,29 +6,34 @@
 //! declares, `{name:Type}`, or the cast after it, `:name::Type`.
 //!
 //! What the describe leaves open is that ClickHouse writes a parameter's value into the statement
-//! as a constant before it reads the statement, and a constant can decide a type: the scale of
-//! `toDateTime64(x, {p:UInt8})`, the type `CAST(x, {t:String})` names, the length of a
-//! `FixedString`. A constant is also computed with as the statement is read, so no one value can
-//! stand for a parameter: `toDate('a')` fails where `toDate({day:String})` is a fine statement. So
-//! the statement is described three ways, and the answers held against each other:
+//! as a constant before it reads the statement. A constant can decide a type: the scale of
+//! `toDateTime64(x, {p:UInt8})`, the type `CAST(x, {t:String})` names, the element
+//! `tupleElement(t, {i:UInt8})` reads. A constant is typed otherwise than a column, too: `x IN
+//! (1, {n:UInt8})` is a UInt8 of constants and a Nullable(UInt8) of a column, and a function of a
+//! `LowCardinality` column and a constant is `LowCardinality` where one of two columns is not. And
+//! a constant is computed with as the statement is read, so no one value stands for a parameter:
+//! `toDate('a')` fails where `toDate({day:String})` is a fine statement. So:
 //!
-//! - With each parameter a column, `materialize(defaultValueOfTypeName('T'))`, which has the
-//!   parameter's type and no value to read or to compute with. ClickHouse refuses it wherever it
-//!   needs a constant, and the types it answers with hold for every value. A `LIMIT`, an `OFFSET`
-//!   and the right side of an `IN` take a constant and decide no type, so a parameter there is
-//!   written as one.
-//! - Where that is refused, each parameter is asked about alone, which finds the ones the server
-//!   reads as constants. Such a parameter is written as a constant, and the statement described
-//!   again with two other values of it: the same types with one of them, and they are the
-//!   statement's (`formatDateTime(t, {format:String})`, `quantile({level:Float64})(x)`); other
-//!   types, and the parameter is refused where it stands. A value the statement fails with says
-//!   nothing of its types, since the statement fails with it as it runs too, so one of the two
-//!   must describe.
-//! - With every parameter a constant, as the statement runs, twice with other values. A function
-//!   may type a constant otherwise than a column: `x IN (1, {n:UInt8})` is a UInt8 of constants and
-//!   a Nullable(UInt8) of a column. Where the two describes answer alike, theirs are the
-//!   statement's types; where they differ, a parameter's value changes a type, and it is refused;
-//!   where one fails, a value was computed with, and the first describe stands.
+//! - The statement's types are the ones it has as it runs, every parameter a constant. Each type
+//!   has a list of values that stand for a parameter of it ([`constants`]), a string's among them
+//!   the texts a statement commonly computes with: a number, a date, a time, a zone, a unit. The
+//!   statement is described with each parameter's first value, then its second, and where both
+//!   fail, with each later one, then with one parameter changed at a time, until it describes.
+//!   Two describes that answer alike give the statement's types; two that differ show a value
+//!   deciding a type, and the parameter is refused.
+//! - The statement is described with each parameter a column too,
+//!   `materialize(defaultValueOfTypeName('T'))`, which has the parameter's type and no value to
+//!   read. ClickHouse refuses it wherever it needs a constant, which finds the parameters it reads
+//!   as constants. A `LIMIT`, an `OFFSET` and the right side of an `IN` take a constant and
+//!   decide no type, so a parameter there is written as one.
+//! - A parameter the server reads as a constant is tried with every value of its list: the same
+//!   types with another of them, and they are the statement's (`formatDateTime(t,
+//!   {format:String})`, `quantile({level:Float64})(x)`, `dateDiff({unit:String}, a, b)`); other
+//!   types with one, and it is refused where it stands. A value the statement fails with says
+//!   nothing of its types, since the statement fails with it as it runs too.
+//! - A column the statement gives no name is named by its expression's text, which holds each
+//!   constant in it, a parameter's value too. One such column alone is the statement's value, and
+//!   goes by no name; among others it is refused, as a name that changes from run to run.
 //!
 //! No list of values shows that a type holds for every value, so the run time holds the types each
 //! result comes back with against the ones read here, and refuses a result that differs
@@ -38,8 +43,9 @@
 //! How many rows the statement returns is read from the server's query tree ([`crate::tree`]). A
 //! write (`INSERT`, `DELETE`, `UPDATE`, `ALTER TABLE … UPDATE` or `DELETE`) returns no rows, and
 //! ClickHouse describes none: an `INSERT` is checked against its table by `EXPLAIN PIPELINE`,
-//! which builds the insert and writes nothing, a `DELETE` as the `SELECT` of the rows it would
-//! delete, and the others for their syntax (`EXPLAIN AST`).
+//! which builds the insert and writes nothing, and a `DELETE` or an `UPDATE` as the `SELECT` of
+//! the rows it would change and the values it would write. An `ALTER` that does anything else
+//! (`ADD COLUMN`, `FREEZE`) changes no rows, and is refused.
 
 use crate::api::{Analysis, Column, Diagnostic, Param, Scope};
 use crate::host::{as_str, Host, Lazy};
@@ -78,24 +84,14 @@ enum Position {
     Constant,
 }
 
-/// How a statement's parameters are written into the text the server is asked about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum As {
-    /// Each as a column, a value that is no constant, but where its position takes a constant:
-    /// there, its constant of this number.
-    Columns(usize),
-    /// Each as its constant of this number: the statement as it runs.
-    Constants(usize),
-    /// The one at this index as a column, and the others as their first constants.
-    Column(usize),
-    /// The one at this index as its first constant, and the others as `Columns(0)` writes them.
-    Constant(usize),
-    /// As `Columns(0)`, but the parameter at this index, where it is a constant, as its constant
-    /// of this number.
-    Varied(usize, usize),
-    /// As `Constants(0)`, but the parameter at this index as its second constant.
-    Other(usize),
-}
+/// How each placeholder of a statement is written into a text the server is asked about, by the
+/// placeholder's index: its constant of a number, or `None`, a column. One parameter is written
+/// one way at each of its places.
+type Choice = Vec<Option<usize>>;
+
+/// What a describe answers with: a row a column, its name and its type's.
+type Rows = Vec<Vec<Value>>;
+type Described = Result<Rows, DbError>;
 
 fn whole(sql: &str, message: impl Into<String>, code: u32, server_code: Option<String>) -> Diagnostic {
     Diagnostic { message: message.into(), start: 0, length: sql.trim_end().len().max(1), code, server_code }
@@ -252,38 +248,95 @@ fn position(sql: &str, lexed: &Lexed, p: &Placeholder) -> Position {
     Position::Value
 }
 
+/// The texts a statement commonly computes with as it reads a string: plain letters first, then
+/// a number, a date, a time, a zone, a unit, a UUID, an address and a document, two of each, so
+/// that a statement that takes one of a kind describes with another of it. The units are of both
+/// kinds, those of a time and those of a date: `dateTrunc` to a month is a date, and to a day a time.
+const STRINGS: [&str; 22] = [
+    "a", "b", "c", "1", "2", "2001-02-03", "2004-05-06", "2001-02-03 04:05:06", "2004-05-06 07:08:09", "UTC", "Asia/Tokyo", "day", "hour", "month", "61f0c404-5cb3-11e7-907b-a6006ad3dba0", "00112233-4455-6677-8899-aabbccddeeff",
+    "127.0.0.1", "10.1.2.3", "::1", "2001:db8::1", "{}", "{\"a\": 1}",
+];
+/// The whole numbers a parameter is tried with: the first few, where a place in a tuple or a
+/// number of digits is read, then some further off.
+const WHOLE: [&str; 15] = ["1", "2", "3", "0", "4", "5", "6", "7", "8", "9", "10", "16", "32", "64", "100"];
+/// Within 0 and 1 first, which a level and a ratio take alone.
+const FRACTIONS: [&str; 9] = ["0.5", "0.25", "0.75", "1", "0", "2", "10", "100", "-1"];
+
 /// The constants a parameter of `ty` is written as where the server reads one: each as the
-/// expression that stands in its place, and as a message shows it. Three where the type has them,
-/// so that a type that changes with the value shows; one, the type's default, for a type whose
-/// values are not written here, which no describe can vary.
+/// expression that stands in its place, and as a message shows it. The first two differ for every
+/// type that has two values, so that a type or a name that changes with the value shows; a type
+/// whose values are not written here has its default alone, which no describe can vary.
 fn constants(ty: &Named) -> Vec<(String, String)> {
     let name = types::quoted(&ty.to_string());
     let cast = |value: &str| format!("CAST({value}, {name})");
     let of = |values: &[&str]| values.iter().map(|v| (cast(v), v.to_string())).collect::<Vec<_>>();
-    match (ty.name.as_str(), ty.args.as_slice()) {
-        // A value, NULL, and another value.
+    let texts = |values: &[&str]| values.iter().map(|v| (cast(&types::quoted(v)), types::quoted(v))).collect::<Vec<_>>();
+    let mut out = match (ty.name.as_str(), ty.args.as_slice()) {
+        // A value, NULL, and its other values.
         ("Nullable", [Arg::Type(inner)]) => {
             let inner = constants(inner);
             let mut out = vec![(cast(&inner[0].0), inner[0].1.clone()), (cast("NULL"), "NULL".to_string())];
-            out.extend(inner.get(1).map(|(sql, shown)| (cast(sql), shown.clone())));
+            out.extend(inner[1..].iter().map(|(sql, shown)| (cast(sql), shown.clone())));
             out
         }
         ("LowCardinality", [Arg::Type(inner)]) => constants(inner).into_iter().map(|(sql, shown)| (cast(&sql), shown)).collect(),
-        // One element, none, and two.
+        // One element, none, two, the two the other way, three, and those the other way: two of
+        // each length a statement may ask for.
         ("Array", [Arg::Type(inner)]) => {
             let inner = constants(inner);
-            let (first, last) = (&inner[0], &inner[inner.len() - 1]);
-            vec![(cast(&format!("[{}]", first.0)), format!("[{}]", first.1)), (cast("[]"), "[]".to_string()), (cast(&format!("[{}, {}]", last.0, first.0)), format!("[{}, {}]", last.1, first.1))]
+            let at = |i: usize| &inner[i.min(inner.len() - 1)];
+            let listed = |indexes: &[usize]| {
+                let sql: Vec<&str> = indexes.iter().map(|&i| at(i).0.as_str()).collect();
+                let shown: Vec<&str> = indexes.iter().map(|&i| at(i).1.as_str()).collect();
+                (cast(&format!("[{}]", sql.join(", "))), format!("[{}]", shown.join(", ")))
+            };
+            vec![listed(&[0]), listed(&[]), listed(&[1, 0]), listed(&[0, 1]), listed(&[0, 1, 2]), listed(&[2, 1, 0])]
+        }
+        // Each element's first value, then each one's second, and third.
+        ("Tuple", args) if !args.is_empty() && args.iter().all(|a| matches!(a, Arg::Type(_) | Arg::Member(..))) => {
+            let elements: Vec<Vec<(String, String)>> = args.iter().map(|a| match a {
+                Arg::Type(t) | Arg::Member(_, t) => constants(t),
+                _ => Vec::new(),
+            }).collect();
+            (0..3)
+                .map(|j| {
+                    let at = |element: &Vec<(String, String)>| element[j.min(element.len() - 1)].clone();
+                    let (sql, shown): (Vec<String>, Vec<String>) = elements.iter().map(at).unzip();
+                    (cast(&format!("tuple({})", sql.join(", "))), format!("({})", shown.join(", ")))
+                })
+                .collect()
+        }
+        // One pair, none, and another pair.
+        ("Map", [Arg::Type(key), Arg::Type(value)]) => {
+            let (keys, values) = (constants(key), constants(value));
+            let pair = |j: usize| (&keys[j.min(keys.len() - 1)], &values[j.min(values.len() - 1)]);
+            let one = |j: usize| (cast(&format!("map({}, {})", pair(j).0 .0, pair(j).1 .0)), format!("{{{}: {}}}", pair(j).0 .1, pair(j).1 .1));
+            vec![one(0), (cast("map()"), "{}".to_string()), one(1)]
+        }
+        ("Enum8" | "Enum16", labels) => {
+            let labels: Vec<&str> = labels.iter().filter_map(|a| if let Arg::Label(label, _) = a { Some(label.as_str()) } else { None }).take(3).collect();
+            texts(&labels)
         }
         ("Bool", _) => of(&["true", "false"]),
-        ("String" | "FixedString", _) => of(&["'a'", "'b'", "'c'"]),
+        ("String" | "FixedString", _) => texts(&STRINGS),
+        ("UUID", _) => texts(&["61f0c404-5cb3-11e7-907b-a6006ad3dba0", "00112233-4455-6677-8899-aabbccddeeff", "00000000-0000-0000-0000-000000000000"]),
+        ("IPv4", _) => texts(&["127.0.0.1", "10.1.2.3", "0.0.0.0"]),
+        ("IPv6", _) => texts(&["::1", "2001:db8::1", "::"]),
         // A date or a time of a number: so many days, or seconds, after 1970.
         ("Date" | "Date32" | "DateTime" | "DateTime64", _) => of(&["1", "2", "3"]),
-        // Within 0 and 1, which a level and a ratio take alone.
-        ("Float32" | "Float64" | "BFloat16", _) => of(&["0.5", "0.25", "0.75"]),
-        _ if ty.is_number() => of(&["1", "2", "3"]),
-        _ => vec![(format!("defaultValueOfTypeName({name})"), "its type's default value".to_string())],
+        ("Float32" | "Float64" | "BFloat16", _) => of(&FRACTIONS),
+        // A number below zero for a type that holds one: a place counted from the end.
+        (name, _) if ty.is_number() && !name.starts_with("UInt") => of(&[&WHOLE[..], &["-1", "-2"]].concat()),
+        _ if ty.is_number() => of(&WHOLE),
+        _ => Vec::new(),
+    };
+    // A value is tried once, and a type none of whose values is written here has its default.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|(sql, _)| seen.insert(sql.clone()));
+    if out.is_empty() {
+        out.push((format!("defaultValueOfTypeName({name})"), "its type's default value".to_string()));
     }
+    out
 }
 
 /// The statement's parameters as the analysis reads them: each placeholder's type, where it
@@ -313,34 +366,48 @@ impl Parameters {
         &all[j.min(all.len() - 1)]
     }
 
-    /// What stands for the placeholder at `k`.
-    fn written(&self, lexed: &Lexed, k: usize, how: As) -> String {
-        let same = |one: usize| lexed.placeholders[k].name == lexed.placeholders[one].name;
-        let fixed = self.positions[k] != Position::Value;
-        match how {
-            As::Columns(j) if fixed => self.constant(k, j).0.clone(),
-            As::Columns(_) => self.column(k),
-            As::Constants(j) => self.constant(k, j).0.clone(),
-            As::Column(one) if k == one => self.column(k),
-            As::Column(_) => self.constant(k, 0).0.clone(),
-            As::Constant(one) if k == one || fixed => self.constant(k, 0).0.clone(),
-            As::Constant(_) => self.column(k),
-            As::Varied(one, j) if fixed => self.constant(k, if same(one) { j } else { 0 }).0.clone(),
-            As::Varied(..) => self.column(k),
-            As::Other(one) => self.constant(k, usize::from(same(one))).0.clone(),
+    /// Every parameter as its constant numbered `j`: the statement as it runs.
+    fn joint(&self, j: usize) -> Choice {
+        vec![Some(j); self.types.len()]
+    }
+
+    /// `choice`, but each parameter that stands where a value goes as a column.
+    fn columns(&self, choice: &Choice) -> Choice {
+        choice.iter().enumerate().map(|(k, how)| if self.positions[k] == Position::Value { None } else { *how }).collect()
+    }
+
+    /// `choice`, but the parameter at `k`, at each of its places, written as `how`.
+    fn with(&self, lexed: &Lexed, choice: &Choice, k: usize, how: Option<usize>) -> Choice {
+        choice.iter().enumerate().map(|(i, own)| if lexed.placeholders[i].name == lexed.placeholders[k].name { how } else { *own }).collect()
+    }
+
+    /// Whether two choices write the parameter at `k` as two values, or one as a column.
+    fn differs(&self, k: usize, a: &Choice, b: &Choice) -> bool {
+        match (a[k], b[k]) {
+            (Some(x), Some(y)) => self.constant(k, x).0 != self.constant(k, y).0,
+            (None, None) => false,
+            _ => true,
         }
     }
 
-    /// The statement `body` with each placeholder written as `how` says, and the map from that
+    /// The value a choice writes the parameter at `k` as, as a message shows it.
+    fn shown(&self, k: usize, choice: &Choice) -> &str {
+        choice[k].map_or("a column", |j| self.constant(k, j).1.as_str())
+    }
+
+    /// The statement `body` with each placeholder written as `choice` says, and the map from that
     /// text back to the author's.
-    fn text(&self, body: &str, lexed: &Lexed, how: As) -> Rewritten {
+    fn text(&self, body: &str, lexed: &Lexed, choice: &Choice) -> Rewritten {
         let mut out = String::with_capacity(body.len());
         let mut spans = Vec::with_capacity(lexed.placeholders.len());
         let mut last = 0;
         for (k, p) in lexed.placeholders.iter().enumerate() {
             out.push_str(&body[last..p.start]);
             let start = out.len();
-            out.push_str(&self.written(lexed, k, how));
+            match choice[k] {
+                Some(j) => out.push_str(&self.constant(k, j).0),
+                None => out.push_str(&self.column(k)),
+            }
             spans.push((p.start, p.end, start, out.len()));
             last = p.end;
         }
@@ -599,7 +666,13 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     // The statement without what follows it: a `;`, and the whitespace and comments after one.
     let in_text = |i: usize| lexed.opaque.iter().any(|&(start, end)| start <= i && i < end);
     let body = &sql[..sql.bytes().enumerate().find(|&(i, c)| c == b';' && !in_text(i)).map_or(sql.len(), |(i, _)| i)];
-    let asked = parameters.text(body, &lexed, As::Columns(0));
+    // A format the statement's own SETTINGS names outranks the one a result is asked for in, the
+    // server's answers to the questions below included, so it is read off the text.
+    if let Some((start, word)) = words(body, &lexed).into_iter().find(|(_, word)| word == "default_format") {
+        return refuse(vec![Diagnostic { message: "The statement's SETTINGS names a format for its result, default_format, and Reylo reads the one it asks for: take the setting out.".into(), start, length: word.len(), code: 10, server_code: None }]);
+    }
+    let first = parameters.joint(0);
+    let asked = parameters.text(body, &lexed, &parameters.columns(&first));
     let kind = match word.as_str() {
         "insert" => StatementKind::Insert,
         "delete" => StatementKind::Delete,
@@ -632,57 +705,42 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         return write(sql, &lexed, &parameters, body, &asked, typed, host);
     }
 
-    let describe = |parameters: &Parameters, how: As| host.query(&format!("{DESCRIBE}{}\n)", parameters.text(body, &lexed, how).sql), Vec::new(), Scope::Statement);
-    // One round: the describe, the query tree, the session's settings, and the statement as it
-    // runs, each parameter a constant, with two values of each.
-    let described = describe(&parameters, As::Columns(0));
+    let describe = |parameters: &Parameters, choice: &Choice| host.query(&format!("{DESCRIBE}{}\n)", parameters.text(body, &lexed, choice).sql), Vec::new(), Scope::Statement);
+    // One round: the describe with each parameter a column, the query tree, the session's
+    // settings, and the statement as it runs, each parameter a constant, with two values of each.
+    let described = describe(&parameters, &parameters.columns(&first));
     let tree = host.query(&format!("{TREE}{}", asked.sql), Vec::new(), Scope::Statement);
     let settings = host.query(ROW_SETTINGS, Vec::new(), Scope::Session);
-    let run = (!lexed.placeholders.is_empty()).then(|| (describe(&parameters, As::Constants(0)), describe(&parameters, As::Constants(1))));
+    let run = (!lexed.placeholders.is_empty()).then(|| (describe(&parameters, &first), describe(&parameters, &parameters.joint(1))));
     let (described, tree, settings) = (described?, tree?, settings?);
-    let run = match run {
-        Some((first, second)) => Some((first?, second?)),
-        None => None,
-    };
-    let (rows, tree) = match described {
-        Ok(rows) => (rows, tree),
-        Err(error) => {
-            // The parameters the server reads as constants, each written as one from here on.
-            let found = match constant_needed(sql, &lexed, &parameters, body, &asked, &error, host)? {
-                Ok(found) => found,
+    let (rows, tree, varying) = match run {
+        // No parameter: the describe is the statement's.
+        None => match described {
+            Ok(rows) => {
+                let varying = vec![false; rows.len()];
+                (rows, tree, varying)
+            }
+            Err(e) => return refuse(vec![server_error(sql, &lexed, &parameters, &asked, DESCRIBE, &e)]),
+        },
+        Some((one, two)) => {
+            let (one, two) = (one?, two?);
+            let ran = match as_it_runs(sql, &lexed, &parameters, body, &asked, &described, one, two, host)? {
+                Ok(ran) => ran,
                 Err(diagnostics) => return refuse(diagnostics),
             };
-            for &k in &found {
-                parameters.positions[k] = Position::Constant;
+            // A parameter the server reads as a constant is written as one from here on, and each
+            // with the value the statement describes with: the tree is read of that text.
+            for &k in &ran.constants {
+                for i in 0..lexed.placeholders.len() {
+                    if lexed.placeholders[i].name == lexed.placeholders[k].name {
+                        parameters.positions[i] = Position::Constant;
+                    }
+                }
             }
-            let asked = parameters.text(body, &lexed, As::Columns(0));
-            let described = describe(&parameters, As::Columns(0));
-            let tree = host.query(&format!("{TREE}{}", asked.sql), Vec::new(), Scope::Statement);
-            // The statement has one type only where another value of each leaves its types alone.
-            let ones = once(&lexed, found.iter().copied());
-            let others: Vec<_> = ones.iter().map(|&k| [1, 2].map(|j| describe(&parameters, As::Varied(k, j)))).collect();
-            let (described, tree) = (described?, tree?);
-            let rows = match described {
-                Ok(rows) => rows,
-                Err(e) => return refuse(vec![server_error(sql, &lexed, &parameters, &asked, DESCRIBE, &e)]),
-            };
-            let mut refusals = Vec::new();
-            for (&k, [second, third]) in ones.iter().zip(others) {
-                refusals.extend(held(sql, &lexed, &parameters, k, &rows, [second?, third?]));
-            }
-            if !refusals.is_empty() {
-                return refuse(refusals);
-            }
-            (rows, tree)
+            let text = parameters.text(body, &lexed, &parameters.columns(&ran.base));
+            let tree = if text.sql == asked.sql { tree } else { host.query(&format!("{TREE}{}", text.sql), Vec::new(), Scope::Statement)? };
+            (ran.rows, tree, ran.varying)
         }
-    };
-    // As the statement runs, every parameter is a constant, which a function may type otherwise
-    // than a column. Two describes of that statement that agree give its types; two that differ
-    // show a value changing a type; one that fails computed with a value, and says nothing.
-    let rows = match run {
-        Some((Ok(first), Ok(second))) if types_of(&first) == types_of(&second) => first,
-        Some((Ok(first), Ok(second))) => return changing(sql, &lexed, &parameters, body, &first, &second, host).map(|d| analysis::bare(sql, &lexed, Dialect::Clickhouse, d)),
-        _ => rows,
     };
     let mut unread = Vec::new();
     let columns: Vec<Column> = rows
@@ -712,6 +770,10 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     // a constant decides, whose first value the tree was read with.
     let limit_given = parameters.positions.iter().any(|p| matches!(p, Position::Limit | Position::Constant));
     let lines: Vec<&str> = tree.as_ref().map(|rows| rows.iter().filter_map(|row| row.first().and_then(as_str)).flat_map(str::lines).collect()).unwrap_or_default();
+    // What a result in rows cannot carry, or a setting of the statement's own would write otherwise.
+    if let Some(message) = crate::tree::unread(&lines) {
+        return refuse(vec![whole(sql, message, 10, None)]);
+    }
     let proven = crate::tree::rows(&lines, limit_given);
     let defaults = settings.ok().is_some_and(|rows| rows.len() == 3 && rows.iter().all(|row| row.get(1).and_then(as_str) == Some("0")));
     let (cardinality, reason) = if proven.one && defaults {
@@ -732,6 +794,22 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     // ClickHouse names a column with no alias by its expression's text, which is no name to rely on.
     let targets = targets(sql, &typed.columns);
     analysis::names(sql, Dialect::Clickhouse, &mut typed, Some(&targets), &|_| None);
+    // A name ClickHouse makes of an expression holds each constant in it, a parameter's value too,
+    // so it changes from run to run: the one column of a statement that returns a value goes by
+    // no name, and any other needs one of its own.
+    if !typed.value && typed.diagnostics.is_empty() {
+        let unnamed: Vec<Diagnostic> = typed
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| varying.get(*i) == Some(&true))
+            .map(|(i, column)| {
+                let name = parameters.authored(sql, &lexed, &column.name);
+                whole(sql, format!("Column {} is named \"{name}\" by its expression, which holds a parameter's value, so its name changes from run to run. Give it one with `as` where the statement makes it.", i + 1), analysis::UNNAMED_COLUMN, None)
+            })
+            .collect();
+        typed.diagnostics.extend(unnamed);
+    }
     Some(typed)
 }
 
@@ -772,121 +850,219 @@ fn refused(sql: &str, lexed: &Lexed, parameters: &Parameters, k: usize, why: &st
     at(p, format!("ClickHouse reads {} as a constant here, and {why}. Write the value in the statement.{quoted}", &sql[p.start..p.end]), 10)
 }
 
-/// Why the describe failed: the parameters the server reads as constants, each by its index, or
-/// the diagnostics of a statement that cannot be typed. Where the statement describes with every
-/// parameter a constant, each parameter is asked about alone, as a column among constants, and
-/// the ones the server refuses so are found. Where it fails with every parameter a constant too,
-/// and in another way, a parameter's first constant is refused in its turn, as `'a'` is for the
-/// type `CAST(x, {t:String})` names: it is the one parameter whose writing as a constant changes
-/// the describe's answer, where one alone does. Else the statement is wrong whatever its
-/// parameters are, and the error is the describe's.
-fn constant_needed(sql: &str, lexed: &Lexed, parameters: &Parameters, body: &str, asked: &Rewritten, error: &DbError, host: &Host) -> Lazy<Result<Vec<usize>, Vec<Diagnostic>>> {
-    let values: Vec<usize> = (0..lexed.placeholders.len()).filter(|&k| parameters.positions[k] == Position::Value).collect();
-    let own_error = || vec![server_error(sql, lexed, parameters, asked, DESCRIBE, error)];
-    if values.is_empty() {
-        return Some(Err(own_error()));
-    }
-    let describe = |how: As| host.query(&format!("{DESCRIBE}{}\n)", parameters.text(body, lexed, how).sql), Vec::new(), Scope::Statement);
-    let constants = describe(As::Constants(0));
-    let alone: Vec<_> = values.iter().map(|&k| describe(As::Column(k))).collect();
-    if let Err(with_constants) = constants? {
-        // The same error either way, each stand-in read back as its parameter, is the statement's own.
-        let same = |a: &DbError, b: &DbError| a.code == b.code && parameters.authored(sql, lexed, &message_of(a)) == parameters.authored(sql, lexed, &message_of(b));
-        if same(&with_constants, error) {
-            return Some(Err(own_error()));
-        }
-        let as_constant: Vec<_> = values.iter().map(|&k| describe(As::Constant(k))).collect();
-        let mut passed = Vec::new();
-        let mut changed = Vec::new();
-        for (&k, answer) in values.iter().zip(as_constant) {
-            match answer? {
-                // The statement describes once this one parameter is a constant.
-                Ok(_) => passed.push(k),
-                Err(e) if !same(&e, error) => changed.push((k, e)),
-                Err(_) => {}
-            }
-        }
-        return Some(match (passed.is_empty(), &changed[..]) {
-            (false, _) => checked(sql, lexed, parameters, passed),
-            (true, [(k, e)]) => Err(vec![refused(sql, lexed, parameters, *k, &format!("the statement fails with {} in its place, so its value is part of what the statement says", parameters.constant(*k, 0).1), Some(e))]),
-            _ => Err(own_error()),
-        });
-    }
-    let mut found = Vec::new();
-    for (&k, answer) in values.iter().zip(alone) {
-        if answer?.is_err() {
-            found.push(k);
-        }
-    }
-    // Refused with its parameters columns, described with them constants, and no one of them at
-    // fault alone: they are constants together.
-    Some(checked(sql, lexed, parameters, if found.is_empty() { values } else { found }))
+/// The statement as it runs, every parameter a constant.
+struct Ran {
+    /// What its describe answers with the values of `base`.
+    rows: Rows,
+    /// The values the statement describes with: each parameter's constant.
+    base: Choice,
+    /// The parameters the server reads as constants, each by the index of its first placeholder.
+    constants: Vec<usize>,
+    /// Which of the columns are named by text that changes with a parameter's value.
+    varying: Vec<bool>,
 }
 
-/// The parameters the server reads as constants, where each has a second value to describe the
-/// statement with; else the refusal of each that has one value alone.
-fn checked(sql: &str, lexed: &Lexed, parameters: &Parameters, found: Vec<usize>) -> Result<Vec<usize>, Vec<Diagnostic>> {
-    let single: Vec<Diagnostic> = found
-        .iter()
-        .filter(|&&k| parameters.constants[k].len() < 2)
-        .map(|&k| refused(sql, lexed, parameters, k, &format!("Reylo has one value of the type {} to describe the statement with, which cannot show that the result's types hold for every value", parameters.types[k]), None))
-        .collect();
-    if single.is_empty() {
-        Ok(found)
+/// The statement as it runs, or the diagnostics of one that has no one type so. `column` is its
+/// describe with each parameter a column, and `first` and `second` its describes with each
+/// parameter's first constant and its second.
+#[allow(clippy::too_many_arguments)]
+fn as_it_runs(sql: &str, lexed: &Lexed, parameters: &Parameters, body: &str, asked: &Rewritten, column: &Described, first: Described, second: Described, host: &Host) -> Lazy<Result<Ran, Vec<Diagnostic>>> {
+    let describe = |choice: &Choice| host.query(&format!("{DESCRIBE}{}\n)", parameters.text(body, lexed, choice).sql), Vec::new(), Scope::Statement);
+    let ones = once(lexed, 0..lexed.placeholders.len());
+    let most = parameters.constants.iter().map(Vec::len).max().unwrap_or(1);
+    // The same error with a column and with a constant, each stand-in read back as its parameter,
+    // is the statement's own, whatever its parameters are.
+    if let (Err(as_columns), Err(as_constants)) = (column, &first) {
+        if as_columns.code == as_constants.code && parameters.authored(sql, lexed, &message_of(as_columns)) == parameters.authored(sql, lexed, &message_of(as_constants)) {
+            return Some(Err(vec![server_error(sql, lexed, parameters, asked, DESCRIBE, as_columns)]));
+        }
+    }
+    // Every describe of the statement as it runs, each with the values it was asked with.
+    let mut tried: Vec<(Choice, Described)> = vec![(parameters.joint(0), first), (parameters.joint(1), second)];
+    // Where it fails with the first two values of each parameter, a value was computed with: each
+    // later value of every parameter at once, which finds what one kind of text describes.
+    if tried.iter().all(|(_, answer)| answer.is_err()) {
+        let later: Vec<_> = (2..most).map(|j| parameters.joint(j)).map(|choice| (describe(&choice), choice)).collect();
+        for (answer, choice) in later {
+            tried.push((choice, answer?));
+        }
+    }
+    // Then one parameter changed at a time, keeping a change the statement fails otherwise with:
+    // a zone here and a date there.
+    if tried.iter().all(|(_, answer)| answer.is_err()) {
+        let mut current = parameters.joint(0);
+        let mut code = tried[0].1.as_ref().err().and_then(|e| e.code.clone());
+        for _ in 0..ones.len() {
+            let changes: Vec<Choice> = ones.iter().flat_map(|&k| (0..parameters.constants[k].len()).map(move |j| (k, j))).map(|(k, j)| parameters.with(lexed, &current, k, Some(j))).filter(|choice| *choice != current).collect();
+            let asked: Vec<_> = changes.into_iter().map(|choice| (describe(&choice), choice)).collect();
+            let mut answers = Vec::with_capacity(asked.len());
+            for (answer, choice) in asked {
+                answers.push((choice, answer?));
+            }
+            let described = answers.iter().any(|(_, answer)| answer.is_ok());
+            let moved = answers.iter().find_map(|(choice, answer)| answer.as_ref().err().filter(|e| e.code != code).map(|e| (choice.clone(), e.code.clone())));
+            tried.extend(answers);
+            match moved {
+                Some((choice, other)) if !described => {
+                    current = choice;
+                    code = other;
+                }
+                _ => break,
+            }
+        }
+    }
+    let Some((base, rows)) = tried.iter().find_map(|(choice, answer)| answer.as_ref().ok().map(|rows| (choice.clone(), rows.clone()))) else {
+        let Err(error) = &tried[0].1 else { unreachable!("no describe answered") };
+        return unvalued(sql, lexed, parameters, body, column, error, host).map(Err);
+    };
+    let types = types_of(&rows);
+
+    // The parameters the server reads as constants: where the statement is refused with its
+    // parameters columns, each one it is refused with as a column alone, or all of them where no
+    // one is at fault alone.
+    let values: Vec<usize> = ones.iter().copied().filter(|&k| parameters.positions[k] == Position::Value).collect();
+    let constants = if column.is_ok() || values.is_empty() {
+        Vec::new()
     } else {
-        Err(single)
-    }
-}
-
-/// Whether the statement's types hold as the parameter at `k`, which the server reads as a
-/// constant, takes its other values: `None` where one of them describes with the types of `rows`,
-/// the describe with its first value, and none with other types; else its refusal. A value the
-/// statement fails with says nothing of its types, since the statement fails with it as it runs
-/// too: a level of 2 is no quantile's.
-fn held(sql: &str, lexed: &Lexed, parameters: &Parameters, k: usize, rows: &[Vec<Value>], others: [Result<Vec<Vec<Value>>, DbError>; 2]) -> Option<Diagnostic> {
-    let first = parameters.constant(k, 0).1.as_str();
-    let mut agreed = false;
-    let mut failed = None;
-    for (j, other) in [1, 2].into_iter().zip(others) {
-        let shown = parameters.constant(k, j).1.as_str();
-        match other {
-            Ok(with_other) if types_of(&with_other) == types_of(rows) => agreed = true,
-            Ok(with_other) => return Some(refused(sql, lexed, parameters, k, &format!("the result's types change with its value: {}", difference((rows, first), (with_other.as_slice(), shown))), None)),
-            Err(e) => failed = failed.or(Some((shown, e))),
+        let together = describe(&parameters.columns(&base));
+        let alone: Vec<_> = values.iter().map(|&k| describe(&parameters.with(lexed, &base, k, None))).collect();
+        let together = together?;
+        let mut found = Vec::new();
+        for (&k, answer) in values.iter().zip(alone) {
+            if answer?.is_err() {
+                found.push(k);
+            }
+        }
+        match together {
+            Ok(_) => Vec::new(),
+            Err(_) if found.is_empty() => values,
+            Err(_) => found,
+        }
+    };
+    // Each of those is tried with every value it has, alone, and with every parameter's value of
+    // each number at once, since two of them may only describe together: two arrays of one length.
+    if !constants.is_empty() {
+        let mut more: Vec<Choice> = Vec::new();
+        let singles = constants.iter().flat_map(|&k| (0..parameters.constants[k].len()).map(move |j| (k, j))).map(|(k, j)| parameters.with(lexed, &base, k, Some(j)));
+        for choice in (0..most).map(|j| parameters.joint(j)).chain(singles) {
+            if !more.contains(&choice) && !tried.iter().any(|(other, _)| *other == choice) {
+                more.push(choice);
+            }
+        }
+        let asked: Vec<_> = more.into_iter().map(|choice| (describe(&choice), choice)).collect();
+        for (answer, choice) in asked {
+            tried.push((choice, answer?));
         }
     }
-    if agreed {
-        return None;
+
+    // A describe with other types shows a value deciding one: the parameter's, where one alone changed.
+    let changed = |choice: &Choice| ones.iter().copied().filter(|&k| parameters.differs(k, choice, &base)).collect::<Vec<usize>>();
+    let decides = |k: usize, choice: &Choice, other: &Rows| {
+        let p = &lexed.placeholders[k];
+        let why = difference((&rows, parameters.shown(k, &base)), (other, parameters.shown(k, choice)));
+        if constants.contains(&k) {
+            refused(sql, lexed, parameters, k, &format!("the result's types change with its value: {why}"), None)
+        } else {
+            at(p, format!("The result's types change with the value of {}: {why}. Write the value in the statement.", &sql[p.start..p.end]), 10)
+        }
+    };
+    let differing: Vec<(&Choice, &Rows)> = tried.iter().filter_map(|(choice, answer)| answer.as_ref().ok().filter(|other| types_of(other) != types).map(|other| (choice, other))).collect();
+    if let Some(&(choice, other)) = differing.first() {
+        let mut out: Vec<Diagnostic> = Vec::new();
+        let mut blamed: Vec<usize> = Vec::new();
+        for &(choice, other) in &differing {
+            if let [k] = changed(choice)[..] {
+                if !blamed.contains(&k) {
+                    blamed.push(k);
+                    out.push(decides(k, choice, other));
+                }
+            }
+        }
+        if out.is_empty() {
+            // Several changed at once: each alone, with the value it had there.
+            let alone: Vec<_> = changed(choice).into_iter().map(|k| parameters.with(lexed, &base, k, choice[k])).map(|single| (describe(&single), single)).collect();
+            for (answer, single) in alone {
+                if let (Ok(with_other), [k]) = (answer?, &changed(&single)[..]) {
+                    if types_of(&with_other) != types {
+                        out.push(decides(*k, &single, &with_other));
+                    }
+                }
+            }
+        }
+        if out.is_empty() {
+            out.push(whole(sql, format!("The result's types change with the values of the statement's parameters: {}. Write the values in the statement.", difference((&rows, "one value of each"), (other, "another"))), 10, None));
+        }
+        return Some(Err(out));
     }
-    let (shown, e) = failed?;
-    Some(refused(sql, lexed, parameters, k, &format!("the statement fails with each other value tried in its place, as with {shown}, so nothing shows that the result's types hold for every value"), Some(&e)))
+    // And a parameter the server reads as a constant holds its types only where another value of
+    // it describes with them. A value the statement fails with says nothing of its types.
+    let mut unshown = Vec::new();
+    for &k in &constants {
+        if tried.iter().any(|(choice, answer)| answer.is_ok() && parameters.differs(k, choice, &base)) {
+            continue;
+        }
+        if parameters.constants[k].len() < 2 {
+            unshown.push(refused(sql, lexed, parameters, k, &format!("Reylo has one value of the type {} to describe the statement with, which cannot show that the result's types hold for every value", parameters.types[k]), None));
+            continue;
+        }
+        let failed = tried.iter().find_map(|(choice, answer)| answer.as_ref().err().filter(|_| changed(choice) == [k]).map(|e| (parameters.shown(k, choice), e)));
+        let (shown, error) = match failed {
+            Some((shown, e)) => (shown, Some(e)),
+            None => (parameters.constant(k, 1).1.as_str(), None),
+        };
+        unshown.push(refused(sql, lexed, parameters, k, &format!("the statement fails with each other value tried in its place, as with {shown}, so nothing shows that the result's types hold for every value"), error));
+    }
+    if !unshown.is_empty() {
+        return Some(Err(unshown));
+    }
+
+    // A column's name that another value changes, or that holds the text standing for a parameter.
+    let name = |rows: &Rows, i: usize| rows.get(i).and_then(|row| row.first()).and_then(as_str).unwrap_or_default().to_string();
+    let varying = (0..rows.len())
+        .map(|i| {
+            let own = name(&rows, i);
+            tried.iter().any(|(_, answer)| matches!(answer, Ok(other) if other.len() == rows.len() && name(other, i) != own)) || ones.iter().any(|&k| base[k].is_some_and(|j| own.contains(parameters.constant(k, j).0.as_str())))
+        })
+        .collect();
+    Some(Ok(Ran { rows, base, constants, varying }))
 }
 
-/// Why the statement has no one type as it runs, every parameter a constant: `first` and `second`
-/// are its describes with each parameter's first constant and its second, and they differ. Each
-/// parameter is asked about alone, the one given its second constant among the others' first.
-fn changing(sql: &str, lexed: &Lexed, parameters: &Parameters, body: &str, first: &[Vec<Value>], second: &[Vec<Value>], host: &Host) -> Lazy<Vec<Diagnostic>> {
-    let ones = once(lexed, (0..lexed.placeholders.len()).filter(|&k| parameters.constants[k].len() > 1));
-    let asked: Vec<_> = ones.iter().map(|&k| host.query(&format!("{DESCRIBE}{}\n)", parameters.text(body, lexed, As::Other(k)).sql), Vec::new(), Scope::Statement)).collect();
+/// Why the statement describes with no value tried for its parameters: the diagnostics of each
+/// parameter at fault, found by writing it alone as its first constant among columns. The server
+/// computes with the one the statement then fails with, or fails otherwise with than as columns;
+/// where none is at fault alone, the error is the statement's, as it fails with each first value.
+fn unvalued(sql: &str, lexed: &Lexed, parameters: &Parameters, body: &str, column: &Described, error: &DbError, host: &Host) -> Lazy<Vec<Diagnostic>> {
+    let ones = once(lexed, 0..lexed.placeholders.len());
+    let first = parameters.joint(0);
+    let columns = parameters.columns(&first);
+    let alone: Vec<_> = ones.iter().map(|&k| host.query(&format!("{DESCRIBE}{}\n)", parameters.text(body, lexed, &parameters.with(lexed, &columns, k, Some(0))).sql), Vec::new(), Scope::Statement)).collect();
     let mut out = Vec::new();
-    for (&k, answer) in ones.iter().zip(asked) {
-        if let Ok(with_other) = answer? {
-            if types_of(&with_other) != types_of(first) {
-                let p = &lexed.placeholders[k];
-                let why = difference((first, parameters.constant(k, 0).1.as_str()), (with_other.as_slice(), parameters.constant(k, 1).1.as_str()));
-                out.push(at(p, format!("The result's types change with the value of {}: {why}. Write the value in the statement.", &sql[p.start..p.end]), 10));
+    for (&k, answer) in ones.iter().zip(alone) {
+        let p = &lexed.placeholders[k];
+        let shown = &parameters.constant(k, 0).1;
+        match (column, answer?) {
+            // A column there, and a value the statement converts as it is read: a text that is no date.
+            (Ok(_), Err(e)) => {
+                let quoted = parameters.authored(sql, lexed, &message_of(&e));
+                out.push(at(p, format!("ClickHouse computes with {} as it reads the statement, and the statement fails with each value tried in its place, as with {shown}. Declare the parameter as the type the statement converts it to, or write the value in the statement. ({})", &sql[p.start..p.end], quoted.trim_end_matches('.')), 10));
             }
+            // A constant there alone, and one that names what the statement reads: a type's name.
+            (Err(as_columns), Err(e)) if e.code != as_columns.code => out.push(refused(sql, lexed, parameters, k, &format!("the statement fails with each value tried in its place, as with {shown}, so its value is part of what the statement says"), Some(&e))),
+            _ => {}
         }
     }
     if out.is_empty() {
-        out.push(whole(sql, format!("The result's types change with the values of the statement's parameters: {}. Write the values in the statement.", difference((first, "one value of each"), (second, "another"))), 10, None));
+        out.push(server_error(sql, lexed, parameters, &parameters.text(body, lexed, &first), DESCRIBE, error));
     }
     Some(out)
 }
 
-/// The analysis of a write, which returns no rows. An INSERT is built, and not run, by `EXPLAIN
-/// PIPELINE`, which checks its table and columns and the SELECT it reads; a DELETE is described as
-/// the SELECT of the rows it would delete, where that reads as one; any write is parsed.
+/// The analysis of a write, which returns no rows. Any write is parsed. An INSERT is built, and
+/// not run, by `EXPLAIN PIPELINE`, which checks its table and columns and the SELECT it reads; a
+/// DELETE or an UPDATE is described as the SELECT it reads as ([`as_select`]), which checks its
+/// table, the rows it names and the values it writes. A write returns no types for a parameter's
+/// value to change, so it stands where the server takes it with its parameters columns, or
+/// constants of any of the values tried: a constant is computed with as the statement is read.
 fn write(sql: &str, lexed: &Lexed, parameters: &Parameters, body: &str, asked: &Rewritten, mut typed: Analysis, host: &Host) -> Lazy<Analysis> {
     let refuse = |d: Vec<Diagnostic>| Some(analysis::bare(sql, lexed, Dialect::Clickhouse, d));
     let insert = typed.kind == Some(StatementKind::Insert);
@@ -898,36 +1074,269 @@ fn write(sql: &str, lexed: &Lexed, parameters: &Parameters, body: &str, asked: &
             return refuse(vec![Diagnostic { message: "An INSERT … FORMAT takes its rows from the request's body, which a typed statement does not have: write the rows as VALUES, or as a SELECT, with parameters.".into(), start, length: "format".len(), code: 10, server_code: None }]);
         }
     }
-    // A write returns no types for a parameter's value to change, so a parameter the server reads
-    // as a constant is one: the statement is asked about with its parameters columns, and where
-    // that is refused, with them constants, and it stands where either answers.
-    let constants = parameters.text(body, lexed, As::Constants(0));
-    let parsed = host.query(&format!("{AST}{}", asked.sql), Vec::new(), Scope::Statement);
-    let built = insert.then(|| [asked, &constants].map(|text| host.query(&format!("{PIPELINE}{}", text.sql), Vec::new(), Scope::Statement)));
-    // `DELETE FROM t WHERE c` reads as `SELECT 1 FROM t WHERE c`, the first word alone changed.
-    let deleted = (typed.kind == Some(StatementKind::Delete)).then(|| {
-        let cut = (code_after(sql, lexed, 0) + "delete".len()).min(body.len());
-        let select = format!("SELECT 1{}", &body[cut..]);
-        let moved = shifted(lexed, "SELECT 1".len() as isize - cut as isize, cut);
-        let [columns, constants] = [As::Columns(0), As::Constants(0)].map(|how| parameters.text(&select, &moved, how).sql);
-        (host.query(&format!("{AST}{columns}"), Vec::new(), Scope::Statement), [columns, constants].map(|text| host.query(&format!("{DESCRIBE}{text}\n)"), Vec::new(), Scope::Statement)))
-    });
-    if let Err(e) = parsed? {
-        return refuse(vec![server_error(sql, lexed, parameters, asked, AST, &e)]);
-    }
-    if let Some([columns, constants]) = built {
-        if let (Err(e), Err(_)) = (columns?, constants?) {
-            return refuse(vec![server_error(sql, lexed, parameters, asked, PIPELINE, &e)]);
+    let ask = |text: String| host.query(&text, Vec::new(), Scope::Statement);
+    let most = parameters.constants.iter().map(Vec::len).max().unwrap_or(1);
+    let first = parameters.joint(0);
+    let columns = parameters.columns(&first);
+    let select = if insert { None } else { as_select(body, lexed) };
+    // What the server is asked of the statement with its parameters written one way.
+    let question = |choice: &Choice| match &select {
+        _ if insert => Some(format!("{PIPELINE}{}", parameters.text(body, lexed, choice).sql)),
+        Some(edits) => Some(format!("{DESCRIBE}{}\n)", edited(&parameters.text(body, lexed, choice), edits))),
+        None => None,
+    };
+    let parsed = ask(format!("{AST}{}", asked.sql));
+    // The columns an INSERT … VALUES writes its parameters to, as the table has them.
+    let values = if insert { inserted(body, lexed) } else { None };
+    let table = values.as_ref().map(|(table, ..)| ask(format!("DESCRIBE TABLE {table}")));
+    // Where the text is no SELECT, as with ON CLUSTER or IN PARTITION, nothing more is asked of it.
+    let reads = select.as_ref().map(|edits| ask(format!("{AST}{}", edited(&parameters.text(body, lexed, &columns), edits))));
+    let checks: Vec<_> = [&columns, &first].into_iter().filter_map(question).map(ask).collect();
+    let parsed = match parsed? {
+        Ok(rows) => rows,
+        Err(e) => return refuse(vec![server_error(sql, lexed, parameters, asked, AST, &e)]),
+    };
+    // An ALTER's commands, as the server's parse names them: one that changes no rows changes the
+    // table, or a part of it on disk, which is no statement of an application's data.
+    if typed.kind == Some(StatementKind::Other) {
+        let lines: Vec<&str> = parsed.iter().filter_map(|row| row.first().and_then(as_str)).flat_map(str::lines).collect();
+        let commands: Vec<&str> = lines.iter().filter_map(|line| line.trim_start().strip_prefix("AlterCommand ")).map(|rest| rest.split_whitespace().next().unwrap_or_default()).collect();
+        let other = commands.iter().find(|command| !matches!(**command, "UPDATE" | "DELETE"));
+        if !lines.first().is_some_and(|line| line.starts_with("AlterQuery")) || commands.is_empty() || other.is_some() {
+            let what = other.map_or_else(|| "this one is none".to_string(), |command| format!("{} is neither", command.replace('_', " ")));
+            return refuse(vec![whole(sql, lex::refused_command(&format!("Reylo types an ALTER TABLE that changes rows, with UPDATE or DELETE, and {what}")), 10, None)]);
         }
     }
-    if let Some((reads, [columns, constants])) = deleted {
-        // Where the text is no SELECT, as with ON CLUSTER or IN PARTITION, nothing more is asked.
-        if let (Ok(_), Err(e), Err(_)) = (reads?, columns?, constants?) {
-            return refuse(vec![whole(sql, parameters.authored(sql, lexed, &message_of(&e)), 6, e.code.clone())]);
+    let reads = match reads {
+        Some(answer) => answer?.is_ok(),
+        None => true,
+    };
+    let mut answers = Vec::with_capacity(checks.len());
+    for check in checks {
+        answers.push(check?);
+    }
+    if reads && !answers.is_empty() && answers.iter().all(Result::is_err) {
+        // A value may have been computed with: each later value of every parameter at once.
+        let later: Vec<_> = (1..most).filter_map(|j| question(&parameters.joint(j))).map(ask).collect();
+        let mut taken = false;
+        for answer in later {
+            taken |= answer?.is_ok();
+        }
+        if let (false, Some(Err(e))) = (taken, answers.first()) {
+            return refuse(vec![if insert { server_error(sql, lexed, parameters, asked, PIPELINE, e) } else { whole(sql, parameters.authored(sql, lexed, &message_of(e)), 6, e.code.clone()) }]);
+        }
+    }
+    // A parameter written to a column as it is: ClickHouse converts what a statement inserts to
+    // the column's type, and where the column cannot hold the value it changes it and says
+    // nothing, so the parameter's own type has to be one whose every value the column holds.
+    if let (Some((_, listed, written)), Some(answer)) = (&values, table) {
+        if let Ok(rows) = answer? {
+            let text = |row: &Vec<Value>, i: usize| row.get(i).and_then(as_str).unwrap_or_default().to_string();
+            let columns: Vec<(String, String)> = match listed {
+                Some(names) => names.iter().filter_map(|name| rows.iter().find(|row| text(row, 0) == *name).map(|row| (text(row, 0), text(row, 1)))).collect(),
+                // With no list, every column but the ones the table computes itself, in its order.
+                None => rows.iter().filter(|row| !matches!(text(row, 2).as_str(), "MATERIALIZED" | "ALIAS" | "EPHEMERAL")).map(|row| (text(row, 0), text(row, 1))).collect(),
+            };
+            let narrowed: Vec<Diagnostic> = written
+                .iter()
+                .filter(|_| listed.as_ref().is_none_or(|names| names.len() == columns.len()))
+                .filter_map(|&(place, k)| {
+                    let (name, described) = columns.get(place)?;
+                    let column = types::parse(described)?;
+                    let into = match (column.name.as_str(), column.args.as_slice()) {
+                        ("LowCardinality", [Arg::Type(inner)]) => inner.clone(),
+                        _ => column.clone(),
+                    };
+                    let p = &lexed.placeholders[k];
+                    types::narrows(&parameters.types[k], &column).then(|| at(p, format!("{} is written to the column {name}, a {column}, and ClickHouse changes a value the column cannot hold into one it can, without an error. Declare the parameter as the column's type: {{{}:{into}}}.", &sql[p.start..p.end], p.name), 10))
+                })
+                .collect();
+            if !narrowed.is_empty() {
+                return refuse(narrowed);
+            }
         }
     }
     typed.cardinality = Cardinality::None;
     Some(typed)
+}
+
+/// What an `INSERT … VALUES` writes: the table as the statement names it, the columns it lists,
+/// where it lists them, and each value of a row that is a parameter alone, by its place in the row
+/// and the parameter's index. `None` where the statement is another INSERT (`… SELECT`, a table
+/// function's) or lists what is no column's name.
+fn inserted(body: &str, lexed: &Lexed) -> Option<(String, Option<Vec<String>>, Vec<(usize, usize)>)> {
+    let code = code(body, lexed);
+    let b = body.as_bytes();
+    let top: Vec<(usize, String)> = words(body, lexed).into_iter().filter(|(start, _)| code.iter().any(|&(at, _, depth)| at == *start && depth == 0)).collect();
+    let word = |i: usize| top.get(i).map(|(_, word)| word.as_str());
+    if word(0)? != "insert" || word(1)? != "into" {
+        return None;
+    }
+    let named = if word(2) == Some("table") { 2 } else { 1 };
+    let values = top.iter().position(|(_, word)| word == "values")?;
+    if top[..values].iter().any(|(_, word)| matches!(word.as_str(), "function" | "select" | "with" | "format")) {
+        return None;
+    }
+    // The table: names joined by dots, each plain or quoted.
+    let start = code_after(body, lexed, top[named].0 + top[named].1.len());
+    let mut end = start;
+    loop {
+        end += name_length(&body[end..])?;
+        match b.get(end) {
+            Some(b'.') => end += 1,
+            _ => break,
+        }
+    }
+    let table = body[start..end].to_string();
+    // The list of columns after it, where there is one: each a name.
+    let after = code_after(body, lexed, end);
+    let listed = match b.get(after) {
+        Some(b'(') if after < top[values].0 => {
+            let close = code.iter().find(|&&(at, byte, depth)| at > after && byte == b')' && depth == 0)?.0;
+            let names = body[after + 1..close].split(',').map(|name| {
+                let name = name.trim();
+                (name_length(name) == Some(name.len())).then(|| if name.starts_with(['`', '"']) { name[1..name.len() - 1].replace("\\", "") } else { name.to_string() })
+            });
+            Some(names.collect::<Option<Vec<String>>>()?)
+        }
+        _ => None,
+    };
+    // Each row's values, a level inside its parentheses.
+    let from = top[values].0 + "values".len();
+    let mut written = Vec::new();
+    let (mut place, mut item) = (0usize, from);
+    let mut alone = |place: usize, start: usize, end: usize| {
+        let inside: Vec<usize> = (0..lexed.placeholders.len()).filter(|&k| start <= lexed.placeholders[k].start && lexed.placeholders[k].end <= end).collect();
+        if let [k] = inside[..] {
+            let p = &lexed.placeholders[k];
+            let cast = body[p.end..end].trim();
+            if body[start..p.start].trim().is_empty() && (cast.is_empty() || cast.strip_prefix("::").is_some_and(|ty| type_end(ty) == ty.len())) {
+                written.push((place, k));
+            }
+        }
+    };
+    for &(at, byte, depth) in code.iter().filter(|&&(at, _, _)| at >= from) {
+        match (byte, depth) {
+            (b'(', 0) => {
+                place = 0;
+                item = at + 1;
+            }
+            (b',', 1) => {
+                alone(place, item, at);
+                place += 1;
+                item = at + 1;
+            }
+            (b')', 0) => alone(place, item, at),
+            _ => {}
+        }
+    }
+    Some((table, listed, written))
+}
+
+/// The statement's code a byte at a time, each with its place and how many parentheses, brackets
+/// and braces it stands in: its strings, quoted names, comments and placeholders left out.
+fn code(body: &str, lexed: &Lexed) -> Vec<(usize, u8, usize)> {
+    let b = body.as_bytes();
+    let skip = |i: usize| lexed.opaque.iter().copied().chain(lexed.placeholders.iter().map(|p| (p.start, p.end))).find(|&(start, end)| start <= i && i < end).map(|(_, end)| end);
+    let mut out = Vec::with_capacity(b.len());
+    let (mut i, mut depth) = (0, 0usize);
+    while i < b.len() {
+        if let Some(end) = skip(i) {
+            i = end;
+            continue;
+        }
+        match b[i] {
+            b'(' | b'[' | b'{' => {
+                out.push((i, b[i], depth));
+                depth += 1;
+            }
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                out.push((i, b[i], depth));
+            }
+            byte => out.push((i, byte, depth)),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The SELECT a DELETE or an UPDATE reads as, as the edits of its text that make it one, each a
+/// place, a length and what stands there. `DELETE FROM t WHERE c` is `SELECT 1 FROM t WHERE c`.
+/// `UPDATE t SET a = x, b = y WHERE c` is `FROM t SELECT a , x, b , y WHERE c`, which names each
+/// column written and computes each value, and `ALTER TABLE t UPDATE … WHERE c` and `ALTER TABLE t
+/// DELETE WHERE c` read the same way. `None` where the statement opens otherwise.
+fn as_select(body: &str, lexed: &Lexed) -> Option<Vec<(usize, usize, String)>> {
+    let code = code(body, lexed);
+    // The words outside every parenthesis, lowercased, each with where it starts.
+    let mut words: Vec<(usize, String)> = Vec::new();
+    let mut last = None;
+    for &(at, byte, depth) in &code {
+        if depth > 0 || !(byte.is_ascii_alphanumeric() || byte == b'_') {
+            last = None;
+            continue;
+        }
+        match words.last_mut() {
+            Some((_, word)) if last == Some(at.wrapping_sub(1)) => word.push(byte.to_ascii_lowercase() as char),
+            _ => words.push((at, (byte.to_ascii_lowercase() as char).to_string())),
+        }
+        last = Some(at);
+    }
+    let word = |i: usize| words.get(i).map(|(_, word)| word.as_str());
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    // The word the assignments follow, where the statement has them.
+    let set = match (word(0)?, word(1)) {
+        ("delete", _) => {
+            edits.push((words[0].0, "delete".len(), "SELECT 1".into()));
+            return Some(edits);
+        }
+        ("update", _) => {
+            edits.push((words[0].0, "update".len(), "FROM".into()));
+            let set = words.iter().position(|(_, word)| word == "set")?;
+            edits.push((words[set].0, "set".len(), "SELECT".into()));
+            set
+        }
+        ("alter", Some("table")) => {
+            edits.push((words[0].0, words[1].0 + "table".len() - words[0].0, "FROM".into()));
+            let command = words.iter().skip(2).position(|(_, word)| word == "update" || word == "delete")? + 2;
+            if words[command].1 == "delete" {
+                edits.push((words[command].0, "delete".len(), "SELECT 1".into()));
+                return Some(edits);
+            }
+            edits.push((words[command].0, "update".len(), "SELECT".into()));
+            command
+        }
+        _ => return None,
+    };
+    // Each assignment's `=`, the first of its item, as the comma between the column and the value.
+    let from = words[set].0 + words[set].1.len();
+    let to = words.iter().rposition(|(_, word)| word == "where").filter(|&i| i > set).map_or(body.len(), |i| words[i].0);
+    let mut assigned = false;
+    for &(at, byte, depth) in code.iter().filter(|&&(at, _, _)| at >= from && at < to) {
+        match byte {
+            b',' if depth == 0 => assigned = false,
+            b'=' if depth == 0 && !assigned => {
+                assigned = true;
+                edits.push((at, 1, ",".into()));
+            }
+            _ => {}
+        }
+    }
+    Some(edits)
+}
+
+/// A rewritten statement with `edits` made, each at a place of the author's text that stands in
+/// no placeholder: the placeholders before it are each as long as what stands for them.
+fn edited(text: &Rewritten, edits: &[(usize, usize, String)]) -> String {
+    let moved = |at: usize| text.spans.iter().take_while(|&&(_, end, _, _)| end <= at).last().map_or(at, |&(_, end, _, rewritten_end)| rewritten_end + (at - end));
+    let mut ordered: Vec<&(usize, usize, String)> = edits.iter().collect();
+    ordered.sort_by_key(|edit| std::cmp::Reverse(edit.0));
+    let mut out = text.sql.clone();
+    for (at, length, with) in ordered {
+        let start = moved(*at);
+        out.replace_range(start..start + length, with);
+    }
+    out
 }
 
 /// The words of the statement's code, lowercased, each with where it starts: its strings, quoted
@@ -951,17 +1360,6 @@ fn words(body: &str, lexed: &Lexed) -> Vec<(usize, String)> {
         }
     }
     out
-}
-
-/// The placeholders of a text whose first `cut` bytes were replaced by text `shift` bytes longer.
-fn shifted(lexed: &Lexed, shift: isize, cut: usize) -> Lexed {
-    let moved = |at: usize| (at as isize + shift).max(0) as usize;
-    Lexed {
-        params: lexed.params.clone(),
-        placeholders: lexed.placeholders.iter().filter(|p| p.start >= cut).map(|p| Placeholder { name: p.name.clone(), start: moved(p.start), end: moved(p.end) }).collect(),
-        style: lexed.style,
-        opaque: lexed.opaque.iter().filter(|&&(start, _)| start >= cut).map(|&(start, end)| (moved(start), moved(end))).collect(),
-    }
 }
 
 #[cfg(test)]
@@ -1074,14 +1472,80 @@ mod tests {
         assert_eq!(b.diagnostics.len(), 1);
         assert_eq!(&sql[b.diagnostics[0].start..b.diagnostics[0].start + b.diagnostics[0].length], "{n:UInt8}");
         assert_eq!(b.diagnostics[0].message, "The result's types change with the value of {n:UInt8}: column 1 (hit) has the type UInt8 with 1 and String with 2. Write the value in the statement.");
-        // A value the server computed with, and failed on, says nothing of the statement.
-        let c = run("SELECT toDate({day:String}) AS day", &|sent| match sent.strip_prefix(DESCRIBE) {
-            Some(text) if text.contains("materialize(") => Ok(vec![vec![json!("day"), json!("Date")]]),
-            Some(_) => Err(error("Code: 38. DB::Exception: Cannot parse date: In scope SELECT toDate(CAST('a', 'String')). (CANNOT_PARSE_DATE) (version 26.9)", "38")),
+    }
+
+    /// A describe that fails, as the server does with a text it cannot compute with.
+    fn unparsed(name: &str, code: &str) -> Result<Vec<Vec<Value>>, DbError> {
+        Err(error(&format!("Code: {code}. DB::Exception: Cannot parse it. ({name}) (version 26.9)"), code))
+    }
+
+    #[test]
+    fn a_statement_is_described_with_values_it_computes_with() {
+        // A function of a LowCardinality column and a constant is LowCardinality, and of two columns
+        // is not: the types are the ones the statement runs with, a date standing for the string a
+        // date is made of, which no letter is.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let sql = "SELECT concat(plan, {suffix:String}) AS label FROM users WHERE created >= toDateTime({since:String})";
+        let a = run(sql, &|sent| {
+            asked.borrow_mut().push(sent.to_string());
+            match sent.strip_prefix(DESCRIBE) {
+                Some(text) if text.contains("materialize(") => Ok(vec![vec![json!("label"), json!("String")]]),
+                Some(text) if text.contains("toDateTime(CAST('2001-02-03 04:05:06', 'String'))") || text.contains("toDateTime(CAST('2004-05-06 07:08:09', 'String'))") => Ok(vec![vec![json!("label"), json!("LowCardinality(String)")]]),
+                Some(_) => unparsed("CANNOT_PARSE_DATETIME", "41"),
+                None => server(&[], "QUERY id: 0")(sent),
+            }
+        });
+        assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+        assert_eq!(a.columns[0].described.as_deref(), Some("LowCardinality(String)"));
+        // No parameter is one the server reads as a constant, so none is asked about alone.
+        assert_eq!(asked.borrow().iter().filter(|s| s.starts_with(DESCRIBE)).count(), 1 + STRINGS.len());
+
+        // Two parameters that each take a text of their own kind: one is changed at a time, and a
+        // change the statement fails otherwise with is kept.
+        let sql = "SELECT toDate(created, {zone:String}) AS day FROM users WHERE created >= {since:String}";
+        let b = run(sql, &|sent| match sent.strip_prefix(DESCRIBE) {
+            Some(text) if text.contains("materialize(") => Err(error("Code: 43. DB::Exception: Illegal type of argument. (ILLEGAL_TYPE_OF_ARGUMENT) (version 26.9)", "43")),
+            Some(text) if !["'UTC'", "'Asia/Tokyo'"].iter().any(|zone| text.contains(&format!("toDate(created, CAST({zone}, 'String'))"))) => unparsed("BAD_ARGUMENTS", "36"),
+            Some(text) if !["'2001-02-03 04:05:06'", "'2004-05-06 07:08:09'"].iter().any(|time| text.contains(&format!(">= CAST({time}, 'String')"))) => unparsed("CANNOT_PARSE_DATETIME", "41"),
+            Some(_) => Ok(vec![vec![json!("day"), json!("Date")]]),
+            None => server(&[], "QUERY id: 0\n  LIMIT\n    CONSTANT id: 4, constant_value: UInt64_1, constant_value_type: UInt64")(sent),
+        });
+        assert!(b.diagnostics.is_empty(), "{:?}", b.diagnostics);
+        assert_eq!(b.columns[0].described.as_deref(), Some("Date"));
+        // Both are constants to the server, so what they decide is the caller's.
+        assert_eq!(b.cardinality, Cardinality::Many);
+
+        // A text the statement computes with, and none of the values tried is one: the parameter is refused where it stands.
+        let sql = "SELECT parse({code:String}) AS n FROM users WHERE id = {id:UInt64}";
+        let c = run(sql, &|sent| match sent.strip_prefix(DESCRIBE) {
+            Some(text) if text.contains("parse(materialize(") => Ok(vec![vec![json!("n"), json!("UInt8")]]),
+            Some(_) => Err(error("Code: 6. DB::Exception: Cannot parse the code: In scope SELECT parse(CAST('a', 'String')). (CANNOT_PARSE_TEXT) (version 26.9)", "6")),
             None => server(&[], "QUERY id: 0")(sent),
         });
-        assert!(c.diagnostics.is_empty(), "{:?}", c.diagnostics);
-        assert_eq!(c.columns[0].described.as_deref(), Some("Date"));
+        assert_eq!(c.diagnostics.len(), 1, "{:?}", c.diagnostics);
+        assert_eq!(&sql[c.diagnostics[0].start..c.diagnostics[0].start + c.diagnostics[0].length], "{code:String}");
+        assert_eq!(c.diagnostics[0].message, "ClickHouse computes with {code:String} as it reads the statement, and the statement fails with each value tried in its place, as with 'a'. Declare the parameter as the type the statement converts it to, or write the value in the statement. (Cannot parse the code: In scope SELECT parse({code:String}). (CANNOT_PARSE_TEXT))");
+    }
+
+    #[test]
+    fn a_column_named_by_a_parameter_s_value_is_the_statement_s_value_or_refused() {
+        // ClickHouse names a column with no alias by its expression, each constant in it written out.
+        let named = |sent: &str| match sent.strip_prefix(DESCRIBE) {
+            Some(text) => {
+                let value = text.split("CAST(").nth(1).and_then(|rest| rest.split(',').next()).unwrap_or("?").to_string();
+                let name = if text.contains("materialize(") { "plus(id, materialize(defaultValueOfTypeName('UInt32')))".to_string() } else { format!("plus(id, CAST({value}, 'UInt32'))") };
+                Ok(if text.contains("SELECT *") { vec![vec![json!("id"), json!("UInt32")], vec![json!(name), json!("UInt64")]] } else { vec![vec![json!(name), json!("UInt64")]] })
+            }
+            None => server(&[], "QUERY id: 0")(sent),
+        };
+        // One such column alone goes by no name: the statement returns its values.
+        let a = run("SELECT id + {x:UInt32} FROM users", &named);
+        assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+        assert!(a.value);
+        // Among others, its name would change from run to run.
+        let b = run("SELECT * FROM (SELECT id, id + {x:UInt32} FROM users)", &named);
+        assert_eq!(b.diagnostics.len(), 1, "{:?}", b.diagnostics);
+        assert_eq!(b.diagnostics[0].message, "Column 2 is named \"plus(id, {x:UInt32})\" by its expression, which holds a parameter's value, so its name changes from run to run. Give it one with `as` where the statement makes it.");
     }
 
     #[test]
@@ -1150,10 +1614,12 @@ mod tests {
         });
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
         assert_eq!(a.columns.iter().map(|c| c.described.as_deref().unwrap()).collect::<Vec<_>>(), ["String", "Float64"]);
-        // The two are written as constants, each varied in its turn, and the third parameter stays a column.
-        for value in ["CAST('a', 'String')) AS shown, quantile(CAST(0.5, 'Float64'))", "CAST('b', 'String')) AS shown, quantile(CAST(0.5, 'Float64'))", "CAST('c', 'String')) AS shown, quantile(CAST(0.5, 'Float64'))", "CAST('a', 'String')) AS shown, quantile(CAST(0.25, 'Float64'))", "CAST('a', 'String')) AS shown, quantile(CAST(0.75, 'Float64'))"] {
-            assert!(asked.borrow().iter().any(|s| s.contains(value) && s.contains("id = materialize(")), "{value}");
+        // Each of the two is tried with every value of its list, alone, in the statement as it runs.
+        for value in ["CAST('a', 'String')) AS shown, quantile(CAST(0.5, 'Float64'))", "CAST('b', 'String')) AS shown, quantile(CAST(0.5, 'Float64'))", "CAST('UTC', 'String')) AS shown, quantile(CAST(0.5, 'Float64'))", "CAST('a', 'String')) AS shown, quantile(CAST(0.25, 'Float64'))", "CAST('a', 'String')) AS shown, quantile(CAST(-1, 'Float64'))"] {
+            assert!(asked.borrow().iter().any(|s| s.starts_with(DESCRIBE) && s.contains(value) && s.contains("id = CAST(1, 'UInt64')")), "{value}");
         }
+        // The tree is read with the two written as constants, and the third parameter a column.
+        assert!(asked.borrow().iter().any(|s| s.starts_with(TREE) && s.contains("CAST('a', 'String')) AS shown, quantile(CAST(0.5, 'Float64'))") && s.contains("id = materialize(")));
         // Whatever such a parameter decides is the caller's, a limit included.
         assert_eq!(a.cardinality, Cardinality::Many);
     }
@@ -1180,7 +1646,28 @@ mod tests {
         };
         let b = run(sql, &constant_only("tupleElement(pair, ", &failing_from(3)));
         assert!(b.diagnostics.is_empty(), "{:?}", b.diagnostics);
+        // A place in the tuple past the first values tried is tried too, and one counted from its end.
+        let sql = "SELECT tupleElement(spot, {at:Int8}) AS side FROM users";
+        let by_place = |text: &str| Ok(vec![vec![json!("side"), json!(if text.contains("CAST(4, 'Int8')") || text.contains("CAST(-1, 'Int8')") { "String" } else { "Float64" })]]);
+        let last = run(sql, &constant_only("tupleElement(spot, ", &by_place));
+        assert_eq!(last.diagnostics.len(), 1, "{:?}", last.diagnostics);
+        assert_eq!(last.diagnostics[0].message, "ClickHouse reads {at:Int8} as a constant here, and the result's types change with its value: column 1 (side) has the type Float64 with 1 and String with 4. Write the value in the statement.");
+        // A unit of a date gives a date where a unit of a time gives a time: both kinds are tried.
+        let sql = "SELECT dateTrunc({unit:String}, created) AS start FROM users";
+        let by_unit = |text: &str| match text.split("dateTrunc(CAST('").nth(1).and_then(|rest| rest.split('\'').next()) {
+            Some("day" | "hour") => Ok(vec![vec![json!("start"), json!("DateTime64(0, 'UTC')")]]),
+            Some("month") => Ok(vec![vec![json!("start"), json!("Date32")]]),
+            _ => unparsed("BAD_ARGUMENTS", "36"),
+        };
+        let unit = run(sql, &constant_only("dateTrunc(", &by_unit));
+        assert_eq!(unit.diagnostics.len(), 1, "{:?}", unit.diagnostics);
+        assert_eq!(unit.diagnostics[0].message, "ClickHouse reads {unit:String} as a constant here, and the result's types change with its value: column 1 (start) has the type DateTime64(0, 'UTC') with 'day' and Date32 with 'month'. Write the value in the statement.");
         // Where no other value describes, nothing shows that the types hold.
+        let sql = "SELECT tupleElement(pair, {at:UInt8}) AS side FROM users";
+        let failing_from = |_: u8| move |text: &str| match text.contains("CAST(1, 'UInt8')") {
+            true => Ok(vec![vec![json!("side"), json!("UInt8")]]),
+            false => Err(error("Code: 10. DB::Exception: Tuple doesn't have element with that index. (NOT_FOUND_COLUMN_IN_BLOCK) (version 26.9.23.15 (official build))", "10")),
+        };
         let b = run(sql, &constant_only("tupleElement(pair, ", &failing_from(2)));
         assert_eq!(b.diagnostics.len(), 1);
         assert_eq!(b.diagnostics[0].message, "ClickHouse reads {at:UInt8} as a constant here, and the statement fails with each other value tried in its place, as with 2, so nothing shows that the result's types hold for every value. Write the value in the statement. (Tuple doesn't have element with that index. (NOT_FOUND_COLUMN_IN_BLOCK))");
@@ -1209,7 +1696,7 @@ mod tests {
         assert_eq!(a.diagnostics.len(), 1);
         let d = &a.diagnostics[0];
         assert_eq!(&sql[d.start..d.start + d.length], "{type:String}");
-        assert_eq!(d.message, "ClickHouse reads {type:String} as a constant here, and the statement fails with 'a' in its place, so its value is part of what the statement says. Write the value in the statement. (Unknown data type family: a: In scope SELECT CAST(age, {type:String}) AS a FROM users. (UNKNOWN_TYPE))");
+        assert_eq!(d.message, "ClickHouse reads {type:String} as a constant here, and the statement fails with each value tried in its place, as with 'a', so its value is part of what the statement says. Write the value in the statement. (Unknown data type family: a: In scope SELECT CAST(age, {type:String}) AS a FROM users. (UNKNOWN_TYPE))");
         // A statement that fails the same way whatever its parameters are is wrong by itself.
         let unknown = "Code: 47. DB::Exception: Unknown expression identifier `nope`. In scope SELECT nope FROM users. (UNKNOWN_IDENTIFIER) (version 26.9.23.15 (official build))";
         let b = run("SELECT nope FROM users WHERE id = {id:UInt64}", &|sent| if sent.starts_with(DESCRIBE) { Err(error(unknown, "47")) } else { server(&[], "QUERY id: 0")(sent) });
@@ -1261,6 +1748,20 @@ mod tests {
     }
 
     #[test]
+    fn a_result_of_more_than_rows_is_refused() {
+        let a = run("SELECT plan, count() AS n FROM users GROUP BY plan WITH TOTALS", &server(&[("plan", "String"), ("n", "UInt64")], "QUERY id: 0, is_group_by_with_totals: 1\n  PROJECTION COLUMNS"));
+        assert_eq!(a.diagnostics.len(), 1);
+        assert!(a.diagnostics[0].message.starts_with("WITH TOTALS returns its totals beside the rows, and a typed result is its rows alone"), "{}", a.diagnostics[0].message);
+        // A format the statement names is the one the server would answer every question in, so it is read off the text.
+        let sql = "SELECT 'default_format' AS n SETTINGS default_format = 'JSONEachRow'";
+        let b = run(sql, &|_| Err(error("unread", "1")));
+        assert_eq!(b.diagnostics[0].message, "The statement's SETTINGS names a format for its result, default_format, and Reylo reads the one it asks for: take the setting out.");
+        assert_eq!(b.diagnostics[0].start, sql.rfind("default_format").unwrap());
+        let c = run("SELECT 1 AS n SETTINGS extremes = 1", &server(&[("n", "UInt8")], "QUERY id: 0\n  PROJECTION COLUMNS\n  SETTINGS extremes=1"));
+        assert!(c.diagnostics[0].message.starts_with("The statement's SETTINGS turns on extremes"), "{}", c.diagnostics[0].message);
+    }
+
+    #[test]
     fn a_column_s_name_is_an_alias_or_a_column_s_own() {
         let value = run("SELECT count() FROM users", &server(&[("count()", "UInt64")], "QUERY id: 0"));
         assert!(value.value && value.diagnostics.is_empty());
@@ -1304,6 +1805,57 @@ mod tests {
         assert!(asked.borrow().iter().any(|s| s == "DESCRIBE (\nSELECT 1 FROM orders WHERE id = materialize(defaultValueOfTypeName('UInt64'))\n)"), "{:?}", asked.borrow());
         let refused = run("DELETE FROM orders WHERE nope = 1", &|sent| if sent.starts_with(DESCRIBE) { Err(error("Code: 47. DB::Exception: Unknown expression identifier `nope`. (UNKNOWN_IDENTIFIER) (version 26.9)", "47")) } else { Ok(Vec::new()) });
         assert_eq!(refused.diagnostics[0].message, "Unknown expression identifier `nope`. (UNKNOWN_IDENTIFIER)");
+        // An UPDATE reads as the SELECT of each column it writes and each value it computes.
+        asked.borrow_mut().clear();
+        let update = run("UPDATE orders SET note = {note:Nullable(String)}, total = round(total, 2) + 1 WHERE id IN (SELECT id FROM gone WHERE at = 1) AND id = {id:UInt64}", &ok);
+        assert_eq!((update.kind, update.cardinality, update.diagnostics.len()), (Some(StatementKind::Update), Cardinality::None, 0));
+        assert!(asked.borrow().iter().any(|s| s == "DESCRIBE (\nFROM orders SELECT note , materialize(defaultValueOfTypeName('Nullable(String)')), total , round(total, 2) + 1 WHERE id IN (SELECT id FROM gone WHERE at = 1) AND id = materialize(defaultValueOfTypeName('UInt64'))\n)"), "{:?}", asked.borrow());
+        // An ALTER is one of rows where each of its commands is, as the server's parse names them.
+        let log = &asked;
+        let parse = |commands: &'static str| move |sent: &str| {
+            log.borrow_mut().push(sent.to_string());
+            match sent.strip_prefix(AST) {
+                Some(text) if text.starts_with("ALTER") => Ok(format!("AlterQuery  orders (children 2)\n ExpressionList (children 1)\n{commands}").lines().map(|line| vec![json!(line)]).collect()),
+                _ => Ok(Vec::new()),
+            }
+        };
+        asked.borrow_mut().clear();
+        let altered = run("ALTER TABLE orders UPDATE note = {note:Nullable(String)} WHERE id = {id:UInt64}", &parse("  AlterCommand UPDATE (children 2)"));
+        assert_eq!((altered.cardinality, altered.diagnostics.len()), (Cardinality::None, 0), "{:?}", altered.diagnostics);
+        assert!(asked.borrow().iter().any(|s| s == "DESCRIBE (\nFROM orders SELECT note , materialize(defaultValueOfTypeName('Nullable(String)')) WHERE id = materialize(defaultValueOfTypeName('UInt64'))\n)"), "{:?}", asked.borrow());
+        asked.borrow_mut().clear();
+        let cut = run("ALTER TABLE orders DELETE WHERE id = {id:UInt64}", &parse("  AlterCommand DELETE (children 1)"));
+        assert!(cut.diagnostics.is_empty(), "{:?}", cut.diagnostics);
+        assert!(asked.borrow().iter().any(|s| s == "DESCRIBE (\nFROM orders SELECT 1 WHERE id = materialize(defaultValueOfTypeName('UInt64'))\n)"), "{:?}", asked.borrow());
+        let added = run("ALTER TABLE orders ADD COLUMN z UInt8", &parse("  AlterCommand ADD_COLUMN (children 1)"));
+        assert!(added.diagnostics[0].message.starts_with("Reylo types an ALTER TABLE that changes rows, with UPDATE or DELETE, and ADD COLUMN is neither, so if it is a migration"), "{}", added.diagnostics[0].message);
+        let frozen = run("ALTER TABLE orders UPDATE note = '' WHERE 1, FREEZE", &parse("  AlterCommand UPDATE (children 2)\n  AlterCommand FREEZE_ALL"));
+        assert!(frozen.diagnostics[0].message.contains("and FREEZE ALL is neither"), "{}", frozen.diagnostics[0].message);
+        // A value a statement computes with as it is read is tried with each of a parameter's, and the statement refused where none is taken.
+        let dated = run("UPDATE orders SET note = '' WHERE created >= {since:String}", &|sent| match sent.strip_prefix(DESCRIBE) {
+            Some(text) if text.contains("'2001-02-03 04:05:06'") => Ok(Vec::new()),
+            Some(_) => unparsed("CANNOT_PARSE_DATETIME", "41"),
+            None => Ok(Vec::new()),
+        });
+        assert!(dated.diagnostics.is_empty(), "{:?}", dated.diagnostics);
+        let missing = run("UPDATE orders SET nope = {note:String} WHERE id = 1", &|sent| if sent.starts_with(DESCRIBE) { Err(error("Code: 47. DB::Exception: Unknown expression identifier `nope`. (UNKNOWN_IDENTIFIER) (version 26.9)", "47")) } else { Ok(Vec::new()) });
+        assert_eq!(missing.diagnostics[0].message, "Unknown expression identifier `nope`. (UNKNOWN_IDENTIFIER)");
+        // A parameter written to a column is held to a type whose every value the column holds.
+        let table = |sent: &str| match sent {
+            "DESCRIBE TABLE shop.`order lines`" => Ok(vec![vec![json!("id"), json!("UInt8"), json!("")], vec![json!("total"), json!("Decimal(9, 2)"), json!("")], vec![json!("seen"), json!("UInt8"), json!("MATERIALIZED")], vec![json!("note"), json!("LowCardinality(String)"), json!("DEFAULT")]]),
+            _ => Ok(Vec::new()),
+        };
+        let sql = "INSERT INTO shop.`order lines` VALUES ({id:UInt64}, {total:Decimal(18, 4)}, {note:Nullable(String)}), (1 + {id:UInt64}, 2, 'x')";
+        let wide = run(sql, &table);
+        assert_eq!(wide.diagnostics.iter().map(|d| &sql[d.start..d.start + d.length]).collect::<Vec<_>>(), ["{id:UInt64}", "{total:Decimal(18, 4)}", "{note:Nullable(String)}"]);
+        assert_eq!(wide.diagnostics[0].message, "{id:UInt64} is written to the column id, a UInt8, and ClickHouse changes a value the column cannot hold into one it can, without an error. Declare the parameter as the column's type: {id:UInt8}.");
+        assert!(wide.diagnostics[2].message.ends_with("Declare the parameter as the column's type: {note:String}."), "{}", wide.diagnostics[2].message);
+        // By the columns the statement lists, in its order; a cast is the parameter's type too.
+        let listed = run("INSERT INTO shop.`order lines` (note, id) VALUES (:note::String, :id::UInt16)", &table);
+        assert_eq!(listed.diagnostics.len(), 1, "{:?}", listed.diagnostics);
+        assert!(listed.diagnostics[0].message.starts_with(":id is written to the column id, a UInt8"), "{}", listed.diagnostics[0].message);
+        let fits = run("INSERT INTO shop.`order lines` (id, total, note) VALUES ({id:UInt8}, {total:Decimal(9, 2)}, {note:String}), ({id:UInt8}, toDecimal32({total:Decimal(9, 2)}, 2), concat({note:String}, 'x'))", &table);
+        assert!(fits.diagnostics.is_empty(), "{:?}", fits.diagnostics);
         let format = run("INSERT INTO orders FORMAT JSONEachRow", &ok);
         assert!(format.diagnostics[0].message.starts_with("An INSERT … FORMAT takes its rows"));
         let ddl = run("CREATE TABLE t (id UInt64) ENGINE = MergeTree ORDER BY id", &ok);

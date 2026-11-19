@@ -79,6 +79,25 @@ fn constant(line: &str) -> Option<u64> {
     (ty.starts_with("UInt") || ty.starts_with("Int")).then(|| digits.parse().ok()).flatten()
 }
 
+/// Why a statement's result is one Reylo does not read whole, where the tree shows it: the
+/// totals of `WITH TOTALS` come beside the rows, in a part of the result that the rows' format
+/// leaves out, and a `SETTINGS` clause of the statement's own that changes how a result is
+/// written outranks what the run time asks for. A format the clause names is read off the
+/// statement's text, since it is the format this tree would come in, too.
+pub fn unread(lines: &[&str]) -> Option<String> {
+    let root = lines.first().filter(|l| l.starts_with("QUERY id: "))?;
+    if root.contains("is_group_by_with_totals: 1") {
+        return Some("WITH TOTALS returns its totals beside the rows, and a typed result is its rows alone: write WITH ROLLUP, whose totals are rows, or select the totals in a statement of their own.".to_string());
+    }
+    // The top query's own settings: `SETTINGS a=1 b=x`, a level under the root.
+    let settings = lines.iter().find_map(|l| l.strip_prefix("  SETTINGS "))?;
+    let set = |name: &str| settings.split_whitespace().find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='));
+    ["output_format_binary_encode_types_in_binary_format", "extremes"]
+        .into_iter()
+        .find(|name| set(name).is_some_and(|value| value != "0"))
+        .map(|name| format!("The statement's SETTINGS turns on {name}, which changes what a result holds beside its rows, and Reylo reads rows alone: take the setting out."))
+}
+
 /// What the tree's lines prove. `limit_given` says the statement writes a parameter as its LIMIT,
 /// whose value the tree shows as the analysis's stand-in, not as a number the statement fixes.
 pub fn rows(lines: &[&str], limit_given: bool) -> Rows {
@@ -111,6 +130,17 @@ pub fn rows(lines: &[&str], limit_given: bool) -> Rows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_result_that_is_more_than_rows_or_written_otherwise_is_refused() {
+        assert_eq!(unread(&["QUERY id: 0", "  PROJECTION COLUMNS", "    a UInt8"]), None);
+        assert!(unread(&["QUERY id: 0, is_group_by_with_totals: 1", "  PROJECTION COLUMNS"]).unwrap().starts_with("WITH TOTALS returns its totals beside the rows"));
+        assert!(unread(&["QUERY id: 0", "  SETTINGS max_threads=1 extremes=1"]).unwrap().contains("turns on extremes"));
+        assert!(unread(&["QUERY id: 0", "  SETTINGS output_format_binary_encode_types_in_binary_format=1"]).unwrap().contains("output_format_binary_encode_types_in_binary_format"));
+        // A setting that is off, another setting, and a subquery's own say nothing.
+        assert_eq!(unread(&["QUERY id: 0", "  SETTINGS extremes=0 max_threads=1"]), None);
+        assert_eq!(unread(&["QUERY id: 0", "  JOIN TREE", "    QUERY id: 3, is_subquery: 1", "      SETTINGS extremes=1"]), None);
+    }
 
     fn read(tree: &str, limit_given: bool) -> Rows {
         let lines: Vec<&str> = tree.lines().collect();

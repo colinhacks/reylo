@@ -163,7 +163,7 @@ fn lasting(analysis: &Value) -> Value {
         let kept = if d["server_code"].is_string() {
             error_name(&message).map(str::to_string)
         } else {
-            message.split_once(" Write the value in the statement. (").map(|(before, _)| format!("{before} Write the value in the statement."))
+            message.split_once(" in the statement. (").map(|(before, _)| format!("{before} in the statement."))
         };
         if let Some(kept) = kept {
             d["message"] = Value::String(kept);
@@ -267,18 +267,20 @@ fn pool(t: &Named) -> Option<Vec<String>> {
             let one = if precision > scale { "1".to_string() } else { largest.clone() };
             Some(vec!["0".into(), one, format!("-{largest}"), largest])
         }
-        ("String", _) => Some(["", "a", "A ", "é😀", "it's \\ a\tb"].iter().map(|s| escaped(s)).collect()),
+        // Texts of every kind, and the ones a statement computes with: a date, a time, a zone, and a unit of a time and one of a date.
+        ("String", _) => Some(["", "a", "A ", "é😀", "it's \\ a\tb", "2026-01-02", "2026-01-02 03:04:05", "UTC", "day", "month"].iter().map(|s| escaped(s)).collect()),
         ("FixedString", _) => texts(&["", "a"]),
         ("UUID", _) => texts(&["00000000-0000-0000-0000-000000000000", "61f0c404-5cb3-11e7-907b-a6006ad3dba0"]),
         ("IPv4", _) => texts(&["0.0.0.0", "255.255.255.255"]),
         ("IPv6", _) => texts(&["::", "2001:db8::1"]),
         ("Date", _) => texts(&["1970-01-01", "2026-01-02", "2149-06-06"]),
         ("Date32", _) => texts(&["1900-01-01", "2026-01-02", "2299-12-31"]),
-        ("DateTime", _) => texts(&["0", "1767268800", "4294967295"]),
+        // Its seconds since 1970, in five digits or more: the server reads a shorter number as a year.
+        ("DateTime", _) => texts(&["00000", "1767268800", "4294967295"]),
         ("DateTime64", _) => {
             let digits = number(t, 0)?;
             let fraction = if digits == 0 { String::new() } else { format!(".{}", "1".repeat(digits)) };
-            Some(vec!["0".into(), format!("1767268800{fraction}"), if digits == 0 { "-1".into() } else { format!("-1{fraction}") }])
+            Some(vec![format!("00000{}", fraction.replace('1', "0")), format!("1767268800{fraction}"), format!("-00001{fraction}")])
         }
         ("Enum8" | "Enum16", labels) => labels.iter().map(|a| if let Arg::Label(label, _) = a { Some(escaped(label)) } else { None }).collect(),
         ("Array", [Arg::Type(inner)]) => Some(vec!["[]".into(), format!("[{}]", inside(inner)?)]),
@@ -458,7 +460,9 @@ fn check(states: &[Http], analyzed: &[(String, String, Value)], timeout_ms: u64)
                 for ((name, ty), column) in returned.iter().zip(&columns) {
                     let described = column["described"].as_str().unwrap_or_default();
                     let came = types::parse(ty);
-                    if column["name"].as_str() != Some(name.as_str()) {
+                    // The one column of a statement that returns a value goes by no name: the
+                    // server's holds each constant of its expression, a parameter's value too.
+                    if column["name"].as_str() != Some(name.as_str()) && analysis["value"].as_bool() != Some(true) {
                         problems.push(format!("{file}: column {name} is typed as {} (with {})", column["name"], shown()));
                     }
                     match &came {
@@ -535,7 +539,9 @@ mod tests {
         assert_eq!(of("Nullable(Bool)").unwrap(), ["true", "false", "\\N"]);
         assert_eq!(of("Decimal(4, 2)").unwrap(), ["0", "1", "-99.99", "99.99"]);
         assert_eq!(of("Decimal(2, 2)").unwrap(), ["0", "0.99", "-0.99", "0.99"]);
-        assert_eq!(of("DateTime64(3, 'UTC')").unwrap(), ["0", "1767268800.111", "-1.111"]);
+        assert_eq!(of("DateTime64(3, 'UTC')").unwrap(), ["00000.000", "1767268800.111", "-00001.111"]);
+        assert_eq!(of("DateTime64(0)").unwrap(), ["00000", "1767268800", "-00001"]);
+        assert_eq!(of("DateTime").unwrap(), ["00000", "1767268800", "4294967295"]);
         assert_eq!(of("Enum8('a' = 1, 'b' = 2)").unwrap(), ["a", "b"]);
         assert_eq!(of("Array(Tuple(UInt64, Nullable(String)))").unwrap(), ["[]", "[(1,NULL)]"]);
         assert_eq!(of("Map(String, Array(Date))").unwrap(), ["{'it\\'s':['2026-01-02']}"]);

@@ -481,6 +481,20 @@ const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^
 /** A zone's name that is UTC's own, or one of its other names. */
 const UTC = /^(?:Etc\/)?(?:UTC|UCT|GMT|Zulu|Universal|Greenwich)$/;
 
+/**
+ * The 32-bit float nearest a number, as the shortest text that reads back as it, which is how
+ * ClickHouse writes one: a server reads the seventeen digits of the double beside it as another
+ * float on some releases.
+ */
+function shortest32(v: number): string {
+  const float = Math.fround(v);
+  for (let digits = 1; digits < 9; digits++) {
+    const text = float.toPrecision(digits);
+    if (Math.fround(Number(text)) === float) return String(Number(text));
+  }
+  return String(Number(float.toPrecision(9)));
+}
+
 /** The days from 1970-01-01 to a date, or undefined where its text is no date of the calendar. */
 function daysOf(text: string): number | undefined {
   const m = DATE.exec(text);
@@ -539,7 +553,10 @@ function valueText(type: Named, v: unknown, name: string, path = ""): string {
       if (typeof v !== "number") fail("which takes a number");
       // ClickHouse reads a number past a 32-bit float as an infinity, without an error.
       if (t.name !== "Float64" && Number.isFinite(v) && !Number.isFinite(Math.fround(v as number))) fail("which holds -3.4028235e38 to 3.4028235e38");
-      return Number.isNaN(v) ? "nan" : v === Infinity ? "inf" : v === -Infinity ? "-inf" : Object.is(v, -0) ? "-0" : String(v);
+      if (Number.isNaN(v)) return "nan";
+      if (!Number.isFinite(v)) return v === Infinity ? "inf" : "-inf";
+      if (Object.is(v, -0)) return "-0";
+      return t.name === "Float64" ? String(v) : shortest32(v as number);
     case "String":
       if (typeof v !== "string") fail("which takes a string");
       if (LONE_SURROGATE.test(v as string)) fail("which takes text, and half of a surrogate pair is none: it would go as U+FFFD");
@@ -596,6 +613,9 @@ function valueText(type: Named, v: unknown, name: string, path = ""): string {
         if (ticks < 0n || ticks > 4294967295n) fail("which holds 1970-01-01T00:00:00Z to 2106-02-07T06:28:15Z");
         return ticks.toString().padStart(5, "0");
       }
+      // The years ClickHouse says a DateTime64 holds: some releases read one past them as the
+      // last instant of 9999, without an error.
+      if (ticks < -2208988800n * second64 || ticks >= 10413792000n * second64) fail("which holds 1900-01-01T00:00:00Z to 2299-12-31T23:59:59Z");
       if (ticks < -(2n ** 63n) || ticks >= 2n ** 63n) fail("whose 64 bits hold no instant so far from 1970");
       const negative = ticks < 0n;
       const magnitude = negative ? -ticks : ticks;
@@ -679,7 +699,7 @@ function tooLong(error: unknown, names: readonly string[], settings: Readonly<Re
   }
   if (longest === undefined) return undefined;
   const code = /Code: (\d+)/.exec(message)?.[1];
-  const own = message.replace(/^Poco::Exception\.\s*Code: \d+,\s*(?:e\.code\(\) = \d+,\s*)?/, "").trim();
+  const own = message.replace(/^Poco::Exception\.\s*Code: \d+,\s*(?:e\.code\(\) = \d+,\s*)?/, "").replace(/\s*\(version [^()]*(?:\([^()]*\))?\)\s*$/, "").trim();
   return Object.assign(new Error(`${own}: the parameter "${longest.name}" is ${longest.bytes} bytes as ClickHouse's text, and the server takes 131072 of one unless its http_max_field_value_size is raised. Send fewer values at a time.`, { cause: error }), code === undefined ? {} : { code });
 }
 

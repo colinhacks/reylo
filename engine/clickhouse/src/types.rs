@@ -313,6 +313,55 @@ impl Named {
 }
 
 /// An integer type's width and whether it is unsigned, by its name.
+/// Whether ClickHouse, writing a value of the type `from` into a column of the type `to`, may
+/// change the value and raise no error: a number past the column's range wraps into it, as one
+/// read from a string does, a decimal's or an instant's digits past the column's are dropped, a
+/// float is rounded to a narrower one or cut to a whole number, a time is dropped from a date, and
+/// a NULL becomes the default of a column that takes none. A value the column cannot read at all
+/// is the server's error, and none of these.
+pub fn narrows(from: &Named, to: &Named) -> bool {
+    let nullable = |t: &Named| match (t.name.as_str(), t.args.as_slice()) {
+        ("Nullable", _) => true,
+        ("LowCardinality", [Arg::Type(inner)]) => inner.name == "Nullable",
+        _ => false,
+    };
+    if nullable(from) && !nullable(to) {
+        return true;
+    }
+    let (from, to) = (from.bare(), to.bare());
+    // A decimal's digits after the point, and an instant's after the second.
+    let scale = |t: &Named| match t.name.as_str() {
+        "Decimal" => Some(t.number(1).unwrap_or(0)),
+        "Decimal32" | "Decimal64" | "Decimal128" | "Decimal256" => Some(t.number(0).unwrap_or(0)),
+        _ => None,
+    };
+    let ticks = |t: &Named| match t.name.as_str() {
+        "DateTime64" => Some(t.number(0).unwrap_or(3)),
+        "DateTime" => Some(0),
+        _ => None,
+    };
+    let float = |t: &Named| matches!(t.name.as_str(), "Float32" | "Float64" | "BFloat16");
+    let text = |t: &Named| matches!(t.name.as_str(), "String" | "FixedString");
+    match (integer(&from.name), integer(&to.name)) {
+        // Every number of the one is a number of the other: as wide with the same sign, or wider and signed.
+        (Some((bits, unsigned)), Some((into, into_unsigned))) => return !(if unsigned == into_unsigned { into >= bits } else { unsigned && into > bits }),
+        (None, Some(_)) => return float(from) || text(from) || scale(from).is_some_and(|digits| digits > 0),
+        _ => {}
+    }
+    if let Some(into) = scale(to) {
+        return float(from) || text(from) || scale(from).is_some_and(|digits| digits > into);
+    }
+    if float(from) && float(to) {
+        let width = |t: &Named| ["BFloat16", "Float32", "Float64"].iter().position(|name| *name == t.name);
+        return width(to) < width(from);
+    }
+    match (ticks(from), ticks(to)) {
+        (Some(digits), Some(into)) => into < digits || (from.name == "DateTime64" && to.name == "DateTime"),
+        (Some(_), None) => matches!(to.name.as_str(), "Date" | "Date32"),
+        _ => from.name == "Date32" && to.name == "Date",
+    }
+}
+
 fn integer(name: &str) -> Option<(u32, bool)> {
     let (digits, unsigned) = match name.strip_prefix("UInt") {
         Some(digits) => (digits, true),
@@ -471,6 +520,25 @@ mod tests {
 
     fn typed(name: &str) -> serde_json::Value {
         serde_json::to_value(slot(&parse(name).expect(name)).expect(name)).unwrap()
+    }
+
+    #[test]
+    fn a_type_narrows_into_a_column_that_changes_its_values_in_silence() {
+        let narrows = |from: &str, to: &str| super::narrows(&parse(from).unwrap(), &parse(to).unwrap());
+        // A number past the column's range wraps into it, whichever sign it has, and one read from a string too.
+        for (from, to) in [("UInt64", "UInt8"), ("Int8", "UInt8"), ("UInt8", "Int8"), ("Int64", "Int32"), ("String", "UInt8"), ("Float64", "Int32"), ("Decimal(9, 2)", "Int64")] {
+            assert!(narrows(from, to), "{from} into {to}");
+        }
+        // Digits past the column's are dropped, a float is rounded to a narrower one, and a time dropped from a date.
+        for (from, to) in [("Decimal(18, 4)", "Decimal(9, 2)"), ("Float64", "Decimal(9, 2)"), ("String", "Decimal(9, 2)"), ("Float64", "Float32"), ("Float32", "BFloat16"), ("DateTime64(6, 'UTC')", "DateTime64(3, 'UTC')"), ("DateTime64(3)", "DateTime"), ("DateTime", "Date"), ("Date32", "Date")] {
+            assert!(narrows(from, to), "{from} into {to}");
+        }
+        // A NULL becomes the default of a column that takes none.
+        assert!(narrows("Nullable(UInt8)", "UInt8") && narrows("LowCardinality(Nullable(String))", "String"));
+        // The same type, a wider one, and one the server reads or refuses aloud.
+        for (from, to) in [("UInt8", "UInt8"), ("UInt8", "UInt64"), ("UInt8", "Int16"), ("UInt8", "Nullable(UInt8)"), ("String", "LowCardinality(String)"), ("Decimal(9, 2)", "Decimal(18, 4)"), ("Float32", "Float64"), ("BFloat16", "Float32"), ("DateTime", "DateTime64(3)"), ("Date", "Date32"), ("String", "Date"), ("String", "FixedString(2)"), ("UInt64", "Decimal(9, 2)"), ("UInt8", "String"), ("Decimal(9, 0)", "Int64")] {
+            assert!(!narrows(from, to), "{from} into {to}");
+        }
     }
 
     #[test]
