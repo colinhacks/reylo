@@ -110,15 +110,12 @@ impl Remote {
         Ok(())
     }
 
-    /// Keeps each pragma `sql` set, for a stream opened again.
+    /// Keeps each pragma `sql` set, for a stream opened again: its statements as SQLite reads them,
+    /// so that text in a string or a comment is never taken for one.
     fn remember_pragmas(&mut self, sql: &str) {
-        static PRAGMA: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^\s*pragma\s+([\w.]+)\s*=").expect("a valid pattern"));
-        for statement in sql.split(';') {
-            if let Some(c) = PRAGMA.captures(statement) {
-                let name = c[1].to_ascii_lowercase();
-                self.pragmas.retain(|(n, _)| *n != name);
-                self.pragmas.push((name, statement.trim().to_string()));
-            }
+        for (name, statement) in pragmas_set(sql) {
+            self.pragmas.retain(|(n, _)| *n != name);
+            self.pragmas.push((name, statement));
         }
     }
 
@@ -202,6 +199,18 @@ impl Remote {
     }
 }
 
+/// Each statement of `sql` that sets a pragma, with the pragma's name.
+fn pragmas_set(sql: &str) -> Vec<(String, String)> {
+    static PRAGMA: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)^pragma\s+([\w.]+)\s*=").expect("a valid pattern"));
+    crate::sql::split_statements(sql, crate::Dialect::Sqlite)
+        .into_iter()
+        .filter_map(|s| {
+            let text = s.text.trim();
+            PRAGMA.captures(text).map(|c| (c[1].to_ascii_lowercase(), text.to_string()))
+        })
+        .collect()
+}
+
 /// The server's message as SQLite's own: libSQL's server puts `SQLite error: ` before it.
 fn sqlite_message(message: &str) -> String {
     message.strip_prefix("SQLite error: ").unwrap_or(message).to_string()
@@ -258,6 +267,16 @@ mod tests {
         assert!(target("libsql://token@h").is_err());
         assert_eq!(identity("libsql://app-acme.turso.io/?authToken=secret"), "libsql://app-acme.turso.io");
         assert!(is_url("LIBSQL://h") && is_url("https://h") && !is_url("file:./dev.db") && !is_url("postgres://h"));
+    }
+
+    #[test]
+    fn remembers_only_statements_that_set_a_pragma() {
+        let names = |sql: &str| pragmas_set(sql).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert_eq!(names("pragma foreign_keys = off"), ["foreign_keys"]);
+        assert_eq!(names("PRAGMA main.journal_mode=wal; select 1; pragma foreign_keys = on;"), ["main.journal_mode", "foreign_keys"]);
+        assert!(names("insert into log values ('note; pragma user_version = 42; end')").is_empty());
+        assert!(names("select 1; -- pragma user_version = 42;\n/* pragma user_version = 7; */ select 2").is_empty());
+        assert!(names("pragma foreign_key_check").is_empty());
     }
 
     #[test]
