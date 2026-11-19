@@ -5,8 +5,8 @@ import { wordmark } from './wordmark';
 import { githubUrl, migrateDocsUrl } from '@/lib/layout.shared';
 
 /**
- * Reylo Migrate's landing page, at /migrate (app/routes/migrate.tsx): a type-led hero, the mark
- * behind it, then one row per feature, its words on one side and a terminal or an editor playing it
+ * Reylo Migrate's landing page, at /migrate (app/routes/migrate.tsx): a hero split in half, the
+ * words on the left and the first edit playing on the right, then one row per feature, its words on one side and a terminal or an editor playing it
  * on the other, the sides alternating. Every line a terminal prints is the docs' own
  * (content/docs/migrate.mdx), and the docs are a page of their own, at /migrate/docs. The players
  * run on timers from the moment the page loads; nothing here reads the scroll position.
@@ -24,22 +24,26 @@ export function MigrateLanding({ stars }: { stars?: number }) {
           <a href="/">Reylo</a>
           <a href={githubUrl} className="ml-gh">
             <GitHubIcon />
-            GitHub
+            <span className="ml-gh-label">GitHub</span>
             {stars ? <span className="ml-stars">{starCount(stars)}</span> : null}
           </a>
         </div>
       </nav>
 
       <header className="ml-hero">
-        <Mark className="ml-ghost" />
-        <h1 className="ml-h1">
-          <span>SQL-first</span> <em>database migration tool</em>
-        </h1>
-        <p className="ml-lede">Model your schema in plain SQL, on Postgres, MySQL and SQLite.</p>
-        <Install />
+        <div className="ml-hero-words">
+          <h1 className="ml-h1">
+            <span>SQL-first</span> <em>schema and migrations.</em>
+          </h1>
+          <p className="ml-lede">Model your schema in plain SQL, on Postgres, MySQL and SQLite.</p>
+          <Install />
+        </div>
+        <div className="ml-hero-visual">
+          <SchemaToMigration />
+        </div>
       </header>
 
-      <Row n={1} title="The world's most advanced multi-dialect diff engine" visual={<SchemaToMigration />}>
+      <Row n={1} title="The world's most advanced multi-dialect diff engine" visual={<DialectMigrations />}>
         <p>Edit <code>schema.sql</code> and run one command. The change comes back as a draft migration in plain SQL, yours to edit.</p>
       </Row>
 
@@ -80,7 +84,6 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </Row>
 
       <section className="ml-end">
-        <span className="ml-end-rule" aria-hidden="true" />
         <h2>Get started</h2>
         <Install centered />
       </section>
@@ -150,7 +153,7 @@ function Row({ n, title, visual, flip, children }: { n: number; title: ReactNode
 
 const INSTALLS = { brew: 'brew install reylosql/tap/reylo', npm: 'npm install reylo', curl: 'curl -fsSL https://reylo.dev/install.sh | sh' } as const;
 
-/** The install command, by package manager: the managers as tabs over its upper left, a copy button at its end, and the docs beside it. `centered` is the closing call to action's, which centres the two and fills the docs button with the yellow. */
+/** The install command, by package manager: the managers as tabs over its upper left, a copy button at its end, and the docs button, filled with the yellow. `centered` is the closing call to action's, which centres the two side by side. */
 function Install({ centered }: { centered?: boolean }) {
   const [kind, setKind] = useState<keyof typeof INSTALLS>('brew');
   const [copied, setCopied] = useState(false);
@@ -192,14 +195,12 @@ function Install({ centered }: { centered?: boolean }) {
             </button>
           </div>
         </div>
-        {(
-          <a className={centered ? 'ml-docs ml-docs-primary' : 'ml-docs'} href={migrateDocsUrl}>
-            Read the docs
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M2.5 8h11M9 3.5 13.5 8 9 12.5" />
-            </svg>
-          </a>
-        )}
+        <a className="ml-docs ml-docs-primary" href={migrateDocsUrl}>
+          Read the docs
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2.5 8h11M9 3.5 13.5 8 9 12.5" />
+          </svg>
+        </a>
       </div>
     </div>
   );
@@ -459,6 +460,115 @@ function SchemaToMigration() {
         </pre>
       </div>
       <TermWindow lines={lines} script={MIGRATE} className="ml-under" />
+    </div>
+  );
+}
+
+/**
+ * One edit to schema.sql, and the migration `reylo migrate new email_required` writes for it on each
+ * database, as reylo 0.8.0 wrote them: Postgres and MySQL alter the column, SQLite rebuilds the table.
+ */
+const DIALECTS: { name: string; sql: ReactNode }[] = [
+  {
+    name: 'Postgres',
+    sql: (
+      <>
+        {kw('alter table')} users {kw('alter column')} email {kw('set not null')};
+      </>
+    ),
+  },
+  {
+    name: 'MySQL',
+    sql: (
+      <>
+        {kw('alter table')} users {kw('modify column')} email {ty('text')} {kw('not null')};
+      </>
+    ),
+  },
+  {
+    name: 'SQLite',
+    sql: (
+      <>
+        {kw('create table')} new_users (id {ty('integer')} {kw('primary key')}, email {ty('text')} {kw('not null')}, name {ty('text')} {kw('not null')}) {kw('strict')};{'\n'}
+        {kw('insert into')} new_users (id, email, name) {kw('select')} id, email, name {kw('from')} users;{'\n'}
+        {kw('drop table')} users;{'\n'}
+        {kw('alter table')} new_users {kw('rename to')} users;
+      </>
+    ),
+  },
+];
+
+/** schema.sql with `email` made required, and under it the migration for each database, as tabs that turn by themselves until one is picked. */
+function DialectMigrations() {
+  const [at, setAt] = useState(0);
+  const [picked, setPicked] = useState(false);
+  useEffect(() => {
+    if (picked || stillPlease()) return;
+    const timer = setInterval(() => setAt((i) => (i + 1) % DIALECTS.length), 3500);
+    return () => clearInterval(timer);
+  }, [picked]);
+  return (
+    <div className="ml-pair">
+      <div className="ml-win ml-editor" aria-hidden="true">
+        <div className="ml-bar">
+          <FileIcon />
+          reylo/schema.sql
+        </div>
+        <pre className="ml-code">
+          <span className="ml-l" data-g=" ">
+            {kw('create table')} users (
+          </span>
+          <span className="ml-l" data-g=" ">
+            {'  id '}
+            {ty('integer')} {kw('primary key')},
+          </span>
+          <span className="ml-l ml-del" data-g="-">
+            {'  email '}
+            {ty('text')},
+          </span>
+          <span className="ml-l ml-add" data-g="+">
+            {'  email '}
+            {ty('text')} {kw('not null')},
+          </span>
+          <span className="ml-l" data-g=" ">
+            {'  name '}
+            {ty('text')} {kw('not null')}
+          </span>
+          <span className="ml-l" data-g=" ">
+            );
+          </span>
+        </pre>
+      </div>
+      <div className="ml-win ml-under ml-dialects">
+        <div className="ml-bar">
+          <FileIcon />
+          reylo/migrations/20261104140347_email_required.sql
+        </div>
+        <div className="ml-tabs" role="tablist">
+          {DIALECTS.map((d, i) => (
+            <button
+              key={d.name}
+              type="button"
+              role="tab"
+              aria-selected={i === at}
+              className={i === at ? 'on' : undefined}
+              onClick={() => {
+                setAt(i);
+                setPicked(true);
+              }}
+            >
+              {d.name}
+            </button>
+          ))}
+        </div>
+        <div className="ml-kinds-body">
+          {DIALECTS.map((d, i) => (
+            <pre key={d.name} className="ml-sql" data-on={i === at || undefined}>
+              {d.sql}
+            </pre>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

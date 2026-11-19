@@ -1160,30 +1160,70 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   color: var(--color-fd-foreground);
 }
 
-/* The hero: the words left, the mark large and faint on the right, behind them. */
+/* The hero, in two halves: the words on the left, the first edit playing on the right, at a size
+   larger than the rows'. */
 .ml-hero {
-  position: relative;
-  padding-top: 6rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 4rem;
+  padding-top: 5rem;
   padding-bottom: 7rem;
 }
 
-.ml-ghost {
-  position: absolute;
-  top: 7rem;
-  right: -2rem;
-  width: 34rem;
-  height: auto;
-  color: var(--color-fd-primary);
-  opacity: 0.08;
-  pointer-events: none;
+.ml-hero-visual {
+  min-width: 0;
+}
+
+/* In the half, the install a size down and as wide as the words, so no manager's command moves
+   anything as the tabs switch, and the docs button under it. */
+.ml-hero .ml-big {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1.25rem;
+}
+
+.ml-hero .ml-box {
+  align-self: stretch;
+}
+
+.ml-hero .ml-cmd {
+  display: flex;
+  align-self: stretch;
+  height: 3.5rem;
+  gap: 0.75rem;
+  padding-left: 1.25rem;
+  font-size: 1.0625rem;
+}
+
+.ml-hero .ml-copybtn {
+  margin-left: auto;
+}
+
+.ml-hero .ml-docs {
+  height: 3.5rem;
+  padding: 0 1.375rem;
+  font-size: 1rem;
+}
+
+.ml-hero-visual .ml-code,
+.ml-hero-visual .ml-term {
+  font-size: 0.9375rem;
+}
+
+.ml-hero-visual .ml-editor {
+  width: 78%;
+}
+
+.ml-hero-visual .ml-under {
+  margin-left: 10%;
 }
 
 .ml-h1 {
   position: relative;
   margin: 0 0 2rem;
-  /* Two lines, each kept whole: the first fills the column at the largest size, and both shrink
-     with the window rather than break again. It may run over the mark behind it. */
-  font-size: clamp(2.25rem, 6.6vw, 6rem);
+  /* "SQL-first" kept whole on its line, the rest wrapping under it, three lines in all. */
+  font-size: clamp(2.25rem, 5.4vw, 5rem);
   font-weight: 600;
   line-height: 0.98;
   letter-spacing: -0.04em;
@@ -1192,6 +1232,9 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 .ml-h1 span,
 .ml-h1 em {
   display: block;
+}
+
+.ml-h1 span {
   white-space: nowrap;
 }
 
@@ -1600,20 +1643,6 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   text-align: center;
 }
 
-/* A short yellow rule over the closing section's heading. */
-.ml-end-rule {
-  display: block;
-  width: 3rem;
-  height: 3px;
-  margin: 0 auto 2rem;
-  border-radius: 2px;
-  background: var(--color-fd-primary);
-}
-
-.dark .ml-end-rule {
-  box-shadow: 0 0 10px rgb(255 184 0 / 0.55);
-}
-
 .ml-docs-primary {
   border-color: var(--color-fd-primary);
   background: var(--color-fd-primary);
@@ -1628,6 +1657,8 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-docs-primary svg {
   color: hsl(0 0% 6%);
+  /* The arrow sat 0.38px high beside its label (optical-spacing's ink-align.mjs, 2026-11-18). */
+  translate: 0 0.375px;
 }
 
 .ml-end h2 {
@@ -1712,8 +1743,8 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
     font-size: 4.5rem;
   }
 
-  .ml-ghost {
-    display: none;
+  .ml-hero {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .ml-row,
@@ -1752,8 +1783,40 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
     font-size: 2rem;
   }
 
-  .ml-cmd {
-    font-size: 0.95rem;
+  .ml-cmd,
+  .ml-hero .ml-cmd {
+    font-size: 0.8125rem;
+  }
+
+  .ml-nav {
+    gap: 1rem;
+  }
+
+  .ml-brand {
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .ml-links {
+    gap: 0.875rem;
+  }
+
+  .ml-hero-visual .ml-code,
+  .ml-hero-visual .ml-term {
+    font-size: 0.84rem;
+  }
+
+  .ml-hero-visual .ml-editor {
+    width: auto;
+  }
+
+  .ml-hero-visual .ml-under {
+    margin: 1rem 0 0;
+  }
+
+  /* On a phone the GitHub link is its icon and star count, so the nav keeps one line. */
+  .ml-gh-label {
+    display: none;
   }
 
   .ml-editor {
@@ -1841,6 +1904,13 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-kinds-body > .ml-sql[data-on] {
   visibility: visible;
+}
+
+/* The first row's migration: SQLite's rebuild wraps rather than scrolls, and the window keeps its
+   height as the tabs turn. */
+.ml-dialects .ml-sql {
+  min-height: 0;
+  white-space: pre-wrap;
 }
 
 /* A terminal wraps a long line, as a narrow terminal window does, instead of scrolling it. */

@@ -4,7 +4,7 @@ import { siteUrl } from '@/lib/layout.shared';
 
 // Reylo Migrate's landing page (components/migrate-landing.tsx); its docs are at /migrate/docs.
 export const meta: Route.MetaFunction = () => {
-  const title = 'Reylo Migrate — SQL-first database migrations for busy teams';
+  const title = 'Reylo Migrate — SQL-first schema and migrations';
   const description = 'Model your schema in plain SQL, on Postgres, MySQL and SQLite, and Reylo Migrate drafts each migration from your changes.';
   return [
     { title },
