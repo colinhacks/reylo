@@ -438,9 +438,11 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
         Dialect::Postgres => db.exec("select pg_advisory_lock(hashtextextended('reylo_migrate', 0))").await.map(|_| None),
         // A lock of this database's alone (its name is at most 64 characters), which answers 0
         // once the wait runs out. Named through sha2: MySQL 9.7 has md5 and sha1 only as a component.
+        // The answer is read by position: Vitess (PlanetScale's MySQL) runs a lock function apart
+        // and answers it without the column's alias.
         Dialect::Mysql => {
-            let rows = db.rows("select get_lock(concat('reylo_migrate_', left(sha2(coalesce(database(), ''), 256), 32)), 600) as ok").await?;
-            if !rows.first().is_some_and(|r| r.flag("ok")) {
+            let rows = db.rows("select get_lock(concat('reylo_migrate_', left(sha2(coalesce(database(), ''), 256), 32)), 600)").await?;
+            if rows.first().and_then(|r| r.first()) != Some("1") {
                 return Err(Error("another run of reylo migrate held this database for ten minutes; try again once it finishes".into()));
             }
             Ok(None)
@@ -572,7 +574,13 @@ async fn limit_lock_wait(db: &mut Db) -> Result<(), Error> {
 async fn reset_lock_wait(db: &mut Db) -> Result<(), Error> {
     match db {
         #[cfg(feature = "cli")]
-        Db::Mysql(_) => db.exec("set session lock_wait_timeout = default").await,
+        // The server's own value, which `= default` would set: Vitess (PlanetScale's MySQL) refuses
+        // that ("unsupported: DEFAULT for @@lock_wait_timeout"), and takes a number.
+        Db::Mysql(_) => {
+            let rows = db.rows("select @@global.lock_wait_timeout").await?;
+            let seconds = rows.first().and_then(|r| r.first()).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| Error("cannot read the server's lock_wait_timeout".into()))?;
+            db.exec(&format!("set session lock_wait_timeout = {seconds}")).await
+        }
         _ => Ok(()),
     }
 }
