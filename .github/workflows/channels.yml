@@ -73,7 +73,7 @@ jobs:
           if [ "$ARTIFACTS" = true ]; then
             .github/scripts/pack-binaries.sh "$RUNNER_TEMP/binaries" assets
             version="$(jq -r .version package.json)"
-            url=http://127.0.0.1:48765
+            url=http://127.0.0.1:28765
           else
             tag="${RELEASE:-$(gh release list -R "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')}"
             gh release download "$tag" -R "$GITHUB_REPOSITORY" -D assets -p 'reylo-*.tar.gz' -p SHA256SUMS

@@ -207,6 +207,11 @@ pub fn set_color(on: bool) {
     COLOR.store(on, Ordering::Relaxed);
 }
 
+/// Whether lines carry ANSI colors.
+pub fn color() -> bool {
+    COLOR.load(Ordering::Relaxed)
+}
+
 pub fn paint(style: &str, text: &str) -> String {
     if !COLOR.load(Ordering::Relaxed) {
         return text.to_string();
@@ -4031,10 +4036,12 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     // An empty database has no history to start: the first migration is `new`'s. The lock starts
     // empty, holding the checksum of the empty schema.sql the no migrations reach, so the project
     // keeps linear history from its first migration.
+    let spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let lines = catalog(&mut db).await;
     db.close().await;
     if !holds_a_schema(&lines?) {
+        drop(spinning);
         std::fs::create_dir_all(&opts.dir)?;
         std::fs::write(&opts.schema, "")?;
         lock::write(&opts.lock, &lock::Lock { schema: Some(lock::schema_sum("", "")), entries: vec![] })?;
@@ -4047,6 +4054,8 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         return Ok(0);
     }
     let sql = schema_as_sql(opts, schemas).await?;
+    // Recording init.sql replays it on a shadow database, which says so itself.
+    drop(spinning);
     let made_dir = !opts.dir.exists();
     std::fs::create_dir_all(&opts.dir)?;
     std::fs::write(&opts.schema, &sql)?;
@@ -4092,6 +4101,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 #[cfg(feature = "cli")]
 pub async fn db_introspect(opts: &Options, schemas: &[String]) -> Result<String, Error> {
     there(opts)?;
+    let _spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = match catalog(&mut db).await {
         Ok(lines) if holds_a_schema(&lines) => schema_as_sql_on(&mut db, opts, schemas).await,
