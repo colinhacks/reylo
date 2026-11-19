@@ -1,11 +1,15 @@
 middle_owner.sql: many () -> { id: bigint, n: bigint? }
 outer_bare_name.sql: many () -> { id: bigint?, n: bigint? }
+outer_beside_derived.sql: many () -> { id: bigint?, x: bigint? }
+outer_beside_derived_exists.sql: many () -> { id: bigint?, e: boolean? }
+outer_beside_derived_join.sql: many () -> { id: bigint?, x: bigint? }
 outer_count.sql: many () -> { id: bigint?, name: varchar(≤20)?, n: bigint? }
 outer_count_where_false.sql: many () -> { id: bigint?, n: bigint? }
 outer_derived.sql: many () -> { id: bigint?, x: bigint? }
 outer_exists.sql: many () -> { id: bigint?, e: boolean? }
 outer_having.sql: many () -> { id: bigint? }
 outer_json_arrayagg.sql: many () -> { id: bigint?, o: json? }
+own_beside_lateral.sql: many () -> { id: bigint, x: bigint? }
 own_count_qualified.sql: many () -> { id: bigint, n: bigint }
 own_count_star.sql: many () -> { id: bigint, n: bigint }
 own_max_unqualified.sql: many () -> { id: bigint, last: datetime? }

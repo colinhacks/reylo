@@ -1109,8 +1109,9 @@ pub(crate) fn calls_aggregate(e: &Expr) -> bool {
 /// select list or its HAVING: MySQL aggregates a call in the query block it is written in unless
 /// every column its arguments read (inside a subquery among them, every one that subquery's own
 /// FROM does not bind) is bound outside that block, and one is; it then belongs to the innermost
-/// block that binds one. A derived table's own block takes the FROM it stands in as its own, as a
-/// LATERAL reference to a table beside it is aggregated in it (measured on 8.4.11). A column binds
+/// block that binds one. A LATERAL derived table's own block takes the FROM it stands in as its
+/// own, as a reference to a table beside it is aggregated in it (measured on 8.4.11); a plain one
+/// sees no table beside it, and a name its FROM does not bind is the blocks' around. A column binds
 /// where the engine knows it does: a name qualified with a FROM item's own name as written, or a
 /// bare name a table has by the catalog (`columns`) or a derived table's select list names; else
 /// it is taken to bind further out, which only makes the call more likely the outer query's, and
@@ -1338,7 +1339,7 @@ impl Owners<'_> {
                 ons.extend(join_on(&j.join_operator));
             }
         }
-        let mut derived: Vec<&Query> = Vec::new();
+        let mut derived: Vec<(&Query, bool)> = Vec::new();
         while let Some(factor) = factors.pop() {
             match factor {
                 TableFactor::Table { name, alias, args: None, .. } => {
@@ -1363,11 +1364,11 @@ impl Owners<'_> {
                         items.push((qualifier, known));
                     }
                 }
-                TableFactor::Derived { subquery, alias, .. } => {
+                TableFactor::Derived { lateral, subquery, alias, .. } => {
                     if let Some(alias) = alias {
                         items.push((alias.name.value.clone(), Some(crate::mysql_shape::output_columns(subquery, &alias.columns))));
                     }
-                    derived.push(subquery);
+                    derived.push((subquery, *lateral));
                 }
                 TableFactor::NestedJoin { table_with_joins, alias } => {
                     if let Some(alias) = alias {
@@ -1393,10 +1394,10 @@ impl Owners<'_> {
             self.expr(e);
         }
         let here = self.levels.pop().unwrap_or_default();
-        // A derived table reads this query's FROM as its own block, and the blocks around it as
-        // outer ones.
-        for q in derived {
-            self.query(q, Some(here.clone()));
+        // A derived table reads the blocks around this query as outer ones, and a LATERAL one this
+        // query's FROM as its own block.
+        for (q, lateral) in derived {
+            self.query(q, lateral.then(|| here.clone()));
         }
     }
 }
@@ -3785,6 +3786,9 @@ mod tests {
             // `name` is no column of `posts`, and the columns of `d` are not known.
             "select u.id, (select count(name) from posts limit 1) as n from users u",
             "select p.id, (select count(body) from (select * from comments) d) as n from posts p",
+            // A plain derived table sees no table beside it: `title` of `posts p` binds none of it.
+            "select u.id, (select d.c from posts p, (select count(title) as c from comments) d limit 1) as x from users u",
+            "select u.id, (select d.c from posts p join (select count(title) as c from comments) d on true limit 1) as x from users u",
         ] {
             assert!(hides(sql).0, "{sql}");
         }
@@ -3800,6 +3804,8 @@ mod tests {
             // A WITH query's columns are its select list's or its column list's.
             "with p as (select id, title from posts) select u.id, (select count(title) from p where false) as n from users u",
             "select u.id, (with r (k) as (select id from posts) select count(k) from r) as n from users u",
+            // A LATERAL one does, and aggregates over it.
+            "select u.id, (select d.c from posts p, lateral (select count(p.title) as c from comments) d limit 1) as x from users u",
         ] {
             assert!(!hides(sql).0, "{sql}");
         }
