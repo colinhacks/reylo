@@ -1541,6 +1541,11 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   color: hsl(0 0% 63%);
 }
 
+/* The CLI's cyan, for a spinner's frame and the keywords of the SQL it prints. */
+.ml-cy {
+  color: hsl(186 62% 62%);
+}
+
 .ml-kw {
   color: #f97583;
 }
