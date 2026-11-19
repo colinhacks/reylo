@@ -827,7 +827,7 @@ create table users (
 );
 ```
 
-Where it can't check it, it prints the database's own dump instead.
+In a terminal, a spinner shows while it reads, and the SQL is coloured; a pipe or a redirect gets plain SQL. Where it can't check the schema, it prints the database's own dump instead.
 
 To save it over `schema.sql`, write another file first, so a failed run can't empty it:
 

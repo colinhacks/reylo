@@ -316,19 +316,19 @@ function paint(line: string): ReactNode {
 }
 
 /** A terminal: the session so far, over the whole session drawn invisibly, which holds the window at its final height as it plays. */
-/** The SQL words the terminals print, coloured as the editors colour them. */
+/** The SQL words `reylo db introspect` colours in a terminal (reylosql/reylo#309): keywords cyan, types yellow, names plain. */
 const SQL_KEYWORDS = new Set(['create', 'table', 'not', 'null', 'constraint', 'primary', 'key', 'alter', 'add', 'column', 'unique', 'references']);
 const SQL_TYPES = new Set(['integer', 'bigint', 'text', 'boolean']);
 
-/** A line of SQL a command printed, its keywords and types in the editors' colours. */
+/** A line of SQL a command printed, coloured as the CLI colours it. */
 function paintSql(line: string): ReactNode {
-  return line.split(/(\b[a-z_]+\b)/).map((t, i) => (SQL_KEYWORDS.has(t) ? <span key={i} className="ml-kw">{t}</span> : SQL_TYPES.has(t) ? <span key={i} className="ml-ty">{t}</span> : t));
+  return line.split(/(\b[a-z_]+\b)/).map((t, i) => (SQL_KEYWORDS.has(t) ? <span key={i} className="ml-cy">{t}</span> : SQL_TYPES.has(t) ? <span key={i} className="ml-wn">{t}</span> : t));
 }
 
-/** A spinner's frame: the braille turning in the accent, before what it says. */
+/** A spinner's frame: the braille in the CLI's cyan, before what it says. */
 const paintSpin = (line: string): ReactNode => (
   <>
-    <span className="ml-wn">{line[0]}</span>
+    <span className="ml-cy">{line[0]}</span>
     {line.slice(1)}
   </>
 );
@@ -399,7 +399,7 @@ const SCHEMALESS: Script = [
   '✓ Wrote reylo/reylo.lock',
 ];
 
-/** What reylo 0.8.0 printed for one Postgres table, after the spinner an interactive terminal shows while it reads. */
+/** What reylo printed for one Postgres table, after the spinner an interactive terminal shows while it reads (reylosql/reylo#309). */
 const INTROSPECT: Script = [
   '$ reylo db introspect',
   '#spin Introspecting postgres://localhost:5432/app',
