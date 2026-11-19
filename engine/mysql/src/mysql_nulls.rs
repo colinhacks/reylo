@@ -17,10 +17,43 @@
 
 use sqlparser::ast::{self, BinaryOperator, Expr, GroupByExpr, GroupByWithModifier, JoinConstraint, JoinOperator, Query, SelectItem, SetExpr, TableFactor, TableWithJoins, UnaryOperator};
 
-/// MySQL's built-in functions that answer NULL wherever an argument is NULL: "CONCAT() returns
-/// NULL if any argument is NULL", and so for the rest, whatever else they answer NULL for, which
-/// only removes more rows.
-const STRICT_FUNCTIONS: &[&str] = &["lower", "upper", "lcase", "ucase", "length", "char_length", "character_length", "abs", "floor", "ceil", "ceiling", "round", "date", "year", "month", "concat", "left", "right", "reverse"];
+/// Which arguments of a built-in function make it NULL where they are NULL.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Strict {
+    /// Every argument, however many it takes.
+    Every,
+    /// These positions, from 0; NULL elsewhere may give a value.
+    At(&'static [usize]),
+}
+
+use Strict::{At, Every};
+
+/// MySQL's built-in functions that are NULL wherever one of the arguments named is NULL, each
+/// measured on 8.4.11: the call with that argument NULL and the others values it is otherwise not
+/// NULL for, which it then was. `concat` is NULL for a NULL anywhere, while `concat_ws` skips one
+/// after its separator, `nullif(a, NULL)` is `a`, `json_set` takes a NULL value as JSON's null and
+/// `week` a NULL mode as the default one; a position not named, and a function not here, may
+/// give a value for NULL, as `coalesce`, `ifnull`, `if`, `char`, `field`, `interval`,
+/// `json_array`, `json_object`, `quote` and `isnull` do. That a function is NULL for more than its
+/// NULL arguments (`str_to_date` for text that is no date) changes nothing here.
+const STRICT_FUNCTIONS: &[(&str, Strict)] = &[
+    // Strings.
+    ("ascii", Every), ("bin", Every), ("bit_length", Every), ("char_length", Every), ("character_length", Every), ("compress", Every), ("concat", Every), ("concat_ws", At(&[0])), ("conv", Every), ("crc32", Every), ("elt", At(&[0])), ("export_set", Every), ("find_in_set", Every), ("format", At(&[0, 1])), ("from_base64", Every), ("hex", Every), ("insert", Every), ("instr", Every), ("lcase", Every), ("left", Every), ("length", Every), ("locate", Every), ("lower", Every), ("lpad", Every), ("ltrim", Every), ("make_set", At(&[0])), ("md5", Every), ("mid", Every), ("oct", Every), ("octet_length", Every), ("ord", Every), ("regexp_instr", At(&[0, 1])), ("regexp_like", At(&[0, 1])), ("regexp_replace", At(&[0, 1, 2])), ("regexp_substr", At(&[0, 1])), ("repeat", Every), ("replace", Every), ("reverse", Every), ("right", Every), ("rpad", Every), ("rtrim", Every), ("sha", Every), ("sha1", Every), ("sha2", Every), ("soundex", Every), ("space", Every), ("strcmp", Every), ("substr", Every), ("substring", Every), ("substring_index", Every), ("to_base64", Every), ("ucase", Every), ("uncompress", Every), ("uncompressed_length", Every), ("unhex", Every), ("upper", Every), ("weight_string", Every),
+    // Numbers.
+    ("abs", Every), ("acos", Every), ("asin", Every), ("atan", Every), ("atan2", Every), ("bit_count", Every), ("ceil", Every), ("ceiling", Every), ("cos", Every), ("cot", Every), ("degrees", Every), ("exp", Every), ("floor", Every), ("ln", Every), ("log", Every), ("log10", Every), ("log2", Every), ("mod", Every), ("pow", Every), ("power", Every), ("radians", Every), ("round", Every), ("sign", Every), ("sin", Every), ("sqrt", Every), ("tan", Every), ("truncate", Every),
+    // Dates and times; `timestampadd` and `timestampdiff` take a unit first, which is no value.
+    ("adddate", Every), ("addtime", Every), ("convert_tz", Every), ("date", Every), ("date_add", Every), ("date_format", Every), ("date_sub", Every), ("datediff", Every), ("day", Every), ("dayname", Every), ("dayofmonth", Every), ("dayofweek", Every), ("dayofyear", Every), ("from_days", Every), ("from_unixtime", Every), ("hour", Every), ("last_day", Every), ("makedate", Every), ("maketime", Every), ("microsecond", Every), ("minute", Every), ("month", Every), ("monthname", Every), ("period_add", Every), ("period_diff", Every), ("quarter", Every), ("sec_to_time", Every), ("second", Every), ("str_to_date", Every), ("subdate", Every), ("subtime", Every), ("time", Every), ("time_format", Every), ("time_to_sec", Every), ("timediff", Every), ("timestamp", Every), ("timestampadd", At(&[1, 2])), ("timestampdiff", At(&[1, 2])), ("to_days", Every), ("to_seconds", Every), ("unix_timestamp", Every), ("week", At(&[0])), ("weekday", Every), ("weekofyear", Every), ("year", Every), ("yearweek", At(&[0])),
+    // JSON: a document's editors are NULL for a NULL document or first path, and not for a NULL
+    // value, which they write as JSON's null.
+    ("json_array_append", At(&[0, 1])), ("json_array_insert", At(&[0, 1])), ("json_contains", Every), ("json_contains_path", Every), ("json_depth", Every), ("json_extract", Every), ("json_insert", At(&[0, 1])), ("json_keys", Every), ("json_length", Every), ("json_merge_patch", At(&[1])), ("json_merge_preserve", Every), ("json_overlaps", Every), ("json_pretty", Every), ("json_quote", Every), ("json_remove", Every), ("json_replace", At(&[0, 1])), ("json_search", At(&[0, 1, 2, 4])), ("json_set", At(&[0, 1])), ("json_storage_size", Every), ("json_type", Every), ("json_unquote", Every), ("json_valid", Every), ("json_value", At(&[0])),
+    // The rest.
+    ("any_value", Every), ("bin_to_uuid", At(&[0])), ("format_bytes", Every), ("inet6_aton", Every), ("inet6_ntoa", Every), ("inet_aton", Every), ("inet_ntoa", Every), ("is_ipv4", Every), ("is_ipv6", Every), ("st_astext", At(&[0])), ("st_geomfromtext", At(&[0])), ("st_x", At(&[0])), ("st_y", At(&[0])), ("statement_digest_text", Every), ("uuid_to_bin", At(&[0])),
+];
+
+/// Which arguments of a call make it NULL where they are NULL, by [`STRICT_FUNCTIONS`].
+fn strict_args(name: &str) -> Option<Strict> {
+    STRICT_FUNCTIONS.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+}
 
 /// The statement with every outer join inner whose null-extended rows a strict test rejects: a
 /// LEFT JOIN whose right side holds a column the test is strict in, and a RIGHT JOIN whose left
@@ -216,10 +249,9 @@ fn column(e: &Expr) -> Option<Vec<String>> {
 
 /// The columns a predicate at the top of a WHERE is strict in: a row with NULL in one of them does
 /// not pass. Under AND, either side's; under OR, the ones every arm is strict in; `IS NOT NULL`,
-/// `IS TRUE` and `IS FALSE`; NOT over `IS NULL`, or over a test that is NULL with NULL in it
-/// ([`test_nulls`]), since NOT of NULL is NULL; `IN` over a subquery (not `NOT IN`, which an empty
-/// subquery makes true for NULL); and any test [`test_nulls`] reads, a bare value taken as a
-/// boolean among them.
+/// `IS TRUE` and `IS FALSE`; NOT over `IS NULL`; `IN` over a subquery (not `NOT IN`, which an empty
+/// subquery makes true for NULL); and every column the test is NULL for ([`nulls_with`]), a bare
+/// value taken as a boolean among them.
 pub fn strict_in(e: &Expr) -> Vec<Vec<String>> {
     match e {
         Expr::Nested(inner) => strict_in(inner),
@@ -238,31 +270,10 @@ pub fn strict_in(e: &Expr) -> Vec<Vec<String>> {
         }
         Expr::UnaryOp { op: UnaryOperator::Not, expr } => match strip(expr) {
             Expr::IsNull(inner) => nulls_with(inner),
-            other => test_nulls(other),
+            other => nulls_with(other),
         },
         Expr::IsNotNull(inner) | Expr::IsTrue(inner) | Expr::IsFalse(inner) => nulls_with(inner),
         Expr::InSubquery { expr, negated: false, .. } => nulls_with(expr),
-        other => test_nulls(other),
-    }
-}
-
-/// The columns a test is NULL for: a comparison other than `<=>`, `[NOT] IN` over a list,
-/// `[NOT] BETWEEN`, `[NOT] LIKE` and `REGEXP`, in the columns its operands answer NULL for
-/// ([`nulls_with`]), and any value [`nulls_with`] reads.
-fn test_nulls(e: &Expr) -> Vec<Vec<String>> {
-    match e {
-        Expr::Nested(inner) => test_nulls(inner),
-        Expr::BinaryOp { left, op: BinaryOperator::Eq | BinaryOperator::NotEq | BinaryOperator::Lt | BinaryOperator::Gt | BinaryOperator::LtEq | BinaryOperator::GtEq | BinaryOperator::Regexp, right } => {
-            let mut out = nulls_with(left);
-            out.extend(nulls_with(right));
-            out
-        }
-        Expr::InList { expr, .. } | Expr::Between { expr, .. } => nulls_with(expr),
-        Expr::Like { expr, pattern, any: false, .. } => {
-            let mut out = nulls_with(expr);
-            out.extend(nulls_with(pattern));
-            out
-        }
         other => nulls_with(other),
     }
 }
@@ -274,30 +285,81 @@ fn strip(e: &Expr) -> &Expr {
     }
 }
 
-/// The columns an expression answers NULL for: the column itself, and through arithmetic, a sign,
-/// a cast, a COLLATE or a function of [`STRICT_FUNCTIONS`], every column an operand answers NULL for.
+/// The columns an expression is NULL for, wherever they are NULL: the column itself, and through
+/// an operator or a function, every column an operand that makes it NULL is NULL for. Each was
+/// measured on 8.4.11 as the functions of [`STRICT_FUNCTIONS`] were: a comparison but `<=>`,
+/// arithmetic, a bitwise operator, XOR, NOT, a sign, `->` and `->>` in their document,
+/// `[NOT] LIKE`, `[NOT] REGEXP`, `MEMBER OF`, a cast, CONVERT, COLLATE, an INTERVAL's value, and
+/// the forms the parser reads apart: `SUBSTRING`, `TRIM`, `POSITION`, `EXTRACT`, `CEIL` and
+/// `FLOOR`. `[NOT] IN` over a list and `[NOT] BETWEEN` are NULL for a NULL value tested, and not
+/// for a NULL in the list or a bound: `1 in (1, NULL)` is 1, and `5 between NULL and 1` is 0. AND
+/// and OR give a value for NULL (`NULL and 0` is 0), and so do `IS`, `<=>`, CASE and a subquery.
 pub(crate) fn nulls_with(e: &Expr) -> Vec<Vec<String>> {
+    let all = |exprs: &[&Expr]| -> Vec<Vec<String>> { exprs.iter().flat_map(|e| nulls_with(e)).collect() };
     match e {
         Expr::Nested(inner) => nulls_with(inner),
         Expr::Identifier(_) | Expr::CompoundIdentifier(_) => column(e).into_iter().collect(),
-        Expr::BinaryOp { left, op: BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Multiply | BinaryOperator::Divide | BinaryOperator::Modulo | BinaryOperator::MyIntegerDivide, right } => {
-            let mut out = nulls_with(left);
-            out.extend(nulls_with(right));
+        Expr::BinaryOp {
+            left,
+            op:
+                BinaryOperator::Eq
+                | BinaryOperator::NotEq
+                | BinaryOperator::Lt
+                | BinaryOperator::Gt
+                | BinaryOperator::LtEq
+                | BinaryOperator::GtEq
+                | BinaryOperator::Plus
+                | BinaryOperator::Minus
+                | BinaryOperator::Multiply
+                | BinaryOperator::Divide
+                | BinaryOperator::Modulo
+                | BinaryOperator::MyIntegerDivide
+                | BinaryOperator::BitwiseAnd
+                | BinaryOperator::BitwiseOr
+                | BinaryOperator::BitwiseXor
+                | BinaryOperator::PGBitwiseShiftLeft
+                | BinaryOperator::PGBitwiseShiftRight
+                | BinaryOperator::Xor
+                | BinaryOperator::Regexp,
+            right,
+        } => all(&[&**left, &**right]),
+        Expr::BinaryOp { left, op: BinaryOperator::Arrow | BinaryOperator::LongArrow, .. } => nulls_with(left),
+        Expr::UnaryOp { op: UnaryOperator::Not | UnaryOperator::Minus | UnaryOperator::Plus | UnaryOperator::BitwiseNot, expr } => nulls_with(expr),
+        Expr::Like { expr, pattern, any: false, .. } | Expr::RLike { expr, pattern, .. } => all(&[&**expr, &**pattern]),
+        Expr::InList { expr, .. } | Expr::Between { expr, .. } => nulls_with(expr),
+        Expr::MemberOf(m) => all(&[&*m.value, &*m.array]),
+        Expr::Cast { expr, .. } | Expr::Collate { expr, .. } | Expr::Convert { expr, .. } | Expr::Extract { expr, .. } | Expr::Ceil { expr, .. } | Expr::Floor { expr, .. } => nulls_with(expr),
+        Expr::Interval(i) => nulls_with(&i.value),
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            let mut out = nulls_with(expr);
+            out.extend(substring_from.iter().chain(substring_for).flat_map(|x| nulls_with(x)));
             out
         }
-        Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => nulls_with(expr),
-        Expr::Cast { expr, .. } | Expr::Collate { expr, .. } => nulls_with(expr),
-        Expr::Function(f) if f.over.is_none() && f.filter.is_none() && f.within_group.is_empty() && STRICT_FUNCTIONS.contains(&crate::mysql::builtin(f).as_str()) => match &f.args {
-            ast::FunctionArguments::List(list) if list.duplicate_treatment.is_none() && list.clauses.is_empty() => list
-                .args
-                .iter()
-                .flat_map(|a| match a {
-                    ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) => nulls_with(x),
-                    _ => Vec::new(),
-                })
-                .collect(),
-            _ => Vec::new(),
-        },
+        Expr::Trim { expr, trim_what, trim_characters: None, .. } => {
+            let mut out = nulls_with(expr);
+            out.extend(trim_what.iter().flat_map(|x| nulls_with(x)));
+            out
+        }
+        Expr::Position { expr, r#in } => all(&[&**expr, &**r#in]),
+        Expr::Function(f) if f.over.is_none() && f.filter.is_none() && f.within_group.is_empty() => {
+            let Some(strict) = strict_args(&crate::mysql::builtin(f)) else { return Vec::new() };
+            match &f.args {
+                ast::FunctionArguments::List(list) if list.duplicate_treatment.is_none() && list.clauses.is_empty() => list
+                    .args
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| match strict {
+                        Every => true,
+                        At(positions) => positions.contains(i),
+                    })
+                    .flat_map(|(_, a)| match a {
+                        ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) => nulls_with(x),
+                        _ => Vec::new(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
         _ => Vec::new(),
     }
 }
@@ -561,6 +623,18 @@ mod tests {
         assert_eq!(strict("p.flag"), ["p.flag"]);
         assert_eq!(strict("p.flag is true"), ["p.flag"]);
         assert_eq!(strict("p.id in (select id from c)"), ["p.id"]);
+        // Through the functions and operators measured strict, at the arguments they are strict in.
+        assert_eq!(strict("json_unquote(json_extract(p.doc, '$.t')) = 'x'"), ["p.doc"]);
+        assert_eq!(strict("p.doc->>'$.t' = 'x'"), ["p.doc"]);
+        assert_eq!(strict("substring(p.title, 1, p.n) = 'x'"), ["p.title", "p.n"]);
+        assert_eq!(strict("trim(leading p.pad from p.title) = 'x'"), ["p.title", "p.pad"]);
+        assert_eq!(strict("timestampdiff(day, p.at, now()) > 1"), ["p.at"]);
+        assert_eq!(strict("(p.n div 2 = 1) xor (p.m & 1)"), ["p.n", "p.m"]);
+        assert_eq!(strict("p.n member of (p.doc)"), ["p.n", "p.doc"]);
+        assert_eq!(strict("date_add(p.at, interval p.n day) < now()"), ["p.at", "p.n"]);
+        assert_eq!(strict("p.id in (1, p.n)"), ["p.id"]);
+        assert_eq!(strict("p.n between p.lo and p.hi"), ["p.n"]);
+        assert_eq!(strict("concat_ws(p.sep, p.title) = 'x'"), ["p.sep"]);
         // What NULL can pass: an OR whose arms test different columns, `IS NULL`, `<=>`,
         // `coalesce`, `IS NOT TRUE`, NOT over a test that is true for NULL, and a `NOT IN` over a
         // subquery, which is true for NULL where the subquery is empty.
@@ -576,10 +650,25 @@ mod tests {
             "not (p.n > 0 and p.m > 0)",
             "p.id not in (select id from c)",
             "concat_ws(',', p.title) = 'x'",
+            "nullif('x', p.title) = 'x'",
+            "json_set('{}', '$.a', p.n) is not null",
+            "week('2026-01-01', p.mode) = 1",
+            "if(p.n > 0, 1, 0) = 0",
+            "char(p.n) = ''",
+            "1 between p.lo and 2",
             "`lower`(p.title) = 'x'",
         ] {
             assert_eq!(strict(test), Vec::<String>::new(), "{test}");
         }
+    }
+
+    #[test]
+    fn the_strict_functions_are_named_once_in_lower_case() {
+        let mut names: Vec<&str> = STRICT_FUNCTIONS.iter().map(|(n, _)| *n).collect();
+        assert!(names.iter().all(|n| *n == n.to_ascii_lowercase()));
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), STRICT_FUNCTIONS.len());
     }
 
     #[test]
