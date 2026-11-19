@@ -315,7 +315,9 @@ macro_rules! re {
 re!(TRANSACTION_CONTROL, r"^(BEGIN|START TRANSACTION|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|ABORT|SET TRANSACTION)\b");
 re!(PG_ALONE, r"^(CREATE (UNIQUE )?INDEX CONCURRENTLY|DROP INDEX CONCURRENTLY|REINDEX\b.*\bCONCURRENTLY|VACUUM|ALTER SYSTEM|CREATE DATABASE|DROP DATABASE|CREATE TABLESPACE|DROP TABLESPACE|CLUSTER$|REINDEX (SYSTEM|DATABASE))");
 re!(SQLITE_ALONE, r"^(VACUUM|ATTACH|DETACH)\b");
-re!(MYSQL_DATA, r"^(INSERT|UPDATE|DELETE|REPLACE|SELECT|WITH|DO|TABLE|VALUES)\b|^SET (@|SESSION|LOCAL|NAMES|CHARACTER)");
+re!(PG_DETACH, r"^ALTER TABLE\b.*\bDETACH PARTITION\b.*\bCONCURRENTLY\b");
+re!(MYSQL_DATA, r"^(INSERT|UPDATE|DELETE|REPLACE|SELECT|WITH|DO|TABLE|VALUES|CALL|SET)\b");
+re!(MYSQL_SET_COMMITS, r"^SET (GLOBAL|PERSIST|PERSIST_ONLY|PASSWORD|DEFAULT ROLE)\b|^SET @ @ (GLOBAL|PERSIST)\b|^SET\b.*\bAUTOCOMMIT\b");
 
 /// How the statement runs on the dialect: inside the file's transaction, or not.
 pub fn kind_of(statement: &Statement, dialect: Dialect) -> Kind {
@@ -325,7 +327,7 @@ pub fn kind_of(statement: &Statement, dialect: Dialect) -> Kind {
     }
     match dialect {
         Dialect::Postgres => {
-            if PG_ALONE.is_match(&h) {
+            if PG_ALONE.is_match(&h) || PG_DETACH.is_match(&head(statement, statement.tokens.len())) {
                 Kind::Alone
             } else {
                 Kind::Transactional
@@ -338,10 +340,11 @@ pub fn kind_of(statement: &Statement, dialect: Dialect) -> Kind {
                 Kind::Transactional
             }
         }
-        // MySQL: the statements that change data run in a transaction; every other one (DDL,
-        // account and table maintenance statements) commits the transaction around it.
+        // MySQL: the statements that change data, a procedure's call and a session's SET run in a
+        // transaction; every other one (DDL, account and table maintenance statements, and the SET
+        // of a password, a server setting or autocommit) commits the transaction around it.
         Dialect::Mysql => {
-            if MYSQL_DATA.is_match(&h) {
+            if MYSQL_DATA.is_match(&h) && !MYSQL_SET_COMMITS.is_match(&h) {
                 Kind::Transactional
             } else {
                 Kind::Commits
@@ -392,10 +395,14 @@ pub fn runs_alone(sql: &str, dialect: Dialect) -> bool {
     statements.len() == 1 && matches!(kind_of(&statements[0], dialect), Kind::Alone | Kind::Commits)
 }
 
-/// The words a table's (or routine's) name follows, so that `<word> a.b` names the database `a`.
-/// `on` names a table only in `create index … on` and `create trigger … on`, and `like` only in
-/// `create table … like`; elsewhere `on a.b` is a join's condition and `like a.b` a comparison.
-const OBJECT_KEYWORDS: &[&str] = &["TABLE", "INTO", "FROM", "JOIN", "UPDATE", "VIEW", "TRIGGER", "PROCEDURE", "FUNCTION", "EVENT", "REFERENCES", "EXISTS", "INDEX"];
+/// The words a table's (or routine's) name follows, so that `<word> a.b` names the database `a`:
+/// MySQL's `truncate` needs no `table`, `call` names a procedure, and `to` a table's new name
+/// (`rename table … to`, `alter table … rename to`). `on` names a table only in `create index
+/// … on` and `create trigger … on`, and `like` only in `create table … like`; elsewhere `on a.b` is a
+/// join's condition and `like a.b` a comparison. `insert` and `replace` take theirs after their
+/// modifiers, where `into` is optional, and `rename table` after each comma too.
+const OBJECT_KEYWORDS: &[&str] = &["TABLE", "INTO", "FROM", "JOIN", "UPDATE", "VIEW", "TRIGGER", "PROCEDURE", "FUNCTION", "EVENT", "REFERENCES", "EXISTS", "INDEX", "TRUNCATE", "CALL", "TO"];
+const INSERT_MODIFIERS: &[&str] = &["LOW_PRIORITY", "DELAYED", "HIGH_PRIORITY", "IGNORE"];
 
 re!(PG_ROLE, r"^(CREATE|ALTER|DROP) (ROLE|USER|GROUP)\b");
 re!(PG_SERVER, r"^(CREATE|ALTER|DROP) (DATABASE|TABLESPACE|SUBSCRIPTION)\b|^ALTER SYSTEM\b");
@@ -403,6 +410,7 @@ re!(PG_OWNED, r"^(REASSIGN|DROP) OWNED\b");
 re!(PG_LABEL, r"^(COMMENT|SECURITY LABEL)\b");
 re!(PG_LABEL_SERVER, r"\bON (ROLE|DATABASE|TABLESPACE)\b");
 re!(GRANT, r"^(GRANT|REVOKE)\b");
+re!(PG_GRANT_SERVER, r"\bON (DATABASE|TABLESPACE|PARAMETER)\b");
 re!(MYSQL_ACCOUNT, r"^(CREATE|ALTER|DROP|RENAME) (USER|ROLE)\b|^(GRANT|REVOKE)\b");
 re!(MYSQL_SERVER, r"^(CREATE|ALTER|DROP) (DATABASE|SCHEMA|SERVER|TABLESPACE|LOGFILE|RESOURCE)\b");
 re!(MYSQL_SETTING, r"^SET (GLOBAL|PERSIST)\b|^SET @ @ (GLOBAL|PERSIST)\b");
@@ -412,7 +420,8 @@ re!(MYSQL_ELSEWHERE, r"^(USE|INSTALL|UNINSTALL|FLUSH|KILL|PURGE|SHUTDOWN|RESTART
 /// is a scratch database on the target's own server, so a statement that changes the server itself
 /// (a role, a database, a tablespace, a server setting) or, on MySQL, names a database runs against
 /// the real one: `create role` in a shadow makes the role the target's migration then fails to
-/// create, and `create table app.users` writes into `app`.
+/// create, and `create table app.users` writes into `app`. What the statements say is read from
+/// their words, so a Postgres `do` block, whose body is code read only as it runs, is refused.
 pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String> {
     let h = head(statement, 8);
     let words: Vec<String> = statement.tokens.iter().map(|t| if t.kind == TokenKind::Word { t.text.to_ascii_uppercase() } else { t.text.clone() }).collect();
@@ -433,6 +442,12 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
             if GRANT.is_match(&h) && !words.iter().any(|w| w == "ON") {
                 return Some("it grants or revokes a role, which belongs to the server".into());
             }
+            if GRANT.is_match(&h) && PG_GRANT_SERVER.is_match(&words.join(" ")) {
+                return Some("it grants or revokes a privilege on a database, a tablespace or a setting, which belong to the server".into());
+            }
+            if h == "DO" || h.starts_with("DO ") {
+                return Some("its do block runs code that is read only as it runs, so whether it reaches past the shadow can't be seen: write its statements as plain SQL".into());
+            }
             None
         }
         Dialect::Mysql => {
@@ -450,19 +465,25 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
             }
             let t = &statement.tokens;
             let created = |w: &str| words.first().is_some_and(|f| f == "CREATE") && words.iter().take(6).any(|x| x == w);
+            let renames = words.first().is_some_and(|f| f == "RENAME");
             let first_on = words.iter().position(|w| w == "ON");
             let first_like = words.iter().position(|w| w == "LIKE");
-            for k in 0..t.len().saturating_sub(3) {
+            for k in 0..t.len() {
                 let names_table = OBJECT_KEYWORDS.contains(&words[k].as_str())
                     || (Some(k) == first_on && (created("INDEX") || created("TRIGGER")))
-                    || (Some(k) == first_like && created("TABLE"));
-                if !names_table {
-                    continue;
-                }
-                let (a, dot, b) = (&t[k + 1], &t[k + 2], &t[k + 3]);
-                let name = |x: &Token| matches!(x.kind, TokenKind::Word | TokenKind::Quoted);
-                if name(a) && dot.text == "." && name(b) {
-                    return Some(format!("it names the database {}: in a shadow it would reach that database itself, so leave names unqualified", a.text));
+                    || (Some(k) == first_like && created("TABLE"))
+                    || (renames && words[k] == ",");
+                // `insert` and `replace` as statements, not as the functions of those names.
+                let inserts = (k == 0 && matches!(words[k].as_str(), "INSERT" | "REPLACE")).then(|| (k + 1..t.len()).find(|&j| !INSERT_MODIFIERS.contains(&words[j].as_str())));
+                let at = match inserts {
+                    Some(at) => at,
+                    None if names_table => Some(k + 1),
+                    None => None,
+                };
+                let Some(at) = at else { continue };
+                let name = |x: Option<&Token>| x.is_some_and(|x| matches!(x.kind, TokenKind::Word | TokenKind::Quoted));
+                if name(t.get(at)) && t.get(at + 1).is_some_and(|d| d.text == ".") && name(t.get(at + 2)) {
+                    return Some(format!("it names the database {}: in a shadow it would reach that database itself, so leave names unqualified", t[at].text));
                 }
             }
             None
@@ -551,6 +572,16 @@ mod tests {
         assert_eq!(atomicity_problem("insert into a values (1); update a set x = 2", Dialect::Mysql), None);
         assert!(runs_alone("alter table a add column y int", Dialect::Mysql));
         assert!(!runs_alone("alter table a add column y int", Dialect::Postgres));
+        // Postgres refuses a concurrent detach in a transaction.
+        assert!(atomicity_problem("alter table p detach partition c concurrently; select 1", Dialect::Postgres).unwrap().contains("needs a file of its own"));
+        assert!(atomicity_problem("alter table only public.p detach partition public.c concurrently; select 1", Dialect::Postgres).unwrap().contains("needs a file of its own"));
+        assert_eq!(atomicity_problem("alter table p detach partition c; select 1", Dialect::Postgres), None);
+        // MySQL's SET of a session variable and CALL commit nothing.
+        assert_eq!(atomicity_problem("set foreign_key_checks = 0; delete from a; set foreign_key_checks = 1", Dialect::Mysql), None);
+        assert_eq!(atomicity_problem("set session sql_mode = ''; update a set x = 1", Dialect::Mysql), None);
+        assert_eq!(atomicity_problem("call refresh_totals(); insert into a values (1)", Dialect::Mysql), None);
+        assert!(atomicity_problem("set autocommit = 1; insert into a values (1)", Dialect::Mysql).unwrap().contains("a file of its own"));
+        assert!(atomicity_problem("set password = 'x'; insert into a values (1)", Dialect::Mysql).unwrap().contains("a file of its own"));
     }
 
     #[test]
@@ -565,5 +596,24 @@ mod tests {
         assert!(shadow_problem("create trigger t before insert on app.users for each row set new.x = 1", Dialect::Mysql).is_some());
         assert!(shadow_problem("create table t like app.users", Dialect::Mysql).is_some());
         assert!(shadow_problem("attach 'x.db' as x", Dialect::Sqlite).is_some());
+        // A database named where no keyword before it says so.
+        assert!(shadow_problem("insert app.t values (1)", Dialect::Mysql).unwrap().contains("names the database app"));
+        assert!(shadow_problem("insert low_priority ignore app.t values (1)", Dialect::Mysql).is_some());
+        assert!(shadow_problem("replace app.t values (1)", Dialect::Mysql).is_some());
+        assert!(shadow_problem("truncate app.t", Dialect::Mysql).is_some());
+        assert!(shadow_problem("rename table x to app.y", Dialect::Mysql).is_some());
+        assert!(shadow_problem("rename table x to y, z to app.w", Dialect::Mysql).is_some());
+        assert!(shadow_problem("rename table x to y, app.z to w", Dialect::Mysql).is_some());
+        assert!(shadow_problem("alter table x rename to app.y", Dialect::Mysql).is_some());
+        assert!(shadow_problem("call app.p()", Dialect::Mysql).is_some());
+        assert!(shadow_problem("/*!50001 create table app.t (id int) */", Dialect::Mysql).is_some());
+        assert_eq!(shadow_problem("insert t values (1); replace into t values (2); truncate t; rename table x to y, z to w; call p(); select replace(a.b, 'x', 'y') from a", Dialect::Mysql), None);
+        // A server's database, tablespace or parameter, whose privileges belong to the server.
+        assert!(shadow_problem("grant connect on database app to reporting", Dialect::Postgres).is_some());
+        assert!(shadow_problem("revoke create on tablespace fast from app", Dialect::Postgres).is_some());
+        assert!(shadow_problem("grant set on parameter work_mem to app", Dialect::Postgres).is_some());
+        assert_eq!(shadow_problem("grant select on all tables in schema public to app", Dialect::Postgres), None);
+        // A do block's body is read only as it runs.
+        assert!(shadow_problem("do $$ begin create role app; end $$", Dialect::Postgres).unwrap().contains("do block"));
     }
 }
