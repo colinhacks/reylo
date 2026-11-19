@@ -3579,10 +3579,12 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
     let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
+    /// A cast to a string type that keeps the value whole: one with a length (`varchar(1)`) cuts it,
+    /// so `x::varchar(1) IN ('a', 'b')` lets `'ab'` in.
     fn uncast(node: &pg_query::protobuf::Node) -> &pg_query::protobuf::Node {
         match node.node.as_ref() {
             Some(N::TypeCast(t)) => {
-                let name = t.type_name.as_ref().and_then(|n| crate::jsonshape::last_string(&n.names)).unwrap_or_default();
+                let name = t.type_name.as_ref().filter(|n| n.typmods.is_empty()).and_then(|n| crate::jsonshape::last_string(&n.names)).unwrap_or_default();
                 match (["text", "varchar"].contains(&name.as_str()), t.arg.as_deref()) {
                     (true, Some(arg)) => uncast(arg),
                     _ => node,
@@ -3766,11 +3768,12 @@ pub fn check_array_values(text: &str, column: &str, types: (Option<u32>, Option<
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
     let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
-    /// A cast to a string type, as the server prints one around a column of a domain.
+    /// A cast to a string type, as the server prints one around a column of a domain: with no
+    /// length, which would cut each element (`arr::varchar(1)[]`).
     fn uncast(node: &Node) -> &Node {
         match node.node.as_ref() {
             Some(N::TypeCast(t)) => {
-                let name = t.type_name.as_ref().and_then(|n| crate::infer::builtin_name(&n.names)).unwrap_or_default();
+                let name = t.type_name.as_ref().filter(|n| n.typmods.is_empty()).and_then(|n| crate::infer::builtin_name(&n.names)).unwrap_or_default();
                 match (["text", "varchar"].contains(&name.as_str()), t.arg.as_deref()) {
                     (true, Some(arg)) => uncast(arg),
                     _ => node,

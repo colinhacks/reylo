@@ -536,7 +536,7 @@ A `vector` or `halfvec` comes back as a `number[]`, and a parameter of either ta
 
 ### Enums and domains
 
-An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A `text[]` column whose `CHECK` holds it within a list (`tags <@ array['a', 'b']`) is an array of that union, with no `null` element, since `<@` finds `NULL` in no list. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
+An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A `text[]` column whose `CHECK` holds it within a list (`tags <@ array['a', 'b']`) is an array of that union, with no `null` element, since `<@` finds `NULL` in no list. A `CHECK` that compares the column through a cast with a length, as `code::varchar(2) in ('ab', 'cd')`, limits nothing, since the cast cuts the value it compares. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
 
 <Pairs>
 
