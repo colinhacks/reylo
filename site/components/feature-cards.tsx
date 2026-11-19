@@ -25,6 +25,12 @@ const icons: Record<string, ReactNode> = {
     </>
   ),
   hash: <path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18" />,
+  lock: (
+    <>
+      <rect width="18" height="11" x="3" y="11" rx="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </>
+  ),
   zap: <path d="M13 2 4 14h7l-1 8 9-12h-7z" />,
   split: (
     <>
@@ -49,6 +55,23 @@ export function Features({ children }: { children: ReactNode }) {
 }
 
 /** A name with `code` in backticks, as the card shows it. */
+/**
+ * How far each glyph is raised, in CSS px, so that its ink centre meets the centre of its title's cap
+ * band: the titles are centred on their line boxes, and each glyph paints its own part of its 24-unit
+ * box. Measured with the optical-spacing skill's ink-align.mjs on /migrations (2026-11-17), dark and
+ * light alike, before any lift: file 1.25, branch 0.31, zap 1.31, split 1.69, lock 1.31, layers 1.31,
+ * hash 0.31 and database 0.31 px low. Measure again for a new glyph rather than reusing a neighbour's.
+ */
+const lift: Record<string, number> = { file: 1.25, branch: 0.31, zap: 1.31, split: 1.69, lock: 1.31, layers: 1.31, hash: 0.31, database: 0.31 };
+
+function glyph(icon: string): ReactNode {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={lift[icon] ? { transform: `translateY(${-lift[icon]}px)` } : undefined}>
+      {icons[icon]}
+    </svg>
+  );
+}
+
 function named(text: string): ReactNode {
   return text.split('`').map((part, k) => (k % 2 ? <code key={k}>{part}</code> : part));
 }
@@ -58,9 +81,7 @@ export function Choice({ icon, title, children }: { icon: keyof typeof icons; ti
   return (
     <div className="reylo-choice">
       <div className="reylo-feature-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          {icons[icon]}
-        </svg>
+        {glyph(icon)}
         {title}
       </div>
       <div className="reylo-choice-ways">{children}</div>
@@ -88,9 +109,7 @@ export function Feature({ icon, title, wide, children }: { icon: keyof typeof ic
   return (
     <div className={wide ? 'reylo-feature reylo-feature-wide' : 'reylo-feature'}>
       <div className="reylo-feature-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          {icons[icon]}
-        </svg>
+        {glyph(icon)}
         {title}
       </div>
       {children}

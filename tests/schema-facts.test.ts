@@ -78,6 +78,15 @@ test("an array's size is written on an array", () => {
   assert.deepEqual([schema.minItems, schema.maxItems], [3, 3]);
 });
 
+test("a map's size, which counts its keys, is written on the object an hstore is, as a result, inside a document and as a parameter", () => {
+  const hstore = (facts: object): EngineType => ({ kind: "map", label: "public.hstore", key: { type: { kind: "text" } }, value: { type: { kind: "text" }, nullable: true }, ...facts }) as EngineType;
+  const object = { type: "object", additionalProperties: { type: ["string", "null"] } };
+  assert.deepEqual(output(hstore({})), object);
+  assert.deepEqual(output(hstore({ size: { max: 64 } })), { ...object, maxProperties: 64 });
+  assert.deepEqual(output(hstore({ size: { min: 1, max: 64 } }), true), { ...object, minProperties: 1, maxProperties: 64 });
+  assert.deepEqual(typeSchema(hstore({ size: { exact: 2 } }), "postgres", true), { ...object, minProperties: 2, maxProperties: 2 });
+});
+
 test("a nullable position keeps its facts beside null, and comments describe what they are on", () => {
   const schemas = querySchemas(
     {

@@ -46,6 +46,11 @@ Try a change before you write its migration: `reylo db push --watch` takes your 
 Every destructive change needs `--drop`, in a migration and in a push: a dropped table or column, or a type change that loses values, is refused until `--drop` names it. Where Reylo Migrate can't tell a rename from a drop, `--rename` settles it.
 
 </Feature>
+<Feature icon="lock" title="No long locks">
+
+On Postgres, a new constraint or index never blocks writes: it's added without reading the rows, then checked in a migration of its own. A table rewrite waits for `--blocking`, and a statement gives up a busy lock after half a second, then tries again.
+
+</Feature>
 <Feature icon="layers" title="Dry runs in shadow databases">
 
 Reylo Migrate replays your migrations on a throwaway database, so `--dry-run` shows what a deploy would do, running nothing on yours.
@@ -58,7 +63,7 @@ Chained hashes in the lock catch a migration edited, deleted or reordered, befor
 </Feature>
 <Feature icon="database" title="Dialect-agnostic">
 
-Supports Postgres, MySQL and SQLite, with one set of commands.
+Supports Postgres, MySQL and SQLite, Turso Cloud included, with one set of commands.
 
 </Feature>
 </Features>
@@ -248,6 +253,7 @@ Commands:
   migrate new <name>       Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
+    --blocking             Accept a statement that blocks writes while it reads every row
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
@@ -303,7 +309,7 @@ direct_url: ${DATABASE_URL}
 shadow_url: null
 ```
 
-To migrate another database, pass `--url`.
+To migrate another database, pass `--url`. On Turso Cloud, that's its `libsql://` URL with your auth token ([Turso](/turso#migrations)).
 
 ### Shadow databases
 
@@ -327,7 +333,7 @@ Each database makes them its own way:
 
 - **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
-- **SQLite:** in memory. There's nothing to grant.
+- **SQLite:** in memory, Turso Cloud's included. There's nothing to grant.
 
 Since a shadow is on your database's server, a migration that would reach past it is refused: one that changes a role, a database, a tablespace or a server setting, and on MySQL, one that names a database, as in `app.users`. Reylo Migrate reads each statement's own words, so code that runs inside a `do` block or a function isn't checked: keep such code from changing a role, a database, a tablespace or a server setting.
 

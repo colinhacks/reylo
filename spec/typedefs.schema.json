@@ -113,7 +113,7 @@
           "type": "string"
         },
         "title": {
-          "description": "A short name for the type, as JSON Schema's `title`. Like the comment, it says nothing of the values.",
+          "description": "A short name for the type, written for a reader, as JSON Schema's `title`: `Mailing address`, on a type whose `label` is `public.address`. Like the comment, it says nothing of the values.",
           "type": "string"
         }
       }
