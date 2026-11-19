@@ -28,7 +28,7 @@ select verified from users where id = :id
 
 | Field | What it holds |
 | --- | --- |
-| `file` | The file the statement was read from |
+| `file` | The file `reylo analyze` read the statement from. Only the CLI adds it: the format has no such field, and a statement given with `--sql` has none |
 | `$schema` | The format's version, as the URL of its JSON Schema |
 | `dialect` | The database, and its server's version |
 | `sql` | The statement as the database runs it, with the database's own placeholders |

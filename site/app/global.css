@@ -1111,8 +1111,11 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   font-size: 0.88em;
 }
 
-/* Code in the copy: plain mono, a shade brighter than the words around it, with no chip. */
+/* Code in the copy: mono, a shade brighter than the words around it, on a faint chip. */
 .ml p code {
+  padding: 0.1em 0.375em;
+  border-radius: 0.3125rem;
+  background: var(--color-fd-secondary);
   color: var(--color-fd-foreground);
 }
 

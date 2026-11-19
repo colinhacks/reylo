@@ -56,7 +56,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </Row>
 
       <Row n={4} title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
-        <p>Push <code>schema.sql</code> to your development database on every save. Then <code>reylo migrate dev</code> rewinds what left your migrations and runs what's new.</p>
+        <p>Push <code>schema.sql</code> to your development database on every save. Then <code>reylo migrate new</code> turns what you pushed into a migration.</p>
       </Row>
 
       <Row n={5} title="Schemaless mode" visual={<Term lines={SCHEMALESS} />}>
@@ -378,12 +378,8 @@ const PUSH: Script = [
   '  + alter table users add column nick text;',
   '✓ This database matches reylo/schema.sql',
   '! Not in a migration yet: reylo migrate new <name> writes it',
-  '$ reylo migrate dev',
-  'Applying to postgres://localhost:5432/app',
-  "  ↺ 20261104120000_tags.sql   rewound: it isn't in the migrations",
-  '    ! Dropped tags (3 rows)',
-  '  ✓ 20261104130000_posts.sql  applied · 3 ms',
-  '✓ Wrote reylo/reylo.lock',
+  '$ reylo migrate new add_nick',
+  '✓ Wrote reylo/migrations/20261104150000_add_nick.sql',
 ];
 
 const HAND_CHANGE: Script = [
