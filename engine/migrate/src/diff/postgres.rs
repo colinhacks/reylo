@@ -535,6 +535,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         relations.insert(oid(r, "oid"), (id, kind.to_string()));
     }
 
+    // The tables others inherit from (not partitioned ones), whose columns' defaults change on them
+    // alone: each child keeps its own.
+    let inherited_from: BTreeSet<String> = rels.iter().filter(|r| r.get("bound").is_none()).filter_map(|r| r.get("parent")).flat_map(names_in).collect();
     // The composite types tables are made of, whose attributes change on those tables too.
     let typed_by: BTreeSet<String> = rels.iter().filter_map(|r| r.get("of_type").map(String::from)).collect();
 
@@ -808,7 +811,12 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             } else {
                 "inherited"
             };
-            table_columns.push(format!("{TABLE_COLUMN}{col_id}{SEP}{held}{SEP}{}{SEP}alter table {name} add column {} {made}{SEP}{}", c.text("name"), c.text("name"), c.text("nn_name")));
+            // A not null under the name it has (a parent's), which the column added keeps.
+            let added = match c.get("nn_name") {
+                Some(nn) if made.ends_with(" not null") => format!("{} constraint {nn} not null", made.trim_end_matches(" not null")),
+                _ => made.clone(),
+            };
+            table_columns.push(format!("{TABLE_COLUMN}{col_id}{SEP}{held}{SEP}{}{SEP}alter table {name} add column {} {added}{SEP}{}", c.text("name"), c.text("name"), c.text("nn_name")));
             // A typed table's columns are its type's attributes, made, changed and dropped through
             // the type; a default or a not null of one is the table's own, written `with options`.
             if let Some(ty) = r.get("of_type") {
@@ -859,6 +867,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                         .chain((c.flag("inherited") && !partition).then(|| "inherited".to_string()))
                         .chain((kind == "f").then(|| "foreign".to_string()))
                         .chain((!cascade.is_empty()).then(|| CASCADE.to_string()))
+                        .chain((kind == "r" && inherited_from.contains(&name)).then(|| INHERITED_FROM.to_string()))
+                        .chain((c.flag("inherited") && !partition).then(|| format!("{PARENTS}{}", r.text("parent"))))
                         .collect(),
                     // A column a parent has too changes type with the parent's, before its own change.
                     deps: if c.flag("inherited") && !partition { holders(c.text("name")) } else { BTreeSet::new() },
@@ -1160,6 +1170,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             // target has valid where this one isn't is made again, attaching them as it is made.
             if r.flag("partitioned") && !r.flag("valid") {
                 o.def.push_str("\n(invalid)");
+                // A partition made under it takes a copy of it, which the target may not have: it
+                // is made again over its table's partitions, after them.
+                let over: Vec<String> = rels.iter().filter(|p| p.get("bound").is_some() && p.get("parent") == Some(r.text("table_name"))).map(|p| format!("table {}", p.text("name"))).collect();
+                o.def.push_str(&format!("\nover {}", over.join(", ")));
+                o.after.extend(over);
             }
             if let Some(parent) = r.get("parent").and_then(|p| p.parse::<u32>().ok()).and_then(|p| ids.class.get(&p).cloned()) {
                 let parent_name = parent.split_once(' ').map(|(_, n)| n.to_string()).unwrap_or_default();
@@ -1711,7 +1726,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select p.oid, format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root,
               concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end) as publish,
-              format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}, {listed}) order by 1) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
+              format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}, {listed}) order by format('%I.%I', n.nspname, c.relname)) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
               format('%s', {schemas}) as schemas
             from pg_publication p where {}",
             not_platform("p.pubowner")
@@ -3048,6 +3063,9 @@ fn if_not_exists(def: &str) -> String {
     def.to_string()
 }
 
+/// A column of a table others inherit from.
+const INHERITED_FROM: &str = "inherited from";
+
 /// A typed table's column, which is its type's attribute.
 const TYPED: &str = "typed";
 /// An attribute of a composite type a table is of, which changes on that table too.
@@ -3640,6 +3658,14 @@ impl Alterer for PostgresAlterer {
     }
 
     fn around(&self, from: &Object, to: &Object, under: &Object) -> Option<(Vec<String>, Vec<String>)> {
+        // A child's column whose type changes with its parent's has its own default taken off
+        // first, which may not cast: its own change sets the target's after.
+        if from.kind == Some(Kind::Column) && from.extra.iter().any(|l| l == "inherited") && under.kind == Some(Kind::Column) {
+            let (a, b) = (parse_column(&from.def), parse_column(&to.def));
+            let table = from.owner.as_deref()?.strip_prefix("table ")?;
+            let name = super::last_written(from.id.strip_prefix("column ")?);
+            return (a.default.is_some() && a.ty != b.ty).then(|| (vec![format!("alter table only {table} alter column {name} drop default")], vec![]));
+        }
         // A publication naming a column (in a column list or a row filter) refuses the column's
         // change: its table leaves the publication around it, and comes back as the target lists it.
         let name = from.id.strip_prefix("publication ")?;
@@ -3657,20 +3683,24 @@ impl Alterer for PostgresAlterer {
         Some((vec![format!("alter publication {name} drop table only {table}")], back.into_iter().collect()))
     }
 
-    fn kept_from(&self, from: &Object, to: &Object, gone: &Object) -> Option<Vec<String>> {
+    fn kept_from(&self, from: &Object, to: &Object, gone: &Object) -> Option<(Vec<String>, Vec<String>)> {
         // A column a table only inherits from this parent alone, which it keeps where the parent's
-        // goes: the table leaves the parent and takes it again, which leaves the column its own.
+        // goes: the table leaves the parent before and takes it again after, which leaves the column
+        // its own. A column it declares too stays, but for its not null, which Postgres 18 keeps
+        // inherited from a parent's column that is gone, past dropping: it leaves the parent too.
         // Where a parent that keeps its column holds it still, it stays.
         if from.kind != Some(Kind::Column) || !from.extra.iter().any(|l| l == "inherited") || to.deps.iter().any(|d| *d != gone.id && d.starts_with("column ") && from.deps.contains(d)) {
+            return None;
+        }
+        let declared = !from.create.is_empty();
+        if declared && !parse_column(&from.def).not_null {
             return None;
         }
         let table = from.owner.as_deref()?.strip_prefix("table ")?;
         // It leaves every parent and takes each again in its order, which keeps the order of its
         // parents and leaves the column its own whichever of them held it.
         let parents = from.extra.iter().find_map(|l| l.strip_prefix(PARENTS)).map(names_in).unwrap_or_else(|| gone.owner.as_deref().and_then(|w| w.strip_prefix("table ")).map(|p| vec![p.to_string()]).unwrap_or_default());
-        let mut out: Vec<String> = parents.iter().map(|p| format!("alter table {table} no inherit {p}")).collect();
-        out.extend(parents.iter().map(|p| format!("alter table {table} inherit {p}")));
-        Some(out)
+        Some((parents.iter().map(|p| format!("alter table {table} no inherit {p}")).collect(), parents.iter().map(|p| format!("alter table {table} inherit {p}")).collect()))
     }
 
     fn releases(&self, from: &Object, to: &Object) -> bool {
@@ -3678,7 +3708,7 @@ impl Alterer for PostgresAlterer {
         // inheriting from a parent, whose columns of that parent's become its own.
         let part = |o: &Object, what: &str| o.extra.iter().find_map(|l| l.strip_prefix(what)).map(String::from);
         let parents = |o: &Object| part(o, "inherits ").map(|p| names_in(&p)).unwrap_or_default();
-        to.kind == Some(Kind::Table) && ((part(from, "partition of ").is_some() && part(from, "partition of ") != part(to, "partition of ")) || parents(from).iter().any(|p| !parents(to).contains(p)))
+        to.kind == Some(Kind::Table) && ((part(from, "partition of ").is_some() && part(from, "partition of ") != part(to, "partition of ")) || parents(from).iter().any(|p| !parents(to).contains(p)) || (part(from, "of ").is_some() && part(from, "of ") != part(to, "of ")))
     }
 
     fn takes_along(&self, from: &Object, to: &Object) -> Vec<String> {
@@ -3879,7 +3909,10 @@ impl Alterer for PostgresAlterer {
                 // which would cast it.
                 // A partitioned table's default changes on it alone, where its type stays: each
                 // partition sets its own, which may differ.
-                let at_default = if !type_changes && to.extra.iter().any(|l| l == "partitioned") { format!("alter table only {table} alter column {name}") } else { at.clone() };
+                // A table others inherit from changes its own default alone too, whatever its type:
+                // each child's is the child's own change.
+                let alone = (!type_changes && to.extra.iter().any(|l| l == "partitioned")) || to.extra.iter().any(|l| l == INHERITED_FROM);
+                let at_default = if alone { format!("alter table only {table} alter column {name}") } else { at.clone() };
                 if a.default.is_some() && (b.default.is_none() || type_changes) {
                     out.push(format!("{at_default} drop default"));
                 }
@@ -4175,7 +4208,12 @@ impl Alterer for PostgresAlterer {
                         out.push(format!("alter table {parent} detach partition {name}"));
                     }
                 }
-                for parent in had.iter().filter(|p| !has.contains(p)) {
+                // A parent taken is appended to those it has: those the target lists after one it
+                // takes leave first, and come back in the target's order.
+                let kept: Vec<&String> = had.iter().filter(|p| has.contains(p)).collect();
+                let in_order = kept.iter().zip(&has).take_while(|(a, b)| **a == *b).count();
+                let again: Vec<&String> = kept[in_order..].to_vec();
+                for parent in had.iter().filter(|p| !has.contains(p)).chain(again.iter().copied()) {
                     out.push(format!("alter table {name} no inherit {parent}"));
                 }
                 if was_of.is_some() && was_of != is_of {
@@ -4207,7 +4245,7 @@ impl Alterer for PostgresAlterer {
                         out.push(format!("alter table {parent} attach partition {name} {bound}"));
                     }
                 }
-                for parent in has.iter().filter(|p| !had.contains(p)) {
+                for parent in has.iter().filter(|p| !had.contains(p) || again.contains(p)) {
                     out.push(format!("alter table {name} inherit {parent}"));
                 }
                 if let Some(ty) = is_of.as_ref().filter(|_| was_of != is_of) {

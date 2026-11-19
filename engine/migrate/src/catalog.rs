@@ -723,7 +723,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     for r in db
         .rows(&format!(
             "select format('publication %I%s%s operations=%s%s', p.pubname, case when p.puballtables then ' all tables' else '' end,
-              coalesce(' tables=' || (select string_agg(format('%I.%I', n.nspname, c.relname){}, ', ' order by 1)
+              coalesce(' tables=' || (select string_agg(format('%I.%I', n.nspname, c.relname){}, ', ' order by format('%I.%I', n.nspname, c.relname))
                 from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid), ''),
               concat_ws(',', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end),
               case when p.pubviaroot then ' via root' else '' end) || {} as line
