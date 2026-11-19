@@ -6,5 +6,6 @@ create function app.api_request_headers() returns jsonb language sql stable as $
 create function app.normalize_title(input text) returns text language sql immutable as $f$ select app.normalize_title_inner(input) $f$;
 create function app.normalize_title_inner(input text) returns text language sql immutable as $f$ select lower(btrim(input)) $f$;
 alter table app.downloads add column client_info text default app.api_request_client_info();
+reset check_function_bodies;
 -- file 2 of 2
 create index concurrently documents_title_norm_idx on app.documents ((app.normalize_title(title)));
