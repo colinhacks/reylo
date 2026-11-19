@@ -13,7 +13,8 @@
 //! error's name as mysql2 gives it; a catalog query that fails fails the case.
 //!
 //! MySQL has no transactional DDL and no deferred constraints, so the isolation is not Postgres's
-//! one transaction. Each state is seeded in a transaction that is never committed, and every run
+//! one transaction. Each state is seeded in a transaction that is never committed (the empty
+//! state's rows deleted in one, the foreign keys unchecked while they go), and every run
 //! sits between `SAVEPOINT q` and `ROLLBACK TO SAVEPOINT q`. When that rollback finds no
 //! savepoint, the run ended the transaction (an implicit commit, or an error that rolled all of
 //! it back): the database is then dropped, built again from `setup.sql` on a new session and
@@ -540,6 +541,25 @@ async fn seed(conn: &mut Conn, tables: &[Table], scenario: Scenario) -> Result<(
     Ok((counts.join(", "), bare))
 }
 
+/// Delete every table's rows, inside the transaction the caller opened, with the foreign keys
+/// unchecked, twice for the rows a trigger writes as others go: what the seeding's note says.
+async fn empty(conn: &mut Conn, tables: &[Table]) -> Result<String, String> {
+    conn.query_drop("SET SESSION foreign_key_checks = 0").await.map_err(|e| e.to_string())?;
+    let mut kept = Vec::new();
+    for pass in 0..2 {
+        for table in tables {
+            match conn.query_drop(format!("DELETE FROM {}", backticked(&table.name))).await {
+                Ok(()) => {}
+                Err(mysql_async::Error::Server(e)) if pass == 1 => kept.push(format!("{} ({})", table.name, e.message)),
+                Err(mysql_async::Error::Server(_)) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    }
+    conn.query_drop("SET SESSION foreign_key_checks = 1").await.map_err(|e| e.to_string())?;
+    Ok(if kept.is_empty() { "every table empty".into() } else { format!("every table empty but {}", kept.join(", ")) })
+}
+
 /// Insert one row; a row that breaks a unique key is tried again, once per key the table may
 /// have, with fresh values in the columns of the key the server names, or NULL in a column whose
 /// type has no fresh value and that takes one.
@@ -739,6 +759,13 @@ impl State<'_> {
     /// and the checksum of the tables no rollback restores.
     async fn begin_seeded(&mut self, scenario: Scenario) -> Result<(String, Vec<String>, String), String> {
         let conn = &mut self.conn;
+        if scenario == Scenario::Empty {
+            conn.query_drop("START TRANSACTION").await.map_err(|e| e.to_string())?;
+            let emptied = empty(conn, &self.tables).await?;
+            let checksum = self.checksum().await?;
+            self.counters = self.conn.query::<(String, u64), _>(COUNTERS_QUERY).await.map_err(|e| e.to_string())?.into_iter().collect();
+            return Ok((emptied, Vec::new(), checksum));
+        }
         let (mode, zone): (String, String) = conn.query_first("select @@session.sql_mode, @@session.time_zone").await.map_err(|e| e.to_string())?.unwrap_or_default();
         conn.query_drop("START TRANSACTION").await.map_err(|e| e.to_string())?;
         // A TIMESTAMP literal is an instant only under a zone without daylight saving time.
@@ -805,8 +832,9 @@ async fn query(conn: &mut Conn, text: &str, each: &mut dyn FnMut(&[Returned], &[
     Ok((columns, returned))
 }
 
-/// Seed the case's tables twice and run every statement over both states, each run under the
-/// timeout, which a second session enforces with `KILL QUERY`.
+/// Seed the case's tables twice, then empty them, and run every statement over the three states,
+/// each run under the timeout, which a second session enforces with `KILL QUERY`. The empty state
+/// runs each statement's first assignment alone.
 async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String, String, Value)], timeout_ms: u64) -> Result<Report, String> {
     let mut problems = Vec::new();
     let mut notes = Vec::new();
@@ -910,7 +938,10 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                         prepared = Some((Some(statement), pools));
                     }
                     let (statement, pools) = prepared.as_ref().expect("prepared above");
-                    let all = assignments(pools);
+                    let mut all = assignments(pools);
+                    if scenario == Scenario::Empty {
+                        all.truncate(1);
+                    }
                     let Some(values) = all.get(r) else { break };
                     r += 1;
                     // Each `?` is the n-th name of `order`, and the value is that parameter's.
@@ -927,7 +958,7 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                         literal
                     };
                     let bound = bind(values);
-                    let shown = format!("{}{how}", values.iter().map(|b| b.shown.clone()).collect::<Vec<_>>().join(", "));
+                    let shown = format!("{}{how}{}", values.iter().map(|b| b.shown.clone()).collect::<Vec<_>>().join(", "), scenario.shown());
                     let literal = literal_of(values);
                     state.conn.query_drop("SAVEPOINT q").await.map_err(|e| e.to_string())?;
                     // The rows are checked as they come, so a statement that returns rows without end
