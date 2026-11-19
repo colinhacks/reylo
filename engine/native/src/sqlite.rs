@@ -287,6 +287,31 @@ mod tests {
     static TURNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn an_insert_into_a_table_declaring_on_conflict_replace_reaches_what_its_delete_cascades_to() {
+        let dir = std::env::temp_dir().join(format!("reylo-sqlite-replace-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let reached = |name: &str, clause: &str| {
+            let path = dir.join(format!("{name}.db"));
+            let _ = std::fs::remove_file(&path);
+            Db::open(&path).unwrap().execute_batch(&format!("create table p (id integer primary key, email text {clause}); create table c (id integer primary key, pid integer not null references p (id) on delete cascade);")).unwrap();
+            let analysis = Session::open(path.to_str().unwrap()).unwrap().analyze("insert into p (email) values (:e)").unwrap();
+            let Some(reylo_engine_core::types::Capabilities { tables: reylo_engine_core::types::CapabilityTables::Named(tables), .. }) = analysis.capabilities else { panic!("{clause}: {:?}", analysis.capabilities) };
+            // The errors it may raise name the tables it reaches too: `c`'s NOT NULL.
+            let errors = serde_json::to_value(&analysis.errors).unwrap();
+            let named = errors["SQLITE_CONSTRAINT_NOTNULL"]["table"].as_array().is_some_and(|t| t.contains(&serde_json::json!("c")));
+            (tables.into_keys().collect::<Vec<_>>(), named)
+        };
+        // The UNIQUE's REPLACE deletes the row the insert conflicts with, and its children with it,
+        // however the DDL spells the clause.
+        for (name, clause) in [("plain", "unique on conflict replace"), ("lines", "unique on conflict\n  replace"), ("case", "UNIQUE On Conflict RePlace"), ("comment", "unique on /* the old row goes */ conflict -- and is deleted\n replace")] {
+            assert_eq!(reached(name, clause), (vec!["c".to_string(), "p".to_string()], true), "{clause}");
+        }
+        // A UNIQUE that aborts deletes nothing.
+        assert_eq!(reached("abort", "unique"), (vec!["p".to_string()], false));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_held_file_is_read_through_a_copy_of_its_own_removed_with_the_connection() {
         let _turn = TURNS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("reylo-sqlite-test-{}", std::process::id()));

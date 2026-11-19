@@ -574,6 +574,16 @@ static int ignoresConflict(Table *pTab){
   return 0;
 }
 
+/* Whether the table declares its PRIMARY KEY or a UNIQUE ON CONFLICT REPLACE: a write that breaks
+** it deletes the row it conflicts with, unless the statement's own OR clause says otherwise. A NOT
+** NULL's REPLACE writes the column's default instead, and deletes nothing. */
+static int replacesConflict(Table *pTab){
+  Index *pIdx;
+  if( pTab->keyConf==OE_Replace ) return 1;
+  for(pIdx=pTab->pIndex; pIdx; pIdx=pIdx->pNext) if( pIdx->onError==OE_Replace ) return 1;
+  return 0;
+}
+
 static void tables(sqlite3_str *s){
   int t, i, k;
   sqlite3_str_appendchar(s, 1, '{');
@@ -584,6 +594,7 @@ static void tables(sqlite3_str *s){
     kv_bool(s, "strict", (pTab->tabFlags & TF_Strict)!=0);
     kv_str(s, "rowidAlias", pTab->iPKey>=0 ? pTab->aCol[pTab->iPKey].zCnName : 0);
     kv_bool(s, "ignores", ignoresConflict(pTab));
+    kv_bool(s, "replaces", replacesConflict(pTab));
     key(s, "columns"); sqlite3_str_appendchar(s, 1, '[');
     for(i=0; i<pTab->nCol; i++){
       Column *pCol = &pTab->aCol[i];
