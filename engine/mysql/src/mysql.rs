@@ -957,7 +957,7 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
         .columns
         .iter()
         .map(|(name, shape)| {
-            let (ty, non_null) = resolve(shape, &outcomes, &plan, &flows, &documents, views);
+            let (ty, non_null) = resolve(shape, &outcomes, &plan, &flows, &documents, views, false);
             (name.clone(), ty, non_null)
         })
         .collect();
@@ -2660,21 +2660,22 @@ fn param_type(code: u32, charset: u32) -> Type {
 
 /// One shape plus its probes' prepares as the column's type and whether it is never NULL. A leaf
 /// stored under its definition ([`stored_column`]) takes its narrowing, its `TEXT`'s capacity
-/// counted in code points, since the probe's origin may be a derived column's own name.
-fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysql_shape::Plan, flows: &[Vec<u8>], documents: &[Vec<Option<Value>>], views: &HashSet<String>) -> (Type, bool) {
+/// counted in code points, since the probe's origin may be a derived column's own name. `inside`
+/// says the shape stands inside a document, where a JSON value that is JSON's null is a null.
+fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysql_shape::Plan, flows: &[Vec<u8>], documents: &[Vec<Option<Value>>], views: &HashSet<String>, inside: bool) -> (Type, bool) {
     match shape {
         Shape::Object { fields, non_null } => {
             let fields = fields
                 .iter()
                 .map(|(k, s)| {
-                    let (ty, nn) = resolve(s, outcomes, plan, flows, documents, views);
+                    let (ty, nn) = resolve(s, outcomes, plan, flows, documents, views, true);
                     Field::new(k.clone(), ty, !nn)
                 })
                 .collect();
             (Type::structure(fields), *non_null)
         }
         Shape::Array { items, non_null, .. } => {
-            let (ty, nn) = resolve(items, outcomes, plan, flows, documents, views);
+            let (ty, nn) = resolve(items, outcomes, plan, flows, documents, views, true);
             (Type::array(Slot::new(ty, !nn)), *non_null)
         }
         Shape::Column { probe, index } => match outcomes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
@@ -2690,18 +2691,28 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
                 };
                 // A JSON document a column holds is, inside another, what it holds.
                 let ty = crate::mysql_types::content(ty);
+                // JSON the statement did not build may be JSON's null (`'null'` in a NOT NULL JSON
+                // column), which a document holds as a null, unless the JSON Schema a CHECK holds
+                // it to refuses null; at the top it is the column's value.
+                let non_null = c.flags & 1 != 0 && !(inside && may_be_json_null(&ty));
                 if plan.either.contains(&(*probe, *index)) && crate::mysql_types::has_integer(&ty) {
-                    (Type::union(vec![Type::boolean(), ty]), c.flags & 1 != 0)
+                    (Type::union(vec![Type::boolean(), ty]), non_null)
                 } else {
-                    (ty, c.flags & 1 != 0)
+                    (ty, non_null)
                 }
             }
             None => (Type::unknown(), false),
         },
         // A value the query may hand back NULL whatever its probe says ([`crate::mysql_shape`]).
-        Shape::Nullable(inner) => (resolve(inner, outcomes, plan, flows, documents, views).0, false),
+        Shape::Nullable(inner) => (resolve(inner, outcomes, plan, flows, documents, views, inside).0, false),
         _ => (Type::unknown(), false),
     }
+}
+
+/// Whether a value of the type may be JSON's null: JSON the statement did not build, unless the
+/// JSON Schema a CHECK holds it to refuses null.
+fn may_be_json_null(ty: &Type) -> bool {
+    matches!(&ty.kind, TyKind::Json(crate::types::JsonType { content: None, .. })) && ty.schema().is_none_or(|schema| crate::schema_type::admits(&schema, &Value::Null))
 }
 
 // ---- the row count ------------------------------------------------------------------------------

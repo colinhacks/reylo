@@ -1416,7 +1416,10 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
         }
         // What a statement built: its content, at the top of the document.
         Kind::Json(JsonType { content: Some(content), .. }) => return document_contradiction(&content.ty, json, nullable || content.nullable, path),
-        Kind::Json(_) | Kind::Unknown => return None,
+        // Any JSON, of whatever kind, but inside a document JSON's null is a null, which a place
+        // typed non-null does not hold; at the top it is a value.
+        Kind::Json(_) => return (json.is_null() && !nullable && !path.is_empty()).then(|| format!("has a null at {at}, typed non-null")),
+        Kind::Unknown => return None,
         _ => {}
     }
     if json.is_null() {
@@ -1664,6 +1667,15 @@ mod tests {
         assert_eq!(check(json!([1])).as_deref(), Some("holds a list at the top, typed an object"));
         assert_eq!(check(Value::Null).as_deref(), Some("has a null at the top, typed non-null"));
         assert_eq!(json_contradiction(&shape, &Value::Null, true, ""), None);
+        // Any JSON inside a document is held to its place's nullability, JSON's null being a null
+        // there; at the top it is a value.
+        let any = json!({ "kind": "struct", "fields": [
+            { "name": "p", "type": { "kind": "json", "label": "json" } },
+            { "name": "q", "type": { "kind": "json", "label": "json" }, "nullable": true },
+        ] });
+        assert_eq!(json_contradiction(&any, &json!({ "p": null, "q": null }), false, "").as_deref(), Some("has a null at .p, typed non-null"));
+        assert_eq!(json_contradiction(&any, &json!({ "p": [null], "q": null }), false, ""), None);
+        assert_eq!(json_contradiction(&json!({ "kind": "json", "label": "json" }), &Value::Null, false, ""), None);
         // An integer is a JSON integer, and a date and a time the text MySQL writes for one.
         let int = json!({ "kind": "integer", "bits": 32, "label": "int" });
         assert_eq!(json_contradiction(&int, &json!(1.5), false, ".n").as_deref(), Some("holds 1.5 at .n, typed int"));
