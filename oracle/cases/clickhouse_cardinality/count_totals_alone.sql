@@ -1,0 +1,1 @@
+SELECT count() AS n FROM users WITH TOTALS

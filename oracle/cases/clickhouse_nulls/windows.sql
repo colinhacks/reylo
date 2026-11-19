@@ -1,0 +1,1 @@
+SELECT id, name, lagInFrame(name) OVER w AS previous, leadInFrame(email) OVER w AS next_email, row_number() OVER w AS position, sum(age) OVER w AS running FROM users WINDOW w AS (ORDER BY id, name ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) ORDER BY id, name

@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 reylo-engine-core.workspace = true
-reylo-engine = { workspace = true, features = ["postgres", "mysql", "sqlite"] }
+reylo-engine = { workspace = true, features = ["postgres", "mysql", "sqlite", "clickhouse"] }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 # The same features as Reylo Framework's, so the two share one build of each in the workspace's target.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs", "io-util", "process"] }

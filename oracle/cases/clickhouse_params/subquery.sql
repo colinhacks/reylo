@@ -1,0 +1,1 @@
+SELECT u.id, (SELECT count() FROM orders o WHERE o.user_id = u.id AND o.total > {least:Decimal(18, 2)}) AS big_orders FROM users u WHERE u.id IN (SELECT user_id FROM orders WHERE placed >= {since:Date}) ORDER BY u.id, u.name

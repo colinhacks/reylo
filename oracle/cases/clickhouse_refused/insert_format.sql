@@ -1,0 +1,1 @@
+INSERT INTO orders FORMAT JSONEachRow

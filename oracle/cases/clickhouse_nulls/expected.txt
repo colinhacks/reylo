@@ -1,0 +1,13 @@
+aggregates.sql: one (than: UInt8) -> { n: UInt64, total: Decimal(39,4), mean: Float64, last: String(UTF-8, ill-formed), first: DateTime64, some_email: String(UTF-8, ill-formed)?, last_or_null: String(UTF-8, ill-formed)?, names: String(UTF-8, ill-formed)[], distinct_ids: UInt64, oldest: String(UTF-8, ill-formed) }
+arithmetic.sql: many () -> { inf: Float64, zero: UInt8, rest: UInt8, maybe_number: Int8?, number_or_zero: UInt64, no_tag: String(UTF-8, ill-formed), has_a: UInt8, not_found: String(UTF-8, ill-formed), maybe_decimal: Decimal(19,2)? }
+arrays.sql: many () -> { mixed: String(UTF-8, ill-formed)?[], maybe_tags: String(UTF-8, ill-formed)?[], kept: String(UTF-8, ill-formed)[], pair: (String(UTF-8, ill-formed)?, UInt8), by_name: Map(({ key: String(UTF-8, ill-formed), value: String(UTF-8, ill-formed)? })[]), tag: String(UTF-8, ill-formed) }
+conditionals.sql: many () -> { a: String(UTF-8, ill-formed)?, b: String(UTF-8, ill-formed)?, c: String(UTF-8, ill-formed), d: String(UTF-8, ill-formed), e: String(UTF-8, ill-formed), f: String(UTF-8, ill-formed)?, g: UInt8, h: String(UTF-8, ill-formed), i: UInt8?, j: String(UTF-8, ill-formed)? }
+full_join.sql: many () -> { user_id: UInt64, email: String(UTF-8, ill-formed)?, order_id: UInt64, total: Decimal(19,2) }
+grouped.sql: many () -> { plan: String(UTF-8, ill-formed), n: UInt64, rich: Decimal(39,4), email: String(UTF-8, ill-formed)? }
+left_join.sql: many () -> { id: UInt64, name: String(UTF-8, ill-formed), total: Decimal(19,2), note: String(UTF-8, ill-formed)?, order_id: UInt64 }
+left_join_nulls.sql: many () -> { id: UInt64, total: Decimal(19,2)?, note: String(UTF-8, ill-formed)?, order_id: UInt64? }
+rollup.sql: many () -> { plan: String(UTF-8, ill-formed), role: Enum8('admin' | 'member'), n: UInt64 }
+rollup_nulls.sql: many () -> { name: String(UTF-8, ill-formed)?, n: UInt64 }
+subqueries.sql: many () -> { id: UInt64, biggest: Decimal(19,2)?, nobody: String(UTF-8, ill-formed)?, has_orders: UInt8, any_big: UInt8 }
+unions.sql: many () -> { id: UInt64?, email: String(UTF-8, ill-formed)? }
+windows.sql: many () -> { id: UInt64, name: String(UTF-8, ill-formed), previous: String(UTF-8, ill-formed), next_email: String(UTF-8, ill-formed)?, position: UInt64, running: UInt64 }

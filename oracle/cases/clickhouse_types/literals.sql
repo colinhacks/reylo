@@ -1,0 +1,1 @@
+SELECT 1 AS one, -1 AS minus, 1.5 AS half, 'x' AS x, NULL AS nothing, true AS yes, [] AS none, [1, 2] AS some, (1, 'a') AS pair, toDate('2026-01-02') AS day, now() > toDateTime(0) AS later, toUUID('61f0c404-5cb3-11e7-907b-a6006ad3dba0') AS uid, CAST(1.5, 'BFloat16') AS brain

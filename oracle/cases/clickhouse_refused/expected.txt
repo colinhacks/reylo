@@ -1,0 +1,35 @@
+cast_target.sql: many (type: unknown) -> {  } !! reylo10: ClickHouse reads {type:String} as a constant here, and the statement fails with 'a' in its place, so its value is part of what the statement says. Write the value in the statement.
+command.sql: many () -> {  } !! reylo10: Reylo types a ClickHouse SELECT, INSERT, DELETE or UPDATE, and CREATE is none of them, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+date_trunc_unit.sql: many (unit: unknown) -> {  } !! reylo10: ClickHouse reads {unit:String} as a constant here, and the statement fails with 'a' in its place, so its value is part of what the statement says. Write the value in the statement.
+datetime64_scale.sql: many (scale: unknown) -> {  } !! reylo10: ClickHouse reads {scale:UInt8} as a constant here, and the result's types change with its value: column 1 (t) has the type DateTime64(1, 'UTC') with 1 and DateTime64(2, 'UTC') with 2. Write the value in the statement.
+delete_unknown_column.sql: many (id: unknown) -> {  } !! reylo6: (UNKNOWN_IDENTIFIER)
+dynamic_column.sql: many () -> {  } !! reylo10: Column 1 (d) has the type Dynamic, and Reylo does not read a ClickHouse Dynamic yet: select it as a type it reads, as toString(d) or toJSONString(d) does.
+fixed_string_length.sql: many (length: unknown) -> {  } !! reylo10: ClickHouse reads {length:UInt8} as a constant here, and the result's types change with its value: column 1 (f) has the type FixedString(1) with 1 and FixedString(2) with 2. Write the value in the statement.
+format_clause.sql: many () -> {  } !! reylo6: (SYNTAX_ERROR)
+format_table.sql: many (data: unknown) -> {  } !! reylo10: ClickHouse reads {data:String} as a constant here, and the statement fails with 'a' in its place, so its value is part of what the statement says. Write the value in the statement.
+identifier_column.sql: many (column: unknown) -> {  } !! reylo10: {column:Identifier} stands for a name, so the statement's columns and their types would change with its value: write the name in the statement.
+identifier_table.sql: many (table: unknown) -> {  } !! reylo10: {table:Identifier} stands for a name, so the statement's columns and their types would change with its value: write the name in the statement.
+insert_format.sql: many () -> {  } !! reylo10: An INSERT … FORMAT takes its rows from the request's body, which a typed statement does not have: write the rows as VALUES, or as a SELECT, with parameters.
+insert_unknown_column.sql: many (id: unknown) -> {  } !! reylo6: (NO_SUCH_COLUMN_IN_TABLE)
+insert_unknown_table.sql: many (id: unknown) -> {  } !! reylo6: (UNKNOWN_TABLE)
+interval_column.sql: many () -> {  } !! reylo10: Column 1 (days) has the type IntervalDay, and Reylo does not read a ClickHouse IntervalDay yet: select it as a type it reads, as toString(days) or toJSONString(days) does.
+json_column.sql: many () -> {  } !! reylo10: Column 1 (doc) has the type JSON, and Reylo does not read a ClickHouse JSON yet: select it as a type it reads, as toString(doc) or toJSONString(doc) does.
+json_extract_type.sql: many (type: unknown) -> {  } !! reylo10: ClickHouse reads {type:String} as a constant here, and the statement fails with 'a' in its place, so its value is part of what the statement says. Write the value in the statement.
+json_parameter.sql: many (doc: unknown) -> {  } !! reylo10: Reylo binds no parameter of the type JSON: it is no ClickHouse type, or one whose values it does not write yet, as a JSON, a Dynamic or an interval is.
+question_mark.sql: many () -> {  } !! reylo6: (SYNTAX_ERROR)
+same_names.sql: many () -> { id: UInt64, name: String(UTF-8, ill-formed), id: UInt64 } !! reylo14: Columns 1 and 3 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+several.sql: many () -> {  } !! reylo10: A typed .sql file holds one statement and this one holds several, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+show.sql: many () -> {  } !! reylo10: Reylo types a ClickHouse SELECT, INSERT, DELETE or UPDATE, and SHOW is none of them, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+state_column.sql: many () -> {  } !! reylo10: Column 1 (state) has the type AggregateFunction(sum, UInt8), and Reylo does not read a ClickHouse AggregateFunction yet: select it as a type it reads, as toString(state) or toJSONString(state) does.
+syntax.sql: many () -> {  } !! reylo6: (SYNTAX_ERROR)
+time_zone.sql: many (zone: unknown) -> {  } !! reylo10: ClickHouse reads {zone:String} as a constant here, and the statement fails with 'a' in its place, so its value is part of what the statement says. Write the value in the statement.
+tuple_element.sql: many (at: unknown) -> {  } !! reylo10: ClickHouse reads {at:UInt8} as a constant here, and the result's types change with its value: column 1 (e) has the type UInt64 with 1 and String with 2. Write the value in the statement.
+two_forms.sql: many () -> {  } !! reylo1: :b and {a:UInt8} are written two ways; write every parameter of a statement one way, as {name:Type} or as :name::Type
+two_types.sql: many (n: unknown) -> {  } !! reylo3: The parameter n is declared String here and UInt8 at its first use: declare it with one type.
+unknown_column.sql: many () -> {  } !! reylo6: (UNKNOWN_IDENTIFIER)
+unknown_table.sql: many () -> {  } !! reylo6: (UNKNOWN_TABLE)
+unknown_type.sql: many (n: unknown) -> {  } !! reylo10: Reylo binds no parameter of the type UInt46: it is no ClickHouse type, or one whose values it does not write yet, as a JSON, a Dynamic or an interval is.
+unnamed_columns.sql: many () -> { id: UInt64, plus(age, 1): UInt16, upper(name): String(UTF-8, ill-formed) } !! reylo23: Column 2 has no name: the database calls it "plus(age, 1)", which is no identifier and may differ on another driver or server. Give it one with `as`. !! reylo23: Column 3 has no name: the database calls it "upper(name)", which is no identifier and may differ on another driver or server. Give it one with `as`.
+untyped.sql: many () -> {  } !! reylo6: (SYNTAX_ERROR) A ClickHouse parameter is written with its type: {id:Type}, or :id::Type.
+variant_parameter.sql: many (v: unknown) -> {  } !! reylo10: {v:Variant(String, UInt8)} is a Variant, whose value's text does not say which of its types it is: declare the parameter with the one type it has.
+wrong_types.sql: many () -> {  } !! reylo6: (ILLEGAL_TYPE_OF_ARGUMENT)

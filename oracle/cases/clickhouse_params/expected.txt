@@ -1,0 +1,19 @@
+aliases.sql: many (a: Int32, b: Int64, c: String(UTF-8, ill-formed), d: String(UTF-8, ill-formed)[], e: Float64, f: Date, g: Int32?, h: Decimal(10,2)) -> { a: Int32, b: Int64, c: String(UTF-8, ill-formed), d: String(UTF-8, ill-formed)[], e: Float64, f: Date, g: Int32?, h: Decimal(19,2) }
+aliases_cast.sql: many (id: Int64, not: String(UTF-8, ill-formed)) -> { id: UInt64, name: String(UTF-8, ill-formed) }
+arithmetic.sql: many (more: UInt8, times: Decimal(4,2), suffix: String(UTF-8, ill-formed), days: UInt16, digits: UInt8, from: UInt8, flag: Bool, at: UInt8) -> { older: UInt16, scaled: Decimal(19,6), named: String(UTF-8, ill-formed), later: DateTime64, rounded: Decimal(19,4), part: String(UTF-8, ill-formed), shown: String(UTF-8, ill-formed), tag: String(UTF-8, ill-formed) }
+cast_form.sql: many (id: UInt64, not: String(UTF-8, ill-formed), before: DateTime64) -> { id: UInt64, name: String(UTF-8, ill-formed) }
+composite.sql: many (ids: UInt64[], holes: String(UTF-8, ill-formed)?[], deep: UInt8[][], pair: (UInt64, String(UTF-8, ill-formed)), named: { n: UInt8, s: String(UTF-8, ill-formed)? }, counts: Map(({ key: String(UTF-8, ill-formed), value: UInt32 })[]), rows: (UInt64, Date)[]) -> { ids: UInt64[], holes: String(UTF-8, ill-formed)?[], deep: UInt8[][], pair: (UInt64, String(UTF-8, ill-formed)), named: { n: UInt8, s: String(UTF-8, ill-formed)? }, counts: Map(({ key: String(UTF-8, ill-formed), value: UInt32 })[]), rows: (UInt64, Date)[] }
+constant_format.sql: many (format: String(UTF-8, ill-formed), minutes: UInt8) -> { name: String(UTF-8, ill-formed), shown: String(UTF-8, ill-formed), slot: DateTime }
+filters.sql: many (ids: UInt64[], pattern: String(UTF-8, ill-formed), since: DateTime64, low: UInt8, high: UInt8, role: Enum8('admin' | 'member'), tag: String(UTF-8, ill-formed)) -> { id: UInt64, name: String(UTF-8, ill-formed) }
+group_array_size.sql: one (most: UInt8) -> { some: UInt64[] }
+in_selected.sql: many (ids: UInt64[], a: UInt64, b: UInt64, pairs: (UInt64, String(UTF-8, ill-formed))[], least: Decimal(18,2)) -> { id: UInt64, found: UInt8, neither: UInt8, paired: UInt8, ordered: UInt8 }
+limit_pair.sql: many (skip: UInt32, count: UInt32) -> { id: UInt64, name: String(UTF-8, ill-formed) }
+limits.sql: many (count: UInt64, skip: UInt64) -> { id: UInt64, name: String(UTF-8, ill-formed) }
+nullable.sql: many (s: String(UTF-8, ill-formed)?, n: Int32?, day: Date?, packed: String(UTF-8, ill-formed)?) -> { s: String(UTF-8, ill-formed)?, n: Int32?, s_is_null: UInt8, n_or_zero: Int32, day: Date?, packed: String(UTF-8, ill-formed)? }
+quantile_level.sql: one (level: Float64, low: Float64) -> { q: Float64, qs: Float64[] }
+repeated.sql: many (n: UInt8) -> { a: UInt8, b: UInt16, id: UInt64 }
+scalars.sql: many (u8: UInt8, i64: Int64, u64: UInt64, u256: UInt256, f: Float64, d: Decimal(18,4), flag: Bool, s: String(UTF-8, ill-formed), fixed: FixedString(=4 bytes, UTF-8, ill-formed), uid: UUID, ip4: IPv4, ip6: IPv6, day: Date, day32: Date32, at: DateTime, at3: DateTime64, role: Enum8('admin' | 'member'), packed: String(UTF-8, ill-formed)) -> { u8: UInt8, i64: Int64, u64: UInt64, u256: UInt256, f: Float64, d: Decimal(19,4), flag: Bool, s: String(UTF-8, ill-formed), fixed: FixedString(=4 bytes, UTF-8, ill-formed), uid: UUID, ip4: IPv4, ip6: IPv6, day: Date, day32: Date32, at: DateTime, at3: DateTime64, role: Enum8('admin' | 'member'), packed: String(UTF-8, ill-formed) }
+subquery.sql: many (least: Decimal(18,2), since: Date) -> { id: UInt64, big_orders: UInt64? }
+table_function.sql: many (count: UInt8) -> { number: UInt64, twice: UInt64 }
+top_k.sql: one (k: UInt8) -> { top: String(UTF-8, ill-formed)[] }
+with.sql: many (than: UInt8) -> { id: UInt64, older: UInt8, by: Int16 }

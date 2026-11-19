@@ -1,0 +1,1 @@
+SELECT if(age > 40, name, NULL) AS a, CASE WHEN age > 40 THEN name END AS b, CASE WHEN age > 40 THEN name ELSE 'young' END AS c, coalesce(email, 'none') AS d, ifNull(email, name) AS e, nullIf(name, 'ada') AS f, email IS NULL AS g, assumeNotNull(email) AS h, toNullable(age) AS i, multiIf(age > 40, 'old', age > 30, 'mid', NULL) AS j FROM users ORDER BY id, name

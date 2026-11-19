@@ -1,0 +1,1 @@
+SELECT count() AS n, sum(balance) AS total, avg(age) AS mean, max(name) AS last, min(created) AS first, any(email) AS some_email, maxOrNull(name) AS last_or_null, groupArray(name) AS names, uniq(id) AS distinct_ids, argMax(name, age) AS oldest FROM users WHERE age > {than:UInt8}
