@@ -1873,7 +1873,10 @@ fn outer_column_type(c: &protobuf::ColumnRef, catalog: &Catalog) -> Option<u32> 
 /// A node as JSON with what the comparison of two spellings must ignore: every `location`, the
 /// qualifier `alias` on a column (`u.email` is `email` when read for `u`), and a cast to a text
 /// type around a string literal, which the server prints for a literal the statement may leave
-/// to take the column's type.
+/// to take the column's type. Only a cast that leaves the literal's value as it is: one with no
+/// type modifier, which would cut it to a length (`'ab'::varchar(1)` is `'a'`), and to `bpchar`
+/// only where the literal ends in no blank, which a `bpchar` drops where it meets `text` (`text_col
+/// = 'a  '::bpchar` compares with `'a'`).
 fn normalized(node: &protobuf::Node, alias: &str) -> Value {
     fn walk(v: &mut Value, alias: &str) {
         match v {
@@ -1887,9 +1890,16 @@ fn normalized(node: &protobuf::Node, alias: &str) -> Value {
                 }
                 let literal = map.get("TypeCast").and_then(|t| {
                     let arg = t.get("arg")?.get("node")?;
-                    let name = t.get("type_name")?.get("names")?.as_array()?.last()?.get("node")?.get("String")?.get("sval")?.as_str()?;
-                    let text = ["text", "varchar", "bpchar"].contains(&name) && arg.get("AConst").and_then(|c| c.get("val")).is_some_and(|v| v.get("Sval").is_some());
-                    text.then(|| arg.clone())
+                    let type_name = t.get("type_name")?;
+                    let name = type_name.get("names")?.as_array()?.last()?.get("node")?.get("String")?.get("sval")?.as_str()?;
+                    let empty = |key: &str| type_name.get(key).and_then(Value::as_array).is_none_or(Vec::is_empty);
+                    let string = arg.get("AConst").and_then(|c| c.get("val")).and_then(|v| v.get("Sval")).and_then(|s| s.get("sval")).and_then(Value::as_str)?;
+                    let kept = match name {
+                        "text" | "varchar" => empty("typmods"),
+                        "bpchar" => empty("typmods") && empty("array_bounds") && !string.ends_with(' '),
+                        _ => false,
+                    };
+                    kept.then(|| arg.clone())
                 });
                 if let Some(arg) = literal {
                     map.remove("TypeCast");
@@ -4013,6 +4023,25 @@ mod tests {
         // A write reads the same keys.
         assert!(matches!(dml("delete from posts where title = $1 and score is null returning id", &Trust::default(), &c), Some(Ok(_))));
         assert!(matches!(dml("delete from posts where title = $1 returning id", &Trust::default(), &c), Some(Err(_))));
+    }
+
+    #[test]
+    fn a_partial_index_counts_only_where_the_where_writes_its_literal_as_the_same_value() {
+        let mut c = joined();
+        // `… on pidx (email) where status = 'a  '`, over a text column, as the catalog reports it.
+        c.partial_keys.insert("pidx".into(), vec![(vec!["email".into()], "status = 'a  '::text".into())]);
+        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
+        assert_eq!(at("select id from pidx where email = $1 and status = 'a  '"), Ok(()));
+        assert_eq!(at("select id from pidx where email = $1 and status = 'a  '::varchar"), Ok(()));
+        // A cast that changes the literal compares another value: a length cuts it, and `bpchar`
+        // drops its trailing blanks where it meets `text`.
+        assert!(at("select id from pidx where email = $1 and status = 'a  '::bpchar").is_err());
+        assert!(at("select id from pidx where email = $1 and status = 'a  '::char(1)").is_err());
+        assert!(at("select id from pidx where email = $1 and status = 'a  '::varchar(1)").is_err());
+        // A `bpchar` of a literal with no trailing blank is the same value.
+        c.partial_keys.insert("pidx".into(), vec![(vec!["email".into()], "status = 'a'::text".into())]);
+        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
+        assert_eq!(at("select id from pidx where email = $1 and status = 'a'::bpchar"), Ok(()));
     }
 
     #[test]

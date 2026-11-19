@@ -692,7 +692,7 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 Reylo infers how many rows a query returns from its keys, aggregates, `limit 1` and `returning` ([Inference](/inference#unique-keys)). On Postgres:
 
 - **Unique indexes on an expression** count when the query compares the same expression, written as Postgres stores it in the index, cast included.
-- **Partial unique indexes** count only when the `where` includes the index's condition.
+- **Partial unique indexes** count only when the `where` includes the index's condition, each literal as the index writes it: a cast that changes one, as `'a  '::bpchar` does beside a `text` column, compares another value.
 - **Writes that join**, with `from`, `using` or a `with` query of one row, still return a row or `null` when their key is matched.
 - **`BEFORE` row triggers** can skip a row by returning `NULL`, so a write they fire on returns a row or `null`. A PL/pgSQL trigger whose every `return` returns `new`, or `old` on an update or a delete, skips nothing.
 - **Nondeterministic collations** bound nothing: compared under one, where `'a'` can equal `'A'`, a unique key matches more than one row.

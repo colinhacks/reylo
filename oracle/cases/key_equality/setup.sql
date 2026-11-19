@@ -33,3 +33,8 @@ insert into pv_posts values (1, 'a', 1), (2, 'A', 1.0);
 -- compares the column as bpchar, whose = ignores trailing blanks, so 'a', 'a ' and 'a  ' match.
 create table vk (id int primary key, vc varchar(10) unique);
 insert into vk values (1, 'a  '), (2, 'a '), (3, 'a');
+-- A partial unique index whose predicate a WHERE meets only with a literal a cast changes:
+-- 'a  '::bpchar meets a text column as 'a', which the index does not cover.
+create table pidx (id int primary key, email text, status text);
+create unique index pidx_active on pidx (email) where status = 'a  ';
+insert into pidx values (1, 'a', 'a'), (2, 'a', 'a'), (3, 'a', 'a  ');
