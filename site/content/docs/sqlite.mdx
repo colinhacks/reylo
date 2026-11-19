@@ -391,6 +391,16 @@ Values read with `json_extract`, `->` and `->>` are typed `unknown`, since they 
 
 </Pairs>
 
+**JSON values inside built JSON**
+
+A JSON value inside the JSON you build, from `json(…)`, `->`, `json_extract` or another JSON function, may be `null`, even read from a `not null` column, since the document it holds can be JSON's `null`.
+
+<Pairs>
+
+- `json_object('k', json('null'))` → `{ k: null }`
+
+</Pairs>
+
 </Rules>
 
 ### Functions

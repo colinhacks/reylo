@@ -942,9 +942,16 @@ fn in_json(t: &Ty) -> Ty {
     }
 }
 
-/// Whether a type already admits a JSON null, so a field of it needs no `| null`.
-fn admits_null(t: &Ty) -> bool {
-    matches!(t, Ty::Unknown | Ty::Json { schema: None })
+/// Whether a value may be JSON's null inside the JSON a function builds: one that may be NULL,
+/// which SQLite writes there as null, and any value of plain JSON, which may be the document `null`
+/// itself however NOT NULL it is (`json(doc)` where `doc` holds `'null'`), as on Postgres and
+/// MySQL. A value of no known type is left as it is: `unknown` already admits null.
+fn nullable_in_json(f: &JsonFact) -> bool {
+    match f.ty {
+        Ty::Unknown => false,
+        Ty::Json { schema: None } => true,
+        _ => !f.non_null,
+    }
 }
 
 /// The JSON Schema of a value inside a document SQLite built, as src/schema.ts spells SQLite's
@@ -1933,11 +1940,10 @@ impl Analyzer<'_> {
     fn shape_here(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         let name = self.builtin_name(n)?;
         let aggregate = n.agg || n.window;
-        // What a JSON function reads an argument as: a value that may be NULL is a null there,
-        // which `unknown` already admits.
+        // What a JSON function reads an argument as, and whether it may be a null there.
         let value = |x: &Node| {
             let f = self.json_fact(x, scope);
-            let nullable = !f.non_null && !admits_null(&f.ty);
+            let nullable = nullable_in_json(&f);
             (f.ty, nullable)
         };
         match name {
@@ -5083,18 +5089,28 @@ mod tests {
             "lag(json_array(id)) over (order by id)",
             "max(json_array(id), json_array(0))",
             "cast(json_array(id) as text)",
-            "json(doc)",
-            "json_extract(doc, '$.a')",
-            "doc -> '$.a'",
             "doc ->> '$.a'",
-            "json_set(doc, '$.a', 1)",
-            "json_quote(name)",
             "json_pretty(json_array(1))",
             "case when id > 1 then json_array(id) else 'x' end",
             "case when id > 1 then json_array(id) else json_object('a', 1) end",
         ] {
             let sql = format!("select json_object('a', {expr}) as o from (select *, json_array(id) as x from users) users, (select post from titled)");
             assert_eq!(json_typed(&sql), "o: { a: unknown }", "{expr}");
+        }
+        // Any JSON a function returns, which may be the document `null` itself, however NOT NULL
+        // the value it reads (`json(doc)` where `doc` holds `'null'`): a null there too.
+        for expr in ["json(doc)", "json_extract(doc, '$.a')", "doc -> '$.a'", "json_set(doc, '$.a', 1)", "json_quote(name)"] {
+            assert_eq!(json_typed(&format!("select json_object('a', {expr}) as o from users")), "o: { a: unknown | null }", "{expr}");
+        }
+        let not_null = vec!["create table js (id integer primary key, doc text not null check (json_valid(doc)), b blob not null check (json_valid(b, 8)))".to_string()];
+        for (expr, ty) in [
+            ("json_object('k', json(doc))", "{ k: unknown | null }"),
+            ("json_object('k', doc -> '$')", "{ k: unknown | null }"),
+            ("json_object('k', json_extract(doc, '$'))", "{ k: unknown | null }"),
+            ("json_object('k', json(b))", "{ k: unknown | null }"),
+            ("json_group_array(json(doc))", "(unknown | null)[]"),
+        ] {
+            assert_eq!(shown(&analyze_ddl(&format!("select {expr} as o from js"), &not_null, &Extras::default()).analysis), format!("o: {ty}"), "{expr}");
         }
         // A function the host registers over a built-in is its own, and may set the subtype.
         let host = Extras { total: vec![TotalFunction { name: "json_array".into(), arity: -1, returns: Affinity::Text }, TotalFunction { name: "html".into(), arity: 1, returns: Affinity::Text }], host: None };

@@ -1820,10 +1820,11 @@ fn built_contradiction(ty: &Value, value: &rusqlite::types::Value) -> Option<Str
 /// Why a value inside a document SQLite built contradicts its type: an INTEGER (a 64-bit column's
 /// too) is a JSON integer, a REAL a number, a TEXT a string, a NUMERIC a number or a string; an
 /// object has exactly its keys, each null only where it may be; a list's items likewise; a JSON
-/// Schema admits the value. Any JSON (`unknown`, `json` without a schema) admits null.
+/// Schema admits the value. A value of no known type admits null; a JSON value inside the document
+/// may be null only where it is nullable, as any other.
 fn built_value(ty: &Type, json: &Value, path: &str) -> Option<String> {
     let at = if path.is_empty() { "the top".to_string() } else { path.to_string() };
-    let admits_null = |t: &Type| t.is_unknown() || matches!(&t.kind, Kind::Json(JsonType { schema: None, content: None }));
+    let admits_null = |t: &Type| t.is_unknown();
     match &ty.kind {
         Kind::Integer(_) | Kind::Float(_) | Kind::Text(_) | Kind::Union(_) => {
             let fits = ty.members().iter().any(|m| match &m.kind {
@@ -2106,6 +2107,10 @@ mod tests {
         assert!(built_contradiction(&ty, &text(r#"{"id":1,"r":1,"doc":1,"tags":[],"pair":[1,2]}"#)).is_some_and(|why| why.contains("does not admit")));
         assert!(built_contradiction(&ty, &text("not json")).is_some_and(|why| why.contains("which is no JSON")));
         assert_eq!(built_contradiction(&ty, &Integer(1)).as_deref(), Some("typed as built JSON holds Integer(1), which is no text"));
+        // A JSON value inside the document may be JSON's null only where it is nullable.
+        let leaf = |nullable: bool| json!({"kind": "json", "content": {"type": {"kind": "struct", "fields": [{"name": "k", "type": {"kind": "json"}, "nullable": nullable}]}}});
+        assert_eq!(built_contradiction(&leaf(false), &text(r#"{"k":null}"#)).as_deref(), Some("has a null at .k, typed non-null"));
+        assert_eq!(built_contradiction(&leaf(true), &text(r#"{"k":null}"#)), None);
     }
 
     #[test]
