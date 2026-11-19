@@ -3934,6 +3934,14 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 let row = db.rows(&format!("show create table `{}`", t.text("n"))).await?;
                 out.push(format!("{};", AUTO.replace(row.first().map(|r| r.text("Create Table")).unwrap_or_default(), "")));
             }
+            // Routines before the views, which may call a function: MySQL resolves what a routine's body
+            // names only when it runs, so a routine may come before the views and tables it reads.
+            for r in db.rows("select routine_name as n, routine_type as t from information_schema.routines where routine_schema = database()").await? {
+                let kind = r.text("t");
+                let row = db.rows(&format!("show create {} `{}`", kind.to_lowercase(), r.text("n"))).await?;
+                let column = if kind == "PROCEDURE" { "Create Procedure" } else { "Create Function" };
+                out.push(format!("{};", DEFINER.replace(row.first().map(|x| x.text(column)).unwrap_or_default(), "")));
+            }
             // Each view after the views it reads.
             let mut views: Vec<String> = tables.iter().filter(|t| t.text("t") == "VIEW").map(|t| t.text("n").to_string()).collect();
             let reads: Vec<(String, String)> = db
@@ -3949,12 +3957,6 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             for name in &ordered {
                 let row = db.rows(&format!("show create view `{name}`")).await?;
                 out.push(format!("{};", DEFINER.replace(row.first().map(|r| r.text("Create View")).unwrap_or_default(), "")));
-            }
-            for r in db.rows("select routine_name as n, routine_type as t from information_schema.routines where routine_schema = database()").await? {
-                let kind = r.text("t");
-                let row = db.rows(&format!("show create {} `{}`", kind.to_lowercase(), r.text("n"))).await?;
-                let column = if kind == "PROCEDURE" { "Create Procedure" } else { "Create Function" };
-                out.push(format!("{};", DEFINER.replace(row.first().map(|x| x.text(column)).unwrap_or_default(), "")));
             }
             for r in db.rows("select trigger_name as n from information_schema.triggers where trigger_schema = database()").await? {
                 let row = db.rows(&format!("show create trigger `{}`", r.text("n"))).await?;

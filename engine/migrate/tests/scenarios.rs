@@ -2677,6 +2677,7 @@ on!(
     without_a_lock_a_history_out_of_name_order_is_held_to_name_order,
 );
 on!(Mysql, a_recurring_event_is_in_the_dump);
+on!(Mysql, init_makes_a_function_before_the_view_that_calls_it);
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
@@ -3746,6 +3747,19 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "extra", &Default::default(), log).await).await, 0, "{}", p.peek());
         let texts: String = p.files().iter().filter(|f| f.contains("_extra")).map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect();
         assert!(!texts.to_lowercase().contains("drop event"), "{texts}");
+    }
+
+    /// A view that calls a stored function: MySQL refuses the view until the function exists.
+    pub async fn init_makes_a_function_before_the_view_that_calls_it(mut p: P) {
+        p.exec("create table t (id int primary key, n int)").await;
+        p.exec("create function twice(x int) returns int deterministic no sql return x * 2").await;
+        p.exec("create view v as select id, twice(n) as n2 from t").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(q.history().await, ["init.sql"]);
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
     pub async fn a_virtual_tables_own_tables_are_not_in_the_dump(mut p: P) {
