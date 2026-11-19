@@ -79,7 +79,7 @@ pub(crate) fn hex(h: &[u8]) -> String {
 /// reader reads, or how it writes a line, changes, so that a release that leaves the reading alone
 /// leaves every stored fingerprint comparable. A test holds each edit to the reader's code to that
 /// choice.
-const READER: u32 = 2;
+const READER: u32 = 3;
 
 /// The catalog reader's part of a fingerprint.
 pub(crate) fn reader_id() -> String {
@@ -321,7 +321,7 @@ impl Cache {
             Dialect::Postgres => {
                 let name = Cache::pg_name(key);
                 let Shadow { db, name: shadow_name } = shadow;
-                let Server::Postgres { admin, url, .. } = server else { return Err(Error("not a Postgres server".into())) };
+                let Server::Postgres { admin, url, settings, .. } = server else { return Err(Error("not a Postgres server".into())) };
                 if pg_rows(admin, &format!("select pg_try_advisory_lock(hashtextextended('{name}', 0)) as ok")).await?.first().is_some_and(|r| r.flag("ok")) {
                     pg_close(admin, db, &shadow_name).await;
                     let made = admin.batch_execute(&format!("create database \"{name}\" template \"{shadow_name}\"")).await;
@@ -331,7 +331,8 @@ impl Cache {
                         count(|s| s.saved += 1);
                     }
                     admin.batch_execute(&format!("select pg_advisory_unlock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
-                    let db = Db::Postgres(crate::db::open_postgres(&with_database(url, &shadow_name)).await?);
+                    let mut db = Db::Postgres(crate::db::open_postgres(&with_database(url, &shadow_name)).await?);
+                    crate::db::mark_platform_names(&mut db, settings).await;
                     return Ok(Shadow { db, name: shadow_name });
                 }
                 Ok(Shadow { db, name: shadow_name })
@@ -414,7 +415,7 @@ impl Cache {
 #[cfg(feature = "cli")]
 async fn server_state(server: &mut Server) -> Result<String, Error> {
     match server {
-        Server::Postgres { admin, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, schema_grants, .. } => {
+        Server::Postgres { admin, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, owned, schema_grants, .. } => {
             // The server and its settings as a session sees them, the roles a grant may name, the
             // extensions a migration may create, and template1, which a new shadow is a copy of: a
             // change to it moves its counters of rows written.
@@ -433,6 +434,7 @@ async fn server_state(server: &mut Server) -> Result<String, Error> {
             out.push_str(&format!("\n\x1fcreate {create}\n\x1fsettings {}\n\x1fprivileges {copy_privileges} {}", settings.join("\n"), privileges.join("\n")));
             let copied: Vec<String> = extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase())).map(|(e, s)| format!("{e} {s}")).collect();
             out.push_str(&format!("\n\x1fextensions {}\n\x1fschema grants {}\n\x1fenvironment {} {}", copied.join("\n"), schema_grants.join("\n"), environment_role.as_deref().unwrap_or_default(), environment.join("\n")));
+            out.push_str(&format!("\n\x1fowned {}\n{}", owned.key(), owned.statements.join("\n")));
             Ok(out)
         }
         Server::Mysql { admin, defaults, .. } => {
@@ -481,15 +483,22 @@ pub(crate) async fn snapshot(db: &mut Db) -> Result<String, Error> {
         }
         Dialect::Mysql => {
             // What changes with every statement or row is left out; a text that reads it is never
-            // replayed from a copy.
-            const MOVING: &[&str] = &["timestamp", "statement_id", "identity", "last_insert_id", "insert_id", "rand_seed1", "rand_seed2"];
+            // replayed from a copy. So is the server's `gtid_executed`, which every write moves
+            // where GTIDs are on (MySQL 9.7's default) and which no session keeps.
+            const MOVING: &[&str] = &["timestamp", "statement_id", "identity", "last_insert_id", "insert_id", "rand_seed1", "rand_seed2", "gtid_executed"];
             let vars = db.rows("select variable_name as k, variable_value as v from performance_schema.session_variables").await?;
             let mut out: Vec<String> = vars.iter().filter(|r| !MOVING.contains(&r.text("k"))).map(|r| format!("{}={}", r.text("k"), r.text("v"))).collect();
             out.sort();
-            let rest = db.rows("select (select count(*) from performance_schema.user_variables_by_thread where thread_id = ps_current_thread_id()) as u, current_user() as who, database() as db").await?;
-            if let Some(r) = rest.first() {
-                out.push(format!("{} {} {}", r.text("u"), r.text("who"), r.text("db")));
-            }
+            let rest = db.rows("select @@performance_schema as ps, current_user() as who, database() as db").await?;
+            let Some(r) = rest.first() else { return Ok(out.join("\n")) };
+            // With performance_schema off, skipping user variables is safe: MySQL never copies a shadow, and they end with the session.
+            let users = if r.text("ps") == "0" {
+                "-".to_string()
+            } else {
+                let u = db.rows("select count(*) as u from performance_schema.user_variables_by_thread where thread_id = ps_current_thread_id()").await?;
+                u.first().map(|u| u.text("u").to_string()).unwrap_or_default()
+            };
+            out.push(format!("{users} {} {}", r.text("who"), r.text("db")));
             Ok(out.join("\n"))
         }
         Dialect::Sqlite => {
@@ -749,7 +758,7 @@ mod tests {
     }
 
     /// The digest of the catalog reader's code when `READER` was last set.
-    const READER_CODE: &str = "157188459bae";
+    const READER_CODE: &str = "0cc3b83c7f6f";
 
     #[test]
     fn the_catalog_reader_keeps_its_version() {
