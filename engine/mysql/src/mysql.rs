@@ -376,6 +376,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         });
     }
     let parsed = if misread.is_some() { None } else { read.clone() };
+    // A query with no tree the engine reads, set aside or never parsed: nothing that only the tree
+    // shows is known of its columns (below).
+    let unread = parsed.is_none() && !matches!(&read, Some(statement) if !matches!(statement, Statement::Query(_)));
     // A parameter as a whole sort or group key is an error; the rest is typed all the same.
     let mut diagnostics = parsed.as_ref().map(|statement| constant_keys(sql, statement, &rewritten)).unwrap_or_default();
     // The parameters the caller may pass null for, which the prepare does not say: each one cast
@@ -459,6 +462,10 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             let views: HashSet<String> = host.query(VIEWS_QUERY, Vec::new(), Scope::Session)?.ok().map(|rows| rows.iter().filter_map(|row| row.first().and_then(as_str)).map(str::to_ascii_lowercase).collect()).unwrap_or_default();
             prove(q, Some(&raw), &views, host, &dialect, 0)?
         }
+        // An unread query claims no column non-null: the server flags a column of a derived table,
+        // a WITH query or a view merged into the null-extended side of an outer join NOT NULL
+        // ([`crate::mysql_derived`]), and only the tree says where one stands.
+        _ if unread => Proven { flags: vec![false; raw.columns.len()], ..Proven::default() },
         _ => Proven { flags: raw.columns.iter().map(|c| c.flags & 1 != 0).collect(), ..Proven::default() },
     };
     // The unique keys, columns and views of the tables the query reads, which its cardinality
@@ -468,9 +475,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         _ => None,
     };
     let mut never_null = proven.never_null(&raw.columns);
-    let no_views = HashMap::new();
-    let views = keys.as_ref().map_or(&no_views, |keys| &keys.views);
-    for position in flagged_wrongly(parsed.as_ref(), never_null.len(), views) {
+    for position in flagged_wrongly(parsed.as_ref(), never_null.len(), keys.as_ref()) {
         never_null[position] = (false, None);
     }
     // A column of a view may be an expression, which the prepare does not tell from a table's:
@@ -483,6 +488,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     // An IF or a CASE that returns a BIT's bytes under another type ([`bit_results`]).
     let bits = match &parsed {
         Some(Statement::Query(q)) => bit_results(q, &raw, host)?,
+        // In an unread query that calls IF or CASE, any column it computes of a type such a call
+        // over a BIT prepares as may hold the BIT's bytes.
+        _ if unread && branches(sql, lexed) => raw.columns.iter().enumerate().filter(|(_, c)| matches!(c.r#type, 0 | 4 | 5 | 16 | 246) && !table_column(c, views.as_ref())).map(|(i, _)| i).collect(),
         _ => Vec::new(),
     };
     // A JSON column a CHECK holds to a JSON Schema: the values the schema lets in.
@@ -1243,6 +1251,34 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> 
         }
     }
     Some(bits)
+}
+
+/// Whether the statement's code, outside its strings, names and comments, calls IF or writes a
+/// CASE, either of which may return a BIT's bytes under another type ([`bit_results`]).
+fn branches(sql: &str, lexed: &Lexed) -> bool {
+    let mut code = String::with_capacity(sql.len());
+    let mut at = 0;
+    for &(start, end) in &lexed.opaque {
+        code.push_str(&sql[at..start]);
+        code.push(' ');
+        at = end;
+    }
+    code.push_str(&sql[at..]);
+    let lower = code.to_ascii_lowercase();
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut rest = lower.as_str();
+    while let Some(start) = rest.find(word) {
+        let tail = &rest[start..];
+        let end = tail.find(|c: char| !word(c)).unwrap_or(tail.len());
+        let after = tail[end..].trim_start();
+        match &tail[..end] {
+            "case" => return true,
+            "if" if after.starts_with('(') => return true,
+            _ => {}
+        }
+        rest = &tail[end..];
+    }
+    false
 }
 
 /// The positions of the columns that are an aggregate called as a window function over a frame
@@ -2319,6 +2355,8 @@ pub(crate) struct Keys {
     columns: HashMap<String, Vec<(String, Class)>>,
     /// Per view, its defining SELECT, which names its tables with the view's schema.
     views: HashMap<String, Query>,
+    /// The text of each view's definition the engine's parser does not read.
+    unparsed: Vec<String>,
     /// The schema the views are in, which their statements qualify each name with.
     pub(crate) schema: Option<String>,
 }
@@ -2555,8 +2593,12 @@ fn catalog(host: &Host, q: &Query) -> Lazy<Keys> {
         let mut next = Vec::new();
         for row in views.unwrap_or_default() {
             let (Some(name), Some(definition), Some(schema)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str)) else { continue };
-            // A definition the session may not read is empty, and reads as nothing.
-            let Ok(mut parsed) = Parser::parse_sql(&MySqlDialect {}, definition) else { continue };
+            // A definition the session may not read is empty, and reads as nothing. One the parser
+            // does not read keeps its text, which may still name a call.
+            let Ok(mut parsed) = Parser::parse_sql(&MySqlDialect {}, definition) else {
+                keys.unparsed.push(definition.to_string());
+                continue;
+            };
             let Some(Statement::Query(view)) = parsed.pop() else { continue };
             keys.schema = Some(schema.to_string());
             for table in crate::mysql_keys::tables_anywhere(&view, Some(schema)) {
@@ -2695,12 +2737,12 @@ fn calls_flagged_wrongly(text: &str) -> bool {
 /// The positions of the result columns whose NOT NULL the server's flags, and every proof read
 /// from them, cannot show, since a call of [`FLAGGED_WRONGLY`] may make them: a select list item
 /// that makes one, or every column where one stands where it can reach a column through the FROM
-/// (a derived table, a view's own query, which `views` holds) or a WITH query, or the statement is
-/// a set operation or the list has a wildcard. A call in the WHERE, GROUP BY, HAVING or ORDER BY
-/// only filters or orders, and makes no column.
-fn flagged_wrongly(parsed: Option<&Statement>, columns: usize, views: &HashMap<String, Query>) -> Vec<usize> {
+/// (a derived table, a view's own query, which `keys` holds, or its text where the parser does not
+/// read it) or a WITH query, or the statement is a set operation or the list has a wildcard. A call
+/// in the WHERE, GROUP BY, HAVING or ORDER BY only filters or orders, and makes no column.
+fn flagged_wrongly(parsed: Option<&Statement>, columns: usize, keys: Option<&Keys>) -> Vec<usize> {
     let Some(Statement::Query(q)) = parsed else { return Vec::new() };
-    let in_views = views.values().any(|view| calls_flagged_wrongly(&view.to_string()));
+    let in_views = keys.is_some_and(|keys| keys.views.values().any(|view| calls_flagged_wrongly(&view.to_string())) || keys.unparsed.iter().any(|text| calls_flagged_wrongly(text)));
     if !in_views && !calls_flagged_wrongly(&q.to_string()) {
         return Vec::new();
     }
@@ -3203,6 +3245,23 @@ mod tests {
         // The server runs what a version comment holds.
         let (analysis, _) = analyzed("select id from users /*!80000 where id = 1 */", one.clone(), default);
         assert_eq!(analysis.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), vec![(10, 21, 24)]);
+    }
+
+    #[test]
+    fn a_query_the_engine_does_not_read_claims_no_column_non_null() {
+        let default = "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION";
+        let one = json!({ "columns": [{ "name": "id", "type": 3, "flags": 1 }], "params": [] });
+        let nullable = |sql: &str| analyzed(sql, one.clone(), default).0.columns[0].nullable;
+        assert!(!nullable("select id from users where id = 1"));
+        // Set aside, by the mode or by a hint that sets a variable, or not parsed at all.
+        assert!(nullable("select id from users where id = 1 || 1"));
+        assert!(nullable("select /*+ SET_VAR(sort_buffer_size = 1048576) */ id from users"));
+        assert!(nullable("select id from users where name sounds like 'a'"));
+        // A computed number or BIT beside an IF or a CASE may be one over a BIT; a table's own column is its own.
+        let computed = json!({ "columns": [{ "name": "v", "type": 246, "flags": 1 }, { "name": "b", "type": 16, "flags": 1, "length": 8, "schema": "app", "org_table": "users", "org_name": "b" }], "params": [] });
+        let types = |sql: &str| analyzed(sql, computed.clone(), default).0.columns.iter().map(|c| c.ty.short()).collect::<Vec<_>>();
+        assert_eq!(types("select if(id > 1 || id < 0, b, 0) as v, b from users"), ["unknown", "bit(boolean[8])"]);
+        assert_eq!(types("select id || 0 as v, b from users"), ["decimal", "bit(boolean[8])"]);
     }
 
     #[test]

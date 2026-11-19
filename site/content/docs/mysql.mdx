@@ -741,11 +741,11 @@ What Reylo can't type on MySQL, and what to do instead:
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
 | An `if` or a `case` that returns a `BIT` column, which MySQL sends as the column's bytes under a `DECIMAL` type, or as a number under a `BIT` one: it is typed `unknown` | Make the column a number first: `if(n > 0, enabled + 0, 0)` |
 | A loadable function (`create function … soname`), which `information_schema` doesn't list, so `.readOnly` can't see one | Don't retry a query that calls one |
-| A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `Json` |
-| A `sql_mode` that changes how MySQL reads a query (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, `PIPES_AS_CONCAT`) | None: Reylo keeps MySQL's types, with no row counts or JSON shapes |
+| A query Reylo's parser can't read | None: it keeps MySQL's types, every column can be null, it returns `Row[]`, and its JSON is `Json` |
+| A query MySQL reads otherwise than Reylo's parser, by its `sql_mode` (`a \|\| b` without `PIPES_AS_CONCAT`, `count (x)` without `IGNORE_SPACE`, `not` under `HIGH_NOT_PRECEDENCE`) or by a `SET_VAR` hint | None: Reylo keeps MySQL's types, every column can be null, and it has no row counts or JSON shapes |
 | A `/*! … */` comment, which MySQL runs as SQL, so it's an error | Write it as plain SQL |
 | `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [Bulk inserts](/inference#bulk-inserts) |
-| A query past 500 operators or 200 levels of nesting | None: Reylo falls back to MySQL's own types and any number of rows |
+| A query past 500 operators or 200 levels of nesting | None: Reylo falls back to MySQL's own types, every column can be null, and any number of rows |
 | A statement other than a query, such as `create index` or `show tables` | None: it returns nothing, or rows whose columns are all nullable, as MySQL reports |
 | `explain` and `call`, whose rows MySQL describes only once they run | None: each is an error |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
