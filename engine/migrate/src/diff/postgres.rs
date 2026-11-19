@@ -3511,7 +3511,10 @@ impl Alterer for PostgresAlterer {
     fn unhook(&self, from: &Object, to: &Object) -> Option<(Vec<String>, Vec<String>)> {
         let table = from.owner.as_deref()?.strip_prefix("table ")?;
         let name = super::last_written(from.id.strip_prefix("column ")?);
-        let at = format!("alter table {table} alter column {name}");
+        // A partitioned table's default is its own, as its alterer sets it: each partition's is set
+        // apart.
+        let only = if to.extra.iter().any(|l| l == "partitioned") && parse_column(&from.def).ty == parse_column(&to.def).ty { "only " } else { "" };
+        let at = format!("alter table {only}{table} alter column {name}");
         let drop = parse_column(&from.def).default.map(|_| format!("{at} drop default"));
         let set = parse_column(&to.def).default.map(|d| format!("{at} set default {d}"));
         Some((drop.into_iter().collect(), set.into_iter().collect()))
