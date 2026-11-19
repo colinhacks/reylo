@@ -32,11 +32,11 @@ function diag(size: number, messageText: string, start: number, length: number, 
 /**
  * The span map TypeScript reads as `mappings`: `[virtualStart, virtualLength, originalStart,
  * originalLength, kind, features]`, in UTF-8 bytes, the encoding `initialize` chose. One atom takes the
- * whole module to the statement, so go-to-definition on anything the module declares (the import's
- * path, the query, a column, a parameter) opens the `.sql` file at its statement. TypeScript maps a
- * definition only when its whole range lies in one segment, and the import's path goes to the range
- * of the module from its first token to its end, which a map by name would cut into pieces. No hover,
- * references or rename, which would land on the whole statement or write the TypeScript into it.
+ * whole module to the statement, so go-to-definition on anything the module declares (the query, a
+ * column, a parameter) opens the `.sql` file at its statement: TypeScript maps a definition only when
+ * its whole range lies in one segment. Go-to-definition on the import's path opens the file at its
+ * top, which TypeScript places itself, without the map. No hover, references or rename, which would
+ * land on the whole statement or write the TypeScript into it.
  */
 function mapToStatement(text: string, sql: string): number[][] {
   const bytes = Buffer.from(sql, "utf8");

@@ -35,7 +35,7 @@ function project(): string {
   return root;
 }
 
-test("go-to-definition on a query, its import's path, its Row and a column opens the .sql file at its statement, and a hover shows its comment and statement", async () => {
+test("go-to-definition on a query, its Row and a column opens the .sql file at its statement, on its import's path at its top, and a hover shows its comment and statement", async () => {
   const root = project();
   const main = join(root, "main.ts");
   const text = readFileSync(main, "utf8");
@@ -80,16 +80,18 @@ test("go-to-definition on a query, its import's path, its Row and a column opens
     // colon encoded (`file:///c%3A/…`), and the system matches a path's letters without regard to case.
     const path = (uri: string) => (process.platform === "win32" ? fileURLToPath(uri).toLowerCase() : fileURLToPath(uri));
     const sql = path(pathToFileURL(join(root, "queries", "posts.sql")).href);
-    // Lines 2 to 5 of the file: the comment above the statement, through `:after`.
+    // Lines 2 to 5 of the file: the comment above the statement, through `:after`. The import's path
+    // opens the file at its top, where TypeScript puts a module specifier's definition itself.
     const statement: Range = { start: { line: 1, character: 0 }, end: { line: 4, character: 17 } };
-    for (const [what, position] of [
-      ["the import's path", at(`"@/queries/posts.sql"`, 3)],
-      ["the query", at("= posts", 3)],
-      ["Row", at(`Row["title"]`, 1)],
-      ["a column", at(`"title"]`, 2)],
+    const top: Range = { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+    for (const [what, position, range] of [
+      ["the import's path", at(`"@/queries/posts.sql"`, 3), top],
+      ["the query", at("= posts", 3), statement],
+      ["Row", at(`Row["title"]`, 1), statement],
+      ["a column", at(`"title"]`, 2), statement],
     ] as const) {
       const links: { targetUri: string; targetSelectionRange: Range }[] = await lsp.request("textDocument/definition", { textDocument: { uri }, position });
-      assert.deepEqual(links.map((l) => [path(l.targetUri), l.targetSelectionRange]), [[sql, statement]], what);
+      assert.deepEqual(links.map((l) => [path(l.targetUri), l.targetSelectionRange]), [[sql, range]], what);
     }
   } finally {
     await lsp.close();
