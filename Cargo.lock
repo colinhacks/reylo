@@ -2585,6 +2585,7 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "tokio-postgres",
+ "ureq",
 ]
 
 [[package]]

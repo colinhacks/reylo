@@ -270,7 +270,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # The migrations' tests (engine/migrate/tests) build schemas on these and skip each database whose URL is
-    # unset.
+    # unset; their Turso scenarios start a libSQL server each, the sqld that REYLO_TEST_SQLD names.
     services:
       postgres:
         image: postgres:18
@@ -338,6 +338,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-client-18
           /usr/lib/postgresql/18/bin/pg_dump --version
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+      - name: Install sqld, libSQL's server
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/sqld.tar.xz" https://github.com/tursodatabase/libsql/releases/download/libsql-server-v0.24.32/libsql-server-x86_64-unknown-linux-gnu.tar.xz
+          echo "71720fc8648c19efef416efebd47145ef59b62e198770533530a858e1336879f  $RUNNER_TEMP/sqld.tar.xz" | sha256sum -c
+          tar -xJf "$RUNNER_TEMP/sqld.tar.xz" -C "$RUNNER_TEMP"
+          sqld=$(find "$RUNNER_TEMP" -name sqld -type f | head -1)
+          "$sqld" --version
+          echo "REYLO_TEST_SQLD=$sqld" >> "$GITHUB_ENV"
       - run: cargo test ${{ needs.scope.outputs.tests }}
       # Each demo's statements typed by the macro as it compiles, and the modules reylo generate and
       # reylo-build write, built and run, on these servers: the engine's every change reaches them.

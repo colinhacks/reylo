@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Reylo's migrations: hand-written SQL migrations checked against the declared schema in shadow databases before they run: on Postgres, MySQL, SQLite and SQL Server over the connections of the native engine."
+description = "Reylo's migrations: hand-written SQL migrations checked against the declared schema in shadow databases before they run: on Postgres, MySQL, SQLite (Turso's among it) and SQL Server over the connections of the native engine."
 
 [features]
 default = ["cli"]
@@ -14,7 +14,7 @@ default = ["cli"]
 # writes a migration from a change to schema.sql, over Postgres's parser. Without it, deploy and
 # status run on a database a host connects (`db::Session`), as a Rust app's `reylo::migrate!()` does,
 # and nothing else is built.
-cli = ["dep:reylo-engine", "dep:pg_query", "dep:prost", "dep:rusqlite", "dep:tokio-postgres", "dep:mysql_async", "dep:tiberius"]
+cli = ["dep:reylo-engine", "dep:pg_query", "dep:prost", "dep:rusqlite", "dep:tokio-postgres", "dep:mysql_async", "dep:tiberius", "dep:ureq"]
 
 [dependencies]
 reylo-engine = { workspace = true, features = ["postgres", "mysql", "sqlite", "sqlserver"], optional = true }
@@ -32,6 +32,9 @@ tokio = { version = "1", features = ["rt", "time"] }
 tokio-postgres = { version = "0.7", optional = true }
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"], optional = true }
 tiberius = { workspace = true, features = ["tds73", "rustls"], optional = true }
+
+# A libSQL server's database (Turso's) over HTTP, as `@libsql/client` reaches it.
+ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # The user id, which names the directory of a user's SQLite run locks.

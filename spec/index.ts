@@ -40,7 +40,7 @@ export interface Base {
   label?: string;
   /** The comment the source keeps on a named type, such as `COMMENT ON TYPE`. A field's own comment is on the field. */
   comment?: string;
-  /** A short name for the type, as JSON Schema's `title`. Like the comment, it says nothing of the values. */
+  /** A short name for the type, written for a reader, as JSON Schema's `title`: `Mailing address`, on a type whose `label` is `public.address`. Like the comment, it says nothing of the values. */
   title?: string;
 }
 

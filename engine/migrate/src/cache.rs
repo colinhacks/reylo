@@ -273,6 +273,7 @@ impl Cache {
         let state = server_state(server).await.ok()?;
         h.part(state.as_bytes());
         let target = match d {
+            Dialect::Sqlite if crate::libsql::is_url(url) => crate::libsql::identity(url),
             Dialect::Sqlite => crate::db::sqlite_path(url, root),
             _ => crate::redact(url),
         };
