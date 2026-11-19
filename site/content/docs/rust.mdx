@@ -75,6 +75,7 @@ On 0.8, sqlx's own `json`, `chrono`, `time` and `uuid` features are yours to tur
 Reylo finds your dev database through the `DATABASE_URL` environment variable, or a `.env` file beside the crate's `Cargo.toml`. In a workspace, that's the member's own, not the workspace root's:
 
 ```sh title=".env"
+# or mysql://… or sqlite:./path/to/your.db, etc
 DATABASE_URL=postgres://postgres@localhost:5432/app
 ```
 
@@ -220,6 +221,25 @@ while let Some(post) = posts.try_next().await? {
     println!("{}", post.title);
 }
 ```
+
+### Connection poolers
+
+Through PgBouncer in transaction mode, turn on its prepared statements.
+
+sqlx prepares each query once per connection, under a name such as `sqlx_s_1`, and runs it by that name after. A pooler in transaction mode gives each transaction whichever server connection is free, so the name may be missing there, or belong to another client's statement. PgBouncer 1.21 and later keeps each client's statements across its server connections:
+
+```ini title="pgbouncer.ini"
+pool_mode = transaction
+# keep each client's prepared statements
+max_prepared_statements = 200
+# sqlx sets extra_float_digits when it connects
+ignore_startup_parameters = extra_float_digits
+```
+
+- Without `max_prepared_statements`, queries fail with errors such as `prepared statement "sqlx_s_1" does not exist`, and some return another statement's rows with no error at all.
+- Turning off sqlx's statement cache with `statement_cache_capacity(0)` doesn't help, since sqlx still prepares each query under a name.
+- Where you can't change the pooler's settings, `.extra_float_digits(None)` on sqlx's `PgConnectOptions` does what `ignore_startup_parameters` does.
+- The attribute reads `DATABASE_URL` as the crate compiles, so point it at a direct connection, not the pooler.
 
 ### Enums
 
@@ -537,7 +557,7 @@ let ran = reylo::migrate!().run(&pool).await?;
 
 The macro compiles your project's migrations into the crate, with their lock and `reylo/schema.sql`. Then `.run()` does what `reylo migrate deploy` does, on the pool's database: it runs each locked migration the database hasn't, in order, each in a transaction with its row in the history table.
 
-It refuses, running nothing, where the [command](/migrations#commands) would: on a draft the lock doesn't list yet, a migration edited since the database ran it, or a schema changed by hand since the last deploy. Its error says why, with the fix, as the command prints it.
+It refuses, running nothing, where the [command](/migrate/docs#cli-reylo-migrate) would: on a draft the lock doesn't list yet, a migration edited since the database ran it, or a schema changed by hand since the last deploy. Its error says why, with the fix, as the command prints it.
 
 A migration that fails rolls back with its row, and those before it stay applied: the error's `.applied()` lists them.
 

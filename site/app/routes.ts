@@ -12,6 +12,9 @@ const markdown = readdirSync('content/docs')
 
 export default [
   route(':slug?', 'routes/page.tsx'),
+  // Reylo Migrate: its landing page, and its docs (content/docs/migrate.mdx) under it.
+  route('migrate', 'routes/migrate.tsx'),
+  route('migrate/docs', 'routes/page.tsx', { id: 'migrate-docs' }),
   ...markdown.map((file) => route(file, 'routes/markdown.ts', { id: `markdown/${file}` })),
   route('404', 'routes/not-found.tsx'),
   // The playground, full screen (components/play.tsx).

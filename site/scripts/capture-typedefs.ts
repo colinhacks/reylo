@@ -103,7 +103,8 @@ async function build(dialect: CardDialect, schema: string, dir: string): Promise
   return `file:${file}`;
 }
 
-const files = readdirSync(path.join(site, 'content', 'docs')).filter((f) => f.endsWith('.mdx')).map((f) => path.join(site, 'content', 'docs', f));
+// Every page and every section a page holds (lib/page-sections.ts).
+const files = ['docs', 'sections'].flatMap((dir) => readdirSync(path.join(site, 'content', dir)).filter((f) => f.endsWith('.mdx')).map((f) => path.join(site, 'content', dir, f)));
 const found: { file: string; card: AnalyzedCard }[] = files.flatMap((file) => analyzedCards(parsePage(file)).map((card) => ({ file: path.relative(site, file), card })));
 const dir = mkdtempSync(path.join(tmpdir(), 'reylo-capture-typedefs-'));
 writeFileSync(path.join(dir, 'package.json'), '{}');

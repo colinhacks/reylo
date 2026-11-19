@@ -334,6 +334,7 @@ DATABASE_URL=clickhouse+http://default@localhost:8123/app
 To override this, create a `.reylo.yaml` file in your project root and set the `direct_url` field:
 
 ```yaml title=".reylo.yaml"
+# or mysql://… or sqlite:./path/to/your.db, etc
 direct_url: postgres://localhost:5432/app
 ```
 

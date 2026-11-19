@@ -645,39 +645,6 @@ Postgres writes a range of integers or dates as `[)`, whatever the query wrote, 
 
 </Rules>
 
-### Type descriptors
-
-How the engine writes each type.
-
-The engine gives every column its type in [Reylo Type Defs](/typedefs), as [`reylo analyze`](/cli#reylo-analyze) prints it. A column of each Postgres type:
-
-<Analyzed file="types.sql" format="types">
-
-```sql schema
-create type mood as enum ('sad', 'ok', 'happy');
-create domain email as varchar(255) check (value like '%@%');
-```
-
-```sql
-select
-  null::smallint as "smallint", null::integer as "integer", null::bigint as "bigint", null::oid as "oid",
-  null::real as "real", null::double precision as "double precision",
-  null::numeric as "numeric", null::numeric(10,2) as "numeric(10,2)", null::money as "money",
-  null::text as "text", null::varchar(255) as "varchar(255)", null::char(8) as "char(8)", null::name as "name",
-  null::mood as "mood", null::email as "email",
-  null::boolean as "boolean", null::uuid as "uuid", null::bytea as "bytea", null::macaddr as "macaddr",
-  null::date as "date", null::time as "time", null::timetz as "timetz",
-  null::timestamp as "timestamp", null::timestamptz as "timestamptz", null::interval as "interval",
-  null::json as "json", null::jsonb as "jsonb", null::xml as "xml",
-  null::integer[] as "integer[]", null::bit(7) as "bit(7)", null::varbit as "varbit",
-  null::point as "point", null::circle as "circle", null::inet as "inet",
-  null::int4range as "int4range", null::tstzmultirange as "tstzmultirange", null::tsvector as "tsvector"
-```
-
-</Analyzed>
-
-The schema and the query narrow these. A `CHECK` holds a string to a `pattern`, from a `like`, or from a case-sensitive `~` where an I-Regexp matches exactly the values it finds a match in, so `code ~ '^[A-Z]{3}$'` is `[A-Z]{3}`. An array that `array_agg(distinct …)`, `json_agg(distinct …)` or `jsonb_agg(distinct …)` builds is `distinct`, unless its elements hold an array, which Postgres compares with its bounds, JSON, whose `null` and SQL's `NULL` are one value inside JSON, or a PostGIS geometry, which it compares by its bytes. A composite type's attribute comments are its fields' comments, wherever the row is a value.
-
 ## Nullability
 
 Each column can be null unless Reylo can tell it never is, from `NOT NULL`, joins, `where` tests and expressions ([Inference](/inference#left-joins)). On Postgres:

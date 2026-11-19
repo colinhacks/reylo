@@ -1,12 +1,13 @@
-import { siteUrl } from '@/lib/layout.shared';
+import { docsUrl, siteUrl } from '@/lib/layout.shared';
 import { source } from '@/lib/source';
 
 // The site's pages, dated by the build, which runs on every push that changes the site. Written to
 // build/client/sitemap.xml.
 export function loader() {
   const lastmod = new Date().toISOString();
-  const urls = source.getPages().map((page) => `<url>
-<loc>${new URL(page.url, siteUrl).href}</loc>
+  // Reylo Migrate's docs sit under its landing page, /migrate, which is a page too.
+  const urls = [...source.getPages().map((page) => docsUrl(page.url)), '/migrate'].map((url) => `<url>
+<loc>${new URL(url, siteUrl).href}</loc>
 <lastmod>${lastmod}</lastmod>
 <changefreq>weekly</changefreq>
 <priority>1</priority>

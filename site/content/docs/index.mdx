@@ -1,6 +1,6 @@
 ---
 title: Reylo
-description: Reylo is an engine that infers type information from SQL queries, read from your live database. <Rust>TypeScript and Rust use</Rust><NoRust>TypeScript uses</NoRust> its types as you write, and its CLI prints them as data.
+description: Reylo is an engine that infers type information from SQL queries, read from your live database. <Rust>TypeScript and Rust use</Rust><NoRust>TypeScript uses</NoRust> its types as you write, and its CLI writes and runs your migrations.
 ---
 
 <p className="dk-subheader hero">An engine that infers the types of your SQL queries</p>
@@ -188,7 +188,7 @@ Reylo reads all of this from your live database, which checks the query without 
 
 </div>
 
-The same engine is behind <Rust>three</Rust><NoRust>two</NoRust> ways to use it.
+You use it from TypeScript<Rust> or Rust</Rust>, and its `reylo` command also writes and runs your migrations.
 
 ### TypeScript
 
@@ -214,7 +214,7 @@ author?.
 //      ^|
 ```
 
-[Usage with TypeScript](/typescript) covers the setup.
+[Usage<Rust> with TypeScript</Rust>](/typescript) covers the setup.
 
 <Rust>
 ### Rust
@@ -242,31 +242,10 @@ author.
 [Usage with Rust](/rust) covers the setup.
 </Rust>
 
-### The command line
+### Migrations
 
-The `reylo` command prints what Reylo infers, as JSON, for scripts and agents:
+The `reylo` command writes a migration from each change you make to `schema.sql`, and runs the migrations on your database:
 
-<Analyzed file="get_author.sql" jq=".result">
+<MigrationsDiagram />
 
-```sql schema
-create table users (
-  id serial primary key,
-  name text not null
-);
-create table posts (
-  id serial primary key,
-  user_id integer not null references users (id)
-);
-```
-
-```sql
-select u.id, u.name, count(p.id)::int as post_count
-from users u
-left join posts p on p.user_id = u.id
-where u.id = :id::int
-group by u.id
-```
-
-</Analyzed>
-
-It also writes and runs your migrations ([Migrations](/migrations)). Every command is on the [CLI](/cli) page.
+[Migrations](/migrate/docs) covers the rest, and every command is on the [CLI](/cli) page.

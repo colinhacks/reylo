@@ -165,32 +165,6 @@ A column of one of these types is an error at the type check, which says what to
 | `AggregateFunction` | The finished value, `finalizeAggregation(x)`, or an aggregate with `-Merge` |
 | An interval, `Time`, `Time64` | `toString(x)`, or the number it counts, `toInt64(x)` |
 
-### Type descriptors
-
-How the engine writes each type.
-
-The engine gives every column its type in [Reylo Type Defs](/typedefs), as [`reylo analyze`](/cli#reylo-analyze) prints it. A column of each ClickHouse type:
-
-<Analyzed file="types.sql" dialect="clickhouse" format="types">
-
-```sql schema
-CREATE TABLE types (
-  `Int32` Int32, `UInt64` UInt64, `Float64` Float64, `Decimal(12, 2)` Decimal(12, 2), `Bool` Bool,
-  `String` String, `FixedString(8)` FixedString(8), `UUID` UUID, `IPv4` IPv4,
-  `Date` Date, `DateTime` DateTime, `DateTime64(3)` DateTime64(3),
-  `Enum8` Enum8('a' = 1, 'b' = 2), `Array(String)` Array(String),
-  `Tuple` Tuple(UInt8, String), `Tuple with names` Tuple(x Float64, y Float64),
-  `Map` Map(String, UInt32), `Nullable(String)` Nullable(String),
-  `LowCardinality(String)` LowCardinality(String), `Variant` Variant(String, UInt64)
-) ENGINE = MergeTree ORDER BY tuple()
-```
-
-```sql
-SELECT * FROM types
-```
-
-</Analyzed>
-
 ## Nullability
 
 A column can be null only where ClickHouse says its type is `Nullable`.
