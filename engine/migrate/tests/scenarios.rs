@@ -45,10 +45,20 @@ impl Sqld {
             eprintln!("skipped: no sqld for turso");
             return None;
         };
-        // A port another test takes between the probe and the server's bind fails the server at
-        // once, which tries the next one.
+        // The scenarios run side by side, and a port probed free can be probed again by another
+        // before its server binds it, which would put two scenarios on one server: a port is handed
+        // out once in the run, and one taken meanwhile by another process fails the server at once,
+        // which tries the next.
+        static TAKEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+        let mut taken = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
         for _ in 0..5 {
-            let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+            let port = loop {
+                let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+                if !taken.contains(&port) {
+                    taken.push(port);
+                    break port;
+                }
+            };
             let log = std::fs::File::create(dir.join("sqld.log")).unwrap();
             let mut child = std::process::Command::new(&binary)
                 .arg("--db-path")
@@ -63,8 +73,13 @@ impl Sqld {
                 if child.try_wait().unwrap().is_some() {
                     break;
                 }
+                // Listening, and still the server this started: one that lost the port exits.
                 if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                    return Some((Sqld(child), format!("libsql://127.0.0.1:{port}?tls=0")));
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    if child.try_wait().unwrap().is_none() {
+                        return Some((Sqld(child), format!("libsql://127.0.0.1:{port}?tls=0")));
+                    }
+                    break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
