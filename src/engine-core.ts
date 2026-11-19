@@ -47,6 +47,8 @@ export type Analysis = {
   ordered?: true;
   /** `inserted`: text the engine added that the statement as written does not hold, as `[original offset, start, end]` (the collation MySQL's own text needs). */
   rewritten: { sql: string; order: string[]; spans: [number, number, number, number][]; inserted?: [number, number, number][] };
+  /** How the MySQL session the statement was read on reads strings and double quotes, by its `sql_mode`, where another mode would read the statement otherwise: its placeholders hold only for a session that reads it so. Absent where every mode reads it alike (engine/core/src/api.rs). */
+  sqlMode?: SqlMode;
   style: "none" | "named" | "positional" | "mixed";
   diagnostics: Diagnostic[];
   unresolved: string[];
@@ -63,6 +65,9 @@ export type Analysis = {
   /** Whether the statement is certain to write nothing. */
   readOnly?: boolean;
 };
+
+/** How a MySQL session reads text, by its `sql_mode` (engine/core/src/lex.rs, `MysqlText`): a backslash in a string escapes the character after it unless the mode has NO_BACKSLASH_ESCAPES, and a double-quoted word is a string unless it has ANSI_QUOTES. */
+export type SqlMode = { readonly backslashEscapes: boolean; readonly ansiQuotes: boolean };
 
 export type Lexed = {
   params: string[];

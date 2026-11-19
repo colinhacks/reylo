@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sqlModule } from "../src/loader.ts";
 import { defineQuery } from "../src/index.ts";
-import { declarations, DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase, ROOT } from "./helpers.ts";
+import { declarations, DRIVERS, handWritten, pgLive, mysqlLive, INDEX, plain, postgresDatabase, closeSessions, mysqlDatabase, ROOT } from "./helpers.ts";
 
 // A query's `sql` is the statement as Reylo sends it to the database, the engine's compiled text,
 // and `raw` the file as written. Both are the module's exports too,
@@ -43,22 +43,21 @@ function texts(declaration: string): string[] {
 
 const GET_USER = "select id, name, email from users where id = :id\n";
 
-test("a query defined by hand: `raw` is its statement as written and `sql` the one the run time compiles from it", () => {
+test("a query defined by hand: `raw` is its statement as written, and `sql` the compiled one it gives, else the same statement, taken as written", () => {
   const raw = "select :id as id, :name as name, :id as again";
-  const pg = defineQuery({ dialect: "postgres", sql: raw, params: ["id", "name"] });
+  const pg = defineQuery({ dialect: "postgres", ...handWritten(raw, "postgres") });
   assert.equal(pg.raw, raw);
   assert.equal(pg.sql, "select $1 as id, $2 as name, $1 as again");
   for (const dialect of ["mysql", "sqlite"] as const) {
-    const q = defineQuery({ dialect, sql: raw, params: ["id", "name"] });
+    const q = defineQuery({ dialect, ...handWritten(raw, dialect) });
     assert.equal(q.raw, raw);
     assert.equal(q.sql, "select ? as id, ? as name, ? as again");
   }
-  // The compiled text a build step writes wins over the run time's own lexer.
   assert.equal(defineQuery({ dialect: "postgres", sql: "select :id", params: ["id"], text: "select $1::int", order: ["id"] }).sql, "select $1::int");
-  // A placeholder its params miss fails where `sql` is read, as `run` does.
-  const missing = defineQuery({ dialect: "postgres", sql: "select :id, :other", params: ["id"] });
-  assert.equal(missing.raw, "select :id, :other");
-  assert.throws(() => missing.sql, /The statement's placeholder :other is parameter "other", which the query's params \(\["id"\]\) do not list/);
+  // Without it, the run time reads no placeholder off the statement: it is the database's own.
+  const asWritten = defineQuery({ dialect: "postgres", sql: "select $1::int, :id", params: ["id"] });
+  assert.equal(asWritten.raw, "select $1::int, :id");
+  assert.equal(asWritten.sql, "select $1::int, :id");
 });
 
 test("SQLite: `sql` is the compiled statement and `raw` the file, at run time and in the mapper's declaration", async () => {
@@ -175,6 +174,31 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
     assert.equal((await built(root, "listed", listed)).default["~standard"].query.ordered, true);
     assert.equal("ordered" in (await built(root, "unordered", unordered)).default["~standard"].query, false);
   } finally {
+    await closeSessions();
+    await own.drop();
+  }
+});
+
+test("Postgres: Slonik runs a built statement split at the engine's places of its placeholders, past an E'' string, a dollar quote and what a structured parameter's expansion wraps", { skip: pgLive }, async () => {
+  const own = await postgresDatabase("reylo_compiled_slonik", "create table accounts (id int generated always as identity primary key, name text not null, role text not null default 'user')");
+  const root = project(own.url);
+  const { createPool } = await import("slonik");
+  const slonik = await createPool(own.url);
+  try {
+    // An escaped quote inside an `E''` string, and `$1` and `:name` inside a dollar quote, are text: the real parameter after each binds.
+    const escaped = await built(root, "escaped", "select E'it\\'s :not $1' as s, :id::int as id\n");
+    assert.equal(escaped.default.sql, "select E'it\\'s :not $1' as s, $1::int as id");
+    assert.deepEqual({ ...((await escaped.default.run(slonik, { id: 7 })) as object) }, { s: "it's :not $1", id: 7 });
+    const quoted = await built(root, "quoted", "select $$costs $1 or :name$$ as note, :name::text as name\n");
+    assert.equal(quoted.default.sql, "select $$costs $1 or :name$$ as note, $1::text as name");
+    assert.deepEqual({ ...((await quoted.default.run(slonik, { name: "ada" })) as object) }, { note: "costs $1 or :name", name: "ada" });
+    // A structured parameter's placeholder is inside its expansion, past the default copied for a key a row leaves out.
+    const insert = await built(root, "insert", "insert into accounts :a::rows(name text not null, role? text not null)\n");
+    await insert.default.run(slonik, { a: [{ name: "it's" }, { name: "$1" }] });
+    await insert.default.run(slonik, { a: [{ name: "x", role: "admin" }] });
+    assert.deepEqual(plain(await own.sql`select name, role from accounts order by id`), [{ name: "it's", role: "user" }, { name: "$1", role: "user" }, { name: "x", role: "admin" }]);
+  } finally {
+    await slonik.end();
     await closeSessions();
     await own.drop();
   }

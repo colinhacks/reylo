@@ -5,6 +5,7 @@ import { tracingChannel } from "node:diagnostics_channel";
 import { DatabaseSync } from "node:sqlite";
 import { defineQuery, type QueryTrace } from "../src/index.ts";
 import { listening } from "../src/trace.ts";
+import { handWritten } from "./helpers.ts";
 
 // Every query Reylo runs is published on the tracing channel "reylo:query" (src/trace.ts): one
 // call per `.run()`, `.runSync()`, `.try()`, `.trySync()` and call of the function `.with()`
@@ -12,8 +13,8 @@ import { listening } from "../src/trace.ts";
 // or error.
 const channel = tracingChannel<QueryTrace>("reylo:query");
 
-const getUser = defineQuery<{ id: number }, { id: number; email: string }, "one", "sqlite">({ dialect: "sqlite", sql: "select id, email from users where id = :id", params: ["id"], cardinality: "one", source: "queries/get_user.sql" });
-const createUser = defineQuery<{ email: string }, never, "none", "sqlite">({ dialect: "sqlite", sql: "insert into users (email) values (:email)", params: ["email"], cardinality: "none", source: "queries/create_user.sql" });
+const getUser = defineQuery<{ id: number }, { id: number; email: string }, "one", "sqlite">({ dialect: "sqlite", ...handWritten("select id, email from users where id = :id", "sqlite"), cardinality: "one", source: "queries/get_user.sql" });
+const createUser = defineQuery<{ email: string }, never, "none", "sqlite">({ dialect: "sqlite", ...handWritten("insert into users (email) values (:email)", "sqlite"), cardinality: "none", source: "queries/create_user.sql" });
 
 function database() {
   const db = new DatabaseSync(":memory:");

@@ -15,6 +15,7 @@ import { jsonNumbers } from "./render.ts";
 import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
 import { planLibraries, planOf, type Library } from "./codecs.ts";
 import type { Dialect } from "./execute.ts";
+import type { Analysis, Lexed } from "./engine-core.ts";
 
 export type SqlModule = {
   code: string;
@@ -122,6 +123,9 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // A structured parameter's lists, at JavaScript's offsets into the statement (the engine's are
   // UTF-8 bytes).
   const structured = (analysis.structured ?? []).map((s) => ({ name: s.name, lists: s.lists.map((l) => ({ start: utf16(text, l.start), end: utf16(text, l.end), entries: l.entries })) }));
+  // Each placeholder's place in it, where a driver takes the statement in pieces or with its values
+  // written in (src/execute.ts, `QueryModule`); SQLite has no such driver.
+  const marks = dialect === "sqlite" ? undefined : await marksOf(analysis, text, dialect, (region) => session.lex(region));
   // A typed JSON, structured or cast parameter is checked with reylo's `checks`, imported only where
   // the statement has one, so that an app none of whose statements has one bundles none of them
   // (src/checks.ts). A non-null JSON parameter whose type alone carries a schema needs them too,
@@ -139,7 +143,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default ${define}({ sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}${analysis.value ? "value: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${handed.length ? `, libraries: { ${handed.join(", ")} }` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
+    `export default ${define}({ sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}${analysis.value ? "value: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}${marks ? `, marks: ${JSON.stringify(marks)}` : ""}${analysis.sqlMode ? `, sqlMode: ${JSON.stringify(analysis.sqlMode)}` : ""}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${handed.length ? `, libraries: { ${handed.join(", ")} }` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };
@@ -147,6 +151,41 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
 
 /** The define function from "reylo" a module of each dialect calls (src/index.ts). */
 export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery" };
+
+/**
+ * Each placeholder's place in `text`, the compiled statement, at JavaScript's offsets, in text
+ * order. The engine's spans say where it wrote each one; where it wrote more than the placeholder
+ * (a cast, a JSON or vector parameter, a structured parameter's expansion), the span covers all
+ * of it, and the placeholder is the one the engine's lexer finds in that text, which it wrote
+ * itself. The lexer reads MySQL text as the default `sql_mode` does, so where the statement was
+ * read under another mode, a wrap whose own strings that mode reads otherwise (a double quote, a
+ * backslash) gives no marks, rather than a guess.
+ */
+export async function marksOf(analysis: Analysis, text: string, dialect: Dialect, lex: (sql: string) => Promise<Lexed>): Promise<[number, number][] | undefined> {
+  const bytes = Buffer.from(analysis.rewritten.sql, "utf8");
+  const mode = analysis.sqlMode;
+  const otherMode = mode !== undefined && (!mode.backslashEscapes || mode.ansiQuotes);
+  const marks: [number, number][] = [];
+  for (const [, , start, end] of analysis.rewritten.spans) {
+    const written = bytes.subarray(start, end);
+    const region = written.toString("utf8");
+    if (dialect === "mysql" ? region === "?" : /^\$[0-9]+$/.test(region)) {
+      marks.push([utf16(text, start), utf16(text, end)]);
+      continue;
+    }
+    let lexed: Lexed;
+    try {
+      lexed = await lex(region);
+    } catch {
+      return undefined;
+    }
+    const [p, ...more] = lexed.placeholders;
+    if (p === undefined || more.length || !/^[0-9]+$/.test(p.name)) return undefined;
+    if (otherMode && lexed.opaque.some(([s, e]) => written[s] === 0x22 || written.subarray(s, e).includes(0x5c))) return undefined;
+    marks.push([utf16(text, start + p.start), utf16(text, start + p.end)]);
+  }
+  return marks;
+}
 
 /** The line and column, from 1, of a UTF-8 byte offset into `text`. */
 function place(text: string, bytes: number): string {
