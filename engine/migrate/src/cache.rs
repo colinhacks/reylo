@@ -79,7 +79,7 @@ pub(crate) fn hex(h: &[u8]) -> String {
 /// reader reads, or how it writes a line, changes, so that a release that leaves the reading alone
 /// leaves every stored fingerprint comparable. A test holds each edit to the reader's code to that
 /// choice.
-const READER: u32 = 1;
+const READER: u32 = 2;
 
 /// The catalog reader's part of a fingerprint.
 pub(crate) fn reader_id() -> String {
@@ -789,7 +789,7 @@ mod tests {
     }
 
     /// The digest of the catalog reader's code when `READER` was last set.
-    const READER_CODE: &str = "e00d34849a9c";
+    const READER_CODE: &str = "ba131f4d0a94";
 
     #[test]
     fn the_catalog_reader_keeps_its_version() {

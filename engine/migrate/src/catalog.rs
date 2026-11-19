@@ -221,6 +221,36 @@ pub const PLATFORM_ROLES: &[&str] = &[
     "cloud_admin",
 ];
 
+/// The schemas a hosting platform makes for itself, left out by name whoever owns them: Supabase's
+/// are the 22 its own diff engine leaves out (pg-delta's `SUPABASE_SYSTEM_SCHEMAS`), some of which its
+/// local stack gives the project's role (`_realtime`), so no owner tells them apart. What a project
+/// makes in one is still judged by the rule for its kind: a policy or a trigger on `auth.users`, a
+/// table its role owns, and an extension in `extensions`, a schema its role owns ([`in_project_schema`]).
+pub const PLATFORM_SCHEMAS: &[&str] = &[
+    "_analytics",
+    "_realtime",
+    "_supavisor",
+    "auth",
+    "cron",
+    "etl",
+    "extensions",
+    "graphql",
+    "graphql_public",
+    "information_schema",
+    "net",
+    "pgbouncer",
+    "pgmq",
+    "pgmq_public",
+    "pgsodium",
+    "pgsodium_masks",
+    "pgtle",
+    "realtime",
+    "storage",
+    "supabase_functions",
+    "supabase_migrations",
+    "vault",
+];
+
 /// The role a shadow database makes the platform's own objects as, where a superuser the connection
 /// may not act as owns them on the target: one the shadows' server has, which the connection may
 /// become, and which every comparison leaves out as it leaves out a platform's role. Reylo never
@@ -238,9 +268,16 @@ pub(crate) fn not_platform(owner: &str) -> String {
     format!("{} and not {}", not_named(owner), beyond_reach(owner))
 }
 
-/// A schema `alias` (a `pg_namespace` row) that is no platform's: `public` never is, which Postgres
-/// 14 and older made the bootstrap superuser's in every database.
+/// A schema `alias` (a `pg_namespace` row) that is no platform's: none of [`PLATFORM_SCHEMAS`], and
+/// owned by no platform's owner.
 pub(crate) fn not_platform_schema(alias: &str) -> String {
+    let names = PLATFORM_SCHEMAS.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ");
+    format!("{alias}.nspname <> all (array[{names}]) and {}", not_platform_owned_schema(alias))
+}
+
+/// A schema `alias` that no platform's owner owns: `public` never is, which Postgres 14 and older made
+/// the bootstrap superuser's in every database.
+fn not_platform_owned_schema(alias: &str) -> String {
     format!("{} and ({alias}.nspname = 'public' or not {})", not_named(&format!("{alias}.nspowner")), beyond_reach(&format!("{alias}.nspowner")))
 }
 
@@ -263,12 +300,13 @@ pub(crate) fn project_relation(c: &str, n: &str) -> String {
 }
 
 /// The relations in a schema of the project's that a superuser the connected role may not act as
-/// owns, each `(owner, kind, name)`: the kind as `alter` names it, and the name schema-qualified
-/// outside `public`. No migration the role runs may change them, and no shadow it makes owns them as
+/// owns, each `(owner, kind, name, qualified)`: the kind as `alter` names it, the name as a person
+/// reads it (schema-qualified outside `public`), and the name schema-qualified always, for a
+/// statement run as another role, whose `search_path` may find another relation of that name first. No migration the role runs may change them, and no shadow it makes owns them as
 /// they are owned here. A sequence a column owns, and an index, go with their table, whose new owner
 /// takes them.
 #[cfg(feature = "cli")]
-pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, String, String)>, Error> {
+pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, String, String, String)>, Error> {
     if db.dialect() != Dialect::Postgres {
         return Ok(vec![]);
     }
@@ -276,7 +314,8 @@ pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, S
         .rows(&format!(
             "select pg_get_userbyid(c.relowner)::text as owner,
               case c.relkind when 'v' then 'view' when 'm' then 'materialized view' when 'S' then 'sequence' when 'f' then 'foreign table' else 'table' end as kind,
-              case when n.nspname = 'public' then quote_ident(c.relname) else format('%I.%I', n.nspname, c.relname) end as name
+              case when n.nspname = 'public' then quote_ident(c.relname) else format('%I.%I', n.nspname, c.relname) end as name,
+              format('%I.%I', n.nspname, c.relname) as qualified
             from pg_class c join pg_namespace n on n.oid = c.relnamespace
             where c.relkind in ('r', 'p', 'v', 'm', 'S', 'f') and {PG_USER_NS} and c.relname <> '{HISTORY_TABLE}' and {} and {} and {}
               and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.refclassid = 'pg_class'::regclass and d.deptype in ('a', 'i'))
@@ -286,7 +325,7 @@ pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, S
             not_extension("pg_class", "c")
         ))
         .await?;
-    Ok(rows.iter().map(|r| (r.text("owner").to_string(), r.text("kind").to_string(), r.text("name").to_string())).collect())
+    Ok(rows.iter().map(|r| (r.text("owner").to_string(), r.text("kind").to_string(), r.text("name").to_string(), r.text("qualified").to_string())).collect())
 }
 
 /// Whether `owner` is a superuser the connected role may not act as: may not `set role` to, which
@@ -311,9 +350,11 @@ pub(crate) fn project_extension(x: &str, n: &str) -> String {
     format!("({} or {})", not_platform(&format!("{x}.extowner")), in_project_schema(n))
 }
 
-/// Whether the schema `n` (a `pg_namespace` row) is one of the project's, which `pg_catalog` never is.
+/// Whether the schema `n` (a `pg_namespace` row) holds the project's extensions, by its owner alone:
+/// Supabase's `extensions`, a platform's schema by name, is its role's and holds the extensions the
+/// project enables. `pg_catalog` never is.
 pub(crate) fn in_project_schema(n: &str) -> String {
-    format!("({n}.nspname <> 'pg_catalog' and {})", not_platform_schema(n))
+    format!("({n}.nspname <> 'pg_catalog' and {})", not_platform_owned_schema(n))
 }
 
 pub(crate) fn not_extension(catalog: &str, alias: &str) -> String {
@@ -1208,13 +1249,27 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         lines.push(format!("view {} as {} check={} security={}", r.text("n"), strip(r.text("def")), r.text("opt"), r.text("sec")));
     }
 
+    // Each routine's parameters are read in a query of their own and joined here, not in a
+    // subquery correlated with the routines: Vitess, which PlanetScale's MySQL runs behind, plans
+    // that subquery apart from its outer query and refuses it ("query arguments missing for
+    // r_routine_schema").
+    let mut params: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in db
+        .rows(
+            "select specific_name as routine, parameter_mode as pmode, parameter_name as pname, dtd_identifier as ptype
+            from information_schema.parameters where specific_schema = database() and ordinal_position > 0 order by specific_name, ordinal_position",
+        )
+        .await?
+    {
+        // As `concat_ws(' ', …)` joins them: a null part is left out.
+        let text = [p.get("pmode"), p.get("pname"), p.get("ptype")].into_iter().flatten().collect::<Vec<_>>().join(" ");
+        params.entry(p.text("routine").to_string()).or_default().push(text);
+    }
     for r in db
         .rows(
-            "select r.routine_name as n, r.routine_type as type, r.dtd_identifier as ret, r.routine_definition as def, r.is_deterministic as det,
-              r.sql_data_access as access, r.security_type as sec,
-              (select group_concat(concat_ws(' ', p.parameter_mode, p.parameter_name, p.dtd_identifier) order by p.ordinal_position separator ', ')
-                 from information_schema.parameters p where p.specific_schema = r.routine_schema and p.specific_name = r.specific_name and p.ordinal_position > 0) as params
-            from information_schema.routines r where r.routine_schema = database()",
+            "select routine_name as n, specific_name as routine, routine_type as type, dtd_identifier as ret, routine_definition as def, is_deterministic as det,
+              sql_data_access as access, security_type as sec
+            from information_schema.routines where routine_schema = database()",
         )
         .await?
     {
@@ -1222,7 +1277,7 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
             "{} {}({}){} {} {} security={} as {}",
             r.text("type").to_lowercase(),
             r.text("n"),
-            r.text("params"),
+            params.get(r.text("routine")).map(|p| p.join(", ")).unwrap_or_default(),
             r.get("ret").map(|t| format!(" returns {t}")).unwrap_or_default(),
             if r.text("det") == "YES" { "deterministic" } else { "not deterministic" },
             r.text("access"),

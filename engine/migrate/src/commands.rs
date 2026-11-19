@@ -460,9 +460,11 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
         Dialect::Postgres => db.exec("select pg_advisory_lock(hashtextextended('reylo_migrate', 0))").await.map(|_| None),
         // A lock of this database's alone (its name is at most 64 characters), which answers 0
         // once the wait runs out. Named through sha2: MySQL 9.7 has md5 and sha1 only as a component.
+        // The answer is read by position: Vitess (PlanetScale's MySQL) runs a lock function apart
+        // and answers it without the column's alias.
         Dialect::Mysql => {
-            let rows = db.rows("select get_lock(concat('reylo_migrate_', left(sha2(coalesce(database(), ''), 256), 32)), 600) as ok").await?;
-            if !rows.first().is_some_and(|r| r.flag("ok")) {
+            let rows = db.rows("select get_lock(concat('reylo_migrate_', left(sha2(coalesce(database(), ''), 256), 32)), 600)").await?;
+            if rows.first().and_then(|r| r.first()) != Some("1") {
                 return Err(Error("another run of reylo migrate held this database for ten minutes; try again once it finishes".into()));
             }
             Ok(None)
@@ -594,7 +596,13 @@ async fn limit_lock_wait(db: &mut Db) -> Result<(), Error> {
 async fn reset_lock_wait(db: &mut Db) -> Result<(), Error> {
     match db {
         #[cfg(feature = "cli")]
-        Db::Mysql(_) => db.exec("set session lock_wait_timeout = default").await,
+        // The server's own value, which `= default` would set: Vitess (PlanetScale's MySQL) refuses
+        // that ("unsupported: DEFAULT for @@lock_wait_timeout"), and takes a number.
+        Db::Mysql(_) => {
+            let rows = db.rows("select @@global.lock_wait_timeout").await?;
+            let seconds = rows.first().and_then(|r| r.first()).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| Error("cannot read the server's lock_wait_timeout".into()))?;
+            db.exec(&format!("set session lock_wait_timeout = {seconds}")).await
+        }
         _ => Ok(()),
     }
 }
@@ -1705,20 +1713,22 @@ async fn out_of_reach(db: &mut Db, url: &str) -> Result<Vec<Problem>, Error> {
     }
     let me = db.rows("select current_user::text as u, quote_ident(current_user) as q").await?;
     let (role, quoted) = me.first().map(|r| (r.text("u").to_string(), r.text("q").to_string())).unwrap_or_default();
-    let mut owners: Vec<&str> = relations.iter().map(|(o, _, _)| o.as_str()).collect();
+    let mut owners: Vec<&str> = relations.iter().map(|(o, ..)| o.as_str()).collect();
     owners.dedup();
     Ok(owners
         .into_iter()
         .map(|owner| {
-            let theirs: Vec<&(String, String, String)> = relations.iter().filter(|(o, _, _)| o == owner).collect();
+            let theirs: Vec<&(String, String, String, String)> = relations.iter().filter(|(o, ..)| o == owner).collect();
             let one = theirs.len() == 1;
             let kinds: Vec<String> = ["table", "view", "materialized view", "sequence", "foreign table"]
                 .into_iter()
-                .filter(|k| theirs.iter().any(|(_, kind, _)| kind == k))
+                .filter(|k| theirs.iter().any(|(_, kind, ..)| kind == k))
                 .map(|k| if one { format!("a {k}") } else { format!("{k}s") })
                 .collect();
-            let names: Vec<&str> = theirs.iter().map(|(_, _, name)| name.as_str()).collect();
-            let statements: Vec<String> = theirs.iter().map(|(_, kind, name)| shell_word(&format!("alter {kind} {name} owner to {quoted}"))).collect();
+            let names: Vec<&str> = theirs.iter().map(|(_, _, name, _)| name.as_str()).collect();
+            // Each named with its schema, `public` too: the statements run as the owner, whose
+            // `search_path` (`"$user", public`) may find another relation of the name first.
+            let statements: Vec<String> = theirs.iter().map(|(_, kind, _, qualified)| shell_word(&format!("alter {kind} {qualified} owner to {quoted}"))).collect();
             let command = format!("reylo run --url {} {}", shell_word(&as_user(url, owner)), statements.join(" "));
             Problem::new("owner-out-of-reach", format!("{owner} owns {} here that {role} can't act as: {}", and_list(&kinds), names.join(", ")))
                 .fix(format!("Make {role} {} owner, connected as {owner}, then start again", if one { "its" } else { "their" }), &[&command])
@@ -4131,8 +4141,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                                 select 1, format('GRANT %s ON SCHEMA %I TO %s%s', x.privilege_type, n.nspname, case when x.grantee = 0 then 'PUBLIC' else quote_ident(pg_get_userbyid(x.grantee)) end, case when x.is_grantable then ' WITH GRANT OPTION' else '' end)
                                   from pg_namespace n, aclexplode(n.nspacl) x where n.nspname = {name} and x.grantee <> n.nspowner and {}
                                 order by k, s",
-                                crate::catalog::in_project_schema("n"),
-                                crate::catalog::in_project_schema("n")
+                                crate::catalog::not_platform_schema("n"),
+                                crate::catalog::not_platform_schema("n")
                             ))
                             .await?
                         {
