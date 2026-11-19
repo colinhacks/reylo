@@ -84,6 +84,33 @@ fn is<T: Into<i32>>(field: i32, value: T) -> bool {
     field == value.into()
 }
 
+/// The columns, as (table as the statement names it, column), that a statement of `plan` needs not
+/// null when it runs: one given an identity, and the key of a primary key added to a table. Their
+/// `set not null` can't wait for the last file.
+fn needs_not_null(plan: &Plan) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for statement in plan.statements.iter().filter(|s| !s.starts_with("--")) {
+        let Some(N::AlterTableStmt(a)) = parsed(statement) else { continue };
+        let Some(rel) = a.relation.as_ref().map(named) else { continue };
+        for cmd in &a.cmds {
+            let Some(N::AlterTableCmd(cmd)) = &cmd.node else { continue };
+            if is(cmd.subtype, At::AtAddIdentity) {
+                out.insert((rel.clone(), cmd.name.clone()));
+            } else if is(cmd.subtype, At::AtAddConstraint) {
+                if let Some(N::Constraint(c)) = cmd.def.as_ref().and_then(|d| d.node.as_ref()) {
+                    if is(c.contype, ConstrType::ConstrPrimary) {
+                        out.extend(c.keys.iter().filter_map(|k| match &k.node {
+                            Some(N::String(s)) => Some((rel.clone(), s.sval.clone())),
+                            _ => None,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// What one statement of a plan becomes in the lock-safe shape.
 enum Shape {
     /// Kept as it is, in the file being written.
@@ -98,7 +125,7 @@ enum Shape {
 
 /// `statement` in the shape that holds no lock that blocks writes to a table in `existing` while
 /// it reads every row.
-fn shape(statement: &str, existing: &BTreeSet<String>) -> Shape {
+fn shape(statement: &str, existing: &BTreeSet<String>, needs_not_null: &BTreeSet<(String, String)>) -> Shape {
     let kept = || Shape::Kept(statement.to_string());
     let Some(node) = parsed(statement) else { return kept() };
     match node {
@@ -125,7 +152,9 @@ fn shape(statement: &str, existing: &BTreeSet<String>) -> Shape {
                 return kept();
             }
             // A validated check that the column is not null lets `set not null` skip its scan.
-            if is(cmd.subtype, At::AtSetNotNull) && !cmd.name.is_empty() {
+            // Unless a later statement needs the column not null, which an identity and a primary
+            // key do: then it stays where it is, and the lint says what it holds.
+            if is(cmd.subtype, At::AtSetNotNull) && !cmd.name.is_empty() && !needs_not_null.contains(&(rel.clone(), cmd.name.clone())) {
                 let column = quote_ident(&cmd.name);
                 let check = quote_ident(&not_null_check(&cmd.name));
                 return Shape::Later(
@@ -151,6 +180,7 @@ fn shape(statement: &str, existing: &BTreeSet<String>) -> Shape {
 /// that already has rows) while they read every row: where any statement does, the files in order,
 /// comments kept with the statement they come before; `None` where the plan holds no such lock.
 pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<String>>> {
+    let needs_not_null = needs_not_null(plan);
     let mut files: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = Vec::new();
     // The last file: every validation first, then what finishes the changes, so that no
@@ -158,24 +188,26 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
     let (mut validations, mut finishes): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     let mut comments: Vec<String> = Vec::new();
     let mut changed = false;
-    // The session's settings in force (`set check_function_bodies = off` around functions), which a
-    // file after a lone index build repeats: a deploy cut off between the files starts the next run
-    // there, in a new session.
+    // The session's settings in force (`set check_function_bodies = off` around functions). Each
+    // file is whole on its own: one that ends with a setting still in force resets it, and the
+    // file after a lone index build sets it again, since a deploy cut off between the files starts
+    // the next run there, in a new session.
     let mut settings: Vec<String> = Vec::new();
+    let resets = |settings: &[String]| -> Vec<String> { settings.iter().map(|s| format!("reset {}", setting_name(s))).collect() };
     for statement in &plan.statements {
         if statement.starts_with("--") {
             comments.push(statement.clone());
             continue;
         }
         let lower = statement.trim_start().to_ascii_lowercase();
-        if let Some(rest) = lower.strip_prefix("set ").filter(|r| !r.starts_with("local ")) {
-            let name = rest.split(['=', ' ']).next().unwrap_or_default().to_string();
-            settings.retain(|s| !s.to_ascii_lowercase().strip_prefix("set ").is_some_and(|r| r.starts_with(&name)));
+        if lower.starts_with("set ") && !lower.starts_with("set local ") {
+            let name = setting_name(statement);
+            settings.retain(|s| setting_name(s) != name);
             settings.push(statement.clone());
         } else if let Some(name) = lower.strip_prefix("reset ") {
-            settings.retain(|s| !s.to_ascii_lowercase().strip_prefix("set ").is_some_and(|r| r.starts_with(name.trim())));
+            settings.retain(|s| setting_name(s) != name.trim());
         }
-        match shape(statement, existing) {
+        match shape(statement, existing, &needs_not_null) {
             Shape::Kept(s) => {
                 current.append(&mut comments);
                 current.push(s);
@@ -192,6 +224,7 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
                 // What came before goes in a file of its own, unless it is only settings, which
                 // the file after this one repeats.
                 if does_something(&current) {
+                    current.extend(resets(&settings));
                     files.push(std::mem::take(&mut current));
                 } else {
                     current.retain(|s| s.starts_with("--"));
@@ -217,6 +250,14 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
         files.push(validations);
     }
     Some(files)
+}
+
+/// The name a `set` statement sets, in lowercase: `check_function_bodies`.
+fn setting_name(statement: &str) -> String {
+    let lower = statement.trim_start().to_ascii_lowercase();
+    let rest = lower.strip_prefix("set ").unwrap_or(&lower).trim_start();
+    let rest = rest.strip_prefix("session ").unwrap_or(rest).trim_start();
+    rest.split(['=', ' ']).next().unwrap_or_default().to_string()
 }
 
 /// Whether statements change anything: more than comments and the session's settings.
@@ -479,6 +520,16 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_not_null_an_identity_or_a_primary_key_needs() {
+        // Adding an identity, or a primary key, refuses a column not yet not null.
+        assert_eq!(lock_safe(&plan(&["alter table v alter column r set not null", "alter table v alter column r add generated always as identity"]), &existing(&["v"])), None);
+        assert_eq!(lock_safe(&plan(&["alter table v alter column r set not null", "alter table v add constraint v_pkey primary key (r)"]), &existing(&["v"])), None);
+        // Another column's is still proven first.
+        let files = lock_safe(&plan(&["alter table v alter column r set not null", "alter table v alter column r add generated always as identity", "alter table v alter column s set not null"]), &existing(&["v"])).unwrap();
+        assert_eq!(files[0], vec!["alter table v alter column r set not null".to_string(), "alter table v alter column r add generated always as identity".to_string(), "alter table v add constraint s_not_null check (s is not null) not valid".to_string()]);
+    }
+
+    #[test]
     fn builds_indexes_concurrently_alone() {
         let files = lock_safe(&plan(&["alter table users add column code text", "-- the index", "create unique index users_code_key on users (code)", "alter table users add constraint users_email_key unique (email)", "comment on table users is 'x'"]), &existing(&["users"])).unwrap();
         assert_eq!(
@@ -500,6 +551,18 @@ mod tests {
             vec![
                 vec!["create index concurrently i on users (n)".to_string()],
                 vec!["set check_function_bodies = off".to_string(), "create function f() returns int language sql as 'select 1'".to_string(), "reset check_function_bodies".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn resets_a_setting_a_file_leaves_in_force() {
+        let files = lock_safe(&plan(&["set check_function_bodies = off", "create function f() returns int language sql as 'select 1'", "create index i on users (n)", "reset check_function_bodies"]), &existing(&["users"])).unwrap();
+        assert_eq!(
+            files,
+            vec![
+                vec!["set check_function_bodies = off".to_string(), "create function f() returns int language sql as 'select 1'".to_string(), "reset check_function_bodies".to_string()],
+                vec!["create index concurrently i on users (n)".to_string()],
             ]
         );
     }
