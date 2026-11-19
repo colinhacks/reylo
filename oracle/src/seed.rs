@@ -1631,6 +1631,9 @@ pub fn check_sqlite<D: SqliteDb + ?Sized>(db: &D, statements: &[(String, String,
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
+                                Some(rusqlite::types::Value::Blob(bytes)) if !admits_bytes(&col["type"]) => {
+                                    found.push(format!("{file}: column {name} typed {} returned a BLOB of {} bytes with ({shown})", col["type"], bytes.len()));
+                                }
                                 _ => {}
                             }
                         }
@@ -1718,6 +1721,15 @@ pub fn check_sqlite<D: SqliteDb + ?Sized>(db: &D, statements: &[(String, String,
         }
     }
     Ok(report(statements, &tallies, timeout_ms, problems, notes))
+}
+
+/// Whether a SQLite value's type admits a BLOB: bytes, a type not known, or a union with either.
+fn admits_bytes(ty: &Value) -> bool {
+    match ty["kind"].as_str() {
+        Some("bytes" | "unknown") | None => true,
+        Some("union") => ty["members"].as_array().is_some_and(|members| members.iter().any(admits_bytes)),
+        _ => false,
+    }
 }
 
 /// Whether a SQLite column's type is JSON a constructor built (an object, a list, or the JSON
@@ -2024,6 +2036,16 @@ mod tests {
 
     fn column(category: &str, base: &str) -> Column {
         Column { name: "c".into(), ty: base.into(), category: category.into(), kind: "b".into(), base: base.into(), is_array: false, delimiter: ",".into(), labels: Vec::new(), generated: false }
+    }
+
+    #[test]
+    fn a_blob_contradicts_a_type_that_admits_no_bytes() {
+        let utf8 = json!({"kind": "text", "encoding": "UTF-8", "ill_formed": true});
+        assert!(!admits_bytes(&utf8));
+        assert!(!admits_bytes(&json!({"kind": "integer", "bits": 64})));
+        assert!(admits_bytes(&json!({"kind": "bytes"})));
+        assert!(admits_bytes(&json!({"kind": "unknown"})));
+        assert!(admits_bytes(&json!({"kind": "union", "members": [utf8, {"kind": "bytes"}], "label": "TEXT"})));
     }
 
     #[test]

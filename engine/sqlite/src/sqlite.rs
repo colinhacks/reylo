@@ -1632,18 +1632,13 @@ impl Analyzer<'_> {
 
     /// What libSQL's `vector_top_k` returns as `id`: the key of the row of the table its index
     /// holds, as libSQL 0.10.0's search reads it, which is never NULL. A rowid table's rowid, an
-    /// integer, whatever its primary key; a WITHOUT ROWID table's primary key column, where it has
-    /// one alone (with several, the first, whose type is not settled here). `None` where the index
-    /// is not written as a string or names no index.
+    /// integer, whatever its primary key; a WITHOUT ROWID table's first primary key column, as it
+    /// is stored, which is of any storage class: libSQL refuses a vector column in a STRICT table,
+    /// so a table with a vector index never is one, and the key comes back with no declared type to
+    /// name it by. `None` where the index is not written as a string or names no index.
     fn vector_key(&self, f: &From) -> Option<Fact> {
         let table = self.tree.tables.get(f.vector_table.as_deref()?)?;
-        if !table.without_rowid {
-            return Some(Fact::new("integer", true));
-        }
-        match table.columns.iter().filter(|c| c.pk).collect::<Vec<_>>().as_slice() {
-            [key] => Some(Fact { ty: column_type(&key.declared, &key.affinity, table.strict), non_null: true }),
-            _ => None,
-        }
+        Some(if table.without_rowid { Fact { ty: Ty::Unknown, non_null: true } } else { Fact::new("integer", true) })
     }
 
     // ---- expressions -------------------------------------------------------------------------
@@ -4135,8 +4130,8 @@ mod tests {
             assert_eq!(a("select * from vector_top_k('docs_emb', :q, 5)").columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id"]);
             let joined = a("select d.id, d.title from vector_top_k('docs_emb', vector(:q), 5) as t join docs d on d.id = t.id");
             assert_eq!(col(&joined, "title"), ("text".into(), false));
-            // A WITHOUT ROWID table's primary key.
-            assert_eq!(col(&a("select id from vector_top_k('words_e', :q, 3)"), "id"), ("text".into(), false));
+            // A WITHOUT ROWID table's primary key, of any storage class outside a STRICT table.
+            assert_eq!(col(&a("select id from vector_top_k('words_e', :q, 3)"), "id"), ("unknown".into(), false));
             // On the nullable side of an outer join, and from an index named some other way.
             assert_eq!(col(&a("select t.id from docs d left join vector_top_k('docs_emb', d.emb, 1) t"), "id"), ("integer".into(), true));
             assert_eq!(a("select id from vector_top_k(:index, :q, 5)").columns[0].nullable, true);

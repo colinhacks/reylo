@@ -10,5 +10,5 @@ plain.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(UTF-8, ill
 top_k.sql: many (q: text(UTF-8, ill-formed)) -> { id: int64 }
 top_k_joined.sql: many (q: text(UTF-8, ill-formed)) -> { id: INTEGER, title: TEXT(text(UTF-8, ill-formed) | bytes), distance: float(11,52)? }
 top_k_star.sql: many () -> { id: int64 }
-top_k_without_rowid.sql: many (q: text(UTF-8, ill-formed)) -> { id: text(UTF-8, ill-formed) }
+top_k_without_rowid.sql: many (q: text(UTF-8, ill-formed)) -> { id: unknown }
 wide.sql: many (q: text(UTF-8, ill-formed)) -> { id: INTEGER, e: text(UTF-8, ill-formed), d: float(11,52)? }
