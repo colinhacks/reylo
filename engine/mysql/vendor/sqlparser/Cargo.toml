@@ -5,6 +5,7 @@
 
 [package]
 edition = "2021"
+rust-version.workspace = true
 name = "reylo-sqlparser"
 version = "0.63.0"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]

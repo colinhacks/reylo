@@ -19,6 +19,11 @@ pg=${REYLO_TEST_PG:?REYLO_TEST_PG names the Postgres server}
 mysql=${REYLO_TEST_MYSQL:?REYLO_TEST_MYSQL names the MySQL server}
 server=${pg%/*}
 root=$(pwd)
+# The new projects sit outside this repository, where its rust-toolchain.toml does not reach: they
+# build with the release it pins, the crates' rust-version, rather than the runner's own.
+rustup toolchain install
+RUSTUP_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+export RUSTUP_TOOLCHAIN
 
 # The published crates, each with its version, from the workspace's own manifests.
 crates=$(cargo metadata --no-deps --format-version 1 --locked | python3 -c '

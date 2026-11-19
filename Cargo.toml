@@ -40,6 +40,9 @@ members = [
 # crate published from here takes.
 [workspace.package]
 version = "0.8.0"
+# The oldest Rust every published crate builds with: the one rust-toolchain.toml pins, which CI builds
+# and tests them with.
+rust-version = "1.100"
 license = "MIT"
 repository = "https://github.com/reylosql/reylo"
 homepage = "https://reylo.dev"

@@ -1,7 +1,7 @@
 diff -ruN a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -1,17 +1,24 @@
+@@ -1,17 +1,25 @@
  [package]
 -name = "pg_query"
 -description = "PostgreSQL parser that uses the actual PostgreSQL server source to parse SQL queries and return the internal PostgreSQL parse tree."
@@ -13,6 +13,7 @@ diff -ruN a/Cargo.toml b/Cargo.toml
 +description = "The PostgreSQL 18 parser of pg_query 18.0.0 and libpg_query 18.1.0, with the fixes Reylo's analysis engine needs that no pg_query release carries yet."
  version = "18.0.0"
  edition = "2021"
++rust-version.workspace = true
 -documentation = "https://docs.rs/pg_query"
 -license = "MIT"
 -repository = "https://github.com/pganalyze/pg_query.rs"
