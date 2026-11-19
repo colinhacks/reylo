@@ -1,5 +1,7 @@
 aggregated.sql: one () -> { g: jsonb jsonb?[]?, c: jsonb jsonb?[] }
-array_of_jsonb.sql: one () -> { o: jsonb { xs: jsonb[] } }
+array_column.sql: many () -> { o: json { arr: jsonb?[] }, r: jsonb { id: int4, arr: jsonb?[] }, t: json { id: int4, arr: jsonb?[] } }
+array_in_object.sql: many () -> { o: json { js: jsonb?[]?, one: jsonb?[] } }
+array_of_jsonb.sql: one () -> { o: jsonb { xs: jsonb?[] } }
 built_kept.sql: at_most_one (id: int4) -> { o: jsonb { inner: { id: int4, label: text(¬NUL) }, list: int4[]? } }
 column_items.sql: one () -> { js: jsonb jsonb?[]? }
 column_leaf.sql: at_most_one (id: int4) -> { o: jsonb { j: jsonb?, n: jsonb? }, a: json {"type":"array","prefixItems":[{}],"items":false,"minItems":1} }
@@ -9,4 +11,8 @@ literal.sql: one () -> { o: jsonb { tags: jsonb?, meta: jsonb?, none: jsonb? }, 
 param_one_cast.sql: one (p: int4, q: text(¬NUL)) -> { o: json { p: int4?, q: text(¬NUL)? } }
 param_two_casts.sql: one (p: int4, q: date, b: int4) -> { o: json { p: unknown?, q: unknown?, b: unknown? } }
 returning_old.sql: at_most_one (label: text(¬NUL), id: int4) -> { o: jsonb { was: jsonb?, now: jsonb? } }
+row_aggregate_in_subquery.sql: one () -> { list: json (public.doc{ id: int4, j: jsonb?, n: jsonb?, label: text(¬NUL) })[]? }
+row_in_aggregate.sql: one () -> { list: json (public.doc{ id: int4, j: jsonb?, n: jsonb?, label: text(¬NUL) })[]? }
+row_in_object.sql: at_most_one (id: int4) -> { o: jsonb { doc: public.doc{ id: int4, j: jsonb?, n: jsonb?, label: text(¬NUL) } } }
+row_in_subquery.sql: one () -> { o: json { r: public.doc{ id: int4, j: jsonb?, n: jsonb?, label: text(¬NUL) }? } }
 whole_row.sql: at_most_one (id: int4) -> { o: jsonb { id: int4, j: jsonb?, n: jsonb?, label: text(¬NUL) } }

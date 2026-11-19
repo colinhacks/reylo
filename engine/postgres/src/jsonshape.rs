@@ -247,7 +247,34 @@ pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistr
     let mut unresolved = Vec::new();
     let ctx = ResolveCtx { probes, registry, param_oids, document: true };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
-    Resolved { ty: document(registry.through_json_casts(ty)), non_null, unresolved }
+    let mut ty = registry.through_json_casts(ty);
+    json_null_slots(&mut ty);
+    Resolved { ty: document(ty), non_null, unresolved }
+}
+
+/// Make every slot inside a document's content, at any depth, that may hold JSON's null nullable:
+/// a field of a row or an element of an array the statement puts in it whose type is JSON it did
+/// not build ([`may_be_json_null`]), which a document holds as a null, whatever `NOT NULL` or
+/// `CHECK` keeps SQL's NULL out of the column the value comes from.
+fn json_null_slots(ty: &mut Type) {
+    fn slot(nullable: &mut bool, ty: &mut Type) {
+        *nullable |= may_be_json_null(ty);
+        json_null_slots(ty);
+    }
+    match &mut ty.kind {
+        Kind::Struct(record) => {
+            for field in &mut record.fields {
+                slot(&mut field.nullable, &mut field.ty);
+            }
+            if let Some(extra) = record.extra.as_mut() {
+                slot(&mut extra.nullable, &mut extra.ty);
+            }
+        }
+        Kind::Array(array) => slot(&mut array.element.nullable, &mut array.element.ty),
+        Kind::Map(map) => slot(&mut map.value.nullable, &mut map.value.ty),
+        Kind::Json(JsonType { content: Some(content), .. }) => slot(&mut content.nullable, &mut content.ty),
+        _ => {}
+    }
 }
 
 /// Turn the shape of a whole row of no type the catalog has, or of an array of such rows, at a SQL

@@ -312,7 +312,7 @@ join users u on u.id = o.user_id
 
 A key given twice holds its last value, as `jsonb` keeps it and as a parser reads the two a `json` value holds.
 
-A `json` or `jsonb` column inside the JSON you build may be `null`, even `not null`, since it can hold JSON's `null`, unless a JSON Schema `CHECK` refuses null.
+A `json` or `jsonb` value inside the JSON you build may be `null`, even from a `not null` column, since it can hold JSON's `null`, unless a JSON Schema `CHECK` refuses null. That holds at any depth: a column you put in, a field of a row, and an element of an array alike.
 
 A schema's type carries through an aggregate, and `to_jsonb` of a row is typed column by column, enums included:
 
