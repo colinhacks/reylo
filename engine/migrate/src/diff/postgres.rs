@@ -827,7 +827,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 Some(nn) if made.ends_with(" not null") => format!("{} constraint {nn} not null", made.trim_end_matches(" not null")),
                 _ => made.clone(),
             };
-            table_columns.push(format!("{TABLE_COLUMN}{col_id}{SEP}{held}{SEP}{}{SEP}alter table {name} add column {} {added}{SEP}{}", c.text("name"), c.text("name"), c.text("nn_name")));
+            let from_parent = if c.flag("inherited") || partition { "inherited" } else { "" };
+            table_columns.push(format!("{TABLE_COLUMN}{col_id}{SEP}{held}{SEP}{}{SEP}alter table {name} add column {} {added}{SEP}{}{SEP}{from_parent}", c.text("name"), c.text("name"), c.text("nn_name")));
             // A typed table's columns are its type's attributes, made, changed and dropped through
             // the type; a default or a not null of one is the table's own, written `with options`.
             if let Some(ty) = r.get("of_type") {
@@ -1184,7 +1185,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 o.def.push_str("\n(invalid)");
                 // A partition made under it takes a copy of it, which the target may not have: it
                 // is made again over its table's partitions, after them.
-                let over: Vec<String> = rels.iter().filter(|p| p.get("bound").is_some() && p.get("parent") == Some(r.text("table_name"))).map(|p| format!("table {}", p.text("name"))).collect();
+                let mut over: Vec<String> = rels.iter().filter(|p| p.get("bound").is_some() && p.get("parent") == Some(r.text("table_name"))).map(|p| format!("table {}", p.text("name"))).collect();
+                over.sort();
                 o.def.push_str(&format!("\nover {}", over.join(", ")));
                 o.after.extend(over);
             }
@@ -3674,6 +3676,12 @@ impl Alterer for PostgresAlterer {
     }
 
     fn around(&self, from: &Object, to: &Object, under: &Object) -> Option<(Vec<String>, Vec<String>)> {
+        // An index made on a partitioned table alone, not yet valid, which the server would make
+        // again on every partition around a change of its column, making it valid: dropped before,
+        // and made again after as the target has it.
+        if from.kind == Some(Kind::Index) && from.def.contains("\n(invalid)") && to.def.contains("\n(invalid)") {
+            return Some((from.drop.clone(), to.create.clone()));
+        }
         // A child's column whose type changes with its parent's has its own default taken off
         // first, which may not cast: its own change sets the target's after.
         if from.kind == Some(Kind::Column) && from.extra.iter().any(|l| l == "inherited") && under.kind == Some(Kind::Column) {
@@ -3785,14 +3793,26 @@ impl Alterer for PostgresAlterer {
         let name = super::last_written(from.id.strip_prefix("column ")?);
         // A partitioned table's default is its own, as its alterer sets it: each partition's is set
         // apart.
-        let only = if to.extra.iter().any(|l| l == "partitioned") && parse_column(&from.def).ty == parse_column(&to.def).ty { "only " } else { "" };
+        let only = if (to.extra.iter().any(|l| l == "partitioned") && parse_column(&from.def).ty == parse_column(&to.def).ty) || to.extra.iter().any(|l| l == INHERITED_FROM) { "only " } else { "" };
         let at = format!("alter table {only}{table} alter column {name}");
         let drop = parse_column(&from.def).default.map(|_| format!("{at} drop default"));
         let set = parse_column(&to.def).default.map(|d| format!("{at} set default {d}"));
         Some((drop.into_iter().collect(), set.into_iter().collect()))
     }
 
+    fn renames_as(&self, from: &Object, to: &Object) -> bool {
+        // Two indexes of one table alike but for their names.
+        let unnamed = |o: &Object| -> Option<String> {
+            let name = super::last_written(o.id.strip_prefix("index ")?);
+            Some(o.def.replacen(&format!(" INDEX {name} ON "), " INDEX ON ", 1))
+        };
+        from.kind == Some(Kind::Index) && to.kind == Some(Kind::Index) && unnamed(from).is_some() && unnamed(from) == unnamed(to)
+    }
+
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
+        if from.kind == Some(Kind::Index) {
+            return Some(vec![format!("alter index {} rename to {}", from.id.strip_prefix("index ")?, super::last_written(to.id.strip_prefix("index ")?))]);
+        }
         let table = to.owner.as_deref()?.strip_prefix("table ")?;
         let (old, new) = (super::last_written(&from.id), super::last_written(&to.id));
         let mut out = vec![format!("alter table {table} rename column {old} to {new}")];
@@ -4262,15 +4282,17 @@ impl Alterer for PostgresAlterer {
                 // A not null of a column kept as it leaves, or as it joins, is under the other's name:
                 // given the target's.
                 if joins_or_leaves(from, to) != (false, false) {
-                    let names = |o: &Object| -> BTreeMap<String, String> {
+                    // Each with whether a parent gives it, whose not null is then the parent's, which
+                    // no rename reaches.
+                    let names = |o: &Object| -> BTreeMap<String, (String, bool)> {
                         o.extra.iter().filter_map(|l| {
                             let f: Vec<&str> = l.strip_prefix(TABLE_COLUMN)?.split(SEP).collect();
-                            Some((f.first()?.to_string(), f.get(4).filter(|n| !n.is_empty())?.to_string()))
+                            Some((f.first()?.to_string(), (f.get(4).filter(|n| !n.is_empty())?.to_string(), f.get(5) == Some(&"inherited"))))
                         }).collect()
                     };
                     let (was, will) = (names(from), names(to));
-                    for (column, old) in &was {
-                        if let Some(new) = will.get(column).filter(|n| *n != old) {
+                    for (column, (old, held_before)) in &was {
+                        if let Some((new, _)) = will.get(column).filter(|(n, held_after)| n != old && !(*held_before && *held_after)) {
                             out.push(format!("alter table {name} rename constraint {old} to {new}"));
                         }
                     }
