@@ -52,11 +52,12 @@ fi
 # libSQL's engine for the migrations (`migrate/csrc/reylo_libsql.c`): the amalgamation Turso's
 # `libsql-ffi` crate carries, fetched from crates.io and checked against its SHA-256, with each
 # `SQLITE_API extern` declaration made a plain one, so that the amalgamation compiles with its API
-# private (`SQLITE_API` static) beside the other copies of SQLite the binary links.
+# private (`SQLITE_API` static) beside the other copies of SQLite the binary links; and the sqlean
+# extensions the crate carries beside it, with the headers they include, which Turso Cloud loads.
 LIBSQL_CRATE="libsql-ffi-0.10.0"
 LIBSQL_SHA256=f232292810b6298d17466b59bf8077d075fb016d89c281ca9dc968ea4a3b9d03
 LIBSQL=migrate/.libsql
-if [ ! -f "$LIBSQL/sqlite3-private.c" ]; then
+if [ ! -f "$LIBSQL/sqlite3-private.c" ] || [ ! -d "$LIBSQL/sqlean" ]; then
   mkdir -p "$LIBSQL"
   echo "fetching $LIBSQL_CRATE from crates.io"
   curl -fsSL -o "$LIBSQL/$LIBSQL_CRATE.crate" "https://static.crates.io/crates/libsql-ffi/$LIBSQL_CRATE.crate"
@@ -64,7 +65,10 @@ if [ ! -f "$LIBSQL/sqlite3-private.c" ]; then
     echo "$LIBSQL_CRATE: the crate's SHA-256 is $(sha256 "$LIBSQL/$LIBSQL_CRATE.crate"), expected $LIBSQL_SHA256" >&2
     exit 1
   fi
-  tar -xzf "$LIBSQL/$LIBSQL_CRATE.crate" -C "$LIBSQL" "$LIBSQL_CRATE/bundled/src/sqlite3.c"
+  tar -xzf "$LIBSQL/$LIBSQL_CRATE.crate" -C "$LIBSQL" "$LIBSQL_CRATE/bundled/src/sqlite3.c" "$LIBSQL_CRATE/bundled/src/sqlite3.h" "$LIBSQL_CRATE/bundled/src/sqlite3ext.h" "$LIBSQL_CRATE/bundled/sqlean"
+  rm -rf "$LIBSQL/sqlean"
+  mv "$LIBSQL/$LIBSQL_CRATE/bundled/sqlean" "$LIBSQL/sqlean"
+  mv "$LIBSQL/$LIBSQL_CRATE/bundled/src/sqlite3.h" "$LIBSQL/$LIBSQL_CRATE/bundled/src/sqlite3ext.h" "$LIBSQL/"
   sed 's/SQLITE_API extern /SQLITE_API /' "$LIBSQL/$LIBSQL_CRATE/bundled/src/sqlite3.c" > "$LIBSQL/sqlite3-private.c.tmp"
   mv "$LIBSQL/sqlite3-private.c.tmp" "$LIBSQL/sqlite3-private.c"
   rm -rf "$LIBSQL/$LIBSQL_CRATE" "$LIBSQL/$LIBSQL_CRATE.crate"
