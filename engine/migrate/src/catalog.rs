@@ -95,6 +95,11 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
     // as it makes a database), as Reylo copies it into every shadow: only one a migration made and
     // the live database lacks is a difference.
     let live: Vec<String> = live.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) || reference.contains(l)).cloned().collect();
+    // So is an extension the reference has none of: a live database's extensions are never
+    // dropped, and a shadow leaves out one the project's files no longer create in a schema they do.
+    let extension = |l: &str| l.strip_prefix("extension ").and_then(|r| r.split(' ').next()).map(String::from);
+    let theirs_extensions: BTreeSet<String> = reference.iter().filter_map(|l| extension(l)).collect();
+    let live: Vec<String> = live.into_iter().filter(|l| extension(l).is_none_or(|e| theirs_extensions.contains(&e))).collect();
     let live = &live[..];
     let theirs: BTreeSet<String> = children(reference).into_iter().map(|(name, _)| name).collect();
     let parents: BTreeSet<&str> = reference.iter().filter_map(|l| l.strip_prefix("table ")).map(name_at).collect();
@@ -404,7 +409,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
               col_description(c.oid, a.attnum) as comment,
               concat_ws(' ', case when a.attstorage <> t.typstorage then 'storage=' || a.attstorage::text end, case when a.attcompression <> '' then 'compression=' || a.attcompression::text end,
-                case when coalesce(a.attstattarget, -1) >= 0 then 'statistics=' || a.attstattarget end) as settings,
+                case when coalesce(a.attstattarget, -1) >= 0 then 'statistics=' || a.attstattarget end, 'options=' || (select string_agg(o, ',' order by o) from unnest(a.attoptions) o where left(o, 10) = 'n_distinct')) as settings,
               exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.connoinherit and nn.conkey = array[a.attnum]) as noinherit,
               exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and not nn.convalidated and nn.conkey = array[a.attnum]) as nn_invalid,
               (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
@@ -459,9 +464,14 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     // Constraints (not the not-null ones Postgres 18 records, which the columns carry).
     for r in db
         .rows(&format!(
-            "select case when c.oid is not null then format('%I.%I', n.nspname, c.relname) else format('%I.%I', tn.nspname, t.typname) end as rel, co.conname as name,
+            "select case when c.oid is not null then format('%I.%I', n.nspname, c.relname) else format('%I.%I', tn.nspname, t.typname) end as rel,
+              -- A foreign key's copy for each partition of the table it references is named in the
+              -- order the partitions were made: it is read as its key's, for that partition.
+              case when pc.conrelid = co.conrelid then pc.conname || ' for ' || format('%I.%I', fn.nspname, fc.relname) else co.conname end as name,
               pg_get_constraintdef(co.oid, false) as def, co.condeferrable as deferrable, co.condeferred as deferred, co.convalidated as validated
             from pg_constraint co
+            left join pg_constraint pc on pc.oid = co.conparentid
+            left join pg_class fc on fc.oid = co.confrelid left join pg_namespace fn on fn.oid = fc.relnamespace
             left join pg_class c on c.oid = co.conrelid left join pg_namespace n on n.oid = c.relnamespace
             left join pg_type t on t.oid = co.contypid left join pg_namespace tn on tn.oid = t.typnamespace
             where co.contype <> 'n' and coalesce(n.nspname, tn.nspname) not in ('pg_catalog', 'information_schema') and coalesce(c.relname, '') <> '{history}'
@@ -482,7 +492,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
 
     for r in db
         .rows(&format!(
-            "select pg_get_indexdef(i.indexrelid) as def, i.indisvalid as valid, i.indisready as ready,
+            "select pg_get_indexdef(i.indexrelid) as def, i.indisvalid as valid, i.indisready as ready, i.indisclustered as clustered,
               (select format('%I.%I', pn.nspname, pc.relname) from pg_inherits h join pg_class pc on pc.oid = h.inhparent join pg_namespace pn on pn.oid = pc.relnamespace where h.inhrelid = i.indexrelid) as parent
             from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid
             where {ns} and {} and {} and t.relname <> '{history}'
@@ -494,7 +504,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     {
         // A partition's index attached to its table's, as every partition's must be for that one to be valid.
         let attached = r.get("parent").map(|p| format!(" attached to {p}")).unwrap_or_default();
-        lines.push(format!("index {}{}{}{attached}", r.text("def"), if r.flag("valid") { "" } else { " (invalid)" }, if r.flag("ready") { "" } else { " (not ready)" }));
+        lines.push(format!("index {}{}{}{attached}{}", r.text("def"), if r.flag("valid") { "" } else { " (invalid)" }, if r.flag("ready") { "" } else { " (not ready)" }, if r.flag("clustered") { " (clustered)" } else { "" }));
     }
 
     for r in db
@@ -512,7 +522,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     for r in db
         .rows(&format!(
             "select format('%I.%I', n.nspname, c.relname) as name, format_type(s.seqtypid, null) as type, s.seqstart as start, s.seqincrement as inc,
-              s.seqmin as min, s.seqmax as max, s.seqcache as cache, s.seqcycle as cycle,
+              s.seqmin as min, s.seqmax as max, s.seqcache as cache, s.seqcycle as cycle, c.relpersistence = 'u' as unlogged,
               (select format('%I.%I.%I', tn.nspname, t.relname, a.attname) from pg_depend d join pg_class t on t.oid = d.refobjid join pg_namespace tn on tn.oid = t.relnamespace
                  join pg_attribute a on a.attrelid = d.refobjid and a.attnum = d.refobjsubid where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'a') as owned
             from pg_sequence s join pg_class c on c.oid = s.seqrelid join pg_namespace n on n.oid = c.relnamespace
@@ -524,7 +534,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         .await?
     {
         lines.push(format!(
-            "sequence {} as {} start {} increment {} min {} max {} cache {}{}{}",
+            "sequence {} as {} start {} increment {} min {} max {} cache {}{}{}{}",
             r.text("name"),
             r.text("type"),
             r.text("start"),
@@ -533,7 +543,8 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             r.text("max"),
             r.text("cache"),
             if r.flag("cycle") { " cycle" } else { "" },
-            r.get("owned").map(|o| format!(" owned by {o}")).unwrap_or_default()
+            r.get("owned").map(|o| format!(" owned by {o}")).unwrap_or_default(),
+            if r.flag("unlogged") { " unlogged" } else { "" }
         ));
     }
 
@@ -1006,7 +1017,7 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
     for r in db
         .rows(&format!(
             "select table_name as t, index_name as i, non_unique as nonunique, seq_in_index as seq, column_name as col, sub_part as sub,
-              collation as coll, expression as expr, index_type as type, is_visible as visible
+              collation as coll, expression as expr, index_type as type, is_visible as visible, index_comment as comment
             from information_schema.statistics where table_schema = database() and table_name <> '{history}' order by table_name, index_name, seq_in_index"
         ))
         .await?
@@ -1018,10 +1029,10 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
             if r.text("nonunique") != "0" { "" } else { "unique " },
             r.text("type"),
             if r.text("visible") == "NO" { " invisible" } else { "" }
-        );
+        ) + &r.get("comment").filter(|c| !c.is_empty()).map(|c| format!(" comment {c:?}")).unwrap_or_default();
         let part = format!(
             "{}{}{}",
-            r.get("col").map(String::from).unwrap_or_else(|| format!("({})", strip(r.text("expr")))),
+            r.get("col").map(String::from).unwrap_or_else(|| format!("({})", fold_names(&strip(r.text("expr"))))),
             r.get("sub").map(|s| format!("({s})")).unwrap_or_default(),
             if r.text("coll") == "D" { " desc" } else { "" }
         );
@@ -1134,8 +1145,8 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         .await?
     {
         let t = r.text("t").to_string();
-        let sub = r.get("submethod").map(|m| format!(" subpartition by {m} ({})", strip(r.text("subexpr")))).unwrap_or_default();
-        schemes.insert(t.clone(), format!("partitioning {t} by {} ({}){sub}", r.text("method"), strip(r.text("expr"))));
+        let sub = r.get("submethod").map(|m| format!(" subpartition by {m} ({})", fold_names(&strip(r.text("subexpr"))))).unwrap_or_default();
+        schemes.insert(t.clone(), format!("partitioning {t} by {} ({}){sub}", r.text("method"), fold_names(&strip(r.text("expr")))));
         let bound = r.get("bound").map(|b| format!(" values {b}")).unwrap_or_default();
         let entry = parts.entry((t, r.text("p").to_string())).or_insert_with(|| (bound, vec![]));
         if let Some(sp) = r.get("sp") {
@@ -1147,7 +1158,73 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         let subs = if subs.is_empty() { String::new() } else { format!(" subpartitions ({})", subs.join(", ")) };
         lines.push(format!("table {t}.{p} partition of {t}{bound}{subs}"));
     }
+
+    // What only a table's own statement shows: options MySQL keeps and information_schema leaves
+    // out (a table's autoextend size and engine attributes; an index's comment, block size, parser
+    // and engine attributes; a column's storage, format and engine attributes; a partitioning's key
+    // algorithm, and each partition's comment and row limits).
+    let tables: Vec<String> = db
+        .rows(&format!("select table_name as t from information_schema.tables where table_schema = database() and table_type = 'BASE TABLE' and table_name <> '{history}'"))
+        .await?
+        .iter()
+        .map(|r| r.text("t").to_string())
+        .collect();
+    for t in tables {
+        let text = db.rows(&format!("show create table `{}`", t.replace('`', "``"))).await?.first().map(|r| r.text("Create Table").to_string()).unwrap_or_default();
+        lines.extend(statement_options(&t, &text));
+    }
     Ok(lines)
+}
+
+/// The options of a MySQL table's `show create table` text that information_schema leaves out,
+/// as lines.
+fn statement_options(table: &str, text: &str) -> Vec<String> {
+    use std::sync::LazyLock;
+    static STRING: &str = r"'(?:[^'\\]|\\.|'')*'";
+    static COLUMN: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b(STORAGE (?:DISK|MEMORY)|COLUMN_FORMAT (?:FIXED|DYNAMIC)|(?:SECONDARY_)?ENGINE_ATTRIBUTE {STRING})")).expect("a valid pattern"));
+    static INDEX: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b(KEY_BLOCK_SIZE=\d+|WITH PARSER `[^`]+`|(?:SECONDARY_)?ENGINE_ATTRIBUTE {STRING})")).expect("a valid pattern"));
+    static TABLE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b(AUTOEXTEND_SIZE=\d+|(?:SECONDARY_)?ENGINE_ATTRIBUTE={STRING})")).expect("a valid pattern"));
+    static ALGORITHM: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\b((?:SUB)?PARTITION BY (?:LINEAR )?KEY ALGORITHM = \d)").expect("a valid pattern"));
+    static PARTITION: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^\(?\s*((?:SUB)?PARTITION) (`[^`]+`|\S+)").expect("a valid pattern"));
+    static LIMITS: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b((?:MAX|MIN)_ROWS = \d+|COMMENT = {STRING})")).expect("a valid pattern"));
+    let found = |re: &regex::Regex, line: &str| -> Vec<String> { re.captures_iter(line).map(|c| c[1].to_string()).collect() };
+    let mut out = Vec::new();
+    let mut body = true;
+    for line in text.lines().skip(1) {
+        let line = line.trim().trim_end_matches(',');
+        if line.starts_with(')') {
+            body = false;
+            let options = found(&TABLE, line);
+            if !options.is_empty() {
+                out.push(format!("table options {table} {}", options.join(" ")));
+            }
+        }
+        if body {
+            let name = line.split('`').nth(1).unwrap_or_default();
+            if line.starts_with('`') {
+                let options = found(&COLUMN, line);
+                if !options.is_empty() {
+                    out.push(format!("column options {table}.{name} {}", options.join(" ")));
+                }
+            } else if line.contains("KEY ") {
+                let options = found(&INDEX, line);
+                if !options.is_empty() {
+                    out.push(format!("index options {table}.{} {}", if line.starts_with("PRIMARY") { "PRIMARY" } else { name }, options.join(" ")));
+                }
+            }
+        } else {
+            for a in found(&ALGORITHM, line) {
+                out.push(format!("partitioning options {table} {a}"));
+            }
+            if let Some(c) = PARTITION.captures(line) {
+                let limits = found(&LIMITS, line);
+                if !limits.is_empty() {
+                    out.push(format!("{} options {table}.{} {}", c[1].to_lowercase(), &c[2], limits.join(" ")));
+                }
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1260,8 +1337,39 @@ fn one_line(sql: &str) -> String {
     out
 }
 
+
+/// A MySQL expression with the names it quotes in lowercase: they name columns, whose names are
+/// alike in any case, and MySQL keeps the case each was written in.
+fn fold_names(expression: &str) -> String {
+    let mut out = String::with_capacity(expression.len());
+    // Inside a name, inside a string (`'…'`, where a backtick is text), and after a backslash in one.
+    let (mut name, mut string, mut escaped) = (false, false, false);
+    for ch in expression.chars() {
+        match ch {
+            _ if escaped => escaped = false,
+            '\\' if string => escaped = true,
+            '\'' if !name => string = !string,
+            '`' if !string => name = !name,
+            _ => {}
+        }
+        if name {
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn folds_quoted_names_and_leaves_strings() {
+        assert_eq!(fold_names("(`C` + 1)"), "(`c` + 1)");
+        assert_ne!(fold_names("json_extract(`j`, _utf8mb4'$.\"`A`\"')"), fold_names("json_extract(`j`, _utf8mb4'$.\"`a`\"')"));
+        assert_eq!(fold_names("concat('it\\'s `X`', `Y`)"), "concat('it\\'s `X`', `y`)");
+    }
     use super::*;
 
     #[test]

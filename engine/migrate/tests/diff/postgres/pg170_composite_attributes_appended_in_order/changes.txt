@@ -1,0 +1,1 @@
+public.t.x a composite value prints its new attributes as more, empty, fields

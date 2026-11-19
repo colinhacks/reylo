@@ -1622,6 +1622,20 @@ fn created_extensions(opts: &Options) -> Vec<String> {
     texts.iter().flat_map(|t| extensions_in(t)).collect()
 }
 
+/// The schemas the project's own files create.
+fn created_schemas(opts: &Options) -> Vec<String> {
+    static SCHEMA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_$-]+)"?"#).expect("a valid pattern"));
+    let mut texts = vec![opts.schema_text().unwrap_or_default()];
+    texts.extend(opts.migrations().map(|(files, _)| files.into_iter().map(|f| f.sql).collect::<Vec<_>>()).unwrap_or_default());
+    texts
+        .iter()
+        .flat_map(|t| {
+            let uncommented = crate::sql::tokenize(t, Dialect::Postgres).iter().map(|token| token.text.clone()).collect::<Vec<_>>().join(" ");
+            SCHEMA.captures_iter(&uncommented).map(|c| c[1].to_string()).filter(|s| !s.eq_ignore_ascii_case("authorization")).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The extensions a text creates.
 fn extensions_in(text: &str) -> Vec<String> {
     static EXTENSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+extension\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_-]+)"?"#).expect("a valid pattern"));
@@ -1649,6 +1663,7 @@ async fn shadow_server(db: &mut Db, opts: &Options) -> Result<Server, Error> {
     let mut server = Server::open(db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    server.leave_schemas(created_schemas(opts));
     Ok(server)
 }
 
@@ -3060,8 +3075,9 @@ fn described(loss: &str) -> String {
 /// one per statement, each with the comments written above it.
 #[cfg(feature = "cli")]
 fn plan_files(plan: &crate::diff::Plan, d: Dialect) -> Vec<String> {
+    // A file per transaction: one, or more where the plan commits partway.
     if d != Dialect::Mysql {
-        return vec![plan.sql()];
+        return plan.transactions().iter().map(|t| t.sql()).collect();
     }
     let mut files: Vec<String> = Vec::new();
     let mut pending = String::new();
@@ -3639,6 +3655,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    server.leave_schemas(created_schemas(opts));
     db.close().await;
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
     let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
@@ -4159,6 +4176,10 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
     result
 }
 
+/// What a push that failed after committing part of its plan says: an enum's labels, which what
+/// follows them uses, are committed first.
+const COMMITTED: &str = "The plan commits partway (an enum's new labels, before what uses them), so its first part is in place.";
+
 /// Why `take_to` left the database as it was.
 enum Unreached {
     /// The plan ran, but the database didn't then read as the target: how it differs.
@@ -4190,8 +4211,12 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
             Ok(Settled { renames, plan, .. }) => (renames, plan),
             Err(problems) => return Ok(Err(Unreached::Refused(problems))),
         };
+        let mut committed = false;
         for s in plan.runnable().chain(then) {
-            db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await?;
+            if let Err(e) = db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await {
+                return Err(if committed { Error(format!("{}\n{COMMITTED}", e.0)) } else { e });
+            }
+            committed |= s == crate::diff::COMMIT;
         }
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
@@ -5094,7 +5119,12 @@ async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Optio
 async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, applied: &[Migration], schema_sql: &str, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
     let d = db.dialect();
     let fail = |m: &str, error: String, log: Log<'_>| {
-        let problem = Problem::new("db-push-failed", m.to_string()).note(error);
+        let partway = error.contains(COMMITTED);
+        let problem = Problem::new("db-push-failed", m.to_string()).note(error.replace(&format!("\n{COMMITTED}"), ""));
+        if partway {
+            print_problems(&[problem.note(COMMITTED)], log);
+            return Ok(1);
+        }
         if d == Dialect::Mysql {
             print_problems(&[problem.note("MySQL commits each statement, so part of the push may be in place.")], log);
             return Ok(1);

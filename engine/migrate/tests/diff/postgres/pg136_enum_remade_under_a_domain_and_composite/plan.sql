@@ -1,0 +1,10 @@
+alter type mood rename to mood__old;
+create type mood as enum ('ok', 'happy');
+alter domain good_mood rename to good_mood__old;
+create domain good_mood as mood constraint good_mood_check check ((value <> 'ok'::mood));
+alter table t alter column g type good_mood using g::text::good_mood;
+alter table t alter column e type text using e::text;
+alter type entry alter attribute m type mood;
+alter table t alter column e type entry using e::text::entry;
+drop domain good_mood__old;
+drop type mood__old;

@@ -394,7 +394,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 ))
                 .await?
             {
-                extra.push(format!("{}|{}|{}|{}", c.text("rel"), c.text("col"), c.text("type"), c.text("def")));
+                extra.push([c.text("rel"), c.text("col"), c.text("type"), c.text("def")].join(SEP));
             }
         }
         // A check left unvalidated is added after the domain is made, which can't take one.
@@ -419,7 +419,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               (select format('%I.%I.%I', tn.nspname, t.relname, a.attname) from pg_depend d join pg_class t on t.oid = d.refobjid join pg_namespace tn on tn.oid = t.relnamespace
                  join pg_attribute a on a.attrelid = d.refobjid and a.attnum = d.refobjsubid where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'a') as owned,
               (select d.refobjid from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'a' and d.refobjsubid > 0) as owned_rel,
-              (select d.refobjsubid from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'a' and d.refobjsubid > 0) as owned_att
+              (select d.refobjsubid from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'a' and d.refobjsubid > 0) as owned_att,
+              c.relpersistence = 'u' as unlogged
             from pg_sequence s join pg_class c on c.oid = s.seqrelid join pg_namespace n on n.oid = c.relnamespace
             where {ns} and {} and {}
               and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'i')",
@@ -442,7 +443,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             r.text("cache"),
             if r.flag("cycle") { " cycle" } else { " no cycle" }
         );
-        let goes_with = r.get("owned").and_then(|o| o.rsplit_once('.')).map(|(t, c)| format!("column {t}.{c}"));
+        let goes_with = r.get("owned").map(|o| split_last(o)).map(|(t, c)| format!("column {t}.{c}"));
         s.add(Object {
             goes_with,
             id: id.clone(),
@@ -454,8 +455,21 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             ..Object::default()
         });
         grants(&mut s, r.text("acl"), &name, &id, "sequence");
+        // An unlogged sequence is set so after it is made, and logged again where the target's isn't.
+        if r.flag("unlogged") {
+            s.add(Object {
+                id: format!("unlogged {id}"),
+                kind: Some(Kind::ColumnSetting),
+                owner: Some(id.clone()),
+                def: "unlogged".into(),
+                create: vec![format!("alter sequence {name} set unlogged")],
+                drop: vec![format!("alter sequence {name} set logged")],
+                change: Change::Alter { blocks: false },
+                ..Object::default()
+            });
+        }
         if let Some(owned) = r.get("owned") {
-            let column = owned.rsplit_once('.').map(|(t, c)| format!("column {t}.{c}")).unwrap_or_default();
+            let column = { let (t, c) = split_last(owned); format!("column {t}.{c}") };
             s.add(Object {
                 id: format!("owner {name}"),
                 kind: Some(Kind::SequenceOwner),
@@ -482,6 +496,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               pg_get_expr(c.relpartbound, c.oid) as bound,
               (select format('%I.%I', pn.nspname, pc.relname) from pg_inherits i join pg_class pc on pc.oid = i.inhparent join pg_namespace pn on pn.oid = pc.relnamespace where i.inhrelid = c.oid order by i.inhseqno limit 1) as parent,
               case when c.relkind = 'p' then pg_get_partkeydef(c.oid) end as partkey,
+              c.relispartition and exists (select 1 from pg_constraint fk where fk.contype = 'f' and fk.confrelid in (select a.relid from pg_partition_ancestors(c.oid) a where a.relid <> c.oid)) as referenced,
               case when c.relkind in ('v', 'm') then pg_get_viewdef(c.oid, false) end as view,
               {} as acl,
               obj_description(c.oid, 'pg_class') as comment,
@@ -582,7 +597,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     for r in db
         .rows(&format!(
             "select a.attrelid as rel, a.attnum as num, format('%I', a.attname) as name, format_type(a.atttypid, a.atttypmod) as type, a.attnotnull as notnull,
-              pg_get_expr(d.adbin, d.adrelid) as def, d.oid as defoid, a.attidentity as identity, {} as identity_options, a.attgenerated as generated, a.attislocal as local,
+              pg_get_expr(d.adbin, d.adrelid) as def, d.oid as defoid, a.attidentity as identity, {} as identity_options, a.attgenerated as generated, a.attislocal as local, a.attinhcount > 0 as inherited,
               (select format('%I.%I', sn.nspname, sc.relname) from pg_depend sd join pg_class sc on sc.oid = sd.objid join pg_namespace sn on sn.oid = sc.relnamespace
                 where sd.classid = 'pg_class'::regclass and sd.refclassid = 'pg_class'::regclass and sd.refobjid = a.attrelid and sd.refobjsubid = a.attnum and sd.deptype = 'i'
                   and (sc.relnamespace <> c.relnamespace or sc.relname <> left(c.relname || '_' || a.attname || '_seq', 63))) as identity_name,
@@ -591,7 +606,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               case when a.attstorage <> t.typstorage then case a.attstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end end as storage,
               case t.typstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end as type_storage,
               case a.attcompression when 'p' then 'pglz' when 'l' then 'lz4' end as compression,
-              case when coalesce(a.attstattarget, -1) >= 0 then a.attstattarget end as stattarget
+              case when coalesce(a.attstattarget, -1) >= 0 then a.attstattarget end as stattarget,
+              (select string_agg(o, ', ' order by o) from unnest(a.attoptions) o where left(o, 10) = 'n_distinct') as attoptions
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
             left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
             where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
@@ -631,6 +647,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let cols = columns.remove(&rel).unwrap_or_default();
         let partition = r.get("bound").is_some();
         let mut col_defs = Vec::new();
+        let mut detach: Option<String> = None;
+        // A composite type's attributes in order, each its name and definition.
+        let mut members: Vec<(String, String)> = Vec::new();
         // What a partition says of its columns where its parent says otherwise.
         let mut overrides = Vec::new();
         let mut later: Vec<String> = Vec::new();
@@ -659,8 +678,23 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             }
             // How the column's values are kept and how closely the planner samples them, where not
             // its type's defaults.
-            if matches!(kind, "r" | "p" | "m") {
-                let at = format!("alter {} {name} alter column {}", if kind == "m" { "materialized view" } else { "table" }, c.text("name"));
+            if matches!(kind, "r" | "p" | "m" | "f") {
+                let at = format!("alter {} {name} alter column {}", match kind { "m" => "materialized view", "f" => "foreign table", _ => "table" }, c.text("name"));
+                // Its attribute options Postgres documents (`n_distinct`, `n_distinct_inherited`), set
+                // as a list and reset by their names; a server may keep others of its own.
+                if let Some(options) = c.get("attoptions").filter(|o| !o.is_empty()) {
+                    let keys: Vec<&str> = options.split(", ").filter_map(|o| o.split('=').next()).collect();
+                    s.add(Object {
+                        id: format!("options {col_id}"),
+                        kind: Some(Kind::ColumnSetting),
+                        owner: Some(if matches!(kind, "m") { id.clone() } else { col_id.clone() }),
+                        def: options.to_string(),
+                        create: vec![format!("{at} set ({options})")],
+                        drop: vec![format!("{at} reset ({})", keys.join(", "))],
+                        change: Change::Replace,
+                        ..Object::default()
+                    });
+                }
                 for (what, value, default) in [("storage", c.get("storage"), c.text("type_storage").to_string()), ("compression", c.get("compression"), "default".into()), ("statistics", c.get("stattarget"), "-1".into())] {
                     let Some(value) = value else { continue };
                     s.add(Object {
@@ -690,8 +724,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             if unvalidated {
                 later.push(add_not_null.clone());
             }
-            if c.flag("local") || !partition {
+            // A column a table inherits is no part of its statement unless the table declares it
+            // too: a partition's, or an inheriting table's, comes from its parent.
+            if c.flag("local") {
                 col_defs.push(format!("{} {made}", c.text("name")));
+                members.push((c.text("name").to_string(), made.clone()));
             }
             let def = if unvalidated { format!("{full} not valid") } else { full.clone() };
             if c.flag("local") {
@@ -704,10 +741,37 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     owner: Some(id.clone()),
                     def: def.clone(),
                     create: [Some(if kind == "c" { format!("alter type {name} add attribute {} {made}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }), unvalidated.then(|| add_not_null.clone())].into_iter().flatten().collect(),
-                    extra: c.get("nn_name").map(|n| format!("not null name {n}")).into_iter().chain(c.get("identity_name").map(|n| format!("{IDENTITY_SEQUENCE}{n}"))).chain((kind == "p").then(|| "partitioned".to_string())).collect(),
+                    extra: c
+                        .get("nn_name")
+                        .map(|n| format!("not null name {n}"))
+                        .into_iter()
+                        .chain(c.get("identity_name").map(|n| format!("{IDENTITY_SEQUENCE}{n}")))
+                        .chain((kind == "p").then(|| "partitioned".to_string()))
+                        .chain((!c.text("generated").is_empty()).then(|| super::GENERATED.to_string()))
+                        .chain((c.flag("inherited") && !partition).then(|| "inherited".to_string()))
+                        .chain((kind == "f").then(|| "foreign".to_string()))
+                        .collect(),
+                    // A column a parent has too changes type with the parent's, before its own change.
+                    deps: r.get("parent").filter(|_| c.flag("inherited") && !partition).map(|p| format!("column {p}.{}", c.text("name"))).into_iter().collect(),
                     drop: vec![if kind == "c" { format!("alter type {name} drop attribute {}", c.text("name")) } else { format!("alter table {name} drop column {}", c.text("name")) }],
                     inline: true,
                     change: Change::Alter { blocks: true },
+                    ..Object::default()
+                });
+            } else if let Some(parent) = r.get("parent").filter(|_| !partition) {
+                // A column a table only inherits is its parent's, made, changed and dropped with
+                // it: an object with no statement of its own, so that a table that starts or stops
+                // inheriting keeps the column and its values, but for a default or a not null of
+                // its own.
+                s.add(Object {
+                    id: col_id,
+                    kind: Some(Kind::Column),
+                    owner: Some(id.clone()),
+                    def: def.clone(),
+                    inline: true,
+                    change: Change::Alter { blocks: true },
+                    extra: vec!["inherited".to_string()],
+                    deps: [format!("column {parent}.{}", c.text("name"))].into_iter().collect(),
                     ..Object::default()
                 });
             } else if partition {
@@ -759,7 +823,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 let body = r.text("view").trim().trim_end_matches(';').to_string();
                 (format!("materialized view{using}{options} as {body}"), format!("create materialized view {name}{using}{options} as\n{body}"), format!("drop materialized view {name}"))
             }
-            "c" => (String::new(), format!("create type {name} as (\n  {}\n)", col_defs.join(",\n  ")), format!("drop type {name}")),
+            // Its attributes' order, which an attribute added goes to the end of.
+            "c" => {
+                extra.extend(members.iter().map(|(n, d)| format!("{MEMBER}{n}{SEP}{d}")));
+                (format!("composite ({})", members.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")), format!("create type {name} as (\n  {}\n)", col_defs.join(",\n  ")), format!("drop type {name}"))
+            }
             _ => {
                 let unlogged = if r.text("persistence") == "u" { "unlogged " } else { "" };
                 let foreign = if kind == "f" { "foreign " } else { "" };
@@ -782,7 +850,13 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     (None, Some(parent)) => extra.push(format!("inherits {parent}")),
                     _ => {}
                 }
-                (extra.join("\n"), format!("{body}{partkey}{using}{server}{options}"), format!("drop {foreign}table {name}"))
+                // A partition of a table a foreign key references leaves it first: the key's own
+                // part on the partition stops its drop.
+                if let Some(parent) = r.get("parent").filter(|_| r.flag("referenced")) {
+                    detach = Some(format!("alter table {parent} detach partition {name}"));
+                }
+                let drop = format!("drop {foreign}table {name}");
+                (extra.join("\n"), format!("{body}{partkey}{using}{server}{options}"), drop)
             }
         };
         let object_kind = match kind {
@@ -790,11 +864,13 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "c" => Kind::Type,
             _ => Kind::Table,
         };
-        // A table's own properties change in place; a view or a composite type is replaced.
-        let change = if object_kind == Kind::Table { Change::Alter { blocks: false } } else { Change::Replace };
+        // A table's own properties change in place, and so does a composite type's order of
+        // attributes; a view is replaced.
+        let change = if object_kind == Kind::View { Change::Replace } else { Change::Alter { blocks: false } };
         let mut create = vec![create];
         create.extend(later);
-        s.add(Object { id: id.clone(), kind: Some(object_kind), def, create, drop: vec![drop], change, extra, ..Object::default() });
+        let drop = detach.take().into_iter().chain([drop]).collect();
+        s.add(Object { id: id.clone(), kind: Some(object_kind), def, create, drop, change, extra, ..Object::default() });
         // Row-level security, enabled, forced on the table's owner, or both: each is set on its own.
         if r.flag("rls") || r.flag("force") {
             s.add(Object {
@@ -846,8 +922,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               exists (select 1 from pg_constraint co where co.conindid = i.indexrelid) as keyed,
               exists (select 1 from pg_inherits h where h.inhparent = i.indexrelid) as attached,
               (select pi.indisvalid from pg_inherits h join pg_index pi on pi.indexrelid = h.inhparent where h.inhrelid = i.indexrelid) as parent_valid,
-              i.indisvalid as valid, t.relkind = 'p' as partitioned
-            from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid
+              i.indisvalid as valid, t.relkind = 'p' as partitioned, i.indisclustered as clustered, format('%I.%I', tn.nspname, t.relname) as table_name
+            from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid join pg_namespace tn on tn.oid = t.relnamespace
             where {ns} and {} and {} and t.relname <> '{history}'",
             not_extension("pg_class", "c"),
             not_platform("t.relowner")
@@ -873,18 +949,45 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
     let valid = |index: &str| indexes.iter().find(|r| r.text("oid") == index).is_some_and(|r| r.flag("valid")) && !by_name_only.contains(index);
-    for pass in [false, true] {
-        for r in &indexes {
+    // Each index after the one it is attached to, at any depth of partitions, which it names.
+    let depth = |r: &Row| -> usize {
+        let mut depth = 0;
+        let mut at = r.get("parent").map(String::from);
+        while let Some(parent) = at.filter(|_| depth < 64) {
+            depth += 1;
+            at = indexes.iter().find(|i| i.text("oid") == parent).and_then(|i| i.get("parent")).map(String::from);
+        }
+        depth
+    };
+    let mut ordered: Vec<&Row> = indexes.iter().collect();
+    ordered.sort_by_key(|r| depth(r));
+    {
+        for r in ordered {
             let index = oid(r, "oid");
             let child = r.get("parent").is_some();
-            if constraint_indexes.contains_key(&index) || child != pass || (child && r.flag("keyed")) {
+            if constraint_indexes.contains_key(&index) || (child && r.flag("keyed")) {
                 continue;
             }
             let Some((table, _)) = relations.get(&oid(r, "rel")) else { continue };
             let id = format!("index {}", r.text("name"));
             ids.class.insert(index, id.clone());
             let def = r.text("def").to_string();
-            let mut o = Object { id: id.clone(), kind: Some(Kind::Index), owner: Some(table.clone()), def: def.clone(), create: vec![def.clone()], drop: vec![format!("drop index {}", r.text("name"))], ..Object::default() };
+            // The index a table is clustered on, which goes and comes back with it.
+            if r.flag("clustered") {
+                let (t, bare) = (r.text("table_name"), super::last_written(r.text("name")));
+                s.add(Object {
+                    id: format!("cluster {table}"),
+                    kind: Some(Kind::ColumnSetting),
+                    owner: Some(id.clone()),
+                    def: bare.clone(),
+                    create: vec![format!("alter table {t} cluster on {bare}")],
+                    drop: vec![format!("alter table {t} set without cluster")],
+                    change: Change::Alter { blocks: false },
+                    ..Object::default()
+                });
+            }
+            // Changed by its alterer where it can be (attached or detached in place), else made again.
+            let mut o = Object { id: id.clone(), kind: Some(Kind::Index), owner: Some(table.clone()), def: def.clone(), create: vec![def.clone()], drop: vec![format!("drop index {}", r.text("name"))], change: Change::Alter { blocks: false }, ..Object::default() };
             if r.flag("attached") {
                 let made = if valid(r.text("oid")) { def.replacen(" ON ONLY ", " ON ", 1) } else { def.clone() };
                 o.create = vec![made.clone()];
@@ -1468,6 +1571,18 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         });
     }
 
+    // A partition's copy of its parent's constraint is no object of its own, which Postgres makes
+    // and drops with the parent's, but a comment on it is: made again where the parent's is.
+    let mut copies: BTreeMap<u32, (String, String, u32)> = BTreeMap::new();
+    for r in db
+        .rows(
+            "select co.oid, format('%I.%I', n.nspname, c.relname) as rel, format('%I', co.conname) as name, co.conparentid as parent
+            from pg_constraint co join pg_class c on c.oid = co.conrelid join pg_namespace n on n.oid = c.relnamespace where not co.conislocal and co.conparentid <> 0",
+        )
+        .await?
+    {
+        copies.insert(oid(&r, "oid"), (r.text("rel").to_string(), r.text("name").to_string(), oid(&r, "parent")));
+    }
     // Comments on what is not a relation or a column, which are read with them.
     for r in db
         .rows(
@@ -1480,6 +1595,25 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         )
         .await?
     {
+        if let (Some((rel, name, parent)), Some(text)) = (copies.get(&oid(&r, "objoid")).filter(|_| r.text("cls") == "pg_constraint"), r.get("description")) {
+            let mut up = *parent;
+            while let Some((_, _, p)) = copies.get(&up) {
+                up = *p;
+            }
+            let Some(key) = ids.constraints.get(&up) else { continue };
+            s.add(Object {
+                id: format!("comment constraint {rel}.{name}"),
+                kind: Some(Kind::Comment),
+                owner: Some(format!("table {rel}")),
+                def: text.to_string(),
+                create: vec![format!("comment on constraint {name} on {rel} is {}", literal(text))],
+                drop: vec![format!("comment on constraint {name} on {rel} is null")],
+                deps: [key.clone()].into_iter().collect(),
+                change: Change::Alter { blocks: false },
+                ..Object::default()
+            });
+            continue;
+        }
         let Some(target) = ids.of(r.text("cls"), oid(&r, "objoid"), 0) else { continue };
         let (kind, name) = target.split_once(' ').unwrap_or_default();
         let on_table = |rest: &str| {
@@ -1618,21 +1752,23 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
     // A check that calls a function of its own table's row can't be made with the table, before the
-    // function: it is added after both.
+    // function: it is added after both. So is a column of a domain whose check calls one that reads
+    // the column's table.
     let late: Vec<(String, String)> = s
         .objects
         .values()
-        .filter(|o| o.kind == Some(Kind::Constraint) && o.inline)
+        .filter(|o| matches!(o.kind, Some(Kind::Constraint | Kind::Column)) && o.inline)
         .filter(|o| {
             let table = o.owner.clone().unwrap_or_default();
-            o.deps.iter().any(|d| d.starts_with("function ") && s.objects.get(d).is_some_and(|f| f.deps.contains(&table)))
+            let reads_table = |d: &String| d.starts_with("function ") && s.objects.get(d).is_some_and(|f| f.deps.contains(&table));
+            o.deps.iter().any(|d| reads_table(d) || (d.starts_with("type ") && s.objects.get(d).is_some_and(|t| t.def.starts_with("domain ") && t.deps.iter().any(reads_table))))
         })
         .map(|o| (o.id.clone(), o.owner.clone().unwrap_or_default()))
         .collect();
     for (id, table) in late {
         let Some(o) = s.objects.get_mut(&id) else { continue };
         o.inline = false;
-        let line = o.create.first().and_then(|c| c.split_once(" add ")).map(|(_, l)| l.to_string()).unwrap_or_default();
+        let line = o.create.first().and_then(|c| c.split_once(" add ")).map(|(_, l)| l.strip_prefix("column ").unwrap_or(l).to_string()).unwrap_or_default();
         if let Some(t) = s.objects.get_mut(&table) {
             if let Some(create) = t.create.first_mut() {
                 for (from, to) in [(format!("\n  {line},"), String::new()), (format!(",\n  {line}\n"), "\n".to_string())] {
@@ -1690,6 +1826,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             for c in columns_of.get(&id).into_iter().flatten() {
                 on.extend(around.get(c).cloned().unwrap_or_default());
             }
+            // What calls a function taking or giving the type is the plan's to make again, with
+            // the function.
+            let functions: BTreeSet<&String> = s.objects.values().filter(|f| f.kind == Some(Kind::Function) && f.deps.contains(&id)).map(|f| &f.id).collect();
+            on.retain(|a| !s.objects.get(a).is_some_and(|a| a.deps.iter().any(|d| functions.contains(d))));
         } else if o.kind != Some(Kind::Column) {
             continue;
         }
@@ -1698,14 +1838,170 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             o.extra.extend(lines);
         }
     }
-    // A view that names an enum's label uses it, as a default or a check does.
+    // What names an enum's label uses it, as a default or a check does: a view, a policy, a
+    // trigger's condition, an index's predicate, a function, and a partition's bound over a column
+    // of the type. A label added in the plan that one of them uses can't be added in place: Postgres
+    // refuses a value added in the transaction that uses it.
+    // The columns a partitioned table is partitioned by.
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for r in db
+        .rows(
+            "select format('%I.%I', n.nspname, c.relname) as rel, format('%I', a.attname) as col
+            from pg_partitioned_table p join pg_class c on c.oid = p.partrelid join pg_namespace n on n.oid = c.relnamespace
+              join pg_attribute a on a.attrelid = p.partrelid and a.attnum = any(p.partattrs::int2[])",
+        )
+        .await?
+    {
+        keys.insert(format!("column {}.{}", r.text("rel"), r.text("col")));
+    }
+    let enum_type = |d: &String| s.objects.get(d).is_some_and(|t| t.def.starts_with("enum ("));
     let mut uses: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for o in s.objects.values().filter(|o| o.kind == Some(Kind::View)) {
-        for t in o.deps.iter().filter(|d| s.objects.get(*d).is_some_and(|t| t.def.starts_with("enum ("))) {
-            uses.entry(t.clone()).or_default().push(format!("{USES}{}", o.def.replace('\n', " ")));
+    let mut enums_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for o in s.objects.values() {
+        for t in o.deps.iter().filter(|d| enum_type(d)) {
+            if o.kind == Some(Kind::Column) {
+                if let Some(table) = &o.owner {
+                    enums_of.entry(table.clone()).or_default().insert(t.clone());
+                }
+            } else {
+                uses.entry(t.clone()).or_default().push(format!("{USES}{}", o.def.replace('\n', " ")));
+            }
         }
     }
+    // An enum a table is partitioned by can't be made again under it: a label its partitions use
+    // is added and committed before them, and each partition waits for the type's change.
+    let mut keyed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for o in s.objects.values().filter(|o| keys.contains(&o.id)) {
+        for t in o.deps.iter().filter(|d| enum_type(d)) {
+            keyed.entry(o.owner.clone().unwrap_or_default()).or_default().insert(t.clone());
+        }
+    }
+    let mut waits: Vec<(String, BTreeSet<String>)> = Vec::new();
+    for o in s.objects.values().filter(|o| o.kind == Some(Kind::Table)) {
+        let Some(parent) = o.def.lines().find_map(|l| l.strip_prefix("partition of ")).and_then(|l| l.split_once(' ')).map(|(p, _)| format!("table {p}")) else { continue };
+        for t in enums_of.get(&parent).into_iter().flatten() {
+            uses.entry(t.clone()).or_default().push(format!("{USES}{}", o.def.replace('\n', " ")));
+        }
+        if let Some(types) = keyed.get(&parent) {
+            waits.push((o.id.clone(), types.clone()));
+        }
+    }
+    for (id, types) in waits {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.deps.extend(types);
+        }
+    }
+    for t in keyed.into_values().flatten() {
+        uses.entry(t).or_default().push(PARTITION_KEY.to_string());
+    }
     for (id, lines) in uses {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra.extend(lines);
+        }
+    }
+    // What else an enum made again takes to the new type: a domain over it is made again with its
+    // columns moved to it, its grants and comment set again, and a composite type's attribute of it
+    // changes type, the columns of the composite type moved through their text around the change.
+    // (A function taking or giving it is the planner's to make again around the change.)
+    let split = |id: &str| -> Option<(String, String)> {
+        let rest = id.strip_prefix("column ")?;
+        let column = super::last_written(rest);
+        Some((rest.strip_suffix(column.as_str())?.strip_suffix('.')?.to_string(), column))
+    };
+    // The columns of a type, each its table, its name, its type (the type or an array of it) and
+    // its default (or none), as fields of the line that carries them. A partition's column is its
+    // parent's, which changes it.
+    let users = |s: &Schema, ty: &str| -> Vec<String> {
+        s.objects
+            .values()
+            .filter(|c| c.kind == Some(Kind::Column) && c.deps.contains(ty) && c.owner.as_deref().is_some_and(|w| w.starts_with("table ")) && !c.extra.iter().any(|l| l == "partition"))
+            .filter_map(|c| {
+                let parts = parse_column(&c.def);
+                split(&c.id).map(|(t, n)| [t, n, parts.ty, parts.default.unwrap_or_default()])
+            })
+            .flatten()
+            .collect()
+    };
+    // A composite type's attribute changes only with no column of the type: each carries the
+    // columns, which its change moves through their text.
+    let mut used: BTreeMap<String, String> = BTreeMap::new();
+    for a in s.objects.values().filter(|o| o.def.starts_with("composite (") || (o.kind == Some(Kind::Column) && o.owner.as_deref().is_some_and(|w| w.starts_with("type ")))) {
+        let fields = users(&s, if a.kind == Some(Kind::Type) { a.id.as_str() } else { a.owner.as_deref().unwrap_or_default() });
+        if !fields.is_empty() {
+            used.insert(a.id.clone(), format!("{USED_BY}{}", fields.join(SEP)));
+        }
+    }
+    // A domain carries its own columns, which a change of its base type moves.
+    let mut own: BTreeMap<String, String> = BTreeMap::new();
+    for d in s.objects.values().filter(|o| o.def.starts_with("domain ")) {
+        let fields = users(&s, &d.id);
+        if !fields.is_empty() {
+            own.insert(d.id.clone(), format!("{COLUMNS_OF}{}", fields.join(SEP)));
+        }
+    }
+    for (id, line) in own {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra.push(line);
+        }
+    }
+    // A domain an attribute of a composite type has carries that type's columns, which a change
+    // that checks its values moves.
+    for d in s.objects.values().filter(|o| o.def.starts_with("domain ")) {
+        let mut fields: Vec<String> = Vec::new();
+        for a in s.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.deps.contains(&d.id)) {
+            if let Some(owner) = a.owner.as_deref().filter(|w| w.starts_with("type ")) {
+                fields.extend(users(&s, owner));
+            }
+        }
+        if !fields.is_empty() {
+            used.insert(d.id.clone(), format!("{USED_BY}{}", fields.join(SEP)));
+        }
+    }
+    for (id, line) in used {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra.push(line);
+        }
+    }
+    let mut carried: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut unhooked: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for t in s.objects.values().filter(|o| o.def.starts_with("enum (")).map(|o| o.id.clone()).collect::<Vec<_>>() {
+        // A column whose default calls a function taking or giving the type has the default taken
+        // off and set again by the plan, around the function: its line carries none.
+        let functions: BTreeSet<&String> = s.objects.values().filter(|f| f.kind == Some(Kind::Function) && f.deps.contains(&t)).map(|f| &f.id).collect();
+        let calls = |line: &str| -> bool {
+            let mut fields = line.split(SEP);
+            let (Some(rel), Some(col)) = (fields.next(), fields.next()) else { return false };
+            s.objects.get(&format!("column {rel}.{col}")).is_some_and(|c| c.deps.iter().any(|d| functions.contains(d)))
+        };
+        let lines: Vec<String> = s.objects[&t].extra.iter().map(|l| if is_column_line(l) && calls(l) { l.splitn(4, SEP).take(3).chain([""]).collect::<Vec<_>>().join(SEP) } else { l.clone() }).collect();
+        unhooked.insert(t.clone(), lines);
+        let mut lines = Vec::new();
+        for d in s.objects.values().filter(|o| o.def.starts_with("domain ") && o.deps.contains(&t)) {
+            lines.push(domain_line(&s, d, &users));
+        }
+        // A composite type's attribute of the type, or of a domain over it, which the domain's
+        // making again leaves on the old one.
+        let domains: BTreeSet<&String> = s.objects.values().filter(|o| o.def.starts_with("domain ") && o.deps.contains(&t)).map(|o| &o.id).collect();
+        for a in s.objects.values().filter(|o| o.kind == Some(Kind::Column) && (o.deps.contains(&t) || o.deps.iter().any(|d| domains.contains(d))) && o.owner.as_deref().is_some_and(|w| w.starts_with("type "))) {
+            lines.extend(attribute_line(&s, a, &users));
+        }
+        carried.insert(t, lines);
+    }
+    for (id, lines) in unhooked {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.extra = lines;
+        }
+    }
+    // A domain carries the composite types' attributes of it and the domains over it, which its
+    // base type's change moves.
+    for d in s.objects.values().filter(|o| o.def.starts_with("domain ")).map(|o| o.id.clone()).collect::<Vec<_>>() {
+        let mut lines: Vec<String> = s.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.deps.contains(&d) && o.owner.as_deref().is_some_and(|w| w.starts_with("type "))).filter_map(|a| attribute_line(&s, a, &users)).collect();
+        for child in s.objects.values().filter(|o| o.def.starts_with("domain ") && o.deps.contains(&d)) {
+            lines.push(domain_line(&s, child, &users));
+        }
+        carried.entry(d).or_default().extend(lines);
+    }
+    for (id, lines) in carried {
         if let Some(o) = s.objects.get_mut(&id) {
             o.extra.extend(lines);
         }
@@ -1720,10 +2016,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             o.after.extend(rest);
         }
     }
-    // An enum made again takes its grants, revokes, owner and comment back, which a new type lacks.
+    // An enum or a domain made again takes its grants, revokes, owner and comment back, which a new
+    // type lacks.
     let mut metadata: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for o in s.objects.values().filter(|o| matches!(o.kind, Some(Kind::Grant | Kind::Comment))) {
-        if let Some(t) = o.owner.as_ref().filter(|t| s.objects.get(*t).is_some_and(|t| t.def.starts_with("enum ("))) {
+        if let Some(t) = o.owner.as_ref().filter(|t| s.objects.get(*t).is_some_and(|t| t.def.starts_with("enum (") || t.def.starts_with("domain "))) {
             metadata.entry(t.clone()).or_default().extend(o.create.iter().map(|c| format!("{AGAIN}{c}")));
         }
     }
@@ -1733,6 +2030,92 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
     }
     Ok(s)
+}
+
+/// Whether `text` names an enum's label (`'b'` as written in the type), as a literal or as an
+/// element of an array's (`'{a,b}'`, `'{"b c"}'`, `'{"b,c"}'`).
+fn names_label(text: &str, label: &str) -> bool {
+    if text.contains(label) {
+        return true;
+    }
+    let bare = label.trim_start_matches('\'').trim_end_matches('\'').replace("''", "'");
+    string_literals(text).iter().filter(|l| l.starts_with('{') && l.ends_with('}')).any(|l| array_elements(l).contains(&bare))
+}
+
+/// The values of the string literals in `text` (`'it''s'` as `it's`).
+fn string_literals(text: &str) -> Vec<String> {
+    let (mut out, mut cur, mut inside) = (Vec::new(), String::new(), false);
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match (ch, inside) {
+            ('\'', false) => inside = true,
+            ('\'', true) if chars.peek() == Some(&'\'') => {
+                chars.next();
+                cur.push('\'');
+            }
+            ('\'', true) => {
+                inside = false;
+                out.push(std::mem::take(&mut cur));
+            }
+            (_, true) => cur.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The elements of an array's literal (`{a,"b,c",{d}}`), each its value: a quoted one unquoted and
+/// unescaped, an unquoted one trimmed, and a nested array's among them.
+fn array_elements(literal: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quoted, mut was_quoted, mut escaped) = (Vec::new(), String::new(), false, false, false);
+    for ch in literal.chars() {
+        if escaped {
+            cur.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            // Space around a quoted element is no part of it.
+            '"' => {
+                if !quoted && !was_quoted {
+                    cur.clear();
+                }
+                quoted = !quoted;
+                was_quoted = true;
+            }
+            c if c.is_whitespace() && was_quoted && !quoted => {}
+            '{' | '}' | ',' if !quoted => {
+                let value = if was_quoted { cur.clone() } else { cur.trim().to_string() };
+                if was_quoted || !value.is_empty() {
+                    out.push(value);
+                }
+                cur.clear();
+                was_quoted = false;
+            }
+            _ => cur.push(ch),
+        }
+    }
+    out
+}
+
+/// A list of string literals, `'a', 'b, c'`, each as written: the commas inside a literal are its own.
+fn literal_list(list: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quoted) = (Vec::new(), String::new(), false);
+    for ch in list.chars() {
+        match ch {
+            '\'' => {
+                quoted = !quoted;
+                cur.push(ch);
+            }
+            ',' if !quoted => out.push(std::mem::take(&mut cur).trim().to_string()),
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
 }
 
 /// A qualified name's schema and name, as the reader writes them (`public."My Table"`).
@@ -1897,7 +2280,7 @@ pub async fn inherited_renames(db: &mut Db, target: &BTreeMap<String, BTreeSet<S
     for (old, new, id) in renamed {
         let rel = id.strip_prefix("table ").unwrap_or(id);
         let (Some(have), Some(want)) = (now.get(rel), target.get(rel)) else { continue };
-        let schema = rel.rsplit_once('.').map_or("", |(s, _)| s);
+        let schema = split_last(rel).0;
         for name in have.iter().filter(|n| !want.contains(*n)) {
             let wanted = crate::diff::swap_name(name, old, new);
             if wanted != *name && want.contains(&wanted) && !have.contains(&wanted) {
@@ -2075,7 +2458,121 @@ fn options_change(from: &[(String, String)], to: &[(String, String)]) -> Option<
     (!out.is_empty()).then(|| format!("options ({})", out.join(", ")))
 }
 
-/// What an object a change is made around is carried as: `around <id>\t<def>\t<drop>\t<create>`.
+/// A name as written (`public."t.x"`) split before its last part: what qualifies it (empty where
+/// nothing does) and the last part, each as written. A dot inside quotes separates nothing.
+fn split_last(name: &str) -> (&str, &str) {
+    let at = name.len() - crate::sql::last_written(name).len();
+    (name[..at].strip_suffix('.').unwrap_or(&name[..at]), &name[at..])
+}
+
+/// A name as written (`"c x"`, `k`) and the text after it, past one space.
+fn name_first(text: &str) -> Option<(&str, &str)> {
+    let end = if text.starts_with('"') {
+        let mut chars = text.char_indices().skip(1).peekable();
+        let mut end = None;
+        while let Some((k, ch)) = chars.next() {
+            if ch == '"' {
+                if chars.peek().is_some_and(|(_, c)| *c == '"') {
+                    chars.next();
+                } else {
+                    end = Some(k + 1);
+                    break;
+                }
+            }
+        }
+        end?
+    } else {
+        text.find(' ')?
+    };
+    Some((&text[..end], text[end..].strip_prefix(' ')?))
+}
+
+/// A publication's objects as `drop` names them: each table without its column list and row
+/// filter, which Postgres's grammar refuses there.
+fn without_lists(objects: &str) -> String {
+    let (mut out, mut item, mut depth, mut quoted) = (Vec::new(), String::new(), 0, false);
+    for ch in objects.chars().chain([',']) {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                out.push(std::mem::take(&mut item));
+                continue;
+            }
+            _ => {}
+        }
+        item.push(ch);
+    }
+    out.iter()
+        .map(|item| {
+            let item = item.trim();
+            if !item.starts_with("table ") {
+                return item.to_string();
+            }
+            let mut quoted = false;
+            let cut = item.char_indices().find(|(k, ch)| {
+                if *ch == '"' {
+                    quoted = !quoted;
+                }
+                !quoted && (item[*k..].starts_with(" (") || item[*k..].starts_with(" where "))
+            });
+            cut.map(|(k, _)| item[..k].to_string()).unwrap_or_else(|| item.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The name Postgres gives a not null it makes on a table's column, as it holds it.
+fn default_not_null(table: &str, column: &str) -> String {
+    let name = format!("{}_{}_not_null", unquoted(split_last(table).1), unquoted(column));
+    let mut end = name.len().min(63);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].to_string()
+}
+
+/// A name as Postgres holds it, from how it is written: a quoted one without its quotes.
+fn unquoted(name: &str) -> String {
+    match name.strip_prefix('"').and_then(|n| n.strip_suffix('"')) {
+        Some(inner) => inner.replace("\"\"", "\""),
+        None => name.to_string(),
+    }
+}
+
+/// What a composite type and each of its attributes carry: the columns of the type, which a change
+/// of them moves.
+const USED_BY: &str = "used by ";
+
+/// A domain as a type it is over carries it: its name, create, grants and comment, and columns.
+fn domain_line(s: &Schema, d: &Object, users: &dyn Fn(&Schema, &str) -> Vec<String>) -> String {
+    let metadata: Vec<String> = s.objects.values().filter(|o| matches!(o.kind, Some(Kind::Grant | Kind::Comment)) && o.owner.as_deref() == Some(d.id.as_str())).flat_map(|o| o.create.iter().cloned()).collect();
+    let fields = [vec![d.id.trim_start_matches("type ").to_string(), d.create.join(";\n"), metadata.join(";\n")], users(s, &d.id)].concat();
+    format!("{DOMAIN}{}", fields.join(SEP))
+}
+
+/// A composite type's attribute as an enum or a domain carries it: the type, the attribute, its
+/// type as written, and the type's columns.
+fn attribute_line(s: &Schema, a: &Object, users: &dyn Fn(&Schema, &str) -> Vec<String>) -> Option<String> {
+    let owner = a.owner.as_deref()?;
+    let attribute = crate::sql::last_written(a.id.strip_prefix("column ")?);
+    let fields = [vec![owner.trim_start_matches("type ").to_string(), attribute, parse_column(&a.def).ty], users(s, owner)].concat();
+    Some(format!("{ATTRIBUTE}{}", fields.join(SEP)))
+}
+
+/// What a domain carries: its columns, which a change of its base type moves.
+const COLUMNS_OF: &str = "columns of ";
+
+/// A composite type's attribute, as the type carries it: its name and definition.
+const MEMBER: &str = "member ";
+
+/// What separates the fields of a line an object carries: no name, definition or statement holds
+/// it, since Postgres keeps no NUL in its text.
+const SEP: &str = "\0";
+
+/// What an object a change is made around is carried as: `around <id>`, its definition, its drop
+/// and its create, each after a `SEP`.
 const AROUND: &str = "around ";
 
 /// A statement an enum made again runs after: one of its grants, its owner or its comment.
@@ -2084,8 +2581,24 @@ const AGAIN: &str = "again ";
 /// A view's definition that names an enum's labels, carried by the enum.
 const USES: &str = "uses ";
 
+/// What an enum carries of what uses it beside its columns: a domain over it (its name, create,
+/// grants and comment, and columns), and a composite type's attribute of it (the type, the
+/// attribute, and the type's columns), each field after a `SEP`, and a column as its table and its
+/// name.
+const DOMAIN: &str = "domain of ";
+const ATTRIBUTE: &str = "attribute of ";
+
+/// Whether a line an enum carries is one of its columns (its table, name, type and default), not
+/// what else it carries.
+fn is_column_line(l: &str) -> bool {
+    ![AROUND, AGAIN, USES, DOMAIN, ATTRIBUTE, PARTITION_KEY].iter().any(|p| l.starts_with(p))
+}
+
+/// What an enum a table is partitioned by carries: it can't be made again.
+const PARTITION_KEY: &str = "partition key";
+
 fn around_line(o: &Object) -> String {
-    format!("{AROUND}{}\t{}\t{}\t{}", o.id, o.def.replace(['\t', '\n'], " "), o.drop.join("; "), o.create.join("; "))
+    format!("{AROUND}{}", [o.id.clone(), o.def.replace('\n', " "), o.drop.join("; "), o.create.join("; ")].join(SEP))
 }
 
 /// The objects made around a change of `from` to `to` that both have alike, as `(drops, creates)`:
@@ -2096,7 +2609,7 @@ fn around(from: &Object, to: &Object) -> (Vec<String>, Vec<String>) {
             .iter()
             .filter_map(|l| l.strip_prefix(AROUND))
             .filter_map(|l| {
-                let mut parts = l.splitn(4, '\t');
+                let mut parts = l.splitn(4, SEP);
                 Some((parts.next()?.to_string(), (parts.next()?.to_string(), parts.next()?.to_string(), parts.next()?.to_string())))
             })
             .collect()
@@ -2141,7 +2654,7 @@ fn column_def(c: &Row, attribute: bool) -> String {
 }
 
 /// A column's definition read back into its parts.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Column {
     ty: String,
     collation: Option<String>,
@@ -2252,12 +2765,12 @@ fn or_replace(create: &str) -> String {
 /// aside, the new one created, each column of it converted through its text (a row holding a
 /// removed label fails the conversion, and the file with it), and the old one dropped.
 fn swap_enum(name: &str, create: &str, columns: &[String], targets: &[String]) -> Vec<String> {
-    let (schema, bare) = name.rsplit_once('.').unwrap_or(("", name));
+    let (schema, bare) = split_last(name);
     let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
     let old = if schema.is_empty() { aside.clone() } else { format!("{schema}.{aside}") };
     let mut out = vec![format!("alter type {name} rename to {aside}"), create.to_string()];
-    for c in columns.iter().filter(|c| !c.starts_with(AROUND) && !c.starts_with(AGAIN) && !c.starts_with(USES)) {
-        let parts: Vec<&str> = c.splitn(4, '|').collect();
+    for c in columns.iter().filter(|c| is_column_line(c)) {
+        let parts: Vec<&str> = c.splitn(4, SEP).collect();
         let [table, column, ty, default] = parts[..] else { continue };
         let text = if ty.ends_with("[]") { "text[]" } else { "text" };
         if !default.is_empty() {
@@ -2266,7 +2779,7 @@ fn swap_enum(name: &str, create: &str, columns: &[String], targets: &[String]) -
         out.push(format!("alter table {table} alter column {column} type {ty} using {column}::{text}::{ty}"));
         // A default the target keeps is set back; one it changes is the column's own change to
         // make, after what it calls, and one the old type alone takes can't be set back at all.
-        let kept = targets.iter().find(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2))).and_then(|t| t.splitn(4, '|').nth(3)) == Some(default);
+        let kept = targets.iter().find(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))).and_then(|t| t.splitn(4, SEP).nth(3)) == Some(default);
         if !default.is_empty() && kept {
             let restored = default.replace(&format!("::{old}"), &format!("::{name}")).replace(&format!("::{aside}"), &format!("::{name}"));
             out.push(format!("alter table {table} alter column {column} set default {restored}"));
@@ -2274,6 +2787,256 @@ fn swap_enum(name: &str, create: &str, columns: &[String], targets: &[String]) -
     }
     out.push(format!("drop type {old}"));
     out
+}
+
+/// What an enum made again (set aside as `<name>__old`) takes to its new type, as the
+/// statements after the type is made and those before the old one is dropped: each domain over it
+/// both schemas have made again as the target has it (the plan leaves it to this), with its grants
+/// and comment, and each composite type's attribute of it both have. One only the target has is
+/// made after, and one only the source has dropped before, by the plan.
+fn carried_over(from: &Object, to: &Object) -> (Vec<String>, Vec<String>) {
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    // A column leaving a domain over the type for the type itself moves to the new domain first,
+    // and from there to the type as the plan changes it.
+    let of_type: Vec<(String, String)> = to.extra.iter().filter(|l| is_column_line(l)).filter_map(|l| {
+        let mut f = l.split(SEP);
+        Some((f.next()?.to_string(), f.next()?.to_string()))
+    }).collect();
+    let both = |a: &[String], b: &[String]| -> Vec<Moved> {
+        let mut moved = columns_both(a, b);
+        for c in a.chunks(4).filter(|c| c.len() == 4) {
+            if of_type.iter().any(|(t, n)| *t == c[0] && *n == c[1]) && !moved.iter().any(|m| m.table == c[0] && m.column == c[1]) {
+                moved.push(Moved { table: c[0].clone(), column: c[1].clone(), ty: c[2].clone(), had_default: !c[3].is_empty(), default: String::new() });
+            }
+        }
+        moved
+    };
+    let (domains_before, domains_after) = domains_moved(from, to, &both);
+    before.extend(domains_before);
+    after.extend(domains_after);
+    before.extend(attributes_moved(from, to));
+    (before, after)
+}
+
+/// A column moved to another type and back (a type's attribute changing under it): its table,
+/// name and type, whether it has a default, which can't be cast with it, and the default the target
+/// gives it.
+struct Moved {
+    table: String,
+    column: String,
+    ty: String,
+    had_default: bool,
+    default: String,
+}
+
+impl Moved {
+    fn defaultless(&self) -> Option<String> {
+        self.had_default.then(|| format!("alter table {} alter column {} drop default", self.table, self.column))
+    }
+
+    fn default_back(&self) -> Option<String> {
+        (!self.default.is_empty()).then(|| format!("alter table {} alter column {} set default {}", self.table, self.column, self.default))
+    }
+}
+
+/// The lines an object carries under `what`, each split into its fields.
+fn carried(o: &Object, what: &str) -> Vec<Vec<String>> {
+    o.extra.iter().filter_map(|l| l.strip_prefix(what)).map(|l| l.split(SEP).map(String::from).collect()).collect()
+}
+
+/// The domains over a type made again that `from` and `to` both carry, made again as the target
+/// has them (the old set aside and dropped at the end), with their grants and comment, and their
+/// columns moved to them: the statements before the old type is dropped, and the drops.
+fn domains_moved(from: &Object, to: &Object, both: &dyn Fn(&[String], &[String]) -> Vec<Moved>) -> (Vec<String>, Vec<String>) {
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    let had = carried(from, DOMAIN);
+    for d in carried(to, DOMAIN) {
+        let [domain, create, metadata, users @ ..] = &d[..] else { continue };
+        let Some([_, _, _, had_users @ ..]) = had.iter().find(|h| h.first() == Some(domain)).map(|h| &h[..]) else { continue };
+        let (schema, bare_domain) = split_last(domain);
+        let set_aside = if bare_domain.ends_with('"') { format!("{}__old\"", bare_domain.trim_end_matches('"')) } else { format!("{bare_domain}__old") };
+        before.push(format!("alter domain {domain} rename to {set_aside}"));
+        before.extend(create.split(";\n").map(String::from));
+        before.extend(metadata.split(";\n").filter(|m| !m.is_empty()).map(String::from));
+        for m in both(had_users, users) {
+            before.extend(m.defaultless());
+            before.push(format!("alter table {} alter column {} type {} using {}::text::{}", m.table, m.column, m.ty, m.column, m.ty));
+            before.extend(m.default_back());
+        }
+        after.push(format!("drop domain {}", if schema.is_empty() { set_aside } else { format!("{schema}.{set_aside}") }));
+    }
+    (before, after)
+}
+
+/// The composite types' attributes `from` and `to` both carry made the type the target gives
+/// them again (the type made again under its name), each composite type's together, its columns
+/// made text once around them.
+fn attributes_moved(from: &Object, to: &Object) -> Vec<String> {
+    let had = carried(from, ATTRIBUTE);
+    let mut composites: BTreeMap<String, (Vec<String>, Vec<Moved>)> = BTreeMap::new();
+    for a in carried(to, ATTRIBUTE) {
+        let [composite, attribute, ty, users @ ..] = &a[..] else { continue };
+        let Some([_, _, _, had_users @ ..]) = had.iter().find(|h| h.first() == Some(composite) && h.get(1) == Some(attribute)).map(|h| &h[..]) else { continue };
+        let entry = composites.entry(composite.clone()).or_insert_with(|| (Vec::new(), columns_both(had_users, users)));
+        entry.0.push(format!("alter type {composite} alter attribute {attribute} type {ty}"));
+    }
+    composites.values().flat_map(|(statements, columns)| through_text(columns, statements)).collect()
+}
+
+/// The columns of the composite types whose attributes `from` and `to` both carry.
+fn attribute_columns(from: &Object, to: &Object) -> Vec<Moved> {
+    let had = carried(from, ATTRIBUTE);
+    carried(to, ATTRIBUTE).iter().filter_map(|a| had.iter().find(|h| h.get(..2) == a.get(..2)).map(|h| columns_both(h.get(3..).unwrap_or_default(), a.get(3..).unwrap_or_default()))).flatten().collect()
+}
+
+/// The columns of its own a domain carries, as fields.
+fn columns_of(o: &Object) -> Vec<String> {
+    o.extra.iter().find_map(|l| l.strip_prefix(COLUMNS_OF)).map(|l| l.split(SEP).map(String::from).collect()).unwrap_or_default()
+}
+
+/// Whether a domain's base type changes, which makes it again.
+fn domain_rebased(from: &Object, to: &Object) -> bool {
+    let base = |o: &Object| o.extra.iter().find_map(|l| l.strip_prefix("base ")).map(String::from);
+    from.def.starts_with("domain ") && to.def.starts_with("domain ") && base(from) != base(to)
+}
+
+/// The columns a composite type or its attribute carries, as fields.
+fn used_by(o: &Object) -> Vec<String> {
+    o.extra.iter().find_map(|l| l.strip_prefix(USED_BY)).map(|l| l.split(SEP).map(String::from).collect()).unwrap_or_default()
+}
+
+/// The columns (table, name, type and default) that lines of both sides carry, which are there to
+/// move, each with the target's default.
+fn columns_both(a: &[String], b: &[String]) -> Vec<Moved> {
+    let columns = |list: &[String]| -> Vec<Vec<String>> { list.chunks(4).filter(|c| c.len() == 4).map(|c| c.to_vec()).collect() };
+    let b = columns(b);
+    columns(a)
+        .into_iter()
+        .filter_map(|c| {
+            let target = b.iter().find(|d| d[0] == c[0] && d[1] == c[1])?;
+            Some(Moved { table: c[0].clone(), column: c[1].clone(), ty: c[2].clone(), had_default: !c[3].is_empty(), default: target[3].clone() })
+        })
+        .collect()
+}
+
+/// Whether a domain's change checks its values again: a check added or changed, or not null set.
+fn domain_validates(from: &Object, to: &Object) -> bool {
+    if !from.def.starts_with("domain ") || !to.def.starts_with("domain ") {
+        return false;
+    }
+    let checks = |o: &Object| -> BTreeSet<String> { o.extra.iter().filter(|l| l.starts_with("check ")).cloned().collect() };
+    let not_null = |o: &Object| o.extra.iter().any(|l| l == "not null");
+    !checks(to).is_subset(&checks(from)) || (not_null(to) && !not_null(from))
+}
+
+/// `statements` with each column made text before them and its type again after: the change of a
+/// type's attribute, which Postgres refuses while a column has the type.
+fn through_text(columns: &[Moved], statements: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in columns {
+        out.extend(m.defaultless());
+        out.push(format!("alter table {} alter column {} type text using {}::text", m.table, m.column, m.column));
+    }
+    out.extend(statements.iter().cloned());
+    for m in columns {
+        out.push(format!("alter table {} alter column {} type {} using {}::text::{}", m.table, m.column, m.ty, m.column, m.ty));
+        out.extend(m.default_back());
+    }
+    out
+}
+
+/// Where a composite type's attributes would end in another order than the target's (an attribute
+/// added before others, which Postgres adds last, or several added, which the plan would add by
+/// their names), the attributes from the first out of place on, which are dropped and added again
+/// in the target's order, the statements, and the columns they move. Where attributes the type's
+/// columns hold are dropped, the columns move to a copy of the type as it is, through their text,
+/// and back by each attribute's name, which keeps every value as it was; an array of the type,
+/// which no single expression takes back by name, leaves the change refused (None).
+fn reorder_attributes(from: &Object, to: &Object) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
+    let members = |o: &Object| -> Vec<(String, String)> { o.extra.iter().filter_map(|l| l.strip_prefix(MEMBER)).filter_map(|l| l.split_once(SEP)).map(|(n, d)| (n.to_string(), d.to_string())).collect() };
+    let (a, b) = (members(from), members(to));
+    let names = |m: &[(String, String)]| -> Vec<String> { m.iter().map(|(n, _)| n.clone()).collect() };
+    let (an, bn) = (names(&a), names(&b));
+    let expected: Vec<&String> = an.iter().filter(|n| bn.contains(n)).chain(bn.iter().filter(|n| !an.contains(n))).collect();
+    // Several attributes added at the end are added here too, in the target's order, which the
+    // plan would otherwise give by their names.
+    let added = bn.iter().filter(|n| !an.contains(n)).count();
+    let first = expected.iter().zip(&bn).position(|(x, y)| *x != y).or_else(|| (added > 1).then(|| bn.len() - added))?;
+    // The type's columns move only where attributes they hold are dropped and added again.
+    let dropped = bn[first..].iter().any(|n| an.contains(n));
+    let moved_columns = if dropped { columns_both(&used_by(from), &used_by(to)) } else { Vec::new() };
+    if moved_columns.iter().any(|m| m.ty.ends_with("[]")) {
+        return None;
+    }
+    let name = to.id.strip_prefix("type ")?;
+    let (schema, bare) = split_last(name);
+    let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
+    let aside = if schema.is_empty() { aside } else { format!("{schema}.{aside}") };
+    let mut out = Vec::new();
+    // The copy is of the type as it is when this runs, after the plan drops what the target lacks.
+    if !moved_columns.is_empty() {
+        out.push(format!("create type {aside} as ({})", a.iter().filter(|(n, _)| bn.contains(n)).map(|(n, d)| format!("{n} {d}")).collect::<Vec<_>>().join(", ")));
+    }
+    for m in &moved_columns {
+        out.extend(m.defaultless());
+        out.push(format!("alter table {} alter column {} type {aside} using {}::text::{aside}", m.table, m.column, m.column));
+    }
+    for n in bn[first..].iter().filter(|n| an.contains(n)) {
+        out.push(format!("alter type {name} drop attribute {n}"));
+    }
+    for (n, d) in &b[first..] {
+        out.push(format!("alter type {name} add attribute {n} {d}"));
+    }
+    for m in &moved_columns {
+        let fields: Vec<String> = b.iter().map(|(n, d)| if an.contains(n) { format!("({}).{n}::{d}", m.column) } else { format!("null::{d}") }).collect();
+        out.push(format!("alter table {} alter column {} type {} using case when {} is null then null else row({})::{} end", m.table, m.column, m.ty, m.column, fields.join(", "), m.ty));
+        out.extend(m.default_back());
+    }
+    if !moved_columns.is_empty() {
+        out.push(format!("drop type {aside}"));
+    }
+    let columns = moved_columns.iter().map(|m| format!("column {}.{}", m.table, m.column)).collect();
+    Some((bn[first..].to_vec(), out, columns))
+}
+
+/// How an enum's labels change, from `from` to `to`.
+struct EnumChange {
+    /// The labels before and after, each as written.
+    before: Vec<String>,
+    after: Vec<String>,
+    /// Whether the target uses a label it adds (a default, a check), which a label added in a
+    /// transaction can't be in it, as one of a type made in it can.
+    used: bool,
+    /// Whether a label goes or moves.
+    reorders: bool,
+    /// Whether a table is partitioned by the type, which then stays: a label used is added, and
+    /// committed before what uses it, a migration of its own.
+    keyed: bool,
+}
+
+impl EnumChange {
+    fn of(from: &Object, to: &Object) -> EnumChange {
+        let labels = |def: &str| -> Vec<String> { literal_list(def.trim_start_matches("enum (").trim_end_matches(')')) };
+        let (a, b) = (labels(&from.def), labels(&to.def));
+        let kept: Vec<&String> = b.iter().filter(|l| a.contains(l)).collect();
+        let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().filter(|x| !x.starts_with(AGAIN)).any(|x| names_label(x, l)));
+        let reorders = kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y);
+        let keyed = to.extra.iter().any(|l| l == PARTITION_KEY);
+        EnumChange { before: a, after: b, used, reorders, keyed }
+    }
+
+    /// Whether the type is made again, rather than given its new labels in place.
+    fn remakes(&self) -> bool {
+        (self.used && !self.keyed) || self.reorders
+    }
+}
+
+/// The element of an array first in its storage order, whatever its bounds and its dimensions
+/// (Postgres keeps at most six): a subscript of 1 is not it where the bounds start elsewhere
+/// (`'[0:1]={10,20}'`), and is null for an array of more than one dimension.
+fn first_element(name: &str) -> String {
+    let arms: Vec<String> = (1..=6).map(|n| format!("when {n} then {name}{}", (1..=n).map(|d| format!("[array_lower({name}, {d})]")).collect::<String>())).collect();
+    format!("case array_ndims({name}) {} end", arms.join(" "))
 }
 
 pub struct PostgresAlterer {
@@ -2375,10 +3138,77 @@ impl Alterer for PostgresAlterer {
         let (a, b) = (parse_column(&from.def).ty, parse_column(&to.def).ty);
         // An array's elements change as values of their type do, a value made an array of one
         // among them.
+        if a.ends_with("[]") && !b.ends_with("[]") {
+            return Some(format!("changes from {a} to {b}, which keeps only each array's first element"));
+        }
         let element = |t: &str| t.strip_suffix("[]").unwrap_or(t).to_string();
         let (x, y) = if b.ends_with("[]") { (element(&a), element(&b)) } else { (a.clone(), b.clone()) };
         let why = super::narrowing(&type_class(&x), &type_class(&y))?;
         Some(format!("changes from {a} to {b}, which {why}"))
+    }
+
+    fn remakes(&self, from: &Object, to: &Object) -> bool {
+        match from.kind {
+            Some(Kind::Type) => (from.def.starts_with("enum (") && to.def.starts_with("enum (") && EnumChange::of(from, to).remakes()) || domain_rebased(from, to),
+            // A column's type (or collation) changes only with no function body reading it.
+            Some(Kind::Column) => {
+                let (a, b) = (parse_column(&from.def), parse_column(&to.def));
+                a.ty != b.ty || a.collation != b.collation
+            }
+            _ => false,
+        }
+    }
+
+    fn takes_along(&self, from: &Object, to: &Object) -> Vec<String> {
+        if let Some((moved, _, _)) = reorder_attributes(from, to) {
+            let name = from.id.strip_prefix("type ").unwrap_or_default();
+            return moved.iter().map(|m| format!("column {name}.{m}")).collect();
+        }
+        if !self.remakes(from, to) {
+            return Vec::new();
+        }
+        // The domains over an enum both have, which its change makes again from the target's.
+        let domains = |o: &Object| -> BTreeSet<String> { o.extra.iter().filter_map(|l| l.strip_prefix(DOMAIN)).filter_map(|l| l.split(SEP).next()).map(|d| format!("type {d}")).collect() };
+        domains(from).intersection(&domains(to)).cloned().collect()
+    }
+
+    fn converts(&self, from: &Object, to: &Object) -> Vec<String> {
+        let mut moved: Vec<Moved> = Vec::new();
+        match from.kind {
+            Some(Kind::Type) if domain_rebased(from, to) => {
+                moved = columns_both(&columns_of(from), &columns_of(to));
+                moved.extend(attribute_columns(from, to));
+                let had = carried(from, DOMAIN);
+                for d in carried(to, DOMAIN) {
+                    if let Some(h) = had.iter().find(|h| h.first() == d.first()) {
+                        moved.extend(columns_both(h.get(3..).unwrap_or_default(), d.get(3..).unwrap_or_default()));
+                    }
+                }
+            }
+            Some(Kind::Type) if self.remakes(from, to) => {
+                let had = carried(from, DOMAIN);
+                for d in carried(to, DOMAIN) {
+                    if let Some(h) = had.iter().find(|h| h.first() == d.first()) {
+                        moved.extend(columns_both(h.get(3..).unwrap_or_default(), d.get(3..).unwrap_or_default()));
+                    }
+                }
+                moved.extend(attribute_columns(from, to));
+            }
+            Some(Kind::Type) if reorder_attributes(from, to).is_some() => return reorder_attributes(from, to).map(|(_, _, columns)| columns).unwrap_or_default(),
+            Some(Kind::Column) if from.owner.as_deref().is_some_and(|o| o.starts_with("type ")) => moved = columns_both(&used_by(from), &used_by(to)),
+            Some(Kind::Type) if domain_validates(from, to) => moved = columns_both(&used_by(from), &used_by(to)),
+            _ => {}
+        }
+        moved.into_iter().map(|m| format!("column {}.{}", m.table, m.column)).collect()
+    }
+
+    fn unhook(&self, from: &Object, to: &Object) -> Option<(Vec<String>, Vec<String>)> {
+        let table = from.owner.as_deref()?.strip_prefix("table ")?;
+        let name = super::last_written(from.id.strip_prefix("column ")?);
+        let at = format!("alter table {table} alter column {name}");
+        let drop = parse_column(&from.def).default.map(|_| format!("{at} drop default"));
+        let set = parse_column(&to.def).default.map(|d| format!("{at} set default {d}"));
+        Some((drop.into_iter().collect(), set.into_iter().collect()))
     }
 
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
@@ -2410,10 +3240,35 @@ impl Alterer for PostgresAlterer {
                 let b = parse_column(&to.def);
                 let ty = to.owner.as_deref()?.strip_prefix("type ")?;
                 let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
-                Some(vec![format!("alter type {ty} alter attribute {name} type {}{collate}", b.ty)])
+                Some(through_text(&columns_both(&used_by(from), &used_by(to)), &[format!("alter type {ty} alter attribute {name} type {}{collate}", b.ty)]))
             }
             // A partition's column changes with its parent's, but for a default or a not null of
             // its own, set after the parent's.
+            // A column a parent has too changes type with the parent's: what is its own changes after.
+            Kind::Column if to.extra.iter().any(|l| l == "inherited") => {
+                let (a, b) = (parse_column(&from.def), parse_column(&to.def));
+                // What the column declares of its own beside (a generated expression, an identity)
+                // changes as any column's, from the column as the parent's change leaves it: of the
+                // new type already, with nothing of a type change to do again here.
+                if a.generated != b.generated || a.identity != b.identity {
+                    let own = |o: &Object, def: String| Object { def, extra: o.extra.iter().filter(|l| *l != "inherited").cloned().collect(), ..o.clone() };
+                    let after_parent = Column { ty: b.ty.clone(), collation: b.collation.clone(), ..a.clone() };
+                    // Its not null still to validate stays so, which the rendering leaves out.
+                    let def = format!("{}{}", render_column(&after_parent), if a.not_valid { " not valid" } else { "" });
+                    return self.alter(&own(from, def), &own(to, to.def.clone()));
+                }
+                let at = format!("alter table {table} alter column {name}");
+                let mut out = Vec::new();
+                match (&a.default, &b.default) {
+                    (Some(_), None) => out.push(format!("{at} drop default")),
+                    (x, Some(y)) if x.as_ref() != Some(y) || a.ty != b.ty => out.push(format!("{at} set default {y}")),
+                    _ => {}
+                }
+                if a.not_null != b.not_null {
+                    out.push(format!("{at} {} not null", if b.not_null { "set" } else { "drop" }));
+                }
+                Some(out)
+            }
             Kind::Column if to.extra.iter().any(|l| l == "partition") => {
                 let (a, b) = (parse_column(&from.def), parse_column(&to.def));
                 // A default set on a partitioned table alone, which its partitions say for themselves.
@@ -2431,6 +3286,13 @@ impl Alterer for PostgresAlterer {
                     }
                 }
                 Some(out)
+            }
+            // A foreign table's column changes as a table's does, but for the rows it holds none of:
+            // a new type takes no `using`, which Postgres refuses there.
+            Kind::Column if to.extra.iter().any(|l| l == "foreign") => {
+                let plain = Object { extra: to.extra.iter().filter(|l| *l != "foreign").cloned().collect(), ..to.clone() };
+                let statements = self.alter(from, &plain)?;
+                Some(statements.into_iter().map(|s| if s.contains(" type ") { s.split(" using ").next().unwrap_or(&s).to_string() } else { s }).collect())
             }
             Kind::Column => {
                 let (a, mut b) = (parse_column(&from.def), parse_column(&to.def));
@@ -2476,7 +3338,19 @@ impl Alterer for PostgresAlterer {
                     out.extend(unmake);
                     let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
                     let element = b.ty.strip_suffix("[]").filter(|_| !a.ty.ends_with("[]"));
-                    if let Some(element) = element {
+                    let first = a.ty.strip_suffix("[]").filter(|_| !b.ty.ends_with("[]"));
+                    if let Some(from_element) = first {
+                        // An array becomes its first element, which `narrows` says loses the rest.
+                        let first = first_element(&name);
+                        let value = if self.assigns(from_element, &b.ty) {
+                            first
+                        } else if self.casts(from_element, &b.ty) {
+                            format!("({first})::{}", b.ty)
+                        } else {
+                            format!("({first})::text::{}", b.ty)
+                        };
+                        out.push(format!("{at} type {}{collate} using {value}", b.ty));
+                    } else if let Some(element) = element {
                         // A value becomes an array of one element, and a null stays null. Where the
                         // server converts the value in assignment, it does here too, refusing one
                         // the element's type can't hold rather than cutting it to fit.
@@ -2518,7 +3392,7 @@ impl Alterer for PostgresAlterer {
                         // A new identity starts past the rows the table holds, or its first insert
                         // collides; one that counts down is left where it starts.
                         let (_, options) = identity_parts(kind);
-                        let sequence = format!("pg_get_serial_sequence({}, {})", literal(&table), literal(&name.replace('"', "")));
+                        let sequence = format!("pg_get_serial_sequence({}, {})", literal(&table), literal(&unquoted(&name)));
                         match (options.get("increment by").map(|i| i.starts_with('-')), options.get("start with").or(options.get("minvalue"))) {
                             (Some(true), _) => {}
                             (_, None) => out.push(format!("select setval({sequence}, coalesce(max({name}), 0) + 1, false) from {table}")),
@@ -2558,8 +3432,22 @@ impl Alterer for PostgresAlterer {
                         // One whose new bounds share no value with its old ones starts again: every
                         // value it gave lies outside them. Otherwise it keeps its place.
                         let bound = |e: &BTreeMap<String, String>, key: &str| e[key].parse::<i128>().unwrap_or_default();
-                        if bound(&ey, "maxvalue") < bound(&ex, "minvalue") || bound(&ey, "minvalue") > bound(&ex, "maxvalue") {
+                        let disjoint = bound(&ey, "maxvalue") < bound(&ex, "minvalue") || bound(&ey, "minvalue") > bound(&ex, "maxvalue");
+                        if disjoint {
                             set.push("restart".into());
+                        }
+                        // Bounds that close in past where the sequence stands move it to the new
+                        // bound first, which the change otherwise refuses: every value it gave lies
+                        // beyond that bound, so none is given again.
+                        let descending = ey["increment by"].starts_with('-');
+                        let (edge, beyond) = if descending { ("maxvalue", ">") } else { ("minvalue", "<") };
+                        let closes = if descending { bound(&ey, edge) < bound(&ex, edge) } else { bound(&ey, edge) > bound(&ex, edge) };
+                        if closes && !disjoint {
+                            let sequence = format!("pg_get_serial_sequence({}, {})", literal(&table), literal(&unquoted(&name)));
+                            out.push(format!(
+                                "select setval(q.seq, {0}, false) from (select {sequence} as seq) q join pg_sequences s on format('%I.%I', s.schemaname, s.sequencename) = q.seq where coalesce(s.last_value, s.start_value) {beyond} {0}",
+                                ey[edge]
+                            ));
                         }
                         if ox.contains_key("cycle") != oy.contains_key("cycle") {
                             set.push(if oy.contains_key("cycle") { "set cycle".into() } else { "set no cycle".into() });
@@ -2579,32 +3467,46 @@ impl Alterer for PostgresAlterer {
                     let nn = to.extra.iter().find_map(|l| l.strip_prefix("not null name ")).unwrap_or_default();
                     out.push(format!("alter table {table} add constraint {nn} not null {name} not valid"));
                 } else if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit || (a.not_valid && !b.not_valid)) && !not_null_done {
-                    out.push(if b.no_inherit { format!("alter table {table} add not null {name} no inherit") } else { format!("{at} set not null") });
+                    // A not null the target names otherwise than Postgres would is added under its name.
+                    let named = to.extra.iter().find_map(|l| l.strip_prefix("not null name ")).filter(|n| !a.not_null && unquoted(n) != default_not_null(&table, &name));
+                    out.push(match named {
+                        _ if b.no_inherit => format!("alter table {table} add not null {name} no inherit"),
+                        Some(n) => format!("alter table {table} add constraint {n} not null {name}"),
+                        None => format!("{at} set not null"),
+                    });
                 }
                 Some(out)
             }
             Kind::Type if to.def.starts_with("enum (") && from.def.starts_with("enum (") => {
                 // New labels only, the old ones kept in their order: each added beside its neighbour.
-                let labels = |def: &str| -> Vec<String> { def.trim_start_matches("enum (").trim_end_matches(')').split(", ").map(String::from).collect() };
-                let (a, b) = (labels(&from.def), labels(&to.def));
-                let kept: Vec<&String> = b.iter().filter(|l| a.contains(l)).collect();
+                let change = EnumChange::of(from, to);
+                let (a, b) = (&change.before, &change.after);
                 let name = to.id.strip_prefix("type ")?;
-                // A label added in a transaction can't be used in it (a default, a check), as a
-                // label of a type made in it can: one the target uses is added by making the type again.
-                let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().filter(|x| !x.starts_with(AGAIN)).any(|x| x.contains(l.as_str())));
-                if used || kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y) {
+                if change.remakes() {
                     let (unmake, remake) = around(from, to);
                     let mut out = unmake;
                     // The columns both have: one the plan drops is gone before, one it adds comes after.
-                    let plain = |l: &&String| !l.starts_with(AROUND) && !l.starts_with(AGAIN) && !l.starts_with(USES);
-                    let kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2)))).cloned().collect();
+                    let plain = |l: &&String| is_column_line(l);
+                    // A column entering a domain over the type converts with them, and enters the
+                    // new domain after, as the plan changes it.
+                    let entering = |c: &str| -> bool {
+                        let mut f = c.split(SEP);
+                        let (Some(t), Some(n)) = (f.next(), f.next()) else { return false };
+                        carried(to, DOMAIN).iter().any(|d| d.get(3..).unwrap_or_default().chunks(4).any(|u| u.len() == 4 && u[0] == t && u[1] == n))
+                    };
+                    let kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))) || entering(c)).cloned().collect();
                     // Each with the default the target gives it, which is set back where unchanged.
-                    let targets: Vec<String> = kept.iter().filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, '|').take(2).eq(c.splitn(3, '|').take(2))).cloned()).collect();
+                    let targets: Vec<String> = kept.iter().filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))).cloned()).collect();
                     let mut swap = swap_enum(name, &to.create[0], &kept, &targets);
                     let last = swap.pop();
+                    let (before, after) = carried_over(from, to);
+                    let made = swap.drain(..2.min(swap.len())).collect::<Vec<_>>();
+                    out.extend(made);
+                    out.extend(before);
                     out.extend(swap);
                     out.extend(remake);
                     out.extend(to.extra.iter().filter_map(|l| l.strip_prefix(AGAIN)).map(String::from));
+                    out.extend(after);
                     out.extend(last);
                     return Some(out);
                 }
@@ -2613,23 +3515,45 @@ impl Alterer for PostgresAlterer {
                     if a.contains(label) {
                         continue;
                     }
+                    // Beside a label there already: the one before it, else the next the type had.
                     match b[..k].iter().rev().find(|l| a.contains(l) || out.iter().any(|s: &String| s.contains(l.as_str()))) {
                         Some(before) => out.push(format!("alter type {name} add value {label} after {before}")),
-                        None => match b.get(k + 1) {
+                        None => match b[k + 1..].iter().find(|l| a.contains(l)) {
                             Some(next) => out.push(format!("alter type {name} add value {label} before {next}")),
                             None => out.push(format!("alter type {name} add value {label}")),
                         },
                     }
                 }
+                if change.used && change.keyed {
+                    out.push(super::COMMIT.to_string());
+                }
                 Some(out)
             }
+            Kind::Type if to.def.starts_with("composite (") && from.def.starts_with("composite (") => Some(reorder_attributes(from, to).map(|(_, statements, _)| statements).unwrap_or_default()),
             Kind::Type if to.def.starts_with("domain ") && from.def.starts_with("domain ") => {
                 // A domain's default, NOT NULL and checks change in place; its base type does not.
                 let part = |o: &Object, what: &str| o.extra.iter().find_map(|l| l.strip_prefix(what)).map(String::from);
-                if part(from, "base ") != part(to, "base ") {
-                    return None;
-                }
                 let name = to.id.strip_prefix("type ")?;
+                // Its base type changes by making it again under its name, its columns moved to the
+                // new one through their text, and its grants and comment set again.
+                if part(from, "base ") != part(to, "base ") {
+                    let (schema, bare) = split_last(name);
+                    let aside = if bare.ends_with('"') { format!("{}__old\"", bare.trim_end_matches('"')) } else { format!("{bare}__old") };
+                    let mut out = vec![format!("alter domain {name} rename to {aside}")];
+                    out.extend(to.create.iter().cloned());
+                    out.extend(to.extra.iter().filter_map(|l| l.strip_prefix(AGAIN)).map(String::from));
+                    let (domains_before, domains_after) = domains_moved(from, to, &columns_both);
+                    out.extend(domains_before);
+                    out.extend(attributes_moved(from, to));
+                    for m in columns_both(&columns_of(from), &columns_of(to)) {
+                        out.extend(m.defaultless());
+                        out.push(format!("alter table {} alter column {} type {} using {}::text::{}", m.table, m.column, m.ty, m.column, m.ty));
+                        out.extend(m.default_back());
+                    }
+                    out.extend(domains_after);
+                    out.push(format!("drop domain {}", if schema.is_empty() { aside } else { format!("{schema}.{aside}") }));
+                    return Some(out);
+                }
                 let at = format!("alter domain {name}");
                 let mut out = Vec::new();
                 match (part(from, "default "), part(to, "default ")) {
@@ -2643,9 +3567,7 @@ impl Alterer for PostgresAlterer {
                     (false, true) => out.push(format!("{at} set not null")),
                     _ => {}
                 }
-                let checks = |o: &Object| -> BTreeMap<String, String> {
-                    o.extra.iter().filter_map(|l| l.strip_prefix("check ")).filter_map(|l| l.split_once(' ')).map(|(n, d)| (n.to_string(), d.to_string())).collect()
-                };
+                let checks = |o: &Object| -> BTreeMap<String, String> { o.extra.iter().filter_map(|l| l.strip_prefix("check ")).filter_map(name_first).map(|(n, d)| (n.to_string(), d.to_string())).collect() };
                 let (a, b) = (checks(from), checks(to));
                 for (check, def) in &a {
                     if b.get(check) != Some(def) {
@@ -2660,6 +3582,12 @@ impl Alterer for PostgresAlterer {
                         });
                         out.push(format!("{at} add constraint {check} {}", declared.unwrap_or_else(|| def.clone())));
                     }
+                }
+                // Postgres checks no value inside a composite column against a domain: it refuses
+                // the change while such a column has the domain, so the column is text meanwhile,
+                // and its values are checked as they come back.
+                if domain_validates(from, to) {
+                    return Some(through_text(&columns_both(&used_by(from), &used_by(to)), &out));
                 }
                 Some(out)
             }
@@ -2734,7 +3662,7 @@ impl Alterer for PostgresAlterer {
                 let mut out = Vec::new();
                 match (part(from, "objects "), part(to, "objects ")) {
                     (a, b) if a == b => {}
-                    (a, b) if b.is_empty() => out.push(format!("alter publication {name} drop {a}")),
+                    (a, b) if b.is_empty() => out.push(format!("alter publication {name} drop {}", without_lists(&a))),
                     (_, b) => out.push(format!("alter publication {name} set {b}")),
                 }
                 if part(from, "with ") != part(to, "with ") {
@@ -2764,6 +3692,8 @@ impl Alterer for PostgresAlterer {
                 match (attached(from), attached(to)) {
                     (None, Some(_)) if plain(from) == plain(to) && !to.extra.iter().any(|l| l == "attached by statement") => Some(vec![]),
                     (None, Some(parent)) if plain(from) == plain(to) => Some(vec![format!("alter index {parent} attach partition {}", to.id.strip_prefix("index ")?)]),
+                    // One whose table is detached stands alone after, as the target has it.
+                    (Some(_), None) if plain(from) == plain(to) => Some(vec![]),
                     _ => None,
                 }
             }
@@ -2846,6 +3776,23 @@ mod tests {
     }
 
     #[test]
+    fn finds_a_label_in_an_arrays_literal() {
+        assert!(names_label("t\0v\0e[]\0'{b}'::e[]", "'b'"));
+        assert!(names_label("default '{\"b,c\"}'::mood[]", "'b,c'"));
+        assert!(!names_label("default '{\"b,c\"}'::mood[]", "'b'"));
+        assert!(names_label("default '{\"it''s\"}'::mood[]", "'it''s'"));
+        assert_eq!(array_elements(r#"{a, "b,c",{"d\"e",NULL}}"#), ["a", "b,c", "d\"e", "NULL"]);
+        assert!(names_label("default '{a,\"b c\"}'::e[]", "'b c'"));
+        assert!(!names_label("default '{ab}'::e[]", "'b'"));
+        assert!(names_label("check (v <> 'b'::e)", "'b'"));
+    }
+
+    #[test]
+    fn reads_a_list_of_literals_with_commas_in_them() {
+        assert_eq!(literal_list("'a', 'b, c', 'it''s', 'd|e'"), vec!["'a'", "'b, c'", "'it''s'", "'d|e'"]);
+    }
+
+    #[test]
     fn a_value_made_an_array_narrows_as_its_element_does() {
         let alterer = PostgresAlterer { version: 180000, assignment: BTreeSet::new(), strings: BTreeSet::new(), explicit: BTreeSet::new() };
         let column = |def: &str| Object { id: "column public.t.c".into(), kind: Some(Kind::Column), def: def.into(), ..Object::default() };
@@ -2854,6 +3801,7 @@ mod tests {
         assert!(narrows("numeric", "numeric(5,1)[]").is_some_and(|w| w.contains("rounds to 1 decimal places")));
         assert!(narrows("numeric[]", "numeric(5,1)[]").is_some());
         assert_eq!(narrows("integer", "integer[]"), None);
+        assert!(narrows("integer[]", "integer").is_some_and(|w| w.contains("first element")));
         assert_eq!(narrows("bytea", "bytea[]"), None);
     }
 }

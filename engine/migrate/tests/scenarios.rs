@@ -2794,6 +2794,7 @@ on!(
     Postgres,
     a_partition_of_a_run_time_partition_is_data,
     an_extension_in_a_schema_of_its_own_is_dumped_after_it,
+    an_extension_left_in_a_schema_of_the_projects_own_stops_no_push,
     a_partition_dropped_at_run_time_is_data,
     init_creates_the_extensions_its_schema_uses,
     a_dump_keeps_a_function_body_as_written,
@@ -2823,6 +2824,7 @@ on!(
     a_rename_to_a_name_that_needs_quotes,
     an_index_left_invalid_by_a_cut_off_build_is_dropped_and_built_again,
     a_renamed_tables_sequence_keeps_counting,
+    an_enum_label_a_partition_uses_is_committed_first,
     a_foreign_table_is_renamed_as_stated,
     a_partitioned_table_is_renamed_with_its_partitions,
     a_table_renamed_onto_a_views_name_drops_the_view_first,
@@ -3398,6 +3400,30 @@ mod adversarial {
         assert_has!(p.output(), "Up to date");
     }
 
+    pub async fn an_enum_label_a_partition_uses_is_committed_first(mut p: P) {
+        let v1 = "create type region as enum ('eu', 'us'); create table t (id int, r region) partition by list (r); create table t_eu partition of t for values in ('eu');";
+        let v2 = "create type region as enum ('eu', 'us', 'ap'); create table t (id int, r region) partition by list (r); create table t_eu partition of t for values in ('eu'); create table t_ap partition of t for values in ('ap');";
+        p.schema(v1);
+        p.file("20261027100000_regions.sql", v1);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into t values (1, 'eu')").await;
+        // Postgres refuses a label added and used in one transaction, and the type can't be made
+        // again under a partition key: the label is a migration of its own, before the partition.
+        p.schema(v2);
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "ap", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let made: Vec<String> = p.files().into_iter().filter(|f| f.contains("_ap")).collect();
+        assert_eq!(made.len(), 2, "{made:?}");
+        let first = std::fs::read_to_string(p.dir.join("migrations").join(&made[0])).unwrap();
+        let second = std::fs::read_to_string(p.dir.join("migrations").join(&made[1])).unwrap();
+        assert!(first.contains("add value 'ap'") && !first.contains("partition of"), "{first}");
+        assert!(second.contains("partition of t for values in ('ap')"), "{second}");
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into t values (2, 'ap')").await;
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
     pub async fn a_renamed_tables_sequence_keeps_counting(mut p: P) {
         p.schema("create table users (id serial primary key, email text unique, n integer generated always as identity);");
         p.file("20261027100000_users.sql", "create table users (id serial primary key, email text unique, n integer generated always as identity);");
@@ -3802,6 +3828,16 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.url = q.url.clone();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(q.history().await, ["init.sql"]);
+    }
+
+    pub async fn an_extension_left_in_a_schema_of_the_projects_own_stops_no_push(mut p: P) {
+        p.schema("create schema ext;\ncreate extension pg_trgm with schema ext;\ncreate table t (id int);");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        // schema.sql stops declaring the extension, which the database keeps, and still makes its
+        // schema: the shadow leaves the extension out, as it does one the project makes.
+        p.schema("create schema ext;\ncreate table t (id int, n int);");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*)::text as n from information_schema.columns where table_name = 't' and column_name = 'n'").await[0].text("n"), "1");
     }
 
     pub async fn a_dump_keeps_a_function_body_as_written(mut p: P) {

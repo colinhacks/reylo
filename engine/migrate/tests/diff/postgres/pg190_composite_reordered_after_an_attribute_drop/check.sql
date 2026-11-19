@@ -1,0 +1,1 @@
+do $$ begin if (select (v).a from t) is distinct from 1 or (select (v).b from t) is distinct from 2 then raise exception 'the values did not keep their attributes: %', (select v::text from t); end if; end $$;
