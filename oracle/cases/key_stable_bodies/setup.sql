@@ -28,3 +28,17 @@ create function sampled() returns int language sql stable as $$ select id from r
 create function turn_plpgsql() returns int language plpgsql stable as $$ begin return 1; end $$;
 -- A body that calls a function whose own body calls nothing volatile keeps its label.
 create function first_outer() returns int language sql stable as $$ select first_id() $$;
+-- A view a body reads that calls a function whose own body is volatile, a view inside it, and a
+-- set-returning function reading it, all run that function for each call. A materialized view
+-- holds its rows, and its definition runs only at a refresh; a view of built-in functions alone
+-- answers alike for each call.
+create view indirect_turns as select turn() as n;
+create function turn_via_view() returns int language sql stable as $$ select n from indirect_turns $$;
+create view deeper_turns as select n from indirect_turns;
+create function turn_via_views() returns int language sql stable as $$ select n from deeper_turns $$;
+create function indirect_set() returns setof int language sql stable as $$ select n from indirect_turns $$;
+create function turn_via_set() returns int language sql stable as $$ select v from indirect_set() v limit 1 $$;
+create materialized view stored_turns as select (random() * 0)::int + 1 as n;
+create function stored_turn() returns int language sql stable as $$ select n from stored_turns limit 1 $$;
+create view plain_ids as select abs(id) as n from rk;
+create function plain_view() returns int language sql stable as $$ select min(n) from plain_ids $$;

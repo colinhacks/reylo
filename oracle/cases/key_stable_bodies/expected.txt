@@ -5,7 +5,12 @@ honest_nested.sql: at_most_one () -> { id: int4 }
 nested.sql: many () -> { id: int4 } key (id)
 operator.sql: many () -> { id: int4 } key (id)
 other_language.sql: at_most_one () -> { id: int4 }
+plain_view.sql: at_most_one () -> { id: int4 }
 sampled.sql: many () -> { id: int4 } key (id)
 set_returning.sql: many () -> { id: int4 } key (id)
+stored_view.sql: at_most_one () -> { id: int4 }
 turn.sql: many () -> { id: int4 } key (id)
+via_set_view.sql: many () -> { id: int4 } key (id)
+via_view.sql: many () -> { id: int4 } key (id)
+via_views.sql: many () -> { id: int4 } key (id)
 view.sql: many () -> { id: int4 } key (id)

@@ -1395,9 +1395,10 @@ fn both(a: Option<bool>, b: Option<bool>) -> Option<bool> {
 /// Whether each `language sql` overload of `name` that is not labelled volatile answers alike for
 /// every call of it in a statement: its body, and the defaults of its arguments, which a call that
 /// leaves one out runs, call nothing volatile, read no view that does, sample no table without
-/// `REPEATABLE`, and call no such function of a user's, directly, in FROM or through an operator,
-/// whose own body is volatile ([`quiet_body`]), `levels` levels down at most, a function met again
-/// on the way (`path`) counting as volatile. An overload in another language, or labelled
+/// `REPEATABLE`, and call no such function of a user's, directly, in FROM, through an operator or
+/// in a view it reads (views inside views included), whose own body is volatile ([`quiet_body`]),
+/// `levels` levels down at most, a function met again on the way (`path`) counting as volatile. A
+/// materialized view holds its rows, so what its definition calls does not count. An overload in another language, or labelled
 /// volatile, is taken at its label; where `required`, a name the catalog gives no such overload of
 /// that the engine reads counts as volatile.
 fn quiet_function(name: &str, required: bool, levels: usize, path: &mut Vec<String>, host: &Host) -> Lazy<bool> {
@@ -1431,6 +1432,12 @@ fn quiet_body(f: &Function, levels: usize, path: &mut Vec<String>, host: &Host) 
         }
         quiet = both(quiet, crate::errors::calls_nothing_volatile(text, host));
         let mut called = called_names(&value);
+        // What a view it reads calls, through views inside views, or a policy of a table it reads.
+        match crate::errors::reached_functions(text, host) {
+            Some(Some(reached)) => called.extend(reached),
+            Some(None) => return Some(false),
+            None => quiet = both(quiet, None),
+        }
         let operators = analyze::analyze(text).map(|a| a.operators).unwrap_or_default();
         if !operators.is_empty() {
             match host.query_each(OPERATOR_FUNCTIONS_QUERY, operators.iter().map(|o| vec![json!([o])]), Scope::Statement) {
