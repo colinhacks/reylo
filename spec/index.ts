@@ -405,8 +405,8 @@ export interface UnknownType {
 
 /** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
 export interface StatementDescriptor {
-  /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything. */
-  $schema: "https://reylo.dev/typedefs/0.1.1.json";
+  /** The format the descriptor is written in, as the URL of its JSON Schema, which a validator or an editor reads. Until 1.0.0 the format is a preview, which changes in place and has no version number; from 1.0.0 the URL names the version. */
+  $schema: "https://reylo.dev/typedefs/preview.json";
   dialect: Dialect;
   /** The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them. */
   sql: string;

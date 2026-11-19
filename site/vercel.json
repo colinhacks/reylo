@@ -20,7 +20,7 @@
   },
   "routes": [
     {
-      "src": "^/typedefs/\\d+\\.\\d+\\.\\d+\\.json$",
+      "src": "^/typedefs/(preview|\\d+\\.\\d+\\.\\d+)\\.json$",
       "headers": {
         "Content-Type": "application/schema+json",
         "Access-Control-Allow-Origin": "*"
