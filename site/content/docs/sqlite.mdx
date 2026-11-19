@@ -405,7 +405,7 @@ A JSON value inside the JSON you build, from `json(…)`, `->`, `json_extract` o
 
 ### Functions
 
-SQLite doesn't report what a function returns, so Reylo has its own table of SQLite's built-in functions: `count` returns a non-null integer, `coalesce` the type of its arguments, and `upper` text that is `NULL` only when its argument is.
+SQLite doesn't report what a function returns, so Reylo has its own table of SQLite's built-in functions: `count` returns a non-null integer, `coalesce` the type of its arguments, and `upper` text that is `NULL` only when its argument is. The table also has libSQL's vector functions and `vector_top_k` ([Vectors](/turso#vectors)).
 
 <Rules>
 

@@ -128,7 +128,7 @@ Most merged pull requests are this shape (reylosql/reylo#10, reylosql/reylo#29, 
 6. Run the loader's checks (`nub run typecheck`, `nub run test` with both test databases) on that binary.
 7. Where the dialect's docs page states the rule (`site/content/docs/<database>.mdx`), correct it in the same pull request.
 
-The oracle analyzes each statement through a live describe and catalog, then runs it in rolled-back transactions over seeded edge values, twice (with and without the values of extreme magnitude), and once more over tables emptied of every row, under a 5000 ms timeout (`--timeout <ms>`, or a case's `timeout` file). A value that contradicts a type, or a row count beyond the cardinality, fails the case, and so does a parameter's or a column's type that is no `Type` of `spec/typedefs.schema.json`, does not read and write back as the same JSON, or breaks the validity rules (`oracle/src/validity.rs`). Each Postgres and MySQL statement is also analyzed again under other session settings, and a case fails if its analysis changes. A statement that failed or timed out on every run was checked for nothing: it is listed under `UNCHECKED`, a case's `unchecked.txt` holds those lines (empty where every statement must run; compared and blessed like `expected.txt`), and `--strict-coverage` fails a case that has such a statement and no `unchecked.txt`, which is how to run statements from elsewhere. A directory with no `expected.txt` is checked for soundness alone. A case may also carry a `min_version` file, whose line with a version alone skips the case on an older server and whose `<file> <version>` lines skip a statement there (for syntax or a function the older version lacks), an `expected-<series>.txt` (`expected-8.0.txt`) that stands in for `expected.txt` on that series, where its server answers a statement differently and the analysis is right for it, and, for MySQL, a `sql_mode` file. The oracle creates and drops a database per case. MySQL statements run on sessions opened as mysql2 opens them, three ways: bound over the binary protocol as mysql2's `execute()` binds, through `SQL_BUFFER_RESULT`, and with their values written into the text as mariadb's `query()` and PlanetScale write them; a run that ends the transaction, writes a MyISAM or MEMORY table or moves an AUTO_INCREMENT counter far has the database built again (`oracle/src/mysql.rs`). `--dump <file>` writes every analysis and `--analyses <file>` checks another engine's.
+The oracle analyzes each statement through a live describe and catalog, then runs it in rolled-back transactions over seeded edge values, twice (with and without the values of extreme magnitude), and once more over tables emptied of every row, under a 5000 ms timeout (`--timeout <ms>`, or a case's `timeout` file). A value that contradicts a type, or a row count beyond the cardinality, fails the case, and so does a parameter's or a column's type that is no `Type` of `spec/typedefs.schema.json`, does not read and write back as the same JSON, or breaks the validity rules (`oracle/src/validity.rs`). Each Postgres and MySQL statement is also analyzed again under other session settings, and a case fails if its analysis changes. A statement that failed or timed out on every run was checked for nothing: it is listed under `UNCHECKED`, a case's `unchecked.txt` holds those lines (empty where every statement must run; compared and blessed like `expected.txt`), and `--strict-coverage` fails a case that has such a statement and no `unchecked.txt`, which is how to run statements from elsewhere. A directory with no `expected.txt` is checked for soundness alone. A case may also carry a `min_version` file, whose line with a version alone skips the case on an older server and whose `<file> <version>` lines skip a statement there (for syntax or a function the older version lacks), an `expected-<series>.txt` (`expected-8.0.txt`) that stands in for `expected.txt` on that series, where its server answers a statement differently and the analysis is right for it, for MySQL a `sql_mode` file, and for SQLite a `libsql` file, which makes its schema and runs its statements on libSQL's engine (`oracle/src/libsql.rs`, Turso's `libsql-ffi` amalgamation, which the prepare step fetches into `engine/migrate/.libsql/`) while the engine reads the file with its own SQLite. The oracle creates and drops a database per case. MySQL statements run on sessions opened as mysql2 opens them, three ways: bound over the binary protocol as mysql2's `execute()` binds, through `SQL_BUFFER_RESULT`, and with their values written into the text as mariadb's `query()` and PlanetScale write them; a run that ends the transaction, writes a MyISAM or MEMORY table or moves an AUTO_INCREMENT counter far has the database built again (`oracle/src/mysql.rs`). `--dump <file>` writes every analysis and `--analyses <file>` checks another engine's.
 
 `--mutate oracle/mutations.json` shows that each kind of check the oracle makes can fail. Each entry names a statement of a case, a JSON pointer into the engine's fresh analysis of it, a value to put there, and the text of the problem the oracle must then report; the oracle runs the changed analysis over the case's states, and the run fails unless every entry's problem is reported. CI runs it in each dialect's shard. A new kind of check gets an entry, on a statement whose runs contradict the changed analysis only through that check.
 
@@ -178,3 +178,34 @@ Run what CI runs before you push. A failing check's log: `gh pr checks <number> 
 - A frontmatter `description:` carries no inline code.
 - A docs page and each of its sections open with one short sentence, alone, to the point; what more it needs follows in its own paragraph or the example.
 - Prose in the docs never opens a sentence with inline code, writes a method as `.run()` (never a bare `run`), says Reylo infers a type (never that it proves one), and says "cardinality" for how many rows a query returns.
+
+## Terminal output
+
+Everything `reylo` prints for a person follows one set of marks and one layout. A note and its next steps:
+
+```
+✓ The migration files match reylo/reylo.lock
+» This database hasn't run 2 migrations
+  Run them in development:
+    reylo migrate dev
+  Run them in production:
+    reylo migrate deploy
+```
+
+| Mark | Colour | Meaning |
+| --- | --- | --- |
+| ✓ | green | done, or matches |
+| ✗ | red, with its title | refused or failed |
+| ! | yellow | a risk: data lost, a rename taken for granted, a run cut off, a statement that blocks writes |
+| » | dim | a note: something to know, and maybe act on |
+| + and - | green and red | added and removed |
+| ↺ | yellow | rewound |
+| ↓ | green | pulled |
+| · | dim | a pending migration's row, and the separator before a timing |
+
+- A command never sits inside a sentence. It goes on its own line, cyan, two spaces in from a lead that names the act and ends in a colon. In `engine/migrate/src/commands.rs`, `then` and `steps` write this layout, as a refusal's `fix` does.
+- Leads that offer alternatives are parallel, as "Run them in development:" and "Run them in production:" are, and none starts with "Or".
+- Every line opens with a capitalized word, never a digit, a path, a command or a migration's name. A count or a name goes later in the line: "This database hasn't run 2 migrations". A row in a table of migrations opens with its name, which is the row.
+- Colour never carries a meaning alone, so the text reads the same where colour is off: a pipe, a file, `NO_COLOR`. Dim is for what a reader may skip.
+- A SQL comment a plan carries is shown as the migration file has it, under a `!`.
+- A usage error is one line on stderr, `reylo <group>: <message>`, as other command-line tools print theirs.

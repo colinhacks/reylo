@@ -35,7 +35,7 @@ test("await migrate() runs reylo migrate deploy, resolves to what it ran, and re
     assert.deepEqual(await migrate(), []);
     // A draft refuses the deploy, with what to do about it.
     writeFileSync(join(root, "reylo", "migrations", "20991231000000_draft.sql"), "alter table users add column bio text;\n");
-    await assert.rejects(migrate({ url: "file:./prod.sqlite" }), /^Error: reylo migrate deploy refused: 20991231000000_draft\.sql isn't locked yet\n  Run it in development, which locks it: reylo migrate dev/);
+    await assert.rejects(migrate({ url: "file:./prod.sqlite" }), /^Error: reylo migrate deploy refused: The lock doesn't list 20991231000000_draft\.sql yet\n  Run it in development, which locks it: reylo migrate dev/);
   } finally {
     process.chdir(was);
   }
