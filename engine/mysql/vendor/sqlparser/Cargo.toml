@@ -5,7 +5,9 @@
 
 [package]
 edition = "2021"
-rust-version.workspace = true
+# Written here, not taken from the workspace: the copy keeps its version across Reylo's releases, so
+# its manifest moves only when the copy does, and a new workspace floor needs no new version of it.
+rust-version = "1.94"
 name = "reylo-sqlparser"
 version = "0.63.0"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]

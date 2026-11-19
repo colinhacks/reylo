@@ -1,7 +1,7 @@
 diff -ruN a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -1,17 +1,25 @@
+@@ -1,17 +1,27 @@
  [package]
 -name = "pg_query"
 -description = "PostgreSQL parser that uses the actual PostgreSQL server source to parse SQL queries and return the internal PostgreSQL parse tree."
@@ -13,7 +13,9 @@ diff -ruN a/Cargo.toml b/Cargo.toml
 +description = "The PostgreSQL 18 parser of pg_query 18.0.0 and libpg_query 18.1.0, with the fixes Reylo's analysis engine needs that no pg_query release carries yet."
  version = "18.0.0"
  edition = "2021"
-+rust-version.workspace = true
++# Written here, not taken from the workspace: this crate keeps its version across Reylo's releases,
++# so its manifest moves only when the copy does, and a new workspace floor needs no new version of it.
++rust-version = "1.94"
 -documentation = "https://docs.rs/pg_query"
 -license = "MIT"
 -repository = "https://github.com/pganalyze/pg_query.rs"
