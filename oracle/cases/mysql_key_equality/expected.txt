@@ -27,7 +27,12 @@ collation_cs.sql: at_most_one (v: varchar) -> { cs: varchar(≤20) }
 collation_cs_scan.sql: at_most_one (v: varchar) -> { cs: varchar(≤20) }
 collation_cs_user.sql: many () -> { cs: varchar(≤20) }
 collation_latin.sql: at_most_one (v: varchar) -> { latin: varchar(≤20, windows-1252) }
+collation_latin1_bin_cast.sql: many (c: varchar) -> { id: int }
 collation_latin_scan.sql: at_most_one (v: varchar) -> { latin: varchar(≤20, windows-1252) }
+collation_mb3_bin.sql: at_most_one (c: varchar) -> { id: int }
+collation_mb3_bin_cast.sql: many (c: varchar) -> { id: int }
+collation_mb3_bin_cast_concat.sql: many (c: varchar) -> { id: int }
+collation_mb3_bin_cast_lower.sql: many (c: varchar) -> { id: int }
 collation_pad.sql: at_most_one (v: varchar) -> { pad: varchar(≤20) }
 collation_pad_scan.sql: at_most_one (v: varchar) -> { pad: varchar(≤20) }
 column_of_another_collation.sql: many (x: varchar) -> { bin: varchar(≤20) }

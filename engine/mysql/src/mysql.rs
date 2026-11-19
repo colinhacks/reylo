@@ -2840,6 +2840,12 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
     if approximate(e) && has_placeholder(e) {
         return Some(Class::Real);
     }
+    // A cast to a character type takes the connection's collation, as IMPLICIT as a column's, and
+    // between the two the server compares under the wider character set's: a utf8mb3 or latin1 key
+    // beside one compares under the connection's collation, not its own.
+    if casts_to_text(e) {
+        return Some(Class::Other);
+    }
     // `md5` and `sha1` are not here: MySQL 9.7 and 26.7 have neither, and there a stored function
     // of the name answers the call. The same holds in `deterministic`.
     const TEXT: &[&str] = &[
@@ -2883,6 +2889,26 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
         }
         _ => Class::Other,
     })
+}
+
+/// Whether an expression is, or reads through the functions and operators that keep its
+/// collation, a cast or a CONVERT to a character type, a string in a collation of its own.
+fn casts_to_text(e: &Expr) -> bool {
+    let character = |data_type: &ast::DataType| {
+        let target = data_type.to_string().to_ascii_lowercase();
+        ["char", "nchar", "varchar", "nvarchar", "text", "national"].iter().any(|p| target.starts_with(p))
+    };
+    match e {
+        Expr::Cast { data_type, .. } => character(data_type),
+        Expr::Convert { data_type, charset, .. } => charset.is_some() || data_type.as_ref().is_some_and(character),
+        Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } => casts_to_text(inner),
+        Expr::BinaryOp { left, right, .. } => casts_to_text(left) || casts_to_text(right),
+        Expr::Function(f) => match &f.args {
+            ast::FunctionArguments::List(list) => list.args.iter().any(|a| matches!(a, ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) if casts_to_text(x))),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// Whether an expression is a FLOAT or DOUBLE by its form: a cast to one, a literal in scientific
@@ -3134,6 +3160,12 @@ mod tests {
         assert_eq!(card("select id from events where at = '2026-10-04 00:00:00'"), "at_most_one");
         assert_eq!(card("select id from events where at = sysdate()"), "many");
         assert_eq!(card("select id from users where email = lower(?)"), "at_most_one");
+        // A cast to a character type takes the connection's collation, which a key of a narrower
+        // character set is then compared under; bytes compare as they are.
+        assert_eq!(card("select id from users where email = cast(? as char)"), "many");
+        assert_eq!(card("select id from users where email = lower(cast(? as char(10)))"), "many");
+        assert_eq!(card("select id from users where email = concat(convert(? using utf8mb4), '')"), "many");
+        assert_eq!(card("select id from users where email = cast(? as binary)"), "at_most_one");
     }
 
     #[test]

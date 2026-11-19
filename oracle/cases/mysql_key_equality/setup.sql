@@ -14,3 +14,7 @@ create table functional (id int primary key, email varchar(40), unique key lower
 create table hidden (k int primary key auto_increment, id int not null, at timestamp not null, unique key id_key (id) invisible, unique key at_key (at) invisible);
 create table stamped (tenant int not null, at timestamp not null, primary key (tenant, at));
 create view user_names as select id, name from users;
+-- A cast to a character type takes the connection's collation, as IMPLICIT as a column's, and of
+-- the two the wider character set's wins: utf8mb4 over a utf8mb3 or latin1 key, which then compares
+-- under the connection's collation, not its own.
+create table bins (id int primary key, mb3 varchar(10) character set utf8mb3 collate utf8mb3_bin not null unique, l1 varchar(10) character set latin1 collate latin1_bin unique);
