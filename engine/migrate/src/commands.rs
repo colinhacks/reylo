@@ -218,6 +218,11 @@ pub fn set_color(on: bool) {
     COLOR.store(on, Ordering::Relaxed);
 }
 
+/// Whether lines carry ANSI colors.
+pub fn color() -> bool {
+    COLOR.load(Ordering::Relaxed)
+}
+
 pub fn paint(style: &str, text: &str) -> String {
     if !COLOR.load(Ordering::Relaxed) {
         return text.to_string();
@@ -2987,7 +2992,10 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
         written.push(shown(&file));
     }
     match written.as_slice() {
-        [one] if drafted.empty => log(&format!("{} Wrote {one}, empty: {} has nothing new, so it's for a change to data", paint("green", "✓"), drafted.target)),
+        // With schema.sql, any schema change goes there, so an empty migration is for data; with
+        // none, it is as much for a schema change written by hand.
+        [one] if drafted.empty && drafted.target.ends_with(".sql") => log(&format!("{} Wrote {one}, empty: {} has nothing new, so it's for a change to data", paint("green", "✓"), drafted.target)),
+        [one] if drafted.empty => log(&format!("{} Wrote {one}, empty, to write by hand: {} has nothing new", paint("green", "✓"), drafted.target)),
         [one] => log(&format!("{} Wrote {one}", paint("green", "✓"))),
         many => {
             if drafted.lock_safe {
@@ -4229,10 +4237,12 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     // An empty database has no history to start: the first migration is `new`'s. The lock starts
     // empty, holding the checksum of the empty schema.sql the no migrations reach, so the project
     // keeps linear history from its first migration.
+    let spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
     let mut db = Db::open(opts).await?;
     let lines = catalog(&mut db).await;
     db.close().await;
     if !holds_a_schema(&lines?) {
+        drop(spinning);
         std::fs::create_dir_all(&opts.dir)?;
         std::fs::write(&opts.schema, "")?;
         lock::write(&opts.lock, &lock::Lock { schema: Some(lock::schema_sum("", "")), entries: vec![] })?;
@@ -4245,6 +4255,8 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         return Ok(0);
     }
     let sql = schema_as_sql(opts, schemas).await?;
+    // Recording init.sql replays it on a shadow database, which says so itself.
+    drop(spinning);
     let made_dir = !opts.dir.exists();
     std::fs::create_dir_all(&opts.dir)?;
     std::fs::write(&opts.schema, &sql)?;
@@ -4298,6 +4310,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 #[cfg(feature = "cli")]
 pub async fn db_introspect(opts: &Options, schemas: &[String]) -> Result<String, Error> {
     there(opts)?;
+    let _spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
     let mut db = Db::open(opts).await?;
     let result = match catalog(&mut db).await {
         Ok(lines) if holds_a_schema(&lines) => schema_as_sql_on(&mut db, opts, schemas).await,
@@ -5352,7 +5365,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
         log(&format!("{} This database matches {schema} and its migrations", paint("green", "✓")));
     } else {
         log(&format!("{} This database matches {schema}", paint("green", "✓")));
-        log(&format!("{} Not in a migration yet: reylo migrate new <name> writes it", paint("yellow", "!")));
+        log(&paint("dim", "· Not in a migration yet: reylo migrate new <name> writes it"));
     }
     if wrote {
         log(&format!("{} Wrote {}", paint("green", "✓"), shown(&opts.lock)));

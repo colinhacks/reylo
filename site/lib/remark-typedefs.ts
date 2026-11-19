@@ -96,7 +96,9 @@ function renderAnalyzed(card: AnalyzedCard, json: string) {
     .join('\n');
   card.node.name = 'div';
   card.node.attributes = [{ type: 'mdxJsxAttribute', name: 'className', value: 'typedef-analyzed' }];
-  card.node.children = [code('terminal', `$ ${command}\n${shown}`)];
+  // The file first, so each field of the JSON can be read against the statement it describes, its
+  // leading comment included.
+  card.node.children = [code('sql', card.query, `title="${card.file}"`), code('terminal', `$ ${command}\n${shown}`)];
 }
 
 /** The format's version, from its JSON Schema's `$id`, and the path reylo.dev serves that schema at. */

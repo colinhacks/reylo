@@ -158,7 +158,7 @@ if (pg && certs) {
   check("Postgres, NODE_EXTRA_CA_CERTS", `${pg}?sslrootcert=system${client(join(project, "certs"))}`, { tsc: false, env: { NODE_EXTRA_CA_CERTS: join(elsewhere, "root.crt") } });
   // MySQL over TCP and over a named pipe, as mysql2's socketPath names one on Windows; Postgres's
   // socket directory, which Node cannot open on Windows, is refused with what to write instead.
-  check("MySQL over TCP", "mysql://root@127.0.0.1:53306/reylo_windows", { tsc: false });
+  check("MySQL over TCP", "mysql://root@127.0.0.1:23306/reylo_windows", { tsc: false });
   // The engine connects over TCP alone, and the loader bridges a named pipe to it (src/host-url.ts).
   check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`)}`, { tsc: false, analyze: false });
   check("Postgres, a socket directory", "postgres://postgres@/reylo_windows?host=/tmp", { tsc: false, refused: /names the Unix socket \/tmp\/\.s\.PGSQL\.5432, which Node cannot open on Windows/ });

@@ -4,8 +4,8 @@ import Link from 'fumadocs-core/link';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { GitHubIcon, GitHubStar, ThemeRow } from './chrome';
 
-/** A page of the list. `code` writes its title as code, as a page named for a file is (`.reylo.yaml`). */
-export type PageListItem = { title: string; href: string; code?: boolean };
+/** A page of the list. `code` writes its title as code, as a page named for a file is (`.reylo.yaml`); `external` marks a page that leaves the docs, with the links' ↗. */
+export type PageListItem = { title: string; href: string; code?: boolean; external?: boolean };
 
 /** A group of pages, under a label or, with none, the list's main run. */
 export type PageListGroup = { label?: string; items: PageListItem[] };
@@ -45,6 +45,11 @@ function Groups({ list, onPick }: { list: PageList; onPick?: () => void }) {
           {group.items.map((item) => (
             <Link key={item.href} href={item.href} className="dk-pages-item" aria-current={item.href === list.current ? 'page' : undefined} onClick={onPick}>
               {item.code ? <code>{item.title}</code> : item.title}
+              {item.external ? (
+                <span aria-hidden className="dk-pages-out">
+                  ↗
+                </span>
+              ) : null}
             </Link>
           ))}
         </div>

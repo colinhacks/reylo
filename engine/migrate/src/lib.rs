@@ -9,7 +9,8 @@
 //! Postgres, MySQL and SQLite, a libSQL server's (Turso's) among SQLite's (`libsql`). The commands are in `commands`; the comparator is `catalog`; the
 //! lexer that splits and classifies statements is `sql`; the connections and shadows are `db`; the
 //! replays the shadows run are `replay`, which the cache of what they reached (`cache`) shortens;
-//! `lock` is the project's lock file.
+//! `lock` is the project's lock file; `terminal` is the spinner and the SQL's colours an interactive
+//! terminal shows.
 //!
 //! The `cli` feature (on by default) builds every command, with the connections and shadows they
 //! open. Without it, only `reylo migrate deploy` and `reylo migrate status` are built, each run on a
@@ -34,6 +35,7 @@ pub mod locks;
 #[cfg(feature = "cli")]
 mod replay;
 pub mod sql;
+pub mod terminal;
 mod time;
 
 #[cfg(feature = "cli")]

@@ -23,7 +23,7 @@ jobs:
       run:
         shell: bash
     env:
-      PG_PORT: "55432"
+      PG_PORT: "25432"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,12 +77,12 @@ jobs:
           & "$bin\mysqld.exe" --version
           $data = "$env:RUNNER_TEMP\mysql".Replace("\", "/")
           $ini = "$env:RUNNER_TEMP\reylo-mysql.ini"
-          Set-Content $ini "[mysqld]`ndatadir=$data`nport=53306`nbind-address=127.0.0.1`nmysqlx=OFF`nnamed-pipe=ON`nsocket=reylo-mysql`nnamed_pipe_full_access_group=*everyone*`nlog-error=$data.log"
+          Set-Content $ini "[mysqld]`ndatadir=$data`nport=23306`nbind-address=127.0.0.1`nmysqlx=OFF`nnamed-pipe=ON`nsocket=reylo-mysql`nnamed_pipe_full_access_group=*everyone*`nlog-error=$data.log"
           & "$bin\mysqld.exe" "--defaults-file=$ini" --initialize-insecure
           & "$bin\mysqld.exe" --install ReyloMySQL "--defaults-file=$ini"
           Start-Service ReyloMySQL
-          for ($i = 0; $i -lt 60; $i++) { & "$bin\mysqladmin.exe" --user=root --host=127.0.0.1 --port=53306 ping 2>$null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
-          & "$bin\mysql.exe" --user=root --host=127.0.0.1 --port=53306 -e "select version(), @@named_pipe, @@socket; create database reylo_windows; create table reylo_windows.users (id int primary key, name text not null)"
+          for ($i = 0; $i -lt 60; $i++) { & "$bin\mysqladmin.exe" --user=root --host=127.0.0.1 --port=23306 ping 2>$null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
+          & "$bin\mysql.exe" --user=root --host=127.0.0.1 --port=23306 -e "select version(), @@named_pipe, @@socket; create database reylo_windows; create table reylo_windows.users (id int primary key, name text not null)"
       - run: nub install --frozen-lockfile
         working-directory: lab/jest
       # The Jest lab reaches the package through a link into this checkout, a native one, which Git's
@@ -98,21 +98,21 @@ jobs:
       # runner's servers.
       - name: Run the tests
         env:
-          REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
-          REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
+          REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
+          REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
         run: |
           nub run test
       # dist/reylo and dist/engine-win32-x64, around the binary the tests ran.
       - run: nub scripts/build.ts --binary "$REYLO_ENGINE_PATH"
       - name: Type-check a project through the built packages, on SQLite and Postgres
         env:
-          REYLO_WINDOWS_PG: postgres://certuser@127.0.0.1:55432/reylo_windows
+          REYLO_WINDOWS_PG: postgres://certuser@127.0.0.1:25432/reylo_windows
           REYLO_WINDOWS_CERTS: ${{ runner.temp }}\certs
         run: node .github/scripts/windows-check.ts
       - name: The Node example on Postgres
         working-directory: examples/node
         env:
-          DATABASE_URL: postgres://postgres@127.0.0.1:55432/reylo_example
+          DATABASE_URL: postgres://postgres@127.0.0.1:25432/reylo_example
         run: |
           set -euo pipefail
           "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -c "create database reylo_example"
