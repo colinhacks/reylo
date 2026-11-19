@@ -1600,22 +1600,18 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   text-align: center;
 }
 
-/* The mark, large and faint behind the closing section, as behind the hero. */
-.ml-end-mark {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 46rem;
-  max-width: 100%;
-  height: auto;
-  translate: -50% -50%;
-  color: var(--color-fd-primary);
-  opacity: 0.07;
-  pointer-events: none;
+/* A short yellow rule over the closing section's heading. */
+.ml-end-rule {
+  display: block;
+  width: 3rem;
+  height: 3px;
+  margin: 0 auto 2rem;
+  border-radius: 2px;
+  background: var(--color-fd-primary);
 }
 
-.ml-end > :not(.ml-end-mark) {
-  position: relative;
+.dark .ml-end-rule {
+  box-shadow: 0 0 10px rgb(255 184 0 / 0.55);
 }
 
 .ml-docs-primary {
@@ -1679,14 +1675,35 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-foot {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 1.75rem;
-  padding-block: 2rem 3rem;
+  padding-block: 2.5rem 3rem;
   border-top: 1px solid var(--color-fd-border);
   font-size: 0.875rem;
   color: var(--color-fd-muted-foreground);
 }
 
-.ml-foot span {
+/* The credit: Variadic's mark and its name, the foot's first item. */
+.ml-variadic {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-weight: 500;
+  color: var(--color-fd-foreground);
+}
+
+.ml-variadic svg {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+.ml-foot-links {
+  display: flex;
+  gap: 1.75rem;
+}
+
+.ml-license {
   margin-left: auto;
 }
 

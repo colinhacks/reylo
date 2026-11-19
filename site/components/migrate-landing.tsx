@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { HOSTS } from './host-logos';
+import { VARIADIC_SQUARE, VARIADIC_SQUARES } from './variadic-mark';
 import { wordmark } from './wordmark';
 import { githubUrl, migrateDocsUrl } from '@/lib/layout.shared';
 
@@ -79,18 +80,36 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </Row>
 
       <section className="ml-end">
-        <Mark className="ml-end-mark" />
+        <span className="ml-end-rule" aria-hidden="true" />
         <h2>Get started</h2>
         <Install centered />
       </section>
 
       <footer className="ml-foot">
-        <a href={migrateDocsUrl}>Docs</a>
-        <a href="/">Reylo</a>
-        <a href={githubUrl}>GitHub</a>
-        <span>Released under the MIT License.</span>
+        <a className="ml-variadic" href="https://variadic.sh">
+          <VariadicMark />A Variadic project
+        </a>
+        <div className="ml-foot-links">
+          <a href={migrateDocsUrl}>Docs</a>
+          <a href={`${migrateDocsUrl}#cli-reylo-migrate`}>CLI</a>
+          <a href="/">Reylo</a>
+          <a href={githubUrl}>GitHub</a>
+          <a href="https://www.npmjs.com/package/reylo">npm</a>
+        </div>
+        <span className="ml-license">Released under the MIT License.</span>
       </footer>
     </div>
+  );
+}
+
+/** Variadic's mark: its squares, in their own colours. */
+function VariadicMark() {
+  return (
+    <svg viewBox="90 90 332 332" aria-hidden="true">
+      {VARIADIC_SQUARES.map((q) => (
+        <rect key={`${q.x},${q.y}`} x={q.x} y={q.y} width={VARIADIC_SQUARE.size} height={VARIADIC_SQUARE.size} rx={VARIADIC_SQUARE.rx} fill={q.fill} />
+      ))}
+    </svg>
   );
 }
 
