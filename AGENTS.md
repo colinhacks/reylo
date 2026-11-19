@@ -98,12 +98,12 @@ engine/build.sh               # the docs site's playground engine, into target/p
 
 ### Test databases
 
-The tests and the oracle create and drop databases, so point them only at throwaway servers, never at one whose data matters; the oracle refuses ports 5432 and 3306 outright. CI's servers, on ports clear of the defaults:
+The tests and the oracle create and drop databases, so point them only at throwaway servers, never at one whose data matters; the oracle refuses ports 5432 and 3306 outright. CI's servers, on ports clear of the defaults and below the ephemeral range (32768 and up on Linux, 49152 and up on macOS and Windows), where an outgoing connection made just before a server starts can hold its port:
 
 ```sh
-docker run -d --name reylo-pg -p 55432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust pgvector/pgvector:pg18     # postgres://postgres@127.0.0.1:55432/postgres
-docker run -d --name reylo-mysql -p 53306:3306 -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.4     # mysql://root@127.0.0.1:53306
-docker run -d --name reylo-pg-tls -p 55434:5432 -e POSTGRES_PASSWORD=reylo postgres:18 -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key     # postgres://postgres:reylo@127.0.0.1:55434/postgres, as REYLO_TEST_PG_TLS
+docker run -d --name reylo-pg -p 25432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust pgvector/pgvector:pg18     # postgres://postgres@127.0.0.1:25432/postgres
+docker run -d --name reylo-mysql -p 23306:3306 -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.4     # mysql://root@127.0.0.1:23306
+docker run -d --name reylo-pg-tls -p 25434:5432 -e POSTGRES_PASSWORD=reylo postgres:18 -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key     # postgres://postgres:reylo@127.0.0.1:25434/postgres, as REYLO_TEST_PG_TLS
 ```
 
 - The Postgres is pgvector's image of Postgres 18, with the extension installed, for the spec's example of a `vector` column, which `tests/spec-examples.test.ts` skips on a server without it.

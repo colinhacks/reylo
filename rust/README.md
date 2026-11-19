@@ -56,13 +56,13 @@ Every read is exact or an error, never another value, except a `bool` read by a 
 Each demo's statements are typed against its database as it compiles, so a build of the workspace leaves the demos out: each builds only with its `live` feature. `.github/scripts/rust-demos.sh` makes each demo's database from its `schema.sql`, on a throwaway Postgres and MySQL 8.4 (any ports but 5432 and 3306), and builds and runs every demo, as CI does:
 
 ```sh
-REYLO_TEST_PG=postgres://postgres@127.0.0.1:55432/postgres REYLO_TEST_MYSQL=mysql://root@127.0.0.1:53306 .github/scripts/rust-demos.sh
+REYLO_TEST_PG=postgres://postgres@127.0.0.1:25432/postgres REYLO_TEST_MYSQL=mysql://root@127.0.0.1:23306 .github/scripts/rust-demos.sh
 ```
 
 One demo, with its own database:
 
 ```sh
-DATABASE_URL=postgres://postgres@127.0.0.1:55432/rust_demo cargo run -p demo-reylo --features live
+DATABASE_URL=postgres://postgres@127.0.0.1:25432/rust_demo cargo run -p demo-reylo --features live
 ```
 
 Where the database cannot be reached (the server down, the file gone) or no URL is set, the macro reads the analysis `reylo/.cache/` holds, so a crate built once builds again offline.
