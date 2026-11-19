@@ -308,7 +308,7 @@ test("ClickHouse: an error is the server's, whether the statement fails at once 
 });
 
 const SCHEMA = `CREATE TABLE users (id UInt64, name String, email Nullable(String), age UInt8, balance Decimal(18, 4), created DateTime64(3, 'UTC'), role Enum8('admin' = 1, 'member' = 2), tags Array(String), meta Map(String, UInt32), spot Tuple(x Float64, y Float64), plan LowCardinality(String)) ENGINE = MergeTree ORDER BY id;
-CREATE TABLE orders (id UInt64, user_id UInt64, total Decimal(18, 2), note Nullable(String)) ENGINE = MergeTree ORDER BY id;
+CREATE TABLE orders (id UInt64, user_id UInt64, total Decimal(18, 2), note Nullable(String)) ENGINE = MergeTree ORDER BY id SETTINGS enable_block_number_column = 1, enable_block_offset_column = 1;
 INSERT INTO users VALUES (1, 'ada', NULL, 36, 1.5, '2026-01-02 03:04:05.678', 'admin', ['a', 'b'], map('logins', 3), (1.5, 2.5), 'pro'), (2, 'bob', 'bob@example.com', 41, 2.25, '2026-01-03 00:00:00', 'member', [], map(), (0, 0), 'free');
 INSERT INTO orders VALUES (10, 1, 9.99, 'first')`;
 
@@ -535,6 +535,10 @@ test("ClickHouse: a write returns no rows, and is checked against its table", { 
     const remove = await built(root, "remove", files["remove.sql"]);
     await remove.run(db.client, { id: 10 });
     assert.deepEqual(await read.run(db.client, {}), [{ id: 11n, total: "5.25", note: null }]);
+    // An UPDATE runs where its table keeps the two block columns a lightweight update needs, as this one does.
+    const set = await built(root, "set", files["set.sql"]);
+    assert.equal(await set.run(db.client, { id: 11, note: "paid", more: "1.5" }), undefined);
+    assert.deepEqual(await read.run(db.client, {}), [{ id: 11n, total: "6.75", note: "paid" }]);
   } finally {
     await db.drop();
   }
