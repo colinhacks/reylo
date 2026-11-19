@@ -35,8 +35,10 @@ pub(crate) fn set_of(labels: Option<Vec<String>>) -> Type {
 }
 
 /// The labels of an `ENUM` or a `SET` column as `information_schema.columns` writes its
-/// `column_type`: `enum('it''s','a\\b')`, each label quoted, a quote inside it doubled and a
-/// backslash escaped. None for text of any other form.
+/// `column_type`: `enum('it''s','a\\b','x\ny')`, each label quoted, a quote inside it doubled, and
+/// a backslash, a line feed, a carriage return and a NUL written as a backslash and `\`, `n`, `r`
+/// or `0` (and `Z` for 0x1A, as a MySQL string reads it, which the server does not write there).
+/// None for text of any other form.
 pub(crate) fn labels(column_type: &str) -> Option<Vec<String>> {
     let open = column_type.find('(')?;
     let body = column_type[open + 1..].strip_suffix(')')?;
@@ -56,7 +58,13 @@ pub(crate) fn labels(column_type: &str) -> Option<Vec<String>> {
                     label.push('\'');
                 }
                 '\'' => break,
-                '\\' => label.push(chars.next()?),
+                '\\' => label.push(match chars.next()? {
+                    'n' => '\n',
+                    'r' => '\r',
+                    '0' => '\0',
+                    'Z' => '\u{1a}',
+                    c => c,
+                }),
                 c => label.push(c),
             }
         }
@@ -481,6 +489,8 @@ mod tests {
     fn an_enums_and_a_sets_labels_are_read_from_the_column_type_the_catalog_writes() {
         assert_eq!(labels("enum('it''s','a\\\\b','x,y','\u{dc}n\u{ef}','')"), Some(vec!["it's".to_string(), "a\\b".into(), "x,y".into(), "\u{dc}n\u{ef}".into(), "".into()]));
         assert_eq!(labels("set('a','b c')"), Some(vec!["a".to_string(), "b c".into()]));
+        // A line feed, a carriage return and a NUL as 8.4.11 writes them; a tab and 0x1A it writes as they are.
+        assert_eq!(labels("enum('a\\nb','cr\\rx','n\\0ul','t\tab','z\u{1a}z')"), Some(vec!["a\nb".to_string(), "cr\rx".into(), "n\0ul".into(), "t\tab".into(), "z\u{1a}z".into()]));
         assert_eq!(labels("varchar(10)"), None);
         assert_eq!(labels("enum('a'"), None);
     }
