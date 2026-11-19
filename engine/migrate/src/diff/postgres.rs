@@ -385,16 +385,23 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         if r.text("kind") == "e" {
             for c in db
                 .rows(&format!(
-                    "select format('%I.%I', n.nspname, c.relname) as rel, format('%I', a.attname) as col, format_type(a.atttypid, a.atttypmod) as type, pg_get_expr(d.adbin, d.adrelid) as def
+                    "select format('%I.%I', n.nspname, c.relname) as rel, format('%I', a.attname) as col, format_type(a.atttypid, a.atttypmod) as type, pg_get_expr(d.adbin, d.adrelid) as def,
+                      a.attislocal and a.attinhcount = 0 as own
                     from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
-                    where c.relkind in ('r', 'p') and not a.attisdropped and a.attnum > 0 and a.attislocal and a.attinhcount = 0
+                    where c.relkind in ('r', 'p') and not a.attisdropped and a.attnum > 0
                       and (a.atttypid = {0} or a.atttypid = (select t.typarray from pg_type t where t.oid = {0}))
                     order by 1, 2",
                     r.text("oid")
                 ))
                 .await?
             {
-                extra.push([c.text("rel"), c.text("col"), c.text("type"), c.text("def")].join(SEP));
+                // A column a table has of its own converts with the type; one it holds from another
+                // (a partition's, a child's) converts with that one's, and is kept all the same.
+                if c.flag("own") {
+                    extra.push([c.text("rel"), c.text("col"), c.text("type"), c.text("def")].join(SEP));
+                } else {
+                    extra.push(format!("{HELD_COLUMN}{}{SEP}{}", c.text("rel"), c.text("col")));
+                }
             }
         }
         // A check left unvalidated is added after the domain is made, which can't take one.
@@ -2915,8 +2922,12 @@ const ATTRIBUTE: &str = "attribute of ";
 /// Whether a line an enum carries is one of its columns (its table, name, type and default), not
 /// what else it carries.
 fn is_column_line(l: &str) -> bool {
-    ![AROUND, AGAIN, USES, DOMAIN, ATTRIBUTE, PARTITION_KEY, TYPED_TABLE].iter().any(|p| l.starts_with(p))
+    ![AROUND, AGAIN, USES, DOMAIN, ATTRIBUTE, PARTITION_KEY, TYPED_TABLE, HELD_COLUMN].iter().any(|p| l.starts_with(p))
 }
+
+/// What an enum carries of a column of it a table holds from another (a partition's, a child's):
+/// its table and its name.
+const HELD_COLUMN: &str = "held column ";
 
 /// What an enum a composite type has an attribute of carries for each table made of that type: the
 /// table and the type. The table leaves its type around the enum's making again, its column
@@ -3859,6 +3870,12 @@ impl Alterer for PostgresAlterer {
                 }
                 Some(out)
             }
+            // A table's own column that is to be a partition's changes as any column's, before the
+            // table is attached: its type, its identity, as its partitioned table's has them.
+            Kind::Column if to.extra.iter().any(|l| l == "partition") && !from.extra.iter().any(|l| l == "partition") => {
+                let plain = |o: &Object| Object { extra: o.extra.iter().filter(|l| *l != "partition" && *l != "partitioned").cloned().collect(), ..o.clone() };
+                self.alter(&plain(from), &plain(to))
+            }
             Kind::Column if to.extra.iter().any(|l| l == "partition") => {
                 let (a, b) = (parse_column(&from.def), parse_column(&to.def));
                 // A default set on a partitioned table alone, which its partitions say for themselves.
@@ -4095,7 +4112,10 @@ impl Alterer for PostgresAlterer {
                         let (Some(t), Some(n)) = (f.next(), f.next()) else { return false };
                         carried(to, DOMAIN).iter().any(|d| d.get(3..).unwrap_or_default().chunks(4).any(|u| u.len() == 4 && u[0] == t && u[1] == n))
                     };
-                    let kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))) || entering(c)).cloned().collect();
+                    // A column the target holds from another table (one that is to be a partition)
+                    // is one both have.
+                    let held = |c: &str| to.extra.iter().filter_map(|l| l.strip_prefix(HELD_COLUMN)).any(|h| h.splitn(2, SEP).eq(c.splitn(3, SEP).take(2)));
+                    let kept: Vec<String> = from.extra.iter().filter(plain).filter(|c| to.extra.iter().filter(plain).any(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))) || entering(c) || held(c)).cloned().collect();
                     // Each with the default the target gives it, which is set back where unchanged.
                     let targets: Vec<String> = kept.iter().filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))).cloned()).collect();
                     let mut swap = swap_enum(name, &to.create[0], &kept, &targets);
@@ -4255,8 +4275,8 @@ impl Alterer for PostgresAlterer {
                         }
                     }
                 }
-                out.extend(constraints_carried(from, to).2);
                 out.extend(columns_joined(from, to).into_iter().map(|(_, add)| add));
+                out.extend(constraints_carried(from, to).2);
                 if was != is {
                     if let Some((parent, bound)) = is.as_deref().and_then(split_qualified) {
                         out.extend(made_before_attach(from, to).into_iter().map(|(_, def, _)| def));

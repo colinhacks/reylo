@@ -1121,6 +1121,16 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     }
                     None => needs.extend(o.owner.iter()),
                 }
+                // A column the table had of its own, which another's new column is to merge with (a
+                // parent's added), changes first: the server merges only columns alike.
+                if matches!(op, Op::Alter(_)) && taken_from_another {
+                    for d in o.deps.iter().filter(|d| to.objects.get(*d).is_some_and(|c| c.kind == Some(Kind::Column) && c.owner != o.owner) && !from.objects.contains_key(*d)) {
+                        needs.remove(d);
+                        if let Some(j) = find(Op::Create(d.clone())) {
+                            after[j].insert(k);
+                        }
+                    }
+                }
                 if matches!(op, Op::Create(_)) {
                     needs.extend(o.after.iter());
                 }
@@ -1198,6 +1208,15 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                                     after[k].insert(j);
                                 }
                             }
+                        }
+                    }
+                }
+                // A change that converts columns after their tables leave what held them (a typed
+                // table's type), which refused the conversion.
+                if matches!(op, Op::Alter(_)) {
+                    for c in converted.get(id.as_str()).into_iter().flatten() {
+                        if let Some(j) = from.objects.get(c).and_then(|c| c.owner.clone()).filter(|w| releases(w)).and_then(|w| find(Op::Alter(w))) {
+                            after[k].insert(j);
                         }
                     }
                 }
@@ -1297,10 +1316,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     let column_kept = from.objects.get(id.as_str()).is_some_and(|o| o.kind == Some(Kind::Column)) && !remade.contains(id.as_str());
                     // What the change lets go of is dropped after it.
                     let released = |d: &str| releases(id) && from.objects[d].owner.as_deref() == Some(id.as_str()) && held_by_another(d);
-                    for dependent in dependents.get(id.as_str()).into_iter().flatten().filter(|d| from.objects[**d].kind != Some(Kind::SequenceOwner) && !(column_kept && from.objects[**d].kind == Some(Kind::Function)) && !released(**d)) {
+                    for dependent in dependents.get(id.as_str()).into_iter().flatten().filter(|d| !matches!(from.objects[**d].kind, Some(Kind::SequenceOwner | Kind::Sequence)) && !(column_kept && from.objects[**d].kind == Some(Kind::Function)) && !released(**d)) {
                         let mut reach = vec![*dependent];
                         if from.objects[*dependent].kind == Some(Kind::Column) {
-                            reach.extend(dependents.get(dependent).into_iter().flatten());
+                            reach.extend(dependents.get(dependent).into_iter().flatten().filter(|d| !matches!(from.objects[**d].kind, Some(Kind::SequenceOwner | Kind::Sequence))));
                         }
                         for d in reach {
                             if let Some(j) = drop_of(d) {
@@ -1394,10 +1413,15 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     if let Some(j) = find(Op::Unhook(dependent.to_string())) {
                         after[k].insert(j);
                     }
-                    // A dependent renamed changes under its new name.
+                    // A dependent renamed changes under its new name. A child's column this one's drop
+                    // leaves (one it declares too) changes after, no longer held.
                     let now = renamed_as.get(*dependent).map(|n| n.to_string()).unwrap_or_else(|| dependent.to_string());
                     if let Some(j) = find(Op::Alter(now)) {
-                        after[k].insert(j);
+                        if goes_along(dependent) {
+                            after[j].insert(k);
+                        } else {
+                            after[k].insert(j);
+                        }
                     }
                 }
             }
