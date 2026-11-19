@@ -1,6 +1,6 @@
 //! The diff engine's cases, `tests/diff/<database>/<case>/`: `v1.sql` (with `seed.sql`'s rows) is
 //! the database as it is, `v2.sql` the schema it should have. Each case builds both, plans from
-//! one to the other, runs the plan on the first in one transaction, and requires its catalog to equal the second's
+//! one to the other, runs the plan on the first as a deploy runs its files, and requires its catalog to equal the second's
 //! and every table both have to keep its own rows, value for value (a partitioned table's are its partitions'); `server.sql`, where a case has one, makes what it
 //! needs of the server itself (a role), and `check.sql` runs after the plan, so a case can require
 //! what no catalog shows (an identity that gives an unused value next). Planned again after it, the
@@ -11,7 +11,7 @@
 
 use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::{with_database, Db};
-use reylo_migrate::diff;
+use reylo_migrate::{diff, locks, sql::runs_alone, Dialect};
 use std::path::{Path, PathBuf};
 
 fn cases(dialect: &str) -> Vec<PathBuf> {
@@ -114,13 +114,12 @@ fn read(path: &Path) -> String {
 }
 
 /// Takes `db` to `target` as the corpus's forward leg does: a moved table first, then the plan in
-/// schema.sql's style, all in one transaction. Gives the statements and the one that failed.
+/// schema.sql's style, as its files. Gives the statements and the one that failed.
 async fn apply(db: &mut Db, target: &diff::Schema, alterer: &diff::postgres::PostgresAlterer) -> (Vec<String>, Option<String>) {
     let current = diff::postgres::read(db).await.unwrap();
     let mut moves = diff::postgres::moves(&current, target);
     diff::postgres::style_statements(db, &mut moves, &target.verbatim).await.unwrap();
     let mut failed = None;
-    db.exec("begin").await.unwrap();
     for s in &moves {
         if let Err(e) = db.exec(s).await {
             failed = Some(format!("{s}: {e}"));
@@ -128,18 +127,33 @@ async fn apply(db: &mut Db, target: &diff::Schema, alterer: &diff::postgres::Pos
     }
     let mut plan = diff::plan(&diff::postgres::read(db).await.unwrap(), target, alterer);
     diff::postgres::style(db, &mut plan, &target.verbatim).await.unwrap();
-    for s in plan.runnable().take(if failed.is_some() { 0 } else { usize::MAX }) {
-        if let Err(e) = db.exec(s).await {
-            failed = Some(format!("{s}: {e}"));
-            break;
-        }
-    }
-    if failed.is_some() {
-        db.exec("rollback").await.unwrap();
-    } else if let Err(e) = db.exec("commit").await {
-        failed = Some(format!("commit: {e}"));
+    let existing = locks::existing_tables(db).await.unwrap();
+    if failed.is_none() {
+        failed = run_files(db, &files_of(&plan, &existing)).await;
     }
     (moves.into_iter().chain(plan.statements).collect(), failed)
+}
+
+/// The plan as the files `reylo migrate new` writes: one, or several in the lock-safe shape or
+/// where the plan commits partway.
+fn files_of(plan: &diff::Plan, existing: &std::collections::BTreeSet<String>) -> Vec<String> {
+    match locks::lock_safe(plan, existing) {
+        Some(files) => locks::file_texts(plan, &files),
+        None => vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")],
+    }
+}
+
+/// Runs files as a deploy runs them: each in a transaction of its own, but one that can't run in a
+/// transaction (an index built concurrently). The file that failed, and why.
+async fn run_files(db: &mut Db, files: &[String]) -> Option<String> {
+    for file in files {
+        let sql = if runs_alone(file, Dialect::Postgres) { file.clone() } else { format!("begin;\n{file}\ncommit;") };
+        if let Err(e) = db.exec(&sql).await {
+            let _ = db.exec("rollback").await;
+            return Some(format!("{file}: {e}"));
+        }
+    }
+    None
 }
 
 /// What a second plan from `db` to `target` runs: nothing, after a plan that reached it.
@@ -203,31 +217,36 @@ async fn postgres() {
                 *t = new.clone();
             }
         }
-        // The plan runs in one transaction, as a migration and a push run it: what Postgres
-        // refuses within one (a label added and used) fails here too.
         let mut failed = None;
-        from.exec("begin").await.unwrap();
         for s in &moves {
             if let Err(e) = from.exec(s).await {
                 failed = Some(format!("{s}: {e}"));
             }
         }
         let mut plan = diff::plan(&diff::postgres::read(&mut from).await.unwrap(), &target, &alterer);
-        // Written as `create` writes it, in schema.sql's style, and run as written.
+        // Written as `create` writes it, in schema.sql's style and in the lock-safe shape where a
+        // statement would block writes to a table with rows while it reads them all, and run as
+        // written: each file in a transaction of its own, but an index built concurrently.
         diff::postgres::style(&mut from, &mut plan, &target.verbatim).await.unwrap();
-        for s in plan.runnable().take(if failed.is_some() { 0 } else { usize::MAX }) {
-            if let Err(e) = from.exec(s).await {
-                failed = Some(format!("{s}: {e}"));
-                break;
+        let existing = locks::existing_tables(&mut from).await.unwrap();
+        let files = files_of(&plan, &existing);
+        if failed.is_none() {
+            failed = run_files(&mut from, &files).await;
+        }
+        let split = locks::lock_safe(&plan, &existing).is_some();
+        plan.statements.splice(0..0, moves.clone());
+        // Several files show one after another, each under a line naming it.
+        let text = if split && files.len() > 1 {
+            let mut out = moves.iter().map(|m| format!("{m};\n")).collect::<String>();
+            for (k, file) in files.iter().enumerate() {
+                out.push_str(&format!("-- file {} of {}\n{file}", k + 1, files.len()));
             }
-        }
-        if failed.is_some() {
-            from.exec("rollback").await.unwrap();
-        } else if let Err(e) = from.exec("commit").await {
-            failed = Some(format!("commit: {e}"));
-        }
-        plan.statements.splice(0..0, moves);
-        let text = plan.sql();
+            out
+        } else if split {
+            moves.iter().map(|m| format!("{m};\n")).collect::<String>() + &files[0]
+        } else {
+            plan.sql()
+        };
         let (mut only_a, mut only_b) = difference(&catalog(&mut from).await.unwrap(), &catalog(&mut to).await.unwrap());
         let (pa, pb) = (unread(&mut from).await, unread(&mut to).await);
         only_a.extend(pa.iter().filter(|l| !pb.contains(l)).cloned());

@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// An identifier as Postgres's `quote_ident` writes it: bare when it is lowercase and no keyword
 /// but an unreserved one.
-pub(super) fn quote_ident(name: &str) -> String {
+pub(crate) fn quote_ident(name: &str) -> String {
     let bare = name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '$')
         && !pg_query::scan(name).ok().and_then(|r| r.tokens.first().map(|t| t.keyword_kind)).is_some_and(|k| k > protobuf::KeywordKind::UnreservedKeyword as i32);
