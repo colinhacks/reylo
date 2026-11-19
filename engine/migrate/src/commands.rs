@@ -3943,27 +3943,44 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             }
             // Foreign data wrappers and servers, which are in no schema, so pg_dump writes them only for a
             // whole database: what the dumped schemas' foreign tables are made on, an extension's and the
-            // platform's own aside. User mappings stay out, since their options hold passwords. They are
-            // made after the functions a wrapper names as its handler or validator, and before the foreign
-            // tables made on a server, both of which pg_dump writes: where its first foreign table is.
-            let mut foreign: Vec<String> = Vec::new();
+            // platform's own aside, each with its grants, an owner that isn't the runner, and its comment.
+            // User mappings stay out, since their options hold passwords. They are made after the
+            // functions a wrapper names as its handler or validator, and before the foreign tables made
+            // on a server, both of which pg_dump writes: where its first foreign table is.
+            let me = "(select oid from pg_roles where rolname = current_user)";
             let options = |column: &str| format!("coalesce(' OPTIONS (' || (select string_agg(format('%I %L', split_part(x, '=', 1), substr(x, strpos(x, '=') + 1)), ', ') from unnest({column}) x) || ')', '')");
+            // Granted before the owner is set, which then grants them as the owner.
+            let grants = |acl: &str, owner: &str, on: &str, name: &str| {
+                format!(
+                    "coalesce((select array_agg(format('GRANT %s ON {on} %I TO %s%s', x.privilege_type, {name}, case when x.grantee = 0 then 'PUBLIC' else quote_ident(pg_get_userbyid(x.grantee)) end,
+                        case when x.is_grantable then ' WITH GRANT OPTION' else '' end) order by x.grantee, x.privilege_type) from aclexplode({acl}) x where x.grantee <> {owner}), '{{}}')"
+                )
+            };
+            let mut foreign: Vec<String> = Vec::new();
             for r in db
                 .rows(&format!(
-                    "select 0 as k, w.oid as id, format('CREATE FOREIGN DATA WRAPPER %I', w.fdwname) || coalesce(' HANDLER ' || nullif(w.fdwhandler::oid, 0)::regproc::text, '')
-                        || coalesce(' VALIDATOR ' || nullif(w.fdwvalidator::oid, 0)::regproc::text, '') || {} as s
+                    "select o.k, o.id, u.s from (
+                      select 0 as k, w.oid as id, array[format('CREATE FOREIGN DATA WRAPPER %I', w.fdwname) || coalesce(' HANDLER ' || nullif(w.fdwhandler::oid, 0)::regproc::text, '')
+                        || coalesce(' VALIDATOR ' || nullif(w.fdwvalidator::oid, 0)::regproc::text, '') || {}] || {}
+                        || array[case when w.fdwowner <> {me} then format('ALTER FOREIGN DATA WRAPPER %I OWNER TO %I', w.fdwname, pg_get_userbyid(w.fdwowner)) end,
+                          case when obj_description(w.oid, 'pg_foreign_data_wrapper') is not null then format('COMMENT ON FOREIGN DATA WRAPPER %I IS %L', w.fdwname, obj_description(w.oid, 'pg_foreign_data_wrapper')) end] as ss
                       from pg_foreign_data_wrapper w where {} and {}
                     union all
-                    select 1, s.oid, format('CREATE SERVER %I', s.srvname) || coalesce(' TYPE ' || quote_literal(s.srvtype), '') || coalesce(' VERSION ' || quote_literal(s.srvversion), '')
-                        || format(' FOREIGN DATA WRAPPER %I', w.fdwname) || {}
-                      from pg_foreign_server s join pg_foreign_data_wrapper w on w.oid = s.srvfdw where {} and {}
-                    order by k, id",
+                      select 1, sv.oid, array[format('CREATE SERVER %I', sv.srvname) || coalesce(' TYPE ' || quote_literal(sv.srvtype), '') || coalesce(' VERSION ' || quote_literal(sv.srvversion), '')
+                        || format(' FOREIGN DATA WRAPPER %I', w.fdwname) || {}] || {}
+                        || array[case when sv.srvowner <> {me} then format('ALTER SERVER %I OWNER TO %I', sv.srvname, pg_get_userbyid(sv.srvowner)) end,
+                          case when obj_description(sv.oid, 'pg_foreign_server') is not null then format('COMMENT ON SERVER %I IS %L', sv.srvname, obj_description(sv.oid, 'pg_foreign_server')) end]
+                      from pg_foreign_server sv join pg_foreign_data_wrapper w on w.oid = sv.srvfdw where {} and {}
+                    ) o, unnest(o.ss) with ordinality u(s, n) where u.s is not null
+                    order by o.k, o.id, u.n",
                     options("w.fdwoptions"),
+                    grants("w.fdwacl", "w.fdwowner", "FOREIGN DATA WRAPPER", "w.fdwname"),
                     crate::catalog::not_extension("pg_foreign_data_wrapper", "w"),
                     crate::catalog::not_platform("w.fdwowner"),
-                    options("s.srvoptions"),
-                    crate::catalog::not_extension("pg_foreign_server", "s"),
-                    crate::catalog::not_platform("s.srvowner")
+                    options("sv.srvoptions"),
+                    grants("sv.srvacl", "sv.srvowner", "FOREIGN SERVER", "sv.srvname"),
+                    crate::catalog::not_extension("pg_foreign_server", "sv"),
+                    crate::catalog::not_platform("sv.srvowner")
                 ))
                 .await?
             {
@@ -3989,7 +4006,6 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             // Event triggers and publications, which are in no schema, so pg_dump writes neither for a
             // schema (and publications not at all here): the project's, which are compared, after the
             // functions and tables they name, an extension's and the platform's own aside.
-            let me = "(select oid from pg_roles where rolname = current_user)";
             let (columns, schemas) = if version >= 150000 {
                 (
                     "coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = c.oid and a.attnum = any(pr.prattrs::int2[])) || ')', '') || coalesce(' WHERE (' || pg_get_expr(pr.prqual, c.oid) || ')', '')",

@@ -2810,7 +2810,7 @@ on!(
 on!(Mysql, a_recurring_event_is_in_the_dump);
 on!(Mysql, init_makes_a_function_before_the_view_that_calls_it);
 on!(Postgres, init_writes_the_foreign_servers_its_tables_use);
-on!(Postgres, init_keeps_a_publications_generated_columns, init_makes_a_wrapper_after_the_functions_it_names);
+on!(Postgres, init_keeps_a_publications_generated_columns, init_makes_a_wrapper_after_the_functions_it_names, init_writes_a_wrappers_and_servers_grants_owner_and_comment);
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
@@ -4095,6 +4095,24 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(q.history().await, ["init.sql"]);
         assert_eq!(q.rows("select 1 from pg_foreign_data_wrapper where fdwname = 'review_fdw' and fdwvalidator = 'validate_options'::regproc").await.len(), 1);
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// What the comparison reads of a wrapper and a server beside their definitions: their grants, an
+    /// owner that isn't the runner, and their comments. The roles are Postgres's own, so that no role
+    /// is made.
+    pub async fn init_writes_a_wrappers_and_servers_grants_owner_and_comment(mut p: P) {
+        p.exec("create table t (id int); create foreign data wrapper review_fdw; create server review_remote foreign data wrapper review_fdw").await;
+        p.exec("grant usage on foreign data wrapper review_fdw to pg_monitor; comment on foreign data wrapper review_fdw is 'remote wrapper'").await;
+        p.exec("grant usage on foreign server review_remote to pg_monitor with grant option; comment on server review_remote is 'remote server'; alter server review_remote owner to pg_read_all_data").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        let read = "select format('%s %s %s %s', pg_get_userbyid(srvowner), has_server_privilege('pg_monitor', oid, 'usage with grant option'), obj_description(oid, 'pg_foreign_server'),
+            (select format('%s %s', has_foreign_data_wrapper_privilege('pg_monitor', w.oid, 'usage'), obj_description(w.oid, 'pg_foreign_data_wrapper')) from pg_foreign_data_wrapper w where w.oid = srvfdw)) as s
+          from pg_foreign_server where srvname = 'review_remote'";
+        assert_eq!(q.rows(read).await[0].text("s"), "pg_read_all_data t remote server t remote wrapper");
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
