@@ -3137,7 +3137,7 @@ mod adversarial {
         let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
         let said = out.join("\n");
         assert_eq!(code, 1, "{said}");
-        assert_has!(said.clone(), r"init\.sql fails when replayed in a shadow database");
+        assert_has!(said.clone(), r"Replaying init\.sql in a shadow database fails");
         assert_has!(said.clone(), r"Nothing was changed\.$");
         assert!(!said.contains("Started"), "{said}");
         assert!(!p.dir.join("schema.sql").exists(), "init left schema.sql:\n{said}");
