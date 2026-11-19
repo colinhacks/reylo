@@ -132,11 +132,12 @@ async fn sqlite() {
 
 /// Every SQLite schema the oracle's cases set up (`oracle/cases/<case>/setup.sql` where `dialect`
 /// says `sqlite`), built from an empty database by its plan, and dropped back to an empty one by the
-/// plan the other way: each direction must end with the other side's catalog.
+/// plan the other way: each direction must end with the other side's catalog. A case with a `libsql`
+/// file is left out: its schema is libSQL's own (a vector index), which SQLite cannot make.
 #[tokio::test(flavor = "current_thread")]
 async fn sqlite_oracle_schemas() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oracle/cases");
-    let cases = only(std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("setup.sql").exists() && read(&p.join("dialect")).trim() == "sqlite").collect());
+    let cases = only(std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("setup.sql").exists() && read(&p.join("dialect")).trim() == "sqlite" && !p.join("libsql").exists()).collect());
     let (mut failures, mut skipped, mut passed) = (Vec::new(), Vec::new(), 0);
     for case in &cases {
         let name = case.file_name().unwrap().to_string_lossy().into_owned();
