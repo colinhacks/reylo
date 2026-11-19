@@ -13,6 +13,7 @@ description: How Reylo types SQL queries on ClickHouse. Each column's type in Ty
 | Connection | A `clickhouse+http://` or `clickhouse+https://` URL, the server's HTTP interface, in `DATABASE_URL` or [`direct_url`](/configuration#direct_url) |
 | Client | `@clickhouse/client` or `@clickhouse/client-web` ([Client](#client)) |
 | Type checking | Reylo's engine asks ClickHouse itself, over HTTP, so your project needs no client for it |
+| Example | [clickhouse](https://github.com/reylosql/reylo/tree/main/examples/clickhouse), a Node project on `@clickhouse/client` with a lookup, a join, an insert and a delete |
 
 <Details summary="View the schema behind the examples" id="schema">
 
