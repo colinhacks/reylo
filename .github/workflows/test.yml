@@ -566,6 +566,9 @@ jobs:
           --health-retries 60
     env:
       PG_BIN: /usr/lib/postgresql/19/bin
+      # Postgres 19, and the libraries the cached PostGIS links at run time, GEOS, PROJ and json-c, which the
+      # runner image doesn't have.
+      PG19_DEBS: postgresql-19 libgeos-c1t64 libproj25 libjson-c5
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
@@ -582,18 +585,19 @@ jobs:
         id: debs
         run: |
           test -n "$ImageOS" && test -n "$ImageVersion"
-          echo "key=postgres-19-debs-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "key=postgres-19-debs-$ImageOS-$ImageVersion-$(echo "$PG19_DEBS" | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: debs-cache
         with:
           path: ~/postgres-debs
           key: ${{ steps.debs.outputs.key }}
-      - name: Download Postgres 19
+      - name: Download Postgres 19 and PostGIS's libraries
         if: steps.debs-cache.outputs.cache-hit != 'true'
         run: |
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
           mkdir -p ~/postgres-debs/partial
-          sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$HOME/postgres-debs" postgresql-19
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$HOME/postgres-debs" $PG19_DEBS
           sudo rm -rf ~/postgres-debs/partial ~/postgres-debs/lock
           sudo chown -R "$USER" ~/postgres-debs
       - if: steps.debs-cache.outputs.cache-hit != 'true'
@@ -601,7 +605,7 @@ jobs:
         with:
           path: ~/postgres-debs
           key: ${{ steps.debs.outputs.key }}
-      - name: Install Postgres 19
+      - name: Install Postgres 19 and PostGIS's libraries
         id: pg
         run: |
           sudo DEBIAN_FRONTEND=noninteractive dpkg -i ~/postgres-debs/*.deb
