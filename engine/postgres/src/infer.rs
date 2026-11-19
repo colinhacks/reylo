@@ -311,8 +311,9 @@ pub enum Expr {
     /// Column `n` of the leaf probe: a column reference, answered by its provenance.
     Leaf(usize),
     /// Column `n` of the leaf probe, read as the whole row of this relation: non-null when the
-    /// probe says it is that relation's row type (and so not a column that shares the alias's
-    /// name), because a row of a table that no outer join nulls always exists.
+    /// probe describes it as the relation's whole row ([`DescribedColumn::own_row`]), and so not a
+    /// column that shares the alias's name, of a type of that name or any other, because a row of
+    /// a table that no outer join nulls always exists.
     Row(usize, String),
     /// Non-null when every operand is: an operator, a cast, a `CASE` with an `ELSE`.
     Every(Vec<Expr>, Ty),
@@ -891,8 +892,8 @@ pub fn resolve(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> Fact {
             Some(col) => Fact { non_null: !col.nullable, type_oid: (col.type_oid != oid::UNKNOWN).then_some(col.type_oid) },
             None => NOTHING,
         },
-        Expr::Row(i, relation) => match leaves.and_then(|l| l.get(*i)) {
-            Some(col) => Fact { non_null: !col.nullable || col.type_name == *relation, type_oid: (col.type_oid != oid::UNKNOWN).then_some(col.type_oid) },
+        Expr::Row(i, _) => match leaves.and_then(|l| l.get(*i)) {
+            Some(col) => Fact { non_null: !col.nullable || col.own_row, type_oid: (col.type_oid != oid::UNKNOWN).then_some(col.type_oid) },
             None => NOTHING,
         },
         Expr::Every(operands, ty) => {
@@ -3829,7 +3830,7 @@ impl WrittenReturning {
                         WrittenLeaf::Selected(i) => selected(*i),
                         WrittenLeaf::Other => false,
                     };
-                    DescribedColumn { name: String::new(), type_oid: oid::UNKNOWN, typmod: -1, type_name: String::new(), nullable: !non_null, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
+                    DescribedColumn { name: String::new(), type_oid: oid::UNKNOWN, typmod: -1, type_name: String::new(), nullable: !non_null, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: false }
                 })
                 .collect();
             (!value.cast || uncast(column)) && resolve(&value.claim, Some(&leaves)).non_null
@@ -4368,7 +4369,7 @@ mod tests {
     }
 
     fn col(nullable: bool, type_oid: u32) -> DescribedColumn {
-        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
+        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: false }
     }
 
     #[test]
@@ -5328,11 +5329,14 @@ mod tests {
         assert_eq!(p.head[0], Some(Expr::Row(0, "users".to_string())));
         assert_eq!(p.head[1], None);
         assert_eq!(p.leaves.as_deref(), Some("SELECT u AS a0 FROM users u WHERE u.id = NULL"));
-        // The probe says whether it was the row after all: a column named like the alias is not.
-        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
-        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
+        // The probe says whether it was the row after all: a column named like the alias is not,
+        // whatever its type is named.
+        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: true };
+        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: false };
+        let named_alike = DescribedColumn { type_oid: 16600, type_name: "users".into(), ..column.clone() };
         assert!(resolve(p.head[0].as_ref().unwrap(), Some(&[row])).non_null);
         assert!(!resolve(p.head[0].as_ref().unwrap(), Some(&[column])).non_null);
+        assert!(!resolve(p.head[0].as_ref().unwrap(), Some(&[named_alike])).non_null);
         assert_eq!(pg("SELECT p FROM users u LEFT JOIN posts p ON p.user_id = u.id").head[0], None);
         assert_eq!(pg("SELECT s FROM (SELECT 1 AS a) s").head[0], None);
     }

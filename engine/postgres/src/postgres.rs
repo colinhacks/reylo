@@ -2369,7 +2369,10 @@ impl<'a> Engine<'a> {
                     _ => false,
                 };
                 let whole_row = from_view || own_row;
-                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document, non_finite: Default::default(), facts: Default::default(), whole_row }
+                // A bare name read as an alias's row is the row where the describe names it so,
+                // whatever else degrades the column's provenance ([`DescribedColumn::own_row`]).
+                let read_whole = col.table != 0 && col.attnum == 0 && registry.get(col.oid).and_then(|t| t.relid) == Some(col.table);
+                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document, non_finite: Default::default(), facts: Default::default(), whole_row, own_row: read_whole }
             })
             .collect();
         let columns = columns
