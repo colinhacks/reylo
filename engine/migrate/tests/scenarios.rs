@@ -1578,7 +1578,7 @@ async fn db_push_takes_a_development_database_to_schema_sql(mut p: P) {
     // schema.sql moves first: sync makes the change, unrecorded, and says what to write.
     p.schema(&format!("create table users (id {id}, name {text}, bio {text});"));
     assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"Pushing \S*schema\.sql to \S+\n  \+ alter table users add column bio [^\n]+;\n✓ This database matches \S*schema\.sql\n! Not in a migration yet: reylo migrate new <name> writes it");
+    assert_has!(p.output(), r"Pushing \S*schema\.sql to \S+\n  \+ alter table users add column bio [^\n]+;\n✓ This database matches \S*schema\.sql\n· Not in a migration yet: reylo migrate new <name> writes it");
     assert_eq!(p.history().await, ["20261027100000_users.sql"]);
     p.exec("insert into users (name, bio) values ('ada', 'hi')").await;
     // The migration written for it is +recorded, and the rows stay. sync alone refuses it
@@ -1649,7 +1649,7 @@ async fn db_push_keeps_what_no_migration_makes_yet(mut p: P) {
     assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
     let out = p.output();
     assert!(!out.contains("Undid"), "{out}");
-    assert_has!(&out, r"✓ This database matches \S*schema\.sql\n! Not in a migration yet:");
+    assert_has!(&out, r"✓ This database matches \S*schema\.sql\n· Not in a migration yet:");
     assert_eq!(p.rows("select * from notes").await.len(), 1);
     // schema.sql moves again: only the new change is made.
     p.schema(&format!("{users} {notes} create table tags (id {int});"));

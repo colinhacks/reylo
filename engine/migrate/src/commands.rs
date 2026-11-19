@@ -5143,7 +5143,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
         log(&format!("{} This database matches {schema} and its migrations", paint("green", "✓")));
     } else {
         log(&format!("{} This database matches {schema}", paint("green", "✓")));
-        log(&format!("{} Not in a migration yet: reylo migrate new <name> writes it", paint("yellow", "!")));
+        log(&paint("dim", "· Not in a migration yet: reylo migrate new <name> writes it"));
     }
     if wrote {
         log(&format!("{} Wrote {}", paint("green", "✓"), shown(&opts.lock)));
