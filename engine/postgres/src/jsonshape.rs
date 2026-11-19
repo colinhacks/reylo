@@ -1500,7 +1500,8 @@ const WRAPPED: &str = "reylo_probe";
 /// `SELECT * FROM <around>, LATERAL (SELECT <items> FROM <from>) AS reylo_probe`: a probe whose
 /// FROM reads the items of `around` as a subquery reads a query around it.
 fn wrapped_text(version: i32, items: &[Node], around: &[Node], from: &[Node], filter: Option<&Node>, with: Option<&protobuf::WithClause>) -> Option<String> {
-    let inner = select_stmt(items, from, filter, &[])?;
+    let (items, filter, _) = without_params(version, items, filter, &[])?;
+    let inner = select_stmt(&items, from, filter.as_ref(), &[])?;
     let mut outer = around.to_vec();
     outer.push(Node {
         node: Some(NodeEnum::RangeSubselect(Box::new(protobuf::RangeSubselect {
@@ -1547,36 +1548,51 @@ fn select_stmt(items: &[Node], from: &[Node], filter: Option<&Node>, group: &[No
 
 /// [`select_text`] with a GROUP BY.
 fn grouped_select_text(version: i32, items: &[Node], from: &[Node], filter: Option<&Node>, group: &[Node], with: Option<&protobuf::WithClause>) -> Option<String> {
-    let mut select = select_stmt(items, from, filter, group)?;
-    let deparse = |select: &SelectStmt| {
-        let result = ParseResult {
-            version,
-            stmts: vec![RawStmt {
-                stmt: Some(Box::new(Node { node: Some(NodeEnum::SelectStmt(Box::new(select.clone()))) })),
-                stmt_location: 0,
-                stmt_len: 0,
-            }],
-        };
-        crate::stack::deparse(&result).ok()
-    };
-    let body = deparse(&select)?;
-    // A probe binds nothing, so a placeholder in its condition is NULL there: a test that is
-    // strict in a column stays strict (`u.id = NULL`), which is all the probe reads of it, and a
-    // condition the server cannot type proves nothing, the probe failing to describe.
-    let nulled = without_placeholders(&body);
+    let (items, filter, group) = without_params(version, items, filter, group)?;
+    let mut select = select_stmt(&items, from, filter.as_ref(), &group)?;
     // The statement's WITH queries go with a probe that reads one, and with nothing else, so a
     // probe that reads none can be described before the statement is. They keep their
-    // placeholders, which the describe pins to the types the statement's own describe gave them:
-    // a query that reads one is then the very text the statement's own read of it settled, and
-    // its columns come back settled, at no cost. Written NULL, it would be another statement,
-    // settled again, and a column selecting a placeholder would be nullable there.
-    let Some(with) = with.filter(|w| reads_with(&select, w)) else { return Some(nulled) };
-    select.with_clause = Some(with.clone());
-    let text = deparse(&select)?;
-    match text.strip_suffix(body.as_str()) {
-        Some(head) => Some(format!("{head}{nulled}")),
-        None => Some(without_placeholders(&text)),
+    // placeholders, as its FROM items do ([`without_params`]).
+    if let Some(with) = with.filter(|w| reads_with(&select, w)) {
+        select.with_clause = Some(with.clone());
     }
+    deparse_select(version, &select)
+}
+
+/// A SELECT as the library that parsed the statement prints it.
+fn deparse_select(version: i32, select: &SelectStmt) -> Option<String> {
+    let result = ParseResult {
+        version,
+        stmts: vec![RawStmt {
+            stmt: Some(Box::new(Node { node: Some(NodeEnum::SelectStmt(Box::new(select.clone()))) })),
+            stmt_location: 0,
+            stmt_len: 0,
+        }],
+    };
+    crate::stack::deparse(&result).ok()
+}
+
+/// A probe's select list, condition and GROUP BY with every placeholder in them written as NULL.
+/// A probe binds nothing, so a placeholder in its condition is NULL there: a test that is strict
+/// in a column stays strict (`u.id = NULL`), which is all the probe reads of it, and a condition
+/// the server cannot type proves nothing, the probe failing to describe. Its FROM items and WITH
+/// queries keep their placeholders, which the describe pins to the types the statement's own
+/// describe gave them: an item that reads one is then the very text the statement's own read of
+/// it settled. Written NULL, it would be another statement, in which a `CASE` whose other branch
+/// is the placeholder reads as one whose other branch is NULL, and a column selecting it as NULL.
+fn without_params(version: i32, items: &[Node], filter: Option<&Node>, group: &[Node]) -> Option<(Vec<Node>, Option<Node>, Vec<Node>)> {
+    let text = deparse_select(version, &select_stmt(items, &[], filter, group)?)?;
+    let nulled = without_placeholders(&text);
+    if nulled == text {
+        return Some((items.to_vec(), filter.cloned(), group.to_vec()));
+    }
+    let parsed = crate::stack::parse(&nulled).ok()?;
+    let Some(NodeEnum::SelectStmt(select)) = parsed.protobuf.stmts.into_iter().next().and_then(|s| s.stmt).and_then(|n| n.node) else { return None };
+    let items: Vec<Node> = select.target_list.into_iter().map(|t| match t.node {
+        Some(NodeEnum::ResTarget(rt)) => rt.val.map(|v| *v),
+        _ => None,
+    }).collect::<Option<_>>()?;
+    Some((items, select.where_clause.map(|w| *w), select.group_clause))
 }
 
 /// Whether `select` names one of the queries of `with`: a relation by the name of one, without a
@@ -2612,6 +2628,16 @@ mod tests {
         // `public.input` is the table, whatever the WITH clause calls `input`.
         let s = shapes("WITH input AS (SELECT $1::uuid AS id) SELECT jsonb_build_object('b', c.body) AS x FROM public.input c");
         assert_eq!(s.probes[0].sql, "SELECT c.body AS a0 FROM public.input c");
+    }
+
+    #[test]
+    fn a_derived_table_keeps_its_placeholders_in_a_probe() {
+        // Written NULL, the CASE would read as one whose other branch is NULL, of the object's shape.
+        let p = shapes("SELECT json_build_object('k', x.o) AS o FROM (SELECT CASE WHEN a > 100 THEN jsonb_build_object('a', a) ELSE $1::jsonb END AS o FROM t) x WHERE x.o IS DISTINCT FROM $2");
+        assert_eq!(p.probes[0].sql, "SELECT x.o AS a0 FROM (SELECT CASE WHEN a > 100 THEN jsonb_build_object('a', a) ELSE $1::jsonb END AS o FROM t) x WHERE x.o IS DISTINCT FROM NULL");
+        // So does a join's condition, which is part of the FROM.
+        let q = shapes("SELECT json_build_object('a', u.id) AS o FROM users u JOIN posts p ON p.author_id = u.id AND p.score > $1");
+        assert_eq!(q.probes[0].sql, "SELECT u.id AS a0 FROM users u JOIN posts p ON p.author_id = u.id AND p.score > $1");
     }
 
     #[test]
