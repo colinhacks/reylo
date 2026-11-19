@@ -1977,3 +1977,57 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   font-weight: 600;
   color: var(--color-fd-primary);
 }
+
+/* A query's block with its schema a hover away (components/schema-query.tsx): "View schema" under
+   the block's bottom right, dotted, and the schema in a popover under it, kept open while the
+   pointer is on either. The popover's top padding bridges the gap, so the pointer can cross it. */
+.schema-query-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -0.375rem;
+  margin-bottom: 1rem;
+}
+
+.schema-query-link {
+  position: relative;
+  font-size: 0.8125rem;
+  color: var(--color-fd-muted-foreground);
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in oklab, currentColor 60%, transparent);
+  text-underline-offset: 0.25rem;
+  cursor: default;
+  outline: none;
+}
+
+.schema-query-link:hover,
+.schema-query-link:focus-visible {
+  color: var(--color-fd-foreground);
+}
+
+.schema-query-pop {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 40;
+  display: none;
+  width: min(44rem, calc(100vw - 2.5rem));
+  padding-top: 0.5rem;
+}
+
+.schema-query-link:hover .schema-query-pop,
+.schema-query-link:focus-within .schema-query-pop {
+  display: block;
+}
+
+.schema-query-card {
+  display: block;
+  max-height: min(34rem, 70vh);
+  overflow: auto;
+  border-radius: 0.875rem;
+  box-shadow: 0 24px 60px -12px rgb(0 0 0 / 0.6);
+  text-decoration: none;
+}
+
+.schema-query-card > * {
+  margin: 0 !important;
+}
