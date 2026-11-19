@@ -11,7 +11,7 @@
 //! declares in a way this does not follow (renamed, or altered after it is declared, or under a
 //! search_path of its own) keeps the server's rendering, which the shadow check still covers.
 
-use super::{bare, parse_column, render_column, AROUND};
+use super::{bare, parse_column, render_column, AROUND, SEP};
 use crate::diff::{Kind, Schema};
 use pg_query::protobuf::{self, node::Node as N, AlterTableType as At, ConstrType, ObjectType};
 use pg_query::Node;
@@ -500,7 +500,7 @@ impl Reader<'_> {
             }
             N::IndexStmt(i) => {
                 let Some((table, relname)) = i.relation.as_ref().and_then(|r| self.relation(r)) else { return };
-                let schema = table.rsplit_once('.').map(|(s, _)| s.to_string()).unwrap_or_default();
+                let schema = super::split_last(&table).0.to_string();
                 let name = if i.idxname.is_empty() {
                     let Some(name) = self.index_name(&table, &schema, &relname, &i.index_params) else { return };
                     name
@@ -784,11 +784,11 @@ pub(super) fn apply(schema: &mut Schema, declared: &Declared) {
     let creates: BTreeMap<String, String> = schema.objects.values().map(|o| (o.id.clone(), o.create.join("; "))).collect();
     for o in schema.objects.values_mut() {
         for line in o.extra.iter_mut().filter(|l| l.starts_with(AROUND)) {
-            let mut parts: Vec<String> = line.splitn(4, '\t').map(String::from).collect();
+            let mut parts: Vec<String> = line.splitn(4, SEP).map(String::from).collect();
             if let (Some(id), Some(create)) = (parts.first().and_then(|p| p.strip_prefix(AROUND)), parts.get(3)) {
                 if let Some(now) = creates.get(id).filter(|c| *c != create) {
                     parts[3] = now.clone();
-                    *line = parts.join("\t");
+                    *line = parts.join(SEP);
                 }
             }
         }

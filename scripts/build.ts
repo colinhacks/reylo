@@ -95,6 +95,8 @@ if (engines.length) throw new Error(`dist/reylo holds an engine: ${engines.join(
 const named = [...Object.values(built.bin as Record<string, string>), ...Object.values(built.exports as Record<string, { types: string; default: string }>).flatMap((e) => [e.types, e.default]), ...(built.typescript.contentMapper.exec as string[]).slice(1)];
 const unnamed = named.map((f) => f.replace(/^\.\//, "")).filter((f) => !files.includes(f));
 if (unnamed.length) throw new Error(`dist/reylo/package.json names files the build did not write: ${unnamed.join(", ")}`);
+// A tsconfig entry that names only the package takes the content mapper's extensions from here.
+if (!(built.typescript.contentMapper.extensions as string[] | undefined)?.length) throw new Error("dist/reylo/package.json names no content mapper extensions");
 // The adapters load the build-time half with `require` (src/tooling-loader.ts), which refuses a
 // module graph with a top-level await in it: it is loaded here as they load it.
 execFileSync(process.execPath, ["-e", "require(process.argv[1])", join(reylo, "src", "tooling.js")], { stdio: "inherit" });

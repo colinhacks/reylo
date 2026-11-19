@@ -40,7 +40,7 @@ left_join_group_nullable_key.sql: one () -> { j: jsonb { k: text(¬NUL)?, kk: te
 left_join_outer.sql: many () -> { j: jsonb { k: unknown?, t: unknown?, c: unknown? }? }
 left_join_sub.sql: one () -> { j: jsonb { n: int8, m: text(¬NUL)?, a: text(¬NUL)?[], aa: int4?[], s: int8?, ba: bool?, sa: text(¬NUL)? }? }
 limit_zero.sql: one () -> { j: jsonb { t: text(¬NUL), a: int8[] }? }
-many_aggregates.sql: one () -> { j: jsonb { s: int8, a: numeric, mx: text(¬NUL), sa: text(¬NUL), ba: bool, ev: bool, aa: text(¬NUL)?[], oa: jsonb, pc: float8, mo: text(¬NUL), bo: int4 }? }
+many_aggregates.sql: one () -> { j: jsonb { s: int8, a: numeric, mx: text(¬NUL), sa: text(¬NUL), ba: bool, ev: bool, aa: text(¬NUL)?[], oa: jsonb?, pc: float8, mo: text(¬NUL), bo: int4 }? }
 nested_agg_mid.sql: one () -> { j: jsonb { m: int8?, k: int4 }? }
 nested_inner_own.sql: one () -> { j: jsonb { t: text(¬NUL), c: int8, m: { x: int4, a: int8[] }? }? }
 nested_mid_level.sql: one () -> { j: jsonb { t: text(¬NUL), m: int8?, a: int8[]? }? }

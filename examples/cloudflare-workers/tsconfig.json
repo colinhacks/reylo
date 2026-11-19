@@ -9,8 +9,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "contentMappers": [
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
-  ],
+  "contentMappers": [{ "package": "reylo" }],
   "include": ["src", "test", "vite.config.ts", "vitest.config.ts", "setup.ts"]
 }

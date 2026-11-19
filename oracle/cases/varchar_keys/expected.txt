@@ -1,0 +1,18 @@
+varchar_bpchar_case.sql: many (flag: bool, e: bpchar(¬NUL)) -> { id: int4 } key (id)
+varchar_bpchar_greatest.sql: many (e: bpchar(¬NUL)) -> { id: int4 } key (id)
+varchar_bpchar_subquery.sql: many (e: bpchar(¬NUL)) -> { id: int4 } key (id)
+varchar_text_btrim.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_case.sql: at_most_one (flag: bool, e: text(¬NUL), f: text(¬NUL)) -> { id: int4 }
+varchar_text_coalesce.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_concat.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_delete.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_function.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_left.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_lower_trim.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_md5.sql: at_most_one (s: text(¬NUL)) -> { id: int4 }
+varchar_text_nullif.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_regexp.sql: at_most_one (s: text(¬NUL)) -> { id: int4 }
+varchar_text_replace.sql: at_most_one (s: text(¬NUL)) -> { id: int4 }
+varchar_text_subquery.sql: at_most_one (e: text(¬NUL)) -> { id: int4 }
+varchar_text_substr.sql: at_most_one (s: text(¬NUL)) -> { id: int4 }
+varchar_text_update.sql: at_most_one (s: varchar(≤80, ¬NUL), e: text(¬NUL)) -> { id: int4 }

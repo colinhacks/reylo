@@ -828,6 +828,8 @@ pub trait Dialect: Debug + Any {
         debug!("get_next_precedence_full() {token:?}");
         match &token.token {
             Token::Word(w) if w.keyword == Keyword::OR => Ok(p!(Or)),
+            // Reylo's copy: `||` as MySQL's OR, where the dialect reads it so.
+            Token::StringConcat if self.supports_double_pipe_or_operator() => Ok(p!(Or)),
             Token::Word(w) if w.keyword == Keyword::AND => Ok(p!(And)),
             Token::Word(w) if w.keyword == Keyword::XOR => Ok(p!(Xor)),
 
@@ -1610,6 +1612,13 @@ pub trait Dialect: Debug + Any {
 
     /// Returns true if the dialect considers the `&&` operator as a boolean AND operator.
     fn supports_double_ampersand_operator(&self) -> bool {
+        false
+    }
+
+    /// Reylo's copy: returns true if the dialect reads the `||` operator as a boolean OR, bound as
+    /// OR binds, as MySQL does unless the session's `sql_mode` has PIPES_AS_CONCAT; false where it
+    /// is a concatenation.
+    fn supports_double_pipe_or_operator(&self) -> bool {
         false
     }
 

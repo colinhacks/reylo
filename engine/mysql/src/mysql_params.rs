@@ -16,11 +16,12 @@ use crate::mysql_keys::Cte;
 use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, Query, Select, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins};
 use std::collections::{HashMap, HashSet};
 
-/// Each column of the named tables of the current schema, whether it may hold NULL, and its
-/// `extra`, in the order an INSERT without a column list fills them, which passes over an
-/// INVISIBLE column. A view's column is taken to refuse NULL: what a write through it takes is its
-/// table's to say. `?` is the comma-joined table names, because MySQL binds no arrays.
-const COLUMNS_QUERY: &str = "select c.table_name, c.column_name, if(t.table_type = 'VIEW', 'NO', c.is_nullable), c.extra from information_schema.columns c \
+/// Each column of the named tables of the current schema, whether it may hold NULL, its `extra`,
+/// and a generated column's expression, as `information_schema` prints it ([`refused_by`]), in the
+/// order an INSERT without a column list fills them, which passes over an INVISIBLE column. A
+/// view's column is taken to refuse NULL: what a write through it takes is its table's to say. `?`
+/// is the comma-joined table names, because MySQL binds no arrays.
+const COLUMNS_QUERY: &str = "select c.table_name, c.column_name, if(t.table_type = 'VIEW', 'NO', c.is_nullable), c.extra, c.generation_expression from information_schema.columns c \
     join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name \
     where c.table_schema = database() and find_in_set(c.table_name, ?) order by c.table_name, c.ordinal_position";
 
@@ -254,10 +255,10 @@ fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target
     let mut out = Vec::new();
     match statement {
         Statement::Query(q) => compared_query(q, &[], names, &mut out),
-        Statement::Update(update) => compared_select(&[&update.table], update.selection.iter().collect(), &[], names, &mut out),
+        Statement::Update(update) => compared_select(&[&update.table], update.selection.iter().collect(), None, &[], names, &mut out),
         Statement::Delete(delete) => {
             let (ast::FromTable::WithFromKeyword(from) | ast::FromTable::WithoutKeyword(from)) = &delete.from;
-            compared_select(&from.iter().collect::<Vec<_>>(), delete.selection.iter().collect(), &[], names, &mut out);
+            compared_select(&from.iter().collect::<Vec<_>>(), delete.selection.iter().collect(), None, &[], names, &mut out);
         }
         _ => {}
     }
@@ -278,7 +279,27 @@ fn compared_query<'a>(q: &'a Query, outer: &[Cte<'a>], names: &Names, out: &mut 
 
 fn compared_body<'a>(body: &'a SetExpr, ctes: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
     match body {
-        SetExpr::Select(s) => compared_select(&s.from.iter().collect::<Vec<_>>(), s.selection.iter().chain(s.having.iter()).collect(), ctes, names, out),
+        SetExpr::Select(s) => {
+            // In a HAVING the server reads a bare name as the select list's alias before the FROM's
+            // column of that name: an alias of anything but that column itself names no column.
+            let aliases: Vec<String> = s
+                .projection
+                .iter()
+                .filter_map(|item| match item {
+                    SelectItem::ExprWithAlias { expr, alias } => {
+                        let itself = match expr {
+                            Expr::Identifier(i) => i.value.eq_ignore_ascii_case(&alias.value),
+                            Expr::CompoundIdentifier(parts) => parts.last().is_some_and(|p| p.value.eq_ignore_ascii_case(&alias.value)),
+                            _ => false,
+                        };
+                        (!itself).then(|| alias.value.to_ascii_lowercase())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let having = s.having.as_ref().map(|having| (having, aliases));
+            compared_select(&s.from.iter().collect::<Vec<_>>(), s.selection.iter().collect(), having, ctes, names, out)
+        }
         SetExpr::SetOperation { left, right, .. } => {
             compared_body(left, ctes, names, out);
             compared_body(right, ctes, names, out);
@@ -292,8 +313,9 @@ fn compared_body<'a>(body: &'a SetExpr, ctes: &[Cte<'a>], names: &Names, out: &m
 /// its HAVING and its joins' ON clauses, and those inside its derived tables. A column of a
 /// derived table or a WITH query is read through to each table column it passes through unchanged
 /// ([`crate::mysql_keys::output_origins`]): one, or one per side of a set operation, whose types
-/// [`typed`] keeps only where they agree.
-fn compared_select<'a>(from: &[&'a TableWithJoins], filters: Vec<&'a Expr>, ctes: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
+/// [`typed`] keeps only where they agree. Beside the HAVING, the select list's aliases, which a
+/// bare name there reads first.
+fn compared_select<'a>(from: &[&'a TableWithJoins], filters: Vec<&'a Expr>, having: Option<(&'a Expr, Vec<String>)>, ctes: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
     // The tables by the name the statement reads each by; `plain` where every item is a table.
     let mut tables: Vec<(String, String)> = Vec::new();
     let mut derived: Vec<(String, &Query, &[Cte], Vec<String>)> = Vec::new();
@@ -404,6 +426,13 @@ fn compared_select<'a>(from: &[&'a TableWithJoins], filters: Vec<&'a Expr>, ctes
     for filter in filters.into_iter().chain(ons) {
         walk(filter, names, &column, out);
     }
+    if let Some((having, aliases)) = having {
+        let unaliased = |e: &Expr| match e {
+            Expr::Identifier(i) if aliases.iter().any(|a| a.eq_ignore_ascii_case(&i.value)) => Vec::new(),
+            _ => column(e),
+        };
+        walk(having, names, &unaliased, out);
+    }
 }
 
 /// The parameters the caller may pass null for, by name, and each one cast to `nullable(…)` that is
@@ -434,14 +463,16 @@ pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host, marked
             checked.entry(table.to_string()).or_default().push(clause.to_string());
         }
     }
+    let rows = rows.unwrap_or_default();
+    let generated = refused_by(&rows);
     // Per table as the server names it: each column in lower case, whether it may hold NULL, and
     // whether it is INVISIBLE.
     let mut columns: HashMap<String, Vec<(String, bool, bool)>> = HashMap::new();
-    for row in rows.unwrap_or_default() {
+    for row in rows {
         let (Some(table), Some(column), Some(nullable)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str)) else { continue };
         let invisible = row.get(3).and_then(as_str).is_some_and(|extra| extra.to_ascii_uppercase().contains("INVISIBLE"));
         let column = column.to_ascii_lowercase();
-        let refused = checked.get(table).is_some_and(|clauses| clauses.iter().any(|clause| refuses_null(clause, &column)));
+        let refused = checked.get(table).is_some_and(|clauses| clauses.iter().any(|clause| refuses_null(clause, &column))) || generated.get(table).is_some_and(|refused| refused.contains(&column));
         columns.entry(table.to_string()).or_default().push((column, nullable.eq_ignore_ascii_case("YES") && !refused, invisible));
     }
     // The column a target names, and whether it may hold NULL.
@@ -479,6 +510,47 @@ pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host, marked
     Some(out)
 }
 
+/// Per table, the columns (in lower case) a NULL in which a NOT NULL generated column refuses
+/// (error 1048, naming the generated column), from [`COLUMNS_QUERY`]'s rows: those its expression
+/// is NULL for wherever they are NULL ([`crate::mysql_nulls::nulls_with`]), through the generated
+/// columns it reads in turn. A column an expression reads otherwise, as through `coalesce`, may be
+/// NULL, and so may any column of an expression the parser does not read.
+fn refused_by(rows: &[Vec<serde_json::Value>]) -> HashMap<String, HashSet<String>> {
+    use sqlparser::dialect::MySqlDialect;
+    use sqlparser::parser::Parser;
+    // Per table, each generated column's strict columns, and the NOT NULL generated columns.
+    let mut strict: HashMap<&str, HashMap<String, Vec<String>>> = HashMap::new();
+    let mut not_null: HashMap<&str, Vec<String>> = HashMap::new();
+    for row in rows {
+        let (Some(table), Some(column), Some(nullable), Some(extra), Some(expression)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str), row.get(3).and_then(as_str), row.get(4).and_then(as_str)) else { continue };
+        let extra = extra.to_ascii_uppercase();
+        if !extra.contains("GENERATED") || extra.contains("DEFAULT_GENERATED") {
+            continue;
+        }
+        let dialect = MySqlDialect {};
+        let read = crate::mysql::check_clause(expression).and_then(|text| Parser::new(&dialect).try_with_sql(&text).and_then(|mut p| p.parse_expr()).ok());
+        let reads = read.map(|e| crate::mysql_nulls::nulls_with(&e).into_iter().filter_map(|parts| parts.last().cloned()).collect()).unwrap_or_default();
+        let column = column.to_ascii_lowercase();
+        if nullable.eq_ignore_ascii_case("NO") {
+            not_null.entry(table).or_default().push(column.clone());
+        }
+        strict.entry(table).or_default().insert(column, reads);
+    }
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for (table, generated) in not_null {
+        let reads = &strict[table];
+        let mut refused: HashSet<String> = HashSet::new();
+        let mut next: Vec<String> = generated.iter().flat_map(|g| reads[g].iter().cloned()).collect();
+        while let Some(column) = next.pop() {
+            if refused.insert(column.clone()) {
+                next.extend(reads.get(&column).into_iter().flatten().cloned());
+            }
+        }
+        out.insert(table.to_string(), refused);
+    }
+    out
+}
+
 /// Whether a CHECK, as the server prints it (`(`email` is not null)`), refuses null in `column`
 /// (lower case): one of its conjuncts tests the column IS NOT NULL, which a null makes false where
 /// any other test of it would be unknown, and so pass.
@@ -502,10 +574,10 @@ fn refuses_null(clause: &str, column: &str) -> bool {
 }
 
 /// The tables of the current schema the statement reads and writes, as it names them, for the
-/// freshness facts ([`crate::fresh`]): every table a FROM item reads, in subqueries and WITH
+/// errors it may raise ([`crate::errors`]): every table a FROM item reads, in subqueries and WITH
 /// queries too, and the tables an INSERT, an UPDATE or a DELETE writes: a multi-table UPDATE's or
 /// DELETE's every table, any of which it may write. A WITH query is no table, and a table of another
-/// schema is left out, since the facts are read from the current one; a write that names one, or
+/// schema is left out, since the catalog is read from the current one; a write that names one, or
 /// that writes through something that is no table, lists nothing it writes.
 pub(crate) fn tables(statement: &Statement) -> Tables {
     let mut walk = Walk { tables: Vec::new(), by_schema: false };
@@ -995,7 +1067,9 @@ mod tests {
     /// The analysis of `sql` over a schema: `users (id NOT NULL, name NOT NULL, secret NOT NULL
     /// INVISIBLE, email, bio)`, `posts (id NOT NULL, user_id NOT NULL, title NOT NULL, tag)` and
     /// `accounts (id NOT NULL, email, nick, note)` with `check (email <> '' and email is not null)`,
-    /// `check (nick is not null)` and `check (note <> '')`; each parameter with whether it may be
+    /// `check (nick is not null)` and `check (note <> '')`, and `measures (id NOT NULL, nu, nv, ns,
+    /// nw)` with the NOT NULL generated columns `nu + 1`, `coalesce(nv, 0)`, `concat('x', ns)` and
+    /// `g2 * 2` over a nullable generated `g2 = nw - 1`; each parameter with whether it may be
     /// null, and whether the columns were asked for.
     fn nullable(sql: &str) -> (Vec<(String, bool)>, bool) {
         let (analysis, asked) = analyzed(sql);
@@ -1009,6 +1083,12 @@ mod tests {
             ["accounts", "id", "NO", ""], ["accounts", "email", "YES", ""], ["accounts", "nick", "YES", ""], ["accounts", "note", "YES", ""],
             ["posts", "id", "NO", "auto_increment"], ["posts", "user_id", "NO", ""], ["posts", "title", "NO", ""], ["posts", "tag", "YES", ""],
             ["users", "id", "NO", "auto_increment"], ["users", "name", "NO", ""], ["users", "secret", "NO", "INVISIBLE"], ["users", "email", "YES", ""], ["users", "bio", "YES", ""],
+            // As 8.4.11 prints them, a string's quotes behind one more backslash.
+            ["measures", "id", "NO", "", ""], ["measures", "nu", "YES", "", ""], ["measures", "g", "NO", "STORED GENERATED", "(`nu` + 1)"],
+            ["measures", "nv", "YES", "", ""], ["measures", "h", "NO", "VIRTUAL GENERATED", "coalesce(`nv`,0)"],
+            ["measures", "ns", "YES", "", ""], ["measures", "j", "NO", "VIRTUAL GENERATED", "concat(_utf8mb4\\'x\\',`ns`)"],
+            ["measures", "nw", "YES", "", ""], ["measures", "g2", "YES", "VIRTUAL GENERATED", "(`nw` - 1)"], ["measures", "k", "NO", "STORED GENERATED", "(`g2` * 2)"],
+            ["measures", "at", "NO", "DEFAULT_GENERATED", "now()"],
         ] });
         let checks = json!({ "rows": [
             ["accounts", "((`email` <> _utf8mb4'') and (`email` is not null))"], ["accounts", "(`nick` is not null)"], ["accounts", "(`note` <> _utf8mb4'')"],
@@ -1088,9 +1168,16 @@ mod tests {
         assert_eq!(param_types("delete from t where big = :b", 8), [p("b", "bigint")]);
         // An expression of the column is not the column: `big + 1` is the prepare's.
         assert_eq!(param_types("select id from t where big + 1 = :b limit :n", 8), [p("b", "int32"), p("n", "int32")]);
+        // A HAVING reads a bare name as the select list's alias first, and an alias of anything but
+        // the column itself is no column.
+        assert_eq!(param_types("select count(*) as big from t having big = :b", 8), [p("b", "int32")]);
+        assert_eq!(param_types("select id as Flag from t having flag = :f", 8), [p("f", "int32")]);
+        assert_eq!(param_types("select big from t having big = :b", 8), [p("b", "bigint")]);
+        assert_eq!(param_types("select t.big as big from t having big = :b", 8), [p("b", "bigint")]);
+        assert_eq!(param_types("select count(*) as big from t where big = :w having big > :h", 8), [p("w", "bigint"), p("h", "int32")]);
     }
 
-    /// The tables `sql` reads and writes, as the freshness facts name them.
+    /// The tables `sql` reads and writes, as [`super::tables`] names them.
     fn tables(sql: &str) -> (Vec<String>, Vec<String>) {
         use sqlparser::dialect::MySqlDialect;
         use sqlparser::parser::Parser;
@@ -1142,6 +1229,13 @@ mod tests {
         ] {
             assert!(may_be_null(sql).is_empty(), "{sql}: {:?}", may_be_null(sql));
         }
+    }
+
+    #[test]
+    fn a_column_a_not_null_generated_column_is_null_for_takes_no_null() {
+        // `g`, `j` and `k` (through `g2`) are NULL wherever `nu`, `ns` and `nw` are; `h` never is.
+        assert_eq!(may_be_null("insert into measures (id, nu, nv, ns, nw) values (:id, :u, :v, :s, :w)"), ["v"]);
+        assert_eq!(may_be_null("update measures set nu = :u, nv = :v, nw = :w where id = :id"), ["v"]);
     }
 
     #[test]

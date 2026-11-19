@@ -1,11 +1,14 @@
-bigint_arithmetic.sql: at_most_one (id: int32) -> { id: bigint }
+bigint_abs_scan.sql: many (b: int32) -> { id: int }
+bigint_arithmetic.sql: many (id: int32) -> { id: bigint }
+bigint_arithmetic_scan.sql: many (b: int32) -> { id: int }
+bigint_div_scan.sql: at_most_one (b: int32) -> { id: int }
 bigint_float_literal.sql: at_most_one () -> { id: bigint }
 bigint_param.sql: at_most_one (id: bigint) -> { id: bigint }
 bigint_param_scan.sql: at_most_one (id: bigint) -> { id: bigint }
 bigint_unsigned.sql: at_most_one (u: bigint) -> { u: bigint }
 bigint_unsigned_scan.sql: at_most_one (u: bigint) -> { u: bigint }
 binary_param.sql: at_most_one (fixed: varbinary) -> { fixed: binary(=2) }
-bit64_arithmetic.sql: at_most_one (n: int32) -> { bits64: bit(boolean[64]) }
+bit64_arithmetic.sql: many (n: int32) -> { bits64: bit(boolean[64]) }
 bit64_float.sql: at_most_one () -> { bits64: bit(boolean[64]) }
 bit64_param.sql: at_most_one (bits: bit(boolean[64])) -> { bits64: bit(boolean[64]) }
 bit64_scan.sql: at_most_one (bits: bit(boolean[64])) -> { bits64: bit(boolean[64]) }
@@ -27,7 +30,12 @@ collation_cs.sql: at_most_one (v: varchar) -> { cs: varchar(≤20) }
 collation_cs_scan.sql: at_most_one (v: varchar) -> { cs: varchar(≤20) }
 collation_cs_user.sql: many () -> { cs: varchar(≤20) }
 collation_latin.sql: at_most_one (v: varchar) -> { latin: varchar(≤20, windows-1252) }
+collation_latin1_bin_cast.sql: many (c: varchar) -> { id: int }
 collation_latin_scan.sql: at_most_one (v: varchar) -> { latin: varchar(≤20, windows-1252) }
+collation_mb3_bin.sql: at_most_one (c: varchar) -> { id: int }
+collation_mb3_bin_cast.sql: many (c: varchar) -> { id: int }
+collation_mb3_bin_cast_concat.sql: many (c: varchar) -> { id: int }
+collation_mb3_bin_cast_lower.sql: many (c: varchar) -> { id: int }
 collation_pad.sql: at_most_one (v: varchar) -> { pad: varchar(≤20) }
 collation_pad_scan.sql: at_most_one (v: varchar) -> { pad: varchar(≤20) }
 column_of_another_collation.sql: many (x: varchar) -> { bin: varchar(≤20) }
@@ -55,7 +63,8 @@ datetime_pipes.sql: many (at: datetime) -> { at: datetime }
 datetime_string.sql: at_most_one () -> { at: datetime }
 datetime_sysdate.sql: many () -> { at: datetime }
 datetime_text_function.sql: at_most_one (s: varchar) -> { at: datetime }
-decimal_arithmetic.sql: at_most_one (amount: int32) -> { amount: decimal(30,20) }
+decimal_arithmetic.sql: many (amount: int32) -> { amount: decimal(30,20) }
+decimal_arithmetic_scan.sql: many (d: int32) -> { id: int }
 decimal_float_literal.sql: at_most_one () -> { amount: decimal(30,20) }
 decimal_float_small.sql: at_most_one () -> { amount: decimal(30,20) }
 decimal_param.sql: at_most_one (amount: decimal) -> { amount: decimal(30,20) }
@@ -81,6 +90,7 @@ int_abs.sql: at_most_one (id: int32) -> { id: int }
 int_alias.sql: at_most_one (id: int32) -> { id: int }
 int_and_more.sql: at_most_one (id: int32, skip: varchar) -> { id: int, name: varchar(≤20) }
 int_arithmetic.sql: at_most_one (id: int32) -> { id: int }
+int_arithmetic_scan.sql: at_most_one (i: int32) -> { id: int }
 int_between.sql: many (lo: int32, hi: int32) -> { id: int }
 int_cast_char.sql: many (id: varchar) -> { id: int }
 int_cast_signed.sql: at_most_one (id: int32) -> { id: int }

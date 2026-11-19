@@ -21,7 +21,5 @@
     "skipLibCheck": true,
     "strict": true
   },
-  "contentMappers": [
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
-  ]
+  "contentMappers": [{ "package": "reylo" }]
 }

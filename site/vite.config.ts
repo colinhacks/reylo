@@ -23,7 +23,8 @@ export default defineConfig({
       collections: path.join(import.meta.dirname, '.source'),
     },
   },
-  server: { port: 3311 },
+  // The build writes build/ inside the site; a dev server watching it reloaded every page on each build.
+  server: { port: 3311, watch: { ignored: ['**/build/**', '**/.share/**'] } },
   // The live card's worker (lib/live/worker.ts) loads PGlite as a chunk of its own, which a module
   // worker can; PGlite finds its files by the URLs it is handed, so Vite leaves it unbundled in dev.
   // PGlite's data file, which its own code and the worker both name, ships as a `.tar`: the CDN

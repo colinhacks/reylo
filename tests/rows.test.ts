@@ -91,14 +91,20 @@ test("the rows an insert writes carry the same keys, and its lists name only tho
   // Elsewhere a key left out reads as NULL, so the rows may differ.
   assert.doesNotThrow(() => prepareRows("events", { ...events, fields: events.fields.filter((f) => f.name !== "status") }, [a, { ...a, amount: 1 }], "postgres", false));
   const { present } = prepareRows("events", events, [a, a], "postgres", true);
-  const text = `insert into events ("id", "ts", "status", "amount", "tags", "meta") SELECT e."id", e."ts", e."status", e."amount", e."tags", e."meta" FROM x`;
+  const text = `with c as (select ? as n) insert into events ("id", "ts", "status", "amount", "tags", "meta") SELECT e."id", e."ts", e."status", e."amount", e."tags", e."meta" FROM x(?)`;
   const entries = (prefix: string) => ["id", "ts", "status", "amount", "tags", "meta"].map((n) => `${prefix}"${n}"`);
   const list = (entries: string[]) => {
     const start = text.indexOf(entries.join(", "));
     return { start, end: start + entries.join(", ").length, entries };
   };
   const structured = { name: "events", lists: [list(entries("")), list(entries("e."))] };
-  assert.equal(variant(text, structured, events.fields, present), `insert into events ("id", "ts") SELECT e."id", e."ts" FROM x`);
+  // Each placeholder's mark after a list moves with what the list lost; one before the lists stays.
+  const marks = [[text.indexOf("?"), text.indexOf("?") + 1], [text.lastIndexOf("?"), text.lastIndexOf("?") + 1]] as const;
+  const written = variant(text, marks, structured, events.fields, present);
+  assert.equal(written.text, `with c as (select ? as n) insert into events ("id", "ts") SELECT e."id", e."ts" FROM x(?)`);
+  assert.deepEqual(written.marks, [[18, 19], [written.text.length - 2, written.text.length - 1]]);
+  assert.deepEqual(written.marks!.map(([start, end]) => written.text.slice(start, end)), ["?", "?"]);
+  assert.equal(variant(text, undefined, structured, events.fields, present).marks, undefined);
   assert.throws(() => prepareRows("p", { one: true, fields: [{ ...events.fields[2]! }] }, {}, "postgres", true), /every key is left out/);
 });
 

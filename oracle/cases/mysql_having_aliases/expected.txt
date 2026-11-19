@@ -1,0 +1,5 @@
+alias_of_a_count.sql: many (p: int32) -> { e: bigint }
+alias_of_a_count_over_bits.sql: many (p: int32) -> { b8: bigint }
+alias_of_a_string.sql: many (p: varchar) -> { e: varchar(≤20) }
+column_itself.sql: many (p: enum('x' | 'y')) -> { e: enum('x' | 'y') }
+grouped_column.sql: many (p: enum('x' | 'y')) -> { e: enum('x' | 'y'), n: bigint }

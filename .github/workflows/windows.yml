@@ -101,7 +101,11 @@ jobs:
           REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
           REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
         run: |
-          nub run test
+          nub run test 2>&1 | tee "$RUNNER_TEMP/test.log"
+          # A test skipped here says why Windows cannot run it. A skip for any other reason, such
+          # as a server no variable names, fails the job, as every skip does on Linux.
+          unexplained=$(grep -E 'ms\) # ' "$RUNNER_TEMP/test.log" | grep -v -E '# .*(POSIX shell|Windows|a stand-in engine is a shell script|the test server has no vector|REYLO_TEST_PG_TLS names no server)' || true)
+          if [ -n "$unexplained" ]; then echo "::error::a test was skipped for a reason Windows does not explain"; echo "$unexplained"; exit 1; fi
       # dist/reylo and dist/engine-win32-x64, around the binary the tests ran.
       - run: nub scripts/build.ts --binary "$REYLO_ENGINE_PATH"
       - name: Type-check a project through the built packages, on SQLite and Postgres

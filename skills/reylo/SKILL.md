@@ -88,6 +88,6 @@ On an error the database raised, `.run()` throws the driver's own error and `.tr
 Open one when the task touches it:
 
 - The rarer forms of a query, in `references/writing.md`: slices, bulk inserts, constants, reusable SQL functions, JSON Schema checks, and the playground's API.
-- Running queries, in `references/running.md`: each driver's details (postgres.js and poolers, MySQL through Hyperdrive, SQLite's `.runSync()`, `STRICT` tables and quotes), every value type, arrays of more than one dimension, `.readOnly`, `.with()`, tracing, row keys and decoders, the cache, and the schema check at run time.
+- Running queries, in `references/running.md`: each driver's details (postgres.js and poolers, MySQL through Hyperdrive, SQLite's `.runSync()`, `STRICT` tables and quotes), every value type, arrays of more than one dimension, `.readOnly`, `.with()`, tracing, row keys and decoders, the cache, and a schema that changes after the build.
 - Migrations, in `references/migrations.md`: `reylo migrate` and `reylo db`, the schema file, writing and running migrations, the lock, and deploying.
 - Moving a project's queries from Prisma Client, in `references/prisma.md`.

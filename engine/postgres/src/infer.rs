@@ -216,7 +216,7 @@ const POSTGRES_ROW_TAKERS: &[&str] = &[
 /// `percentile_disc` and `mode` of an `anyelement`. What they return proves nothing of its type.
 const POSTGRES_ROW_RESULTS: &[&str] = &["min", "max", "lag", "lead", "first_value", "last_value", "any_value", "percentile_disc", "mode"];
 /// The never-null functions the rules read that take no argument but two (`random(min, max)`):
-/// a call of one is no call of theirs.
+/// a call of one is no call of theirs, and only a call of none is never NULL.
 const POSTGRES_NO_ARGUMENT: &[&str] = &["now", "clock_timestamp", "statement_timestamp", "transaction_timestamp", "gen_random_uuid", "uuidv4", "random"];
 /// The window functions a rule reads (see `Reader::call`).
 pub const POSTGRES_WINDOW: &[&str] = &["row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead"];
@@ -311,8 +311,9 @@ pub enum Expr {
     /// Column `n` of the leaf probe: a column reference, answered by its provenance.
     Leaf(usize),
     /// Column `n` of the leaf probe, read as the whole row of this relation: non-null when the
-    /// probe says it is that relation's row type (and so not a column that shares the alias's
-    /// name), because a row of a table that no outer join nulls always exists.
+    /// probe describes it as the relation's whole row ([`DescribedColumn::own_row`]), and so not a
+    /// column that shares the alias's name, of a type of that name or any other, because a row of
+    /// a table that no outer join nulls always exists.
     Row(usize, String),
     /// Non-null when every operand is: an operator, a cast, a `CASE` with an `ELSE`.
     Every(Vec<Expr>, Ty),
@@ -473,6 +474,9 @@ pub enum Ty {
     /// `text` when every operand is a string type: Postgres's `||` over strings. Over anything
     /// else (an array, `jsonb`, a string beside a number) the build names no type.
     Concat,
+    /// Nothing the build can name, of `array_append` and `array_prepend`, which add a value to an
+    /// array as one element ([`items_nullable`]).
+    Appends,
     /// The operands' type when they all agree on a number type the built-in arithmetic has an
     /// operator of that type for (`int4 + int4` is `int4`), `%` having none for a float: an
     /// arithmetic operator over two values of one type, or a prefix sign.
@@ -557,6 +561,10 @@ pub struct Trust {
     /// Whether the database holds no nondeterministic collation, so no value can bring one to a
     /// comparison. A host that did not ask leaves it unset.
     pub deterministic_only: bool,
+    /// Whether the statement compares a value with a bare NULL by `=` ([`compares_with_null`]),
+    /// which `transform_null_equals` turns into `IS NULL`: no such comparison is then a strict
+    /// test, which a probe's NULL in place of a parameter stands for otherwise.
+    pub null_equals: bool,
 }
 
 impl Trust {
@@ -888,8 +896,8 @@ pub fn resolve(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> Fact {
             Some(col) => Fact { non_null: !col.nullable, type_oid: (col.type_oid != oid::UNKNOWN).then_some(col.type_oid) },
             None => NOTHING,
         },
-        Expr::Row(i, relation) => match leaves.and_then(|l| l.get(*i)) {
-            Some(col) => Fact { non_null: !col.nullable || col.type_name == *relation, type_oid: (col.type_oid != oid::UNKNOWN).then_some(col.type_oid) },
+        Expr::Row(i, _) => match leaves.and_then(|l| l.get(*i)) {
+            Some(col) => Fact { non_null: !col.nullable || col.own_row, type_oid: (col.type_oid != oid::UNKNOWN).then_some(col.type_oid) },
             None => NOTHING,
         },
         Expr::Every(operands, ty) => {
@@ -1073,7 +1081,7 @@ pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array:
             Some(false) if may_hold_jsonb_items(inner, leaves) => None,
             items => items,
         },
-        Expr::Every(operands, _) | Expr::Any(operands, _) => join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array))),
+        Expr::Every(operands, ty) | Expr::Any(operands, ty) => operands_items(operands, *ty, leaves, is_array),
         // A column's array holds what the leaf probe says of its elements, which a CHECK settles
         // (`array_position(tags, NULL) IS NULL`), so `coalesce(tags, '{}')` keeps it.
         Expr::Leaf(i) => leaves.and_then(|l| l.get(*i)).and_then(|c| c.nullable_items),
@@ -1082,7 +1090,7 @@ pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array:
         Expr::Call(call) => match (call.fact(leaves), &call.claim) {
             (None, _) | (Some(_), Claim::NonNull(_)) => None,
             (Some(_), Claim::Array(_)) => array_items(&call.args, leaves, is_array),
-            (Some(_), Claim::Every(..)) => join_items(call.args.iter().map(|o| items_nullable(o, leaves, is_array))),
+            (Some(_), Claim::Every(_, ty)) => operands_items(&call.args, *ty, leaves, is_array),
             (Some(_), Claim::Removed(true)) => Some(false),
             (Some(_), Claim::Removed(false)) => call.args.first().and_then(|a| items_nullable(a, leaves, is_array)),
         },
@@ -1140,6 +1148,8 @@ fn items_nesting(items: &[Expr], leaves: Option<&[DescribedColumn]>, is_array: &
             _ => {
                 let type_oid = match item {
                     Expr::Unread(type_oid) => *type_oid,
+                    // `||`, `array_append` and `array_prepend` of an array are of its type.
+                    Expr::Every(operands, Ty::Concat | Ty::Appends) => operands.iter().find_map(|o| resolve(o, leaves).type_oid.filter(|t| is_array(*t) == Some(true))),
                     _ => resolve(item, leaves).type_oid,
                 };
                 match type_oid.map(|t| (t, is_array(t))) {
@@ -1181,6 +1191,48 @@ fn reads_unread(expr: &Expr) -> bool {
         Expr::NonNull(_) | Expr::Unknown | Expr::Leaf(_) | Expr::Row(..) => false,
         Expr::Call(call) => call.args.iter().any(reads_unread),
         Expr::Trusted(t) => reads_unread(&t.then) || reads_unread(&t.otherwise),
+    }
+}
+
+/// What the operands of an [`Expr::Every`] or an [`Expr::Any`] of type `ty` say of the elements
+/// of the array it is: each operand's own elements, as a `CASE`'s or a `coalesce`'s arrays. `||`,
+/// `array_append` and `array_prepend` also take a value that is no array, which is one element of
+/// the result: where an operand of one is of a type that is no array for certain it is such an
+/// element, which may be NULL where the operand may, and where its type is not known it may be
+/// either, and says nothing, unless it builds an array. A string literal there is an array beside
+/// an array (`tags || '{a}'`), whatever type it reads as alone, and holds what it spells.
+fn operands_items(operands: &[Expr], ty: Ty, leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> bool) -> Option<bool> {
+    if !matches!(ty, Ty::Concat | Ty::Appends) {
+        return join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array)));
+    }
+    join_items(operands.iter().map(|o| {
+        if spelled_array(o) || builds_array(o) {
+            return items_nullable(o, leaves, is_array);
+        }
+        let fact = resolve(o, leaves);
+        match fact.type_oid {
+            // A non-null element adds no NULL, but says nothing more of the others either.
+            Some(t) if !is_array(t) => (!fact.non_null).then_some(true),
+            Some(_) => items_nullable(o, leaves, is_array),
+            None => None,
+        }
+    }))
+}
+
+/// Whether an expression is a string literal that spells an array (`'{a,b}'`), as
+/// [`Reader::read`] reads one.
+fn spelled_array(expr: &Expr) -> bool {
+    matches!(expr, Expr::Every(operands, Ty::Is(oid::TEXT)) if matches!(operands.as_slice(), [Expr::Array { .. }]))
+}
+
+/// Whether an expression is an array the statement builds: `ARRAY[…]` or `array_agg(…)`, as it
+/// is or narrowed.
+fn builds_array(expr: &Expr) -> bool {
+    match expr {
+        Expr::Array { .. } => true,
+        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::NotJsonbItems(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => builds_array(inner),
+        Expr::Call(call) => matches!(call.claim, Claim::Array(_)),
+        _ => false,
     }
 }
 
@@ -1594,7 +1646,7 @@ impl Ty {
     fn of(self, facts: &[Fact]) -> Option<u32> {
         match self {
             Ty::Is(o) => Some(o),
-            Ty::Unknown => None,
+            Ty::Unknown | Ty::Appends => None,
             Ty::Shared => {
                 let first = facts.first()?.type_oid?;
                 facts.iter().all(|f| f.type_oid == Some(first)).then_some(first)
@@ -1740,7 +1792,9 @@ impl Reader<'_> {
                             // where a JSON null cast to a number or a boolean is NULL
                             // (`ARRAY['null'::jsonb]::int[]` is `{NULL}`).
                             let operand = if POSTGRES_JSONB_NULL_CASTS.contains(&name.as_str()) && !self.trust.jsonb_casts_raise { elements_not_jsonb(operand) } else { operand };
-                            Expr::Every(vec![operand], Ty::Unknown)
+                            // Of the built-in array type, which an array of it nests in turn.
+                            let ty = POSTGRES_CASTS.iter().find(|(n, _)| *n == name).and_then(|(_, o)| crate::pgtypes::builtin_array_of(*o)).map_or(Ty::Unknown, Ty::Is);
+                            Expr::Every(vec![operand], ty)
                         }
                         _ => Expr::Unknown,
                     };
@@ -1923,6 +1977,19 @@ impl Reader<'_> {
                     read
                 }
             }
+            // A slice of an array (`tags[1:2]`) is of the array's type, NULL for a NULL array or
+            // bound: one subscript a slice makes them all slices.
+            Some(NodeEnum::AIndirection(i))
+                if self.dialect == Dialect::Postgres
+                    && !i.indirection.is_empty()
+                    && i.indirection.iter().all(|n| matches!(n.node, Some(NodeEnum::AIndices(_))))
+                    && i.indirection.iter().any(|n| matches!(&n.node, Some(NodeEnum::AIndices(x)) if x.is_slice)) =>
+            {
+                match i.arg.as_deref() {
+                    Some(arg) => Expr::Nullable(Box::new(Expr::Every(vec![self.read(arg)], Ty::Shared))),
+                    None => Expr::Unknown,
+                }
+            }
             Some(NodeEnum::SubLink(s)) => self.sublink(s),
             // `CURRENT_SCHEMA` is NULL where no schema of the search path exists.
             Some(NodeEnum::SqlvalueFunction(v)) if v.op == protobuf::SqlValueFunctionOp::SvfopCurrentSchema as i32 => Expr::Unknown,
@@ -2023,7 +2090,9 @@ impl Reader<'_> {
             // Anywhere else `array_agg` may see no rows and be NULL, but its elements are still the
             // values of its argument.
             (Dialect::Postgres, "array_agg", 1) if self.trust.builtin("array_agg") => Expr::Array { non_null: false, items: f.args.iter().map(|a| self.read(a)).collect() },
-            (Dialect::Postgres, n, _) if POSTGRES_NEVER_NULL.contains(&n) && self.trust.builtin(n) => Expr::NonNull(None),
+            // `random(min, max)` is strict, and raises rather than answering NULL where `min > max`.
+            (Dialect::Postgres, "random", 2) if self.trust.builtin("random") => Expr::Every(self.args(f, projection), Ty::Unknown),
+            (Dialect::Postgres, n, args) if POSTGRES_NEVER_NULL.contains(&n) && (args == 0 || !POSTGRES_NO_ARGUMENT.contains(&n)) && self.trust.builtin(n) => Expr::NonNull(None),
             // `unnest(ARRAY[…])` gives the elements written, a nested array's flattened: none NULL
             // where none of them is and each is a value of a scalar type. An element that is an
             // array itself (`array[tags]`, `array['{NULL}'::int[]]`) makes the array one of more
@@ -2069,6 +2138,7 @@ impl Reader<'_> {
                 let claim = Claim::Removed(is_null_literal(&f.args[1]));
                 Expr::Call(Box::new(Call { check: Check::builtin(), args, claim }))
             }
+            (Dialect::Postgres, "array_append" | "array_prepend", 2) if self.trust.builtin(&name) => Expr::Every(self.args(f, projection), Ty::Appends),
             (Dialect::Postgres, n, _) if POSTGRES_TOTAL.contains(&n) && self.trust.builtin(n) => {
                 let ty = if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown };
                 Expr::Every(self.args(f, projection), ty)
@@ -2154,7 +2224,8 @@ impl Reader<'_> {
             }
             ("array_agg", 1) => (Claim::Array(false), None),
             ("array_remove", 2) => (Claim::Removed(is_null_literal(&f.args[1])), None),
-            (n, _) if POSTGRES_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
+            ("random", 2) => (Claim::Every(None, Ty::Unknown), None),
+            (n, args) if POSTGRES_NEVER_NULL.contains(&n) && (args == 0 || !POSTGRES_NO_ARGUMENT.contains(&n)) => (Claim::NonNull(None), None),
             ("uuidv7", 0) => (Claim::NonNull(Some(oid::UUID)), None),
             (n, 0) if POSTGRES_NO_ARGUMENT_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
             (n, 1) if POSTGRES_TOTAL_ONE_ARGUMENT.contains(&n) => (Claim::Every(None, Ty::Is(oid::TEXT)), None),
@@ -2164,6 +2235,7 @@ impl Reader<'_> {
             (n, 1) if POSTGRES_FRAME_VALUES.contains(&n) && f.over.as_deref().is_some_and(|over| frame_holds_current_row(over, self.windows)) => (Claim::Every(None, Ty::Unknown), None),
             (n, 1..) if POSTGRES_FIRST_ARG.contains(&n) => (Claim::Every(Some(1), Ty::Is(oid::TEXT)), None),
             (n, 1..) if POSTGRES_TOTAL_FOR.iter().any(|(name, _)| *name == n) => (Claim::Every(None, Ty::Unknown), POSTGRES_TOTAL_FOR.iter().find(|(name, _)| *name == n).map(|(_, t)| (0, *t))),
+            ("array_append" | "array_prepend", 2) => (Claim::Every(None, Ty::Appends), None),
             (n, _) if POSTGRES_TOTAL.contains(&n) => (Claim::Every(None, if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown }), None),
             _ => return None,
         })
@@ -3242,6 +3314,9 @@ impl Reader<'_> {
             if out.iter().any(|n| n.column == strict.column && n.checks.is_empty()) {
                 continue;
             }
+            if self.trust.null_equals && strict.calls.iter().any(StrictCall::null_equality) {
+                continue;
+            }
             let mut checks = Vec::new();
             if strict.calls.iter().any(|c| self.trust.call_checked(c)) && (self.dialect != Dialect::Postgres || self.trust.overloads.is_none()) {
                 continue;
@@ -3352,6 +3427,44 @@ impl Strict {
         self.calls.push(StrictCall { kind, name: name.to_string(), args });
         self
     }
+}
+
+impl StrictCall {
+    /// Whether the call is `=` with a bare NULL on a side ([`compares_with_null`]).
+    pub(crate) fn null_equality(&self) -> bool {
+        self.kind == Kind::Infix && self.name == "=" && self.args.iter().any(is_null_constant)
+    }
+}
+
+/// Whether a node is a NULL constant as written, with no cast: what `transform_null_equals` reads
+/// beside `=`.
+pub(crate) fn is_null_constant(node: &Node) -> bool {
+    matches!(node.node.as_ref(), Some(NodeEnum::AConst(c)) if c.isnull)
+}
+
+/// Whether a statement compares a value with a bare NULL by `=` anywhere (`x = NULL`, `NULL = x`).
+/// Under the setting `transform_null_equals`, which a database or a role may set, Postgres reads
+/// such a comparison as `x IS NULL`, true of the rows where `x` is NULL; without it the comparison
+/// is never true. Either way it pins no key and narrows no column, though a probe writes `x = NULL`
+/// for `x = $1`, which does: in a statement that holds one, no `= NULL` is read as either.
+pub fn compares_with_null(sql: &str) -> bool {
+    fn walk(v: &serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Object(map) => {
+                let found = map.get("AExpr").is_some_and(|e| {
+                    let op = e.get("kind").and_then(serde_json::Value::as_i64) == Some(protobuf::AExprKind::AexprOp as i64);
+                    let equals = e.get("name").and_then(serde_json::Value::as_array).is_some_and(|n| n.len() == 1 && n[0].pointer("/node/String/sval").and_then(serde_json::Value::as_str) == Some("="));
+                    let null = |side: &str| e.get(side).and_then(|s| s.pointer("/node/AConst/isnull")).and_then(serde_json::Value::as_bool) == Some(true);
+                    op && equals && (null("lexpr") || null("rexpr"))
+                });
+                found || map.values().any(walk)
+            }
+            serde_json::Value::Array(items) => items.iter().any(walk),
+            _ => false,
+        }
+    }
+    let Ok(parsed) = crate::stack::parse(sql) else { return true };
+    walk(&serde_json::to_value(&parsed.protobuf).unwrap_or_default())
 }
 
 /// The columns a predicate at the top level of a WHERE, or of an inner join's ON clause, is strict
@@ -3779,7 +3892,7 @@ impl WrittenReturning {
                         WrittenLeaf::Selected(i) => selected(*i),
                         WrittenLeaf::Other => false,
                     };
-                    DescribedColumn { name: String::new(), type_oid: oid::UNKNOWN, typmod: -1, type_name: String::new(), nullable: !non_null, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
+                    DescribedColumn { name: String::new(), type_oid: oid::UNKNOWN, typmod: -1, type_name: String::new(), nullable: !non_null, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: false }
                 })
                 .collect();
             (!value.cast || uncast(column)) && resolve(&value.claim, Some(&leaves)).non_null
@@ -4318,7 +4431,7 @@ mod tests {
     }
 
     fn col(nullable: bool, type_oid: u32) -> DescribedColumn {
-        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false }
+        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: false }
     }
 
     #[test]
@@ -4463,6 +4576,16 @@ mod tests {
         assert_eq!(items("SELECT (SELECT ARRAY[p.id, NULL] FROM posts p LIMIT 1) AS x FROM users u", &[]), Some(true));
         // The literal is still text where it stands for text.
         assert_eq!(resolve(&claim("SELECT '{x}' AS a"), None), Fact { non_null: true, type_oid: Some(oid::TEXT) });
+        // `||`, `array_append` and `array_prepend` add a value that is no array as one element,
+        // NULL where it is; a literal beside an array is an array, and one in a CASE is text.
+        assert_eq!(items("SELECT ARRAY['a'] || '{x}'", &[]), Some(false));
+        assert_eq!(items("SELECT ARRAY['a'] || '{NULL}'", &[]), Some(true));
+        assert_eq!(items("SELECT ARRAY['a', 'b'] || CASE WHEN id > 1 THEN '{x}' END FROM t", &[]), Some(true));
+        assert_eq!(items("SELECT array_append(ARRAY[a], a) FROM t", &[col(false, oid::INT4), col(true, oid::INT4)]), Some(true));
+        assert_eq!(items("SELECT array_append(ARRAY[a], a) FROM t", &[col(false, oid::INT4), col(false, oid::INT4)]), None);
+        assert_eq!(items("SELECT array_prepend(a, ARRAY[1]) FROM t", &[col(true, oid::INT4)]), Some(true));
+        // An element of no type the build names may be NULL, though it is made of arrays.
+        assert_eq!(items("SELECT array_append(ARRAY[a], CASE WHEN a > 0 THEN cardinality(ARRAY[a]) END) FROM t", &[col(false, oid::INT4), col(false, oid::INT4), col(false, oid::INT4)]), None);
         // A cast keeps its operand's elements, but where it takes a JSON null to NULL: on
         // PostgreSQL 18 `ARRAY['null'::jsonb]::int[]` is `{NULL}`.
         assert_eq!(items("SELECT ARRAY[1]::text[]", &[]), Some(false));
@@ -5268,11 +5391,14 @@ mod tests {
         assert_eq!(p.head[0], Some(Expr::Row(0, "users".to_string())));
         assert_eq!(p.head[1], None);
         assert_eq!(p.leaves.as_deref(), Some("SELECT u AS a0 FROM users u WHERE u.id = NULL"));
-        // The probe says whether it was the row after all: a column named like the alias is not.
-        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
-        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false };
+        // The probe says whether it was the row after all: a column named like the alias is not,
+        // whatever its type is named.
+        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: true };
+        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, distinct_items: false, nested: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), whole_row: false, own_row: false };
+        let named_alike = DescribedColumn { type_oid: 16600, type_name: "users".into(), ..column.clone() };
         assert!(resolve(p.head[0].as_ref().unwrap(), Some(&[row])).non_null);
         assert!(!resolve(p.head[0].as_ref().unwrap(), Some(&[column])).non_null);
+        assert!(!resolve(p.head[0].as_ref().unwrap(), Some(&[named_alike])).non_null);
         assert_eq!(pg("SELECT p FROM users u LEFT JOIN posts p ON p.user_id = u.id").head[0], None);
         assert_eq!(pg("SELECT s FROM (SELECT 1 AS a) s").head[0], None);
     }

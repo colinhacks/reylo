@@ -1,0 +1,2 @@
+compared.sql: many (e: enum('a\nb' | 'cr\rx' | 'b\\s' | 'it''s' | 'q')) -> { id: int }
+labels.sql: many () -> { e: enum('a\nb' | 'cr\rx' | 'b\\s' | 'it''s' | 'q'), s: set{text('x\ny' | 'z')} }

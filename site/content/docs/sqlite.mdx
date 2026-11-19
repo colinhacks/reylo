@@ -5,7 +5,7 @@ description: How Reylo types SQL queries on SQLite. Each column's type in TypeSc
 
 <p className="dk-subheader">How Reylo types queries on SQLite</p>
 
-[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>. This page covers how it types and runs queries on SQLite: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>.
 
 | | |
 | --- | --- |
@@ -111,7 +111,7 @@ In TypeScript, each example below pairs a SQL value with the value `.run()` retu
 
 ### Declared types and STRICT tables
 
-Reylo types a column by its declared type, following [SQLite's affinity rules](https://sqlite.org/datatype3.html#determination_of_column_affinity), as in the table above. Outside a `STRICT` table, any column can hold any kind of value, and `.run()` throws an error naming the column when it reads one its type doesn't allow:
+Reylo follows [SQLite's affinity rules](https://sqlite.org/datatype3.html#determination_of_column_affinity). Outside a `STRICT` table, any column can hold any kind of value, and `.run()` throws an error naming the column when it reads one its type doesn't allow:
 
 ```ts twoslash tab="main.ts"
 import loose from "./lite_loose.sql";
@@ -391,6 +391,16 @@ Values read with `json_extract`, `->` and `->>` are typed `unknown`, since they 
 
 </Pairs>
 
+**JSON values inside built JSON**
+
+A JSON value inside the JSON you build, from `json(…)`, `->`, `json_extract` or another JSON function, may be `null`, even read from a `not null` column, since the document it holds can be JSON's `null`.
+
+<Pairs>
+
+- `json_object('k', json('null'))` → `{ k: null }`
+
+</Pairs>
+
 </Rules>
 
 ### Functions
@@ -591,7 +601,7 @@ select id, name, email from users where id = :id
 
 ### `better-sqlite3`
 
-Pass the database. It's synchronous, so `.runSync()` works too, inside its `db.transaction(fn)` as well:
+Pass the database. It's synchronous, so `.runSync()` works too:
 
 ```ts twoslash tab="main.ts"
 import Database from "better-sqlite3";
@@ -610,7 +620,7 @@ An integer past 2^53 comes back exact.
 
 ### `node:sqlite`
 
-Pass a `DatabaseSync`. It's synchronous, so `.runSync()` works too, between a `begin` and a `commit`:
+Pass a `DatabaseSync`. It's synchronous, so `.runSync()` works too:
 
 ```ts twoslash tab="main.ts"
 import { DatabaseSync } from "node:sqlite";
@@ -628,7 +638,7 @@ An integer past 2^53 comes back exact.
 
 ### `bun:sqlite`
 
-Pass the database. It's synchronous, so `.runSync()` works too, inside its `db.transaction(fn)` as well:
+Pass the database. It's synchronous, so `.runSync()` works too:
 
 ```ts twoslash tab="main.ts"
 import { Database } from "bun:sqlite";
@@ -688,7 +698,7 @@ An integer past 2^53 comes back exact. Turso binds the number `2 ** 63` as 2^63 
 
 ### SQLite Wasm
 
-Pass an `oo1` database of `@sqlite.org/sqlite-wasm`, such as an `OpfsDb` in a worker. It's synchronous, so `.runSync()` works too, inside its `db.transaction(fn)` as well:
+Pass an `oo1` database of `@sqlite.org/sqlite-wasm`, such as an `OpfsDb` in a worker. It's synchronous, so `.runSync()` works too:
 
 ```ts twoslash tab="main.ts"
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
@@ -726,7 +736,7 @@ D1 rounds an integer past 2^53, so Reylo throws an error rather than return it, 
 
 ### Durable Objects
 
-Pass the object's `ctx.storage.sql`. It's synchronous, so `.runSync()` works on it, inside `ctx.storage.transactionSync(fn)` as well:
+Pass the object's `ctx.storage.sql`. It's synchronous, so `.runSync()` works on it:
 
 ```ts twoslash tab="main.ts"
 /// <reference types="@cloudflare/workers-types" />

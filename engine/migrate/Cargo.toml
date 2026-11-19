@@ -2,6 +2,7 @@
 name = "reylo-migrate"
 version.workspace = true
 edition = "2021"
+rust-version.workspace = true
 # libSQL is MIT-licensed, and the SQLite it forks is in the public domain, with its blessing in
 # place of a license.
 license = "MIT AND blessing"
@@ -32,6 +33,7 @@ prost = { version = "0.13", features = ["no-recursion-limit"], optional = true }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+sha2 = "0.10"
 rusqlite = { version = "0.39", features = ["bundled"], optional = true }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 tokio = { version = "1", features = ["rt", "time"] }
