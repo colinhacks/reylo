@@ -250,23 +250,6 @@ export function plain(t: Named): Named {
   return sugar === undefined ? t : parseType(sugar)!;
 }
 
-/** The type a cast writes at `at`, where `::` stands: a name, and its arguments in parentheses. */
-export function castType(sql: string, at: number): string {
-  if (!sql.startsWith("::", at)) return "";
-  const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(at + 2))?.[0] ?? "";
-  let i = at + 2 + name.length;
-  if (sql[i] !== "(") return name;
-  let depth = 0;
-  for (; i < sql.length; i++) {
-    const c = sql[i]!;
-    if (c === "'") {
-      for (i += 1; i < sql.length && sql[i] !== "'"; i++) if (sql[i] === "\\") i += 1;
-    } else if (c === "(") depth += 1;
-    else if (c === ")" && --depth === 0) return sql.slice(at + 2, i + 1);
-  }
-  return sql.slice(at + 2);
-}
-
 /** An integer type's width and whether it is unsigned, by its name. */
 export function integerOf(name: string): { bits: number; unsigned: boolean } | undefined {
   const m = /^(U?)Int(8|16|32|64|128|256)$/.exec(name);

@@ -1268,7 +1268,9 @@ fn replacement(sql: &str, opaque: &[(usize, usize)], call: &Call, f: &Function, 
                 let relations: Vec<String> = analyzed.iter().flat_map(|a| a.read_set.iter().cloned()).collect();
                 let catalog = postgres::catalog(host, &functions, &relations);
                 let trust = postgres::trust(host);
-                let (Some(catalog), Some(trust)) = (catalog, trust) else { return None };
+                let (Some(mut catalog), Some(mut trust)) = (catalog, trust) else { return None };
+                trust.null_equals = crate::infer::compares_with_null(&text);
+                catalog.null_equals = trust.null_equals;
                 if cardinality::exactly_one(&text, Dialect::Postgres, &trust, &catalog).is_err() {
                     return Some(None);
                 }
@@ -1346,6 +1348,123 @@ fn ask_level(names: &[String], levels: usize, seen: &mut HashSet<String>, host: 
     if !called.is_empty() {
         ask_level(&called, levels - 1, seen, host);
     }
+}
+
+/// `$1` is a `text[]` of operator names: one row `(operator, function)` for each operator of the
+/// name a user or an extension defined, with the function it runs.
+pub const OPERATOR_FUNCTIONS_QUERY: &str = "SELECT o.oprname::pg_catalog.text, p.proname::pg_catalog.text FROM pg_catalog.pg_operator o \
+    JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode::pg_catalog.oid \
+    WHERE o.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[])";
+
+/// Adds to `catalog.volatile` each name of `catalog.labelled` whose `language sql` overload labelled
+/// `stable` or `immutable` may answer anew for each call all the same ([`quiet_function`]), and
+/// gives those names. A label is its author's word, and Postgres runs the body as it is written: a
+/// sequential scan that compares a key with a call of one calls it for each row. A function in
+/// another language is taken at its label.
+pub(crate) fn belied_labels(catalog: &mut cardinality::Catalog, host: &Host) -> Lazy<Vec<String>> {
+    let mut names: Vec<String> = catalog.labelled.iter().filter(|n| !catalog.volatile.contains(*n)).cloned().collect();
+    if names.is_empty() {
+        return Some(Vec::new());
+    }
+    names.sort_unstable();
+    let mut pending = false;
+    let mut belied = Vec::new();
+    for name in names {
+        match quiet_function(&name, true, MAX_LEVELS, &mut Vec::new(), host) {
+            Some(true) => {}
+            Some(false) => belied.push(name),
+            None => pending = true,
+        }
+    }
+    if pending {
+        return None;
+    }
+    catalog.volatile.extend(belied.iter().cloned());
+    Some(belied)
+}
+
+/// Both of two answers, waiting where either waits, unless the other is already no.
+fn both(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+    match (a, b) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (Some(true), Some(true)) => Some(true),
+        _ => None,
+    }
+}
+
+/// Whether each `language sql` overload of `name` that is not labelled volatile answers alike for
+/// every call of it in a statement: its body, and the defaults of its arguments, which a call that
+/// leaves one out runs, call nothing volatile, read no view that does, sample no table without
+/// `REPEATABLE`, and call no such function of a user's, directly, in FROM, through an operator or
+/// in a view it reads (views inside views included), whose own body is volatile ([`quiet_body`]),
+/// `levels` levels down at most, a function met again on the way (`path`) counting as volatile. A
+/// materialized view holds its rows, so what its definition calls does not count. An overload in another language, or labelled
+/// volatile, is taken at its label; where `required`, a name the catalog gives no such overload of
+/// that the engine reads counts as volatile.
+fn quiet_function(name: &str, required: bool, levels: usize, path: &mut Vec<String>, host: &Host) -> Lazy<bool> {
+    if levels == 0 || path.iter().any(|p| p == name) {
+        return Some(false);
+    }
+    let functions = functions_named(&[name.to_string()], host)?;
+    let labelled: Vec<&Function> = functions.iter().filter(|f| f.name == name && f.sql && !f.volatile).collect();
+    if labelled.is_empty() {
+        return Some(!required);
+    }
+    path.push(name.to_string());
+    let mut quiet = Some(true);
+    for f in labelled {
+        quiet = both(quiet, quiet_body(f, levels, path, host));
+    }
+    path.pop();
+    quiet
+}
+
+/// [`quiet_function`] of one overload.
+fn quiet_body(f: &Function, levels: usize, path: &mut Vec<String>, host: &Host) -> Lazy<bool> {
+    let Some(body) = body_statement(f) else { return Some(false) };
+    let mut texts = vec![body];
+    texts.extend(f.defaults.as_ref().map(|defaults| format!("SELECT {defaults}")));
+    let mut quiet = Some(true);
+    for text in &texts {
+        let Some((value, _)) = tree(text) else { return Some(false) };
+        if samples(&value) {
+            return Some(false);
+        }
+        quiet = both(quiet, crate::errors::calls_nothing_volatile(text, host));
+        let mut called = called_names(&value);
+        // What a view it reads calls, through views inside views, or a policy of a table it reads.
+        match crate::errors::reached_functions(text, host) {
+            Some(Some(reached)) => called.extend(reached),
+            Some(None) => return Some(false),
+            None => quiet = both(quiet, None),
+        }
+        let operators = analyze::analyze(text).map(|a| a.operators).unwrap_or_default();
+        if !operators.is_empty() {
+            match host.query_each(OPERATOR_FUNCTIONS_QUERY, operators.iter().map(|o| vec![json!([o])]), Scope::Statement) {
+                Some(Ok(rows)) => called.extend(rows.iter().filter_map(|row| row.get(1).and_then(as_str).map(String::from))),
+                Some(Err(_)) => return Some(false),
+                None => quiet = both(quiet, None),
+            }
+        }
+        called.sort_unstable();
+        called.dedup();
+        for name in called {
+            quiet = both(quiet, quiet_function(&name, false, levels - 1, path, host));
+        }
+    }
+    quiet
+}
+
+/// Whether a statement samples a table with `TABLESAMPLE` and no `REPEATABLE`, which draws anew
+/// each time it runs.
+fn samples(value: &Value) -> bool {
+    let mut found = false;
+    each_object("", value, &mut |key, map| {
+        if key == "RangeTableSample" && map.get("repeatable").is_none_or(Value::is_null) {
+            found = true;
+        }
+    });
+    found
 }
 
 /// A note where a call in FROM runs apart from its query for want of a word: Postgres flattens a

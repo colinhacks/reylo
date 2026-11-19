@@ -41,6 +41,11 @@ members = [
 # crate published from here takes.
 [workspace.package]
 version = "0.8.0"
+# The oldest Rust every published crate builds with, set by sqlx 0.9's own: the package check
+# (.github/scripts/rust-package-check.sh) builds its projects from the packed crates on it, while
+# this workspace builds on the newer release rust-toolchain.toml pins. The parser copies write theirs
+# in their own manifests.
+rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/reylosql/reylo"
 homepage = "https://reylo.dev"

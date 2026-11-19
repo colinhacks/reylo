@@ -497,10 +497,13 @@ fn analyze_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let inner = Engine::new(host);
     let read = inner.run(&text, &inner_lexed, &inner_marked)?;
     let (declared, found) = (engine.column_oids.borrow(), inner.column_oids.borrow());
-    let (mut analysis, narrowed) = narrowed(analysis, &declared, read, &found);
+    // A function whose body belies its label runs again for each call, where its body in place is a
+    // subquery the server may run once: what that says of the rows holds of the expansion alone.
+    let rows = engine.belied.borrow().is_empty();
+    let (mut analysis, narrowed) = narrowed(analysis, &declared, read, &found, rows);
     analysis.notes = expanded.notes;
-    // A type the body settled holds only while the body and what it reads do: the freshness check
-    // watches those too.
+    // The tables the body reads and the functions read through, which no parse of the statement
+    // as written gives.
     if narrowed {
         let (first, through) = (analyze::analyze(&analysis.rewritten.sql).ok(), analyze::analyze(&text).ok());
         let own: Vec<String> = first.iter().flat_map(|p| p.read_set.iter().chain(&p.write_set).cloned()).collect();
@@ -515,8 +518,9 @@ fn analyze_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
 /// What the statement with its functions' bodies in place says of `analysis`, where it describes to
 /// the same columns of the same types: a column not null, a type it holds more of (a JSON shape), the
 /// smaller of the two cardinalities. Each claim is the statement's own, so taking either is sound.
-/// With whether it changed anything.
-fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u32]) -> (Analysis, bool) {
+/// What it says of the rows (the cardinality, the keys, the order) only where `rows`. With whether
+/// it changed anything.
+fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u32], rows: bool) -> (Analysis, bool) {
     let same = declared == found && analysis.columns.len() == read.columns.len() && analysis.columns.iter().zip(&read.columns).all(|(a, b)| a.name == b.name);
     if !same || read.columns.is_empty() {
         return (analysis, false);
@@ -528,6 +532,9 @@ fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u
         column.nullable &= body.nullable;
         column.ty = body.ty;
         column.comment = column.comment.take().or(body.comment);
+    }
+    if !rows {
+        return (analysis, changed);
     }
     let rank = |c: &Cardinality| match c {
         Cardinality::None => 0,
@@ -579,7 +586,7 @@ pub fn describe(sql: &str, host: &Host) -> Lazy<Result<DescribedStatement, DbErr
     host.on_engine_stack(|host| {
         let engine = Engine::new(host);
         let parsed = analyze::analyze(sql).ok();
-        let trust = trust(host);
+        let trust = trust(host).map(|trust| Trust { null_equals: infer::compares_with_null(sql), ..trust });
         let relations = relations_of(parsed.as_ref());
         engine.described(sql, parsed.as_ref(), &relations, trust.as_ref(), &[]).map(|r| r.map(|(_, described)| described))
     })
@@ -616,7 +623,7 @@ pub fn shaped(sql: &str, host: &Host) -> Lazy<Result<ShapedStatement, DbError>> 
     host.on_engine_stack(|host| {
         let engine = Engine::new(host);
         let parsed = analyze::analyze(sql).ok();
-        let trust = trust(host);
+        let trust = trust(host).map(|trust| Trust { null_equals: infer::compares_with_null(sql), ..trust });
         let relations = relations_of(parsed.as_ref());
         let described = engine.described(sql, parsed.as_ref(), &relations, trust.as_ref(), &[]);
         let columns = columns_where(true, sql, host);
@@ -682,6 +689,7 @@ pub fn catalog(host: &Host, functions: &[String], relations: &[String]) -> Lazy<
     if let Some(rows) = view_rows {
         merge_keys(&mut catalog, build_catalog(&operators, rows));
     }
+    crate::bodies::belied_labels(&mut catalog, host)?;
     catalog.views = views;
     trusted(&mut catalog, &trust);
     Some(catalog)
@@ -717,6 +725,7 @@ fn columns_where(needed: bool, sql: &str, host: &Host) -> Lazy<Columns> {
 /// What the trust check says that the row-count proof reads: whether `=` is only the built-in
 /// one, which operators a user defined, and which types no user's cast function targets.
 fn trusted(catalog: &mut Catalog, trust: &Trust) {
+    catalog.null_equals = trust.null_equals;
     catalog.equality_shadowed = !trust.builtin("=");
     catalog.user_operators = trust.shadowed.clone();
     catalog.cast_targets = trust.cast_targets.clone();
@@ -837,6 +846,8 @@ struct Engine<'a> {
     comments: RefCell<Comments>,
     /// The type of each column the main statement's describe reports.
     column_oids: RefCell<Vec<u32>>,
+    /// The functions the statement calls whose label their body belies ([`crate::bodies::belied_labels`]).
+    belied: RefCell<Vec<String>>,
     budget: Cell<usize>,
 }
 
@@ -856,7 +867,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), written_facts: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES), column_oids: RefCell::new(Vec::new()) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), written_facts: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES), column_oids: RefCell::new(Vec::new()), belied: RefCell::new(Vec::new()) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -903,6 +914,7 @@ impl<'a> Engine<'a> {
         let trust = trust(self.host).zip(nullable.clone()).map(|(mut trust, nullable)| {
             trust.non_null_params = true;
             trust.nullable_params = nullable;
+            trust.null_equals = infer::compares_with_null(&rewritten.sql);
             trust
         });
         let operators = set_returning_operators(self.host);
@@ -954,6 +966,7 @@ impl<'a> Engine<'a> {
         if let Some(rows) = view_rows {
             merge_keys(&mut catalog, build_catalog(&operators, rows));
         }
+        *self.belied.borrow_mut() = crate::bodies::belied_labels(&mut catalog, self.host)?;
         catalog.views = view_definitions;
         catalog.not_null = self.not_null_columns();
         catalog.param_types = raw.params.clone();
@@ -1095,11 +1108,11 @@ impl<'a> Engine<'a> {
             ordered,
             value: false,
             rewritten,
+            sql_mode: None,
             style: lexed.style,
             diagnostics,
             unresolved,
             structured: Vec::new(),
-            fresh: None,
             errors: None,
             capabilities: None,
             read_only: false,
@@ -1214,11 +1227,11 @@ impl<'a> Engine<'a> {
             ordered: false,
             value: false,
             rewritten,
+            sql_mode: None,
             style: lexed.style,
             diagnostics,
             unresolved: Vec::new(),
             structured: Vec::new(),
-            fresh: None,
             errors: None,
             capabilities: None,
             read_only: false,
@@ -2369,7 +2382,10 @@ impl<'a> Engine<'a> {
                     _ => false,
                 };
                 let whole_row = from_view || own_row;
-                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document, non_finite: Default::default(), facts: Default::default(), whole_row }
+                // A bare name read as an alias's row is the row where the describe names it so,
+                // whatever else degrades the column's provenance ([`DescribedColumn::own_row`]).
+                let read_whole = col.table != 0 && col.attnum == 0 && registry.get(col.oid).and_then(|t| t.relid) == Some(col.table);
+                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, distinct_items: false, nested: None, values: None, document, non_finite: Default::default(), facts: Default::default(), whole_row, own_row: read_whole }
             })
             .collect();
         let columns = columns
@@ -2797,17 +2813,29 @@ impl<'a> Engine<'a> {
         if facts.len() != described.columns.len() {
             return Some(());
         }
+        // An array of a domain over an array type (`ARRAY[x]` of such a column, which the describe
+        // reports by its base type) holds the domain's values, each one value however its base
+        // type nests: Postgres builds it as an array of the domain, as the describe says it is.
+        let registry = self.registry.borrow();
+        let of_array_domains = |type_oid: u32| {
+            registry.get(type_oid).filter(|t| t.kind == crate::pgtypes::TypeKind::Array).and_then(|t| registry.get(t.elem?)).is_some_and(|e| {
+                e.kind == crate::pgtypes::TypeKind::Domain && registry.get(registry.resolve_domain(e.oid)).is_none_or(|base| base.kind == crate::pgtypes::TypeKind::Array)
+            })
+        };
         for (col, fact) in described.columns.iter_mut().zip(facts) {
             if let Some((non_null, items, nested)) = fact {
                 if non_null {
                     col.nullable = false;
                 }
                 col.nullable_items = items;
-                col.nested = nested;
+                col.nested = nested.filter(|_| !of_array_domains(col.type_oid));
             }
         }
+        drop(registry);
         // `ARRAY(SELECT …)`'s elements are its subquery's one column, which the subquery's own FROM
-        // and WHERE settle, over the items of this statement it may read.
+        // and WHERE settle, over the items of this statement it may read. A column of arrays is the
+        // rows of an array of more dimensions, whose elements are the arrays' own: non-null where
+        // the subquery's own analysis says so of them.
         if plan.set_op.is_none() {
             let subqueries = infer::array_subqueries(sql).filter(|s| s.len() == described.columns.len()).unwrap_or_default();
             let mut pending = false;
@@ -2815,7 +2843,9 @@ impl<'a> Engine<'a> {
                 let Some(subquery) = subquery else { continue };
                 match self.probe(subquery, trust) {
                     Some(Some(settled)) => {
-                        if matches!(settled.columns.as_slice(), [only] if !only.nullable) {
+                        let registry = self.registry.borrow();
+                        let no_array = |o: u32| registry.get(registry.resolve_domain(o)).is_some_and(|t| t.kind != crate::pgtypes::TypeKind::Array);
+                        if matches!(settled.columns.as_slice(), [only] if !only.nullable && (no_array(only.type_oid) || only.nullable_items == Some(false))) {
                             col.nullable_items = Some(false);
                         }
                     }
@@ -3566,10 +3596,12 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
     let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
+    /// A cast to a string type that keeps the value whole: one with a length (`varchar(1)`) cuts it,
+    /// so `x::varchar(1) IN ('a', 'b')` lets `'ab'` in.
     fn uncast(node: &pg_query::protobuf::Node) -> &pg_query::protobuf::Node {
         match node.node.as_ref() {
             Some(N::TypeCast(t)) => {
-                let name = t.type_name.as_ref().and_then(|n| crate::jsonshape::last_string(&n.names)).unwrap_or_default();
+                let name = t.type_name.as_ref().filter(|n| n.typmods.is_empty()).and_then(|n| crate::jsonshape::last_string(&n.names)).unwrap_or_default();
                 match (["text", "varchar"].contains(&name.as_str()), t.arg.as_deref()) {
                     (true, Some(arg)) => uncast(arg),
                     _ => node,
@@ -3753,11 +3785,12 @@ pub fn check_array_values(text: &str, column: &str, types: (Option<u32>, Option<
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
     let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
-    /// A cast to a string type, as the server prints one around a column of a domain.
+    /// A cast to a string type, as the server prints one around a column of a domain: with no
+    /// length, which would cut each element (`arr::varchar(1)[]`).
     fn uncast(node: &Node) -> &Node {
         match node.node.as_ref() {
             Some(N::TypeCast(t)) => {
-                let name = t.type_name.as_ref().and_then(|n| crate::infer::builtin_name(&n.names)).unwrap_or_default();
+                let name = t.type_name.as_ref().filter(|n| n.typmods.is_empty()).and_then(|n| crate::infer::builtin_name(&n.names)).unwrap_or_default();
                 match (["text", "varchar"].contains(&name.as_str()), t.arg.as_deref()) {
                     (true, Some(arg)) => uncast(arg),
                     _ => node,
@@ -4337,6 +4370,10 @@ fn same_value_is_equal(ty: &Type, in_json: bool) -> bool {
 /// test that rests on one does not prove the joined row exists.
 fn witness_holds(witness: &analyze::Witness, relation: &str, columns: &[Vec<Value>], trust: &Trust) -> bool {
     use crate::resolution::Operand;
+    // Under `transform_null_equals`, `x = NULL` is `x IS NULL`, which holds of NULL.
+    if trust.null_equals && witness.calls.iter().any(infer::StrictCall::null_equality) {
+        return false;
+    }
     // A domain's column, or one the catalog does not report, is of no type the build vouches for.
     let read = || -> Option<Operand> {
         let name = witness.column.last()?;
@@ -4414,6 +4451,7 @@ fn merge_keys(into: &mut Catalog, from: Catalog) {
     into.functions.extend(from.functions);
     into.set_returning.extend(from.set_returning);
     into.volatile.extend(from.volatile);
+    into.labelled.extend(from.labelled);
 }
 
 fn build_catalog(set_returning: &(HashSet<String>, HashSet<String>), rows: CatalogRows) -> Catalog {
@@ -4506,6 +4544,11 @@ fn build_catalog(set_returning: &(HashSet<String>, HashSet<String>), rows: Catal
             // then taken as volatile, which refuses a key pinned to any call.
             if row.get(2).and_then(as_bool).unwrap_or(true) {
                 catalog.volatile.insert(name.to_string());
+            }
+            // A host that answers without the fourth column reports no `language sql` function:
+            // every function is then taken at its label.
+            if row.get(3).and_then(as_bool).unwrap_or(false) {
+                catalog.labelled.insert(name.to_string());
             }
             catalog.functions.insert(name.to_string());
         }

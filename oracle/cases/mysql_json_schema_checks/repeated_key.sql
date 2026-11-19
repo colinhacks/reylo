@@ -1,0 +1,1 @@
+select dup from repeated

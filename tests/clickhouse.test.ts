@@ -8,7 +8,7 @@ import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { defineQuery } from "../src/index.ts";
 import { canonical, parseType, typeName } from "../src/clickhouse-types.ts";
-import { CLICKHOUSE, DRIVERS, INDEX, ROOT, clickhouseDatabase, clickhouseLive, declarations, driver, transform } from "./helpers.ts";
+import { CLICKHOUSE, DRIVERS, INDEX, ROOT, clickhouseDatabase, clickhouseLive, declarations, driver, handWritten, transform } from "./helpers.ts";
 
 // ClickHouse end to end, on the throwaway server REYLO_TEST_CLICKHOUSE names, each test in a
 // database of its own: the types the content mapper writes for a statement, read from the server's
@@ -52,8 +52,8 @@ const returns = (text: string): string => /^declare const query: Query<[\s\S]*?,
 /** Each diagnostic of a file, as its message and the text it marks. */
 const marked = (sql: string, diagnostics: { messageText: string; start: number; length: number }[]) => diagnostics.map((d) => [d.messageText, sql.slice(d.start, d.start + d.length)]);
 
-/** A query written by hand, with no build step: its statement alone. */
-const byHand = (sql: string, params: string[] = []) => defineQuery<Record<string, unknown>, Record<string, unknown>, "many", "clickhouse">({ dialect: "clickhouse", sql, params });
+/** A query written by hand, with no build step: its statement, and each placeholder's place in it as the engine's lexer finds it (tests/helpers.ts, `handWritten`). */
+const byHand = (sql: string, params?: string[]) => defineQuery<Record<string, unknown>, Record<string, unknown>, "many", "clickhouse">({ dialect: "clickhouse", ...handWritten(sql, "clickhouse", params) });
 
 /** Every type the run time reads, each with a value that tries its representation: the SQL that makes it, and the value `.run()` gives. */
 const VALUES: [name: string, sql: string, value: unknown][] = [
@@ -234,10 +234,12 @@ test("ClickHouse: each parameter is written as its type's text, and comes back a
     const given = row(PARAMS.map(([, name, value]) => [name, value]));
     const wanted = row(PARAMS.map(([, name, value, back]) => [name, back === undefined ? value : back]));
     assert.deepEqual(await byHand(sql, PARAMS.map(([, name]) => name)).run(client, given), [wanted]);
-    // The other form, a cast after the name, is sent as ClickHouse's own.
-    assert.deepEqual(await byHand("SELECT :n::UInt8 + 1 AS next, :s::Nullable(String) AS s", ["n", "s"]).run(client, { n: 1, s: null }), [{ next: 2, s: null }]);
     // A parameter used twice is one value.
     assert.deepEqual(await byHand("SELECT {n:UInt8} + {n:UInt8} AS sum", ["n"]).run(client, { n: 2 }), [{ sum: 4 }]);
+    // A query defined by hand with no marks cannot say what type each value goes as.
+    const unmarked = defineQuery<Record<string, unknown>, Record<string, unknown>, "many", "clickhouse">({ dialect: "clickhouse", sql: "SELECT {n:UInt8} AS n", params: ["n"] });
+    await assert.rejects(unmarked.run(client, { n: 2 }), /^TypeError: Reylo cannot bind this ClickHouse statement's parameters: each goes as its declared type's text, which Reylo reads at its placeholder, and a query defined by hand needs `marks` there/);
+    assert.deepEqual(await defineQuery<Record<string, never>, Record<string, unknown>, "many", "clickhouse">({ dialect: "clickhouse", sql: "SELECT 1 AS n", params: [] }).run(client, {}), [{ n: 1 }]);
   } finally {
     await client.close();
   }
@@ -525,6 +527,10 @@ test("ClickHouse: a write returns no rows, and is checked against its table", { 
     assert.match(found["bad_column.sql"]!.diagnostics[0]!.messageText, /^No such column nope in table/);
     assert.match(found["bad_where.sql"]!.diagnostics[0]!.messageText, /^Unknown expression or function identifier `nope`/);
     assert.match(found["from_body.sql"]!.diagnostics[0]!.messageText, /^An INSERT … FORMAT takes its rows from the request's body/);
+    // A parameter written with a cast after its name is sent as ClickHouse's own, `{name:Type}`.
+    const cast = await built(root, "cast", "SELECT :n::UInt8 + 1 AS next, :s::Nullable(String) AS s");
+    assert.equal(cast.sql, "SELECT {n:UInt8}::UInt8 + 1 AS next, {s:Nullable(String)}::Nullable(String) AS s");
+    assert.deepEqual(await cast.run(db.client, { n: 1, s: null }), [{ next: 2, s: null }]);
     const add = await built(root, "add", files["add.sql"]);
     // The module sends its statement with the comment naming its file, which an INSERT's rows must not run into.
     // A parameter that takes NULL may be left out, and is NULL then.

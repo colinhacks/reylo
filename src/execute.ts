@@ -12,14 +12,12 @@
 import type { QueryError } from "./query-error.ts";
 import { columnKind, describe, given, hstoreText, isArrayValued, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers, type Kind } from "./values.ts";
 import { bareName, isMysqlSet, schemaOf, type EngineType } from "./engine-type.ts";
-import { lexPlaceholders } from "./lex.ts";
-import { castType } from "./clickhouse-types.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import type { JsonSchema } from "./engine-type.ts";
+import type { SqlMode } from "./engine-core.ts";
 import type { Checks } from "./checks.ts";
 import type { Members, Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
-import { compared, due, passed, staleError, warnDrifted, type Fresh } from "./fresh.ts";
 import { decodeCodecs, encodePlan, type Libraries, type Plan } from "./codecs.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite" | "clickhouse";
@@ -183,10 +181,14 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly sql: string;
   /** Parameter names in placeholder order, so an object of params binds positionally. */
   readonly params: readonly string[];
-  /** The statement as the engine compiled it for the database, when a build step ran: the query's `sql`. A query without it is compiled by `compile` below. */
+  /** The statement as the engine compiled it for the database, when a build step ran: the query's `sql`. A query without it is taken as written (`compile` below). */
   readonly text?: string | undefined;
   /** The binding order for `text`: one name per placeholder of the rewritten statement. */
   readonly order?: readonly string[] | undefined;
+  /** Each placeholder's place in `text`, as the engine found it: where Reylo splits the statement for a driver that takes it in pieces (Slonik's tag) or writes the values into it (mysql2 on a server that refuses prepared statements, src/decode-mysql.ts). A ClickHouse placeholder carries its parameter's type, which Reylo reads at its mark to write the value (src/decode-clickhouse.ts). A build step writes them for Postgres, MySQL and ClickHouse; those two drivers, and a ClickHouse statement with parameters, refuse a query without them. */
+  readonly marks?: Marks | undefined;
+  /** How the MySQL session the statement was built on reads strings, where another `sql_mode` would read the statement otherwise: Reylo writes values into its text only on a session that reads it the same way (src/decode-mysql.ts). */
+  readonly sqlMode?: SqlMode | undefined;
   /** What the analysis found of each parameter, by name (every build step puts it in the module). */
   readonly inputs?: Inputs | undefined;
   /** Each output column's name and kind (src/values.ts), in order: what the run time gives each value (every build step puts it in the module). */
@@ -209,8 +211,6 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly libraries?: Libraries | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
   readonly structured?: readonly Structured[] | undefined;
-  /** The catalog facts the statement relied on, checked before it runs (src/fresh.ts). */
-  readonly fresh?: Fresh | undefined;
   /** The `.sql` file the module was built from, relative to the project's root, for messages. */
   readonly source?: string | undefined;
   /** Whether a Postgres array column may hold nested arrays, as `allow_nested_arrays: true` says: none is refused. */
@@ -245,8 +245,11 @@ export type Runtime<D extends Dialect = Dialect> = {
   decoder(name: string, kind: Kind, delim: string | undefined, nonFinite: JsonNumbers | undefined, nestedArrays: boolean | undefined): (v: never) => unknown;
 };
 
-/** The statement as Reylo sends it, its values in binding order, and the parameter each binds. */
-export type Bound = { text: string; values: unknown[]; names: readonly string[] };
+/** Placeholders' places in a statement: `[start, end]` for each, at JavaScript's offsets, in text order. */
+export type Marks = readonly (readonly [number, number])[];
+
+/** The statement as Reylo sends it, its values in binding order, the parameter each binds, and each placeholder's place in the text sent, where the module carries them. */
+export type Bound = { text: string; values: unknown[]; names: readonly string[]; marks: Marks | undefined };
 
 /**
  * Each parameter by name: `type` is the engine's type for it. The run time reads it where a
@@ -369,18 +372,6 @@ export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: 
 function executeSyncSqlite<D extends Dialect>(c: AnyClient, query: QueryModule<D>, params: ParamsInput, runSync: NonNullable<Runtime<D>["runSync"]>): unknown[] | Promise<unknown[]> {
   if (isSqlJs(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
-  // A Durable Object's storage is a database of its own, so its checks are its own.
-  const own = isDurableObjectSql(c) ? (c as object) : undefined;
-  if (query.fresh && due(query, undefined, own)) {
-    let rows: unknown[] | undefined;
-    try {
-      rows = own ? c.exec(query.fresh.query).toArray() : isSqliteWasm(c) ? c.selectObjects(query.fresh.query) : c.prepare(query.fresh.query).all();
-    } catch {}
-    const found = rows && compared(query.fresh, rows, query.dialect);
-    if (found?.stale.length) throw staleError(query.source, found.stale);
-    if (found) warnDrifted(query.source, found.drifted);
-    passed(query, undefined, own);
-  }
   return runSync(c, query, statement(query, params));
 }
 
@@ -431,19 +422,6 @@ export function isTurso(c: AnyClient): boolean {
 async function executeAsync(c: AnyClient | null | undefined, query: QueryModule, params: ParamsInput): Promise<unknown[]> {
   if (c == null || (typeof c !== "object" && typeof c !== "function")) throw unsupported(c, query.dialect);
   checkParams(query, params);
-  // The catalog facts the statement relied on, read again through the same client.
-  const own = isDurableObjectSql(c) ? (c as object) : undefined;
-  if (query.fresh && due(query, undefined, own)) {
-    const fresh = query.fresh;
-    let rows: unknown[] | undefined;
-    try {
-      rows = await executeAsync(c, { dialect: query.dialect, runtime: query.runtime, sql: fresh.query, params: [], text: fresh.query, order: [] }, {});
-    } catch {}
-    const found = rows && compared(fresh, rows, query.dialect);
-    if (found?.stale.length) throw staleError(query.source, found.stale);
-    if (found) warnDrifted(query.source, found.drifted);
-    passed(query, undefined, own);
-  }
   if (query.dialect === "postgres") await checkMoneyLocale(c, query);
   const rows = await query.runtime.run(c, query, statement(query, params));
   if (rows === undefined) throw unsupported(c, query.dialect);
@@ -477,7 +455,7 @@ async function checkMoneyLocale(c: AnyClient, query: QueryModule): Promise<void>
   if (name === null || moneyLocales.has(c as object)) return;
   let written: unknown;
   try {
-    const rows = await executeAsync(c, { dialect: "postgres", runtime: query.runtime, sql: MONEY_CHECK, params: [], text: MONEY_CHECK, order: [], columns: [["m", "text"]] }, {});
+    const rows = await executeAsync(c, { dialect: "postgres", runtime: query.runtime, sql: MONEY_CHECK, params: [], text: MONEY_CHECK, order: [], marks: [], columns: [["m", "text"]] }, {});
     written = (rows[0] as { m?: unknown } | undefined)?.m;
   } catch {
     return;
@@ -505,7 +483,7 @@ function checkParams(query: QueryModule, input: unknown): asserts input is Recor
 function statement(query: QueryModule, params: ParamsInput) {
   // The build step already compiled the statement; only the values need ordering.
   const compiled = compile(query);
-  const bound: Bound = { text: compiled.text, values: compiled.order.map((name) => value(params, name)), names: compiled.order };
+  const bound: Bound = { text: compiled.text, values: compiled.order.map((name) => value(params, name)), names: compiled.order, marks: compiled.marks };
   bound.names.forEach((name, i) => {
     const input = query.inputs?.[name];
     const type = input?.type;
@@ -543,7 +521,7 @@ function statement(query: QueryModule, params: ParamsInput) {
       const rows = rowsOf(type, input.members);
       const prepared = prepareRows(name, rows, bound.values[i], query.dialect, structured !== undefined);
       bound.values[i] = prepared.value;
-      if (structured) bound.text = variant(bound.text, structured, rows.fields, prepared.present);
+      if (structured) ({ text: bound.text, marks: bound.marks } = variant(bound.text, bound.marks, structured, rows.fields, prepared.present));
       return;
     }
     // A parameter the statement takes no null for, which its types rely on (a column it alone
@@ -584,8 +562,13 @@ function statement(query: QueryModule, params: ParamsInput) {
     bound.values.forEach((v, i) => {
       if (typeof v === "bigint" && (v >= 2n ** 63n || v < -(2n ** 63n))) throw new ParameterError(`Parameter "${bound.names[i]}" is ${v}, outside the 64-bit integers SQLite holds (-2^63 to 2^63 - 1), so no SQLite driver binds it exactly.`);
     });
-  // The comment naming the file goes on last, after a structured parameter's lists are written.
-  bound.text = sentText(query, bound.text);
+  // The comment naming the file goes on last, after a structured parameter's lists are written. It
+  // ends the statement on Postgres and MySQL, so every mark keeps its place; on ClickHouse it opens
+  // the statement, and every mark moves by its length.
+  const sent = sentText(query, bound.text);
+  const moved = sent.length - bound.text.length;
+  if (query.dialect === "clickhouse" && moved > 0 && bound.marks !== undefined) bound.marks = bound.marks.map(([start, end]) => [start + moved, end + moved] as const);
+  bound.text = sent;
   return bound;
 }
 
@@ -829,48 +812,16 @@ function dateText(d: Date): string {
 }
 
 /**
- * The statement as Reylo sends it to the database, and the parameter each placeholder binds: the
- * engine's compiled text where a build step wrote one into the module. Without it (a query
- * defined by hand) the run time lexes the placeholders itself (`lex.ts`); the engine's lexer is
- * the authoritative one, and the two agree on every statement the fallback is meant for.
- * Postgres numbers each distinct parameter once; MySQL has only `?`, and better-sqlite3 reads
- * SQLite's `?NNN` as a named parameter, so both get one `?` per placeholder and a repeated name is
- * repeated in the binding order.
+ * The statement as Reylo sends it to the database, the parameter each value binds, and each
+ * placeholder's place in it: the engine's compiled text where a build step wrote one into the
+ * module. A query defined by hand without it is taken as written: its `sql` is the statement the
+ * database receives, in the database's own placeholders (`$1` on Postgres, `?` on MySQL and
+ * SQLite), and its `params` the binding order, one name per value. Nothing in the run time reads
+ * a placeholder off the text: only the engine's lexer knows every string and comment of each dialect.
  */
-export function compile(query: QueryModule): { text: string; order: readonly string[] } {
-  if (query.text && query.order) return { text: query.text, order: query.order };
-  const { placeholders } = lexPlaceholders(query.sql, query.dialect);
-  // ClickHouse's driver binds by name, and a placeholder there carries its type: its own form goes
-  // as it is written, and `:name::Type` as that form, with the cast's type.
-  if (query.dialect === "clickhouse") {
-    let sent = "";
-    let from = 0;
-    for (const p of placeholders) {
-      const written = query.sql.slice(p.start, p.end);
-      sent += query.sql.slice(from, p.start) + (written.startsWith("{") ? written : `{${p.name}:${castType(query.sql, p.end)}}`);
-      from = p.end;
-    }
-    return { text: sent + query.sql.slice(from), order: [...new Set(placeholders.map((p) => p.name))] };
-  }
-  // Postgres numbers each distinct parameter once.
-  const numbered = query.dialect === "postgres";
-  let text = "";
-  let last = 0;
-  const order: string[] = [];
-  for (const p of placeholders) {
-    const index = indexOf(query, p);
-    text += query.sql.slice(last, p.start) + (numbered ? `$${index + 1}` : "?");
-    order.push(p.name);
-    last = p.end;
-  }
-  return { text: text + query.sql.slice(last), order: numbered ? query.params : order };
-}
-
-function indexOf(query: QueryModule, p: { name: string; start: number; end: number }) {
-  const index = query.params.indexOf(p.name);
-  // A hand-built query whose `params` misses a placeholder would bind `$0`.
-  if (index === -1) throw new Error(`The statement's placeholder ${query.sql.slice(p.start, p.end)} is parameter "${p.name}", which the query's params (${JSON.stringify(query.params)}) do not list.`);
-  return index;
+export function compile(query: QueryModule): { text: string; order: readonly string[]; marks: Marks | undefined } {
+  if (query.text && query.order) return { text: query.text, order: query.order, marks: query.marks };
+  return { text: query.sql, order: query.params, marks: query.marks };
 }
 
 const accepted: Record<Dialect, string> = {

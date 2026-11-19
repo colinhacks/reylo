@@ -1,9 +1,11 @@
 //! The diff engine's cases, `tests/diff/<database>/<case>/`: `v1.sql` (with `seed.sql`'s rows) is
 //! the database as it is, `v2.sql` the schema it should have. Each case builds both, plans from
-//! one to the other, runs the plan on the first, and requires its catalog to equal the second's
+//! one to the other, runs the plan on the first as a deploy runs its files, and requires its catalog to equal the second's
 //! and every table both have to keep its own rows, value for value (a partitioned table's are its partitions'); `server.sql`, where a case has one, makes what it
 //! needs of the server itself (a role), and `check.sql` runs after the plan, so a case can require
-//! what no catalog shows (an identity that gives an unused value next). The plan is kept beside the case as `plan.sql`,
+//! what no catalog shows (an identity that gives an unused value next). Planned again after it, the
+//! database needs nothing more; and each case goes back too, from v2 without rows to v1, unless its
+//! `one-way.txt` says why it can't. The plan is kept beside the case as `plan.sql`,
 //! compared like the oracle's expected output: `REYLO_BLESS=1` writes it. Postgres's cases run
 //! against the server `REYLO_TEST_PG` names, and are skipped where it is not set.
 
@@ -111,6 +113,56 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
+/// Takes `db` to `target` as the corpus's forward leg does: a moved table first, then the plan in
+/// schema.sql's style, as its files. Gives the statements and the one that failed.
+async fn apply(db: &mut Db, target: &diff::Schema, alterer: &diff::postgres::PostgresAlterer) -> (Vec<String>, Option<String>) {
+    let current = diff::postgres::read(db).await.unwrap();
+    let mut moves = diff::postgres::moves(&current, target);
+    diff::postgres::style_statements(db, &mut moves, &target.verbatim).await.unwrap();
+    let mut failed = None;
+    for s in &moves {
+        if let Err(e) = db.exec(s).await {
+            failed = Some(format!("{s}: {e}"));
+        }
+    }
+    let mut plan = diff::plan(&diff::postgres::read(db).await.unwrap(), target, alterer);
+    diff::postgres::style(db, &mut plan, &target.verbatim).await.unwrap();
+    let existing = locks::existing_tables(db).await.unwrap();
+    if failed.is_none() {
+        failed = run_files(db, &files_of(&plan, &existing)).await;
+    }
+    (moves.into_iter().chain(plan.statements).collect(), failed)
+}
+
+/// The plan as the files `reylo migrate new` writes: one, or several in the lock-safe shape or
+/// where the plan commits partway.
+fn files_of(plan: &diff::Plan, existing: &std::collections::BTreeSet<String>) -> Vec<String> {
+    match locks::lock_safe(plan, existing) {
+        Some(files) => locks::file_texts(plan, &files),
+        None => vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")],
+    }
+}
+
+/// Runs files as a deploy runs them: each in a transaction of its own, but one that can't run in a
+/// transaction (an index built concurrently). The file that failed, and why.
+async fn run_files(db: &mut Db, files: &[String]) -> Option<String> {
+    for file in files {
+        let sql = if runs_alone(file, Dialect::Postgres) { file.clone() } else { format!("begin;\n{file}\ncommit;") };
+        if let Err(e) = db.exec(&sql).await {
+            let _ = db.exec("rollback").await;
+            return Some(format!("{file}: {e}"));
+        }
+    }
+    None
+}
+
+/// What a second plan from `db` to `target` runs: nothing, after a plan that reached it.
+async fn again(db: &mut Db, target: &diff::Schema, alterer: &diff::postgres::PostgresAlterer) -> Vec<String> {
+    let mut plan = diff::plan(&diff::postgres::read(db).await.unwrap(), target, alterer);
+    diff::postgres::style(db, &mut plan, &target.verbatim).await.unwrap();
+    plan.runnable().cloned().collect()
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn postgres() {
     let Ok(base) = std::env::var("REYLO_TEST_PG") else {
@@ -177,17 +229,9 @@ async fn postgres() {
         // written: each file in a transaction of its own, but an index built concurrently.
         diff::postgres::style(&mut from, &mut plan, &target.verbatim).await.unwrap();
         let existing = locks::existing_tables(&mut from).await.unwrap();
-        let files = match locks::lock_safe(&plan, &existing) {
-            Some(files) => locks::file_texts(&plan, &files),
-            None => vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")],
-        };
-        for file in files.iter().take(if failed.is_some() { 0 } else { usize::MAX }) {
-            let sql = if runs_alone(file, Dialect::Postgres) { file.clone() } else { format!("begin;\n{file}\ncommit;") };
-            if let Err(e) = from.exec(&sql).await {
-                let _ = from.exec("rollback").await;
-                failed = Some(format!("{file}: {e}"));
-                break;
-            }
+        let files = files_of(&plan, &existing);
+        if failed.is_none() {
+            failed = run_files(&mut from, &files).await;
         }
         let split = locks::lock_safe(&plan, &existing).is_some();
         plan.statements.splice(0..0, moves.clone());
@@ -243,7 +287,7 @@ async fn postgres() {
             std::fs::write(&expected, &text).unwrap();
         }
         let mut problems = Vec::new();
-        if let Some(f) = failed {
+        if let Some(f) = &failed {
             problems.push(format!("the plan failed at {f}"));
         }
         if !only_a.is_empty() || !only_b.is_empty() {
@@ -261,12 +305,49 @@ async fn postgres() {
         if !bless && read(&expected) != text {
             problems.push(format!("the plan is not plan.sql's (REYLO_BLESS=1 writes it):\n{text}"));
         }
+        // Planned again, a database the plan took to the target needs nothing more.
+        if failed.is_none() && only_a.is_empty() && only_b.is_empty() {
+            let more = again(&mut from, &target, &alterer).await;
+            if !more.is_empty() {
+                problems.push(format!("after the plan, the plan again is not empty:\n{}", more.join(";\n")));
+            }
+        }
+        // And back: v2 (without rows) to v1, which takes the opposite path through each change,
+        // unless the case says why it goes one way only.
+        let (c, d) = (format!("diff_{}_{n}_c", std::process::id()), format!("diff_{}_{n}_d", std::process::id()));
+        if read(&case.join("one-way.txt")).trim().is_empty() {
+            for db in [&c, &d] {
+                admin.exec(&format!("drop database if exists {db} with (force)")).await.unwrap();
+                admin.exec(&format!("create database {db}")).await.unwrap();
+            }
+            let mut back = Db::connect(&with_database(&base, &c), &here).await.unwrap();
+            let mut first = Db::connect(&with_database(&base, &d), &here).await.unwrap();
+            back.exec(&read(&case.join("v2.sql"))).await.unwrap_or_else(|e| panic!("{name}: v2.sql: {e}"));
+            first.exec(&read(&case.join("v1.sql"))).await.unwrap_or_else(|e| panic!("{name}: v1.sql: {e}"));
+            let mut origin = diff::postgres::read(&mut first).await.unwrap();
+            diff::postgres::declare(&mut first, &mut origin, &read(&case.join("v1.sql"))).await.unwrap();
+            let (statements, failed) = apply(&mut back, &origin, &alterer).await;
+            let (only_c, only_d) = difference(&catalog(&mut back).await.unwrap(), &catalog(&mut first).await.unwrap());
+            let mut lines = Vec::new();
+            if let Some(f) = &failed {
+                lines.push(format!("the plan failed at {f}"));
+            }
+            lines.extend(only_c.iter().map(|l| format!("  - {l}")).chain(only_d.iter().map(|l| format!("  + {l}"))));
+            if failed.is_none() && lines.is_empty() {
+                lines.extend(again(&mut back, &origin, &alterer).await.into_iter().map(|s| format!("  again: {s}")));
+            }
+            if !lines.is_empty() {
+                problems.push(format!("back from v2 to v1:\n{}\n  plan:\n{}", lines.join("\n"), statements.iter().map(|s| format!("    {s}")).collect::<Vec<_>>().join("\n")));
+            }
+            back.close().await;
+            first.close().await;
+        }
         if !problems.is_empty() {
             failures.push(format!("{name}:\n{}\nplan:\n{text}", problems.join("\n")));
         }
         from.close().await;
         to.close().await;
-        for db in [&a, &b] {
+        for db in [&a, &b, &c, &d] {
             admin.exec(&format!("drop database if exists {db} with (force)")).await.unwrap();
         }
     }

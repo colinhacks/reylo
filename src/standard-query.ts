@@ -7,12 +7,11 @@
 //
 // Every Reylo query is one, with the same input and output as `.run()`: `encode` binds as
 // `.run()` binds, its checks included, and `decode` gives each value its kind and the result its
-// cardinality as `.run()` does. Two things `.run()` does need its client, and a Standard Query,
-// which has none, does neither: it never checks that the schema still matches the one the
-// statement was typed against (src/fresh.ts), and on MySQL it keeps a DATETIME's, TIMESTAMP's or
-// TIME's fraction digits as the driver read them, which are the column's own over the text
-// protocol, while mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back
-// from the column's metadata.
+// cardinality as `.run()` does. One thing `.run()` does needs its client, and a Standard Query,
+// which has none, does not do it: on MySQL it keeps a DATETIME's, TIMESTAMP's or TIME's fraction
+// digits as the driver read them, which are the column's own over the text protocol, while
+// mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back from the
+// column's metadata.
 import { decodePlan } from "./codecs.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";

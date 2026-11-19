@@ -10,7 +10,7 @@ A PlanetScale MySQL database is MySQL, so everything on the [MySQL](/mysql) page
 | | |
 | --- | --- |
 | Dialect | MySQL, served through Vitess; a [PlanetScale Postgres](#planetscale-postgres) database is Postgres |
-| What the type check reads | A MySQL 8.0.22 or later server with your schema, such as a local one |
+| What the type check reads | A MySQL 8.0.38 or later server with your schema, such as a local one |
 | Drivers | `@planetscale/database` 1.x, `mysql2` and Drizzle |
 | Schema | The migrations you deploy to PlanetScale, applied to that server too |
 | Monitoring | Insights shows the `.sql` file each query came from |
@@ -136,7 +136,7 @@ where id = :id
 
 ## Local database
 
-The type check reads a MySQL server with your schema. PlanetScale serves MySQL through Vitess, which the type check isn't tested on, so run MySQL 8.0.22 or later locally:
+The type check reads a MySQL server with your schema. PlanetScale serves MySQL through Vitess, which the type check isn't tested on, so run MySQL 8.0.38 or later locally:
 
 ```sh title="Terminal"
 docker run -d -p 3306:3306 -e MYSQL_DATABASE=app \

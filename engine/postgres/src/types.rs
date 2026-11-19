@@ -52,6 +52,12 @@ pub struct DescribedColumn {
     /// table's column holds only shares the type.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub whole_row: bool,
+    /// Whether the describe names the column as the whole row (attribute 0) of the relation whose
+    /// row type it is: what a bare name that is an alias reads, where no column of the name is in
+    /// scope. A column of a composite type that shares the relation's name, from another schema, is
+    /// none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_row: bool,
 }
 
 /// Which of the non-finite values a float or `numeric` column's CHECKs keep out of it, each `true`

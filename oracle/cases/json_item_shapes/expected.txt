@@ -1,5 +1,7 @@
 derived_nested.sql: one () -> { j: jsonb { stats: { count: int8 } } }
 derived_object.sql: one () -> { stats: jsonb { count: int8, latest: timestamptz? } }
+derived_param_branch.sql: many (fallback: public.doc_value) -> { o: json { k: jsonb? } }
+derived_param_branch_agg.sql: one (fallback: public.doc_value) -> { o: json jsonb?[]? }
 derived_renamed.sql: many () -> { k: jsonb { id: int8 } }
 direct_param.sql: many (p: text(¬NUL)) -> { j: jsonb { id: int8, p: text(¬NUL)? } }
 lateral.sql: many () -> { j: jsonb { id: int8 } }

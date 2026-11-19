@@ -1,4 +1,5 @@
 columns.sql: at_most_one (id: int4) -> { status: text(¬NUL, 'active' | 'banned'), tier: varchar(≤10, ¬NUL, 'free' | 'pro')?, m: text(¬NUL, 'ok' | 'sad')?, legacy: text(¬NUL)? }
+cut_by_cast.sql: many () -> { code: text(¬NUL)?, codes: text(¬NUL)?[]? }
 expression.sql: many () -> { l: text(¬NUL) }
 left_join.sql: many () -> { id: int4, status: text(¬NUL, 'active' | 'banned')? } key (id)
 not_valid.sql: many () -> { legacy: text(¬NUL)? }

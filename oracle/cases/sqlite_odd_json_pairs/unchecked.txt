@@ -1,1 +1,0 @@
-odd.sql: json_object() requires an even number of arguments

@@ -13,7 +13,7 @@ qualified_count_subquery.sql: many () -> { id: bigint, n: bigint? }
 qualified_json_arrayagg.sql: many () -> { o: json? }
 qualified_json_object.sql: many () -> { o: json? }
 qualified_lower.sql: many (e: varchar) -> { id: bigint }
-qualified_other_table_in_subquery.sql: many () -> { id: bigint, n: bigint? }
+qualified_other_table_in_subquery.sql: many () -> { id: bigint?, n: bigint? }
 qualified_table.sql: many (id: int32) -> { id: bigint }
 qualified_table_alias.sql: many (id: int32) -> { id: bigint }
 spaced_count.sql: one () -> { n: bigint }

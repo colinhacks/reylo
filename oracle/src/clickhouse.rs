@@ -102,7 +102,9 @@ fn first_word(sql: &str) -> String {
     sql.trim_start().chars().take_while(char::is_ascii_alphabetic).collect::<String>().to_ascii_lowercase()
 }
 
-pub fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, given: &Map<String, Value>, dumped: &mut Map<String, Value>, statements: Vec<(String, String)>) -> Result<(Vec<String>, Vec<String>), String> {
+/// A case's two databases, made anew: the one its `setup.sql` seeds, then the one that holds its
+/// tables and no row. Their names, and a client of each.
+fn build(case: &Path, server: &Server) -> Result<([String; 2], Vec<Http>), String> {
     let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let db = format!("reylo_oracle_{}", name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect::<String>());
     let empty = format!("{db}_empty");
@@ -119,6 +121,30 @@ pub fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, given:
         }
         states.push(http);
     }
+    Ok(([db, empty], states))
+}
+
+/// A ClickHouse case's mutations, checked over its two databases as the case's statements are.
+pub fn mutate(case: &Path, server: &mut Server, timeout_ms: u64, mutations: &[(usize, &crate::Mutation)]) -> Result<Report, String> {
+    let (databases, states) = build(case, server)?;
+    let outcome: Result<Report, String> = (|| {
+        let mut analyzed = Vec::new();
+        for (n, m) in mutations {
+            let sql = fs::read_to_string(case.join(&m.file)).map_err(|e| format!("{}: {e}", m.file))?;
+            let analysis = answers::analyze(&states[0], &sql, &mut AnswerCache::default()).map_err(|e| format!("{}: {e}", m.file))?;
+            analyzed.push((m.label(*n), sql, m.apply(serde_json::to_value(&analysis).map_err(|e| e.to_string())?)?));
+        }
+        Ok(check(&states, &analyzed, timeout_ms))
+    })();
+    for database in &databases {
+        let _ = exec(&server.admin, &format!("DROP DATABASE IF EXISTS {database}"));
+    }
+    outcome
+}
+
+pub fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, given: &Map<String, Value>, dumped: &mut Map<String, Value>, statements: Vec<(String, String)>) -> Result<(Vec<String>, Vec<String>), String> {
+    let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let (databases, states) = build(case, server)?;
     let mut lines = Vec::new();
     let mut analyzed = Vec::new();
     for (file, sql) in statements {
@@ -136,7 +162,7 @@ pub fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, given:
     // A value that contradicts a type is a failure whatever expected.txt says.
     let report = check(&states, &analyzed, timeout_ms);
     if !keep {
-        for database in [&db, &empty] {
+        for database in &databases {
             let _ = exec(&server.admin, &format!("DROP DATABASE IF EXISTS {database}"));
         }
     }
@@ -430,12 +456,14 @@ fn check(states: &[Http], analyzed: &[(String, String, Value)], timeout_ms: u64)
                 tally.refused = Some("a parameter's type has no values the oracle writes".into());
                 continue;
             };
-            let all = assignments(&pools);
-            let runs: Vec<(&Http, &Vec<String>)> = if writes { all.first().map(|values| (&states[0], values)).into_iter().collect() } else { states.iter().flat_map(|http| all.iter().map(move |values| (http, values))).collect() };
-            for (http, values) in runs {
+            // A pool always holds a value, so the stand-in for an empty one is never bound.
+            let all = assignments(&pools, &"\\N".to_string());
+            // Each run with its state's place: the seeded database is the first, the empty one the second.
+            let runs: Vec<(usize, &Http, &Vec<String>)> = if writes { all.first().map(|values| (0, &states[0], values)).into_iter().collect() } else { states.iter().enumerate().flat_map(|(state, http)| all.iter().map(move |values| (state, http, values))).collect() };
+            for (state, http, values) in runs {
                 let mut request = fields.clone();
                 request.extend(params.iter().zip(values).map(|((name, _), value)| (format!("param_{name}"), value.clone())));
-                let shown = || params.iter().zip(values).map(|((name, _), value)| format!("{name} = {value}")).collect::<Vec<_>>().join(", ");
+                let shown = || format!("{}{}", params.iter().zip(values).map(|((name, _), value)| format!("{name} = {value}")).collect::<Vec<_>>().join(", "), if state == 1 { "; every table empty" } else { "" });
                 let (returned, rows) = match ask(http, sent, &request) {
                     Ok(answer) => answer,
                     Err(e) if e.contains("TIMEOUT_EXCEEDED") => {
@@ -449,6 +477,10 @@ fn check(states: &[Http], analyzed: &[(String, String, Value)], timeout_ms: u64)
                 };
                 tally.ran += 1;
                 if writes {
+                    // A statement typed as returning nothing returns no column and no row.
+                    if !returned.is_empty() || !rows.is_empty() {
+                        problems.push(format!("{file}: returned {} column(s) and {} row(s), typed none (with {})", returned.len(), rows.len(), shown()));
+                    }
                     continue;
                 }
                 // The types the result came back with are the ones the analysis read.

@@ -1,0 +1,847 @@
+[
+ {
+  "name": "postgres: payment",
+  "input": {
+   "analysis": {
+    "kind": "select",
+    "params": [
+     {
+      "name": "fee",
+      "type": {
+       "kind": "decimal",
+       "min_scale": 0,
+       "max_scale": 16383,
+       "exclusive_min": "-1e131072",
+       "exclusive_max": "1e131072",
+       "infinity": true,
+       "nan": true,
+       "label": "numeric"
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "integer",
+       "bits": 32,
+       "label": "int4"
+      }
+     }
+    ],
+    "columns": [
+     {
+      "name": "amount",
+      "type": {
+       "kind": "decimal",
+       "min_scale": 0,
+       "max_scale": 16383,
+       "exclusive_min": "-1e131072",
+       "exclusive_max": "1e131072",
+       "infinity": true,
+       "nan": true,
+       "label": "numeric"
+      }
+     },
+     {
+      "name": "fee",
+      "type": {
+       "kind": "decimal",
+       "min_scale": 0,
+       "max_scale": 16383,
+       "exclusive_min": "-1e131072",
+       "exclusive_max": "1e131072",
+       "infinity": true,
+       "nan": true,
+       "label": "numeric"
+      }
+     }
+    ],
+    "cardinality": "at_most_one",
+    "rewritten": {
+     "sql": "select amount, $1::numeric as fee from payments where id = $2\n",
+     "order": [
+      "fee",
+      "id"
+     ],
+     "spans": [
+      [
+       15,
+       19,
+       15,
+       17
+      ],
+      [
+       61,
+       64,
+       59,
+       61
+      ]
+     ]
+    },
+    "style": "named",
+    "diagnostics": [],
+    "unresolved": [],
+    "errors": {},
+    "capabilities": {
+     "tables": {
+      "public.payments": "read"
+     }
+    },
+    "readOnly": true
+   },
+   "raw": "select amount, :fee::numeric as fee from payments where id = :id\n",
+   "params": [
+    "fee",
+    "id"
+   ],
+   "marks": [
+    [
+     15,
+     17
+    ],
+    [
+     59,
+     61
+    ]
+   ],
+   "source": "payment.sql",
+   "dialect": "postgres",
+   "codecs": {
+    "decimal": "decimal.js"
+   },
+   "sqlcommenter": true,
+   "allowNestedArrays": false
+  },
+  "code": "import { definePostgresQuery } from \"reylo\";\nimport ReyloDecimal from \"decimal.js\";\nexport const sql = \"select amount, $1::numeric as fee from payments where id = $2\";\nexport const raw = \"select amount, :fee::numeric as fee from payments where id = :id\\n\";\nexport const params = [\"fee\",\"id\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"fee\",\"id\"], marks: [[15,17],[59,61]], inputs: {\"fee\":{\"type\":{\"kind\":\"decimal\",\"min_scale\":0,\"max_scale\":16383,\"exclusive_min\":\"-1e131072\",\"exclusive_max\":\"1e131072\",\"infinity\":true,\"nan\":true,\"label\":\"numeric\"},\"nullable\":false,\"codec\":\"decimal:decimal.js\"},\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":32,\"label\":\"int4\"},\"nullable\":false}}, columns: [[\"amount\",\"decimal\"],[\"fee\",\"decimal\"]], codecs: {\"amount\":\"decimal:decimal.js\",\"fee\":\"decimal:decimal.js\"}, libraries: { decimal: ReyloDecimal }, row: (v) => ({ \"amount\": v[0], \"fee\": v[1] }), source: \"payment.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"fee\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"fee\",\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"amount\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"},\"fee\":{\"type\":\"string\",\"format\":\"decimal\",\"description\":\"a decimal as its library's toJSON() writes it, in exponent form for a large or small value (1e+40, 1e-7)\"}},\"required\":[\"amount\",\"fee\"]},{\"type\":\"null\"}]}} });\n"
+ },
+ {
+  "name": "postgres: non_finite",
+  "input": {
+   "analysis": {
+    "kind": "select",
+    "params": [
+     {
+      "name": "x",
+      "type": {
+       "kind": "float",
+       "exponent_bits": 11,
+       "mantissa_bits": 52,
+       "infinity": true,
+       "nan": true,
+       "label": "float8"
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "integer",
+       "bits": 32,
+       "label": "int4"
+      }
+     }
+    ],
+    "columns": [
+     {
+      "name": "doc",
+      "type": {
+       "kind": "json",
+       "content": {
+        "type": {
+         "kind": "struct",
+         "fields": [
+          {
+           "name": "n",
+           "type": {
+            "kind": "float",
+            "exponent_bits": 11,
+            "mantissa_bits": 52,
+            "infinity": true,
+            "nan": true,
+            "label": "float8"
+           }
+          },
+          {
+           "name": "x",
+           "type": {
+            "kind": "float",
+            "exponent_bits": 11,
+            "mantissa_bits": 52,
+            "infinity": true,
+            "nan": true,
+            "label": "float8"
+           },
+           "nullable": true
+          }
+         ]
+        }
+       },
+       "label": "json"
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "integer",
+       "bits": 32,
+       "label": "int4"
+      }
+     }
+    ],
+    "cardinality": "at_most_one",
+    "rewritten": {
+     "sql": "select json_build_object('n', 'NaN'::float8, 'x', $1::float8) as doc, id from payments where id = $2\n",
+     "order": [
+      "x",
+      "id"
+     ],
+     "spans": [
+      [
+       50,
+       52,
+       50,
+       52
+      ],
+      [
+       98,
+       101,
+       98,
+       100
+      ]
+     ]
+    },
+    "style": "named",
+    "diagnostics": [],
+    "unresolved": [],
+    "errors": {},
+    "capabilities": {
+     "tables": {
+      "public.payments": "read"
+     }
+    },
+    "readOnly": true
+   },
+   "raw": "select json_build_object('n', 'NaN'::float8, 'x', :x::float8) as doc, id from payments where id = :id\n",
+   "params": [
+    "x",
+    "id"
+   ],
+   "marks": [
+    [
+     50,
+     52
+    ],
+    [
+     98,
+     100
+    ]
+   ],
+   "source": "non_finite.sql",
+   "dialect": "postgres",
+   "codecs": {},
+   "sqlcommenter": true,
+   "allowNestedArrays": false
+  },
+  "code": "import { definePostgresQuery } from \"reylo\";\nexport const sql = \"select json_build_object('n', 'NaN'::float8, 'x', $1::float8) as doc, id from payments where id = $2\";\nexport const raw = \"select json_build_object('n', 'NaN'::float8, 'x', :x::float8) as doc, id from payments where id = :id\\n\";\nexport const params = [\"x\",\"id\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"x\",\"id\"], marks: [[50,52],[98,100]], inputs: {\"x\":{\"type\":{\"kind\":\"float\",\"exponent_bits\":11,\"mantissa_bits\":52,\"infinity\":true,\"nan\":true,\"label\":\"float8\"},\"nullable\":false},\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":32,\"label\":\"int4\"},\"nullable\":false}}, columns: [[\"doc\",\"json\"],[\"id\",\"int\"]], row: (v) => ({ \"doc\": v[0], \"id\": v[1] }), nonFinite: [{\"keys\":[[\"n\",true],[\"x\",true]]},null], source: \"non_finite.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"format\":\"double\"},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"x\",\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"doc\":{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"number\",\"format\":\"double\"},\"x\":{\"anyOf\":[{\"type\":\"number\",\"format\":\"double\"},{\"type\":\"null\"}]}},\"required\":[\"n\",\"x\"]},\"id\":{\"type\":\"integer\",\"format\":\"int32\"}},\"required\":[\"doc\",\"id\"]},{\"type\":\"null\"}]}} });\n"
+ },
+ {
+  "name": "postgres: count",
+  "input": {
+   "analysis": {
+    "kind": "select",
+    "params": [],
+    "columns": [
+     {
+      "name": "count",
+      "type": {
+       "kind": "integer",
+       "bits": 64,
+       "label": "int8"
+      }
+     }
+    ],
+    "cardinality": "one",
+    "value": true,
+    "rewritten": {
+     "sql": "select count(*) from payments\n",
+     "order": [],
+     "spans": []
+    },
+    "style": "none",
+    "diagnostics": [],
+    "unresolved": [],
+    "errors": {},
+    "capabilities": {
+     "tables": {
+      "public.payments": "read"
+     }
+    },
+    "readOnly": true
+   },
+   "raw": "select count(*) from payments\n",
+   "params": [],
+   "marks": [],
+   "source": "count.sql",
+   "dialect": "postgres",
+   "codecs": {},
+   "sqlcommenter": true,
+   "allowNestedArrays": false
+  },
+  "code": "import { definePostgresQuery } from \"reylo\";\nexport const sql = \"select count(*) from payments\";\nexport const raw = \"select count(*) from payments\\n\";\nexport const params = [];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"one\", readOnly: true, value: true, text: sql, order: [], marks: [], inputs: {}, columns: [[\"count\",\"int8\"]], row: (v) => ({ \"count\": v[0] }), source: \"count.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"integer\",\"format\":\"int64\"}} });\n"
+ },
+ {
+  "name": "postgres: insert_accounts",
+  "input": {
+   "analysis": {
+    "kind": "insert",
+    "params": [
+     {
+      "name": "a",
+      "type": {
+       "kind": "array",
+       "element": {
+        "type": {
+         "kind": "struct",
+         "fields": [
+          {
+           "name": "name",
+           "type": {
+            "kind": "text",
+            "code_points": [
+             [
+              1,
+              1114111
+             ]
+            ],
+            "label": "text"
+           }
+          },
+          {
+           "name": "role",
+           "type": {
+            "kind": "text",
+            "code_points": [
+             [
+              1,
+              1114111
+             ]
+            ],
+            "label": "text"
+           },
+           "optional": true
+          }
+         ]
+        }
+       }
+      },
+      "members": [
+       {
+        "written": "text"
+       },
+       {
+        "written": "text"
+       }
+      ]
+     }
+    ],
+    "columns": [],
+    "cardinality": "none",
+    "rewritten": {
+     "sql": "insert into accounts (\"name\", \"role\") SELECT \"a\".\"name\", CASE WHEN (\"reylo.e\".\"reylo.v\" -> 'role') IS NOT NULL THEN \"a\".\"role\" ELSE ('user'::text)::text END FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS \"reylo.e\"(\"reylo.v\", \"reylo.n\"), jsonb_to_record(\"reylo.e\".\"reylo.v\") AS \"a\"(\"name\" text, \"role\" text) ORDER BY \"reylo.e\".\"reylo.n\"\n",
+     "order": [
+      "a"
+     ],
+     "spans": [
+      [
+       21,
+       70,
+       21,
+       344
+      ]
+     ]
+    },
+    "style": "named",
+    "diagnostics": [],
+    "unresolved": [],
+    "errors": {
+     "23502": {
+      "column": [
+       "id",
+       "name",
+       "role"
+      ],
+      "table": [
+       "accounts"
+      ]
+     },
+     "23505": {
+      "constraint": [
+       "accounts_pkey"
+      ],
+      "table": [
+       "accounts"
+      ]
+     },
+     "23514": {
+      "table": [
+       "accounts"
+      ]
+     }
+    },
+    "capabilities": {
+     "tables": {
+      "public.accounts": "write",
+      "public.accounts_id_seq": "write"
+     }
+    }
+   },
+   "raw": "insert into accounts :a::rows(name text not null, role? text not null)\n",
+   "params": [
+    "a"
+   ],
+   "marks": [
+    [
+     183,
+     185
+    ]
+   ],
+   "source": "insert_accounts.sql",
+   "dialect": "postgres",
+   "codecs": {},
+   "sqlcommenter": true,
+   "allowNestedArrays": false
+  },
+  "code": "import { definePostgresQuery, checks } from \"reylo\";\nexport const sql = \"insert into accounts (\\\"name\\\", \\\"role\\\") SELECT \\\"a\\\".\\\"name\\\", CASE WHEN (\\\"reylo.e\\\".\\\"reylo.v\\\" -> 'role') IS NOT NULL THEN \\\"a\\\".\\\"role\\\" ELSE ('user'::text)::text END FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS \\\"reylo.e\\\"(\\\"reylo.v\\\", \\\"reylo.n\\\"), jsonb_to_record(\\\"reylo.e\\\".\\\"reylo.v\\\") AS \\\"a\\\"(\\\"name\\\" text, \\\"role\\\" text) ORDER BY \\\"reylo.e\\\".\\\"reylo.n\\\"\";\nexport const raw = \"insert into accounts :a::rows(name text not null, role? text not null)\\n\";\nexport const params = [\"a\"];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"none\", text: sql, order: [\"a\"], marks: [[183,185]], inputs: {\"a\":{\"type\":{\"kind\":\"array\",\"element\":{\"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"name\",\"type\":{\"kind\":\"text\",\"code_points\":[[1,1114111]],\"label\":\"text\"}},{\"name\":\"role\",\"type\":{\"kind\":\"text\",\"code_points\":[[1,1114111]],\"label\":\"text\"},\"optional\":true}]}}},\"members\":[{\"written\":\"text\"},{\"written\":\"text\"}],\"nullable\":false}}, columns: [], source: \"insert_accounts.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"role\":{\"type\":\"string\"}},\"required\":[\"name\"],\"additionalProperties\":false}}},\"required\":[\"a\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"null\"}}, checks });\n"
+ },
+ {
+  "name": "postgres: tags",
+  "input": {
+   "analysis": {
+    "kind": "select",
+    "params": [],
+    "columns": [
+     {
+      "name": "id",
+      "type": {
+       "kind": "integer",
+       "bits": 32,
+       "label": "int4"
+      }
+     },
+     {
+      "name": "tags",
+      "type": {
+       "kind": "array",
+       "element": {
+        "type": {
+         "kind": "text",
+         "code_points": [
+          [
+           1,
+           1114111
+          ]
+         ],
+         "label": "text"
+        },
+        "nullable": true
+       },
+       "label": "_text"
+      },
+      "nullable": true
+     }
+    ],
+    "cardinality": "many",
+    "cardinalityReason": "the WHERE does not equate every column of a unique key of `posts` — it has (id)",
+    "key": [
+     "id"
+    ],
+    "unique": [
+     [
+      "id"
+     ]
+    ],
+    "order": [
+     {
+      "column": "id",
+      "nulls": "last"
+     }
+    ],
+    "ordered": true,
+    "rewritten": {
+     "sql": "select id, tags from posts order by id\n",
+     "order": [],
+     "spans": []
+    },
+    "style": "none",
+    "diagnostics": [],
+    "unresolved": [],
+    "errors": {},
+    "capabilities": {
+     "tables": {
+      "public.posts": "read"
+     }
+    },
+    "readOnly": true
+   },
+   "raw": "select id, tags from posts order by id\n",
+   "params": [],
+   "marks": [],
+   "source": "tags.sql",
+   "dialect": "postgres",
+   "codecs": {},
+   "sqlcommenter": false,
+   "allowNestedArrays": true
+  },
+  "code": "import { definePostgresQuery } from \"reylo\";\nexport const sql = \"select id, tags from posts order by id\";\nexport const raw = \"select id, tags from posts order by id\\n\";\nexport const params = [];\nexport default definePostgresQuery({ sql: raw, params, cardinality: \"many\", readOnly: true, text: sql, order: [], marks: [], inputs: {}, columns: [[\"id\",\"int\"],[\"tags\",\"text[]\"]], row: (v) => ({ \"id\": v[0], \"tags\": v[1] }), key: [\"id\"], ordered: true, source: \"tags.sql\", nestedArrays: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int32\"},\"tags\":{\"anyOf\":[{\"type\":\"array\",\"items\":{\"anyOf\":[{\"type\":[\"string\",\"null\"]},{\"type\":\"array\"}]}},{\"type\":\"null\"}]}},\"required\":[\"id\",\"tags\"]}}} });\n"
+ },
+ {
+  "name": "mysql: insert_accounts",
+  "input": {
+   "analysis": {
+    "kind": "insert",
+    "params": [
+     {
+      "name": "a",
+      "type": {
+       "kind": "array",
+       "element": {
+        "type": {
+         "kind": "struct",
+         "fields": [
+          {
+           "name": "name",
+           "type": {
+            "kind": "text",
+            "label": "varchar"
+           }
+          },
+          {
+           "name": "role",
+           "type": {
+            "kind": "text",
+            "label": "varchar"
+           },
+           "optional": true
+          }
+         ]
+        }
+       }
+      },
+      "members": [
+       {
+        "written": "varchar(9)"
+       },
+       {
+        "written": "varchar(9)"
+       }
+      ]
+     }
+    ],
+    "columns": [],
+    "cardinality": "none",
+    "rewritten": {
+     "sql": "insert into accounts (`name`, `role`) SELECT `a`.`name`, `a`.`role` FROM JSON_TABLE(?, '$[*]' COLUMNS (`reylo.n` FOR ORDINALITY, `name` varchar(9) PATH '$.\"name\"' ERROR ON ERROR, `role` varchar(9) PATH '$.\"role\"' ERROR ON ERROR)) AS `a` ORDER BY `a`.`reylo.n`\n",
+     "order": [
+      "a"
+     ],
+     "spans": [
+      [
+       21,
+       82,
+       21,
+       259
+      ]
+     ]
+    },
+    "style": "named",
+    "diagnostics": [],
+    "unresolved": [],
+    "structured": [
+     {
+      "name": "a",
+      "lists": [
+       {
+        "start": 22,
+        "end": 36,
+        "entries": [
+         "`name`",
+         "`role`"
+        ]
+       },
+       {
+        "start": 45,
+        "end": 67,
+        "entries": [
+         "`a`.`name`",
+         "`a`.`role`"
+        ]
+       }
+      ]
+     }
+    ],
+    "errors": {
+     "ER_BAD_NULL_ERROR": {
+      "column": [
+       "id",
+       "name",
+       "role"
+      ]
+     },
+     "ER_DATA_TOO_LONG": {
+      "column": [
+       "id",
+       "name",
+       "role"
+      ]
+     },
+     "ER_DUP_ENTRY": {
+      "key": [
+       "accounts.PRIMARY"
+      ]
+     },
+     "ER_DUP_ENTRY_WITH_KEY_NAME": {
+      "key": [
+       "accounts.PRIMARY"
+      ]
+     },
+     "ER_NO_DEFAULT_FOR_FIELD": {
+      "column": [
+       "id",
+       "name",
+       "role"
+      ]
+     },
+     "ER_TRUNCATED_WRONG_VALUE": {
+      "column": [
+       "id",
+       "name",
+       "role"
+      ]
+     },
+     "ER_TRUNCATED_WRONG_VALUE_FOR_FIELD": {
+      "column": [
+       "id",
+       "name",
+       "role"
+      ]
+     },
+     "ER_WARN_DATA_OUT_OF_RANGE": {
+      "column": [
+       "id",
+       "name",
+       "role"
+      ]
+     },
+     "WARN_DATA_TRUNCATED": {
+      "column": [
+       "id",
+       "name",
+       "role"
+      ]
+     }
+    },
+    "capabilities": {
+     "tables": {
+      "app.accounts": "write"
+     }
+    }
+   },
+   "raw": "insert into accounts :a::rows(name varchar(9) not null, role? varchar(9) not null)\n",
+   "params": [
+    "a"
+   ],
+   "marks": [
+    [
+     84,
+     85
+    ]
+   ],
+   "source": "insert_accounts.sql",
+   "dialect": "mysql",
+   "codecs": {},
+   "sqlcommenter": true,
+   "allowNestedArrays": false
+  },
+  "code": "import { defineMysqlQuery, checks } from \"reylo\";\nexport const sql = \"insert into accounts (`name`, `role`) SELECT `a`.`name`, `a`.`role` FROM JSON_TABLE(?, '$[*]' COLUMNS (`reylo.n` FOR ORDINALITY, `name` varchar(9) PATH '$.\\\"name\\\"' ERROR ON ERROR, `role` varchar(9) PATH '$.\\\"role\\\"' ERROR ON ERROR)) AS `a` ORDER BY `a`.`reylo.n`\";\nexport const raw = \"insert into accounts :a::rows(name varchar(9) not null, role? varchar(9) not null)\\n\";\nexport const params = [\"a\"];\nexport default defineMysqlQuery({ sql: raw, params, cardinality: \"none\", text: sql, order: [\"a\"], marks: [[84,85]], inputs: {\"a\":{\"type\":{\"kind\":\"array\",\"element\":{\"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"name\",\"type\":{\"kind\":\"text\",\"label\":\"varchar\"}},{\"name\":\"role\",\"type\":{\"kind\":\"text\",\"label\":\"varchar\"},\"optional\":true}]}}},\"members\":[{\"written\":\"varchar(9)\"},{\"written\":\"varchar(9)\"}],\"nullable\":false}}, columns: [], structured: [{\"name\":\"a\",\"lists\":[{\"start\":22,\"end\":36,\"entries\":[\"`name`\",\"`role`\"]},{\"start\":45,\"end\":67,\"entries\":[\"`a`.`name`\",\"`a`.`role`\"]}]}], source: \"insert_accounts.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"role\":{\"type\":\"string\"}},\"required\":[\"name\"],\"additionalProperties\":false}}},\"required\":[\"a\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"null\"}}, checks });\n"
+ },
+ {
+  "name": "mysql: cast",
+  "input": {
+   "analysis": {
+    "kind": "select",
+    "params": [
+     {
+      "name": "x",
+      "type": {
+       "kind": "integer",
+       "bits": 32
+      },
+      "cast": "int"
+     },
+     {
+      "name": "doc",
+      "type": {
+       "kind": "json",
+       "schema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+       },
+       "label": "json"
+      },
+      "schema": {
+       "type": "object"
+      }
+     }
+    ],
+    "columns": [
+     {
+      "name": "x",
+      "type": {
+       "kind": "integer",
+       "bits": 64,
+       "label": "bigint"
+      },
+      "nullable": true
+     },
+     {
+      "name": "doc",
+      "type": {
+       "kind": "json",
+       "label": "json"
+      },
+      "nullable": true
+     }
+    ],
+    "cardinality": "one",
+    "rewritten": {
+     "sql": "select CAST(? AS SIGNED) as x, cast(? as json) as doc\n",
+     "order": [
+      "x",
+      "doc"
+     ],
+     "spans": [
+      [
+       7,
+       14,
+       7,
+       24
+      ],
+      [
+       21,
+       52,
+       31,
+       46
+      ]
+     ]
+    },
+    "style": "named",
+    "diagnostics": [],
+    "unresolved": [],
+    "errors": {},
+    "capabilities": {
+     "tables": {}
+    },
+    "readOnly": true
+   },
+   "raw": "select :x::int as x, :doc::json('{\"type\":\"object\"}') as doc\n",
+   "params": [
+    "x",
+    "doc"
+   ],
+   "marks": [
+    [
+     12,
+     13
+    ],
+    [
+     36,
+     37
+    ]
+   ],
+   "source": "cast.sql",
+   "dialect": "mysql",
+   "codecs": {},
+   "sqlcommenter": true,
+   "allowNestedArrays": false
+  },
+  "code": "import { defineMysqlQuery, checks } from \"reylo\";\nexport const sql = \"select CAST(? AS SIGNED) as x, cast(? as json) as doc\";\nexport const raw = \"select :x::int as x, :doc::json('{\\\"type\\\":\\\"object\\\"}') as doc\\n\";\nexport const params = [\"x\",\"doc\"];\nexport default defineMysqlQuery({ sql: raw, params, cardinality: \"one\", readOnly: true, text: sql, order: [\"x\",\"doc\"], marks: [[12,13],[36,37]], inputs: {\"x\":{\"type\":{\"kind\":\"integer\",\"bits\":32},\"cast\":\"int\",\"nullable\":false},\"doc\":{\"type\":{\"kind\":\"json\",\"schema\":{\"type\":\"object\",\"$schema\":\"https://json-schema.org/draft/2020-12/schema\"},\"label\":\"json\"},\"schema\":{\"type\":\"object\"},\"nullable\":false}}, columns: [[\"x\",\"int8\"],[\"doc\",\"json\"]], row: (v) => ({ \"x\": v[0], \"doc\": v[1] }), source: \"cast.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"integer\",\"format\":\"int32\"},\"doc\":{\"type\":\"object\"}},\"required\":[\"x\",\"doc\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"x\":{\"anyOf\":[{\"type\":\"integer\",\"format\":\"int64\"},{\"type\":\"null\"}]},\"doc\":{}},\"required\":[\"x\",\"doc\"]}}, checks });\n"
+ },
+ {
+  "name": "sqlite: user",
+  "input": {
+   "analysis": {
+    "kind": "select",
+    "params": [
+     {
+      "name": "id",
+      "type": {
+       "kind": "integer",
+       "bits": 64
+      }
+     }
+    ],
+    "columns": [
+     {
+      "name": "id",
+      "type": {
+       "kind": "integer",
+       "bits": 64,
+       "label": "INTEGER"
+      }
+     },
+     {
+      "name": "name",
+      "type": {
+       "kind": "union",
+       "members": [
+        {
+         "kind": "text",
+         "encoding": "UTF-8",
+         "ill_formed": true
+        },
+        {
+         "kind": "bytes"
+        }
+       ],
+       "label": "TEXT"
+      }
+     }
+    ],
+    "cardinality": "at_most_one",
+    "cardinalityReason": "a FROM returns a row per row it matches, and only an aggregate with no GROUP BY collapses them to one",
+    "rewritten": {
+     "sql": "select id, name from users where id = ?\n",
+     "order": [
+      "id"
+     ],
+     "spans": [
+      [
+       38,
+       41,
+       38,
+       39
+      ]
+     ]
+    },
+    "style": "named",
+    "diagnostics": [],
+    "unresolved": [],
+    "errors": {},
+    "capabilities": {
+     "tables": {
+      "users": "read"
+     }
+    },
+    "readOnly": true
+   },
+   "raw": "select id, name from users where id = :id\n",
+   "params": [
+    "id"
+   ],
+   "source": "user.sql",
+   "dialect": "sqlite",
+   "codecs": {},
+   "sqlcommenter": true,
+   "allowNestedArrays": false
+  },
+  "code": "import { defineSqliteQuery } from \"reylo\";\nexport const sql = \"select id, name from users where id = ?\";\nexport const raw = \"select id, name from users where id = :id\\n\";\nexport const params = [\"id\"];\nexport default defineSqliteQuery({ sql: raw, params, cardinality: \"maybeOne\", readOnly: true, text: sql, order: [\"id\"], inputs: {\"id\":{\"type\":{\"kind\":\"integer\",\"bits\":64},\"nullable\":false}}, columns: [[\"id\",\"int\"],[\"name\",\"text\"]], row: (v) => ({ \"id\": v[0], \"name\": v[1] }), source: \"user.sql\", sqlcommenter: true, jsonSchema: {\"input\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int64\"}},\"required\":[\"id\"],\"additionalProperties\":false},\"output\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"anyOf\":[{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"format\":\"int64\"},\"name\":{\"type\":\"string\"}},\"required\":[\"id\",\"name\"]},{\"type\":\"null\"}]}} });\n"
+ }
+]

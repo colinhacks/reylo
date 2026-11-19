@@ -1,3 +1,2 @@
 forever.sql: every run timed out (500 ms)
 forever_rows.sql: every run timed out (500 ms)
-forever_update.sql: every run timed out (500 ms)

@@ -458,7 +458,7 @@
         },
         "rust": {
           "params": "Query { limit: i32 }",
-          "returns": "Vec<{ id: i32, kind: String }>"
+          "returns": "Vec<{ id: i32, kind: Kind }>\n\npub enum Kind {\n    Click,\n    Key,\n}"
         }
       }
     },
@@ -602,7 +602,7 @@
         },
         "rust": {
           "params": "Query { id: i32 }",
-          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
+          "returns": "Option<{ id: i32, payload: Json<Payload> }>\n\npub struct Payload {\n    pub x: i64,\n    pub y: i64,\n}"
         }
       }
     },
@@ -660,7 +660,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<{ kind: String, id: i32, label: String }>"
+          "returns": "Vec<{ kind: Kind, id: i32, label: String }>\n\npub enum Kind {\n    User,\n    Post,\n}"
         }
       }
     },
@@ -842,7 +842,7 @@
           }
         },
         "rust": {
-          "params": "Query { payload: serde_json::Value }",
+          "params": "Query { payload: Json<Payload> }\n\npub struct Payload {\n    pub x: i64,\n    pub y: i64,\n}",
           "returns": "u64"
         }
       }
@@ -1609,7 +1609,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<{ kind: String, x: Option<serde_json::Value> }>"
+          "returns": "Vec<{ kind: Kind, x: Option<Json<i64>> }>\n\npub enum Kind {\n    Click,\n    Key,\n}"
         }
       }
     },
@@ -1677,7 +1677,7 @@
           }
         },
         "rust": {
-          "params": "Query { kind: &'a str, payload: serde_json::Value }",
+          "params": "Query { kind: Kind, payload: Json<Payload> }\n\npub enum Kind {\n    Click,\n    Key,\n}\n\npub struct Payload {\n    pub x: Option<i64>,\n    pub y: Option<i64>,\n    pub code: Option<String>,\n    pub additional_properties: serde_json::Map<\n        String,\n        serde_json::Value,\n    >,\n}",
           "returns": "{ id: i64 }"
         }
       }
@@ -1971,7 +1971,7 @@
           }
         },
         "rust": {
-          "params": "Query { payload: serde_json::Value }",
+          "params": "Query { payload: Json<Payload> }\n\npub struct Payload {\n    pub x: Option<i64>,\n    pub y: Option<i64>,\n    pub code: Option<String>,\n    pub additional_properties: serde_json::Map<\n        String,\n        serde_json::Value,\n    >,\n}",
           "returns": "u64"
         }
       }
@@ -2035,7 +2035,7 @@
           }
         },
         "rust": {
-          "params": "Query { order: serde_json::Value }",
+          "params": "Query { order: Json<Order> }\n\npub struct Order {\n    pub x: Option<i64>,\n    pub y: Option<i64>,\n    pub code: Option<String>,\n    pub additional_properties: serde_json::Map<\n        String,\n        serde_json::Value,\n    >,\n}",
           "returns": "u64"
         }
       }
@@ -3058,7 +3058,7 @@
         },
         "rust": {
           "params": "Query { id: i32 }",
-          "returns": "Option<{ id: i32, payload: serde_json::Value }>"
+          "returns": "Option<{ id: i32, payload: Json<Payload> }>\n\npub struct Payload {\n    pub x: i64,\n    pub y: i64,\n}"
         }
       }
     },
@@ -3205,6 +3205,7 @@
               "type": {
                 "kind": "datetime",
                 "tick": "1/1000000",
+                "min": "0000-01-01T00:00:00",
                 "label": "datetime"
               }
             }
@@ -3424,7 +3425,7 @@
           }
         },
         "rust": {
-          "params": "Query { role: &'a str }",
+          "params": "Query { role: Role }\n\npub enum Role {\n    Admin,\n    Member,\n}",
           "returns": "Vec<{ name: String, email: String, has_posts: bool }>"
         }
       }
@@ -3438,6 +3439,7 @@
               "type": {
                 "kind": "datetime",
                 "tick": "1/1000000",
+                "min": "0000-01-01T00:00:00",
                 "label": "datetime"
               }
             }
@@ -3601,7 +3603,7 @@
           }
         },
         "rust": {
-          "params": "Query { role: &'a str }",
+          "params": "Query { role: Role }\n\npub enum Role {\n    Admin,\n    Member,\n}",
           "returns": "Vec<{ id: i32, name: String }>"
         }
       }
@@ -3640,6 +3642,7 @@
                 "type": {
                   "kind": "datetime",
                   "tick": "1",
+                  "min": "0000-01-01T00:00:00",
                   "label": "datetime"
                 },
                 "nullable": true
@@ -3755,7 +3758,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<{\n    wrapped: Json<Wrapped>,\n    x: Option<serde_json::Value>,\n}>\n\npub struct Wrapped {\n    pub p: serde_json::Value,\n}"
+          "returns": "Vec<{\n    wrapped: Json<Wrapped>,\n    x: Option<serde_json::Value>,\n}>\n\npub struct Wrapped {\n    pub p: WrappedP,\n}\n\npub struct WrappedP {\n    pub x: i64,\n    pub code: Option<String>,\n    pub additional_properties: serde_json::Map<\n        String,\n        serde_json::Value,\n    >,\n}"
         }
       }
     },
@@ -3785,6 +3788,7 @@
               "name": "ships_on",
               "type": {
                 "kind": "date",
+                "min": "0000-01-01",
                 "label": "date"
               },
               "nullable": true
@@ -4579,7 +4583,7 @@
         },
         "rust": {
           "params": "pub struct Query;",
-          "returns": "Vec<{ kind: String, id: i64, label: String }>"
+          "returns": "Vec<{ kind: Kind, id: i64, label: String }>\n\npub enum Kind {\n    User,\n    Post,\n}"
         }
       }
     },

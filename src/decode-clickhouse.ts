@@ -34,10 +34,9 @@
 // that is none of the calendar's, a string that is no text.
 import { DecodeError, describe, ParameterError, type Columns, type Kind } from "./values.ts";
 import { canonical, decimalOf, integerOf, parseType, plain, typeName, type Named } from "./clickhouse-types.ts";
-import { lexPlaceholders } from "./lex.ts";
 import { rowOf } from "./row.ts";
 import { readClickhouseError } from "./query-error.ts";
-import type { AnyClient as Client, Bound, QueryModule, Runtime } from "./execute.ts";
+import type { AnyClient as Client, Bound, Marks, QueryModule, Runtime } from "./execute.ts";
 
 type AnyClient = Record<string, any>;
 
@@ -656,21 +655,24 @@ function valueText(type: Named, v: unknown, name: string, path = ""): string {
   }
 }
 
-/** The type each parameter of a statement declares, by name, read from its placeholders. */
-const declared = new Map<string, ReadonlyMap<string, Named>>();
+/**
+ * The type each parameter of a statement declares, by name, read at its placeholders' places in the
+ * text Reylo sends: the marks a build step writes, each the placeholder whole, `{name:Type}`
+ * (src/loader.ts, `marksOf`). The run time reads no SQL of its own, and a query's types are read once.
+ */
+const declared = new WeakMap<QueryModule, ReadonlyMap<string, Named>>();
 
-function typesOf(text: string): ReadonlyMap<string, Named> {
-  let types = declared.get(text);
+function typesOf(query: QueryModule, text: string, marks: Marks): ReadonlyMap<string, Named> {
+  let types = declared.get(query);
   if (types === undefined) {
     const found = new Map<string, Named>();
-    for (const p of lexPlaceholders(text, "clickhouse").placeholders) {
-      const written = text.slice(p.start, p.end);
-      const type = written.startsWith("{") ? parseType(written.slice(written.indexOf(":") + 1, -1)) : undefined;
-      if (type !== undefined) found.set(p.name, type);
+    for (const [start, end] of marks) {
+      const written = text.slice(start, end);
+      const colon = written.indexOf(":");
+      const type = written.startsWith("{") && written.endsWith("}") && colon !== -1 ? parseType(written.slice(colon + 1, -1)) : undefined;
+      if (type !== undefined) found.set(written.slice(1, colon).trim(), type);
     }
-    // A program runs a bounded set of statements; one that builds text at run time is kept from growing this without bound.
-    if (declared.size >= 4096) declared.clear();
-    declared.set(text, (types = found));
+    declared.set(query, (types = found));
   }
   return types;
 }
@@ -704,9 +706,10 @@ function tooLong(error: unknown, names: readonly string[], settings: Readonly<Re
 }
 
 /** A ClickHouse statement's rows on an `@clickhouse/client` client, or undefined on any other client. */
-async function runClickhouse(c: Client, query: QueryModule<"clickhouse">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
+async function runClickhouse(c: Client, query: QueryModule<"clickhouse">, { text, values, names, marks }: Bound): Promise<unknown[] | undefined> {
   if (!isClient(c)) return undefined;
-  const types = typesOf(text);
+  if (marks === undefined && names.length > 0) throw new TypeError("Reylo cannot bind this ClickHouse statement's parameters: each goes as its declared type's text, which Reylo reads at its placeholder, and a query defined by hand needs `marks` there, the place of each placeholder in its text, which a build step writes.");
+  const types = typesOf(query, text, marks ?? []);
   const settings: Record<string, string> = { default_format: FORMAT };
   names.forEach((name, i) => {
     const type = types.get(name);

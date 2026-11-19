@@ -1,5 +1,5 @@
-//! The request and response vocabulary every host speaks: the loader's `src/engine.ts`, the
-//! parity check's copy of it (`pg-extension/parity/engine.ts`), and the oracle.
+//! The request and response vocabulary every host speaks: the loader's `src/engine.ts` and the
+//! oracle.
 //!
 //! `analyze` is a replay: the host calls it with the answers it has, the engine either returns
 //! the analysis or the list of things it still needs — statements to describe, catalog queries
@@ -223,7 +223,7 @@ pub struct Analysis {
     /// The result key: output columns, by name, that identify each row of the result, since no two
     /// rows the statement returns agree on all of them (a NULL counting as equal to another NULL).
     /// Only for a result that can hold more than one row: `None` where the cardinality is `one` or
-    /// `maybeOne`, which says as much, and where no key is proven, which is always sound.
+    /// `at_most_one`, which says as much, and where no key is proven, which is always sound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<Vec<String>>,
     /// Every set of output columns no two rows agree on all of, as `key` is, none inside another,
@@ -244,6 +244,12 @@ pub struct Analysis {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub value: bool,
     pub rewritten: lex::Rewritten,
+    /// How the session the statement was read on reads MySQL's strings and double quotes, by its
+    /// `sql_mode`, where another mode would read the statement otherwise: its placeholders hold
+    /// only for a session that reads it so. Absent where every mode reads it alike, and on every
+    /// other database.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sql_mode: Option<lex::MysqlText>,
     pub style: lex::Style,
     pub diagnostics: Vec<Diagnostic>,
     /// Paths inside JSON columns the engine could not type, for a message.
@@ -253,10 +259,6 @@ pub struct Analysis {
     /// those that have lists (MySQL's), since a Postgres or SQLite statement copies its defaults.
     #[serde(skip_serializing_if = "crate::structured::none_rewritten", serialize_with = "crate::structured::rewritten_only")]
     pub structured: Vec<crate::structured::Info>,
-    /// The facts the analysis relied on, which a deployed query checks against its database
-    /// ([`crate::fresh`]).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fresh: Option<crate::fresh::Fresh>,
     /// The names each error the statement may raise can carry, where it runs only its database's
     /// own code ([`crate::errors`]).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,10 +280,10 @@ pub struct Analysis {
     /// level below an error.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
-    /// The tables the statement reads and writes, as its database's own parse names them, which
-    /// the facts are read for ([`Database::tables`]). On the wire only where the analysis read a
-    /// function's body, whose facts a parse of the statement as written cannot give: so a server's
-    /// analysis carries them to the client that checks its freshness.
+    /// The tables the statement reads and writes, as its database's own parse names them
+    /// ([`crate::fresh::Tables`]). On the wire only where the analysis read a function's body,
+    /// whose tables a parse of the statement as written cannot give: so a server's analysis
+    /// carries them to its client.
     #[serde(skip_serializing_if = "reads_no_body")]
     pub tables: Option<crate::fresh::Tables>,
 }

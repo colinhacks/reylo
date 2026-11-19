@@ -27,7 +27,7 @@ derived_carrier.sql: at_most_one () -> { o: json? }
 derived_grouped_left.sql: many () -> { id: int, o: json? }
 derived_sub.sql: one () -> { o: json { m: int?, a: int?[], k: varchar? }? }
 distinct_sub.sql: one () -> { o: json { c: bigint, g: text?, m: int? }? }
-e_having_outer_agg.sql: many () -> { o: json { k: varchar, t: varchar(≤20) }? }
+e_having_outer_agg.sql: many () -> { o: json? }
 e_where_outer_agg.sql: many () -> { o: json? }
 gc_order_corr_top.sql: one () -> { o: json? }
 group_by_null.sql: one () -> { o: json { c: unknown?, a: unknown?[]? }? }
@@ -41,9 +41,9 @@ nested_mid_level.sql: one () -> { o: json { t: varchar(≤20), m: unknown?, a: i
 null_funcs_grouped_sub.sql: one () -> { o: json { d: decimal?, dv: decimal?, md: bigint?, ni: int?, cd: date?, sd: date?, ia: bigint?, x: decimal?, y: int?, c: bigint }? }
 null_funcs_grouped_top.sql: many () -> { o: json { d: decimal?, dv: decimal?, md: bigint?, ni: int?, cd: date?, sd: date?, je: json?, ia: bigint?, x: decimal?, y: int?, k: int } }
 objectagg_sub.sql: one () -> { o: json { o: json?, n: bigint }? }
-outer_agg_in_sub.sql: many () -> { o: json { t: unknown?, m: unknown?, a: unknown?[]? }? }
-outer_agg_qualified_table.sql: many () -> { o: json { m: unknown?, c: unknown?, a: unknown?[]? }? }
-outer_agg_shared_name.sql: many () -> { o: json { m: varchar?, c: bigint }? }
+outer_agg_in_sub.sql: many () -> { o: json? }
+outer_agg_qualified_table.sql: many () -> { o: json? }
+outer_agg_shared_name.sql: many () -> { o: json? }
 over_corr_mid.sql: one () -> { o: json { n: bigint, s: { c: bigint, w: bigint }? } }
 over_corr_top.sql: one () -> { o: json? }
 own_with_grouped_sub.sql: many () -> { id: int, o: json { m: int?, a: int[], c: bigint, k: varchar? }? }

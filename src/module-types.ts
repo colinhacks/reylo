@@ -3,6 +3,7 @@
 // writes these into the module it hands TypeScript; the docs site's playground shows them as they
 // are. It imports nothing from Node, so a browser can run it beside the engine.
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
+import { DIAGNOSTIC } from "./engine-core.ts";
 import { docComment } from "./doc-comment.ts";
 import type { Codecs } from "./codecs.ts";
 import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
@@ -119,7 +120,7 @@ export function untypedParams(sql: string, analysis: Pick<Analysis, "params" | "
     const written = span.replace(/\s*::[\s\S]*$/, "");
     const length = at ? utf8.encode(written).length : 1;
     const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set allow_untyped_params: true in ${projectFile}.`;
-    diagnostics.push({ message, start: at?.start ?? 0, length, code: 12 });
+    diagnostics.push({ message, start: at?.start ?? 0, length, code: DIAGNOSTIC.untypedParameter });
   }
   return diagnostics;
 }
@@ -149,7 +150,7 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
   const diagnostics: FileDiagnostic[] = analysis.diagnostics.map((d) => ({ message: d.message, start: d.start, length: d.length, code: d.code }));
   if (strictParams) diagnostics.push(...untypedParams(sql, analysis, placeholders, projectFile));
   const cardinality = analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality;
-  if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === undefined)) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
+  if (analysis.diagnostics.some((d) => d.code === DIAGNOSTIC.refused) || (dialect === "postgres" && analysis.kind === undefined)) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
   // A family the project file's `js.codecs` gives another type is that type (src/codecs.ts).
   const columns = lastOfEachName(analysis.columns).map((c) => {
     const type = renderType(c.type, false, dialect, codecs);

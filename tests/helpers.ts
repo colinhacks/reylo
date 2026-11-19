@@ -1,11 +1,13 @@
-// What the loader's tests share: the test databases `REYLO_TEST_PG`, `REYLO_TEST_MYSQL` and `REYLO_TEST_CLICKHOUSE` name and a database of a test's own on each, the drivers `lab/drivers` installs, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
-import { spawn } from "node:child_process";
+// What the loader's tests share: the test databases `REYLO_TEST_PG`, `REYLO_TEST_MYSQL` and `REYLO_TEST_CLICKHOUSE` name and a database of a test's own on each, the drivers `lab/drivers` installs, a statement written by hand compiled by the engine's lexer, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { reportedDiagnostics } from "../src/mapper-diagnostics.ts";
+import { EngineCore, type Dialect } from "../src/engine-core.ts";
+import { nativeBinary } from "../src/native.ts";
 
 export const ROOT = join(import.meta.dirname, "..");
 export const DRIVERS = join(ROOT, "lab", "drivers", "node_modules");
@@ -66,6 +68,58 @@ export async function sqliteWasmCopy(file: string): Promise<any> {
 export async function closeSessions(): Promise<void> {
   const { Session } = await import("../src/analyze.ts");
   for (const session of Session.opened()) await session.close();
+}
+
+/** A statement written by hand, as `handWritten` compiles it. */
+export type HandWritten = { sql: string; params: string[]; text: string; order: string[]; marks: [number, number][] };
+
+const handWrittenKept = new Map<string, HandWritten>();
+
+/**
+ * A statement written by hand with Reylo's placeholders (`:id`), compiled as a build step compiles
+ * one, for a query a test defines by hand, which the run time takes as written: the engine's lexer
+ * reads its placeholders (the `lex` request, through the one-shot `reylo engine <database> call`,
+ * so that a test can define a query at once), and each is written as its database binds it, `$n`
+ * on Postgres, numbered once per name by `params` (by default the names in the order they first
+ * appear), one `?` per placeholder on MySQL and SQLite, and on ClickHouse as it is written,
+ * `{name:Type}`, the one form a statement defined by hand takes there. `text` is the statement the database
+ * receives, `order` the name each value binds, `marks` each placeholder's place in `text`, and
+ * `params` the names, which spread into `defineQuery` beside `sql`.
+ */
+export function handWritten(sql: string, dialect: Dialect, params?: readonly string[]): HandWritten {
+  const key = JSON.stringify([sql, dialect, params]);
+  const kept = handWrittenKept.get(key);
+  if (kept) return kept;
+  const binary = nativeBinary();
+  const engine = new EngineCore((request) => {
+    const run = spawnSync(binary, ["engine", dialect, "call"], { input: request, encoding: "utf8" });
+    if (run.status !== 0) throw new Error(`the engine ${binary} exited with ${run.status ?? run.signal}: ${run.stderr}`);
+    return run.stdout;
+  });
+  const lexed = engine.lex(sql, dialect);
+  const names = params ?? lexed.params;
+  // The engine's offsets are UTF-8 bytes.
+  const bytes = Buffer.from(sql, "utf8");
+  const at = (offset: number) => bytes.subarray(0, offset).toString("utf8").length;
+  let text = "";
+  let last = 0;
+  const order: string[] = [];
+  const marks: [number, number][] = [];
+  for (const p of lexed.placeholders) {
+    if (dialect === "postgres" && !names.includes(p.name)) throw new Error(`${JSON.stringify(sql)}: its placeholder for ${p.name} is not one of ${JSON.stringify(names)}`);
+    text += sql.slice(last, at(p.start));
+    const own = sql.slice(at(p.start), at(p.end));
+    if (dialect === "clickhouse" && !own.startsWith("{")) throw new Error(`${JSON.stringify(sql)}: a ClickHouse statement defined by hand is sent as written, so its placeholder for ${p.name} is written {${p.name}:Type}`);
+    const written = dialect === "clickhouse" ? own : dialect === "postgres" ? `$${names.indexOf(p.name) + 1}` : "?";
+    marks.push([text.length, text.length + written.length]);
+    text += written;
+    order.push(p.name);
+    last = at(p.end);
+  }
+  text += sql.slice(last);
+  const compiled = { sql, params: [...names], text, order: dialect === "postgres" || dialect === "clickhouse" ? [...names] : order, marks };
+  handWrittenKept.set(key, compiled);
+  return compiled;
 }
 
 /** Rows as plain objects, to compare with literals. */
