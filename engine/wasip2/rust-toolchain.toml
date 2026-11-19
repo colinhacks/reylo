@@ -1,0 +1,8 @@
+# The Rust the playground's component builds with: the root's rust-toolchain.toml release, with its
+# one target. engine/build.sh builds it from engine/, where the root's file applies, so the two move
+# together.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-wasip2"]

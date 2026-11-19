@@ -1,0 +1,11 @@
+alter type mood rename to mood__old;
+create type mood as enum ('a');
+alter domain kept_mood rename to kept_mood__old;
+create domain kept_mood as mood;
+comment on domain kept_mood is 'a mood kept';
+revoke usage on domain kept_mood from public;
+alter table t alter column k type kept_mood using k::text::kept_mood;
+drop domain kept_mood__old;
+drop type mood__old;
+create domain new_mood as mood;
+alter table t add column n new_mood;

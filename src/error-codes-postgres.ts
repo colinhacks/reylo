@@ -1,4 +1,4 @@
-// Written by scripts/error-codes.ts from Postgres's src/backend/utils/errcodes.txt at REL_19_RC2; run it again rather than editing this file.
+// Written by scripts/error-codes.ts from Postgres's src/backend/utils/errcodes.txt at REL_19_0; run it again rather than editing this file.
 
 /** Every SQLSTATE Postgres raises as an error, with its condition name. */
 export const POSTGRES_CODES = {

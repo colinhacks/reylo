@@ -3,14 +3,18 @@
 // schema as reylo.dev publishes it, site/public/typedefs/<name>.json, the name its `$id` gives it;
 // and spec/examples.json, the examples of spec/examples.ts as JSON, which the engine's own tests read
 // (engine/core/src/types.rs). Until 1.0.0 the format is a preview, published as preview.json and
-// rewritten in place; from 1.0.0 each version's published file is kept once written, so a descriptor of
-// an older version still validates against its own. With `--check`, nothing is written, and a file
-// that differs from what its source gives fails.
+// rewritten in place. From 1.0.0 a version's published file stays as the newest release tag holds
+// it, so a descriptor of a released version still validates against its own: a schema that would
+// change it is refused, whether writing or checking, and needs a new version. A version no tag
+// carries is free to change. With `--check`, nothing is written, and a file that differs from what
+// its source gives fails.
 //
 // The schema keeps to a small idiom, which this reads and refuses to go beyond: each definition is an
 // object (whose `allOf` names the definitions it extends), a union of definitions (`anyOf`), or a list
-// of strings (`enum`); a property is a `$ref`, a `const`, an `enum`, a string, a number, a boolean,
-// an array (a tuple where it has `prefixItems` and no `items` after them) or an object of its own.
+// of strings (`enum`); a property is a `$ref`, a `const`, an `enum`, a string, a number, an integer,
+// a boolean, an array (a tuple where it has `prefixItems` and no `items` after them) or an object of
+// its own.
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -95,13 +99,31 @@ ts = ts.trimEnd() + "\n";
 const examples = `${JSON.stringify({ ...(await import("./examples.ts")) }, null, 2)}\n`;
 
 // Each file written, its text, and the file it is written from.
+const publishedFile = path.join(root, "site", "public", "typedefs", `${published}.json`);
 const outputs: [string, string, string][] = [
   [path.join(root, "spec", "index.ts"), ts, "spec/typedefs.schema.json"],
-  [path.join(root, "site", "public", "typedefs", `${published}.json`), readFileSync(source, "utf8").replaceAll("\r\n", "\n"), "spec/typedefs.schema.json"],
+  [publishedFile, readFileSync(source, "utf8").replaceAll("\r\n", "\n"), "spec/typedefs.schema.json"],
   [path.join(root, "spec", "examples.json"), examples, "spec/examples.ts"],
 ];
 // A checkout on Windows may hold any of these with CRLF line endings, which change nothing they say.
 const lf = (text: string) => text.replaceAll("\r\n", "\n");
+
+// A version's file as the newest release tag holds it, if that tag holds one. A checkout with no
+// tag (a shallow clone, a copy outside git) has nothing to compare, and neither has the preview,
+// which changes in place.
+function released(file: string): { tag: string; text: string } | undefined {
+  const git = (...args: string[]) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  const describe = git("describe", "--tags", "--abbrev=0");
+  if (describe.status !== 0) return undefined;
+  const tag = describe.stdout.trim();
+  const shown = git("show", `${tag}:./${path.relative(root, file).split(path.sep).join("/")}`);
+  return shown.status === 0 ? { tag, text: shown.stdout } : undefined;
+}
+const release = published === "preview" ? undefined : released(publishedFile);
+if (release && lf(release.text) !== lf(outputs[1]![1])) {
+  console.error(`${path.relative(root, publishedFile).split(path.sep).join("/")} is published by ${release.tag} and stays as it is there, so the schema cannot change under version ${published}: give spec/typedefs.schema.json a new version (its $id, and SCHEMA in engine/core/src/types.rs), as rule 8 of spec/README.md says.`);
+  process.exit(1);
+}
 const stale = outputs.filter(([file, text]) => !existsSync(file) || lf(readFileSync(file, "utf8")) !== lf(text));
 if (check) {
   for (const [file, , from] of stale) console.error(`${path.relative(root, file)} is not what ${from} gives: run \`nub run typedefs\`.`);

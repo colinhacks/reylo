@@ -317,6 +317,7 @@
             "nullable": true,
             "type": {
               "kind": "date",
+              "min": "0000-01-01",
               "label": "date"
             }
           },

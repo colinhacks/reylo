@@ -107,7 +107,6 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.
     if (kind === "int8") return { type: ["integer", "string"], format: "int64" };
     if (kind === "decimal") return { type: "string", format: "decimal" };
-    if (kind === "timestamp") return { type: "string", format: "date-time" };
   }
   // A SET inside a document is its text, its members joined by commas.
   if (inJson && isMysqlSet(t)) return { type: "string" };

@@ -30,7 +30,7 @@ function check(url: string, engine: "sqlite" | "postgres", setup: (root: string)
   mkdirSync(join(root, "node_modules"), { recursive: true });
   symlinkSync(ROOT, join(root, "node_modules", "reylo"));
   const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true };
-  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo", extensions: [".sql"] }], include: ["main.ts"] }));
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo" }], include: ["main.ts"] }));
   for (const [name, text] of Object.entries(FILES)) writeFileSync(join(root, name), text);
   // Each module is typed: an import that became `any` would leave its expected error unused.
   writeFileSync(join(root, "main.ts"), Object.keys(FILES).map((name, i) => `import q${i} from "./${name}";\n// @ts-expect-error a typed query has no such property\nq${i}.nope;\n`).join(""));

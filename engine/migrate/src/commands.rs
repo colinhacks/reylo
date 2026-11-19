@@ -404,7 +404,7 @@ async fn store_fingerprint(db: &mut Db, name: &str) -> Result<(), Error> {
 }
 
 /// The live schema's fingerprint, from catalog lines already read from `db`: a digest of the catalog
-/// as the comparator reads it, with the server's version and this build's catalog code, which both
+/// as the comparator reads it, with the server's version and the catalog reader's, which both
 /// change what the catalog reads as. A database whose fingerprint equals the one its last run stored
 /// has not been changed since, its comments aside.
 async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> {
@@ -421,7 +421,7 @@ async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> 
     for line in fingerprinted(lines) {
         digest.part(line.as_bytes());
     }
-    Ok(format!("{}:{version}:{}", crate::cache::code_id(), crate::cache::hex(&digest.finish())))
+    Ok(format!("{}:{version}:{}", crate::cache::reader_id(), crate::cache::hex(&digest.finish())))
 }
 
 async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Error> {
@@ -945,17 +945,18 @@ impl Plan {
     }
 }
 
-/// Whether two texts are the same statements, comments and whitespace aside.
+/// Whether two texts are the same statements, comments and whitespace aside; on MySQL, an executable
+/// comment's version too, which says whether its text runs.
 fn same_statements(a: &str, b: &str, d: Dialect) -> bool {
     let tokens = |sql: &str| split_statements(sql, d).into_iter().map(|s| s.tokens.into_iter().map(|t| t.text).collect::<Vec<_>>()).collect::<Vec<_>>();
-    tokens(a) == tokens(b)
+    tokens(a) == tokens(b) && crate::sql::gates(a, d) == crate::sql::gates(b, d)
 }
 
 /// The statements of a migration that change data, as their first words: such a migration always
 /// runs, since no comparison of schemas can see whether its rows were written.
 fn data_statements(sql: &str, d: Dialect) -> Vec<String> {
     let statements = split_statements(sql, d);
-    statements.iter().enumerate().filter(|(k, s)| changes_data(s) && !copies_a_rebuild(&statements, *k)).map(|(_, s)| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
+    statements.iter().enumerate().filter(|(k, s)| changes_data(s, d) && !copies_a_rebuild(&statements, *k)).map(|(_, s)| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
 }
 
 /// Whether statement `k` of a file is a rebuild's own copy of a table's rows, which a database the
@@ -1125,7 +1126,14 @@ fn read_lock(opts: &Options) -> Result<lock::Lock, Problem> {
             .note("Keep main's lines and delete this branch's (git checkout --theirs while merging main in, --ours while rebasing).")
             .fix("Then run this branch's migrations after main's, which locks them again", &["reylo migrate dev"])),
         lock::State::Invalid(e) => Err(Problem::new("lock-unreadable", format!("{path} isn't a lock file")).note(unreadable_why(&e)).fix("Write it again from what a database applied", &["reylo migrate history pull"])),
+        lock::State::Unreadable(why) => Err(unreadable_lock_problem(opts, &why)),
     }
+}
+
+/// The refusal of a lock that is there and can't be read: read as none, it would turn its checksums
+/// off and deploy its drafts.
+fn unreadable_lock_problem(opts: &Options, why: &str) -> Problem {
+    Problem::new("lock-unreadable", format!("{} can't be read: {why}", shown(&opts.lock))).note("Read as no lock, it would run the migrations in name order, drafts and all, with no checksum to hold them to.")
 }
 
 /// Why a lock doesn't read, as a person can act on it: the line the YAML parser stopped at.
@@ -1199,9 +1207,14 @@ fn old_lock(opts: &Options) -> Option<Problem> {
     })
 }
 
-/// The refusal of a project that still holds the lock under its old name ([`old_lock`]).
-fn refuse_old_lock(opts: &Options, log: Log<'_>) -> Option<i32> {
-    old_lock(opts).map(|p| refuse(&[p], log))
+/// The refusal of a project that still holds the lock under its old name ([`old_lock`]), or whose
+/// lock is there and can't be read: every command that reads or writes the lock makes it first.
+fn refuse_lock_file(opts: &Options, log: Log<'_>) -> Option<i32> {
+    let unreadable = || match opts.lock_state() {
+        lock::State::Unreadable(why) => Some(unreadable_lock_problem(opts, &why)),
+        _ => None,
+    };
+    old_lock(opts).or_else(unreadable).map(|p| refuse(&[p], log))
 }
 
 /// Whether the project keeps no lock: its history isn't linear, and its migrations run in name order.
@@ -1622,6 +1635,20 @@ fn created_extensions(opts: &Options) -> Vec<String> {
     texts.iter().flat_map(|t| extensions_in(t)).collect()
 }
 
+/// The schemas the project's own files create.
+fn created_schemas(opts: &Options) -> Vec<String> {
+    static SCHEMA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_$-]+)"?"#).expect("a valid pattern"));
+    let mut texts = vec![opts.schema_text().unwrap_or_default()];
+    texts.extend(opts.migrations().map(|(files, _)| files.into_iter().map(|f| f.sql).collect::<Vec<_>>()).unwrap_or_default());
+    texts
+        .iter()
+        .flat_map(|t| {
+            let uncommented = crate::sql::tokenize(t, Dialect::Postgres).iter().map(|token| token.text.clone()).collect::<Vec<_>>().join(" ");
+            SCHEMA.captures_iter(&uncommented).map(|c| c[1].to_string()).filter(|s| !s.eq_ignore_ascii_case("authorization")).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The extensions a text creates.
 fn extensions_in(text: &str) -> Vec<String> {
     static EXTENSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+extension\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_-]+)"?"#).expect("a valid pattern"));
@@ -1649,6 +1676,7 @@ async fn shadow_server(db: &mut Db, opts: &Options) -> Result<Server, Error> {
     let mut server = Server::open(db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    server.leave_schemas(created_schemas(opts));
     Ok(server)
 }
 
@@ -1771,7 +1799,7 @@ fn may_leave_part(sql: &str, d: Dialect) -> bool {
 /// refuses one that isn't, running nothing. It needs no shadow database: `--dry-run` is what replays.
 #[cfg(feature = "cli")]
 pub async fn deploy(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     let mut db = Db::connect(&opts.url, &opts.root).await?;
@@ -1944,7 +1972,7 @@ fn uncompared_line() -> String {
 /// and writes nothing to the database.
 #[cfg(feature = "cli")]
 pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     // A SQLite file that isn't there yet is a database a first deploy makes: checked as the
@@ -2165,7 +2193,7 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
 /// (a hotfix, then written as a migration), and one whose history was lost or kept by another tool.
 #[cfg(feature = "cli")]
 pub async fn history_push(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if let Some(m) = missing(opts)? {
@@ -2369,7 +2397,7 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
 /// refuses one whose tables aren't what its history makes, whose files would not make it either.
 #[cfg(feature = "cli")]
 pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if let Some(m) = missing(opts)? {
@@ -2465,7 +2493,7 @@ fn there(opts: &Options) -> Result<(), Error> {
 /// made by hand, or a check that fails.
 #[cfg(feature = "cli")]
 pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     there(opts)?;
@@ -2666,7 +2694,7 @@ fn lock_line(opts: &Options) -> String {
 /// lock takes linear history back.
 #[cfg(feature = "cli")]
 pub async fn lock_from_history(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if let Some(m) = missing(opts)? {
@@ -2724,7 +2752,7 @@ async fn lock_from_history_on(db: &mut Db, server: &mut Server, opts: &Options, 
 /// refuse of the files and the lock, it refuses first, with nothing dropped. Never in CI.
 #[cfg(feature = "cli")]
 pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if in_ci {
@@ -2887,7 +2915,7 @@ pub struct Choices {
 
 #[cfg(feature = "cli")]
 pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     static VALID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9_]+$").expect("a valid pattern"));
@@ -3060,8 +3088,9 @@ fn described(loss: &str) -> String {
 /// one per statement, each with the comments written above it.
 #[cfg(feature = "cli")]
 fn plan_files(plan: &crate::diff::Plan, d: Dialect) -> Vec<String> {
+    // A file per transaction: one, or more where the plan commits partway.
     if d != Dialect::Mysql {
-        return vec![plan.sql()];
+        return plan.transactions().iter().map(|t| t.sql()).collect();
     }
     let mut files: Vec<String> = Vec::new();
     let mut pending = String::new();
@@ -3639,6 +3668,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    server.leave_schemas(created_schemas(opts));
     db.close().await;
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
     let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
@@ -4015,7 +4045,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
 /// records init.sql without running it, once a shadow shows the database already has its schema.
 #[cfg(feature = "cli")]
 pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     let started = if opts.schema_exists() { Some(shown(&opts.schema)) } else if !opts.migrations()?.0.is_empty() { Some(shown(&opts.dir)) } else { None };
@@ -4159,6 +4189,10 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
     result
 }
 
+/// What a push that failed after committing part of its plan says: an enum's labels, which what
+/// follows them uses, are committed first.
+const COMMITTED: &str = "The plan commits partway (an enum's new labels, before what uses them), so its first part is in place.";
+
 /// Why `take_to` left the database as it was.
 enum Unreached {
     /// The plan ran, but the database didn't then read as the target: how it differs.
@@ -4190,8 +4224,12 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
             Ok(Settled { renames, plan, .. }) => (renames, plan),
             Err(problems) => return Ok(Err(Unreached::Refused(problems))),
         };
+        let mut committed = false;
         for s in plan.runnable().chain(then) {
-            db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await?;
+            if let Err(e) = db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await {
+                return Err(if committed { Error(format!("{}\n{COMMITTED}", e.0)) } else { e });
+            }
+            committed |= s == crate::diff::COMMIT;
         }
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
@@ -4247,7 +4285,7 @@ pub fn refused_in_ci(command: &str, log: Log<'_>) -> i32 {
 /// variable).
 #[cfg(feature = "cli")]
 pub async fn dev(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if in_ci {
@@ -4941,7 +4979,7 @@ pub async fn db_push(opts: &Options, in_ci: bool, push: &Push, log: Log<'_>) -> 
 
 #[cfg(feature = "cli")]
 async fn db_push_as(opts: &Options, in_ci: bool, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if in_ci {
@@ -4961,7 +4999,7 @@ async fn db_push_as(opts: &Options, in_ci: bool, push: &Push, asked: &Asked, log
 /// makes, for a test; None runs until stopped.
 #[cfg(feature = "cli")]
 pub async fn db_push_watch(opts: &Options, in_ci: bool, push: &Push, runs: Option<usize>, log: Log<'_>) -> Result<i32, Error> {
-    if let Some(code) = refuse_old_lock(opts, log) {
+    if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
     if in_ci {
@@ -5094,7 +5132,12 @@ async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Optio
 async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, applied: &[Migration], schema_sql: &str, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
     let d = db.dialect();
     let fail = |m: &str, error: String, log: Log<'_>| {
-        let problem = Problem::new("db-push-failed", m.to_string()).note(error);
+        let partway = error.contains(COMMITTED);
+        let problem = Problem::new("db-push-failed", m.to_string()).note(error.replace(&format!("\n{COMMITTED}"), ""));
+        if partway {
+            print_problems(&[problem.note(COMMITTED)], log);
+            return Ok(1);
+        }
         if d == Dialect::Mysql {
             print_problems(&[problem.note("MySQL commits each statement, so part of the push may be in place.")], log);
             return Ok(1);

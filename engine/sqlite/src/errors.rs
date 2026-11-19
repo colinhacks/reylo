@@ -56,14 +56,14 @@ pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
         return Some(None);
     }
     // An INSERT changes no key but as a REPLACE, which deletes, or through an upsert that updates.
-    // A REPLACE is the statement's own, or a constraint's a written table declares ON CONFLICT
-    // REPLACE, which the catalog query looks for in the table's DDL (any `replace` there counts).
+    // A REPLACE is the statement's own, or a key's the written table declares ON CONFLICT REPLACE,
+    // as SQLite parsed it.
     let cascades = if written.is_empty() {
         "0"
-    } else if analysis.kind != Some(StatementKind::Insert) || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]) {
+    } else if analysis.kind != Some(StatementKind::Insert) || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]) || crate::sqlite::declares_replace(analysis, host)? {
         "1"
     } else {
-        "exists (select 1 from sqlite_schema where type = 'table' and name collate nocase in ({written}) and sql like '%replace%')"
+        "0"
     };
     let query = ERRORS_QUERY.replace("{cascades}", cascades).replace("{written}", &if written.is_empty() { "null".to_string() } else { written.join(", ") });
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;

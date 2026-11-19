@@ -25,7 +25,7 @@ b24_returning_old_insert.sql: one () -> { arr: record?[] }
 b25_returning_old_top.sql: one () -> { ob: text(¬NUL)? }
 b26_returning_new_delete.sql: at_most_one () -> { arr: record?[] }
 b27_star_dropped_derived.sql: one () -> { arr: (record{ id: int4, kept: text(¬NUL) })[] }
-b31_correlated_param.sql: many (k: int8) -> { id: int8, arr: (record{ id: int8, s: int8? })[] } key (id)
+b31_correlated_param.sql: many (k: int8) -> { id: int8, arr: (record{ id: int8, s: int8 })[] } key (id)
 b32_lateral_param.sql: many (k: int8) -> { s: int8 }
 b33_rollup_lateral.sql: many () -> { author_id: int8?, n: int8? }
 b35_rows_from_lateral.sql: many () -> { a: int4?, b: int4? }

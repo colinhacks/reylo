@@ -5,7 +5,7 @@
  * browser reads it too (lib/content.ts) and that module reads the disk.
  */
 export const PAGE_SECTIONS: Record<string, readonly string[]> = {
-  'typescript.mdx': ['01-setup.mdx', '02-usage.mdx', '08b-tracing.mdx', '08c-schema-checks.mdx'],
+  'typescript.mdx': ['01-setup.mdx', '02-usage.mdx', '08b-tracing.mdx'],
   'inference.mdx': ['03-inference.mdx'],
   'configuration.mdx': ['04-configuration.mdx'],
   'faq.mdx': ['09-faq.mdx'],

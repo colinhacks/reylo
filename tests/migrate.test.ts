@@ -61,6 +61,15 @@ test("a migration that fails rolls back with its row, names itself, and leaves t
   assert.deepEqual((s.db.prepare("select name from __reylo_migrations").all() as { name: string }[]).map((r) => r.name), [USERS.name]);
 });
 
+test("a migration that leaves a foreign key broken rolls back alone, as reylo migrate refuses it", () => {
+  const s = storage();
+  const POSTS = { name: "20261107120000_posts.sql", sql: "create table posts (id integer primary key, user_id integer references users (id) deferrable initially deferred); insert into users (name) values ('ada'); insert into posts (user_id) values (1);" };
+  const ORPHANS = { name: "20261108120000_orphans.sql", sql: "delete from users;" };
+  assert.deepEqual(runMigrations(s, [USERS, POSTS]), [USERS.name, POSTS.name]);
+  assert.throws(() => runMigrations(s, [USERS, POSTS, ORPHANS]), /^Error: reylo: the migration 20261108120000_orphans\.sql failed on this Durable Object, and rolled back: 1 rows break a foreign key after this migration$/);
+  assert.equal((s.db.prepare("select count(*) as n from users").get() as { n: number }).n, 1);
+});
+
 test("a history the bundle doesn't continue is refused before anything runs, naming the migration", () => {
   const AGE = { name: "20261108120000_age.sql", sql: "alter table users add column age int;" };
   const history = (s: { db: DatabaseSync }) => (s.db.prepare("select name from __reylo_migrations order by rowid").all() as { name: string }[]).map((r) => r.name);

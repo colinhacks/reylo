@@ -360,7 +360,7 @@ impl<'a> From<'a> {
         }
         // Another column: both must be exact numbers.
         match self.place_expr(value) {
-            Some(Placed::Item(j, c)) => class == Some(Class::Number) && self.class(j, &c) == Some(Class::Number),
+            Some(Placed::Item(j, c)) => class.is_some_and(Class::exact) && self.class(j, &c).is_some_and(Class::exact),
             _ => false,
         }
     }
@@ -794,7 +794,7 @@ fn set_keys<'a>(op: &ast::SetOperator, quantifier: &ast::SetQuantifier, left: &'
     }
     if !matches!(quantifier, ast::SetQuantifier::All | ast::SetQuantifier::AllByName) {
         if let (Some(l), Some(r)) = (body_columns(left, ctes, keys), body_columns(right, ctes, keys)) {
-            let exact = !l.is_empty() && l.len() == r.len() && l.iter().zip(&r).all(|((_, a), (_, b))| *a == Some(Class::Number) && *b == Some(Class::Number));
+            let exact = !l.is_empty() && l.len() == r.len() && l.iter().zip(&r).all(|((_, a), (_, b))| a.is_some_and(Class::exact) && b.is_some_and(Class::exact));
             if exact {
                 out.push(l.into_iter().map(|(name, class)| Part { name, class }).collect());
             }
