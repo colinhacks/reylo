@@ -853,13 +853,11 @@ direct_url: ${DATABASE_URL}
 shadow_url: null
 ```
 
-To migrate another database, pass `--url`:
+To migrate another database, pass `--url`, which on Turso Cloud is its `libsql://` URL with your auth token ([Turso](/turso#migrations)):
 
 ```terminal
 $ reylo migrate status --url $PROD_URL
 ```
-
-On Turso Cloud, that's its `libsql://` URL with your auth token ([Turso](/turso#migrations)).
 
 Many commands rely on a shadow database: a throwaway database beside yours, where Reylo Migrate runs your migrations, reads the schema they make, and drops it.
 
