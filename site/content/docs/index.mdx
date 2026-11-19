@@ -117,7 +117,7 @@ create table events (
 
 ```sql file="schema.sql" tab="ClickHouse" tab-group="dialect"
 CREATE TABLE users (
-  id UInt32,                             -- no key is unique: a lookup says LIMIT 1
+  id UInt32,                             -- no unique key: say LIMIT 1
   name String,                           -- name: string
   email Nullable(String),                -- email: string | null
   role Enum8('admin' = 1, 'member' = 2)  -- role: "admin" | "member"
