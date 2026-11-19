@@ -19,11 +19,6 @@ pg=${REYLO_TEST_PG:?REYLO_TEST_PG names the Postgres server}
 mysql=${REYLO_TEST_MYSQL:?REYLO_TEST_MYSQL names the MySQL server}
 server=${pg%/*}
 root=$(pwd)
-# The new projects sit outside this repository, where its rust-toolchain.toml does not reach: they
-# build with the release it pins, the crates' rust-version, rather than the runner's own.
-rustup toolchain install
-RUSTUP_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
-export RUSTUP_TOOLCHAIN
 
 # The published crates, each with its version, from the workspace's own manifests.
 crates=$(cargo metadata --no-deps --format-version 1 --locked | python3 -c '
@@ -49,6 +44,13 @@ cargo package --locked --allow-dirty $flags
 echo '::endgroup::'
 
 projects=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/reylo-fresh.XXXXXX")
+# The new projects build on the oldest Rust the crates declare, the workspace's rust-version, so that
+# every run proves it, where this repository builds on the release rust-toolchain.toml pins. They sit
+# outside the repository, where that file does not reach anyway.
+floor=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+rustup toolchain install "$floor" --profile minimal
+export RUSTUP_TOOLCHAIN=$floor
+cargo --version
 trap 'rm -rf "$projects"' EXIT
 # One target directory for every project, so that what they share compiles once.
 export CARGO_TARGET_DIR="$projects/target"
