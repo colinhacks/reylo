@@ -3247,6 +3247,10 @@ mod adversarial {
         )
         .await;
         let superuser = p.rows("select current_user::text as u").await[0].text("u").to_string();
+        // A table of the same name in the schema the owner's `search_path` ("$user", public) finds
+        // first: the platform's, which the fix must leave alone.
+        let own = format!("\"{}\"", superuser.replace('"', "\"\""));
+        p.exec(&format!("create schema {own}; create table {own}.customers (id int)")).await;
         let admin = p.url.clone();
         p.url = as_role(&admin, "madv_app");
         let opts = p.opts();
@@ -3277,7 +3281,7 @@ mod adversarial {
         let fix = said.lines().find(|l| l.contains("reylo run")).unwrap_or_else(|| panic!("no fix in:\n{said}")).trim().to_string();
         let words: Vec<String> = regex::Regex::new(r"'((?:[^']|'\\'')*)'").unwrap().captures_iter(&fix).map(|c| c[1].replace("'\\''", "'")).collect();
         assert!(fix.starts_with("reylo run --url ") && words.len() == 3, "{fix}");
-        assert_eq!(&words[1..], ["alter table customers owner to madv_app", "alter table orders owner to madv_app"], "{fix}");
+        assert_eq!(&words[1..], ["alter table public.customers owner to madv_app", "alter table public.orders owner to madv_app"], "{fix}");
         let items: Vec<(String, String)> = words[1..].iter().map(|w| (w.clone(), w.clone())).collect();
         let (url, dir) = (words[0].clone(), p.dir.clone());
         assert_eq!(p.run(async |_, log| reylo_migrate::run_sql(&url, &dir, &items, log).await).await, 0, "{}", p.peek());
@@ -3292,6 +3296,9 @@ mod adversarial {
         assert_eq!(p.status().await, 0, "{}", p.peek());
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
         assert_eq!(p.rows("select count(*) as n from customers").await[0].text("n"), "1", "the rows stay");
+        // Read from the catalog, since the role connected may not use the owner's schema.
+        let owner = format!("select pg_get_userbyid(c.relowner)::text as o from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = '{}' and c.relname = 'customers'", superuser.replace('\'', "''"));
+        assert_eq!(p.rows(&owner).await[0].text("o"), superuser, "the fix moved the owner's own table");
     }
 
     /// The platform's objects a migration uses (a view over its functions) are made in each shadow as

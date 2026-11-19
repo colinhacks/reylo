@@ -1694,20 +1694,22 @@ async fn out_of_reach(db: &mut Db, url: &str) -> Result<Vec<Problem>, Error> {
     }
     let me = db.rows("select current_user::text as u, quote_ident(current_user) as q").await?;
     let (role, quoted) = me.first().map(|r| (r.text("u").to_string(), r.text("q").to_string())).unwrap_or_default();
-    let mut owners: Vec<&str> = relations.iter().map(|(o, _, _)| o.as_str()).collect();
+    let mut owners: Vec<&str> = relations.iter().map(|(o, ..)| o.as_str()).collect();
     owners.dedup();
     Ok(owners
         .into_iter()
         .map(|owner| {
-            let theirs: Vec<&(String, String, String)> = relations.iter().filter(|(o, _, _)| o == owner).collect();
+            let theirs: Vec<&(String, String, String, String)> = relations.iter().filter(|(o, ..)| o == owner).collect();
             let one = theirs.len() == 1;
             let kinds: Vec<String> = ["table", "view", "materialized view", "sequence", "foreign table"]
                 .into_iter()
-                .filter(|k| theirs.iter().any(|(_, kind, _)| kind == k))
+                .filter(|k| theirs.iter().any(|(_, kind, ..)| kind == k))
                 .map(|k| if one { format!("a {k}") } else { format!("{k}s") })
                 .collect();
-            let names: Vec<&str> = theirs.iter().map(|(_, _, name)| name.as_str()).collect();
-            let statements: Vec<String> = theirs.iter().map(|(_, kind, name)| shell_word(&format!("alter {kind} {name} owner to {quoted}"))).collect();
+            let names: Vec<&str> = theirs.iter().map(|(_, _, name, _)| name.as_str()).collect();
+            // Each named with its schema, `public` too: the statements run as the owner, whose
+            // `search_path` (`"$user", public`) may find another relation of the name first.
+            let statements: Vec<String> = theirs.iter().map(|(_, kind, _, qualified)| shell_word(&format!("alter {kind} {qualified} owner to {quoted}"))).collect();
             let command = format!("reylo run --url {} {}", shell_word(&as_user(url, owner)), statements.join(" "));
             Problem::new("owner-out-of-reach", format!("{owner} owns {} here that {role} can't act as: {}", and_list(&kinds), names.join(", ")))
                 .fix(format!("Make {role} {} owner, connected as {owner}, then start again", if one { "its" } else { "their" }), &[&command])

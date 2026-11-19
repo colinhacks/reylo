@@ -263,12 +263,13 @@ pub(crate) fn project_relation(c: &str, n: &str) -> String {
 }
 
 /// The relations in a schema of the project's that a superuser the connected role may not act as
-/// owns, each `(owner, kind, name)`: the kind as `alter` names it, and the name schema-qualified
-/// outside `public`. No migration the role runs may change them, and no shadow it makes owns them as
+/// owns, each `(owner, kind, name, qualified)`: the kind as `alter` names it, the name as a person
+/// reads it (schema-qualified outside `public`), and the name schema-qualified always, for a
+/// statement run as another role, whose `search_path` may find another relation of that name first. No migration the role runs may change them, and no shadow it makes owns them as
 /// they are owned here. A sequence a column owns, and an index, go with their table, whose new owner
 /// takes them.
 #[cfg(feature = "cli")]
-pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, String, String)>, Error> {
+pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, String, String, String)>, Error> {
     if db.dialect() != Dialect::Postgres {
         return Ok(vec![]);
     }
@@ -276,7 +277,8 @@ pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, S
         .rows(&format!(
             "select pg_get_userbyid(c.relowner)::text as owner,
               case c.relkind when 'v' then 'view' when 'm' then 'materialized view' when 'S' then 'sequence' when 'f' then 'foreign table' else 'table' end as kind,
-              case when n.nspname = 'public' then quote_ident(c.relname) else format('%I.%I', n.nspname, c.relname) end as name
+              case when n.nspname = 'public' then quote_ident(c.relname) else format('%I.%I', n.nspname, c.relname) end as name,
+              format('%I.%I', n.nspname, c.relname) as qualified
             from pg_class c join pg_namespace n on n.oid = c.relnamespace
             where c.relkind in ('r', 'p', 'v', 'm', 'S', 'f') and {PG_USER_NS} and c.relname <> '{HISTORY_TABLE}' and {} and {} and {}
               and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.refclassid = 'pg_class'::regclass and d.deptype in ('a', 'i'))
@@ -286,7 +288,7 @@ pub(crate) async fn out_of_reach_relations(db: &mut Db) -> Result<Vec<(String, S
             not_extension("pg_class", "c")
         ))
         .await?;
-    Ok(rows.iter().map(|r| (r.text("owner").to_string(), r.text("kind").to_string(), r.text("name").to_string())).collect())
+    Ok(rows.iter().map(|r| (r.text("owner").to_string(), r.text("kind").to_string(), r.text("name").to_string(), r.text("qualified").to_string())).collect())
 }
 
 /// Whether `owner` is a superuser the connected role may not act as: may not `set role` to, which
