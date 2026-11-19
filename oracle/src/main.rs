@@ -13,7 +13,7 @@
 //! as `80400`) is skipped on an older server. A MySQL case's `sql_mode` file sets its sessions'
 //! `sql_mode`.
 //!
-//!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres oracle/cases
+//!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:25432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
 //!   cargo run -p reylo-oracle -- --url … --bless oracle/cases/not_null   # rewrite expected.txt
 //!   cargo run -p reylo-oracle -- --url … --analyses old.json oracle/cases  # check other answers
